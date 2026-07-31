@@ -87,7 +87,7 @@ create public release assets and verify their manifest checksums.
 - [Pull request #11](https://github.com/TimLai666/better-os/pull/11)
 - [CI run 30616628027](https://github.com/TimLai666/better-os/actions/runs/30616628027)
 - [CI run 30625827340](https://github.com/TimLai666/better-os/actions/runs/30625827340)
-- [Latest main CI run 30630487421](https://github.com/TimLai666/better-os/actions/runs/30630487421)
+- [Main CI run 30631266909](https://github.com/TimLai666/better-os/actions/runs/30631266909)
 - [Tickets](docs/tickets/)
 
 ## Handoff Notes
