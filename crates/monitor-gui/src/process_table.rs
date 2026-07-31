@@ -2,12 +2,20 @@ use std::cmp::Ordering;
 
 use gpui::*;
 use gpui_component::{
-    ActiveTheme,
+    ActiveTheme, Disableable, Root, Sizable, StyledExt,
+    button::{Button, ButtonVariants},
+    h_flex,
+    switch::Switch,
     table::{Column, ColumnSort, TableDelegate, TableState},
+    v_flex,
 };
 use sysinfo::Pid;
 
-use crate::{linux, settings::MonitorSettings};
+use crate::{
+    linux,
+    process_control::{self, PriorityPreset},
+    settings::MonitorSettings,
+};
 
 #[derive(Clone, Debug)]
 pub struct ProcessInfo {
@@ -60,6 +68,7 @@ enum ProcessColumn {
     CombinedMemory,
     CommandLine,
     State,
+    Options,
 }
 
 impl ProcessColumn {
@@ -86,6 +95,7 @@ impl ProcessColumn {
             Self::CombinedMemory => "combined-memory",
             Self::CommandLine => "command-line",
             Self::State => "state",
+            Self::Options => "options",
         }
     }
 
@@ -112,6 +122,7 @@ impl ProcessColumn {
             Self::CombinedMemory => "Memory + swap",
             Self::CommandLine => "Command line",
             Self::State => "State",
+            Self::Options => "Options",
         }
     }
 
@@ -128,7 +139,19 @@ impl ProcessColumn {
             Self::Priority => 112.0,
             Self::CommandLine => 420.0,
             Self::State => 100.0,
+            Self::Options => 104.0,
         }
+    }
+
+    const fn sortable(self) -> bool {
+        !matches!(
+            self,
+            Self::Gpu
+                | Self::GpuMemory
+                | Self::Encoder
+                | Self::Decoder
+                | Self::Options
+        )
     }
 }
 
@@ -240,13 +263,17 @@ impl ProcessTableDelegate {
             kinds.push(ProcessColumn::CommandLine);
         }
         kinds.push(ProcessColumn::State);
+        kinds.push(ProcessColumn::Options);
 
         self.columns = kinds
             .iter()
             .map(|kind| {
-                let column = Column::new(kind.id(), kind.title())
-                    .width(kind.width())
-                    .sortable();
+                let column = Column::new(kind.id(), kind.title()).width(kind.width());
+                let column = if kind.sortable() {
+                    column.sortable()
+                } else {
+                    column
+                };
                 if *kind == self.sort_column {
                     column.sort(self.sort_order)
                 } else {
@@ -323,7 +350,8 @@ impl ProcessTableDelegate {
                 ProcessColumn::Gpu
                 | ProcessColumn::GpuMemory
                 | ProcessColumn::Encoder
-                | ProcessColumn::Decoder => Ordering::Equal,
+                | ProcessColumn::Decoder
+                | ProcessColumn::Options => Ordering::Equal,
             };
             if descending {
                 ordering.reverse()
@@ -375,6 +403,7 @@ impl ProcessTableDelegate {
                 }
             }
             ProcessColumn::State => process.state.clone(),
+            ProcessColumn::Options => "Open options".to_string(),
         }
     }
 }
@@ -405,6 +434,23 @@ impl TableDelegate for ProcessTableDelegate {
         let Some(column) = self.column_kinds.get(col_ix).copied() else {
             return div().into_any_element();
         };
+
+        if column == ProcessColumn::Options {
+            let process = process.clone();
+            let button_id = ("process-options", process.pid.as_u32() as usize);
+            return div()
+                .child(
+                    Button::new(button_id)
+                        .outline()
+                        .small()
+                        .label("Options")
+                        .on_click(move |_, _, cx| {
+                            open_process_options(process.clone(), cx);
+                        }),
+                )
+                .into_any_element();
+        }
+
         let value = self.cell_value(process, column);
         let color = match column {
             ProcessColumn::Cpu if process.cpu_usage >= 50.0 => cx.theme().red,
@@ -435,6 +481,9 @@ impl TableDelegate for ProcessTableDelegate {
         let Some(column) = self.column_kinds.get(col_ix).copied() else {
             return;
         };
+        if !column.sortable() {
+            return;
+        }
         self.sort_column = column;
         self.sort_order = sort;
         self.sort_processes();
@@ -449,6 +498,290 @@ impl TableDelegate for ProcessTableDelegate {
         };
         self.cell_value(process, column)
     }
+}
+
+struct ProcessOptionsView {
+    process: ProcessInfo,
+    current_priority: PriorityPreset,
+    available_cpus: Vec<usize>,
+    selected_cpus: Vec<usize>,
+    status: String,
+}
+
+impl ProcessOptionsView {
+    fn new(process: ProcessInfo) -> Self {
+        let available_cpus = process_control::available_cpus();
+        let (selected_cpus, status) = match process_control::affinity(process.pid) {
+            Ok(cpus) => (cpus, "Ready".to_string()),
+            Err(error) => (Vec::new(), error.to_string()),
+        };
+        Self {
+            current_priority: PriorityPreset::from_nice(process.nice.unwrap_or_default()),
+            process,
+            available_cpus,
+            selected_cpus,
+            status,
+        }
+    }
+
+    fn set_priority(&mut self, preset: PriorityPreset, cx: &mut Context<Self>) {
+        self.status = match process_control::set_priority(self.process.pid, preset) {
+            Ok(()) => {
+                self.current_priority = preset;
+                format!(
+                    "Priority changed to {} (nice {})",
+                    preset.label(),
+                    preset.nice()
+                )
+            }
+            Err(error) => error.to_string(),
+        };
+        cx.notify();
+    }
+
+    fn toggle_cpu(&mut self, cpu: usize, enabled: bool, cx: &mut Context<Self>) {
+        let mut next = self.selected_cpus.clone();
+        if enabled {
+            if !next.contains(&cpu) {
+                next.push(cpu);
+                next.sort_unstable();
+            }
+        } else {
+            next.retain(|candidate| *candidate != cpu);
+        }
+        self.apply_affinity(next, cx);
+    }
+
+    fn use_all_cpus(&mut self, cx: &mut Context<Self>) {
+        self.apply_affinity(self.available_cpus.clone(), cx);
+    }
+
+    fn apply_affinity(&mut self, cpus: Vec<usize>, cx: &mut Context<Self>) {
+        self.status = match process_control::set_affinity(self.process.pid, &cpus) {
+            Ok(()) => {
+                self.selected_cpus = cpus;
+                format!(
+                    "CPU affinity changed to {}",
+                    process_control::format_affinity(&self.selected_cpus)
+                )
+            }
+            Err(error) => error.to_string(),
+        };
+        cx.notify();
+    }
+}
+
+impl Render for ProcessOptionsView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .px_5()
+                    .py_4()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .font_bold()
+                                    .text_lg()
+                                    .truncate()
+                                    .child(self.process.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!(
+                                        "PID {} · {} · {}",
+                                        self.process.pid, self.process.user, self.process.state
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Process Options"),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .p_5()
+                    .child(
+                        v_flex()
+                            .gap_5()
+                            .child(
+                                v_flex()
+                                    .gap_3()
+                                    .rounded(cx.theme().radius_lg)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .p_4()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(div().font_bold().child("Priority"))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(format!(
+                                                        "Current: {} · nice {}",
+                                                        self.current_priority.label(),
+                                                        self.current_priority.nice()
+                                                    )),
+                                            ),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .flex_wrap()
+                                            .gap_2()
+                                            .children(PriorityPreset::ALL.into_iter().map(
+                                                |preset| {
+                                                    Button::new((
+                                                        "priority-preset",
+                                                        preset.nice() as isize,
+                                                    ))
+                                                    .outline()
+                                                    .small()
+                                                    .selected(self.current_priority == preset)
+                                                    .label(preset.label())
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            this.set_priority(preset, cx);
+                                                        },
+                                                    ))
+                                                },
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_3()
+                                    .rounded(cx.theme().radius_lg)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .p_4()
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap_4()
+                                            .child(
+                                                v_flex()
+                                                    .gap_1()
+                                                    .child(div().font_bold().child("CPU affinity"))
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(
+                                                                cx.theme().muted_foreground,
+                                                            )
+                                                            .child(format!(
+                                                                "Selected: {}",
+                                                                process_control::format_affinity(
+                                                                    &self.selected_cpus
+                                                                )
+                                                            )),
+                                                    ),
+                                            )
+                                            .child(
+                                                Button::new("affinity-all")
+                                                    .outline()
+                                                    .small()
+                                                    .disabled(self.available_cpus.is_empty())
+                                                    .label("Use all CPUs")
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.use_all_cpus(cx);
+                                                    })),
+                                            ),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .flex_wrap()
+                                            .gap_2()
+                                            .children(self.available_cpus.iter().copied().map(
+                                                |cpu| {
+                                                    let checked = self.selected_cpus.contains(&cpu);
+                                                    h_flex()
+                                                        .items_center()
+                                                        .gap_2()
+                                                        .rounded(cx.theme().radius)
+                                                        .border_1()
+                                                        .border_color(cx.theme().border)
+                                                        .px_3()
+                                                        .py_2()
+                                                        .child(
+                                                            Switch::new(("affinity-cpu", cpu))
+                                                                .checked(checked)
+                                                                .on_click(cx.listener(
+                                                                    move |this, checked, _, cx| {
+                                                                        this.toggle_cpu(
+                                                                            cpu, *checked, cx,
+                                                                        );
+                                                                    },
+                                                                )),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_sm()
+                                                                .child(format!("CPU {}", cpu + 1)),
+                                                        )
+                                                },
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .rounded(cx.theme().radius)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .p_3()
+                                    .child(
+                                        div()
+                                            .size_2()
+                                            .rounded(px(99.0))
+                                            .bg(cx.theme().blue),
+                                    )
+                                    .child(div().text_sm().child(self.status.clone())),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        "The GPUI process stays unprivileged. Operations on another user’s process or negative nice values may be denied by Linux and are reported here.",
+                                    ),
+                            ),
+                    ),
+            )
+    }
+}
+
+fn open_process_options(process: ProcessInfo, cx: &mut App) {
+    let window_options = WindowOptions {
+        window_bounds: Some(WindowBounds::centered(size(px(760.0), px(620.0)), cx)),
+        ..Default::default()
+    };
+    let _ = cx.open_window(window_options, move |window, cx| {
+        let view = cx.new(|_| ProcessOptionsView::new(process));
+        cx.new(|cx| Root::new(view, window, cx))
+    });
 }
 
 fn format_ticks(ticks: Option<u64>) -> String {
@@ -472,13 +805,7 @@ fn format_priority(nice: Option<i64>, detailed: bool) -> String {
     let Some(nice) = nice else {
         return "N/A".to_string();
     };
-    let label = match nice {
-        i64::MIN..=-8 => "Very High",
-        -7..=-3 => "High",
-        -2..=2 => "Normal",
-        3..=6 => "Low",
-        _ => "Very Low",
-    };
+    let label = PriorityPreset::from_nice(nice).label();
     if detailed {
         format!("{label} ({nice:+})")
     } else {
