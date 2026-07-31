@@ -47,6 +47,8 @@ GUI or dependency compiles when the relevant command was not executed.
 - Build each supported Ubuntu release in a compatible base environment. The
   current Zorin 18 host produces `libc6 (>= 2.39)` and must not supply a 22.04
   release artifact.
+- Update GitHub Actions dependencies after the Node.js 20 deprecation warning
+  on `actions/checkout` and `actions/upload-artifact` is addressed.
 - Decide the privileged daemon IPC protocol before implementing real system
   installation or rollback.
 - Review the license implications of every copyleft dependency before release.
