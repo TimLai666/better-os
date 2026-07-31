@@ -4,83 +4,7 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
-  parity-fix:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/better-monitor-ui'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/better-monitor-ui
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Apply parity compile fixes
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("crates/monitor-gui/src/parity.rs")
-          source = path.read_text()
-
-          source = source.replace(
-              ".children(groups.into_iter().map(|group| {",
-              ".children(groups.into_iter().enumerate().map(|(index, group)| {",
-          )
-          for action in ("term", "kill", "stop", "cont"):
-              source = source.replace(
-                  f'Button::new(("app-{action}", group.id.clone()))',
-                  f'Button::new(("app-{action}", index))',
-              )
-          source = source.replace("cx.theme().purple", "cx.theme().blue")
-          source = source.replace(
-              "        let selected = self.selected_process();",
-              "        let selected = self.selected_process(cx);",
-          )
-          source = source.replace(
-              "                        .child(match selected {\n                            Some(process) => format!(",
-              "                        .child(match selected.as_ref() {\n                            Some(process) => format!(",
-          )
-          source = source.replace(
-              ".child(self.process_action_buttons(selected.map(|process| process.pid), cx))",
-              ".child(self.process_action_buttons(selected.as_ref().map(|process| process.pid), cx))",
-          )
-          source = source.replace(
-              "            .when_some(selected, |this, process| {\n                this.child(self.render_process_details(process, cx))\n            })",
-              "            .when_some(selected, |this, process| {\n                this.child(self.render_process_details(&process, cx))\n            })",
-          )
-
-          start = source.index("    fn selected_process(&self) -> Option<&ProcessInfo> {")
-          end = source.index("\n    fn signal_pids", start)
-          replacement = '''    fn selected_process(&self, cx: &Context<Self>) -> Option<ProcessInfo> {
-        let pid = self.selected_pid?;
-        self.process_table
-            .read(cx)
-            .delegate()
-            .processes
-            .iter()
-            .find(|process| process.pid == pid)
-            .cloned()
-    }
-'''
-          source = source[:start] + replacement + source[end:]
-          path.write_text(source)
-          PY
-          cargo fmt --all
-      - name: Commit parity fixes
-        run: |
-          if git diff --quiet; then
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/monitor-gui/src/parity.rs
-          git commit -m "fix(monitor): resolve Resources parity compile errors"
-          git push origin HEAD:feature/better-monitor-ui
-
   rust:
     runs-on: ubuntu-latest
     env:
@@ -135,6 +59,8 @@ jobs:
             arm64) test "$(uname -m)" = "aarch64" ;;
             *) exit 1 ;;
           esac
+      # Keep release target artifacts isolated by Ubuntu release. Proc-macro
+      # shared objects are linked against the runner's glibc.
       - name: Install GPUI and packaging dependencies
         run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
       - name: Build Debian packages
