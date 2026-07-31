@@ -9,7 +9,7 @@ impl MonitorWindow {
         let memory_detail = linux::format_bytes(self.system.used_memory(), self.settings.unit_base);
 
         v_flex()
-            .w(px(292.))
+            .w(px(292.0))
             .h_full()
             .flex_shrink_0()
             .gap_2()
@@ -48,37 +48,40 @@ impl MonitorWindow {
                     ),
             )
             .child(
-                div().flex_1().min_h(px(0.)).overflow_y_scrollbar().child(
-                    v_flex()
-                        .gap_1()
-                        .child(self.sidebar_group_label("Applications", cx))
-                        .child(self.sidebar_resource_row(
-                            "sidebar-apps",
-                            "Apps".to_string(),
-                            format!("{} grouped apps", self.app_groups.len()),
-                            self.app_groups.first().map(|app| app.cpu_usage as f64),
-                            self.active_page == MonitorPage::Apps,
-                            cx.listener(|this, _, _, cx| {
-                                this.active_page = MonitorPage::Apps;
-                                cx.notify();
-                            }),
-                            cx,
-                        ))
-                        .child(self.sidebar_resource_row(
-                            "sidebar-processes",
-                            "Processes".to_string(),
-                            format!("{} running", self.system.processes().len()),
-                            Some(point.cpu),
-                            self.active_page == MonitorPage::Processes,
-                            cx.listener(|this, _, _, cx| {
-                                this.active_page = MonitorPage::Processes;
-                                cx.notify();
-                            }),
-                            cx,
-                        ))
-                        .child(self.sidebar_group_label("System", cx))
-                        .child(
-                            self.sidebar_resource_row(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_y_scrollbar()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(self.sidebar_group_label("Applications", cx))
+                            .child(self.sidebar_resource_row(
+                                "sidebar-apps",
+                                "Apps".to_string(),
+                                format!("{} grouped apps", self.app_groups.len()),
+                                self.app_groups.first().map(|app| app.cpu_usage as f64),
+                                self.active_page == MonitorPage::Apps,
+                                cx.listener(|this, _, _, cx| {
+                                    this.active_page = MonitorPage::Apps;
+                                    cx.notify();
+                                }),
+                                cx,
+                            ))
+                            .child(self.sidebar_resource_row(
+                                "sidebar-processes",
+                                "Processes".to_string(),
+                                format!("{} running", self.system.processes().len()),
+                                Some(point.cpu),
+                                self.active_page == MonitorPage::Processes,
+                                cx.listener(|this, _, _, cx| {
+                                    this.active_page = MonitorPage::Processes;
+                                    cx.notify();
+                                }),
+                                cx,
+                            ))
+                            .child(self.sidebar_group_label("System", cx))
+                            .child(self.sidebar_resource_row(
                                 "sidebar-cpu",
                                 "Processor".to_string(),
                                 self.cpu_details
@@ -92,134 +95,131 @@ impl MonitorWindow {
                                     cx.notify();
                                 }),
                                 cx,
-                            ),
-                        )
-                        .child(self.sidebar_resource_row(
-                            "sidebar-memory",
-                            "Memory".to_string(),
-                            memory_detail,
-                            Some(point.memory),
-                            self.active_page == MonitorPage::Memory,
-                            cx.listener(|this, _, _, cx| {
-                                this.active_page = MonitorPage::Memory;
-                                cx.notify();
-                            }),
-                            cx,
-                        ))
-                        .children(self.gpus.iter().enumerate().map(|(index, gpu)| {
-                            let selected =
-                                self.active_page == MonitorPage::Gpu && self.selected_gpu == index;
-                            self.sidebar_resource_row(
-                                ("sidebar-gpu", index),
-                                "GPU".to_string(),
-                                gpu.name.clone(),
-                                gpu.usage_percent,
-                                selected,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.selected_gpu = index;
-                                    this.active_page = MonitorPage::Gpu;
+                            ))
+                            .child(self.sidebar_resource_row(
+                                "sidebar-memory",
+                                "Memory".to_string(),
+                                memory_detail,
+                                Some(point.memory),
+                                self.active_page == MonitorPage::Memory,
+                                cx.listener(|this, _, _, cx| {
+                                    this.active_page = MonitorPage::Memory;
                                     cx.notify();
                                 }),
                                 cx,
+                            ))
+                            .children(self.gpus.iter().enumerate().map(|(index, gpu)| {
+                                self.sidebar_resource_row(
+                                    ("sidebar-gpu", index),
+                                    "GPU".to_string(),
+                                    gpu.name.clone(),
+                                    gpu.usage_percent,
+                                    self.active_page == MonitorPage::Gpu
+                                        && self.selected_gpu == index,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.selected_gpu = index;
+                                        this.active_page = MonitorPage::Gpu;
+                                        cx.notify();
+                                    }),
+                                    cx,
+                                )
+                            }))
+                            .children(self.npus.iter().enumerate().map(|(index, npu)| {
+                                self.sidebar_resource_row(
+                                    ("sidebar-npu", index),
+                                    "NPU".to_string(),
+                                    npu.name.clone(),
+                                    npu.usage_percent,
+                                    self.active_page == MonitorPage::Npu
+                                        && self.selected_npu == index,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.selected_npu = index;
+                                        this.active_page = MonitorPage::Npu;
+                                        cx.notify();
+                                    }),
+                                    cx,
+                                )
+                            }))
+                            .children(self.visible_disks().enumerate().map(|(index, disk)| {
+                                let used = disk.total.saturating_sub(disk.available);
+                                let usage = (disk.total > 0)
+                                    .then_some(used as f64 / disk.total as f64 * 100.0);
+                                self.sidebar_resource_row(
+                                    ("sidebar-drive", index),
+                                    "Drive".to_string(),
+                                    disk.metadata
+                                        .model
+                                        .clone()
+                                        .unwrap_or_else(|| disk.metadata.device.clone()),
+                                    usage,
+                                    self.active_page == MonitorPage::Storage
+                                        && self.selected_disk == index,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.selected_disk = index;
+                                        this.active_page = MonitorPage::Storage;
+                                        cx.notify();
+                                    }),
+                                    cx,
+                                )
+                            }))
+                            .children(
+                                self.visible_networks()
+                                    .enumerate()
+                                    .map(|(index, interface)| {
+                                        let usage = interface
+                                            .metadata
+                                            .link_speed_mbps
+                                            .filter(|speed| *speed > 0)
+                                            .map(|speed| {
+                                                let bytes_per_second =
+                                                    speed as f64 * 1_000_000.0 / 8.0;
+                                                ((interface.received + interface.transmitted)
+                                                    as f64
+                                                    / bytes_per_second
+                                                    * 100.0)
+                                                    .clamp(0.0, 100.0)
+                                            });
+                                        self.sidebar_resource_row(
+                                            ("sidebar-network", index),
+                                            interface.metadata.interface_type.clone(),
+                                            interface.name.clone(),
+                                            usage,
+                                            self.active_page == MonitorPage::Network
+                                                && self.selected_network == index,
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.selected_network = index;
+                                                this.active_page = MonitorPage::Network;
+                                                cx.notify();
+                                            }),
+                                            cx,
+                                        )
+                                    }),
                             )
-                        }))
-                        .children(self.npus.iter().enumerate().map(|(index, npu)| {
-                            let selected =
-                                self.active_page == MonitorPage::Npu && self.selected_npu == index;
-                            self.sidebar_resource_row(
-                                ("sidebar-npu", index),
-                                "NPU".to_string(),
-                                npu.name.clone(),
-                                npu.usage_percent,
-                                selected,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.selected_npu = index;
-                                    this.active_page = MonitorPage::Npu;
-                                    cx.notify();
-                                }),
-                                cx,
-                            )
-                        }))
-                        .children(self.visible_disks().enumerate().map(|(index, disk)| {
-                            let used = disk.total.saturating_sub(disk.available);
-                            let usage =
-                                (disk.total > 0).then_some(used as f64 / disk.total as f64 * 100.0);
-                            let selected = self.active_page == MonitorPage::Storage
-                                && self.selected_disk == index;
-                            self.sidebar_resource_row(
-                                ("sidebar-drive", index),
-                                "Drive".to_string(),
-                                if disk.name.is_empty() {
-                                    disk.mount_point.clone()
-                                } else {
-                                    disk.name.clone()
-                                },
-                                usage,
-                                selected,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.selected_disk = index;
-                                    this.active_page = MonitorPage::Storage;
-                                    cx.notify();
-                                }),
-                                cx,
-                            )
-                        }))
-                        .children(
-                            self.visible_networks()
-                                .enumerate()
-                                .map(|(index, interface)| {
-                                    let usage = interface
-                                        .metadata
-                                        .link_speed_mbps
-                                        .filter(|speed| *speed > 0)
-                                        .map(|speed| {
-                                            let bytes_per_second = speed as f64 * 1_000_000.0 / 8.0;
-                                            ((interface.received + interface.transmitted) as f64
-                                                / bytes_per_second
-                                                * 100.0)
-                                                .clamp(0.0, 100.0)
-                                        });
-                                    let selected = self.active_page == MonitorPage::Network
-                                        && self.selected_network == index;
+                            .children(self.batteries.iter().enumerate().map(
+                                |(index, battery)| {
                                     self.sidebar_resource_row(
-                                        ("sidebar-network", index),
-                                        interface.metadata.interface_type.clone(),
-                                        interface.name.clone(),
-                                        usage,
-                                        selected,
+                                        ("sidebar-battery", index),
+                                        "Battery".to_string(),
+                                        battery.name.clone(),
+                                        battery.charge_percent,
+                                        self.active_page == MonitorPage::Battery
+                                            && self.selected_battery == index,
                                         cx.listener(move |this, _, _, cx| {
-                                            this.selected_network = index;
-                                            this.active_page = MonitorPage::Network;
+                                            this.selected_battery = index;
+                                            this.active_page = MonitorPage::Battery;
                                             cx.notify();
                                         }),
                                         cx,
                                     )
-                                }),
-                        )
-                        .children(self.batteries.iter().enumerate().map(|(index, battery)| {
-                            let selected = self.active_page == MonitorPage::Battery
-                                && self.selected_battery == index;
-                            self.sidebar_resource_row(
-                                ("sidebar-battery", index),
-                                "Battery".to_string(),
-                                battery.name.clone(),
-                                battery.charge_percent,
-                                selected,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.selected_battery = index;
-                                    this.active_page = MonitorPage::Battery;
-                                    cx.notify();
-                                }),
-                                cx,
-                            )
-                        }))
-                        .child(self.sidebar_group_label("Better Monitor", cx))
-                        .children(
-                            MonitorPage::INVESTIGATE
-                                .into_iter()
-                                .map(|page| self.nav_button(page, cx)),
-                        ),
-                ),
+                                },
+                            ))
+                            .child(self.sidebar_group_label("Better Monitor", cx))
+                            .children(
+                                MonitorPage::INVESTIGATE
+                                    .into_iter()
+                                    .map(|page| self.nav_button(page, cx)),
+                            ),
+                    ),
             )
             .child(
                 v_flex()
@@ -233,7 +233,7 @@ impl MonitorWindow {
                         h_flex()
                             .items_center()
                             .gap_2()
-                            .child(div().size_2().rounded(px(99.)).bg(cx.theme().green))
+                            .child(div().size_2().rounded(px(99.0)).bg(cx.theme().green))
                             .child(div().text_sm().font_bold().child("Recording")),
                     )
                     .child(
@@ -270,7 +270,6 @@ impl MonitorWindow {
         listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
         cx: &Context<Self>,
     ) -> Div {
-        let meter = self.sidebar_meter(usage, cx);
         div().child(
             Button::new(id)
                 .ghost()
@@ -298,7 +297,9 @@ impl MonitorWindow {
                                     )
                                 }),
                         )
-                        .when(self.settings.sidebar_details, |this| this.child(meter)),
+                        .when(self.settings.sidebar_details, |this| {
+                            this.child(self.sidebar_meter(usage, cx))
+                        }),
                 ),
         )
     }
@@ -307,36 +308,32 @@ impl MonitorWindow {
         let usage = usage.unwrap_or_default().clamp(0.0, 100.0);
         match self.settings.sidebar_meter_type {
             SidebarMeterType::ProgressBar => v_flex()
-                .w(px(74.))
+                .w(px(74.0))
                 .gap_1()
                 .items_end()
                 .child(
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child(if usage == 0.0 && usage.is_sign_positive() {
-                            "0%".to_string()
-                        } else {
-                            format!("{usage:.0}%")
-                        }),
+                        .child(format!("{usage:.0}%")),
                 )
                 .child(
                     div()
                         .w_full()
-                        .h(px(5.))
-                        .rounded(px(99.))
+                        .h(px(5.0))
+                        .rounded(px(99.0))
                         .bg(cx.theme().border)
                         .overflow_hidden()
                         .child(
                             div()
                                 .h_full()
                                 .w(px((usage as f32 * 0.72).max(1.0)))
-                                .rounded(px(99.))
+                                .rounded(px(99.0))
                                 .bg(cx.theme().blue),
                         ),
                 ),
             SidebarMeterType::Graph => v_flex()
-                .w(px(74.))
+                .w(px(74.0))
                 .items_end()
                 .child(
                     div()
@@ -370,172 +367,302 @@ impl MonitorWindow {
             .gap_4()
             .child(self.render_search_toolbar("Search apps…", cx))
             .child(
-                v_flex()
+                div()
+                    .overflow_x_scrollbar()
                     .rounded(cx.theme().radius_lg)
                     .border_1()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().background)
-                    .overflow_hidden()
                     .child(
-                        h_flex()
-                            .items_center()
-                            .gap_3()
-                            .px_4()
-                            .py_3()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .child(div().w(px(250.)).font_bold().child("App"))
-                            .when(self.settings.app_columns.memory, |this| {
-                                this.child(div().w(px(110.)).font_bold().child("Memory"))
-                            })
-                            .when(self.settings.app_columns.cpu, |this| {
-                                this.child(div().w(px(86.)).font_bold().child("CPU"))
-                            })
-                            .when(self.settings.app_columns.read_speed, |this| {
-                                this.child(div().w(px(108.)).font_bold().child("Read/s"))
-                            })
-                            .when(self.settings.app_columns.write_speed, |this| {
-                                this.child(div().w(px(108.)).font_bold().child("Write/s"))
-                            })
-                            .child(div().flex_1())
-                            .child(div().w(px(250.)).font_bold().child("Actions")),
-                    )
-                    .when(groups.is_empty(), |this| {
-                        this.child(
-                            v_flex()
-                                .items_center()
-                                .justify_center()
-                                .min_h(px(260.))
-                                .child(div().font_bold().child("No matching applications"))
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child("Clear the search or wait for application groups."),
-                                ),
-                        )
-                    })
-                    .children(groups.into_iter().map(|group| {
-                        let term_pids = group.pids.clone();
-                        let kill_pids = group.pids.clone();
-                        let stop_pids = group.pids.clone();
-                        let continue_pids = group.pids.clone();
-                        h_flex()
-                            .items_center()
-                            .gap_3()
-                            .px_4()
-                            .py_3()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .child(
-                                v_flex()
-                                    .w(px(250.))
-                                    .min_w_0()
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_bold()
-                                            .truncate()
-                                            .child(group.display_name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .truncate()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!(
-                                                "{} processes · {}",
-                                                group.process_count, group.grouping_reason
-                                            )),
-                                    ),
-                            )
-                            .when(self.settings.app_columns.memory, |this| {
-                                this.child(div().w(px(110.)).text_sm().child(linux::format_bytes(
-                                    group.memory,
-                                    self.settings.unit_base,
-                                )))
-                            })
-                            .when(self.settings.app_columns.cpu, |this| {
+                        v_flex()
+                            .min_w(px(self.app_table_width()))
+                            .overflow_hidden()
+                            .child(self.render_app_header(cx))
+                            .when(groups.is_empty(), |this| {
                                 this.child(
-                                    div()
-                                        .w(px(86.))
-                                        .text_sm()
-                                        .text_color(cx.theme().blue)
-                                        .child(format!("{:.1}%", group.cpu_usage)),
+                                    v_flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .min_h(px(260.0))
+                                        .child(
+                                            div().font_bold().child("No matching applications"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(
+                                                    "Clear the search or wait for application groups.",
+                                                ),
+                                        ),
                                 )
                             })
-                            .when(self.settings.app_columns.read_speed, |this| {
-                                this.child(div().w(px(108.)).text_sm().child(linux::format_rate(
-                                    group.read_speed,
-                                    false,
-                                    self.settings.unit_base,
-                                )))
-                            })
-                            .when(self.settings.app_columns.write_speed, |this| {
-                                this.child(div().w(px(108.)).text_sm().child(linux::format_rate(
-                                    group.write_speed,
-                                    false,
-                                    self.settings.unit_base,
-                                )))
-                            })
-                            .child(div().flex_1())
-                            .child(
-                                h_flex()
-                                    .w(px(250.))
-                                    .gap_1()
-                                    .child(
-                                        Button::new(("app-term", group.id.clone()))
-                                            .outline()
-                                            .small()
-                                            .label("End")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.signal_pids(&term_pids, Signal::Term);
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new(("app-kill", group.id.clone()))
-                                            .warning()
-                                            .small()
-                                            .label("Force")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.signal_pids(&kill_pids, Signal::Kill);
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new(("app-stop", group.id.clone()))
-                                            .ghost()
-                                            .small()
-                                            .label("Pause")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.signal_pids(&stop_pids, Signal::Stop);
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new(("app-cont", group.id.clone()))
-                                            .ghost()
-                                            .small()
-                                            .label("Resume")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.signal_pids(&continue_pids, Signal::Continue);
-                                                cx.notify();
-                                            })),
-                                    ),
-                            )
-                    })),
+                            .children(groups.into_iter().enumerate().map(|(index, group)| {
+                                self.render_app_row(index, group, cx)
+                            })),
+                    ),
             )
             .when_some(self.last_action.clone(), |this, message| {
                 this.child(self.action_result_banner(message, cx))
             })
     }
 
+    fn app_table_width(&self) -> f32 {
+        let columns = &self.settings.app_columns;
+        250.0
+            + if columns.memory { 110.0 } else { 0.0 }
+            + if columns.cpu { 86.0 } else { 0.0 }
+            + if columns.read_speed { 108.0 } else { 0.0 }
+            + if columns.read_total { 116.0 } else { 0.0 }
+            + if columns.write_speed { 108.0 } else { 0.0 }
+            + if columns.write_total { 116.0 } else { 0.0 }
+            + if columns.gpu { 86.0 } else { 0.0 }
+            + if columns.gpu_memory { 116.0 } else { 0.0 }
+            + if columns.encoder { 96.0 } else { 0.0 }
+            + if columns.decoder { 96.0 } else { 0.0 }
+            + if columns.swap { 110.0 } else { 0.0 }
+            + if columns.combined_memory { 130.0 } else { 0.0 }
+            + 270.0
+    }
+
+    fn render_app_header(&self, cx: &Context<Self>) -> Div {
+        let columns = &self.settings.app_columns;
+        h_flex()
+            .items_center()
+            .gap_3()
+            .px_4()
+            .py_3()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(self.app_header_cell("App", 250.0))
+            .when(columns.memory, |this| {
+                this.child(self.app_header_cell("Memory", 110.0))
+            })
+            .when(columns.cpu, |this| {
+                this.child(self.app_header_cell("CPU", 86.0))
+            })
+            .when(columns.read_speed, |this| {
+                this.child(self.app_header_cell("Read/s", 108.0))
+            })
+            .when(columns.read_total, |this| {
+                this.child(self.app_header_cell("Read total", 116.0))
+            })
+            .when(columns.write_speed, |this| {
+                this.child(self.app_header_cell("Write/s", 108.0))
+            })
+            .when(columns.write_total, |this| {
+                this.child(self.app_header_cell("Write total", 116.0))
+            })
+            .when(columns.gpu, |this| {
+                this.child(self.app_header_cell("GPU", 86.0))
+            })
+            .when(columns.gpu_memory, |this| {
+                this.child(self.app_header_cell("GPU memory", 116.0))
+            })
+            .when(columns.encoder, |this| {
+                this.child(self.app_header_cell("Encoder", 96.0))
+            })
+            .when(columns.decoder, |this| {
+                this.child(self.app_header_cell("Decoder", 96.0))
+            })
+            .when(columns.swap, |this| {
+                this.child(self.app_header_cell("Swap", 110.0))
+            })
+            .when(columns.combined_memory, |this| {
+                this.child(self.app_header_cell("Memory + swap", 130.0))
+            })
+            .child(self.app_header_cell("Actions", 270.0))
+    }
+
+    fn app_header_cell(&self, label: &'static str, width: f32) -> Div {
+        div().w(px(width)).flex_shrink_0().font_bold().child(label)
+    }
+
+    fn render_app_row(
+        &self,
+        index: usize,
+        group: &AppGroup,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let columns = &self.settings.app_columns;
+        let term_pids = group.pids.clone();
+        let kill_pids = group.pids.clone();
+        let stop_pids = group.pids.clone();
+        let continue_pids = group.pids.clone();
+
+        h_flex()
+            .items_center()
+            .gap_3()
+            .px_4()
+            .py_3()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                v_flex()
+                    .w(px(250.0))
+                    .flex_shrink_0()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_bold()
+                            .truncate()
+                            .child(group.display_name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .truncate()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{} processes · {}",
+                                group.process_count, group.grouping_reason
+                            )),
+                    ),
+            )
+            .when(columns.memory, |this| {
+                this.child(self.app_value_cell(
+                    linux::format_bytes(group.memory, self.settings.unit_base),
+                    110.0,
+                    cx.theme().foreground,
+                ))
+            })
+            .when(columns.cpu, |this| {
+                this.child(self.app_value_cell(
+                    format!("{:.1}%", group.cpu_usage),
+                    86.0,
+                    cx.theme().blue,
+                ))
+            })
+            .when(columns.read_speed, |this| {
+                this.child(self.app_value_cell(
+                    linux::format_rate(group.read_speed, false, self.settings.unit_base),
+                    108.0,
+                    cx.theme().foreground,
+                ))
+            })
+            .when(columns.read_total, |this| {
+                this.child(self.app_value_cell(
+                    linux::format_bytes(group.read_total, self.settings.unit_base),
+                    116.0,
+                    cx.theme().foreground,
+                ))
+            })
+            .when(columns.write_speed, |this| {
+                this.child(self.app_value_cell(
+                    linux::format_rate(group.write_speed, false, self.settings.unit_base),
+                    108.0,
+                    cx.theme().foreground,
+                ))
+            })
+            .when(columns.write_total, |this| {
+                this.child(self.app_value_cell(
+                    linux::format_bytes(group.write_total, self.settings.unit_base),
+                    116.0,
+                    cx.theme().foreground,
+                ))
+            })
+            .when(columns.gpu, |this| {
+                this.child(self.app_value_cell("N/A".to_string(), 86.0, cx.theme().muted_foreground))
+            })
+            .when(columns.gpu_memory, |this| {
+                this.child(self.app_value_cell(
+                    "N/A".to_string(),
+                    116.0,
+                    cx.theme().muted_foreground,
+                ))
+            })
+            .when(columns.encoder, |this| {
+                this.child(self.app_value_cell("N/A".to_string(), 96.0, cx.theme().muted_foreground))
+            })
+            .when(columns.decoder, |this| {
+                this.child(self.app_value_cell("N/A".to_string(), 96.0, cx.theme().muted_foreground))
+            })
+            .when(columns.swap, |this| {
+                this.child(self.app_value_cell(
+                    linux::format_bytes(group.swap, self.settings.unit_base),
+                    110.0,
+                    cx.theme().foreground,
+                ))
+            })
+            .when(columns.combined_memory, |this| {
+                this.child(self.app_value_cell(
+                    linux::format_bytes(
+                        group.memory.saturating_add(group.swap),
+                        self.settings.unit_base,
+                    ),
+                    130.0,
+                    cx.theme().foreground,
+                ))
+            })
+            .child(
+                h_flex()
+                    .w(px(270.0))
+                    .flex_shrink_0()
+                    .gap_1()
+                    .child(
+                        Button::new(("app-term", index))
+                            .outline()
+                            .small()
+                            .label("End")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.signal_pids(&term_pids, Signal::Term);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new(("app-kill", index))
+                            .warning()
+                            .small()
+                            .label("Force")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.signal_pids(&kill_pids, Signal::Kill);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new(("app-stop", index))
+                            .ghost()
+                            .small()
+                            .label("Pause")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.signal_pids(&stop_pids, Signal::Stop);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new(("app-cont", index))
+                            .ghost()
+                            .small()
+                            .label("Resume")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.signal_pids(&continue_pids, Signal::Continue);
+                                cx.notify();
+                            })),
+                    ),
+            )
+    }
+
+    fn app_value_cell(&self, value: String, width: f32, color: Hsla) -> Div {
+        div()
+            .w(px(width))
+            .flex_shrink_0()
+            .text_sm()
+            .text_color(color)
+            .truncate()
+            .child(value)
+    }
+
     pub(super) fn render_processes_parity(&self, cx: &mut Context<Self>) -> Div {
-        let selected = self.selected_process();
+        let selected = self.selected_process(cx);
+        let visible_count = self.process_table.read(cx).delegate().processes.len();
+
         v_flex()
             .gap_4()
-            .child(self.render_search_toolbar("Search processes… Use | for multiple terms", cx))
+            .child(self.render_search_toolbar(
+                "Search processes… Use | to require multiple terms",
+                cx,
+            ))
             .child(
                 h_flex()
                     .items_center()
@@ -550,7 +677,7 @@ impl MonitorWindow {
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child(match selected {
+                            .child(match selected.as_ref() {
                                 Some(process) => format!(
                                     "Selected: {} · PID {} · {}",
                                     process.name, process.pid, process.user
@@ -558,11 +685,14 @@ impl MonitorWindow {
                                 None => "Select a process row to enable actions".to_string(),
                             }),
                     )
-                    .child(self.process_action_buttons(selected.map(|process| process.pid), cx)),
+                    .child(self.process_action_buttons(
+                        selected.as_ref().map(|process| process.pid),
+                        cx,
+                    )),
             )
             .child(
                 v_flex()
-                    .min_h(px(520.))
+                    .min_h(px(520.0))
                     .rounded(cx.theme().radius_lg)
                     .border_1()
                     .border_color(cx.theme().border)
@@ -582,8 +712,7 @@ impl MonitorWindow {
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(format!(
-                                        "{} visible · {} total",
-                                        self.process_table.read(cx).delegate().processes.len(),
+                                        "{visible_count} visible · {} total",
                                         self.system.processes().len()
                                     )),
                             ),
@@ -598,14 +727,14 @@ impl MonitorWindow {
                     ),
             )
             .when_some(selected, |this, process| {
-                this.child(self.render_process_details(process, cx))
+                this.child(self.render_process_details(&process, cx))
             })
             .when_some(self.last_action.clone(), |this, message| {
                 this.child(self.action_result_banner(message, cx))
             })
     }
 
-    fn render_search_toolbar(&self, placeholder: &'static str, cx: &Context<Self>) -> Div {
+    fn render_search_toolbar(&self, hint: &'static str, cx: &Context<Self>) -> Div {
         h_flex()
             .items_center()
             .gap_3()
@@ -625,7 +754,7 @@ impl MonitorWindow {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(placeholder),
+                    .child(hint),
             )
     }
 
@@ -690,40 +819,34 @@ impl MonitorWindow {
     fn render_process_details(&self, process: &ProcessInfo, cx: &Context<Self>) -> Div {
         self.section_card(
             "Process information",
-            "Resources-style details without hiding unavailable attribution",
+            "Resources-style details with explicit support states",
             v_flex()
                 .gap_2()
                 .child(self.property_row("Name", process.name.clone(), cx))
                 .child(self.property_row("PID", process.pid.to_string(), cx))
-                .child(
-                    self.property_row(
-                        "Parent PID",
-                        process
-                            .parent_pid
-                            .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
-                        cx,
-                    ),
-                )
+                .child(self.property_row(
+                    "Parent PID",
+                    process
+                        .parent_pid
+                        .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
+                    cx,
+                ))
                 .child(self.property_row("User", process.user.clone(), cx))
                 .child(self.property_row("State", process.state.clone(), cx))
-                .child(
-                    self.property_row(
-                        "Threads",
-                        process
-                            .threads
-                            .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
-                        cx,
-                    ),
-                )
-                .child(
-                    self.property_row(
-                        "File descriptors",
-                        process
-                            .file_descriptors
-                            .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
-                        cx,
-                    ),
-                )
+                .child(self.property_row(
+                    "Threads",
+                    process
+                        .threads
+                        .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
+                    cx,
+                ))
+                .child(self.property_row(
+                    "File descriptors",
+                    process
+                        .file_descriptors
+                        .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
+                    cx,
+                ))
                 .child(self.property_row(
                     "Priority / nice",
                     match (process.priority, process.nice) {
@@ -742,26 +865,19 @@ impl MonitorWindow {
                     process.cgroup.clone().unwrap_or_else(|| "N/A".to_string()),
                     cx,
                 ))
-                .child(
-                    self.property_row(
-                        "Executable",
-                        process
-                            .executable
-                            .clone()
-                            .unwrap_or_else(|| "N/A".to_string()),
-                        cx,
-                    ),
-                )
-                .child(
-                    self.property_row(
-                        "Working directory",
-                        process
-                            .working_directory
-                            .clone()
-                            .unwrap_or_else(|| "N/A".to_string()),
-                        cx,
-                    ),
-                )
+                .child(self.property_row(
+                    "Executable",
+                    process.executable.clone().unwrap_or_else(|| "N/A".to_string()),
+                    cx,
+                ))
+                .child(self.property_row(
+                    "Working directory",
+                    process
+                        .working_directory
+                        .clone()
+                        .unwrap_or_else(|| "N/A".to_string()),
+                    cx,
+                ))
                 .child(self.property_row(
                     "Command line",
                     if process.command_line.is_empty() {
@@ -779,7 +895,7 @@ impl MonitorWindow {
         let Some(gpu) = self.gpus.get(self.selected_gpu) else {
             return self.unavailable_page(
                 "No supported GPU was detected",
-                "Better Monitor scans DRM/sysfs adapters. A missing metric is unavailable, not zero.",
+                "Better Monitor scans DRM/sysfs adapters. Missing metrics remain unavailable.",
                 cx,
             );
         };
@@ -792,6 +908,7 @@ impl MonitorWindow {
             (Some(used), None) => linux::format_bytes(used, self.settings.unit_base),
             _ => "N/A".to_string(),
         };
+
         v_flex()
             .gap_4()
             .child(
@@ -817,73 +934,76 @@ impl MonitorWindow {
                         gpu.temperature_c.map_or_else(
                             || "N/A".to_string(),
                             |value| {
-                                linux::format_temperature(value, self.settings.temperature_unit)
+                                linux::format_temperature(
+                                    value,
+                                    self.settings.temperature_unit,
+                                )
                             },
                         ),
                         "Highest current hwmon sensor".to_string(),
                         cx.theme().yellow,
                         cx,
                     ))
-                    .child(
-                        self.metric_card(
-                            "Power Usage",
-                            gpu.power_watts
-                                .map_or_else(|| "N/A".to_string(), |value| format!("{value:.1} W")),
-                            gpu.max_power_watts.map_or_else(
-                                || "No verified power cap".to_string(),
-                                |value| format!("Maximum {value:.1} W"),
-                            ),
-                            cx.theme().green,
-                            cx,
+                    .child(self.metric_card(
+                        "Power Usage",
+                        gpu.power_watts
+                            .map_or_else(|| "N/A".to_string(), |value| format!("{value:.1} W")),
+                        gpu.max_power_watts.map_or_else(
+                            || "No verified power cap".to_string(),
+                            |value| format!("Maximum {value:.1} W"),
                         ),
-                    ),
+                        cx.theme().green,
+                        cx,
+                    )),
             )
-            .child(
-                self.section_card(
-                    "Media engines",
-                    "Encoder and decoder activity are shown only when the driver exposes them",
-                    v_flex()
-                        .gap_2()
-                        .child(self.property_row(
-                            "Video Encoder Usage",
-                            option_percent(gpu.encode_percent),
-                            cx,
-                        ))
-                        .child(self.property_row(
-                            "Video Decoder Usage",
-                            option_percent(gpu.decode_percent),
-                            cx,
-                        )),
-                    cx,
-                ),
-            )
-            .child(
-                self.section_card(
-                    "Properties",
-                    "Hardware identity and driver metadata",
-                    v_flex()
-                        .gap_2()
-                        .child(self.property_row("Manufacturer", gpu.manufacturer.clone(), cx))
-                        .child(self.property_row("PCI Slot", gpu.pci_slot.clone(), cx))
-                        .child(self.property_row("Driver Used", gpu.driver.clone(), cx))
-                        .child(self.property_row(
-                            "GPU Clock Speed",
-                            option_mhz(gpu.gpu_clock_mhz),
-                            cx,
-                        ))
-                        .child(self.property_row(
-                            "Video Memory Clock Speed",
-                            option_mhz(gpu.memory_clock_mhz),
-                            cx,
-                        ))
-                        .child(self.property_row(
-                            "Link",
-                            gpu.link.clone().unwrap_or_else(|| "N/A".to_string()),
-                            cx,
-                        )),
-                    cx,
-                ),
-            )
+            .child(self.section_card(
+                "Media engines",
+                "Encoder and decoder activity appear only when the driver exposes them",
+                v_flex()
+                    .gap_2()
+                    .child(self.property_row(
+                        "Video Encoder Usage",
+                        option_percent(gpu.encode_percent),
+                        cx,
+                    ))
+                    .child(self.property_row(
+                        "Video Decoder Usage",
+                        option_percent(gpu.decode_percent),
+                        cx,
+                    )),
+                cx,
+            ))
+            .child(self.section_card(
+                "Properties",
+                "Hardware identity and driver metadata",
+                v_flex()
+                    .gap_2()
+                    .child(self.property_row("Manufacturer", gpu.manufacturer.clone(), cx))
+                    .child(self.property_row("PCI Slot", gpu.pci_slot.clone(), cx))
+                    .child(self.property_row("Driver Used", gpu.driver.clone(), cx))
+                    .child(self.property_row(
+                        "GPU Clock Speed",
+                        option_mhz(gpu.gpu_clock_mhz),
+                        cx,
+                    ))
+                    .child(self.property_row(
+                        "Video Memory Clock Speed",
+                        option_mhz(gpu.memory_clock_mhz),
+                        cx,
+                    ))
+                    .child(self.property_row(
+                        "Maximum Power Cap",
+                        gpu.max_power_watts
+                            .map_or_else(|| "N/A".to_string(), |value| format!("{value:.1} W")),
+                        cx,
+                    ))
+                    .child(self.property_row(
+                        "Link",
+                        gpu.link.clone().unwrap_or_else(|| "N/A".to_string()),
+                        cx,
+                    )),
+                cx,
+            ))
     }
 
     pub(super) fn render_npu_parity(&self, cx: &Context<Self>) -> Div {
@@ -903,6 +1023,7 @@ impl MonitorWindow {
             (Some(used), None) => linux::format_bytes(used, self.settings.unit_base),
             _ => "N/A".to_string(),
         };
+
         v_flex()
             .gap_4()
             .child(
@@ -913,14 +1034,14 @@ impl MonitorWindow {
                         "Total Usage",
                         option_percent(npu.usage_percent),
                         npu.name.clone(),
-                        cx.theme().purple,
+                        cx.theme().blue,
                         cx,
                     ))
                     .child(self.metric_card(
                         "Memory Usage",
                         memory,
                         "NPU-local memory when exposed".to_string(),
-                        cx.theme().purple,
+                        cx.theme().blue,
                         cx,
                     ))
                     .child(self.metric_card(
@@ -928,50 +1049,55 @@ impl MonitorWindow {
                         npu.temperature_c.map_or_else(
                             || "N/A".to_string(),
                             |value| {
-                                linux::format_temperature(value, self.settings.temperature_unit)
+                                linux::format_temperature(
+                                    value,
+                                    self.settings.temperature_unit,
+                                )
                             },
                         ),
                         "Driver sensor".to_string(),
                         cx.theme().yellow,
                         cx,
                     ))
-                    .child(
-                        self.metric_card(
-                            "Power Usage",
-                            npu.power_watts
-                                .map_or_else(|| "N/A".to_string(), |value| format!("{value:.1} W")),
-                            npu.max_power_watts.map_or_else(
-                                || "No verified power cap".to_string(),
-                                |value| format!("Maximum {value:.1} W"),
-                            ),
-                            cx.theme().green,
-                            cx,
+                    .child(self.metric_card(
+                        "Power Usage",
+                        npu.power_watts
+                            .map_or_else(|| "N/A".to_string(), |value| format!("{value:.1} W")),
+                        npu.max_power_watts.map_or_else(
+                            || "No verified power cap".to_string(),
+                            |value| format!("Maximum {value:.1} W"),
                         ),
-                    ),
+                        cx.theme().green,
+                        cx,
+                    )),
             )
-            .child(
-                self.section_card(
-                    "Properties",
-                    "Hardware identity and driver metadata",
-                    v_flex()
-                        .gap_2()
-                        .child(self.property_row("Manufacturer", npu.manufacturer.clone(), cx))
-                        .child(self.property_row("PCI Slot", npu.pci_slot.clone(), cx))
-                        .child(self.property_row("Driver Used", npu.driver.clone(), cx))
-                        .child(self.property_row("NPU Clock Speed", option_mhz(npu.clock_mhz), cx))
-                        .child(self.property_row(
-                            "Memory Clock Speed",
-                            option_mhz(npu.memory_clock_mhz),
-                            cx,
-                        ))
-                        .child(self.property_row(
-                            "Link",
-                            npu.link.clone().unwrap_or_else(|| "N/A".to_string()),
-                            cx,
-                        )),
-                    cx,
-                ),
-            )
+            .child(self.section_card(
+                "Properties",
+                "Hardware identity and driver metadata",
+                v_flex()
+                    .gap_2()
+                    .child(self.property_row("Manufacturer", npu.manufacturer.clone(), cx))
+                    .child(self.property_row("PCI Slot", npu.pci_slot.clone(), cx))
+                    .child(self.property_row("Driver Used", npu.driver.clone(), cx))
+                    .child(self.property_row("NPU Clock Speed", option_mhz(npu.clock_mhz), cx))
+                    .child(self.property_row(
+                        "Memory Clock Speed",
+                        option_mhz(npu.memory_clock_mhz),
+                        cx,
+                    ))
+                    .child(self.property_row(
+                        "Maximum Power Cap",
+                        npu.max_power_watts
+                            .map_or_else(|| "N/A".to_string(), |value| format!("{value:.1} W")),
+                        cx,
+                    ))
+                    .child(self.property_row(
+                        "Link",
+                        npu.link.clone().unwrap_or_else(|| "N/A".to_string()),
+                        cx,
+                    )),
+                cx,
+            ))
     }
 
     pub(super) fn render_battery_parity(&self, cx: &Context<Self>) -> Div {
@@ -982,6 +1108,7 @@ impl MonitorWindow {
                 cx,
             );
         };
+
         v_flex()
             .gap_4()
             .child(
@@ -995,17 +1122,14 @@ impl MonitorWindow {
                         cx.theme().green,
                         cx,
                     ))
-                    .child(
-                        self.metric_card(
-                            "Power Usage",
-                            battery
-                                .power_watts
-                                .map_or_else(|| "N/A".to_string(), |value| format!("{value:.2} W")),
-                            "Current charge or discharge rate".to_string(),
-                            cx.theme().green,
-                            cx,
-                        ),
-                    )
+                    .child(self.metric_card(
+                        "Power Usage",
+                        battery.power_watts
+                            .map_or_else(|| "N/A".to_string(), |value| format!("{value:.2} W")),
+                        "Current charge or discharge rate".to_string(),
+                        cx.theme().green,
+                        cx,
+                    ))
                     .child(self.metric_card(
                         "Health",
                         option_percent(battery.health_percent),
@@ -1014,575 +1138,530 @@ impl MonitorWindow {
                         cx,
                     )),
             )
-            .child(
-                self.section_card(
-                    "Properties",
-                    "Power-supply identity and lifetime information",
-                    v_flex()
-                        .gap_2()
-                        .child(self.property_row(
-                            "Design Capacity",
-                            battery.design_capacity_wh.map_or_else(
-                                || "N/A".to_string(),
-                                |value| format!("{value:.1} Wh"),
-                            ),
-                            cx,
-                        ))
-                        .child(
-                            self.property_row(
-                                "Charge Cycles",
-                                battery
-                                    .charge_cycles
-                                    .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
-                                cx,
-                            ),
-                        )
-                        .child(
-                            self.property_row(
-                                "Technology",
-                                battery
-                                    .technology
-                                    .clone()
-                                    .unwrap_or_else(|| "N/A".to_string()),
-                                cx,
-                            ),
-                        )
-                        .child(
-                            self.property_row(
-                                "Manufacturer",
-                                battery
-                                    .manufacturer
-                                    .clone()
-                                    .unwrap_or_else(|| "N/A".to_string()),
-                                cx,
-                            ),
-                        )
-                        .child(
-                            self.property_row(
-                                "Model Name",
-                                battery
-                                    .model_name
-                                    .clone()
-                                    .unwrap_or_else(|| "N/A".to_string()),
-                                cx,
-                            ),
-                        )
-                        .child(self.property_row("Device", battery.device.clone(), cx)),
-                    cx,
-                ),
-            )
+            .child(self.section_card(
+                "Properties",
+                "Power-supply identity and lifetime information",
+                v_flex()
+                    .gap_2()
+                    .child(self.property_row(
+                        "Design Capacity",
+                        battery.design_capacity_wh.map_or_else(
+                            || "N/A".to_string(),
+                            |value| format!("{value:.1} Wh"),
+                        ),
+                        cx,
+                    ))
+                    .child(self.property_row(
+                        "Charge Cycles",
+                        battery
+                            .charge_cycles
+                            .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
+                        cx,
+                    ))
+                    .child(self.property_row(
+                        "Technology",
+                        battery.technology.clone().unwrap_or_else(|| "N/A".to_string()),
+                        cx,
+                    ))
+                    .child(self.property_row(
+                        "Manufacturer",
+                        battery.manufacturer.clone().unwrap_or_else(|| "N/A".to_string()),
+                        cx,
+                    ))
+                    .child(self.property_row(
+                        "Model Name",
+                        battery.model_name.clone().unwrap_or_else(|| "N/A".to_string()),
+                        cx,
+                    ))
+                    .child(self.property_row("Device", battery.device.clone(), cx)),
+                cx,
+            ))
     }
 
     pub(super) fn render_settings_parity(&self, cx: &mut Context<Self>) -> Div {
         v_flex()
             .gap_4()
-            .child(
-                self.section_card(
-                    "General",
-                    "Settings compatible with GNOME Resources v1.10.2 behavior",
-                    v_flex()
-                        .gap_2()
-                        .child(
-                            self.setting_row(
-                                "Refresh speed",
-                                "Controls live collector and UI refresh cadence",
-                                Button::new("setting-refresh-speed")
+            .child(self.section_card(
+                "General",
+                "Settings compatible with GNOME Resources v1.10.2 behavior",
+                v_flex()
+                    .gap_2()
+                    .child(self.setting_row(
+                        "Refresh speed",
+                        "Controls live collector and UI refresh cadence",
+                        Button::new("setting-refresh-speed")
+                            .outline()
+                            .small()
+                            .label(self.settings.refresh_speed.label())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings.refresh_speed = match this.settings.refresh_speed {
+                                    RefreshSpeed::VerySlow => RefreshSpeed::Slow,
+                                    RefreshSpeed::Slow => RefreshSpeed::Normal,
+                                    RefreshSpeed::Normal => RefreshSpeed::Fast,
+                                    RefreshSpeed::Fast => RefreshSpeed::VeryFast,
+                                    RefreshSpeed::VeryFast => RefreshSpeed::VerySlow,
+                                };
+                                this.persist_settings();
+                                cx.notify();
+                            })),
+                        cx,
+                    ))
+                    .child(self.setting_row(
+                        "Data units",
+                        "Choose decimal or binary storage units",
+                        Button::new("setting-unit-base")
+                            .outline()
+                            .small()
+                            .label(self.settings.unit_base.label())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings.unit_base = match this.settings.unit_base {
+                                    UnitBase::Decimal => UnitBase::Binary,
+                                    UnitBase::Binary => UnitBase::Decimal,
+                                };
+                                this.sync_table_settings(cx);
+                            })),
+                        cx,
+                    ))
+                    .child(self.setting_row(
+                        "Temperature unit",
+                        "Used by CPU, GPU, NPU, and thermal pages",
+                        Button::new("setting-temperature-unit")
+                            .outline()
+                            .small()
+                            .label(self.settings.temperature_unit.label())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings.temperature_unit = match this.settings.temperature_unit {
+                                    TemperatureUnit::Celsius => TemperatureUnit::Fahrenheit,
+                                    TemperatureUnit::Fahrenheit => TemperatureUnit::Kelvin,
+                                    TemperatureUnit::Kelvin => TemperatureUnit::Celsius,
+                                };
+                                this.persist_settings();
+                                cx.notify();
+                            })),
+                        cx,
+                    ))
+                    .child(self.setting_row(
+                        "Graph data points",
+                        "Recent values retained by each live graph",
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("graph-points-minus")
                                     .outline()
                                     .small()
-                                    .label(self.settings.refresh_speed.label())
+                                    .label("−")
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.settings.refresh_speed =
-                                            match this.settings.refresh_speed {
-                                                RefreshSpeed::VerySlow => RefreshSpeed::Slow,
-                                                RefreshSpeed::Slow => RefreshSpeed::Normal,
-                                                RefreshSpeed::Normal => RefreshSpeed::Fast,
-                                                RefreshSpeed::Fast => RefreshSpeed::VeryFast,
-                                                RefreshSpeed::VeryFast => RefreshSpeed::VerySlow,
-                                            };
-                                        this.persist_settings();
-                                        cx.notify();
-                                    })),
-                                cx,
-                            ),
-                        )
-                        .child(
-                            self.setting_row(
-                                "Data units",
-                                "Choose decimal or binary storage units",
-                                Button::new("setting-unit-base")
-                                    .outline()
-                                    .small()
-                                    .label(self.settings.unit_base.label())
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.settings.unit_base = match this.settings.unit_base {
-                                            UnitBase::Decimal => UnitBase::Binary,
-                                            UnitBase::Binary => UnitBase::Decimal,
-                                        };
-                                        this.sync_table_settings(cx);
-                                    })),
-                                cx,
-                            ),
-                        )
-                        .child(
-                            self.setting_row(
-                                "Temperature unit",
-                                "Used by CPU, GPU, NPU, and thermal pages",
-                                Button::new("setting-temperature-unit")
-                                    .outline()
-                                    .small()
-                                    .label(self.settings.temperature_unit.label())
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.settings.temperature_unit = match this
+                                        this.settings.graph_data_points = this
                                             .settings
-                                            .temperature_unit
-                                        {
-                                            TemperatureUnit::Celsius => TemperatureUnit::Fahrenheit,
-                                            TemperatureUnit::Fahrenheit => TemperatureUnit::Kelvin,
-                                            TemperatureUnit::Kelvin => TemperatureUnit::Celsius,
-                                        };
+                                            .graph_data_points
+                                            .saturating_sub(30)
+                                            .max(30);
+                                        this.trim_history();
                                         this.persist_settings();
                                         cx.notify();
                                     })),
-                                cx,
-                            ),
-                        )
-                        .child(
-                            self.setting_row(
-                                "Graph data points",
-                                "Recent values retained by each live graph",
-                                h_flex()
-                                    .gap_1()
-                                    .child(
-                                        Button::new("graph-points-minus")
-                                            .outline()
-                                            .small()
-                                            .label("−")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.settings.graph_data_points = this
-                                                    .settings
-                                                    .graph_data_points
-                                                    .saturating_sub(30)
-                                                    .max(30);
-                                                this.trim_history();
-                                                this.persist_settings();
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .child(
-                                        div().w(px(70.)).text_center().child(
-                                            self.settings.clamped_graph_points().to_string(),
-                                        ),
-                                    )
-                                    .child(
-                                        Button::new("graph-points-plus")
-                                            .outline()
-                                            .small()
-                                            .label("+")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.settings.graph_data_points =
-                                                    (this.settings.graph_data_points + 30).min(600);
-                                                this.persist_settings();
-                                                cx.notify();
-                                            })),
-                                    ),
-                                cx,
-                            ),
-                        ),
-                    cx,
-                ),
-            )
-            .child(
-                self.section_card(
-                    "Sidebar and graphs",
-                    "Resources-style navigation density and display controls",
-                    v_flex()
-                        .gap_2()
-                        .child(
-                            self.setting_row(
-                                "Sidebar meter",
-                                "Display progress bars or compact mini graphs",
-                                Button::new("setting-sidebar-meter")
+                            )
+                            .child(
+                                div()
+                                    .w(px(70.0))
+                                    .text_center()
+                                    .child(self.settings.clamped_graph_points().to_string()),
+                            )
+                            .child(
+                                Button::new("graph-points-plus")
                                     .outline()
                                     .small()
-                                    .label(self.settings.sidebar_meter_type.label())
+                                    .label("+")
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.settings.sidebar_meter_type =
-                                            match this.settings.sidebar_meter_type {
-                                                SidebarMeterType::ProgressBar => {
-                                                    SidebarMeterType::Graph
-                                                }
-                                                SidebarMeterType::Graph => {
-                                                    SidebarMeterType::ProgressBar
-                                                }
-                                            };
+                                        this.settings.graph_data_points =
+                                            (this.settings.graph_data_points + 30).min(600);
                                         this.persist_settings();
                                         cx.notify();
                                     })),
-                                cx,
                             ),
-                        )
-                        .child(self.setting_switch(
-                            "setting-sidebar-details",
-                            "Sidebar details",
-                            "Show live meter and current value",
-                            self.settings.sidebar_details,
-                            cx.listener(|this, checked, _, cx| {
-                                this.settings.sidebar_details = *checked;
+                        cx,
+                    )),
+                cx,
+            ))
+            .child(self.section_card(
+                "Sidebar and graphs",
+                "Resources-style navigation density and graph controls",
+                v_flex()
+                    .gap_2()
+                    .child(self.setting_row(
+                        "Sidebar meter",
+                        "Display progress bars or compact mini graphs",
+                        Button::new("setting-sidebar-meter")
+                            .outline()
+                            .small()
+                            .label(self.settings.sidebar_meter_type.label())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings.sidebar_meter_type =
+                                    match this.settings.sidebar_meter_type {
+                                        SidebarMeterType::ProgressBar => SidebarMeterType::Graph,
+                                        SidebarMeterType::Graph => SidebarMeterType::ProgressBar,
+                                    };
                                 this.persist_settings();
                                 cx.notify();
-                            }),
-                            cx,
-                        ))
-                        .child(self.setting_switch(
-                            "setting-sidebar-description",
-                            "Sidebar descriptions",
-                            "Show device model or interface name",
-                            self.settings.sidebar_description,
-                            cx.listener(|this, checked, _, cx| {
-                                this.settings.sidebar_description = *checked;
-                                this.persist_settings();
-                                cx.notify();
-                            }),
-                            cx,
-                        ))
-                        .child(self.setting_switch(
-                            "setting-logical-cpus",
-                            "Show logical CPUs",
-                            "Switch between total CPU and individual thread tiles",
-                            self.settings.show_logical_cpus,
-                            cx.listener(|this, checked, _, cx| {
-                                this.settings.show_logical_cpus = *checked;
-                                this.persist_settings();
-                                cx.notify();
-                            }),
-                            cx,
-                        ))
-                        .child(self.setting_switch(
-                            "setting-graph-grids",
-                            "Show graph grids",
-                            "Keep chart grid guides visible",
-                            self.settings.show_graph_grids,
-                            cx.listener(|this, checked, _, cx| {
-                                this.settings.show_graph_grids = *checked;
-                                this.persist_settings();
-                                cx.notify();
-                            }),
-                            cx,
-                        ))
-                        .child(self.setting_switch(
-                            "setting-normalize-cpu",
-                            "Normalize CPU usage",
-                            "Keep total CPU within 0–100% instead of summing logical CPUs",
-                            self.settings.normalize_cpu_usage,
-                            cx.listener(|this, checked, _, cx| {
-                                this.settings.normalize_cpu_usage = *checked;
-                                this.persist_settings();
-                                cx.notify();
-                            }),
-                            cx,
-                        )),
-                    cx,
-                ),
-            )
-            .child(
-                self.section_card(
-                    "Devices and network",
-                    "Visibility and unit controls for dynamic hardware pages",
-                    v_flex()
-                        .gap_2()
-                        .child(self.setting_switch(
-                            "setting-virtual-drives",
-                            "Show virtual drives",
-                            "Include loop, device-mapper, and other virtual block devices",
-                            self.settings.show_virtual_drives,
-                            cx.listener(|this, checked, _, cx| {
-                                this.settings.show_virtual_drives = *checked;
-                                this.persist_settings();
-                                cx.notify();
-                            }),
-                            cx,
-                        ))
-                        .child(self.setting_switch(
-                            "setting-virtual-network",
-                            "Show virtual network interfaces",
-                            "Include loopback, bridges, tunnels, containers, and VPN devices",
-                            self.settings.show_virtual_network_interfaces,
-                            cx.listener(|this, checked, _, cx| {
-                                this.settings.show_virtual_network_interfaces = *checked;
-                                this.persist_settings();
-                                cx.notify();
-                            }),
-                            cx,
-                        ))
-                        .child(self.setting_switch(
-                            "setting-network-bits",
-                            "Network speed in bits",
-                            "Display bit/s instead of bytes/s",
-                            self.settings.network_bits,
-                            cx.listener(|this, checked, _, cx| {
-                                this.settings.network_bits = *checked;
-                                this.persist_settings();
-                                cx.notify();
-                            }),
-                            cx,
-                        )),
-                    cx,
-                ),
-            )
+                            })),
+                        cx,
+                    ))
+                    .child(self.setting_switch(
+                        "setting-sidebar-details",
+                        "Sidebar details",
+                        "Show a live meter and current value",
+                        self.settings.sidebar_details,
+                        cx.listener(|this, checked, _, cx| {
+                            this.settings.sidebar_details = *checked;
+                            this.persist_settings();
+                            cx.notify();
+                        }),
+                        cx,
+                    ))
+                    .child(self.setting_switch(
+                        "setting-sidebar-description",
+                        "Sidebar descriptions",
+                        "Show device model or interface name",
+                        self.settings.sidebar_description,
+                        cx.listener(|this, checked, _, cx| {
+                            this.settings.sidebar_description = *checked;
+                            this.persist_settings();
+                            cx.notify();
+                        }),
+                        cx,
+                    ))
+                    .child(self.setting_switch(
+                        "setting-logical-cpus",
+                        "Show logical CPUs",
+                        "Switch between total CPU and individual thread tiles",
+                        self.settings.show_logical_cpus,
+                        cx.listener(|this, checked, _, cx| {
+                            this.settings.show_logical_cpus = *checked;
+                            this.persist_settings();
+                            cx.notify();
+                        }),
+                        cx,
+                    ))
+                    .child(self.setting_switch(
+                        "setting-graph-grids",
+                        "Show graph grids",
+                        "Keep chart grid guides visible",
+                        self.settings.show_graph_grids,
+                        cx.listener(|this, checked, _, cx| {
+                            this.settings.show_graph_grids = *checked;
+                            this.persist_settings();
+                            cx.notify();
+                        }),
+                        cx,
+                    ))
+                    .child(self.setting_switch(
+                        "setting-normalize-cpu",
+                        "Normalize CPU usage",
+                        "Keep total CPU within 0–100%",
+                        self.settings.normalize_cpu_usage,
+                        cx.listener(|this, checked, _, cx| {
+                            this.settings.normalize_cpu_usage = *checked;
+                            this.persist_settings();
+                            cx.notify();
+                        }),
+                        cx,
+                    )),
+                cx,
+            ))
+            .child(self.section_card(
+                "Devices and network",
+                "Visibility and unit controls for dynamic hardware pages",
+                v_flex()
+                    .gap_2()
+                    .child(self.setting_switch(
+                        "setting-virtual-drives",
+                        "Show virtual drives",
+                        "Include loop, device-mapper, and other virtual block devices",
+                        self.settings.show_virtual_drives,
+                        cx.listener(|this, checked, _, cx| {
+                            this.settings.show_virtual_drives = *checked;
+                            this.persist_settings();
+                            cx.notify();
+                        }),
+                        cx,
+                    ))
+                    .child(self.setting_switch(
+                        "setting-virtual-network",
+                        "Show virtual network interfaces",
+                        "Include loopback, bridges, tunnels, containers, and VPN devices",
+                        self.settings.show_virtual_network_interfaces,
+                        cx.listener(|this, checked, _, cx| {
+                            this.settings.show_virtual_network_interfaces = *checked;
+                            this.persist_settings();
+                            cx.notify();
+                        }),
+                        cx,
+                    ))
+                    .child(self.setting_switch(
+                        "setting-network-bits",
+                        "Network speed in bits",
+                        "Display bit/s instead of bytes/s",
+                        self.settings.network_bits,
+                        cx.listener(|this, checked, _, cx| {
+                            this.settings.network_bits = *checked;
+                            this.persist_settings();
+                            cx.notify();
+                        }),
+                        cx,
+                    )),
+                cx,
+            ))
             .child(self.render_column_settings(cx))
     }
 
     fn render_column_settings(&self, cx: &mut Context<Self>) -> Div {
-        let p = &self.settings.process_columns;
-        let a = &self.settings.app_columns;
+        let apps = &self.settings.app_columns;
+        let processes = &self.settings.process_columns;
+
         v_flex()
             .gap_4()
-            .child(
-                self.section_card(
-                    "App columns",
-                    "Choose the columns shown on the Apps page",
-                    v_flex()
-                        .gap_2()
-                        .child(self.app_column_switch(
-                            "Memory",
-                            "app-col-memory",
-                            a.memory,
-                            AppColumn::Memory,
-                            cx,
-                        ))
-                        .child(self.app_column_switch(
-                            "CPU",
-                            "app-col-cpu",
-                            a.cpu,
-                            AppColumn::Cpu,
-                            cx,
-                        ))
-                        .child(self.app_column_switch(
-                            "Drive read speed",
-                            "app-col-read-speed",
-                            a.read_speed,
-                            AppColumn::ReadSpeed,
-                            cx,
-                        ))
-                        .child(self.app_column_switch(
-                            "Drive read total",
-                            "app-col-read-total",
-                            a.read_total,
-                            AppColumn::ReadTotal,
-                            cx,
-                        ))
-                        .child(self.app_column_switch(
-                            "Drive write speed",
-                            "app-col-write-speed",
-                            a.write_speed,
-                            AppColumn::WriteSpeed,
-                            cx,
-                        ))
-                        .child(self.app_column_switch(
-                            "Drive write total",
-                            "app-col-write-total",
-                            a.write_total,
-                            AppColumn::WriteTotal,
-                            cx,
-                        ))
-                        .child(self.app_column_switch(
-                            "GPU",
-                            "app-col-gpu",
-                            a.gpu,
-                            AppColumn::Gpu,
-                            cx,
-                        ))
-                        .child(self.app_column_switch(
-                            "GPU memory",
-                            "app-col-gpu-memory",
-                            a.gpu_memory,
-                            AppColumn::GpuMemory,
-                            cx,
-                        ))
-                        .child(self.app_column_switch(
-                            "Encoder",
-                            "app-col-encoder",
-                            a.encoder,
-                            AppColumn::Encoder,
-                            cx,
-                        ))
-                        .child(self.app_column_switch(
-                            "Decoder",
-                            "app-col-decoder",
-                            a.decoder,
-                            AppColumn::Decoder,
-                            cx,
-                        ))
-                        .child(self.app_column_switch(
-                            "Swap",
-                            "app-col-swap",
-                            a.swap,
-                            AppColumn::Swap,
-                            cx,
-                        ))
-                        .child(self.app_column_switch(
-                            "Combined memory",
-                            "app-col-combined",
-                            a.combined_memory,
-                            AppColumn::CombinedMemory,
-                            cx,
-                        )),
-                    cx,
-                ),
-            )
-            .child(
-                self.section_card(
-                    "Process columns",
-                    "Choose the sortable columns shown on the Processes page",
-                    v_flex()
-                        .gap_2()
-                        .child(self.process_column_switch(
-                            "PID",
-                            "proc-col-pid",
-                            p.pid,
-                            ProcessColumnSetting::Pid,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "User",
-                            "proc-col-user",
-                            p.user,
-                            ProcessColumnSetting::User,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "Memory",
-                            "proc-col-memory",
-                            p.memory,
-                            ProcessColumnSetting::Memory,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "CPU",
-                            "proc-col-cpu",
-                            p.cpu,
-                            ProcessColumnSetting::Cpu,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "Drive read speed",
-                            "proc-col-read-speed",
-                            p.read_speed,
-                            ProcessColumnSetting::ReadSpeed,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "Drive read total",
-                            "proc-col-read-total",
-                            p.read_total,
-                            ProcessColumnSetting::ReadTotal,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "Drive write speed",
-                            "proc-col-write-speed",
-                            p.write_speed,
-                            ProcessColumnSetting::WriteSpeed,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "Drive write total",
-                            "proc-col-write-total",
-                            p.write_total,
-                            ProcessColumnSetting::WriteTotal,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "GPU",
-                            "proc-col-gpu",
-                            p.gpu,
-                            ProcessColumnSetting::Gpu,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "GPU memory",
-                            "proc-col-gpu-memory",
-                            p.gpu_memory,
-                            ProcessColumnSetting::GpuMemory,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "Encoder",
-                            "proc-col-encoder",
-                            p.encoder,
-                            ProcessColumnSetting::Encoder,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "Decoder",
-                            "proc-col-decoder",
-                            p.decoder,
-                            ProcessColumnSetting::Decoder,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "Total CPU time",
-                            "proc-col-total-cpu",
-                            p.total_cpu_time,
-                            ProcessColumnSetting::TotalCpuTime,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "User CPU time",
-                            "proc-col-user-cpu",
-                            p.user_cpu_time,
-                            ProcessColumnSetting::UserCpuTime,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "System CPU time",
-                            "proc-col-system-cpu",
-                            p.system_cpu_time,
-                            ProcessColumnSetting::SystemCpuTime,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "Priority",
-                            "proc-col-priority",
-                            p.priority,
-                            ProcessColumnSetting::Priority,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "Swap",
-                            "proc-col-swap",
-                            p.swap,
-                            ProcessColumnSetting::Swap,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "Combined memory",
-                            "proc-col-combined",
-                            p.combined_memory,
-                            ProcessColumnSetting::CombinedMemory,
-                            cx,
-                        ))
-                        .child(self.process_column_switch(
-                            "Command line",
-                            "proc-col-command",
-                            p.command_line,
-                            ProcessColumnSetting::CommandLine,
-                            cx,
-                        ))
-                        .child(self.setting_switch(
-                            "setting-detailed-priority",
-                            "Detailed priority",
-                            "Show numeric nice value beside the human-readable priority",
-                            self.settings.detailed_priority,
-                            cx.listener(|this, checked, _, cx| {
-                                this.settings.detailed_priority = *checked;
-                                this.sync_table_settings(cx);
-                            }),
-                            cx,
-                        )),
-                    cx,
-                ),
-            )
+            .child(self.section_card(
+                "App columns",
+                "Choose the columns shown on the Apps page",
+                v_flex()
+                    .gap_2()
+                    .child(self.app_column_switch(
+                        "Memory",
+                        "app-col-memory",
+                        apps.memory,
+                        AppColumn::Memory,
+                        cx,
+                    ))
+                    .child(self.app_column_switch(
+                        "CPU",
+                        "app-col-cpu",
+                        apps.cpu,
+                        AppColumn::Cpu,
+                        cx,
+                    ))
+                    .child(self.app_column_switch(
+                        "Drive read speed",
+                        "app-col-read-speed",
+                        apps.read_speed,
+                        AppColumn::ReadSpeed,
+                        cx,
+                    ))
+                    .child(self.app_column_switch(
+                        "Drive read total",
+                        "app-col-read-total",
+                        apps.read_total,
+                        AppColumn::ReadTotal,
+                        cx,
+                    ))
+                    .child(self.app_column_switch(
+                        "Drive write speed",
+                        "app-col-write-speed",
+                        apps.write_speed,
+                        AppColumn::WriteSpeed,
+                        cx,
+                    ))
+                    .child(self.app_column_switch(
+                        "Drive write total",
+                        "app-col-write-total",
+                        apps.write_total,
+                        AppColumn::WriteTotal,
+                        cx,
+                    ))
+                    .child(self.app_column_switch(
+                        "GPU",
+                        "app-col-gpu",
+                        apps.gpu,
+                        AppColumn::Gpu,
+                        cx,
+                    ))
+                    .child(self.app_column_switch(
+                        "GPU memory",
+                        "app-col-gpu-memory",
+                        apps.gpu_memory,
+                        AppColumn::GpuMemory,
+                        cx,
+                    ))
+                    .child(self.app_column_switch(
+                        "Encoder",
+                        "app-col-encoder",
+                        apps.encoder,
+                        AppColumn::Encoder,
+                        cx,
+                    ))
+                    .child(self.app_column_switch(
+                        "Decoder",
+                        "app-col-decoder",
+                        apps.decoder,
+                        AppColumn::Decoder,
+                        cx,
+                    ))
+                    .child(self.app_column_switch(
+                        "Swap",
+                        "app-col-swap",
+                        apps.swap,
+                        AppColumn::Swap,
+                        cx,
+                    ))
+                    .child(self.app_column_switch(
+                        "Combined memory",
+                        "app-col-combined",
+                        apps.combined_memory,
+                        AppColumn::CombinedMemory,
+                        cx,
+                    )),
+                cx,
+            ))
+            .child(self.section_card(
+                "Process columns",
+                "Choose the sortable columns shown on the Processes page",
+                v_flex()
+                    .gap_2()
+                    .child(self.process_column_switch(
+                        "PID",
+                        "proc-col-pid",
+                        processes.pid,
+                        ProcessColumnSetting::Pid,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "User",
+                        "proc-col-user",
+                        processes.user,
+                        ProcessColumnSetting::User,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "Memory",
+                        "proc-col-memory",
+                        processes.memory,
+                        ProcessColumnSetting::Memory,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "CPU",
+                        "proc-col-cpu",
+                        processes.cpu,
+                        ProcessColumnSetting::Cpu,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "Drive read speed",
+                        "proc-col-read-speed",
+                        processes.read_speed,
+                        ProcessColumnSetting::ReadSpeed,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "Drive read total",
+                        "proc-col-read-total",
+                        processes.read_total,
+                        ProcessColumnSetting::ReadTotal,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "Drive write speed",
+                        "proc-col-write-speed",
+                        processes.write_speed,
+                        ProcessColumnSetting::WriteSpeed,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "Drive write total",
+                        "proc-col-write-total",
+                        processes.write_total,
+                        ProcessColumnSetting::WriteTotal,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "GPU",
+                        "proc-col-gpu",
+                        processes.gpu,
+                        ProcessColumnSetting::Gpu,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "GPU memory",
+                        "proc-col-gpu-memory",
+                        processes.gpu_memory,
+                        ProcessColumnSetting::GpuMemory,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "Encoder",
+                        "proc-col-encoder",
+                        processes.encoder,
+                        ProcessColumnSetting::Encoder,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "Decoder",
+                        "proc-col-decoder",
+                        processes.decoder,
+                        ProcessColumnSetting::Decoder,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "Total CPU time",
+                        "proc-col-total-cpu",
+                        processes.total_cpu_time,
+                        ProcessColumnSetting::TotalCpuTime,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "User CPU time",
+                        "proc-col-user-cpu",
+                        processes.user_cpu_time,
+                        ProcessColumnSetting::UserCpuTime,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "System CPU time",
+                        "proc-col-system-cpu",
+                        processes.system_cpu_time,
+                        ProcessColumnSetting::SystemCpuTime,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "Priority",
+                        "proc-col-priority",
+                        processes.priority,
+                        ProcessColumnSetting::Priority,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "Swap",
+                        "proc-col-swap",
+                        processes.swap,
+                        ProcessColumnSetting::Swap,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "Combined memory",
+                        "proc-col-combined",
+                        processes.combined_memory,
+                        ProcessColumnSetting::CombinedMemory,
+                        cx,
+                    ))
+                    .child(self.process_column_switch(
+                        "Command line",
+                        "proc-col-command",
+                        processes.command_line,
+                        ProcessColumnSetting::CommandLine,
+                        cx,
+                    ))
+                    .child(self.setting_switch(
+                        "setting-detailed-priority",
+                        "Detailed priority",
+                        "Show numeric nice value beside the human-readable priority",
+                        self.settings.detailed_priority,
+                        cx.listener(|this, checked, _, cx| {
+                            this.settings.detailed_priority = *checked;
+                            this.sync_table_settings(cx);
+                        }),
+                        cx,
+                    )),
+                cx,
+            ))
     }
 
     fn setting_row(
@@ -1645,22 +1724,7 @@ impl MonitorWindow {
             "GNOME Resources parity column",
             checked,
             cx.listener(move |this, checked, _, cx| {
-                match column {
-                    AppColumn::Memory => this.settings.app_columns.memory = *checked,
-                    AppColumn::Cpu => this.settings.app_columns.cpu = *checked,
-                    AppColumn::ReadSpeed => this.settings.app_columns.read_speed = *checked,
-                    AppColumn::ReadTotal => this.settings.app_columns.read_total = *checked,
-                    AppColumn::WriteSpeed => this.settings.app_columns.write_speed = *checked,
-                    AppColumn::WriteTotal => this.settings.app_columns.write_total = *checked,
-                    AppColumn::Gpu => this.settings.app_columns.gpu = *checked,
-                    AppColumn::GpuMemory => this.settings.app_columns.gpu_memory = *checked,
-                    AppColumn::Encoder => this.settings.app_columns.encoder = *checked,
-                    AppColumn::Decoder => this.settings.app_columns.decoder = *checked,
-                    AppColumn::Swap => this.settings.app_columns.swap = *checked,
-                    AppColumn::CombinedMemory => {
-                        this.settings.app_columns.combined_memory = *checked
-                    }
-                }
+                column.set(&mut this.settings, *checked);
                 this.persist_settings();
                 cx.notify();
             }),
@@ -1682,53 +1746,7 @@ impl MonitorWindow {
             "GNOME Resources parity column",
             checked,
             cx.listener(move |this, checked, _, cx| {
-                match column {
-                    ProcessColumnSetting::Pid => this.settings.process_columns.pid = *checked,
-                    ProcessColumnSetting::User => this.settings.process_columns.user = *checked,
-                    ProcessColumnSetting::Memory => this.settings.process_columns.memory = *checked,
-                    ProcessColumnSetting::Cpu => this.settings.process_columns.cpu = *checked,
-                    ProcessColumnSetting::ReadSpeed => {
-                        this.settings.process_columns.read_speed = *checked
-                    }
-                    ProcessColumnSetting::ReadTotal => {
-                        this.settings.process_columns.read_total = *checked
-                    }
-                    ProcessColumnSetting::WriteSpeed => {
-                        this.settings.process_columns.write_speed = *checked
-                    }
-                    ProcessColumnSetting::WriteTotal => {
-                        this.settings.process_columns.write_total = *checked
-                    }
-                    ProcessColumnSetting::Gpu => this.settings.process_columns.gpu = *checked,
-                    ProcessColumnSetting::GpuMemory => {
-                        this.settings.process_columns.gpu_memory = *checked
-                    }
-                    ProcessColumnSetting::Encoder => {
-                        this.settings.process_columns.encoder = *checked
-                    }
-                    ProcessColumnSetting::Decoder => {
-                        this.settings.process_columns.decoder = *checked
-                    }
-                    ProcessColumnSetting::TotalCpuTime => {
-                        this.settings.process_columns.total_cpu_time = *checked
-                    }
-                    ProcessColumnSetting::UserCpuTime => {
-                        this.settings.process_columns.user_cpu_time = *checked
-                    }
-                    ProcessColumnSetting::SystemCpuTime => {
-                        this.settings.process_columns.system_cpu_time = *checked
-                    }
-                    ProcessColumnSetting::Priority => {
-                        this.settings.process_columns.priority = *checked
-                    }
-                    ProcessColumnSetting::Swap => this.settings.process_columns.swap = *checked,
-                    ProcessColumnSetting::CombinedMemory => {
-                        this.settings.process_columns.combined_memory = *checked
-                    }
-                    ProcessColumnSetting::CommandLine => {
-                        this.settings.process_columns.command_line = *checked
-                    }
-                }
+                column.set(&mut this.settings, *checked);
                 this.sync_table_settings(cx);
             }),
             cx,
@@ -1745,13 +1763,13 @@ impl MonitorWindow {
             .border_color(cx.theme().border)
             .child(
                 div()
-                    .w(px(190.))
+                    .w(px(190.0))
                     .flex_shrink_0()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child(label),
             )
-            .child(div().flex_1().text_sm().text_right().child(value))
+            .child(div().flex_1().text_sm().child(value))
     }
 
     fn unavailable_page(
@@ -1764,7 +1782,7 @@ impl MonitorWindow {
             .items_center()
             .justify_center()
             .gap_2()
-            .min_h(px(420.))
+            .min_h(px(420.0))
             .rounded(cx.theme().radius_lg)
             .border_1()
             .border_color(cx.theme().border)
@@ -1772,7 +1790,7 @@ impl MonitorWindow {
             .child(div().text_lg().font_bold().child(title))
             .child(
                 div()
-                    .max_w(px(620.))
+                    .max_w(px(620.0))
                     .text_center()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
@@ -1789,27 +1807,19 @@ impl MonitorWindow {
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .p_3()
-            .child(div().size_2().rounded(px(99.)).bg(cx.theme().blue))
+            .child(div().size_2().rounded(px(99.0)).bg(cx.theme().blue))
             .child(div().text_sm().child(message))
     }
 
-    fn selected_process(&self) -> Option<&ProcessInfo> {
+    fn selected_process(&self, cx: &Context<Self>) -> Option<ProcessInfo> {
         let pid = self.selected_pid?;
-        self.top_processes
+        self.process_table
+            .read(cx)
+            .delegate()
+            .processes
             .iter()
             .find(|process| process.pid == pid)
-            .or_else(|| {
-                self.process_table
-                    .read_with(|table, _| {
-                        table
-                            .delegate()
-                            .processes
-                            .iter()
-                            .find(|process| process.pid == pid)
-                            .cloned()
-                    })
-                    .as_ref()
-            })
+            .cloned()
     }
 
     fn signal_pids(&mut self, pids: &[Pid], signal: Signal) {
@@ -1884,6 +1894,25 @@ enum AppColumn {
     CombinedMemory,
 }
 
+impl AppColumn {
+    fn set(self, settings: &mut MonitorSettings, value: bool) {
+        match self {
+            Self::Memory => settings.app_columns.memory = value,
+            Self::Cpu => settings.app_columns.cpu = value,
+            Self::ReadSpeed => settings.app_columns.read_speed = value,
+            Self::ReadTotal => settings.app_columns.read_total = value,
+            Self::WriteSpeed => settings.app_columns.write_speed = value,
+            Self::WriteTotal => settings.app_columns.write_total = value,
+            Self::Gpu => settings.app_columns.gpu = value,
+            Self::GpuMemory => settings.app_columns.gpu_memory = value,
+            Self::Encoder => settings.app_columns.encoder = value,
+            Self::Decoder => settings.app_columns.decoder = value,
+            Self::Swap => settings.app_columns.swap = value,
+            Self::CombinedMemory => settings.app_columns.combined_memory = value,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ProcessColumnSetting {
     Pid,
@@ -1905,6 +1934,32 @@ enum ProcessColumnSetting {
     Swap,
     CombinedMemory,
     CommandLine,
+}
+
+impl ProcessColumnSetting {
+    fn set(self, settings: &mut MonitorSettings, value: bool) {
+        match self {
+            Self::Pid => settings.process_columns.pid = value,
+            Self::User => settings.process_columns.user = value,
+            Self::Memory => settings.process_columns.memory = value,
+            Self::Cpu => settings.process_columns.cpu = value,
+            Self::ReadSpeed => settings.process_columns.read_speed = value,
+            Self::ReadTotal => settings.process_columns.read_total = value,
+            Self::WriteSpeed => settings.process_columns.write_speed = value,
+            Self::WriteTotal => settings.process_columns.write_total = value,
+            Self::Gpu => settings.process_columns.gpu = value,
+            Self::GpuMemory => settings.process_columns.gpu_memory = value,
+            Self::Encoder => settings.process_columns.encoder = value,
+            Self::Decoder => settings.process_columns.decoder = value,
+            Self::TotalCpuTime => settings.process_columns.total_cpu_time = value,
+            Self::UserCpuTime => settings.process_columns.user_cpu_time = value,
+            Self::SystemCpuTime => settings.process_columns.system_cpu_time = value,
+            Self::Priority => settings.process_columns.priority = value,
+            Self::Swap => settings.process_columns.swap = value,
+            Self::CombinedMemory => settings.process_columns.combined_memory = value,
+            Self::CommandLine => settings.process_columns.command_line = value,
+        }
+    }
 }
 
 fn sparkline_for_usage(usage: f64) -> String {
