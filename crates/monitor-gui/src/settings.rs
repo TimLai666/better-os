@@ -1,9 +1,4 @@
-use std::{
-    env,
-    fs,
-    path::PathBuf,
-    time::Duration,
-};
+use std::{env, fs, path::PathBuf, time::Duration};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum UnitBase {
@@ -427,27 +422,18 @@ impl MonitorSettings {
             "sidebar-meter-type={}",
             self.sidebar_meter_type.config_value()
         ));
-        lines.push(format!(
-            "graph-data-points={}",
-            self.clamped_graph_points()
-        ));
+        lines.push(format!("graph-data-points={}", self.clamped_graph_points()));
         lines.push(format!("show-virtual-drives={}", self.show_virtual_drives));
         lines.push(format!(
             "show-virtual-network-interfaces={}",
             self.show_virtual_network_interfaces
         ));
         lines.push(format!("sidebar-details={}", self.sidebar_details));
-        lines.push(format!(
-            "sidebar-description={}",
-            self.sidebar_description
-        ));
+        lines.push(format!("sidebar-description={}", self.sidebar_description));
         lines.push(format!("network-bits={}", self.network_bits));
         lines.push(format!("show-logical-cpus={}", self.show_logical_cpus));
         lines.push(format!("show-graph-grids={}", self.show_graph_grids));
-        lines.push(format!(
-            "normalize-cpu-usage={}",
-            self.normalize_cpu_usage
-        ));
+        lines.push(format!("normalize-cpu-usage={}", self.normalize_cpu_usage));
         lines.push(format!("detailed-priority={}", self.detailed_priority));
 
         macro_rules! bool_line {
@@ -492,10 +478,7 @@ impl MonitorSettings {
             self.process_columns.write_total
         );
         bool_line!("processes-show-gpu", self.process_columns.gpu);
-        bool_line!(
-            "processes-show-gpu-memory",
-            self.process_columns.gpu_memory
-        );
+        bool_line!("processes-show-gpu-memory", self.process_columns.gpu_memory);
         bool_line!("processes-show-encoder", self.process_columns.encoder);
         bool_line!("processes-show-decoder", self.process_columns.decoder);
         bool_line!(

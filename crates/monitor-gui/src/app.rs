@@ -230,8 +230,8 @@ impl MonitorWindow {
                 .clean_on_escape()
         });
 
-        let table_subscription = cx.subscribe(&process_table, |this, table, event, cx| {
-            match event {
+        let table_subscription =
+            cx.subscribe(&process_table, |this, table, event, cx| match event {
                 TableEvent::SelectRow(row) | TableEvent::DoubleClickedRow(row) => {
                     this.selected_pid = table
                         .read(cx)
@@ -245,12 +245,9 @@ impl MonitorWindow {
                     cx.notify();
                 }
                 _ => {}
-            }
-        });
-        let search_subscription = cx.subscribe_in(
-            &search_input,
-            window,
-            |this, input, event, _, cx| {
+            });
+        let search_subscription =
+            cx.subscribe_in(&search_input, window, |this, input, event, _, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.search_query = input.read(cx).value().to_string();
                     let query = this.search_query.clone();
@@ -261,8 +258,7 @@ impl MonitorWindow {
                     });
                     cx.notify();
                 }
-            },
-        );
+            });
 
         let cpu_details = linux::cpu_details(&system);
         let previous_block_counters = linux::block_counters();
@@ -305,20 +301,22 @@ impl MonitorWindow {
         };
 
         monitor.collect_metrics(cx);
-        cx.spawn(async move |this, cx| loop {
-            let delay = match this.update(cx, |this, _| this.settings.refresh_interval()) {
-                Ok(delay) => delay,
-                Err(_) => break,
-            };
-            Timer::after(delay).await;
-            if this
-                .update(cx, |this, cx| {
-                    this.collect_metrics(cx);
-                    cx.notify();
-                })
-                .is_err()
-            {
-                break;
+        cx.spawn(async move |this, cx| {
+            loop {
+                let delay = match this.update(cx, |this, _| this.settings.refresh_interval()) {
+                    Ok(delay) => delay,
+                    Err(_) => break,
+                };
+                Timer::after(delay).await;
+                if this
+                    .update(cx, |this, cx| {
+                        this.collect_metrics(cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
             }
         })
         .detach();
@@ -508,13 +506,14 @@ impl MonitorWindow {
                         (Some(current), Some(previous)) => {
                             let read_sectors =
                                 current.read_sectors.saturating_sub(previous.read_sectors);
-                            let write_sectors = current
-                                .write_sectors
-                                .saturating_sub(previous.write_sectors);
-                            let io_ticks =
-                                current.io_ticks_ms.saturating_sub(previous.io_ticks_ms);
+                            let write_sectors =
+                                current.write_sectors.saturating_sub(previous.write_sectors);
+                            let io_ticks = current.io_ticks_ms.saturating_sub(previous.io_ticks_ms);
                             (
-                                Some((io_ticks as f64 / (elapsed * 1_000.0) * 100.0).clamp(0.0, 100.0)),
+                                Some(
+                                    (io_ticks as f64 / (elapsed * 1_000.0) * 100.0)
+                                        .clamp(0.0, 100.0),
+                                ),
                                 (read_sectors.saturating_mul(SECTOR_SIZE) as f64 / elapsed) as u64,
                                 (write_sectors.saturating_mul(SECTOR_SIZE) as f64 / elapsed) as u64,
                                 current.read_sectors.saturating_mul(SECTOR_SIZE),
@@ -773,7 +772,11 @@ impl MonitorWindow {
                         linear_color_stop(color.opacity(0.34), 1.0),
                         linear_color_stop(cx.theme().background.opacity(0.05), 0.0),
                     ))
-                    .tick_margin(if self.settings.show_graph_grids { 16 } else { 0 }),
+                    .tick_margin(if self.settings.show_graph_grids {
+                        16
+                    } else {
+                        0
+                    }),
             )
     }
 
@@ -827,16 +830,18 @@ impl MonitorWindow {
                 h_flex()
                     .flex_wrap()
                     .gap_3()
-                    .child(self.metric_card(
-                        "Processor",
-                        format!("{:.1}%", point.cpu),
-                        self.cpu_details
-                            .model_name
-                            .clone()
-                            .unwrap_or_else(|| "N/A".to_string()),
-                        cx.theme().blue,
-                        cx,
-                    ))
+                    .child(
+                        self.metric_card(
+                            "Processor",
+                            format!("{:.1}%", point.cpu),
+                            self.cpu_details
+                                .model_name
+                                .clone()
+                                .unwrap_or_else(|| "N/A".to_string()),
+                            cx.theme().blue,
+                            cx,
+                        ),
+                    )
                     .child(self.metric_card(
                         "Memory",
                         format!("{:.1}%", point.memory),
@@ -964,7 +969,11 @@ impl MonitorWindow {
                 ))
                 .child(self.health_row(
                     "GPU devices",
-                    if self.gpus.is_empty() { "Unavailable" } else { "Detected" },
+                    if self.gpus.is_empty() {
+                        "Unavailable"
+                    } else {
+                        "Detected"
+                    },
                     if self.gpus.is_empty() {
                         cx.theme().yellow
                     } else {
@@ -974,7 +983,11 @@ impl MonitorWindow {
                 ))
                 .child(self.health_row(
                     "NPU devices",
-                    if self.npus.is_empty() { "Unavailable" } else { "Detected" },
+                    if self.npus.is_empty() {
+                        "Unavailable"
+                    } else {
+                        "Detected"
+                    },
                     if self.npus.is_empty() {
                         cx.theme().yellow
                     } else {
@@ -1026,58 +1039,68 @@ impl MonitorWindow {
                 cx.theme().blue,
                 cx,
             ))
-            .child(self.section_card(
-                "Properties",
-                "Processor identity, topology, and platform capabilities",
-                v_flex()
-                    .gap_2()
-                    .child(self.simple_property_row(
-                        "Maximum Speed",
-                        self.cpu_details.max_speed_mhz.map_or_else(
-                            || "N/A".to_string(),
-                            |value| format!("{value} MHz"),
-                        ),
-                        cx,
-                    ))
-                    .child(self.simple_property_row(
-                        "Logical CPUs",
-                        self.cpu_details.logical_cpus.to_string(),
-                        cx,
-                    ))
-                    .child(self.simple_property_row(
-                        "Physical CPUs",
-                        self.cpu_details
-                            .physical_cpus
-                            .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
-                        cx,
-                    ))
-                    .child(self.simple_property_row(
-                        "Sockets",
-                        self.cpu_details
-                            .sockets
-                            .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
-                        cx,
-                    ))
-                    .child(self.simple_property_row(
-                        "Uptime",
-                        format_duration(System::uptime()),
-                        cx,
-                    ))
-                    .child(self.simple_property_row(
-                        "Virtualization",
-                        self.cpu_details
-                            .virtualization
-                            .clone()
-                            .unwrap_or_else(|| "N/A".to_string()),
-                        cx,
-                    ))
-                    .child(self.simple_property_row(
-                        "Architecture",
-                        self.cpu_details.architecture.clone(),
-                        cx,
-                    )),
-                cx,
-            ));
+            .child(
+                self.section_card(
+                    "Properties",
+                    "Processor identity, topology, and platform capabilities",
+                    v_flex()
+                        .gap_2()
+                        .child(
+                            self.simple_property_row(
+                                "Maximum Speed",
+                                self.cpu_details.max_speed_mhz.map_or_else(
+                                    || "N/A".to_string(),
+                                    |value| format!("{value} MHz"),
+                                ),
+                                cx,
+                            ),
+                        )
+                        .child(self.simple_property_row(
+                            "Logical CPUs",
+                            self.cpu_details.logical_cpus.to_string(),
+                            cx,
+                        ))
+                        .child(
+                            self.simple_property_row(
+                                "Physical CPUs",
+                                self.cpu_details
+                                    .physical_cpus
+                                    .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
+                                cx,
+                            ),
+                        )
+                        .child(
+                            self.simple_property_row(
+                                "Sockets",
+                                self.cpu_details
+                                    .sockets
+                                    .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
+                                cx,
+                            ),
+                        )
+                        .child(self.simple_property_row(
+                            "Uptime",
+                            format_duration(System::uptime()),
+                            cx,
+                        ))
+                        .child(
+                            self.simple_property_row(
+                                "Virtualization",
+                                self.cpu_details
+                                    .virtualization
+                                    .clone()
+                                    .unwrap_or_else(|| "N/A".to_string()),
+                                cx,
+                            ),
+                        )
+                        .child(self.simple_property_row(
+                            "Architecture",
+                            self.cpu_details.architecture.clone(),
+                            cx,
+                        )),
+                    cx,
+                ),
+            );
 
         v_flex()
             .gap_4()
@@ -1085,31 +1108,37 @@ impl MonitorWindow {
                 h_flex()
                     .flex_wrap()
                     .gap_3()
-                    .child(self.metric_card(
-                        "Processor",
-                        self.cpu_details
-                            .model_name
-                            .clone()
-                            .unwrap_or_else(|| "N/A".to_string()),
-                        format!("Load {:.2} / {:.2} / {:.2}", load.one, load.five, load.fifteen),
-                        cx.theme().blue,
-                        cx,
-                    ))
+                    .child(
+                        self.metric_card(
+                            "Processor",
+                            self.cpu_details
+                                .model_name
+                                .clone()
+                                .unwrap_or_else(|| "N/A".to_string()),
+                            format!(
+                                "Load {:.2} / {:.2} / {:.2}",
+                                load.one, load.five, load.fifteen
+                            ),
+                            cx.theme().blue,
+                            cx,
+                        ),
+                    )
                     .child(self.metric_card(
                         "Temperature",
                         self.cpu_details.temperature_c.map_or_else(
                             || "N/A".to_string(),
-                            |value| linux::format_temperature(
-                                value,
-                                self.settings.temperature_unit,
-                            ),
+                            |value| {
+                                linux::format_temperature(value, self.settings.temperature_unit)
+                            },
                         ),
                         "Highest available thermal sensor".to_string(),
                         cx.theme().yellow,
                         cx,
                     )),
             )
-            .when(!self.settings.show_logical_cpus, |this| this.child(total_view))
+            .when(!self.settings.show_logical_cpus, |this| {
+                this.child(total_view)
+            })
             .when(self.settings.show_logical_cpus, |this| {
                 this.child(h_flex().flex_wrap().gap_3().children(
                     self.system.cpus().iter().enumerate().map(|(index, cpu)| {
@@ -1267,19 +1296,19 @@ impl MonitorWindow {
                 h_flex()
                     .flex_wrap()
                     .gap_3()
-                    .child(self.metric_card(
-                        "Drive Activity",
-                        disk.activity_percent.map_or_else(
-                            || "N/A".to_string(),
-                            |value| format!("{value:.0}%"),
+                    .child(
+                        self.metric_card(
+                            "Drive Activity",
+                            disk.activity_percent
+                                .map_or_else(|| "N/A".to_string(), |value| format!("{value:.0}%")),
+                            disk.metadata
+                                .model
+                                .clone()
+                                .unwrap_or_else(|| disk.metadata.device.clone()),
+                            cx.theme().yellow,
+                            cx,
                         ),
-                        disk.metadata
-                            .model
-                            .clone()
-                            .unwrap_or_else(|| disk.metadata.device.clone()),
-                        cx.theme().yellow,
-                        cx,
-                    ))
+                    )
                     .child(self.metric_card(
                         "Read Speed",
                         linux::format_rate(disk.read_speed, false, self.settings.unit_base),
@@ -1308,35 +1337,47 @@ impl MonitorWindow {
                         cx,
                     )),
             )
-            .child(self.section_card(
-                "Properties",
-                "Drive identity, mount, and hardware characteristics",
-                v_flex()
-                    .gap_2()
-                    .child(self.simple_property_row("Drive Type", disk.metadata.drive_type.clone(), cx))
-                    .child(self.simple_property_row("Device", disk.metadata.device.clone(), cx))
-                    .child(self.simple_property_row("Mount Point", disk.mount_point.clone(), cx))
-                    .child(self.simple_property_row("Filesystem", disk.file_system.clone(), cx))
-                    .child(self.simple_property_row(
-                        "Writable",
-                        option_yes_no(disk.metadata.writable),
-                        cx,
-                    ))
-                    .child(self.simple_property_row(
-                        "Removable",
-                        option_yes_no(disk.metadata.removable),
-                        cx,
-                    ))
-                    .child(self.simple_property_row(
-                        "Link",
-                        disk.metadata
-                            .link
-                            .clone()
-                            .unwrap_or_else(|| "N/A".to_string()),
-                        cx,
-                    )),
-                cx,
-            ))
+            .child(
+                self.section_card(
+                    "Properties",
+                    "Drive identity, mount, and hardware characteristics",
+                    v_flex()
+                        .gap_2()
+                        .child(self.simple_property_row(
+                            "Drive Type",
+                            disk.metadata.drive_type.clone(),
+                            cx,
+                        ))
+                        .child(self.simple_property_row("Device", disk.metadata.device.clone(), cx))
+                        .child(self.simple_property_row(
+                            "Mount Point",
+                            disk.mount_point.clone(),
+                            cx,
+                        ))
+                        .child(self.simple_property_row("Filesystem", disk.file_system.clone(), cx))
+                        .child(self.simple_property_row(
+                            "Writable",
+                            option_yes_no(disk.metadata.writable),
+                            cx,
+                        ))
+                        .child(self.simple_property_row(
+                            "Removable",
+                            option_yes_no(disk.metadata.removable),
+                            cx,
+                        ))
+                        .child(
+                            self.simple_property_row(
+                                "Link",
+                                disk.metadata
+                                    .link
+                                    .clone()
+                                    .unwrap_or_else(|| "N/A".to_string()),
+                                cx,
+                            ),
+                        ),
+                    cx,
+                ),
+            )
     }
 
     fn render_network(&self, cx: &Context<Self>) -> Div {
@@ -1369,10 +1410,7 @@ impl MonitorWindow {
                         ),
                         format!(
                             "Total {}",
-                            linux::format_bytes(
-                                interface.total_received,
-                                self.settings.unit_base
-                            )
+                            linux::format_bytes(interface.total_received, self.settings.unit_base)
                         ),
                         cx.theme().green,
                         cx,
@@ -1394,74 +1432,88 @@ impl MonitorWindow {
                         cx.theme().blue,
                         cx,
                     ))
-                    .child(self.metric_card(
-                        "Link Speed",
-                        interface.metadata.link_speed_mbps.map_or_else(
-                            || "N/A".to_string(),
-                            |value| format!("{value} Mbit/s"),
+                    .child(
+                        self.metric_card(
+                            "Link Speed",
+                            interface.metadata.link_speed_mbps.map_or_else(
+                                || "N/A".to_string(),
+                                |value| format!("{value} Mbit/s"),
+                            ),
+                            interface
+                                .metadata
+                                .state
+                                .clone()
+                                .unwrap_or_else(|| "N/A".to_string()),
+                            cx.theme().yellow,
+                            cx,
                         ),
-                        interface
-                            .metadata
-                            .state
-                            .clone()
-                            .unwrap_or_else(|| "N/A".to_string()),
-                        cx.theme().yellow,
-                        cx,
-                    )),
+                    ),
             )
-            .child(self.section_card(
-                "Properties",
-                "Interface identity and connection metadata",
-                v_flex()
-                    .gap_2()
-                    .child(self.simple_property_row(
-                        "Manufacturer",
-                        interface
-                            .metadata
-                            .manufacturer
-                            .clone()
-                            .unwrap_or_else(|| "N/A".to_string()),
-                        cx,
-                    ))
-                    .child(self.simple_property_row(
-                        "Driver",
-                        interface
-                            .metadata
-                            .driver
-                            .clone()
-                            .unwrap_or_else(|| "N/A".to_string()),
-                        cx,
-                    ))
-                    .child(self.simple_property_row("Interface", interface.name.clone(), cx))
-                    .child(self.simple_property_row(
-                        "Hardware Address",
-                        interface
-                            .metadata
-                            .hardware_address
-                            .clone()
-                            .unwrap_or_else(|| "N/A".to_string()),
-                        cx,
-                    ))
-                    .child(self.simple_property_row(
-                        "Network Name",
-                        interface
-                            .metadata
-                            .network_name
-                            .clone()
-                            .unwrap_or_else(|| "N/A".to_string()),
-                        cx,
-                    ))
-                    .child(self.simple_property_row(
-                        "Link",
-                        interface
-                            .metadata
-                            .link
-                            .clone()
-                            .unwrap_or_else(|| "N/A".to_string()),
-                        cx,
-                    )),
-                cx,
-            ))
+            .child(
+                self.section_card(
+                    "Properties",
+                    "Interface identity and connection metadata",
+                    v_flex()
+                        .gap_2()
+                        .child(
+                            self.simple_property_row(
+                                "Manufacturer",
+                                interface
+                                    .metadata
+                                    .manufacturer
+                                    .clone()
+                                    .unwrap_or_else(|| "N/A".to_string()),
+                                cx,
+                            ),
+                        )
+                        .child(
+                            self.simple_property_row(
+                                "Driver",
+                                interface
+                                    .metadata
+                                    .driver
+                                    .clone()
+                                    .unwrap_or_else(|| "N/A".to_string()),
+                                cx,
+                            ),
+                        )
+                        .child(self.simple_property_row("Interface", interface.name.clone(), cx))
+                        .child(
+                            self.simple_property_row(
+                                "Hardware Address",
+                                interface
+                                    .metadata
+                                    .hardware_address
+                                    .clone()
+                                    .unwrap_or_else(|| "N/A".to_string()),
+                                cx,
+                            ),
+                        )
+                        .child(
+                            self.simple_property_row(
+                                "Network Name",
+                                interface
+                                    .metadata
+                                    .network_name
+                                    .clone()
+                                    .unwrap_or_else(|| "N/A".to_string()),
+                                cx,
+                            ),
+                        )
+                        .child(
+                            self.simple_property_row(
+                                "Link",
+                                interface
+                                    .metadata
+                                    .link
+                                    .clone()
+                                    .unwrap_or_else(|| "N/A".to_string()),
+                                cx,
+                            ),
+                        ),
+                    cx,
+                ),
+            )
     }
 
     fn render_history(&self, cx: &Context<Self>) -> Div {
@@ -1653,68 +1705,72 @@ impl MonitorWindow {
                         cx.theme().green,
                         cx,
                     ))
-                    .child(self.metric_card(
-                        "Dynamic device pages",
-                        (self.gpus.len()
-                            + self.npus.len()
-                            + self.disk_info.len()
-                            + self.network_info.len()
-                            + self.batteries.len())
-                        .to_string(),
-                        "GPU, NPU, drive, network, and battery".to_string(),
-                        cx.theme().blue,
-                        cx,
-                    )),
+                    .child(
+                        self.metric_card(
+                            "Dynamic device pages",
+                            (self.gpus.len()
+                                + self.npus.len()
+                                + self.disk_info.len()
+                                + self.network_info.len()
+                                + self.batteries.len())
+                            .to_string(),
+                            "GPU, NPU, drive, network, and battery".to_string(),
+                            cx.theme().blue,
+                            cx,
+                        ),
+                    ),
             )
-            .child(self.section_card(
-                "Collector matrix",
-                "Support state is part of every metric",
-                v_flex()
-                    .gap_3()
-                    .child(self.health_row(
-                        "CPU / memory / process baseline",
-                        "Active via sysinfo and /proc",
-                        cx.theme().green,
-                        cx,
-                    ))
-                    .child(self.health_row(
-                        "Application grouping",
-                        "Active via cgroup v2 with named fallback",
-                        cx.theme().green,
-                        cx,
-                    ))
-                    .child(self.health_row(
-                        "GPU / NPU adapters",
-                        "DRM, accel, and driver sysfs where exposed",
-                        cx.theme().green,
-                        cx,
-                    ))
-                    .child(self.health_row(
-                        "Drive and network metadata",
-                        "Active via sysfs and kernel counters",
-                        cx.theme().green,
-                        cx,
-                    ))
-                    .child(self.health_row(
-                        "Memory hardware properties",
-                        "Awaiting narrow Polkit DMI helper",
-                        cx.theme().yellow,
-                        cx,
-                    ))
-                    .child(self.health_row(
-                        "CPU affinity and priority mutation",
-                        "Not connected yet",
-                        cx.theme().yellow,
-                        cx,
-                    ))
-                    .child(self.health_row(
-                        "Linux PSI and persistent history",
-                        "Not connected yet",
-                        cx.theme().yellow,
-                        cx,
-                    )),
-                cx,
-            ))
+            .child(
+                self.section_card(
+                    "Collector matrix",
+                    "Support state is part of every metric",
+                    v_flex()
+                        .gap_3()
+                        .child(self.health_row(
+                            "CPU / memory / process baseline",
+                            "Active via sysinfo and /proc",
+                            cx.theme().green,
+                            cx,
+                        ))
+                        .child(self.health_row(
+                            "Application grouping",
+                            "Active via cgroup v2 with named fallback",
+                            cx.theme().green,
+                            cx,
+                        ))
+                        .child(self.health_row(
+                            "GPU / NPU adapters",
+                            "DRM, accel, and driver sysfs where exposed",
+                            cx.theme().green,
+                            cx,
+                        ))
+                        .child(self.health_row(
+                            "Drive and network metadata",
+                            "Active via sysfs and kernel counters",
+                            cx.theme().green,
+                            cx,
+                        ))
+                        .child(self.health_row(
+                            "Memory hardware properties",
+                            "Awaiting narrow Polkit DMI helper",
+                            cx.theme().yellow,
+                            cx,
+                        ))
+                        .child(self.health_row(
+                            "CPU affinity and priority mutation",
+                            "Not connected yet",
+                            cx.theme().yellow,
+                            cx,
+                        ))
+                        .child(self.health_row(
+                            "Linux PSI and persistent history",
+                            "Not connected yet",
+                            cx.theme().yellow,
+                            cx,
+                        )),
+                    cx,
+                ),
+            )
     }
 
     fn simple_property_row(&self, label: &'static str, value: String, cx: &Context<Self>) -> Div {

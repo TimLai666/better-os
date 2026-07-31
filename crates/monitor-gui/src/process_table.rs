@@ -7,10 +7,7 @@ use gpui_component::{
 };
 use sysinfo::Pid;
 
-use crate::{
-    linux,
-    settings::MonitorSettings,
-};
+use crate::{linux, settings::MonitorSettings};
 
 #[derive(Clone, Debug)]
 pub struct ProcessInfo {
@@ -362,7 +359,9 @@ impl ProcessTableDelegate {
             ProcessColumn::TotalCpuTime => format_ticks(process.total_cpu_time_ticks),
             ProcessColumn::UserCpuTime => format_ticks(process.user_cpu_time_ticks),
             ProcessColumn::SystemCpuTime => format_ticks(process.system_cpu_time_ticks),
-            ProcessColumn::Priority => format_priority(process.nice, self.settings.detailed_priority),
+            ProcessColumn::Priority => {
+                format_priority(process.nice, self.settings.detailed_priority)
+            }
             ProcessColumn::Swap => linux::format_bytes(process.swap, self.settings.unit_base),
             ProcessColumn::CombinedMemory => linux::format_bytes(
                 process.memory.saturating_add(process.swap),

@@ -204,9 +204,8 @@ pub fn cpu_details(system: &System) -> CpuDetails {
         model_name,
         architecture: std::env::consts::ARCH.to_string(),
         logical_cpus: system.cpus().len(),
-        physical_cpus: System::physical_core_count().or_else(|| {
-            (!physical_ids.is_empty()).then_some(physical_ids.len())
-        }),
+        physical_cpus: System::physical_core_count()
+            .or_else(|| (!physical_ids.is_empty()).then_some(physical_ids.len())),
         sockets: (!socket_ids.is_empty()).then_some(socket_ids.len()),
         max_speed_mhz,
         virtualization,
@@ -230,14 +229,16 @@ pub fn process_extra(pid: Pid, users: &HashMap<u32, String>) -> ProcessExtra {
                 .join(" ")
         })
         .unwrap_or_default();
-    let cgroup = read_string(base.join("cgroup"))
-        .and_then(|content| parse_unified_cgroup(&content));
+    let cgroup =
+        read_string(base.join("cgroup")).and_then(|content| parse_unified_cgroup(&content));
     let uid = status_value(&status, "Uid")
         .and_then(|value| value.split_whitespace().next())
         .and_then(|value| value.parse::<u32>().ok());
     let threads = status_value(&status, "Threads").and_then(|value| value.parse::<u64>().ok());
     let swap_bytes = status_value(&status, "VmSwap").and_then(parse_kib_value);
-    let file_descriptors = fs::read_dir(base.join("fd")).ok().map(|entries| entries.count());
+    let file_descriptors = fs::read_dir(base.join("fd"))
+        .ok()
+        .map(|entries| entries.count());
     let executable = fs::read_link(base.join("exe"))
         .ok()
         .map(|path| path.to_string_lossy().into_owned());
@@ -386,8 +387,8 @@ pub fn scan_gpus() -> Vec<GpuDevice> {
             .or_else(|| parse_pp_dpm_clock(device_path.join("pp_dpm_sclk")));
         let memory_clock_mhz = highest_hwmon_value(&device_path, "freq2_input", 1_000_000.0)
             .or_else(|| parse_pp_dpm_clock(device_path.join("pp_dpm_mclk")));
-        let max_power_watts = read_number::<f64>(device_path.join("power_dpm_force_performance_level"))
-            .and(None);
+        let max_power_watts =
+            read_number::<f64>(device_path.join("power_dpm_force_performance_level")).and(None);
         let link = pci_link(&device_path);
 
         devices.push(GpuDevice {
@@ -466,16 +467,8 @@ pub fn scan_npus() -> Vec<NpuDevice> {
                 temperature_c: highest_hwmon_value(&device_path, "temp1_input", 1_000.0),
                 power_watts: highest_hwmon_value(&device_path, "power1_average", 1_000_000.0),
                 clock_mhz: highest_hwmon_value(&device_path, "freq1_input", 1_000_000.0),
-                memory_clock_mhz: highest_hwmon_value(
-                    &device_path,
-                    "freq2_input",
-                    1_000_000.0,
-                ),
-                max_power_watts: highest_hwmon_value(
-                    &device_path,
-                    "power1_cap_max",
-                    1_000_000.0,
-                ),
+                memory_clock_mhz: highest_hwmon_value(&device_path, "freq2_input", 1_000_000.0),
+                max_power_watts: highest_hwmon_value(&device_path, "power1_cap_max", 1_000_000.0),
                 link: pci_link(&device_path),
             });
         }
@@ -561,7 +554,10 @@ pub fn network_metadata(interface: &str) -> NetworkMetadata {
         "Loopback"
     } else if interface.starts_with("br") || interface.starts_with("docker") {
         "Bridge"
-    } else if interface.starts_with("tun") || interface.starts_with("tap") || interface.starts_with("wg") {
+    } else if interface.starts_with("tun")
+        || interface.starts_with("tap")
+        || interface.starts_with("wg")
+    {
         "Tunnel"
     } else {
         "Ethernet"
@@ -635,7 +631,11 @@ pub fn block_counters() -> HashMap<String, BlockCounters> {
             continue;
         }
         let name = fields[2].to_string();
-        let parse = |index: usize| fields.get(index).and_then(|value| value.parse::<u64>().ok());
+        let parse = |index: usize| {
+            fields
+                .get(index)
+                .and_then(|value| value.parse::<u64>().ok())
+        };
         let Some(read_sectors) = parse(5) else {
             continue;
         };
@@ -836,7 +836,11 @@ fn highest_temperature_c() -> Option<f64> {
         for entry in entries.flatten() {
             let value = read_number::<f64>(entry.path().join("temp"));
             if let Some(value) = value {
-                let celsius = if value > 1_000.0 { value / 1_000.0 } else { value };
+                let celsius = if value > 1_000.0 {
+                    value / 1_000.0
+                } else {
+                    value
+                };
                 if (-50.0..=200.0).contains(&celsius) {
                     temperatures.push(celsius);
                 }
@@ -846,7 +850,9 @@ fn highest_temperature_c() -> Option<f64> {
     if let Ok(entries) = fs::read_dir("/sys/class/hwmon") {
         for entry in entries.flatten() {
             for index in 1..=16 {
-                if let Some(value) = read_number::<f64>(entry.path().join(format!("temp{index}_input"))) {
+                if let Some(value) =
+                    read_number::<f64>(entry.path().join(format!("temp{index}_input")))
+                {
                     let celsius = value / 1_000.0;
                     if (-50.0..=200.0).contains(&celsius) {
                         temperatures.push(celsius);
@@ -912,9 +918,14 @@ fn block_parent_name(device: &str) -> String {
             .rfind('p')
             .and_then(|index| value.get(index + 1..).map(|suffix| (index, suffix)))
             .filter(|(_, suffix)| suffix.chars().all(|character| character.is_ascii_digit()))
-            .map_or_else(|| value.to_string(), |(index, _)| value[..index].to_string())
+            .map_or_else(
+                || value.to_string(),
+                |(index, _)| value[..index].to_string(),
+            )
     } else {
-        value.trim_end_matches(|character: char| character.is_ascii_digit()).to_string()
+        value
+            .trim_end_matches(|character: char| character.is_ascii_digit())
+            .to_string()
     }
 }
 
