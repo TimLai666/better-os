@@ -86,6 +86,7 @@ their manifest checksums after maintainer approval.
 - [Pull request #11](https://github.com/TimLai666/better-os/pull/11)
 - [CI run 30616628027](https://github.com/TimLai666/better-os/actions/runs/30616628027)
 - [CI run 30625827340](https://github.com/TimLai666/better-os/actions/runs/30625827340)
+- [Post-merge main CI run 30627878338](https://github.com/TimLai666/better-os/actions/runs/30627878338)
 - [Tickets](docs/tickets/)
 
 ## Handoff Notes
@@ -99,6 +100,7 @@ dependency checks, checksums, and artifact upload. Clean Ubuntu containers for
 all four target/architecture pairs installed the downloaded artifacts with APT,
 had no `*-dev` packages, resolved all dynamic libraries, and passed checksum
 verification. Both GUI binaries stayed alive in GPUI headless mode.
+The post-merge `main` CI run passed Rust checks and all four package jobs.
 Xvfb and the host Wayland socket did not provide a valid desktop-session launch
 environment, so the supported desktop launch criterion remains open. No public
 release asset exists yet, and manifest checksum values and maintainer approval
