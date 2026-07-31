@@ -146,11 +146,7 @@ impl ProcessColumn {
     const fn sortable(self) -> bool {
         !matches!(
             self,
-            Self::Gpu
-                | Self::GpuMemory
-                | Self::Encoder
-                | Self::Decoder
-                | Self::Options
+            Self::Gpu | Self::GpuMemory | Self::Encoder | Self::Decoder | Self::Options
         )
     }
 }
@@ -653,7 +649,7 @@ impl Render for ProcessOptionsView {
                                                 |preset| {
                                                     Button::new((
                                                         "priority-preset",
-                                                        preset.nice() as isize,
+                                                        (preset.nice() + 20) as usize,
                                                     ))
                                                     .outline()
                                                     .small()
