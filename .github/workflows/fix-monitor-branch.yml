@@ -1,0 +1,42 @@
+name: Fix monitor branch
+
+on:
+  push:
+    branches:
+      - feature/better-monitor-ui
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/better-monitor-ui
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply GPUI API fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("crates/monitor-gui/src/main.rs")
+          source = path.read_text()
+          source = source.replace(".bg(cx.theme().list)", ".bg(cx.theme().list.background)")
+          source = source.replace(".overflow_y_scroll()", ".overflow_y_scrollbar()")
+          path.write_text(source)
+          PY
+          cargo fmt --all
+      - name: Commit fixes
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/monitor-gui/src/main.rs
+          git commit -m "fix(monitor): align with pinned GPUI APIs"
+          git push origin HEAD:feature/better-monitor-ui
