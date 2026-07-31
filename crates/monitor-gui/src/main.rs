@@ -3,6 +3,7 @@
 #[allow(unfulfilled_lint_expectations)]
 mod app;
 mod linux;
+mod process_control;
 mod process_table;
 mod settings;
 
