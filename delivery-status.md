@@ -31,13 +31,13 @@ before adding real system integration.
 
 No active blocker remains for the GUI smoke test or the target-compatible
 Ubuntu package matrix. The target-specific asset naming and manifest mapping
-decision is now recorded in ADR 0002 and implemented on the feature branch.
+decision is now recorded in ADR 0002 and merged into `main`.
 Ticket 06 still needs formal release assets, real manifest checksum verification,
 an approved maintainer contact, and the root project license before publishing.
 
 ## Next Verifiable Output
 
-After this contract change is merged, create the combined version Release,
+With this contract change merged, create the combined version Release,
 replace placeholder checksums with the published sidecar values, and verify all
 manifest variants against their target-specific assets.
 
@@ -92,9 +92,11 @@ manifest variants against their target-specific assets.
 - [ADR 0002: Target-specific release assets](docs/decisions/0002-release-artifact-mapping.md)
 - [Pull request #9](https://github.com/TimLai666/better-os/pull/9)
 - [Pull request #11](https://github.com/TimLai666/better-os/pull/11)
+- [Pull request #12](https://github.com/TimLai666/better-os/pull/12)
 - [CI run 30616628027](https://github.com/TimLai666/better-os/actions/runs/30616628027)
 - [CI run 30625827340](https://github.com/TimLai666/better-os/actions/runs/30625827340)
 - [Main CI run 30631266909](https://github.com/TimLai666/better-os/actions/runs/30631266909)
+- [Main CI run 30638535908](https://github.com/TimLai666/better-os/actions/runs/30638535908)
 - [Tickets](docs/tickets/)
 
 ## Handoff Notes
@@ -108,14 +110,15 @@ dependency checks, checksums, and artifact upload. Clean Ubuntu containers for
 all four target/architecture pairs installed the downloaded artifacts with APT,
 had no `*-dev` packages, resolved all dynamic libraries, and passed checksum
 verification. Both GUI binaries stayed alive in GPUI headless mode.
-The post-merge `main` CI run passed Rust checks and all four package jobs. The
-release artifact mapping decision is recorded in ADR 0002; the feature branch
-now validates schema v2 manifests and emits target-specific package filenames.
+The post-merge `main` CI run 30638535908 passed Rust checks and all four package
+jobs. PR #12 is merged into `main` at `000d2e5`; the release artifact mapping
+decision is recorded in ADR 0002, and `main` validates schema v2 manifests and
+emits target-specific package filenames.
 The package payload also started both GUI binaries for 12 seconds in the host's
 Zorin OS 18.1 GNOME Wayland session with `ZED_HEADLESS` unset. Docker's Xvfb and
 host-socket tests still failed because they did not provide a usable compositor,
 but the direct host session passed. No public release asset exists yet, and
 manifest checksum values, maintainer approval, and the root project license
 remain open.
-PR #9 is merged into `main` at `fb3520f`, and the feature branch has been
+PR #9 is merged into `main` at `fb3520f`. PR #12's feature branch has been
 deleted from both the local checkout and GitHub.
