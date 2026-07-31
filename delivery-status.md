@@ -31,12 +31,15 @@ before adding real system integration.
 
 No active blocker remains for the GUI smoke test or the target-compatible
 Ubuntu package matrix. Ticket 06 still needs release assets, manifest checksum
-verification, and an approved maintainer contact before publishing.
+verification, and an approved maintainer contact before publishing. The current
+matrix produces four same-named package assets, while each manifest has only one
+artifact checksum, so the target-specific asset naming and manifest mapping must
+be decided before a release can be created.
 
 ## Next Verifiable Output
 
-Create public release assets and verify their manifest checksums after maintainer
-approval.
+After the asset naming, manifest mapping, and maintainer contact are approved,
+create public release assets and verify their manifest checksums.
 
 ## Next Ticket
 
@@ -103,6 +106,7 @@ The package payload also started both GUI binaries for 12 seconds in the host's
 Zorin OS 18.1 GNOME Wayland session with `ZED_HEADLESS` unset. Docker's Xvfb and
 host-socket tests still failed because they did not provide a usable compositor,
 but the direct host session passed. No public release asset exists yet, and
-manifest checksum values and maintainer approval remain open.
+manifest checksum values and maintainer approval remain open. The four-platform
+asset naming and manifest mapping decision is also open.
 PR #9 is merged into `main` at `fb3520f`, and the feature branch has been
 deleted from both the local checkout and GitHub.
