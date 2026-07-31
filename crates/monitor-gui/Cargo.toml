@@ -1,0 +1,18 @@
+[package]
+name = "monitor-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "monitor-gui"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+better-ui.workspace = true
+monitor-core.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-platform.workspace = true

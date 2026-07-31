@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/better-core",
+    "crates/better-ui",
+    "crates/manager-core",
+    "crates/manager-cli",
+    "crates/manager-gui",
+    "crates/monitor-core",
+    "crates/monitor-gui",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+rust-version = "1.85"
+authors = ["Better OS contributors"]
+
+[workspace.dependencies]
+better-core = { path = "crates/better-core" }
+better-ui = { path = "crates/better-ui" }
+manager-core = { path = "crates/manager-core" }
+monitor-core = { path = "crates/monitor-core" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+semver = { version = "1.0", features = ["serde"] }
+thiserror = "2.0"
+clap = { version = "4.5", features = ["derive"] }
+gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+gpui-platform = { git = "https://github.com/zed-industries/zed", package = "gpui_platform", features = ["wayland", "x11"] }
