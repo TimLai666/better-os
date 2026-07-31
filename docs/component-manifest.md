@@ -18,6 +18,14 @@ distribution declared in `targets.distributions`. A manifest must contain
 exactly one artifact entry for each combination of `targets.releases` and
 `targets.architectures`.
 
+## Release eligibility
+
+Only manifests for components with a corresponding built and tested first-party
+package are release-eligible. `components/manifests/better-files-example.yaml`
+is a schema fixture for a future component. It is not a v0.1.0 release asset and
+must not be treated as an installable package until that component is
+implemented and included in the package matrix.
+
 Optional groups describe replacements, enhancements, dependencies, conflicts,
 health checks, benchmarks, permissions, and touched paths.
 

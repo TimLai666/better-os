@@ -16,8 +16,8 @@
 
 ## Acceptance criteria
 
-- [ ] 對 component manifest 宣告的支援 target 與 CPU architecture 產生 `.deb`
-      release asset
+- [ ] 對 release-eligible component manifest 宣告的支援 target 與 CPU
+      architecture 產生 `.deb` release asset
 - [x] 每個支援的 Ubuntu release 都在相容的 build environment 產生，不能把較新
       host 的 artifact 標成舊版 Ubuntu release
 - [x] `.deb` 的 `Depends` 含有最終 binary 所需的 runtime libraries，且不含任何
@@ -27,6 +27,8 @@
 - [x] 安裝後 manager 與 monitor 都能在支援的桌面 session 啟動，沒有缺少動態
       library，也不需要手動設定 build/CI 環境變數
 - [ ] release asset 的 SHA-256 checksum 可由 component manifest 驗證
+- [ ] package payload 包含 root license 與第三方授權清單，且 verifier 會檢查
+      兩者
 - [x] CI 或 release build log 記錄目前 host architecture 的 runtime dependency
       清單
 - [x] CI 或 release environment 記錄乾淨支援系統的安裝與啟動結果
@@ -53,6 +55,13 @@
   修正，現在 Ubuntu 22.04 package job 與 clean install 都已通過。
 - Debian control metadata 現在使用核准的 `TimLai666 <tim930102@icloud.com>`
   maintainer；root project license 為 GPL-3.0-or-later。
+- `better-files-example.yaml` 是 schema fixture，不是目前可發布的元件；v0.1.0
+  的 release-eligible manifests 是 `better-manager.yaml` 與
+  `better-monitor.yaml`。
+- 本地 host-native package build 與 verifier 已確認 manager、monitor 都包含
+  `/usr/share/doc/<package>/copyright` 與 `THIRD-PARTY-LICENSES.md`，並檢查
+  committed inventory 沒有落後 locked Cargo dependency graph。正式 CI package
+  產物仍需在合併後重新驗證。
 
 ## Out of scope
 

@@ -77,6 +77,25 @@ for package_name in better-manager better-monitor; do
         printf 'Missing executable in %s\n' "$package_name" >&2
         exit 1
     }
+
+    notice_dir="$extract_dir/usr/share/doc/$package_name"
+    [[ -s "$notice_dir/copyright" ]] || {
+        printf 'Missing project license notice in %s\n' "$package_name" >&2
+        exit 1
+    }
+    [[ -s "$notice_dir/THIRD-PARTY-LICENSES.md" ]] || {
+        printf 'Missing third-party license notice inventory in %s\n' "$package_name" >&2
+        exit 1
+    }
+    cmp "$ROOT_DIR/LICENSE" "$notice_dir/copyright" >/dev/null || {
+        printf 'Project license notice does not match repository LICENSE in %s\n' "$package_name" >&2
+        exit 1
+    }
+    grep -q '^# Third-Party License Notices$' "$notice_dir/THIRD-PARTY-LICENSES.md" || {
+        printf 'Invalid third-party license notice inventory in %s\n' "$package_name" >&2
+        exit 1
+    }
+
     if ldd "$binary_path" | grep -q 'not found'; then
         printf 'Unresolved dynamic library in %s\n' "$package_name" >&2
         exit 1
