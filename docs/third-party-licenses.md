@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 866.
-- Packages with an SPDX license expression: 864.
+- Resolved Cargo packages: 868.
+- Packages with an SPDX license expression: 866.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `de40244b5e3ea5ecb13bc908116f0b25cb15cd00f5c996270ed3a7a76c225e0f`.
+- `Cargo.lock` SHA-256: `fa161fc6577c1f67aaa58b8ff1a7f066afa349dfdb062a0017f745723588fa44`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -26,12 +26,12 @@ source of truth for those packages.
 | License expression | Package records |
 | --- | ---: |
 | `MIT OR Apache-2.0` | 398 |
-| `MIT` | 184 |
+| `MIT` | 185 |
 | `Apache-2.0 OR MIT` | 76 |
 | `MIT/Apache-2.0` | 35 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
-| `Zlib OR Apache-2.0 OR MIT` | 17 |
+| `Zlib OR Apache-2.0 OR MIT` | 18 |
 | `BSD-3-Clause` | 10 |
 | `GPL-3.0-or-later` | 10 |
 | `MIT OR Apache-2.0 OR Zlib` | 10 |
@@ -515,6 +515,7 @@ Better OS does not relicense or silently select a different expression.
 | `objc2-encode` | `4.1.0` | `MIT` | [crates.io](https://crates.io/crates/objc2-encode/4.1.0) |
 | `objc2-foundation` | `0.2.2` | `MIT` | [crates.io](https://crates.io/crates/objc2-foundation/0.2.2) |
 | `objc2-foundation` | `0.3.2` | `MIT` | [crates.io](https://crates.io/crates/objc2-foundation/0.3.2) |
+| `objc2-io-kit` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/objc2-io-kit/0.3.2) |
 | `objc2-io-surface` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/objc2-io-surface/0.3.2) |
 | `objc2-metal` | `0.2.2` | `MIT` | [crates.io](https://crates.io/crates/objc2-metal/0.2.2) |
 | `objc2-metal` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/objc2-metal/0.3.2) |
@@ -730,6 +731,7 @@ Better OS does not relicense or silently select a different expression.
 | `synstructure` | `0.13.2` | `MIT` | [crates.io](https://crates.io/crates/synstructure/0.13.2) |
 | `sys-locale` | `0.3.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/sys-locale/0.3.2) |
 | `sysinfo` | `0.31.4` | `MIT` | [crates.io](https://crates.io/crates/sysinfo/0.31.4) |
+| `sysinfo` | `0.37.2` | `MIT` | [crates.io](https://crates.io/crates/sysinfo/0.37.2) |
 | `system-configuration` | `0.6.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/system-configuration/0.6.1) |
 | `system-configuration-sys` | `0.6.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/system-configuration-sys/0.6.0) |
 | `taffy` | `0.12.2` | `MIT` | [crates.io](https://crates.io/crates/taffy/0.12.2) |
