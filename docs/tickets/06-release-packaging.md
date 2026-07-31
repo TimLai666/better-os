@@ -4,7 +4,7 @@
 **User Story:** 使用者可以下載 `.deb`，在支援的 Zorin OS 或 Ubuntu 桌面環境安裝，
 並直接啟動 Better OS，而不需要安裝 development packages
 **Blocked by:** 04-gui-shells
-**Status:** in_progress
+**Status:** done
 
 ## What it delivers
 
@@ -16,7 +16,7 @@
 
 ## Acceptance criteria
 
-- [ ] 對 release-eligible component manifest 宣告的支援 target 與 CPU
+- [x] 對 release-eligible component manifest 宣告的支援 target 與 CPU
       architecture 產生 `.deb` release asset
 - [x] 每個支援的 Ubuntu release 都在相容的 build environment 產生，不能把較新
       host 的 artifact 標成舊版 Ubuntu release
@@ -26,8 +26,8 @@
       `apt install ./<package>.deb` 成功
 - [x] 安裝後 manager 與 monitor 都能在支援的桌面 session 啟動，沒有缺少動態
       library，也不需要手動設定 build/CI 環境變數
-- [ ] release asset 的 SHA-256 checksum 可由 component manifest 驗證
-- [ ] package payload 包含 root license 與第三方授權清單，且 verifier 會檢查
+- [x] release asset 的 SHA-256 checksum 可由 component manifest 驗證
+- [x] package payload 包含 root license 與第三方授權清單，且 verifier 會檢查
       兩者
 - [x] CI 或 release build log 記錄目前 host architecture 的 runtime dependency
       清單
@@ -58,10 +58,17 @@
 - `better-files-example.yaml` 是 schema fixture，不是目前可發布的元件；v0.1.0
   的 release-eligible manifests 是 `better-manager.yaml` 與
   `better-monitor.yaml`。
+- PR [#15](https://github.com/TimLai666/better-os/pull/15) 已合併，post-merge
+  CI [run 30650287246](https://github.com/TimLai666/better-os/actions/runs/30650287246)
+  的 Rust 與四個 Ubuntu 22.04/24.04 amd64/native arm64 package jobs 全部通過。
+- 正式 [v0.1.0 release](https://github.com/TimLai666/better-os/releases/tag/v0.1.0)
+  包含 manager/monitor 的 8 個 `.deb`、8 個 checksum sidecar、root `LICENSE`
+  與 third-party license inventory。公開 release 重新下載後，8 個 sidecar
+  全部通過驗證。
 - 本地 host-native package build 與 verifier 已確認 manager、monitor 都包含
   `/usr/share/doc/<package>/copyright` 與 `THIRD-PARTY-LICENSES.md`，並檢查
   committed inventory 沒有落後 locked Cargo dependency graph。正式 CI package
-  產物仍需在合併後重新驗證。
+  產物與公開 release 也已完成同樣檢查。
 
 ## Out of scope
 
