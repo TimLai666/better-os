@@ -252,6 +252,10 @@ impl MonitorWindow {
             .child(label)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a dynamic sidebar row carries its full resource presentation and navigation contract"
+    )]
     fn sidebar_resource_row(
         &self,
         id: impl Into<ElementId>,

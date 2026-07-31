@@ -37,7 +37,6 @@ pub struct ProcessExtra {
     pub system_cpu_time_ticks: Option<u64>,
     pub priority: Option<i64>,
     pub nice: Option<i64>,
-    pub start_time_ticks: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -127,7 +126,6 @@ pub struct BatteryDevice {
 
 #[derive(Clone, Debug, Default)]
 pub struct NetworkMetadata {
-    pub interface: String,
     pub interface_type: String,
     pub manufacturer: Option<String>,
     pub driver: Option<String>,
@@ -154,8 +152,6 @@ pub struct BlockMetadata {
 pub struct BlockCounters {
     pub read_sectors: u64,
     pub write_sectors: u64,
-    pub read_ticks_ms: u64,
-    pub write_ticks_ms: u64,
     pub io_ticks_ms: u64,
 }
 
@@ -267,7 +263,6 @@ pub fn process_extra(pid: Pid, users: &HashMap<u32, String>) -> ProcessExtra {
         system_cpu_time_ticks: stat_fields.as_ref().map(|fields| fields.system_ticks),
         priority: stat_fields.as_ref().and_then(|fields| fields.priority),
         nice: stat_fields.as_ref().and_then(|fields| fields.nice),
-        start_time_ticks: stat_fields.as_ref().map(|fields| fields.start_time_ticks),
     }
 }
 
@@ -544,9 +539,7 @@ pub fn network_metadata(interface: &str) -> NetworkMetadata {
     let path = PathBuf::from("/sys/class/net").join(interface);
     let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
     let is_virtual = canonical.to_string_lossy().contains("/virtual/");
-    let interface_type = if path.join("wireless").exists() {
-        "Wi-Fi"
-    } else if interface.starts_with("wl") {
+    let interface_type = if path.join("wireless").exists() || interface.starts_with("wl") {
         "Wi-Fi"
     } else if interface.starts_with("ww") {
         "Mobile broadband"
@@ -571,7 +564,6 @@ pub fn network_metadata(interface: &str) -> NetworkMetadata {
     let speed = read_number::<u64>(path.join("speed"));
 
     NetworkMetadata {
-        interface: interface.to_string(),
         interface_type: interface_type.to_string(),
         manufacturer: vendor_id.map(|_| vendor_name(vendor_id)),
         driver,
@@ -639,13 +631,7 @@ pub fn block_counters() -> HashMap<String, BlockCounters> {
         let Some(read_sectors) = parse(5) else {
             continue;
         };
-        let Some(read_ticks_ms) = parse(6) else {
-            continue;
-        };
         let Some(write_sectors) = parse(9) else {
-            continue;
-        };
-        let Some(write_ticks_ms) = parse(10) else {
             continue;
         };
         let Some(io_ticks_ms) = parse(12) else {
@@ -656,8 +642,6 @@ pub fn block_counters() -> HashMap<String, BlockCounters> {
             BlockCounters {
                 read_sectors,
                 write_sectors,
-                read_ticks_ms,
-                write_ticks_ms,
                 io_ticks_ms,
             },
         );
@@ -728,7 +712,6 @@ struct ProcStatFields {
     system_ticks: u64,
     priority: Option<i64>,
     nice: Option<i64>,
-    start_time_ticks: u64,
 }
 
 fn parse_proc_stat(content: &str) -> Option<ProcStatFields> {
@@ -744,7 +727,6 @@ fn parse_proc_stat(content: &str) -> Option<ProcStatFields> {
         system_ticks: fields.get(12)?.parse::<u64>().ok()?,
         priority: fields.get(15).and_then(|value| value.parse::<i64>().ok()),
         nice: fields.get(16).and_then(|value| value.parse::<i64>().ok()),
-        start_time_ticks: fields.get(19)?.parse::<u64>().ok()?,
     })
 }
 

@@ -146,7 +146,6 @@ struct MetricPoint {
 
 #[derive(Clone)]
 struct DiskInfo {
-    name: String,
     mount_point: String,
     file_system: String,
     total: u64,
@@ -497,8 +496,8 @@ impl MonitorWindow {
             .disks
             .iter()
             .map(|disk| {
-                let name = disk.name().to_string_lossy().to_string();
-                let metadata = linux::block_metadata(&name);
+                let device_name = disk.name().to_string_lossy().to_string();
+                let metadata = linux::block_metadata(&device_name);
                 let current = current_counters.get(&metadata.device).copied();
                 let previous = self.previous_block_counters.get(&metadata.device).copied();
                 let (activity_percent, read_speed, write_speed, total_read, total_written) =
@@ -530,7 +529,6 @@ impl MonitorWindow {
                         _ => (None, 0, 0, 0, 0),
                     };
                 DiskInfo {
-                    name,
                     mount_point: disk.mount_point().to_string_lossy().to_string(),
                     file_system: disk.file_system().to_string_lossy().to_string(),
                     total: disk.total_space(),
