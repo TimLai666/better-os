@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Initial monorepo foundation
+Initial monorepo foundation and release packaging contract
 
 ## Stage Objective
 
@@ -14,6 +14,7 @@ before adding real system integration.
 - Shared manifest schema and validation
 - Manager dry-run planning and CLI
 - Monitor observation contracts
+- Release packaging contract and clean-install verification plan
 
 ## Milestones
 
@@ -21,22 +22,28 @@ before adding real system integration.
 | --- | --- | --- | --- | --- |
 | M1 | workspace and shared contracts | agent | done | `cargo test -p better-core` |
 | M2 | manager dry-run path | agent | done | CLI list/status/plan output |
-| M3 | monitor and GUI shells | agent | blocked | `cargo check --workspace`; GUI link/runtime needs Linux desktop libraries |
+| M3 | monitor and GUI shells | agent | done | `cargo build --workspace`; both GUI binaries stayed alive for 8 seconds in a Wayland session |
 | M4 | docs and CI | agent | done | workflow file and docs review |
+| M5 | release packaging contract | agent | done | `docs/release-packaging.md` and ticket 06 acceptance criteria |
+| M6 | target-compatible `.deb` packaging | agent | in_progress | Ubuntu 22.04/24.04 matrix build, dependency metadata check, checksum verification |
 
 ## Current Blockers
 
-- Local GUI test binaries cannot link until `libxcb1-dev`, `libxkbcommon-dev`,
-  and `libxkbcommon-x11-dev` are installed. CI installs them automatically.
+No active blocker remains for the GUI smoke test. Ticket 06 still needs a
+target-compatible Ubuntu 22.04 build, arm64 packaging, manifest checksum
+verification, and an approved maintainer contact before publishing. The
+Zorin 18 host package installs on Ubuntu 24.04 without `*-dev`, but Ubuntu
+22.04 rejects it because it declares `libc6 (>= 2.39)`.
 
 ## Next Verifiable Output
 
-Run the GUI smoke test in CI or on a Linux desktop with the documented GPUI
-development libraries.
+Build the package in an Ubuntu 22.04-compatible environment, then repeat the
+clean Ubuntu 22.04 and 24.04 install checks before verifying the manifest
+checksum.
 
 ## Next Ticket
 
-04 — 使用者可以開啟 manager 與 monitor 的 GPUI mock shell
+06 — 使用者可以在乾淨的支援系統安裝並啟動 release package
 
 ## Decision Log
 
@@ -56,15 +63,27 @@ development libraries.
   dependencies
   timestamp: 2026-07-31
   impacted_ticket_ids: [04]
+- decision: keep GPUI `*-dev` packages in the build environment and declare only
+  verified runtime libraries in each release `.deb`
+  rationale: release users should install through local APT without setting up a
+  compiler/linker environment; package metadata is the correct dependency
+  boundary
+  timestamp: 2026-07-31
+  impacted_ticket_ids: [06]
 
 ## Source Links
 
 - [Issue #1](https://github.com/TimLai666/better-os/issues/1)
 - [ENG.md](ENG.md)
 - [Architecture](docs/architecture.md)
+- [Release packaging](docs/release-packaging.md)
 - [Tickets](docs/tickets/)
 
 ## Handoff Notes
 
 The checkout started with only `README.md`. Rust is available through
 `/home/tim/.cargo/bin`, but is not on the default shell `PATH`.
+
+The repository now has an Ubuntu 22.04/24.04 package matrix. No public release
+asset exists yet. Ticket 06 remains in progress until the matrix passes, then
+the clean-system, arm64, manifest-checksum, and maintainer criteria pass.

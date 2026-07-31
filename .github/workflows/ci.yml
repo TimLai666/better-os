@@ -22,3 +22,34 @@ jobs:
       - run: cargo build --workspace
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
+
+  package:
+    needs: rust
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: ubuntu-22.04
+          - runner: ubuntu-24.04
+            target: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUST_FONTCONFIG_DLOPEN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install GPUI and packaging dependencies
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - name: Build Debian packages
+        run: bash packaging/build-deb.sh --output-dir "dist/${{ matrix.target }}"
+      - name: Verify Debian packages
+        run: bash packaging/verify-deb.sh "dist/${{ matrix.target }}"
+      - name: Upload Debian packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: better-os-deb-packages-${{ matrix.target }}
+          path: |
+            dist/${{ matrix.target }}/*.deb
+            dist/${{ matrix.target }}/*.deb.sha256
