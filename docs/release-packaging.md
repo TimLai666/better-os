@@ -60,7 +60,7 @@ Release package 必須符合以下條件：
 
 repository 現在提供 `packaging/build-deb.sh` 與 `packaging/verify-deb.sh`，可以在
 目前 host architecture 產生並檢查 manager、monitor 的 `.deb`。這兩個腳本不代表
-已經完成所有支援 target 的 release。CI 已配置 Ubuntu 22.04 與 24.04 的 matrix，
-但要等兩個 runner 都通過，才能把對應 target 標成支援。target-compatible build、
-arm64 cross-build、乾淨支援系統安裝與 component manifest checksum 回填，仍由
+已經完成所有支援 target 的 release。Ubuntu 22.04 與 24.04 的 amd64 matrix
+已在 GitHub Actions 通過，證明兩個 target 都能在相容環境產生並驗證 package。
+arm64 packaging、乾淨支援系統安裝與 component manifest checksum 回填，仍由
 `docs/tickets/06-release-packaging.md` 追蹤。正式 GitHub Release asset 尚未產生。

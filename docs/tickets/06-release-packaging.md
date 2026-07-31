@@ -18,7 +18,7 @@
 
 - [ ] 對 component manifest 宣告的支援 target 與 CPU architecture 產生 `.deb`
       release asset
-- [ ] 每個支援的 Ubuntu release 都在相容的 build environment 產生，不能把較新
+- [x] 每個支援的 Ubuntu release 都在相容的 build environment 產生，不能把較新
       host 的 artifact 標成舊版 Ubuntu release
 - [x] `.deb` 的 `Depends` 含有最終 binary 所需的 runtime libraries，且不含任何
       `*-dev` package
@@ -34,10 +34,12 @@
 
 ## Verification so far
 
+- GitHub Actions 的 Ubuntu 22.04 與 24.04 amd64 package matrix 都通過 build、
+  runtime dependency、checksum verification 與 artifact upload。
 - Ubuntu 24.04 clean container：manager 與 monitor 都安裝成功，APT 沒有安裝
   `libfontconfig1-dev`、`libxcb1-dev`、`libxkbcommon-dev` 或
   `libxkbcommon-x11-dev`。
-- Ubuntu 22.04 clean container：安裝失敗，因為目前 Zorin 18/noble build 產物
+- 舊的 Ubuntu 22.04 clean container 測試：安裝失敗，因為 Zorin 18/noble build 產物
   宣告 `libc6 (>= 2.39)`，而 Ubuntu 22.04 提供的版本是 `2.35-0ubuntu3.13`。
 
 ## Out of scope

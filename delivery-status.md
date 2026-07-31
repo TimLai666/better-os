@@ -25,21 +25,20 @@ before adding real system integration.
 | M3 | monitor and GUI shells | agent | done | `cargo build --workspace`; both GUI binaries stayed alive for 8 seconds in a Wayland session |
 | M4 | docs and CI | agent | done | workflow file and docs review |
 | M5 | release packaging contract | agent | done | `docs/release-packaging.md` and ticket 06 acceptance criteria |
-| M6 | target-compatible `.deb` packaging | agent | in_progress | Ubuntu 22.04/24.04 matrix build, dependency metadata check, checksum verification |
+| M6 | target-compatible `.deb` packaging | agent | done | GitHub Actions Ubuntu 22.04/24.04 matrix build, dependency metadata check, checksum verification |
 
 ## Current Blockers
 
-No active blocker remains for the GUI smoke test. Ticket 06 still needs a
-target-compatible Ubuntu 22.04 build, arm64 packaging, manifest checksum
-verification, and an approved maintainer contact before publishing. The
-Zorin 18 host package installs on Ubuntu 24.04 without `*-dev`, but Ubuntu
-22.04 rejects it because it declares `libc6 (>= 2.39)`.
+No active blocker remains for the GUI smoke test or the target-compatible
+Ubuntu package matrix. Ticket 06 still needs arm64 packaging, clean supported
+system install and launch records, manifest checksum verification, and an
+approved maintainer contact before publishing.
 
 ## Next Verifiable Output
 
-Build the package in an Ubuntu 22.04-compatible environment, then repeat the
-clean Ubuntu 22.04 and 24.04 install checks before verifying the manifest
-checksum.
+Download the matrix artifacts from CI, repeat the clean Ubuntu 22.04 and 24.04
+install and launch checks, then verify the manifest checksum and complete the
+arm64 packaging path.
 
 ## Next Ticket
 
@@ -77,6 +76,8 @@ checksum.
 - [ENG.md](ENG.md)
 - [Architecture](docs/architecture.md)
 - [Release packaging](docs/release-packaging.md)
+- [Pull request #9](https://github.com/TimLai666/better-os/pull/9)
+- [CI run 30616628027](https://github.com/TimLai666/better-os/actions/runs/30616628027)
 - [Tickets](docs/tickets/)
 
 ## Handoff Notes
@@ -84,6 +85,7 @@ checksum.
 The checkout started with only `README.md`. Rust is available through
 `/home/tim/.cargo/bin`, but is not on the default shell `PATH`.
 
-The repository now has an Ubuntu 22.04/24.04 package matrix. No public release
-asset exists yet. Ticket 06 remains in progress until the matrix passes, then
-the clean-system, arm64, manifest-checksum, and maintainer criteria pass.
+The Ubuntu 22.04/24.04 package matrix passed in CI, including package build,
+runtime dependency checks, checksums, and artifact upload. No public release
+asset exists yet. Ticket 06 remains in progress until the clean-system, arm64,
+manifest-checksum, and maintainer criteria pass.
