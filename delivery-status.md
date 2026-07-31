@@ -89,3 +89,5 @@ The Ubuntu 22.04/24.04 package matrix passed in CI, including package build,
 runtime dependency checks, checksums, and artifact upload. No public release
 asset exists yet. Ticket 06 remains in progress until the clean-system, arm64,
 manifest-checksum, and maintainer criteria pass.
+PR #9 is merged into `main` at `fb3520f`, and the feature branch has been
+deleted from both the local checkout and GitHub.
