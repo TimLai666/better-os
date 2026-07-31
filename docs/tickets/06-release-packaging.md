@@ -24,7 +24,7 @@
       `*-dev` package
 - [x] 在沒有預先安裝 GPUI build-time `*-dev` packages 的乾淨系統上，執行
       `apt install ./<package>.deb` 成功
-- [ ] 安裝後 manager 與 monitor 都能在支援的桌面 session 啟動，沒有缺少動態
+- [x] 安裝後 manager 與 monitor 都能在支援的桌面 session 啟動，沒有缺少動態
       library，也不需要手動設定 build/CI 環境變數
 - [ ] release asset 的 SHA-256 checksum 可由 component manifest 驗證
 - [x] CI 或 release build log 記錄目前 host architecture 的 runtime dependency
@@ -43,8 +43,12 @@
   `ldd` 都沒有 unresolved library，artifact checksum 也全部通過。
 - 四個環境的 manager 與 monitor 都能在 GPUI `ZED_HEADLESS=1` 模式持續執行。
   這是 process smoke，不是支援桌面 session 的啟動證據。Xvfb 沒有提供 GPUI
-  可用的 surface，主機 Wayland socket 測試也回報 `NoCompositor`，所以 desktop
-  launch acceptance criterion 仍未勾選。
+  可用的 surface，Docker 掛載的主機 Wayland socket 也回報 `NoCompositor`。
+- Ubuntu 22.04 amd64 package payload 在 Zorin OS 18.1 的 GNOME Wayland
+  session 中直接啟動，`ZED_HEADLESS` 與 `RUST_FONTCONFIG_DLOPEN` 都未設定。
+  manager 與 monitor 各持續執行 12 秒後由 timeout 結束，兩個 log 都是空的，
+  沒有 compositor error 或 panic。主機沒有安裝套件，APT 安裝結果由前述四個
+  clean containers 提供。
 - 先前 Ubuntu 22.04 的 glibc mismatch 已由 release target artifact isolation
   修正，現在 Ubuntu 22.04 package job 與 clean install 都已通過。
 

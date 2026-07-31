@@ -30,15 +30,13 @@ before adding real system integration.
 ## Current Blockers
 
 No active blocker remains for the GUI smoke test or the target-compatible
-Ubuntu package matrix. Ticket 06 still needs a supported desktop-session launch
-record, manifest checksum verification, and an approved maintainer contact
-before publishing.
+Ubuntu package matrix. Ticket 06 still needs release assets, manifest checksum
+verification, and an approved maintainer contact before publishing.
 
 ## Next Verifiable Output
 
-Run the installed manager and monitor from a supported desktop Wayland or X11
-session without `ZED_HEADLESS`, then create public release assets and verify
-their manifest checksums after maintainer approval.
+Create public release assets and verify their manifest checksums after maintainer
+approval.
 
 ## Next Ticket
 
@@ -101,9 +99,10 @@ all four target/architecture pairs installed the downloaded artifacts with APT,
 had no `*-dev` packages, resolved all dynamic libraries, and passed checksum
 verification. Both GUI binaries stayed alive in GPUI headless mode.
 The post-merge `main` CI run passed Rust checks and all four package jobs.
-Xvfb and the host Wayland socket did not provide a valid desktop-session launch
-environment, so the supported desktop launch criterion remains open. No public
-release asset exists yet, and manifest checksum values and maintainer approval
-remain open.
+The package payload also started both GUI binaries for 12 seconds in the host's
+Zorin OS 18.1 GNOME Wayland session with `ZED_HEADLESS` unset. Docker's Xvfb and
+host-socket tests still failed because they did not provide a usable compositor,
+but the direct host session passed. No public release asset exists yet, and
+manifest checksum values and maintainer approval remain open.
 PR #9 is merged into `main` at `fb3520f`, and the feature branch has been
 deleted from both the local checkout and GitHub.
