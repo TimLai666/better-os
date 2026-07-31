@@ -11,6 +11,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     chart::AreaChart,
     h_flex,
+    scroll::ScrollableElement,
     table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
     v_flex,
 };
@@ -736,7 +737,7 @@ impl MonitorWindow {
             .rounded(cx.theme().radius_lg)
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().list.background)
+            .bg(cx.theme().background)
             .p_4()
             .child(
                 h_flex()
@@ -775,7 +776,7 @@ impl MonitorWindow {
             .rounded(cx.theme().radius_lg)
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().list.background)
+            .bg(cx.theme().background)
             .overflow_hidden()
             .child(
                 h_flex()
@@ -814,7 +815,7 @@ impl MonitorWindow {
             .rounded(cx.theme().radius_lg)
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().list.background)
+            .bg(cx.theme().background)
             .p_4()
             .child(
                 v_flex()
@@ -1027,7 +1028,7 @@ impl MonitorWindow {
                     .rounded(cx.theme().radius_lg)
                     .border_1()
                     .border_color(cx.theme().yellow)
-                    .bg(cx.theme().list.background)
+                    .bg(cx.theme().background)
                     .p_4()
                     .child(div().font_bold().child("Application grouping is not active yet"))
                     .child(
@@ -1051,7 +1052,7 @@ impl MonitorWindow {
                             .rounded(cx.theme().radius_lg)
                             .border_1()
                             .border_color(cx.theme().border)
-                            .bg(cx.theme().list.background)
+                            .bg(cx.theme().background)
                             .p_4()
                             .child(
                                 h_flex()
@@ -1089,7 +1090,7 @@ impl MonitorWindow {
             .rounded(cx.theme().radius_lg)
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().list.background)
+            .bg(cx.theme().background)
             .overflow_hidden()
             .child(
                 h_flex()
@@ -1165,7 +1166,7 @@ impl MonitorWindow {
                         .rounded(cx.theme().radius)
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().list.background)
+                        .bg(cx.theme().background)
                         .p_3()
                         .child(
                             h_flex()
@@ -1280,7 +1281,7 @@ impl MonitorWindow {
                     .rounded(cx.theme().radius_lg)
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().list.background)
+                    .bg(cx.theme().background)
                     .p_4()
                     .child(
                         h_flex()
@@ -1352,7 +1353,7 @@ impl MonitorWindow {
                             .rounded(cx.theme().radius_lg)
                             .border_1()
                             .border_color(cx.theme().border)
-                            .bg(cx.theme().list.background)
+                            .bg(cx.theme().background)
                             .p_4()
                             .child(
                                 v_flex()
@@ -1443,7 +1444,7 @@ impl MonitorWindow {
                     .rounded(cx.theme().radius_lg)
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().list.background)
+                    .bg(cx.theme().background)
                     .p_4()
                     .child(div().font_bold().child("Persistence boundary"))
                     .child(
@@ -1468,7 +1469,7 @@ impl MonitorWindow {
                     .rounded(cx.theme().radius_lg)
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().list.background)
+                    .bg(cx.theme().background)
                     .p_4()
                     .child(
                         v_flex()
@@ -1516,7 +1517,7 @@ impl MonitorWindow {
                                 .rounded(cx.theme().radius_lg)
                                 .border_1()
                                 .border_color(cx.theme().border)
-                                .bg(cx.theme().list.background)
+                                .bg(cx.theme().background)
                                 .child(div().font_bold().child("No incidents recorded"))
                                 .child(
                                     div()
@@ -1534,7 +1535,7 @@ impl MonitorWindow {
                             .rounded(cx.theme().radius_lg)
                             .border_1()
                             .border_color(cx.theme().border)
-                            .bg(cx.theme().list.background)
+                            .bg(cx.theme().background)
                             .p_4()
                             .child(
                                 v_flex()
