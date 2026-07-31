@@ -40,8 +40,8 @@ schema does not create a separate package for each compatible distribution.
 - CI may use an architecture-specific job directory, but the asset target stays
   `ubuntu-22.04` or `ubuntu-24.04` for both architectures.
 - The CI package verifier must select and validate target-specific filenames.
-- Actual published checksums, the approved maintainer, and the root project
-  license remain release gates.
+- Actual published checksums remain a release gate. The approved maintainer and
+  root project license are recorded in ADR 0003 and the package build script.
 
 ## Deferred
 

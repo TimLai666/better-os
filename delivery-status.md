@@ -33,7 +33,7 @@ No active blocker remains for the GUI smoke test or the target-compatible
 Ubuntu package matrix. The target-specific asset naming and manifest mapping
 decision is now recorded in ADR 0002 and merged into `main`.
 Ticket 06 still needs formal release assets, real manifest checksum verification,
-an approved maintainer contact, and the root project license before publishing.
+and third-party license notice review before publishing.
 
 ## Next Verifiable Output
 
@@ -82,6 +82,16 @@ manifest variants against their target-specific assets.
   every manifest checksum map to exactly one published package
   timestamp: 2026-07-31
   impacted_ticket_ids: [06]
+- decision: license the root project under GPL-3.0-or-later
+  rationale: make the project license explicit before distribution and align the
+  first-party workspace with the GPL-3.0-or-later GUI dependency chain
+  timestamp: 2026-07-31
+  impacted_ticket_ids: [05, 06]
+- decision: use the GitHub account contact as Debian maintainer
+  rationale: provide a reachable package contact without inventing a project
+  mailbox that does not exist yet
+  timestamp: 2026-07-31
+  impacted_ticket_ids: [06]
 
 ## Source Links
 
@@ -90,6 +100,7 @@ manifest variants against their target-specific assets.
 - [Architecture](docs/architecture.md)
 - [Release packaging](docs/release-packaging.md)
 - [ADR 0002: Target-specific release assets](docs/decisions/0002-release-artifact-mapping.md)
+- [ADR 0003: GPL-3.0-or-later root license](docs/decisions/0003-project-license.md)
 - [Pull request #9](https://github.com/TimLai666/better-os/pull/9)
 - [Pull request #11](https://github.com/TimLai666/better-os/pull/11)
 - [Pull request #12](https://github.com/TimLai666/better-os/pull/12)
@@ -118,7 +129,8 @@ The package payload also started both GUI binaries for 12 seconds in the host's
 Zorin OS 18.1 GNOME Wayland session with `ZED_HEADLESS` unset. Docker's Xvfb and
 host-socket tests still failed because they did not provide a usable compositor,
 but the direct host session passed. No public release asset exists yet, and
-manifest checksum values, maintainer approval, and the root project license
-remain open.
+manifest checksum values and the third-party license notice review remain open.
+The approved Debian maintainer is `TimLai666 <tim930102@icloud.com>`, and the
+root project license is GPL-3.0-or-later.
 PR #9 is merged into `main` at `fb3520f`. PR #12's feature branch has been
 deleted from both the local checkout and GitHub.

@@ -6,6 +6,7 @@ OUTPUT_DIR="$ROOT_DIR/dist"
 VERSION="${VERSION:-}"
 ARCH="${DEB_HOST_ARCH:-}"
 RELEASE_TARGET="local"
+MAINTAINER="TimLai666 <tim930102@icloud.com>"
 
 usage() {
     printf 'Usage: %s [--output-dir DIR] [--target TARGET]\n' "$0"
@@ -130,7 +131,7 @@ make_package() {
         'Source: better-os-packaging' \
         'Section: utils' \
         'Priority: optional' \
-        'Maintainer: Better OS contributors' \
+        "Maintainer: $MAINTAINER" \
         'Package: '"$package_name" \
         'Architecture: any' \
         'Depends: ${shlibs:Depends}' \
@@ -161,7 +162,7 @@ make_package() {
         'Section: utils' \
         'Priority: optional' \
         'Architecture: '"$ARCH" \
-        'Maintainer: Better OS contributors' \
+        "Maintainer: $MAINTAINER" \
         "Depends: $runtime_dependencies" \
         "Description: $description" \
         ' Better OS desktop application built with the shared manager and monitor contracts.' \
