@@ -30,7 +30,7 @@
 - [x] CI 或 release build log 記錄目前 host architecture 的 runtime dependency
       清單
 - [x] CI 或 release environment 記錄乾淨支援系統的安裝與啟動結果
-- [ ] 正式發佈前，Debian control metadata 填入核准的 maintainer 聯絡方式
+- [x] 正式發佈前，Debian control metadata 填入核准的 maintainer 聯絡方式
 
 ## Verification so far
 
@@ -51,6 +51,8 @@
   clean containers 提供。
 - 先前 Ubuntu 22.04 的 glibc mismatch 已由 release target artifact isolation
   修正，現在 Ubuntu 22.04 package job 與 clean install 都已通過。
+- Debian control metadata 現在使用核准的 `TimLai666 <tim930102@icloud.com>`
+  maintainer；root project license 為 GPL-3.0-or-later。
 
 ## Out of scope
 

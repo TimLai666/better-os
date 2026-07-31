@@ -69,5 +69,6 @@ repository 現在提供 `packaging/build-deb.sh` 與 `packaging/verify-deb.sh`�
 monitor `.deb`。CI 以 `ubuntu-22.04-arm64`、`ubuntu-24.04-arm64` 作為 arm64
 job 的隔離目錄，但 asset target 仍是 `ubuntu-22.04` 或 `ubuntu-24.04`，因此
 兩種架構的檔名都符合同一套 release 命名規則。正式 GitHub Release asset 尚未
-產生，實際 checksum 回填、maintainer 與 root license 仍由
-`docs/tickets/06-release-packaging.md` 及交接紀錄追蹤。
+產生，實際 checksum 回填仍由 `docs/tickets/06-release-packaging.md` 及交接
+紀錄追蹤。Debian metadata 使用核准的 `TimLai666 <tim930102@icloud.com>`
+maintainer，root project license 為 GPL-3.0-or-later。

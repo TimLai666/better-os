@@ -14,4 +14,4 @@
 - [x] CI 執行 fmt、check、clippy 與 test
 - [x] CI 安裝 GPUI Linux linker dependencies
 - [x] 文件說明 privileged boundary、rollback 與未決策事項
-- [x] 沒有新增 LICENSE 或偷偷決定 IPC protocol
+- [x] 初始 scaffold 沒有新增 LICENSE 或偷偷決定 IPC protocol
