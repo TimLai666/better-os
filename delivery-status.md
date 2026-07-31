@@ -26,27 +26,24 @@ before adding real system integration.
 | M4 | docs and CI | agent | done | workflow file and docs review |
 | M5 | release packaging contract | agent | done | `docs/release-packaging.md` and ticket 06 acceptance criteria |
 | M6 | target-compatible `.deb` packaging | agent | done | GitHub Actions Ubuntu 22.04/24.04 amd64 and native arm64 matrix build, dependency metadata check, checksum verification |
-| M7 | package license notices | agent | in_progress | local package build/verifier and generated locked Cargo inventory; merge and release CI still pending |
+| M7 | package license notices | agent | done | generated locked Cargo inventory, package payload notice checks, and post-merge CI verifier |
+| M8 | v0.1.0 public release | agent | done | GitHub Release assets, public re-download checksum verification, and manifest checksum mapping |
 
 ## Current Blockers
 
-No active blocker remains for the GUI smoke test or the target-compatible
-Ubuntu package matrix. The target-specific asset naming and manifest mapping
-decision is now recorded in ADR 0002 and merged into `main`.
-Ticket 06 still needs formal release assets and real manifest checksum
-verification before publishing. The package notice inventory and metadata review
-are implemented on the current release branch and still need the merge CI run.
+No active blocker remains for Ticket 06. The target-specific asset naming and
+manifest mapping decision is recorded in ADR 0002, the release packaging changes
+are merged into `main`, and the first public release is available.
 
 ## Next Verifiable Output
 
-Merge the release packaging and notice changes, create the combined version
-Release from the post-merge CI artifacts, replace placeholder checksums with
-the published sidecar values, and verify all manifest variants against their
-target-specific assets.
+The initial six-ticket delivery is complete. Keep the next change scoped to a
+new ticket or an explicit decision about the deferred APT repository, signing,
+privileged IPC, or real system integration work.
 
 ## Next Ticket
 
-06 — 使用者可以在乾淨的支援系統安裝並啟動 release package
+None — the initial planned tickets are complete
 
 ## Decision Log
 
@@ -112,6 +109,8 @@ target-specific assets.
 - [ADR 0002: Target-specific release assets](docs/decisions/0002-release-artifact-mapping.md)
 - [ADR 0003: GPL-3.0-or-later root license](docs/decisions/0003-project-license.md)
 - [Third-party license inventory](docs/third-party-licenses.md)
+- [Pull request #15](https://github.com/TimLai666/better-os/pull/15)
+- [v0.1.0 release](https://github.com/TimLai666/better-os/releases/tag/v0.1.0)
 - [Pull request #9](https://github.com/TimLai666/better-os/pull/9)
 - [Pull request #11](https://github.com/TimLai666/better-os/pull/11)
 - [Pull request #12](https://github.com/TimLai666/better-os/pull/12)
@@ -119,6 +118,7 @@ target-specific assets.
 - [CI run 30625827340](https://github.com/TimLai666/better-os/actions/runs/30625827340)
 - [Main CI run 30631266909](https://github.com/TimLai666/better-os/actions/runs/30631266909)
 - [Main CI run 30638535908](https://github.com/TimLai666/better-os/actions/runs/30638535908)
+- [Main CI run 30650287246](https://github.com/TimLai666/better-os/actions/runs/30650287246)
 - [Tickets](docs/tickets/)
 
 ## Handoff Notes
@@ -132,19 +132,20 @@ dependency checks, checksums, and artifact upload. Clean Ubuntu containers for
 all four target/architecture pairs installed the downloaded artifacts with APT,
 had no `*-dev` packages, resolved all dynamic libraries, and passed checksum
 verification. Both GUI binaries stayed alive in GPUI headless mode.
-The post-merge `main` CI run 30638535908 passed Rust checks and all four package
-jobs. PR #12 is merged into `main` at `000d2e5`; the release artifact mapping
+The post-merge `main` CI run 30650287246 passed Rust checks and all four package
+jobs. PR #15 is merged into `main` at `3a6d98b`; the release artifact mapping
 decision is recorded in ADR 0002, and `main` validates schema v2 manifests and
 emits target-specific package filenames.
 The package payload also started both GUI binaries for 12 seconds in the host's
 Zorin OS 18.1 GNOME Wayland session with `ZED_HEADLESS` unset. Docker's Xvfb and
 host-socket tests still failed because they did not provide a usable compositor,
-but the direct host session passed. No public release asset exists yet, and
-manifest checksum values remain open. The current branch adds the generated
-third-party inventory to both package payloads; local `cargo fmt`, `cargo check`,
-`cargo clippy`, workspace tests, package build, package verifier, and inventory
-freshness checks passed.
+but the direct host session passed. The public `v0.1.0` release contains eight
+target-specific `.deb` assets and eight sidecars, and all public sidecars were
+verified after re-download. Both release-eligible manifests now contain the
+actual package checksums. Local `cargo fmt`, `cargo check`, `cargo clippy`,
+workspace tests, package build, package verifier, and inventory freshness checks
+also passed.
 The approved Debian maintainer is `TimLai666 <tim930102@icloud.com>`, and the
 root project license is GPL-3.0-or-later.
-PR #9 is merged into `main` at `fb3520f`. PR #12's feature branch has been
-deleted from both the local checkout and GitHub.
+PR #9 is merged into `main` at `fb3520f`. PR #12 and PR #15 feature branches
+have been deleted from both the local checkout and GitHub.

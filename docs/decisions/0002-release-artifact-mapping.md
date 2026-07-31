@@ -40,8 +40,19 @@ schema does not create a separate package for each compatible distribution.
 - CI may use an architecture-specific job directory, but the asset target stays
   `ubuntu-22.04` or `ubuntu-24.04` for both architectures.
 - The CI package verifier must select and validate target-specific filenames.
-- Actual published checksums remain a release gate. The approved maintainer and
-  root project license are recorded in ADR 0003 and the package build script.
+- The published `v0.1.0` checksums are recorded in the two release-eligible
+  manifests. The approved maintainer and root project license are recorded in
+  ADR 0003 and the package build script.
+
+## v0.1.0 verification
+
+The first release is published at
+<https://github.com/TimLai666/better-os/releases/tag/v0.1.0> from merge commit
+`3a6d98b73b838c5a2c0d94404ae9313844009e56`. Post-merge CI run
+<https://github.com/TimLai666/better-os/actions/runs/30650287246> passed the Rust
+checks and all four target/architecture package jobs. The public release was
+downloaded again and all eight `.deb.sha256` sidecars verified their matching
+`.deb` assets before the manifest checksums were committed.
 
 ## Deferred
 

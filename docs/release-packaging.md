@@ -70,9 +70,13 @@ repository 現在提供 `packaging/build-deb.sh` 與 `packaging/verify-deb.sh`�
 目前 host architecture 產生並檢查帶有 target-specific filename 的 manager、
 monitor `.deb`。CI 以 `ubuntu-22.04-arm64`、`ubuntu-24.04-arm64` 作為 arm64
 job 的隔離目錄，但 asset target 仍是 `ubuntu-22.04` 或 `ubuntu-24.04`，因此
-兩種架構的檔名都符合同一套 release 命名規則。正式 GitHub Release asset 尚未
-產生，`better-files-example` 只作為 schema fixture，不列入 v0.1.0 的正式
-release matrix。Debian metadata 使用核准的 `TimLai666 <tim930102@icloud.com>`
+兩種架構的檔名都符合同一套 release 命名規則。正式 GitHub Release 已產生，
+`better-files-example` 只作為 schema fixture，不列入 v0.1.0 的正式 release
+matrix。正式 release 已發布於
+[`v0.1.0`](https://github.com/TimLai666/better-os/releases/tag/v0.1.0)，由
+merge commit `3a6d98b73b838c5a2c0d94404ae9313844009e56` 的 post-merge CI run
+[`30650287246`](https://github.com/TimLai666/better-os/actions/runs/30650287246)
+產生。Debian metadata 使用核准的 `TimLai666 <tim930102@icloud.com>`
 maintainer，root project license 為 GPL-3.0-or-later。第三方授權清單由
 `packaging/generate-third-party-notices.sh` 從 locked Cargo dependency graph
 產生，並由 package verifier 檢查套件內的 notice files。
