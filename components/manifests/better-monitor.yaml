@@ -1,0 +1,33 @@
+schema_version: 1
+id: better-monitor
+display_name: Better Monitor
+component_type: diagnostic
+version: 0.1.0
+targets:
+  distributions: [zorin, ubuntu]
+  releases: [22.04, 24.04]
+  architectures: [amd64, arm64]
+artifact:
+  url: https://github.com/TimLai666/better-os/releases/download/better-monitor-v0.1.0/better-monitor.deb
+  sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  release_asset: better-monitor.deb
+lifecycle:
+  install: plan-local-apt-install
+  enable: plan-enable
+  disable: plan-disable
+  remove: plan-remove
+  rollback: plan-rollback
+health_checks:
+  - monitor-core-self-check
+benchmarks:
+  - name: idle-overhead
+    workload: desktop-idle
+    metric: cpu-percent
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 1
+permissions:
+  - name: procfs-read
+    reason: future low-cost observation collector
+paths:
+  - /usr/bin/better-monitor
+  - /var/lib/better-os/monitor

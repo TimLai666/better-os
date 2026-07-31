@@ -1,0 +1,32 @@
+schema_version: 1
+id: better-files-example
+display_name: Example File Manager Replacement
+component_type: replacement
+version: 0.1.0
+targets:
+  distributions: [zorin, ubuntu]
+  releases: [24.04]
+  architectures: [amd64]
+replaces:
+  - org.gnome.Nautilus
+artifact:
+  url: https://github.com/TimLai666/better-os/releases/download/examples/better-files-example.deb
+  sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  release_asset: better-files-example.deb
+lifecycle:
+  install: plan-local-apt-install
+  enable: plan-enable
+  disable: plan-disable
+  remove: plan-remove
+  rollback: plan-rollback
+health_checks:
+  - desktop-file-association-check
+benchmarks:
+  - name: file-open-startup
+    workload: open-directory-with-10000-files
+    metric: milliseconds-to-first-content
+    minimum_improvement_percent: 10
+    maximum_regression_percent: 0
+permissions: []
+paths:
+  - /usr/bin/better-files-example

@@ -1,0 +1,19 @@
+[package]
+name = "manager-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "manager-gui"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+better-ui.workspace = true
+manager-core.workspace = true
+better-core.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-platform.workspace = true

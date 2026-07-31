@@ -1,0 +1,27 @@
+schema_version: 1
+id: better-manager
+display_name: Better Manager
+component_type: diagnostic
+version: 0.1.0
+targets:
+  distributions: [zorin, ubuntu]
+  releases: [22.04, 24.04]
+  architectures: [amd64, arm64]
+artifact:
+  url: https://github.com/TimLai666/better-os/releases/download/better-manager-v0.1.0/better-manager.deb
+  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  release_asset: better-manager.deb
+lifecycle:
+  install: plan-local-apt-install
+  enable: plan-enable
+  disable: plan-disable
+  remove: plan-remove
+  rollback: plan-rollback
+health_checks:
+  - manager-core-self-check
+benchmarks: []
+permissions:
+  - name: package-management
+    reason: future privileged boundary, not executed by this scaffold
+paths:
+  - /usr/bin/better-manager
