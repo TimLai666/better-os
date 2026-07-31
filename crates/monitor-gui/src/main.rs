@@ -407,14 +407,14 @@ impl MonitorWindow {
 
         let network_received = self
             .networks
-            .iter()
-            .map(|(_, data)| data.received())
+            .values()
+            .map(|data| data.received())
             .sum::<u64>() as f64
             / MIB;
         let network_transmitted = self
             .networks
-            .iter()
-            .map(|(_, data)| data.transmitted())
+            .values()
+            .map(|data| data.transmitted())
             .sum::<u64>() as f64
             / MIB;
 
