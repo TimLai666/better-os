@@ -5,19 +5,6 @@ on:
   pull_request:
 
 jobs:
-  format-preview:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --all
-      - uses: actions/upload-artifact@v4
-        with:
-          name: monitor-rustfmt-preview
-          path: crates/monitor-gui/src/process_table.rs
-
   rust:
     runs-on: ubuntu-latest
     env:
