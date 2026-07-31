@@ -42,6 +42,11 @@ GUI or dependency compiles when the relevant command was not executed.
 ## Follow-ups
 
 - Decide the root project license before publishing distributable artifacts.
+- Set an approved maintainer contact in Debian control metadata before
+  publishing `.deb` artifacts.
+- Build each supported Ubuntu release in a compatible base environment. The
+  current Zorin 18 host produces `libc6 (>= 2.39)` and must not supply a 22.04
+  release artifact.
 - Decide the privileged daemon IPC protocol before implementing real system
   installation or rollback.
 - Review the license implications of every copyleft dependency before release.

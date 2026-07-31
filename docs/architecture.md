@@ -64,4 +64,9 @@ machine needs `libfontconfig1-dev`, `libxcb1-dev`, `libxkbcommon-dev`, and
 `libxkbcommon-x11-dev` to link the binaries. CI installs these packages before
 the workspace checks. `RUST_FONTCONFIG_DLOPEN=1` avoids requiring the
 fontconfig development metadata at compile time, but the runtime library is
-still required when a desktop binary starts.
+still required when a desktop binary starts. These `*-dev` packages are
+build-time dependencies only. The first release format is a `.deb`; its
+metadata must declare the runtime libraries so `apt install ./<package>.deb`
+works on a clean supported desktop without manual development-package setup.
+See [Release Packaging Specification](release-packaging.md) for the release
+verification contract.

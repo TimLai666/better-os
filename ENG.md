@@ -11,6 +11,11 @@ collectors ──> monitor-core samples/incidents/export ──> monitor-gui
 
 better-ui provides GPUI presentation primitives to both GUI crates.
 Privileged execution is a future boundary and is not implemented here.
+
+Release builds package the final GUI binaries as `.deb` assets. Package
+metadata declares runtime dependencies; the development-only GPUI linker
+packages stay in the build environment and are never a user installation
+prerequisite.
 ```
 
 ## Data flow
@@ -21,6 +26,10 @@ Privileged execution is a future boundary and is not implemented here.
    backend. No plan step can mutate the host in this stage.
 4. Monitor collectors later emit samples into `monitor-core`; this stage only
    defines the collector, storage, incident, and export contracts.
+5. Release packaging derives and verifies runtime dependencies from the final
+   binaries for each supported target and architecture.
+6. A clean desktop environment installs the `.deb` through local APT and runs
+   the manager and monitor launch smoke tests.
 
 ## Test seams
 
@@ -39,6 +48,7 @@ Privileged execution is a future boundary and is not implemented here.
 | Manager | list, status, dry-run install/update, no host mutation |
 | Monitor | sample storage, incident creation, export redaction boundary |
 | GUI | workspace build and launch smoke test on a Linux desktop |
+| Release package | no `*-dev` in `Depends`, clean APT install, dynamic-library check, manager and monitor launch |
 
 ## Migration plan
 
@@ -53,3 +63,6 @@ history must remain replaceable until the storage decision is explicit.
   by the current manager.
 - GPUI is pre-1.0 and may require the latest stable Rust and Linux display
   dependencies.
+- The final runtime dependency list is target- and architecture-specific and
+  must be taken from the packaged binaries rather than copied from CI's
+  build-time package list.
