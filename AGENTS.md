@@ -19,6 +19,12 @@ updated, verified, and rolled back through shared manager operations.
 
 - Keep privileged system mutation outside GUI and CLI code. This issue only
   permits planning and mock/in-memory execution.
+- When testing an unreleased Better OS build or first-party component, use
+  [Chefer](https://github.com/TimLai666/chefer) to package it as a disposable
+  AppCipe and run it in an isolated containerized environment. Keep test data,
+  mounts, and ports temporary or explicitly scoped. Never install the
+  unreleased build directly on the host or touch host system paths, package
+  state, or privileged services.
 - Keep manager CLI and GUI on the same `manager-core` planning API.
 - Use Rust for first-party production code. Use Go only after recording a
   concrete reason in an ADR. Do not add C, C++, Python, JavaScript, Electron,

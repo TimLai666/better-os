@@ -2,17 +2,18 @@
 
 ## Current Phase
 
-Initial monorepo foundation and release packaging contract
+Better Manager UI integration on the shared planning scaffold
 
 ## Stage Objective
 
-Make the component contract and non-privileged manager planning path verifiable
-before adding real system integration.
+Keep the component contract, non-privileged manager planning path, and the
+Issue #8 Better Manager UI verifiable before adding real system integration.
 
 ## Active Workstreams
 
 - Shared manifest schema and validation
 - Manager dry-run planning and CLI
+- Better Manager GPUI shell, localization, review flow, and in-memory planning
 - Monitor observation contracts
 - Release packaging contract and clean-install verification plan
 
@@ -26,6 +27,7 @@ before adding real system integration.
 | M4 | docs and CI | agent | done | workflow file and docs review |
 | M5 | release packaging contract | agent | done | `docs/release-packaging.md` and ticket 06 acceptance criteria |
 | M6 | target-compatible `.deb` packaging | agent | done | GitHub Actions Ubuntu 22.04/24.04 amd64 and native arm64 matrix build, dependency metadata check, checksum verification |
+| M7 | Better Manager GPUI UI integration | agent | done | workspace format/check/test/clippy, manager-gui plan tests, and host launch smoke |
 
 ## Current Blockers
 
@@ -76,10 +78,19 @@ create public release assets and verify their manifest checksums.
   per Ubuntu release and architecture
   timestamp: 2026-07-31
   impacted_ticket_ids: [06]
+- decision: integrate the supplied Better Manager UI into `manager-gui` while
+  keeping Update All and component changes on the shared `manager-core` dry-run
+  API
+  rationale: Issue #8 requires the GPUI experience and a common planning path;
+  real privileged execution and persistent manager storage are still outside
+  the current scaffold boundary
+  timestamp: 2026-07-31
+  impacted_ticket_ids: []
 
 ## Source Links
 
 - [Issue #1](https://github.com/TimLai666/better-os/issues/1)
+- [Issue #8](https://github.com/TimLai666/better-os/issues/8)
 - [ENG.md](ENG.md)
 - [Architecture](docs/architecture.md)
 - [Release packaging](docs/release-packaging.md)
@@ -110,3 +121,12 @@ manifest checksum values and maintainer approval remain open. The four-platform
 asset naming and manifest mapping decision is also open.
 PR #9 is merged into `main` at `fb3520f`, and the feature branch has been
 deleted from both the local checkout and GitHub.
+
+Issue #8 UI integration moved the supplied GPUI screens into `crates/manager-gui`,
+added runtime `en-US`/`zh-TW`/`system` copy, and kept the install flow as an
+observable in-memory preview. Verified with `cargo fmt --all -- --check`,
+`cargo check --workspace`, `cargo test --workspace`, workspace clippy with
+`-D warnings`, and an 8-second host Wayland launch smoke. No privileged command,
+real package mutation, or persistent `manager-store` was added.
+The temporary `better-manager-gpui-complete/` directory was moved to the
+desktop trash after the destination file set was verified.

@@ -24,11 +24,14 @@ prerequisite.
 2. `better-core` parses and validates each manifest.
 3. `manager-core` builds a dry-run transaction plan against an in-memory
    backend. No plan step can mutate the host in this stage.
-4. Monitor collectors later emit samples into `monitor-core`; this stage only
+4. `manager-gui` renders the review and installation-preview states from that
+   shared plan. The preview advances in memory and still performs no host
+   mutation.
+5. Monitor collectors later emit samples into `monitor-core`; this stage only
    defines the collector, storage, incident, and export contracts.
-5. Release packaging derives and verifies runtime dependencies from the final
+6. Release packaging derives and verifies runtime dependencies from the final
    binaries for each supported target and architecture.
-6. A clean desktop environment installs the `.deb` through local APT and runs
+7. A clean desktop environment installs the `.deb` through local APT and runs
    the manager and monitor launch smoke tests.
 
 ## Test seams
@@ -37,8 +40,10 @@ prerequisite.
 - Manager behavior uses an in-memory backend and asserts observable plans and
   status results.
 - Monitor behavior uses a fake collector and in-memory history.
-- GUI crates depend on the shared core crates; UI smoke coverage is deferred to
-  an environment with a display backend.
+- `manager-gui` uses the demo catalog and in-memory backend to assert that its
+  Update All path produces the same dry-run plan as `manager-core`.
+- GUI crates depend on the shared core crates; launch smoke coverage runs in an
+  environment with a display backend.
 
 ## Test matrix
 
