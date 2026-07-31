@@ -31,14 +31,30 @@ jobs:
         include:
           - runner: ubuntu-22.04
             target: ubuntu-22.04
+            architecture: amd64
           - runner: ubuntu-24.04
             target: ubuntu-24.04
+            architecture: amd64
+          - runner: ubuntu-22.04-arm
+            target: ubuntu-22.04-arm64
+            architecture: arm64
+          - runner: ubuntu-24.04-arm
+            target: ubuntu-24.04-arm64
+            architecture: arm64
     runs-on: ${{ matrix.runner }}
     env:
       RUST_FONTCONFIG_DLOPEN: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Verify native runner architecture
+        run: |
+          test "$(dpkg --print-architecture)" = "${{ matrix.architecture }}"
+          case "${{ matrix.architecture }}" in
+            amd64) test "$(uname -m)" = "x86_64" ;;
+            arm64) test "$(uname -m)" = "aarch64" ;;
+            *) exit 1 ;;
+          esac
       # Keep release target artifacts isolated by Ubuntu release. Proc-macro
       # shared objects are linked against the runner's glibc.
       - name: Install GPUI and packaging dependencies

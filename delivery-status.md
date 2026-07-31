@@ -36,9 +36,9 @@ approved maintainer contact before publishing.
 
 ## Next Verifiable Output
 
-Download the matrix artifacts from CI, repeat the clean Ubuntu 22.04 and 24.04
-install and launch checks, then verify the manifest checksum and complete the
-arm64 packaging path.
+Run the four-entry Ubuntu 22.04/24.04 amd64 and native arm64 package matrix,
+then download the artifacts and repeat the clean install and launch checks.
+Manifest checksum verification and maintainer approval remain after that.
 
 ## Next Ticket
 
@@ -69,6 +69,12 @@ arm64 packaging path.
   boundary
   timestamp: 2026-07-31
   impacted_ticket_ids: [06]
+- decision: run arm64 release packaging on native GitHub-hosted arm64 runners
+  rationale: the component manifests declare amd64 and arm64 support, and native
+  runners avoid QEMU emulation while preserving one compatible build environment
+  per Ubuntu release and architecture
+  timestamp: 2026-07-31
+  impacted_ticket_ids: [06]
 
 ## Source Links
 
@@ -89,5 +95,8 @@ The Ubuntu 22.04/24.04 package matrix passed in CI, including package build,
 runtime dependency checks, checksums, and artifact upload. No public release
 asset exists yet. Ticket 06 remains in progress until the clean-system, arm64,
 manifest-checksum, and maintainer criteria pass.
+The package workflow now includes `ubuntu-22.04-arm` and `ubuntu-24.04-arm`
+with explicit native architecture checks; those jobs still need a GitHub Actions
+run before arm64 packaging can be marked verified.
 PR #9 is merged into `main` at `fb3520f`, and the feature branch has been
 deleted from both the local checkout and GitHub.
