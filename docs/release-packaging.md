@@ -57,6 +57,8 @@ Release package 必須符合以下條件：
   `RUST_FONTCONFIG_DLOPEN` 或手動安裝 development packages。
 - 發佈的 checksum 與 component manifest 中的 checksum 相符。
 - 正式發佈前，Debian control metadata 已填入核准的 maintainer 聯絡方式。
+- Package payload 必須包含 root project license 與完整的 Cargo third-party
+  license inventory，放在 `/usr/share/doc/<package>/`。
 
 以上任一項未通過，就不能把該 target/architecture 標成支援的 release。
 最終 runtime dependency 清單與每次驗證結果必須留在 release 的 build log 或
@@ -69,6 +71,8 @@ repository 現在提供 `packaging/build-deb.sh` 與 `packaging/verify-deb.sh`�
 monitor `.deb`。CI 以 `ubuntu-22.04-arm64`、`ubuntu-24.04-arm64` 作為 arm64
 job 的隔離目錄，但 asset target 仍是 `ubuntu-22.04` 或 `ubuntu-24.04`，因此
 兩種架構的檔名都符合同一套 release 命名規則。正式 GitHub Release asset 尚未
-產生，實際 checksum 回填仍由 `docs/tickets/06-release-packaging.md` 及交接
-紀錄追蹤。Debian metadata 使用核准的 `TimLai666 <tim930102@icloud.com>`
-maintainer，root project license 為 GPL-3.0-or-later。
+產生，`better-files-example` 只作為 schema fixture，不列入 v0.1.0 的正式
+release matrix。Debian metadata 使用核准的 `TimLai666 <tim930102@icloud.com>`
+maintainer，root project license 為 GPL-3.0-or-later。第三方授權清單由
+`packaging/generate-third-party-notices.sh` 從 locked Cargo dependency graph
+產生，並由 package verifier 檢查套件內的 notice files。

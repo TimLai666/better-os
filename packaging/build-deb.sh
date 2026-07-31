@@ -41,7 +41,7 @@ while (($# > 0)); do
     esac
 done
 
-for command_name in cargo dpkg dpkg-deb dpkg-shlibdeps install sha256sum; do
+for command_name in cargo dpkg dpkg-deb dpkg-shlibdeps install sha256sum jq; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         printf 'Missing required command: %s\n' "$command_name" >&2
         exit 1
@@ -98,6 +98,7 @@ fi
 
 cd "$ROOT_DIR"
 export RUST_FONTCONFIG_DLOPEN="${RUST_FONTCONFIG_DLOPEN:-1}"
+"$ROOT_DIR/packaging/generate-third-party-notices.sh" --check
 cargo build --release -p manager-gui -p monitor-gui
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
@@ -123,8 +124,11 @@ make_package() {
         exit 1
     fi
 
-    mkdir -p "$staging_dir/DEBIAN" "$staging_dir/usr/bin"
+    mkdir -p "$staging_dir/DEBIAN" "$staging_dir/usr/bin" "$staging_dir/usr/share/doc/$package_name"
     install -m 0755 "$binary_path" "$staging_dir/usr/bin/$package_name"
+    install -m 0644 "$ROOT_DIR/LICENSE" "$staging_dir/usr/share/doc/$package_name/copyright"
+    install -m 0644 "$ROOT_DIR/docs/third-party-licenses.md" \
+        "$staging_dir/usr/share/doc/$package_name/THIRD-PARTY-LICENSES.md"
 
     mkdir -p "$dependency_control_dir/debian"
     printf '%s\n' \
