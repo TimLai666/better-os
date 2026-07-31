@@ -9,6 +9,7 @@ on:
 permissions:
   contents: write
 
+# Branch-only helper. Delete after Cargo.lock and notices are committed.
 jobs:
   update:
     runs-on: ubuntu-latest
