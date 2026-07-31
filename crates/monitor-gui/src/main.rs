@@ -597,19 +597,17 @@ impl MonitorWindow {
                         h_flex()
                             .items_center()
                             .gap_2()
-                            .child(
-                                div()
-                                    .size_2()
-                                    .rounded(px(99.))
-                                    .bg(cx.theme().green),
-                            )
+                            .child(div().size_2().rounded(px(99.)).bg(cx.theme().green))
                             .child(div().text_sm().font_bold().child("Recording")),
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!("{} samples this session", self.store.samples().len())),
+                            .child(format!(
+                                "{} samples this session",
+                                self.store.samples().len()
+                            )),
                     ),
             )
     }
@@ -857,24 +855,27 @@ impl MonitorWindow {
                     .child(self.metric_card(
                         "CPU",
                         format!("{:.1}%", point.cpu),
-                        format!("Load {:.2} / {:.2} / {:.2}", load.one, load.five, load.fifteen),
+                        format!(
+                            "Load {:.2} / {:.2} / {:.2}",
+                            load.one, load.five, load.fifteen
+                        ),
                         cx.theme().red,
                         cx,
                     ))
                     .child(self.metric_card(
                         "Memory",
                         format!("{:.1}%", point.memory),
-                        format!(
-                            "{} available",
-                            format_bytes(self.system.available_memory())
-                        ),
+                        format!("{} available", format_bytes(self.system.available_memory())),
                         cx.theme().blue,
                         cx,
                     ))
                     .child(self.metric_card(
                         "Storage activity",
                         format!("{:.2} MiB/s", point.disk_read + point.disk_written),
-                        format!("Read {:.2} • Write {:.2}", point.disk_read, point.disk_written),
+                        format!(
+                            "Read {:.2} • Write {:.2}",
+                            point.disk_read, point.disk_written
+                        ),
                         cx.theme().yellow,
                         cx,
                     ))
@@ -927,39 +928,41 @@ impl MonitorWindow {
         self.section_card(
             "Top processes",
             "Highest current CPU consumers",
-            v_flex().gap_1().children(self.top_processes.iter().map(|process| {
-                h_flex()
-                    .items_center()
-                    .gap_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().text_sm().truncate().child(process.name.clone()))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format!("PID {} • {}", process.pid, process.state)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().red)
-                            .child(format!("{:.1}%", process.cpu_usage)),
-                    )
-                    .child(
-                        div()
-                            .w(px(82.))
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format_bytes(process.memory)),
-                    )
-            })),
+            v_flex()
+                .gap_1()
+                .children(self.top_processes.iter().map(|process| {
+                    h_flex()
+                        .items_center()
+                        .gap_3()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().text_sm().truncate().child(process.name.clone()))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("PID {} • {}", process.pid, process.state)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().red)
+                                .child(format!("{:.1}%", process.cpu_usage)),
+                        )
+                        .child(
+                            div()
+                                .w(px(82.))
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format_bytes(process.memory)),
+                        )
+                })),
             cx,
         )
     }
@@ -971,9 +974,19 @@ impl MonitorWindow {
             v_flex()
                 .gap_3()
                 .child(self.health_row("Portable system metrics", "Active", cx.theme().green, cx))
-                .child(self.health_row("Process CPU / memory / I/O", "Active", cx.theme().green, cx))
+                .child(self.health_row(
+                    "Process CPU / memory / I/O",
+                    "Active",
+                    cx.theme().green,
+                    cx,
+                ))
                 .child(self.health_row("PSI pressure", "Not connected", cx.theme().yellow, cx))
-                .child(self.health_row("cgroup app grouping", "Not connected", cx.theme().yellow, cx))
+                .child(self.health_row(
+                    "cgroup app grouping",
+                    "Not connected",
+                    cx.theme().yellow,
+                    cx,
+                ))
                 .child(self.health_row("GPU adapters", "Not connected", cx.theme().yellow, cx)),
             cx,
         )
@@ -1143,40 +1156,37 @@ impl MonitorWindow {
                 cx.theme().red,
                 cx,
             ))
-            .child(
-                h_flex()
-                    .flex_wrap()
-                    .gap_3()
-                    .children(self.system.cpus().iter().enumerate().map(|(index, cpu)| {
-                        v_flex()
-                            .min_w(px(160.))
-                            .flex_1()
-                            .gap_2()
-                            .rounded(cx.theme().radius)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().list)
-                            .p_3()
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .child(div().font_bold().child(format!("CPU {index}")))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!("{} MHz", cpu.frequency())),
-                                    ),
-                            )
-                            .child(self.utilization_bar(cpu.cpu_usage(), cx.theme().red, cx))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format!("{:.1}%", cpu.cpu_usage())),
-                            )
-                    })),
-            )
+            .child(h_flex().flex_wrap().gap_3().children(
+                self.system.cpus().iter().enumerate().map(|(index, cpu)| {
+                    v_flex()
+                        .min_w(px(160.))
+                        .flex_1()
+                        .gap_2()
+                        .rounded(cx.theme().radius)
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().list)
+                        .p_3()
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .child(div().font_bold().child(format!("CPU {index}")))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("{} MHz", cpu.frequency())),
+                                ),
+                        )
+                        .child(self.utilization_bar(cpu.cpu_usage(), cx.theme().red, cx))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("{:.1}%", cpu.cpu_usage())),
+                        )
+                }),
+            ))
     }
 
     fn render_memory(&self, cx: &Context<Self>) -> Div {
@@ -1258,63 +1268,51 @@ impl MonitorWindow {
                         cx,
                     )),
             )
-            .child(
+            .child(v_flex().gap_3().children(self.disk_info.iter().map(|disk| {
+                let used = disk.total.saturating_sub(disk.available);
+                let percent = if disk.total > 0 {
+                    used as f32 / disk.total as f32 * 100.0
+                } else {
+                    0.0
+                };
                 v_flex()
                     .gap_3()
-                    .children(self.disk_info.iter().map(|disk| {
-                        let used = disk.total.saturating_sub(disk.available);
-                        let percent = if disk.total > 0 {
-                            used as f32 / disk.total as f32 * 100.0
-                        } else {
-                            0.0
-                        };
-                        v_flex()
-                            .gap_3()
-                            .rounded(cx.theme().radius_lg)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().list)
-                            .p_4()
+                    .rounded(cx.theme().radius_lg)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().list)
+                    .p_4()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_4()
                             .child(
-                                h_flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap_4()
-                                    .child(
-                                        v_flex()
-                                            .min_w_0()
-                                            .child(
-                                                div()
-                                                    .font_bold()
-                                                    .child(if disk.name.is_empty() {
-                                                        disk.mount_point.clone()
-                                                    } else {
-                                                        disk.name.clone()
-                                                    }),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child(format!(
-                                                        "{} • {}",
-                                                        disk.mount_point, disk.file_system
-                                                    )),
-                                            ),
-                                    )
+                                v_flex()
+                                    .min_w_0()
+                                    .child(div().font_bold().child(if disk.name.is_empty() {
+                                        disk.mount_point.clone()
+                                    } else {
+                                        disk.name.clone()
+                                    }))
                                     .child(
                                         div()
-                                            .text_sm()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
                                             .child(format!(
-                                                "{} / {}",
-                                                format_bytes(used),
-                                                format_bytes(disk.total)
+                                                "{} • {}",
+                                                disk.mount_point, disk.file_system
                                             )),
                                     ),
                             )
-                            .child(self.utilization_bar(percent, cx.theme().blue, cx))
-                    })),
-            )
+                            .child(div().text_sm().child(format!(
+                                "{} / {}",
+                                format_bytes(used),
+                                format_bytes(disk.total)
+                            ))),
+                    )
+                    .child(self.utilization_bar(percent, cx.theme().blue, cx))
+            })))
     }
 
     fn render_network(&self, cx: &Context<Self>) -> Div {
@@ -1375,23 +1373,13 @@ impl MonitorWindow {
                                 h_flex()
                                     .gap_4()
                                     .child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(cx.theme().green)
-                                            .child(format!(
-                                                "↓ {}/s",
-                                                format_bytes(interface.received)
-                                            )),
+                                        div().text_sm().text_color(cx.theme().green).child(
+                                            format!("↓ {}/s", format_bytes(interface.received)),
+                                        ),
                                     )
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(cx.theme().blue)
-                                            .child(format!(
-                                                "↑ {}/s",
-                                                format_bytes(interface.transmitted)
-                                            )),
-                                    ),
+                                    .child(div().text_sm().text_color(cx.theme().blue).child(
+                                        format!("↑ {}/s", format_bytes(interface.transmitted)),
+                                    )),
                             )
                     })),
             )
