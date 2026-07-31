@@ -25,20 +25,20 @@ before adding real system integration.
 | M3 | monitor and GUI shells | agent | done | `cargo build --workspace`; both GUI binaries stayed alive for 8 seconds in a Wayland session |
 | M4 | docs and CI | agent | done | workflow file and docs review |
 | M5 | release packaging contract | agent | done | `docs/release-packaging.md` and ticket 06 acceptance criteria |
-| M6 | target-compatible `.deb` packaging | agent | done | GitHub Actions Ubuntu 22.04/24.04 matrix build, dependency metadata check, checksum verification |
+| M6 | target-compatible `.deb` packaging | agent | done | GitHub Actions Ubuntu 22.04/24.04 amd64 and native arm64 matrix build, dependency metadata check, checksum verification |
 
 ## Current Blockers
 
 No active blocker remains for the GUI smoke test or the target-compatible
-Ubuntu package matrix. Ticket 06 still needs arm64 packaging, clean supported
-system install and launch records, manifest checksum verification, and an
-approved maintainer contact before publishing.
+Ubuntu package matrix. Ticket 06 still needs a supported desktop-session launch
+record, manifest checksum verification, and an approved maintainer contact
+before publishing.
 
 ## Next Verifiable Output
 
-Download the matrix artifacts from CI, repeat the clean Ubuntu 22.04 and 24.04
-install and launch checks, then verify the manifest checksum and complete the
-arm64 packaging path.
+Run the installed manager and monitor from a supported desktop Wayland or X11
+session without `ZED_HEADLESS`, then create public release assets and verify
+their manifest checksums after maintainer approval.
 
 ## Next Ticket
 
@@ -69,6 +69,12 @@ arm64 packaging path.
   boundary
   timestamp: 2026-07-31
   impacted_ticket_ids: [06]
+- decision: run arm64 release packaging on native GitHub-hosted arm64 runners
+  rationale: the component manifests declare amd64 and arm64 support, and native
+  runners avoid QEMU emulation while preserving one compatible build environment
+  per Ubuntu release and architecture
+  timestamp: 2026-07-31
+  impacted_ticket_ids: [06]
 
 ## Source Links
 
@@ -77,7 +83,9 @@ arm64 packaging path.
 - [Architecture](docs/architecture.md)
 - [Release packaging](docs/release-packaging.md)
 - [Pull request #9](https://github.com/TimLai666/better-os/pull/9)
+- [Pull request #11](https://github.com/TimLai666/better-os/pull/11)
 - [CI run 30616628027](https://github.com/TimLai666/better-os/actions/runs/30616628027)
+- [CI run 30625827340](https://github.com/TimLai666/better-os/actions/runs/30625827340)
 - [Tickets](docs/tickets/)
 
 ## Handoff Notes
@@ -85,9 +93,15 @@ arm64 packaging path.
 The checkout started with only `README.md`. Rust is available through
 `/home/tim/.cargo/bin`, but is not on the default shell `PATH`.
 
-The Ubuntu 22.04/24.04 package matrix passed in CI, including package build,
-runtime dependency checks, checksums, and artifact upload. No public release
-asset exists yet. Ticket 06 remains in progress until the clean-system, arm64,
-manifest-checksum, and maintainer criteria pass.
+The four-entry Ubuntu 22.04/24.04 amd64 and native arm64 package matrix passed
+in PR #11, including the native `dpkg`/`uname` checks, package build, runtime
+dependency checks, checksums, and artifact upload. Clean Ubuntu containers for
+all four target/architecture pairs installed the downloaded artifacts with APT,
+had no `*-dev` packages, resolved all dynamic libraries, and passed checksum
+verification. Both GUI binaries stayed alive in GPUI headless mode.
+Xvfb and the host Wayland socket did not provide a valid desktop-session launch
+environment, so the supported desktop launch criterion remains open. No public
+release asset exists yet, and manifest checksum values and maintainer approval
+remain open.
 PR #9 is merged into `main` at `fb3520f`, and the feature branch has been
 deleted from both the local checkout and GitHub.

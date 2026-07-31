@@ -22,25 +22,31 @@
       host 的 artifact 標成舊版 Ubuntu release
 - [x] `.deb` 的 `Depends` 含有最終 binary 所需的 runtime libraries，且不含任何
       `*-dev` package
-- [ ] 在沒有預先安裝 GPUI build-time `*-dev` packages 的乾淨系統上，執行
+- [x] 在沒有預先安裝 GPUI build-time `*-dev` packages 的乾淨系統上，執行
       `apt install ./<package>.deb` 成功
 - [ ] 安裝後 manager 與 monitor 都能在支援的桌面 session 啟動，沒有缺少動態
       library，也不需要手動設定 build/CI 環境變數
 - [ ] release asset 的 SHA-256 checksum 可由 component manifest 驗證
 - [x] CI 或 release build log 記錄目前 host architecture 的 runtime dependency
       清單
-- [ ] CI 或 release environment 記錄乾淨支援系統的安裝與啟動結果
+- [x] CI 或 release environment 記錄乾淨支援系統的安裝與啟動結果
 - [ ] 正式發佈前，Debian control metadata 填入核准的 maintainer 聯絡方式
 
 ## Verification so far
 
-- GitHub Actions 的 Ubuntu 22.04 與 24.04 amd64 package matrix 都通過 build、
-  runtime dependency、checksum verification 與 artifact upload。
-- Ubuntu 24.04 clean container：manager 與 monitor 都安裝成功，APT 沒有安裝
-  `libfontconfig1-dev`、`libxcb1-dev`、`libxkbcommon-dev` 或
-  `libxkbcommon-x11-dev`。
-- 舊的 Ubuntu 22.04 clean container 測試：安裝失敗，因為 Zorin 18/noble build 產物
-  宣告 `libc6 (>= 2.39)`，而 Ubuntu 22.04 提供的版本是 `2.35-0ubuntu3.13`。
+- [PR #11](https://github.com/TimLai666/better-os/pull/11) 的 GitHub Actions
+  Ubuntu 22.04/24.04 amd64 與 native arm64 package matrix 都通過 build、
+  native architecture check、runtime dependency、checksum verification 與
+  artifact upload。
+- Ubuntu 22.04/24.04 的 amd64 與 arm64 clean containers 都能用 APT 安裝
+  manager 與 monitor。四個環境都沒有安裝 `*-dev` package，兩個 binary 的
+  `ldd` 都沒有 unresolved library，artifact checksum 也全部通過。
+- 四個環境的 manager 與 monitor 都能在 GPUI `ZED_HEADLESS=1` 模式持續執行。
+  這是 process smoke，不是支援桌面 session 的啟動證據。Xvfb 沒有提供 GPUI
+  可用的 surface，主機 Wayland socket 測試也回報 `NoCompositor`，所以 desktop
+  launch acceptance criterion 仍未勾選。
+- 先前 Ubuntu 22.04 的 glibc mismatch 已由 release target artifact isolation
+  修正，現在 Ubuntu 22.04 package job 與 clean install 都已通過。
 
 ## Out of scope
 
