@@ -2,18 +2,18 @@
 
 ## Current Phase
 
-Initial monorepo foundation and release packaging contract
+Better Monitor live monitoring UI
 
 ## Stage Objective
 
-Make the component contract and non-privileged manager planning path verifiable
-before adding real system integration.
+Turn the existing monitor contracts and mock shell into a useful, non-privileged
+GPUI system monitor while keeping unsupported Linux collectors explicit.
 
 ## Active Workstreams
 
-- Shared manifest schema and validation
-- Manager dry-run planning and CLI
-- Monitor observation contracts
+- Better Monitor live CPU, memory, process, storage, and network presentation
+- Better Monitor incident markers, short-term history, and coverage diagnostics
+- Shared manifest schema and non-privileged manager planning
 - Release packaging contract, clean-install verification, and license notices
 
 ## Milestones
@@ -28,22 +28,24 @@ before adding real system integration.
 | M6 | target-compatible `.deb` packaging | agent | done | GitHub Actions Ubuntu 22.04/24.04 amd64 and native arm64 matrix build, dependency metadata check, checksum verification |
 | M7 | package license notices | agent | done | generated locked Cargo inventory, package payload notice checks, and post-merge CI verifier |
 | M8 | v0.1.0 public release | agent | done | GitHub Release assets, public re-download checksum verification, and manifest checksum mapping |
+| M9 | first functional Better Monitor UI | agent | in_review | PR #18 Rust checks, locked dependency notices, and Ubuntu package matrix |
 
 ## Current Blockers
 
-No active blocker remains for Ticket 06. The target-specific asset naming and
-manifest mapping decision is recorded in ADR 0002, the release packaging changes
-are merged into `main`, and the first public release is available.
+No implementation blocker is known for the current Better Monitor slice. The PR
+must still pass the complete Ubuntu 22.04/24.04 amd64 and arm64 package matrix,
+and the rendered desktop UI still needs visual and interaction review in a real
+GNOME Wayland session before merge.
 
 ## Next Verifiable Output
 
-The initial six-ticket delivery is complete. Keep the next change scoped to a
-new ticket or an explicit decision about the deferred APT repository, signing,
-privileged IPC, or real system integration work.
+Review PR #18 on a real desktop session, verify navigation, charts, table
+scrolling, resizing, light/dark themes, and one-second refresh behavior, then
+record any visual defects as focused follow-up work under issue #16.
 
 ## Next Ticket
 
-None — the initial planned tickets are complete
+Issue #16 — Better Monitor production collectors, history service, and task actions
 
 ## Decision Log
 
@@ -99,10 +101,25 @@ None — the initial planned tickets are complete
   failing the package build if the committed inventory becomes stale
   timestamp: 2026-08-01
   impacted_ticket_ids: [06]
+- decision: use `sysinfo` as the portable baseline dependency for the first live
+  Better Monitor UI, then add Linux-specific collectors behind typed boundaries
+  rationale: deliver useful CPU, memory, process, disk, and network data without
+  pretending a portable API covers PSI, cgroups, GPU engines, SMART, or storage
+  latency semantics
+  timestamp: 2026-08-01
+  impacted_ticket_ids: [16]
+- decision: render unsupported monitor metrics as unavailable coverage states
+  rather than numeric zeroes
+  rationale: missing observation is evidence about the collector, not evidence
+  that the measured activity is zero
+  timestamp: 2026-08-01
+  impacted_ticket_ids: [16]
 
 ## Source Links
 
 - [Issue #1](https://github.com/TimLai666/better-os/issues/1)
+- [Issue #16](https://github.com/TimLai666/better-os/issues/16)
+- [Pull request #18](https://github.com/TimLai666/better-os/pull/18)
 - [ENG.md](ENG.md)
 - [Architecture](docs/architecture.md)
 - [Release packaging](docs/release-packaging.md)
@@ -149,3 +166,10 @@ The approved Debian maintainer is `TimLai666 <tim930102@icloud.com>`, and the
 root project license is GPL-3.0-or-later.
 PR #9 is merged into `main` at `fb3520f`. PR #12 and PR #15 feature branches
 have been deleted from both the local checkout and GitHub.
+
+PR #18 replaces the monitor mock screen with a live GPUI prototype backed by
+`sysinfo` 0.37.2. It includes Overview, Apps, Processes, CPU, Memory, Storage,
+Network, History, Incidents, and Diagnostics pages, but intentionally does not
+claim PSI, cgroup application grouping, GPU, SMART, persistent history, or
+privileged process actions. Closing the current GUI also ends collection because
+the long-running monitor service has not been implemented yet.
