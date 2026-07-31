@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 id: better-files-example
 display_name: Example File Manager Replacement
 component_type: replacement
@@ -9,10 +9,12 @@ targets:
   architectures: [amd64]
 replaces:
   - org.gnome.Nautilus
-artifact:
-  url: https://github.com/TimLai666/better-os/releases/download/examples/better-files-example.deb
-  sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-  release_asset: better-files-example.deb
+artifacts:
+  - release: "24.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-files-example_0.1.0_ubuntu-24.04_amd64.deb
+    sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    release_asset: better-files-example_0.1.0_ubuntu-24.04_amd64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable

@@ -5,9 +5,10 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR="$ROOT_DIR/dist"
 VERSION="${VERSION:-}"
 ARCH="${DEB_HOST_ARCH:-}"
+RELEASE_TARGET="local"
 
 usage() {
-    printf 'Usage: %s [--output-dir DIR]\n' "$0"
+    printf 'Usage: %s [--output-dir DIR] [--target TARGET]\n' "$0"
 }
 
 while (($# > 0)); do
@@ -18,6 +19,14 @@ while (($# > 0)); do
                 exit 2
             fi
             OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        --target)
+            if (($# < 2)); then
+                usage >&2
+                exit 2
+            fi
+            RELEASE_TARGET="$2"
             shift 2
             ;;
         --help)
@@ -81,6 +90,11 @@ case "$ARCH" in
         ;;
 esac
 
+if [[ ! "$RELEASE_TARGET" =~ ^[a-z0-9][a-z0-9.-]*$ ]]; then
+    printf 'Invalid release target: %s\n' "$RELEASE_TARGET" >&2
+    exit 1
+fi
+
 cd "$ROOT_DIR"
 export RUST_FONTCONFIG_DLOPEN="${RUST_FONTCONFIG_DLOPEN:-1}"
 cargo build --release -p manager-gui -p monitor-gui
@@ -98,7 +112,8 @@ make_package() {
     local staging_dir="$WORK_DIR/$package_name"
     local dependency_control_dir="$WORK_DIR/$package_name-deps"
     local binary_path="$BUILD_DIR/$binary_name"
-    local deb_path="$OUTPUT_DIR/$package_name.deb"
+    local deb_filename="${package_name}_${VERSION}_${RELEASE_TARGET}_${ARCH}.deb"
+    local deb_path="$OUTPUT_DIR/$deb_filename"
     local shlib_dependencies
     local runtime_dependencies
 
@@ -155,7 +170,7 @@ make_package() {
     dpkg-deb --build --root-owner-group "$staging_dir" "$deb_path" >/dev/null
     (
         cd "$OUTPUT_DIR"
-        sha256sum "${package_name}.deb"
+        sha256sum "$deb_filename"
     ) > "$deb_path.sha256"
     printf 'Built %s (%s, %s)\n' "$deb_path" "$VERSION" "$ARCH"
     printf 'Depends: %s\n' "$runtime_dependencies"

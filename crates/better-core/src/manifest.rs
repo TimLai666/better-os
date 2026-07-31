@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use thiserror::Error;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -61,7 +61,7 @@ pub struct ComponentManifest {
     pub dependencies: Vec<Dependency>,
     #[serde(default)]
     pub conflicts: Vec<ComponentId>,
-    pub artifact: Artifact,
+    pub artifacts: Vec<Artifact>,
     pub lifecycle: Lifecycle,
     #[serde(default)]
     pub health_checks: Vec<String>,
@@ -94,8 +94,61 @@ impl ComponentManifest {
         {
             return Err(ManifestError::MissingField("targets"));
         }
-        if self.artifact.url.trim().is_empty() || self.artifact.sha256.len() != 64 {
+        if self.artifacts.is_empty() {
             return Err(ManifestError::InvalidArtifact);
+        }
+
+        let mut variants = HashSet::new();
+        for artifact in &self.artifacts {
+            if !self.targets.releases.contains(&artifact.release)
+                || !self.targets.architectures.contains(&artifact.architecture)
+            {
+                return Err(ManifestError::UnsupportedArtifactVariant {
+                    release: artifact.release.clone(),
+                    architecture: artifact.architecture.clone(),
+                });
+            }
+            if artifact.url.trim().is_empty()
+                || !artifact.url.starts_with("https://")
+                || artifact.sha256.len() != 64
+                || !artifact
+                    .sha256
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+                || artifact.release_asset.trim().is_empty()
+                || artifact
+                    .release_asset
+                    .chars()
+                    .any(|character| character == '/' || character == '\\')
+            {
+                return Err(ManifestError::InvalidArtifact);
+            }
+            let expected_asset = format!(
+                "{}_{}_ubuntu-{}_{}.deb",
+                self.id, self.version, artifact.release, artifact.architecture
+            );
+            if artifact.release_asset != expected_asset
+                || !artifact.url.ends_with(&artifact.release_asset)
+            {
+                return Err(ManifestError::InvalidArtifact);
+            }
+            if !variants.insert((artifact.release.clone(), artifact.architecture.clone())) {
+                return Err(ManifestError::DuplicateArtifactVariant {
+                    release: artifact.release.clone(),
+                    architecture: artifact.architecture.clone(),
+                });
+            }
+        }
+
+        for release in &self.targets.releases {
+            for architecture in &self.targets.architectures {
+                if !variants.contains(&(release.clone(), architecture.clone())) {
+                    return Err(ManifestError::MissingArtifactVariant {
+                        release: release.clone(),
+                        architecture: architecture.clone(),
+                    });
+                }
+            }
         }
         if self.lifecycle.install.trim().is_empty()
             || self.lifecycle.enable.trim().is_empty()
@@ -127,10 +180,11 @@ pub struct Dependency {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Artifact {
+    pub release: String,
+    pub architecture: String,
     pub url: String,
     pub sha256: String,
-    #[serde(default)]
-    pub release_asset: Option<String>,
+    pub release_asset: String,
     #[serde(default)]
     pub signature: Option<String>,
 }
@@ -171,6 +225,21 @@ pub enum ManifestError {
     MissingField(&'static str),
     #[error("artifact URL or SHA-256 checksum is invalid")]
     InvalidArtifact,
+    #[error("artifact variant {release}/{architecture} is not declared by targets")]
+    UnsupportedArtifactVariant {
+        release: String,
+        architecture: String,
+    },
+    #[error("artifact variant {release}/{architecture} is declared more than once")]
+    DuplicateArtifactVariant {
+        release: String,
+        architecture: String,
+    },
+    #[error("artifact variant {release}/{architecture} is missing")]
+    MissingArtifactVariant {
+        release: String,
+        architecture: String,
+    },
     #[error("component {0} conflicts with itself")]
     SelfConflict(ComponentId),
     #[error("duplicate component id: {0}")]
@@ -273,7 +342,7 @@ mod tests {
             .map(|value| format!("\n  - {value}"))
             .unwrap_or_default();
         format!(
-            "schema_version: 1\nid: {id}\ndisplay_name: {id}\ncomponent_type: diagnostic\nversion: 1.0.0\ntargets:\n  distributions: [ubuntu]\n  releases: [24.04]\n  architectures: [amd64]\nartifact:\n  url: https://example.com/{id}.deb\n  sha256: {hash}\nlifecycle:\n  install: plan-install\n  enable: plan-enable\n  disable: plan-disable\n  remove: plan-remove\n  rollback: plan-rollback\ndependencies:{dependency}\nconflicts:{conflict}\n",
+            "schema_version: 2\nid: {id}\ndisplay_name: {id}\ncomponent_type: diagnostic\nversion: 1.0.0\ntargets:\n  distributions: [ubuntu]\n  releases: [24.04]\n  architectures: [amd64]\nartifacts:\n  - release: \"24.04\"\n    architecture: amd64\n    url: https://example.com/{id}_1.0.0_ubuntu-24.04_amd64.deb\n    sha256: {hash}\n    release_asset: {id}_1.0.0_ubuntu-24.04_amd64.deb\nlifecycle:\n  install: plan-install\n  enable: plan-enable\n  disable: plan-disable\n  remove: plan-remove\n  rollback: plan-rollback\ndependencies:{dependency}\nconflicts:{conflict}\n",
             hash = "a".repeat(64),
         )
     }
@@ -282,6 +351,8 @@ mod tests {
     fn parses_valid_manifest() {
         let manifest = ComponentManifest::parse_yaml(&yaml("better-monitor", None, None)).unwrap();
         assert_eq!(manifest.id.as_str(), "better-monitor");
+        assert_eq!(manifest.artifacts[0].release, "24.04");
+        assert_eq!(manifest.artifacts[0].architecture, "amd64");
     }
 
     #[test]
@@ -297,10 +368,63 @@ mod tests {
     #[test]
     fn rejects_unsupported_schema_version() {
         let input =
-            yaml("better-monitor", None, None).replace("schema_version: 1", "schema_version: 2");
+            yaml("better-monitor", None, None).replace("schema_version: 2", "schema_version: 3");
         assert!(matches!(
             ComponentManifest::parse_yaml(&input),
-            Err(ManifestError::UnsupportedSchemaVersion(2))
+            Err(ManifestError::UnsupportedSchemaVersion(3))
+        ));
+    }
+
+    #[test]
+    fn rejects_missing_artifact_variant() {
+        let input = yaml("better-monitor", None, None)
+            .replace("releases: [24.04]", "releases: [22.04, 24.04]");
+        assert!(matches!(
+            ComponentManifest::parse_yaml(&input),
+            Err(ManifestError::MissingArtifactVariant { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_artifact_variant() {
+        let input = yaml("better-monitor", None, None).replace(
+            "lifecycle:",
+            "  - release: \"24.04\"\n    architecture: amd64\n    url: https://example.com/better-monitor_1.0.0_ubuntu-24.04_amd64.deb\n    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    release_asset: better-monitor_1.0.0_ubuntu-24.04_amd64.deb\nlifecycle:",
+        );
+        assert!(matches!(
+            ComponentManifest::parse_yaml(&input),
+            Err(ManifestError::DuplicateArtifactVariant { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_artifact_variant_outside_target_matrix() {
+        let input =
+            yaml("better-monitor", None, None).replace("release: \"24.04\"", "release: \"22.04\"");
+        assert!(matches!(
+            ComponentManifest::parse_yaml(&input),
+            Err(ManifestError::UnsupportedArtifactVariant { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_non_hex_artifact_checksums() {
+        let input = yaml("better-monitor", None, None).replace(&"a".repeat(64), &"g".repeat(64));
+        assert!(matches!(
+            ComponentManifest::parse_yaml(&input),
+            Err(ManifestError::InvalidArtifact)
+        ));
+    }
+
+    #[test]
+    fn rejects_mismatched_release_asset_name() {
+        let input = yaml("better-monitor", None, None).replace(
+            "release_asset: better-monitor_1.0.0_ubuntu-24.04_amd64.deb",
+            "release_asset: wrong-name.deb",
+        );
+        assert!(matches!(
+            ComponentManifest::parse_yaml(&input),
+            Err(ManifestError::InvalidArtifact)
         ));
     }
 

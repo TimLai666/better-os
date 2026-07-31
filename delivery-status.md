@@ -30,16 +30,16 @@ before adding real system integration.
 ## Current Blockers
 
 No active blocker remains for the GUI smoke test or the target-compatible
-Ubuntu package matrix. Ticket 06 still needs release assets, manifest checksum
-verification, and an approved maintainer contact before publishing. The current
-matrix produces four same-named package assets, while each manifest has only one
-artifact checksum, so the target-specific asset naming and manifest mapping must
-be decided before a release can be created.
+Ubuntu package matrix. The target-specific asset naming and manifest mapping
+decision is now recorded in ADR 0002 and implemented on the feature branch.
+Ticket 06 still needs formal release assets, real manifest checksum verification,
+an approved maintainer contact, and the root project license before publishing.
 
 ## Next Verifiable Output
 
-After the asset naming, manifest mapping, and maintainer contact are approved,
-create public release assets and verify their manifest checksums.
+After this contract change is merged, create the combined version Release,
+replace placeholder checksums with the published sidecar values, and verify all
+manifest variants against their target-specific assets.
 
 ## Next Ticket
 
@@ -76,6 +76,12 @@ create public release assets and verify their manifest checksums.
   per Ubuntu release and architecture
   timestamp: 2026-07-31
   impacted_ticket_ids: [06]
+- decision: use one version Release with target-specific package assets and
+  schema v2 artifact variants keyed by Ubuntu release and architecture
+  rationale: avoid filename collisions across the four package jobs and let
+  every manifest checksum map to exactly one published package
+  timestamp: 2026-07-31
+  impacted_ticket_ids: [06]
 
 ## Source Links
 
@@ -83,6 +89,7 @@ create public release assets and verify their manifest checksums.
 - [ENG.md](ENG.md)
 - [Architecture](docs/architecture.md)
 - [Release packaging](docs/release-packaging.md)
+- [ADR 0002: Target-specific release assets](docs/decisions/0002-release-artifact-mapping.md)
 - [Pull request #9](https://github.com/TimLai666/better-os/pull/9)
 - [Pull request #11](https://github.com/TimLai666/better-os/pull/11)
 - [CI run 30616628027](https://github.com/TimLai666/better-os/actions/runs/30616628027)
@@ -101,12 +108,14 @@ dependency checks, checksums, and artifact upload. Clean Ubuntu containers for
 all four target/architecture pairs installed the downloaded artifacts with APT,
 had no `*-dev` packages, resolved all dynamic libraries, and passed checksum
 verification. Both GUI binaries stayed alive in GPUI headless mode.
-The post-merge `main` CI run passed Rust checks and all four package jobs.
+The post-merge `main` CI run passed Rust checks and all four package jobs. The
+release artifact mapping decision is recorded in ADR 0002; the feature branch
+now validates schema v2 manifests and emits target-specific package filenames.
 The package payload also started both GUI binaries for 12 seconds in the host's
 Zorin OS 18.1 GNOME Wayland session with `ZED_HEADLESS` unset. Docker's Xvfb and
 host-socket tests still failed because they did not provide a usable compositor,
 but the direct host session passed. No public release asset exists yet, and
-manifest checksum values and maintainer approval remain open. The four-platform
-asset naming and manifest mapping decision is also open.
+manifest checksum values, maintainer approval, and the root project license
+remain open.
 PR #9 is merged into `main` at `fb3520f`, and the feature branch has been
 deleted from both the local checkout and GitHub.

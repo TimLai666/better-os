@@ -105,8 +105,8 @@ impl<B: ComponentBackend> Manager<B> {
                 component: id.clone(),
                 operation,
                 detail: format!(
-                    "verify {}, then use local APT planning path",
-                    manifest.artifact.url
+                    "verify one of {} target-specific artifacts, then use local APT planning path",
+                    manifest.artifacts.len()
                 ),
             }],
             dry_run: true,
