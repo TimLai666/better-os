@@ -8,9 +8,15 @@
 
 ## 第一版 release 格式
 
-- 每個 first-party component 以 GitHub Release 的 `.deb` asset 發佈。
-- 安裝入口是 `apt`，例如 `sudo apt install ./better-manager.deb`。
-- `.deb` 與對應的 SHA-256 checksum 一起發佈，供 manifest 驗證。
+- 每個版本使用一個 GitHub Release，例如 `v0.1.0`，集中放置所有
+  first-party component 的 target-specific `.deb` assets。
+- Package asset 命名為
+  `<component>_<version>_ubuntu-<release>_<architecture>.deb`，例如
+  `better-manager_0.1.0_ubuntu-24.04_amd64.deb`。
+- 每個 `.deb` 旁邊發佈對應的 `.deb.sha256` sidecar，供 manifest 的
+  `artifacts` variant 驗證。
+- 安裝入口是 `apt`，例如
+  `sudo apt install ./better-manager_0.1.0_ubuntu-24.04_amd64.deb`。
 - 每個支援的 Ubuntu release 必須在相容的 build environment 產生自己的
   artifact。較新的 host 產出的 binary 可能要求較新的 `libc6`，不能直接標成
   舊版 Ubuntu 的 release。
@@ -59,8 +65,9 @@ Release package 必須符合以下條件：
 ## 與目前專案狀態的關係
 
 repository 現在提供 `packaging/build-deb.sh` 與 `packaging/verify-deb.sh`，可以在
-目前 host architecture 產生並檢查 manager、monitor 的 `.deb`。這兩個腳本不代表
-已經完成所有支援 target 的 release。Ubuntu 22.04 與 24.04 的 amd64 matrix
-已在 GitHub Actions 通過，證明兩個 target 都能在相容環境產生並驗證 package。
-arm64 packaging、乾淨支援系統安裝與 component manifest checksum 回填，仍由
-`docs/tickets/06-release-packaging.md` 追蹤。正式 GitHub Release asset 尚未產生。
+目前 host architecture 產生並檢查帶有 target-specific filename 的 manager、
+monitor `.deb`。CI 以 `ubuntu-22.04-arm64`、`ubuntu-24.04-arm64` 作為 arm64
+job 的隔離目錄，但 asset target 仍是 `ubuntu-22.04` 或 `ubuntu-24.04`，因此
+兩種架構的檔名都符合同一套 release 命名規則。正式 GitHub Release asset 尚未
+產生，實際 checksum 回填、maintainer 與 root license 仍由
+`docs/tickets/06-release-packaging.md` 及交接紀錄追蹤。
