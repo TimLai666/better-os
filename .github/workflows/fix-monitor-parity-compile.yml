@@ -1,0 +1,115 @@
+name: Fix monitor parity compile
+
+on:
+  push:
+    branches:
+      - feature/better-monitor-ui
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/better-monitor-ui
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply compile fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/monitor-gui/src/parity.rs")
+          source = path.read_text()
+
+          source = source.replace(
+              ".children(groups.into_iter().map(|group| {",
+              ".children(groups.into_iter().enumerate().map(|(index, group)| {",
+          )
+          source = source.replace(
+              'Button::new(("app-term", group.id.clone()))',
+              'Button::new(("app-term", index))',
+          )
+          source = source.replace(
+              'Button::new(("app-kill", group.id.clone()))',
+              'Button::new(("app-kill", index))',
+          )
+          source = source.replace(
+              'Button::new(("app-stop", group.id.clone()))',
+              'Button::new(("app-stop", index))',
+          )
+          source = source.replace(
+              'Button::new(("app-cont", group.id.clone()))',
+              'Button::new(("app-cont", index))',
+          )
+          source = source.replace("cx.theme().purple", "cx.theme().blue")
+
+          source = source.replace(
+              "        let selected = self.selected_process();",
+              "        let selected = self.selected_process(cx);",
+          )
+          source = source.replace(
+              "                        .child(match selected {\n                            Some(process) => format!(",
+              "                        .child(match selected.as_ref() {\n                            Some(process) => format!(",
+          )
+          source = source.replace(
+              ".child(self.process_action_buttons(selected.map(|process| process.pid), cx))",
+              ".child(self.process_action_buttons(selected.as_ref().map(|process| process.pid), cx))",
+          )
+          source = source.replace(
+              "            .when_some(selected, |this, process| {\n                this.child(self.render_process_details(process, cx))\n            })",
+              "            .when_some(selected, |this, process| {\n                this.child(self.render_process_details(&process, cx))\n            })",
+          )
+
+          old = '''    fn selected_process(&self) -> Option<&ProcessInfo> {
+        let pid = self.selected_pid?;
+        self.top_processes
+            .iter()
+            .find(|process| process.pid == pid)
+            .or_else(|| {
+                self.process_table
+                    .read_with(|table, _| {
+                        table
+                            .delegate()
+                            .processes
+                            .iter()
+                            .find(|process| process.pid == pid)
+                            .cloned()
+                    })
+                    .as_ref()
+            })
+    }
+'''
+          new = '''    fn selected_process(&self, cx: &Context<Self>) -> Option<ProcessInfo> {
+        let pid = self.selected_pid?;
+        self.process_table
+            .read(cx)
+            .delegate()
+            .processes
+            .iter()
+            .find(|process| process.pid == pid)
+            .cloned()
+    }
+'''
+          if old not in source:
+              raise SystemExit("selected_process marker not found")
+          source = source.replace(old, new)
+
+          path.write_text(source)
+          PY
+          cargo fmt --all
+      - name: Commit fixes
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/monitor-gui/src/parity.rs
+          git commit -m "fix(monitor): resolve parity compile errors"
+          git push origin HEAD:feature/better-monitor-ui
