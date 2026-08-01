@@ -5,6 +5,19 @@ on:
   pull_request:
 
 jobs:
+  source-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload current Better Monitor sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: better-monitor-current-source
+          path: |
+            crates/monitor-gui
+            crates/better-ui/src/lib.rs
+            docs/better-monitor-resources-v1.10.2-parity.md
+
   rust:
     runs-on: ubuntu-latest
     env:
@@ -73,8 +86,6 @@ jobs:
       # the local script refuses to run on a host.
       - name: Run the privileged service end-to-end
         run: |
-          # ubuntu-24.04 -> 24.04 for the base image; the script still wants the
-          # full asset target to find the packages.
           UBUNTU_RELEASE="${{ matrix.asset_target }}"
           UBUNTU_RELEASE="${UBUNTU_RELEASE#ubuntu-}"
           cp -r "dist/${{ matrix.target }}" dist/e2e
