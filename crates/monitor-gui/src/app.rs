@@ -2078,7 +2078,7 @@ fn chart_summary(
 ) -> String {
     let values = data
         .iter()
-        .map(|point| value_fn(point))
+        .map(value_fn)
         .filter(|value| value.is_finite())
         .collect::<Vec<_>>();
     let Some(current) = values.last().copied() else {
