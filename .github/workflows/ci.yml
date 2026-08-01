@@ -4,53 +4,23 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
-  repair-support-state:
+  source-snapshot:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
         with:
-          ref: feature/better-monitor-ui
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Move support-state view models into renderers
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          ui = Path("crates/better-ui/src/lib.rs")
-          source = ui.read_text()
-          old = "pub fn support_state_panel(state: &SupportState, palette: SupportStatePalette) -> impl IntoElement {"
-          new = "pub fn support_state_panel(state: SupportState, palette: SupportStatePalette) -> impl IntoElement {"
-          if source.count(old) != 1:
-              raise SystemExit(f"support-state signature matches: {source.count(old)}")
-          ui.write_text(source.replace(old, new, 1))
-
-          parity = Path("crates/monitor-gui/src/parity.rs")
-          source = parity.read_text()
-          old_call = "support_state_panel(&state, self.support_state_palette(cx))"
-          if source.count(old_call) != 2:
-              raise SystemExit(f"support-state call matches: {source.count(old_call)}")
-          parity.write_text(source.replace(
-              old_call,
-              "support_state_panel(state, self.support_state_palette(cx))",
-          ))
-          PY
-          cargo fmt --all
-      - name: Commit ownership repair
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/better-ui/src/lib.rs crates/monitor-gui/src/parity.rs
-          git commit -m "fix(ui): own support-state render models"
-          git push origin HEAD:feature/better-monitor-ui || {
-            git pull --rebase origin feature/better-monitor-ui
-            git push origin HEAD:feature/better-monitor-ui
-          }
+          name: better-monitor-current-source
+          include-hidden-files: true
+          path: |
+            Cargo.toml
+            Cargo.lock
+            crates/better-ui
+            crates/monitor-core
+            crates/monitor-gui
+            docs/better-monitor-resources-v1.10.2-parity.md
+            delivery-status.md
 
   rust:
     runs-on: ubuntu-latest
