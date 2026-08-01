@@ -1,312 +1,10 @@
-name: Interaction CI
+name: CI
 
 on:
   push:
-
-permissions:
-  contents: write
+  pull_request:
 
 jobs:
-  repair:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/better-monitor-interactions
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Replace transient interaction contract with typed request
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("crates/monitor-gui/src/app_table.rs")
-          source = path.read_text()
-
-          old_signature = '''#[expect(
-              clippy::too_many_arguments,
-              reason = "the dialog boundary carries the complete, typed application action contract"
-          )]
-          fn open_app_signal_dialog(
-              monitor: WeakEntity<MonitorWindow>,
-              pids: Vec<Pid>,
-              signal: Signal,
-              title: String,
-              description: &'static str,
-              confirm_label: &'static str,
-              row_ix: usize,
-              destructive: bool,
-              window: &mut Window,
-              cx: &mut App,
-          ) {
-              window.open_dialog(cx, move |dialog, _, _| {
-                  let confirm_monitor = monitor.clone();
-                  let confirm_pids = pids.clone();
-                  dialog
-                      .title(title.clone())
-                      .child(description)
-                      .footer(move |_, _, _, _| {
-                          let monitor = confirm_monitor.clone();
-                          let pids = confirm_pids.clone();
-                          let confirm = Button::new(("app-action-confirm", row_ix))
-                              .label(confirm_label)
-                              .when(destructive, |button| button.warning())
-                              .on_click(move |_, window, cx| {
-                                  send_app_signal(monitor.clone(), pids.clone(), signal, cx);
-                                  window.close_dialog(cx);
-                              });
-                          vec![
-                              Button::new(("app-action-cancel", row_ix))
-                                  .outline()
-                                  .label("Cancel")
-                                  .on_click(|_, window, cx| window.close_dialog(cx)),
-                              confirm,
-                          ]
-                      })
-              });
-          }
-          '''
-          new_signature = '''#[derive(Clone)]
-          struct AppSignalRequest {
-              monitor: WeakEntity<MonitorWindow>,
-              pids: Vec<Pid>,
-              signal: Signal,
-              title: String,
-              description: &'static str,
-              confirm_label: &'static str,
-              row_ix: usize,
-              destructive: bool,
-          }
-
-          fn open_app_signal_dialog(
-              request: AppSignalRequest,
-              window: &mut Window,
-              cx: &mut App,
-          ) {
-              window.open_dialog(cx, move |dialog, _, _| {
-                  let confirm_request = request.clone();
-                  dialog
-                      .title(request.title.clone())
-                      .child(request.description)
-                      .footer(move |_, _, _, _| {
-                          let action_request = confirm_request.clone();
-                          let confirm = Button::new((
-                              "app-action-confirm",
-                              action_request.row_ix,
-                          ))
-                          .label(action_request.confirm_label);
-                          let confirm = if action_request.destructive {
-                              confirm.warning()
-                          } else {
-                              confirm
-                          };
-                          vec![
-                              Button::new(("app-action-cancel", action_request.row_ix))
-                                  .outline()
-                                  .label("Cancel")
-                                  .on_click(|_, window, cx| window.close_dialog(cx)),
-                              confirm.on_click(move |_, window, cx| {
-                                  send_app_signal(
-                                      action_request.monitor.clone(),
-                                      action_request.pids.clone(),
-                                      action_request.signal,
-                                      cx,
-                                  );
-                                  window.close_dialog(cx);
-                              }),
-                          ]
-                      })
-              });
-          }
-          '''
-          if old_signature in source:
-              source = source.replace(old_signature, new_signature, 1)
-          elif "struct AppSignalRequest" not in source:
-              raise SystemExit("signal dialog signature anchor changed")
-
-          source = source.replace(
-              '''open_app_signal_dialog(
-                                      term_monitor.clone(),
-                                      term_group.pids.clone(),
-                                      Signal::Term,
-                                      format!("End {}?", term_group.display_name),
-                                      "All processes in this application group will receive a graceful termination signal.",
-                                      "End Application",
-                                      row_ix,
-                                      false,
-                                      window,
-                                      cx,
-                                  );''',
-              '''open_app_signal_dialog(
-                                      AppSignalRequest {
-                                          monitor: term_monitor.clone(),
-                                          pids: term_group.pids.clone(),
-                                          signal: Signal::Term,
-                                          title: format!("End {}?", term_group.display_name),
-                                          description: "All processes in this application group will receive a graceful termination signal.",
-                                          confirm_label: "End Application",
-                                          row_ix,
-                                          destructive: false,
-                                      },
-                                      window,
-                                      cx,
-                                  );''',
-          )
-          source = source.replace(
-              '''open_app_signal_dialog(
-                  force_monitor.clone(),
-                  force_group.pids.clone(),
-                  Signal::Kill,
-                  format!("Force stop {}?", force_group.display_name),
-                  "Every process in this application group will stop immediately without cleanup.",
-                  "Force stop",
-                  row_ix,
-                  true,
-                  window,
-                  cx,
-              );''',
-              '''open_app_signal_dialog(
-                  AppSignalRequest {
-                      monitor: force_monitor.clone(),
-                      pids: force_group.pids.clone(),
-                      signal: Signal::Kill,
-                      title: format!("Force stop {}?", force_group.display_name),
-                      description: "Every process in this application group will stop immediately without cleanup.",
-                      confirm_label: "Force stop",
-                      row_ix,
-                      destructive: true,
-                  },
-                  window,
-                  cx,
-              );''',
-          )
-          source = source.replace(
-              '''open_app_signal_dialog(
-                      action_monitor.clone(),
-                      action_group.pids.clone(),
-                      Signal::Term,
-                      format!("End {}?", action_group.display_name),
-                      "All processes in this application group will receive a graceful termination signal.",
-                      "End Application",
-                      row_ix,
-                      false,
-                      window,
-                      cx,
-                  );''',
-              '''open_app_signal_dialog(
-                      AppSignalRequest {
-                          monitor: action_monitor.clone(),
-                          pids: action_group.pids.clone(),
-                          signal: Signal::Term,
-                          title: format!("End {}?", action_group.display_name),
-                          description: "All processes in this application group will receive a graceful termination signal.",
-                          confirm_label: "End Application",
-                          row_ix,
-                          destructive: false,
-                      },
-                      window,
-                      cx,
-                  );''',
-          )
-
-          old_context = '''        let action_monitor = self.monitor.clone();
-              let action_group = group;
-
-              menu.item(
-                  PopupMenuItem::new("Application information").on_click(
-                      move |_, window, cx| {
-                          open_app_information_dialog(
-                              info_group.clone(),
-                              info_unit,
-                              row_ix,
-                              window,
-                              cx,
-                          );
-                      },
-                  ),
-              )
-              .separator()
-              .item(
-                  PopupMenuItem::new("End application").on_click(move |_, window, cx| {
-                      open_app_signal_dialog(
-                          AppSignalRequest {
-                              monitor: action_monitor.clone(),
-                              pids: action_group.pids.clone(),
-                              signal: Signal::Term,
-                              title: format!("End {}?", action_group.display_name),
-                              description: "All processes in this application group will receive a graceful termination signal.",
-                              confirm_label: "End Application",
-                              row_ix,
-                              destructive: false,
-                          },
-                          window,
-                          cx,
-                      );
-                  }),
-              )
-              .separator()
-              .submenu("More actions", move |menu, _, _| {
-                  app_action_menu(menu, self.monitor.clone(), self.groups[row_ix].clone(), row_ix)
-              })'''
-          new_context = '''        let end_monitor = self.monitor.clone();
-              let end_group = group.clone();
-              let action_monitor = self.monitor.clone();
-              let action_group = group;
-
-              menu.item(
-                  PopupMenuItem::new("Application information").on_click(
-                      move |_, window, cx| {
-                          open_app_information_dialog(
-                              info_group.clone(),
-                              info_unit,
-                              row_ix,
-                              window,
-                              cx,
-                          );
-                      },
-                  ),
-              )
-              .separator()
-              .item(
-                  PopupMenuItem::new("End application").on_click(move |_, window, cx| {
-                      open_app_signal_dialog(
-                          AppSignalRequest {
-                              monitor: end_monitor.clone(),
-                              pids: end_group.pids.clone(),
-                              signal: Signal::Term,
-                              title: format!("End {}?", end_group.display_name),
-                              description: "All processes in this application group will receive a graceful termination signal.",
-                              confirm_label: "End Application",
-                              row_ix,
-                              destructive: false,
-                          },
-                          window,
-                          cx,
-                      );
-                  }),
-              )
-              .separator()
-              .pipe(|menu| app_action_menu(menu, action_monitor, action_group, row_ix))'''
-          if old_context in source:
-              source = source.replace(old_context, new_context, 1)
-          elif ".submenu(" in source:
-              raise SystemExit("context menu anchor changed")
-
-          path.write_text(source)
-          PY
-          cargo fmt --all
-      - name: Commit repair
-        run: |
-          if git diff --quiet; then
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/monitor-gui/src/app_table.rs
-          git commit -m "fix(monitor): type Apps action requests"
-          git push origin HEAD:feature/better-monitor-interactions
-
   rust:
     runs-on: ubuntu-latest
     env:
@@ -321,5 +19,74 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
       - run: cargo fmt --all -- --check
       - run: cargo check --workspace
+      - run: cargo build --workspace
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
+
+  package:
+    needs: rust
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: ubuntu-22.04
+            asset_target: ubuntu-22.04
+            architecture: amd64
+          - runner: ubuntu-24.04
+            target: ubuntu-24.04
+            asset_target: ubuntu-24.04
+            architecture: amd64
+          - runner: ubuntu-22.04-arm
+            target: ubuntu-22.04-arm64
+            asset_target: ubuntu-22.04
+            architecture: arm64
+          - runner: ubuntu-24.04-arm
+            target: ubuntu-24.04-arm64
+            asset_target: ubuntu-24.04
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUST_FONTCONFIG_DLOPEN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify native runner architecture
+        run: |
+          test "$(dpkg --print-architecture)" = "${{ matrix.architecture }}"
+          case "${{ matrix.architecture }}" in
+            amd64) test "$(uname -m)" = "x86_64" ;;
+            arm64) test "$(uname -m)" = "aarch64" ;;
+            *) exit 1 ;;
+          esac
+      # Keep release target artifacts isolated by Ubuntu release. Proc-macro
+      # shared objects are linked against the runner's glibc.
+      - name: Install GPUI and packaging dependencies
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - name: Build Debian packages
+        run: bash packaging/build-deb.sh --output-dir "dist/${{ matrix.target }}" --target "${{ matrix.asset_target }}"
+      - name: Verify Debian packages
+        run: bash packaging/verify-deb.sh "dist/${{ matrix.target }}" "${{ matrix.asset_target }}"
+      # The privileged service is the only thing here that changes a machine, so
+      # it is exercised against a real dpkg, system bus, and polkitd rather than
+      # only against fakes. It runs in a throwaway container for the same reason
+      # the local script refuses to run on a host.
+      - name: Run the privileged service end-to-end
+        run: |
+          # ubuntu-24.04 -> 24.04 for the base image; the script still wants the
+          # full asset target to find the packages.
+          UBUNTU_RELEASE="${{ matrix.asset_target }}"
+          UBUNTU_RELEASE="${UBUNTU_RELEASE#ubuntu-}"
+          cp -r "dist/${{ matrix.target }}" dist/e2e
+          docker build -f packaging/e2e/Dockerfile \
+            --build-arg "UBUNTU_RELEASE=${UBUNTU_RELEASE}" \
+            -t "better-os-e2e:${{ matrix.target }}" .
+          docker run --rm "better-os-e2e:${{ matrix.target }}"
+          rm -rf dist/e2e
+      - name: Upload Debian packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: better-os-deb-packages-${{ matrix.target }}
+          path: |
+            dist/${{ matrix.target }}/*.deb
+            dist/${{ matrix.target }}/*.deb.sha256
