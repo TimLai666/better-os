@@ -8,31 +8,49 @@ permissions:
   contents: write
 
 jobs:
-  apply-device-history:
+  restore-investigation-pages:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: feature/better-monitor-ui
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Apply device history and NetworkManager metadata patch
+      - name: Restore History, Incidents, and Diagnostics
         run: |
-          base64 -d .github/monitor-device-history.patch.gz.b64 | gzip -d > /tmp/monitor-device-history.patch
-          git apply --check /tmp/monitor-device-history.patch
-          git apply /tmp/monitor-device-history.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          app = Path('crates/monitor-gui/src/app.rs')
+          source = app.read_text()
+          if 'fn render_history(&self' not in source:
+              block = Path('/tmp/monitor-missing-pages.rs')
+              import base64, gzip
+              encoded = Path('.github/monitor-missing-pages.rs.gz.b64').read_bytes()
+              block.write_bytes(gzip.decompress(base64.b64decode(encoded)))
+              marker = '    fn empty_hardware_page('
+              if source.count(marker) != 1:
+                  raise SystemExit(f'empty page marker count: {source.count(marker)}')
+              source = source.replace(marker, block.read_text() + marker, 1)
+              app.write_text(source)
+          PY
           cargo fmt --all
-      - name: Commit device history parity
+      - name: Commit page recovery
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/monitor-gui/src/app.rs crates/monitor-gui/src/linux.rs crates/monitor-gui/src/parity.rs docs/better-monitor-resources-v1.10.2-parity.md
-          git commit -m "feat(monitor): add per-device history and network names"
+          git add crates/monitor-gui/src/app.rs
+          if git diff --cached --quiet; then
+            echo "Pages already present"
+            exit 0
+          fi
+          git commit -m "fix(monitor): restore investigation pages"
+          git pull --rebase origin feature/better-monitor-ui
           git push origin HEAD:feature/better-monitor-ui
 
   rust:
-    needs: apply-device-history
+    needs: restore-investigation-pages
     runs-on: ubuntu-latest
     env:
       RUST_FONTCONFIG_DLOPEN: "1"
