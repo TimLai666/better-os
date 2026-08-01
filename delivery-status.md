@@ -42,7 +42,7 @@ boundary that keeps privileged mutation out of the GUI and CLI.
 | M15 | GUI real execution | agent | done | background transaction with live progress, cancel offered only while honorable, real failure copy in both locales |
 | M16 | cutover and documentation | agent | done | real execution by default, daemon packaging verified, AGENTS/ENG/README/architecture/security updated |
 | M17 | container end-to-end verification | agent | done | `chefer run packaging/e2e/appcipe.yml`: real dpkg, real system bus, real polkitd, unauthorized request refused |
-| M18 | four-way packaging matrix on CI | agent | todo | ubuntu 22.04/24.04 × amd64/arm64 build, verify, and container e2e |
+| M18 | four-way packaging matrix on CI | agent | done | CI run 30688730458: build, verify, and container end-to-end passed on ubuntu 22.04/24.04 × amd64/arm64 |
 
 ## Current Blockers
 
@@ -50,9 +50,10 @@ Better Manager can now install, update, remove, and roll back first-party
 components for real, and the privileged service has been exercised against a
 real dpkg, a real system bus, and a real polkitd inside a disposable container.
 
-What is still unverified is breadth rather than depth: only ubuntu-24.04 on
-amd64 has been built and run locally. The other three release and architecture
-combinations, and the container run on CI, are milestone M18.
+CI run 30688730458 then ran the same check on all four supported combinations —
+ubuntu 22.04 and 24.04, amd64 and arm64 — and every one passed, including the
+service claiming its bus name and refusing an unauthorized request on native
+arm64 hardware.
 
 No active blocker remains for the real-integration work. The privileged daemon
 IPC protocol, which `AGENTS.md` required to be decided before any real system
@@ -77,9 +78,10 @@ policy still needs alignment.
 
 ## Next Verifiable Output
 
-The container end-to-end check running on CI across all four release and
-architecture combinations, so a packaging regression on 22.04 or arm64 is
-caught by the build rather than by a user.
+None outstanding. The next change should be scoped to a new ticket or to one of
+the recorded follow-ups: package signing, the public APT repository, the
+authenticated end of the authorization path, or a repair action for a
+transaction interrupted mid-flight.
 
 ## Next Ticket
 
@@ -346,4 +348,11 @@ Docker was not running on this machine; `systemctl --user start
 docker-desktop.service` started it, which needs no elevation and is reversible
 with the matching stop.
 
-Still not run anywhere: ubuntu-22.04, arm64, and the container check on CI.
+CI run 30688730458 closed the remaining gap: the four-way packaging matrix and
+the container end-to-end check both passed on ubuntu 22.04 and 24.04 across
+amd64 and native arm64.
+
+What still has no coverage is the authenticated half of the authorization path.
+A container has no interactive polkit agent, so every run proves that an
+unauthorized caller is refused, and none of them proves that an authorized one
+succeeds. That path has only been exercised against a fake authorizer.

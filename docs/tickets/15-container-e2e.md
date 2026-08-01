@@ -30,10 +30,11 @@
 ## Verification
 
 - `chefer run packaging/e2e/appcipe.yml`（ubuntu-24.04 / amd64）——exit 0
+- CI run 30688730458：四組 release/architecture 全數通過，含原生 arm64
 - `packaging/test-daemon-e2e.sh` 在 host 上直接執行會被守衛拒絕（exit 2）
 
 ## Out of scope
 
-- ubuntu-22.04 與 arm64 的容器執行，以及四組矩陣的完整覆蓋。
-- 帶認證代理的完整授權路徑：容器裡沒有可互動的 polkit agent，所以這裡驗證的是
-  「未授權必定被拒絕」，而不是「授權後會成功」。
+- 帶認證代理的完整授權路徑（見下）。
+- 容器裡沒有可互動的 polkit agent，所以這裡驗證的是「未授權必定被拒絕」，
+  而不是「授權後會成功」。後者目前只對 fake authorizer 測過。

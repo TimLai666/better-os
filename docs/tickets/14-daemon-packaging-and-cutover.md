@@ -23,11 +23,11 @@
 
 ## Acceptance criteria
 
-- [x] 乾淨的 Ubuntu 24.04 容器可安裝 daemon 套件並解出所有動態連結（22.04 待 CI 矩陣補跑）。
+- [x] 乾淨的 Ubuntu 22.04 與 24.04 容器可安裝 daemon 套件並解出所有動態連結。
 - [x] 容器內完成套件安裝、移除、重新安裝與 purge，dpkg 狀態相符；daemon 在真實 system bus 上取得名稱、回報協定版本、拒絕未授權請求且不留下 journal。
 - [x] 未安裝 daemon 時 GUI 與 CLI 都回報明確錯誤，不會假裝成功。
 - [x] 文件不再宣稱「沒有任何出貨路徑會套用套件變更」。
-- [ ] 四組 release/architecture 的封裝矩陣全數通過（本機只驗證 ubuntu-24.04/amd64；其餘三組待 CI）。
+- [x] 四組 release/architecture 的封裝矩陣全數通過（CI run 30688730458）。
 - [x] `cargo fmt`、workspace check/test、clippy `-D warnings` 全數通過。
 
 ## Verification
