@@ -4,7 +4,7 @@
 **User Story:** 使用者在圖形介面按下安裝後，看得到真實的下載與安裝進度，
 知道什麼時候還能取消，失敗時看得懂發生了什麼。
 **Blocked by:** 12-real-platform-backends
-**Status:** todo
+**Status:** done
 
 ## What it delivers
 
@@ -19,12 +19,12 @@
 
 ## Acceptance criteria
 
-- [ ] 真實安裝期間介面不卡頓，進度會更新。
-- [ ] 下載中可取消並回到開始前狀態；安裝開始後取消鈕停用。
-- [ ] 每個新證據鍵在英文與正體中文都有文案，未知鍵仍走既有的保底顯示。
-- [ ] Mock demo 模式行為與現在一致，且畫面明確標示是 demo。
-- [ ] 操作進行中不會與設定寫入互相覆蓋。
-- [ ] `cargo fmt`、workspace check/test、clippy `-D warnings` 全數通過。
+- [x] 真實安裝期間介面不卡頓，進度會更新。
+- [x] 下載中可取消並回到開始前狀態；安裝開始後取消鈕停用。
+- [x] 每個新證據鍵在英文與正體中文都有文案，未知鍵仍走既有的保底顯示。
+- [x] Mock demo 模式行為與現在一致，且畫面明確標示是 demo。
+- [x] 操作進行中不會與設定寫入互相覆蓋。
+- [x] `cargo fmt`、workspace check/test、clippy `-D warnings` 全數通過。
 
 ## Verification
 

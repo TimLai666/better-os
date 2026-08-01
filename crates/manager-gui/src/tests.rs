@@ -242,3 +242,30 @@ fn synthetic_long_translations_wrap_at_the_supported_minimum_size() {
         );
     }
 }
+
+#[test]
+fn every_real_failure_reason_has_copy_in_both_locales() {
+    // A real transaction can fail in ways the simulation never could. Each of
+    // those needs words a person can act on, in both languages, or the screen
+    // falls back to saying nothing useful.
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let c = copy(locale);
+        for text in [
+            c.evidence_download_network,
+            c.evidence_checksum_mismatch,
+            c.evidence_daemon_unavailable,
+            c.evidence_polkit_denied,
+            c.evidence_restore_artifact_missing,
+            c.evidence_apt_busy,
+            c.evidence_apt_failed,
+            c.evidence_health_failed,
+            c.evidence_state_drift,
+            c.evidence_daemon_refused,
+            c.demo_mode_banner,
+            c.downloading_progress,
+            c.check_host_reconciliation,
+        ] {
+            assert!(!text.is_empty(), "{locale:?} is missing a failure reason");
+        }
+    }
+}

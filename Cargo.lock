@@ -3802,6 +3802,8 @@ dependencies = [
  "manager-platform",
  "manager-store",
  "serde_json",
+ "smol",
+ "uuid",
 ]
 
 [[package]]

@@ -1,7 +1,8 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{ActiveTheme, scroll::ScrollableElement, *};
 
-use crate::{app::ManagerApp, layout::COMPACT_VIEWPORT_WIDTH, model::Page};
+use crate::{app::ManagerApp, i18n::copy, layout::COMPACT_VIEWPORT_WIDTH, model::Page};
 
 impl ManagerApp {
     fn render_page(
@@ -53,6 +54,21 @@ impl Render for ManagerApp {
                     .flex_1()
                     .min_w_0()
                     .child(self.top_bar(compact, cx))
+                    // A simulation must never be mistaken for the real thing,
+                    // so demo mode says so on every screen rather than only in
+                    // settings.
+                    .when(self.is_demo(), |this| {
+                        this.child(
+                            div()
+                                .w_full()
+                                .px_5()
+                                .py_2()
+                                .bg(cx.theme().warning)
+                                .text_sm()
+                                .text_color(cx.theme().warning_foreground)
+                                .child(copy(self.locale).demo_mode_banner),
+                        )
+                    })
                     .child(
                         div().flex_1().min_h_0().overflow_y_scrollbar().p_5().child(
                             div()
