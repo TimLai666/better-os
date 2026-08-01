@@ -17,12 +17,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Decode and apply interaction patch
+      - name: Decode interaction patch
         run: |
           cat .github/monitor-interactions/chunk-*.b64 \
             | tr -d '\n' \
             | base64 -d > /tmp/monitor-interactions.patch
-
+          sha256sum /tmp/monitor-interactions.patch
+          wc -c /tmp/monitor-interactions.patch
+          sed -n '220,240p' /tmp/monitor-interactions.patch
+      - name: Upload decoded patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: decoded-monitor-interactions-patch
+          path: /tmp/monitor-interactions.patch
+      - name: Apply interaction patch
+        run: |
           if git apply --check /tmp/monitor-interactions.patch; then
             git apply /tmp/monitor-interactions.patch
             cargo fmt --all
