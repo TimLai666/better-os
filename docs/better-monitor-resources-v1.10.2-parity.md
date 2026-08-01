@@ -33,7 +33,7 @@ This checklist is the merge gate for the GNOME Resources parity portion of Bette
 | Search toolbar | ✅ | Shared Apps / Processes search toolbar exists. Processes supports `|` terms. |
 | Virtualized data table | ✅ | GPUI component `DataTable` is used for both Apps and Processes. |
 | Multi-selection toolbar | ✅ | Processes separates row focus from an explicit multi-PID selection set and batch toolbar. |
-| Split action button | ⬜ | Required for End Application and alternate force/pause/resume actions. |
+| Split action button | ✅ | Apps uses End as the primary action with Force stop, Pause, and Resume in the adjacent dropdown. |
 | Context menu | 🟨 | Processes has a row context menu. Apps and batch-selection context menus remain incomplete. |
 | Confirmation dialog | ✅ | Graceful and force-stop actions use confirmation dialogs for Apps and Processes. |
 | Information dialog | ✅ | Application Information and Process Information dialogs exist; Process Options remains a separate GPUI window. |
@@ -78,9 +78,9 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | GPU / GPU memory / encoder / decoder | 🟨 | Columns exist with explicit unavailable values; attribution adapters are missing. |
 | Swap / combined memory | ✅ | Aggregated. |
 | Application information dialog | ✅ | Implemented in the Apps action column. |
-| End Application split action | ⬜ | Separate row buttons exist; Resources-style split action is missing. |
+| End Application split action | ✅ | End is the primary action; Force stop, Pause, and Resume share the dropdown while preserving confirmations. |
 | Graceful end / force / pause / resume | ✅ | Signals are implemented with explicit denied/unavailable results. |
-| Context menu | ⬜ | Missing. |
+| Context menu | ✅ | Apps exposes information, End, Force stop, Pause, and Resume from the row context menu. |
 | Confirmation dialogs | ✅ | End and Force actions require confirmation. |
 | Background/system grouping | 🟨 | Grouping reason is visible; dedicated visual separation needs refinement. |
 | Temporary refresh hold during interaction | ⬜ | Missing. |

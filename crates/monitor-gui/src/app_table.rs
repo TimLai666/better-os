@@ -2,21 +2,18 @@ use std::cmp::Ordering;
 
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Sizable,
-    button::{Button, ButtonVariants},
-    dialog::{
-        AlertDialog, DialogAction, DialogClose, DialogDescription, DialogFooter, DialogHeader,
-        DialogTitle,
-    },
+    ActiveTheme, Sizable, WindowExt,
+    button::{Button, ButtonVariants, DropdownButton},
     h_flex,
+    menu::{PopupMenu, PopupMenuItem},
     table::{Column, ColumnSort, TableDelegate, TableState},
 };
-use sysinfo::Signal;
+use sysinfo::{Pid, Signal};
 
 use crate::{
     app::MonitorWindow,
     linux::{self, AppGroup},
-    settings::MonitorSettings,
+    settings::{MonitorSettings, UnitBase},
     sort_preferences,
 };
 
@@ -106,7 +103,7 @@ impl AppColumn {
             Self::ReadTotal | Self::WriteTotal | Self::GpuMemory => 118.0,
             Self::Encoder | Self::Decoder => 98.0,
             Self::CombinedMemory => 132.0,
-            Self::Actions => 410.0,
+            Self::Actions => 232.0,
         }
     }
 
@@ -326,182 +323,210 @@ impl AppTableDelegate {
         &self,
         row_ix: usize,
         group: AppGroup,
-        cx: &mut Context<TableState<Self>>,
+        _: &mut Context<TableState<Self>>,
     ) -> AnyElement {
-        let term_target = self.monitor.clone();
-        let kill_target = self.monitor.clone();
-        let stop_target = self.monitor.clone();
-        let continue_target = self.monitor.clone();
-        let term_pids = group.pids.clone();
-        let kill_pids = group.pids.clone();
-        let stop_pids = group.pids.clone();
-        let continue_pids = group.pids.clone();
-        let app_name = group.display_name.clone();
-        let info_name = group.display_name.clone();
-        let info_description = format!(
-            "Identity: {}\nGrouped processes: {}\nGrouping evidence: {}\nPIDs: {}\nCPU: {:.1}%\nMemory: {}\nSwap: {}\nRead: {} total, {}/s\nWritten: {} total, {}/s",
-            group.id,
-            group.process_count,
-            group.grouping_reason,
-            group
-                .pids
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-            group.cpu_usage,
-            linux::format_bytes(group.memory, self.settings.unit_base),
-            linux::format_bytes(group.swap, self.settings.unit_base),
-            linux::format_bytes(group.read_total, self.settings.unit_base),
-            linux::format_bytes(group.read_speed, self.settings.unit_base),
-            linux::format_bytes(group.write_total, self.settings.unit_base),
-            linux::format_bytes(group.write_speed, self.settings.unit_base),
-        );
+        let info_group = group.clone();
+        let info_unit = self.settings.unit_base;
+        let term_monitor = self.monitor.clone();
+        let term_group = group.clone();
+        let menu_monitor = self.monitor.clone();
+        let menu_group = group.clone();
 
         h_flex()
             .items_center()
-            .flex_wrap()
             .gap_1()
             .child(
-                AlertDialog::new(cx)
-                    .trigger(
-                        Button::new(("app-information", row_ix))
-                            .outline()
-                            .small()
-                            .label("Info"),
-                    )
-                    .content(move |content, _, _| {
-                        content
-                            .child(
-                                DialogHeader::new()
-                                    .child(
-                                        DialogTitle::new()
-                                            .child(format!("{info_name} Information")),
-                                    )
-                                    .child(
-                                        DialogDescription::new()
-                                            .child(info_description.clone()),
-                                    ),
-                            )
-                            .child(
-                                DialogFooter::new().child(
-                                    DialogClose::new().child(
-                                        Button::new(("app-information-close", row_ix))
-                                            .outline()
-                                            .label("Close"),
-                                    ),
-                                ),
-                            )
-                    }),
-            )
-            .child(
-                AlertDialog::new(cx)
-                    .trigger(
-                        Button::new(("app-term", row_ix))
-                            .outline()
-                            .small()
-                            .label("End"),
-                    )
-                    .on_ok(move |_, _, cx| {
-                        let _ = term_target.update(cx, |monitor, cx| {
-                            monitor.signal_pids(&term_pids, Signal::Term);
-                            cx.notify();
-                        });
-                        true
-                    })
-                    .content(move |content, _, _| {
-                        content
-                            .child(
-                                DialogHeader::new()
-                                    .child(
-                                        DialogTitle::new().child(format!("End {app_name}?")),
-                                    )
-                                    .child(DialogDescription::new().child(
-                                        "All processes in this application group will receive a graceful termination signal.",
-                                    )),
-                            )
-                            .child(
-                                DialogFooter::new()
-                                    .child(DialogClose::new().child(
-                                        Button::new(("app-term-cancel", row_ix))
-                                            .outline()
-                                            .label("Cancel"),
-                                    ))
-                                    .child(DialogAction::new().child(
-                                        Button::new(("app-term-confirm", row_ix))
-                                            .warning()
-                                            .label("End Application"),
-                                    )),
-                            )
-                    }),
-            )
-            .child(
-                AlertDialog::new(cx)
-                    .trigger(
-                        Button::new(("app-kill", row_ix))
-                            .warning()
-                            .small()
-                            .label("Force"),
-                    )
-                    .on_ok(move |_, _, cx| {
-                        let _ = kill_target.update(cx, |monitor, cx| {
-                            monitor.signal_pids(&kill_pids, Signal::Kill);
-                            cx.notify();
-                        });
-                        true
-                    })
-                    .content(move |content, _, _| {
-                        content
-                            .child(
-                                DialogHeader::new()
-                                    .child(
-                                        DialogTitle::new().child("Force stop application?"),
-                                    )
-                                    .child(DialogDescription::new().child(
-                                        "Every process in this application group will stop immediately without cleanup.",
-                                    )),
-                            )
-                            .child(
-                                DialogFooter::new()
-                                    .child(DialogClose::new().child(
-                                        Button::new(("app-kill-cancel", row_ix))
-                                            .outline()
-                                            .label("Cancel"),
-                                    ))
-                                    .child(DialogAction::new().child(
-                                        Button::new(("app-kill-confirm", row_ix))
-                                            .warning()
-                                            .label("Force stop"),
-                                    )),
-                            )
-                    }),
-            )
-            .child(
-                Button::new(("app-stop", row_ix))
-                    .ghost()
+                Button::new(("app-information", row_ix))
+                    .outline()
                     .small()
-                    .label("Pause")
-                    .on_click(move |_, _, cx| {
-                        let _ = stop_target.update(cx, |monitor, cx| {
-                            monitor.signal_pids(&stop_pids, Signal::Stop);
-                            cx.notify();
-                        });
+                    .label("Info")
+                    .on_click(move |_, window, cx| {
+                        open_app_information_dialog(
+                            info_group.clone(),
+                            info_unit,
+                            row_ix,
+                            window,
+                            cx,
+                        );
                     }),
             )
             .child(
-                Button::new(("app-continue", row_ix))
-                    .ghost()
+                DropdownButton::new(("app-actions", row_ix))
+                    .outline()
                     .small()
-                    .label("Resume")
-                    .on_click(move |_, _, cx| {
-                        let _ = continue_target.update(cx, |monitor, cx| {
-                            monitor.signal_pids(&continue_pids, Signal::Continue);
-                            cx.notify();
-                        });
+                    .button(
+                        Button::new(("app-end-primary", row_ix))
+                            .label("End")
+                            .on_click(move |_, window, cx| {
+                                open_app_signal_dialog(
+                                    term_monitor.clone(),
+                                    term_group.pids.clone(),
+                                    Signal::Term,
+                                    format!("End {}?", term_group.display_name),
+                                    "All processes in this application group will receive a graceful termination signal.",
+                                    "End Application",
+                                    row_ix,
+                                    false,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                    )
+                    .dropdown_menu(move |menu, _, _| {
+                        app_action_menu(
+                            menu,
+                            menu_monitor.clone(),
+                            menu_group.clone(),
+                            row_ix,
+                        )
                     }),
             )
             .into_any_element()
     }
+}
+
+fn app_information(group: &AppGroup, unit_base: UnitBase) -> String {
+    format!(
+        "Identity: {}\nGrouped processes: {}\nGrouping evidence: {}\nPIDs: {}\nCPU: {:.1}%\nMemory: {}\nSwap: {}\nRead: {} total, {}/s\nWritten: {} total, {}/s",
+        group.id,
+        group.process_count,
+        group.grouping_reason,
+        group
+            .pids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+        group.cpu_usage,
+        linux::format_bytes(group.memory, unit_base),
+        linux::format_bytes(group.swap, unit_base),
+        linux::format_bytes(group.read_total, unit_base),
+        linux::format_bytes(group.read_speed, unit_base),
+        linux::format_bytes(group.write_total, unit_base),
+        linux::format_bytes(group.write_speed, unit_base),
+    )
+}
+
+fn open_app_information_dialog(
+    group: AppGroup,
+    unit_base: UnitBase,
+    row_ix: usize,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let title = format!("{} Information", group.display_name);
+    let description = app_information(&group, unit_base);
+    window.open_dialog(cx, move |dialog, _, _| {
+        dialog
+            .title(title.clone())
+            .child(description.clone())
+            .footer(move |_, _, _, _| {
+                vec![
+                    Button::new(("app-info-close", row_ix))
+                        .outline()
+                        .label("Close")
+                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                ]
+            })
+    });
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the dialog boundary carries the complete, typed application action contract"
+)]
+fn open_app_signal_dialog(
+    monitor: WeakEntity<MonitorWindow>,
+    pids: Vec<Pid>,
+    signal: Signal,
+    title: String,
+    description: &'static str,
+    confirm_label: &'static str,
+    row_ix: usize,
+    destructive: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window.open_dialog(cx, move |dialog, _, _| {
+        let confirm_monitor = monitor.clone();
+        let confirm_pids = pids.clone();
+        dialog
+            .title(title.clone())
+            .child(description)
+            .footer(move |_, _, _, _| {
+                let monitor = confirm_monitor.clone();
+                let pids = confirm_pids.clone();
+                let confirm = Button::new(("app-action-confirm", row_ix))
+                    .label(confirm_label)
+                    .when(destructive, |button| button.warning())
+                    .on_click(move |_, window, cx| {
+                        send_app_signal(monitor.clone(), pids.clone(), signal, cx);
+                        window.close_dialog(cx);
+                    });
+                vec![
+                    Button::new(("app-action-cancel", row_ix))
+                        .outline()
+                        .label("Cancel")
+                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                    confirm,
+                ]
+            })
+    });
+}
+
+fn send_app_signal(
+    monitor: WeakEntity<MonitorWindow>,
+    pids: Vec<Pid>,
+    signal: Signal,
+    cx: &mut App,
+) {
+    let _ = monitor.update(cx, |monitor, cx| {
+        monitor.signal_pids(&pids, signal);
+        cx.notify();
+    });
+}
+
+fn app_action_menu(
+    menu: PopupMenu,
+    monitor: WeakEntity<MonitorWindow>,
+    group: AppGroup,
+    row_ix: usize,
+) -> PopupMenu {
+    let force_monitor = monitor.clone();
+    let force_group = group.clone();
+    let pause_monitor = monitor.clone();
+    let pause_pids = group.pids.clone();
+    let resume_monitor = monitor;
+    let resume_pids = group.pids.clone();
+
+    menu.item(
+        PopupMenuItem::new("Force stop").on_click(move |_, window, cx| {
+            open_app_signal_dialog(
+                force_monitor.clone(),
+                force_group.pids.clone(),
+                Signal::Kill,
+                format!("Force stop {}?", force_group.display_name),
+                "Every process in this application group will stop immediately without cleanup.",
+                "Force stop",
+                row_ix,
+                true,
+                window,
+                cx,
+            );
+        }),
+    )
+    .separator()
+    .item(PopupMenuItem::new("Pause").on_click(move |_, _, cx| {
+        send_app_signal(pause_monitor.clone(), pause_pids.clone(), Signal::Stop, cx);
+    }))
+    .item(PopupMenuItem::new("Resume").on_click(move |_, _, cx| {
+        send_app_signal(
+            resume_monitor.clone(),
+            resume_pids.clone(),
+            Signal::Continue,
+            cx,
+        );
+    }))
 }
 
 impl TableDelegate for AppTableDelegate {
@@ -552,6 +577,57 @@ impl TableDelegate for AppTableDelegate {
             .truncate()
             .child(value)
             .into_any_element()
+    }
+
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some(group) = self.groups.get(row_ix).cloned() else {
+            return menu;
+        };
+        let info_group = group.clone();
+        let info_unit = self.settings.unit_base;
+        let action_monitor = self.monitor.clone();
+        let action_group = group;
+
+        menu.item(
+            PopupMenuItem::new("Application information").on_click(
+                move |_, window, cx| {
+                    open_app_information_dialog(
+                        info_group.clone(),
+                        info_unit,
+                        row_ix,
+                        window,
+                        cx,
+                    );
+                },
+            ),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new("End application").on_click(move |_, window, cx| {
+                open_app_signal_dialog(
+                    action_monitor.clone(),
+                    action_group.pids.clone(),
+                    Signal::Term,
+                    format!("End {}?", action_group.display_name),
+                    "All processes in this application group will receive a graceful termination signal.",
+                    "End Application",
+                    row_ix,
+                    false,
+                    window,
+                    cx,
+                );
+            }),
+        )
+        .separator()
+        .submenu("More actions", move |menu, _, _| {
+            app_action_menu(menu, self.monitor.clone(), self.groups[row_ix].clone(), row_ix)
+        })
     }
 
     fn perform_sort(
