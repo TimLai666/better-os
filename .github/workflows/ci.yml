@@ -5,6 +5,20 @@ on:
   pull_request:
 
 jobs:
+  source-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload Better Monitor source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: better-monitor-source-snapshot
+          path: |
+            crates/monitor-gui
+            crates/better-ui/src
+            crates/manager-gui/src/i18n.rs
+            docs/better-monitor-resources-v1.10.2-parity.md
+
   rust:
     runs-on: ubuntu-latest
     env:
