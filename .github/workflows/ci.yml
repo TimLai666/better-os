@@ -24,14 +24,8 @@ jobs:
 
           ui = Path("crates/better-ui/src/lib.rs")
           source = ui.read_text()
-          old = """pub fn support_state_panel(
-              state: &SupportState,
-              palette: SupportStatePalette,
-          ) -> impl IntoElement {"""
-          new = """pub fn support_state_panel(
-              state: SupportState,
-              palette: SupportStatePalette,
-          ) -> impl IntoElement {"""
+          old = "pub fn support_state_panel(state: &SupportState, palette: SupportStatePalette) -> impl IntoElement {"
+          new = "pub fn support_state_panel(state: SupportState, palette: SupportStatePalette) -> impl IntoElement {"
           if source.count(old) != 1:
               raise SystemExit(f"support-state signature matches: {source.count(old)}")
           ui.write_text(source.replace(old, new, 1))
