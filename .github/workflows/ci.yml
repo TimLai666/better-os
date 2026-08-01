@@ -1,10 +1,8 @@
-name: Apply Better Monitor interactions
+name: CI
 
 on:
   push:
-    branches:
-      - feature/better-monitor-ui
-  workflow_dispatch:
+  pull_request:
 
 permissions:
   contents: write
@@ -44,3 +42,73 @@ jobs:
           git add crates/monitor-gui/src/parity.rs crates/monitor-gui/src/process_table.rs
           git commit -m "feat(monitor): add parity interaction components"
           git push origin HEAD:feature/better-monitor-ui
+
+  rust:
+    runs-on: ubuntu-latest
+    env:
+      RUST_FONTCONFIG_DLOPEN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install GPUI Linux dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - run: cargo fmt --all -- --check
+      - run: cargo check --workspace
+      - run: cargo build --workspace
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace
+
+  package:
+    needs: rust
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: ubuntu-22.04
+            asset_target: ubuntu-22.04
+            architecture: amd64
+          - runner: ubuntu-24.04
+            target: ubuntu-24.04
+            asset_target: ubuntu-24.04
+            architecture: amd64
+          - runner: ubuntu-22.04-arm
+            target: ubuntu-22.04-arm64
+            asset_target: ubuntu-22.04
+            architecture: arm64
+          - runner: ubuntu-24.04-arm
+            target: ubuntu-24.04-arm64
+            asset_target: ubuntu-24.04
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUST_FONTCONFIG_DLOPEN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify native runner architecture
+        run: |
+          test "$(dpkg --print-architecture)" = "${{ matrix.architecture }}"
+          case "${{ matrix.architecture }}" in
+            amd64) test "$(uname -m)" = "x86_64" ;;
+            arm64) test "$(uname -m)" = "aarch64" ;;
+            *) exit 1 ;;
+          esac
+      # Keep release target artifacts isolated by Ubuntu release. Proc-macro
+      # shared objects are linked against the runner's glibc.
+      - name: Install GPUI and packaging dependencies
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - name: Build Debian packages
+        run: bash packaging/build-deb.sh --output-dir "dist/${{ matrix.target }}" --target "${{ matrix.asset_target }}"
+      - name: Verify Debian packages
+        run: bash packaging/verify-deb.sh "dist/${{ matrix.target }}" "${{ matrix.asset_target }}"
+      - name: Upload Debian packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: better-os-deb-packages-${{ matrix.target }}
+          path: |
+            dist/${{ matrix.target }}/*.deb
+            dist/${{ matrix.target }}/*.deb.sha256
