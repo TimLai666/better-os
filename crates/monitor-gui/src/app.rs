@@ -23,6 +23,7 @@ use sysinfo::{Disks, Networks, Pid, System};
 
 use crate::{
     app_table::AppTableDelegate,
+    i18n::{CopyKey, text},
     linux::{
         self, AppGroup, AppProcessSample, BatteryDevice, BlockCounters, CpuDetails, GpuDevice,
         NetworkMetadata, NpuDevice,
@@ -341,7 +342,7 @@ impl MonitorWindow {
         });
         let search_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Search apps and processes…")
+                .placeholder(text(settings.locale, CopyKey::SearchPlaceholder))
                 .clean_on_escape()
         });
 

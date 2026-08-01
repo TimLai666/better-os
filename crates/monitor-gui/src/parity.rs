@@ -1259,10 +1259,14 @@ Command: {}",
                                     .outline()
                                     .small()
                                     .label(self.settings.locale.label())
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                    .on_click(cx.listener(|this, _, window, cx| {
                                         this.settings.locale = this.settings.locale.next();
-                                        this.persist_settings();
-                                        cx.notify();
+                                        let placeholder =
+                                            text(this.settings.locale, CopyKey::SearchPlaceholder);
+                                        this.search_input.update(cx, |input, cx| {
+                                            input.set_placeholder(placeholder, window, cx);
+                                        });
+                                        this.sync_table_settings(cx);
                                     })),
                                 cx,
                             ),

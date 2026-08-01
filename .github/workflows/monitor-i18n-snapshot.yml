@@ -1,0 +1,20 @@
+name: Monitor I18n Snapshot
+
+on:
+  push:
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: better-monitor-i18n-source
+          include-hidden-files: true
+          path: |
+            Cargo.toml
+            Cargo.lock
+            crates/better-ui
+            crates/monitor-gui
+            docs/better-monitor-resources-v1.10.2-parity.md
