@@ -1,0 +1,142 @@
+name: Monitor Dialog Repair
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.head_ref == 'feature/better-monitor-interactions'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/better-monitor-interactions
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Replace dialog footer closures with elements
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/monitor-gui/src/app_table.rs")
+          source = path.read_text()
+
+          old_info = '''        dialog
+              .title(title.clone())
+              .child(description.clone())
+              .footer(move |_, _, _, _| {
+                  vec![
+                      Button::new(("app-info-close", row_ix))
+                          .outline()
+                          .label("Close")
+                          .on_click(|_, window, cx| window.close_dialog(cx)),
+                  ]
+              })'''
+          new_info = '''        dialog
+              .title(title.clone())
+              .child(description.clone())
+              .footer(
+                  h_flex().justify_end().gap_2().child(
+                      Button::new(("app-info-close", row_ix))
+                          .outline()
+                          .label("Close")
+                          .on_click(|_, window, cx| window.close_dialog(cx)),
+                  ),
+              )'''
+          if old_info in source:
+              source = source.replace(old_info, new_info, 1)
+          elif ".footer(move |_, _, _, _|" not in source:
+              pass
+          else:
+              raise SystemExit("information dialog footer anchor changed")
+
+          old_signal = '''    window.open_dialog(cx, move |dialog, _, _| {
+              let confirm_request = request.clone();
+              dialog
+                  .title(request.title.clone())
+                  .child(request.description)
+                  .footer(move |_, _, _, _| {
+                      let action_request = confirm_request.clone();
+                      let confirm =
+                          Button::new(("app-action-confirm", action_request.row_ix))
+                              .label(action_request.confirm_label);
+                      let confirm = if action_request.destructive {
+                          confirm.warning()
+                      } else {
+                          confirm
+                      };
+                      vec![
+                          Button::new(("app-action-cancel", action_request.row_ix))
+                              .outline()
+                              .label("Cancel")
+                              .on_click(|_, window, cx| window.close_dialog(cx)),
+                          confirm.on_click(move |_, window, cx| {
+                              send_app_signal(
+                                  action_request.monitor.clone(),
+                                  action_request.pids.clone(),
+                                  action_request.signal,
+                                  cx,
+                              );
+                              window.close_dialog(cx);
+                          }),
+                      ]
+                  })
+          });'''
+          new_signal = '''    window.open_dialog(cx, move |dialog, _, _| {
+              let action_request = request.clone();
+              let click_request = action_request.clone();
+              let confirm = Button::new(("app-action-confirm", action_request.row_ix))
+                  .label(action_request.confirm_label);
+              let confirm = if action_request.destructive {
+                  confirm.warning()
+              } else {
+                  confirm
+              };
+              dialog
+                  .title(request.title.clone())
+                  .child(request.description)
+                  .footer(
+                      h_flex()
+                          .justify_end()
+                          .gap_2()
+                          .child(
+                              Button::new(("app-action-cancel", action_request.row_ix))
+                                  .outline()
+                                  .label("Cancel")
+                                  .on_click(|_, window, cx| window.close_dialog(cx)),
+                          )
+                          .child(confirm.on_click(move |_, window, cx| {
+                              send_app_signal(
+                                  click_request.monitor.clone(),
+                                  click_request.pids.clone(),
+                                  click_request.signal,
+                                  cx,
+                              );
+                              window.close_dialog(cx);
+                          })),
+                  )
+          });'''
+          if old_signal in source:
+              source = source.replace(old_signal, new_signal, 1)
+          elif source.count(".footer(move |_, _, _, _|") == 0:
+              pass
+          else:
+              raise SystemExit("signal dialog footer anchor changed")
+
+          path.write_text(source)
+          PY
+          cargo fmt --all
+      - name: Commit repair
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/monitor-gui/src/app_table.rs
+          git commit -m "fix(monitor): render Apps dialog footers"
+          git push origin HEAD:feature/better-monitor-interactions
