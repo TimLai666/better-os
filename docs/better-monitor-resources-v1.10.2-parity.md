@@ -221,7 +221,7 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | `zh-TW` | 🟨 | Shell, navigation, selected-page headings, and language settings have Traditional Chinese copy; remaining page copy is incomplete. |
 | System language | ✅ | Shared Better OS locale resolves `LANG` to `zh-TW` or `en-US`. |
 | Runtime switching | 🟨 | Monitor switches and persists locale without restart; search placeholders, table headers, dialogs, and full page content still need catalog coverage. |
-| Pseudo-long locale tests | ⬜ | Missing. |
+| Pseudo-long locale tests | 🟨 | Shared readable expansion utility and unit tests exist; rendered screenshot coverage at required scale factors is still pending. |
 | Light/dark themes | 🧪 | Uses theme tokens; real-session review pending. |
 | 100/125/150% scaling | 🧪 | Not validated. |
 | Keyboard-only operation | 🟨 | Basic controls work; full flows and shortcuts incomplete. |

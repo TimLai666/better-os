@@ -65,6 +65,35 @@ impl Locale {
     }
 }
 
+/// Selects Traditional Chinese or English copy from the resolved locale.
+pub fn localized(locale: Locale, en_us: &'static str, zh_tw: &'static str) -> &'static str {
+    match locale.resolved() {
+        Locale::ZhTw => zh_tw,
+        _ => en_us,
+    }
+}
+
+/// Expands interface copy for pseudo-localization overflow tests.
+pub fn pseudo_long_text(input: &str) -> String {
+    const PAD: &str = " · extended";
+    let mut output = String::with_capacity(input.len().saturating_mul(2) + 8);
+    output.push('⟦');
+    for segment in input.split_inclusive('\n') {
+        let (line, newline) = segment
+            .strip_suffix('\n')
+            .map_or((segment, false), |line| (line, true));
+        output.push_str(line);
+        if !line.trim().is_empty() {
+            output.push_str(PAD);
+        }
+        if newline {
+            output.push('\n');
+        }
+    }
+    output.push('⟧');
+    output
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SupportStateKind {
     Success,
@@ -223,6 +252,24 @@ mod tests {
         assert_eq!(Locale::System.next(), Locale::EnUs);
         assert_eq!(Locale::EnUs.next(), Locale::ZhTw);
         assert_eq!(Locale::ZhTw.next(), Locale::System);
+    }
+
+    #[test]
+    fn localized_copy_uses_the_resolved_locale() {
+        assert_eq!(localized(Locale::EnUs, "Settings", "設定"), "Settings");
+        assert_eq!(localized(Locale::ZhTw, "Settings", "設定"), "設定");
+    }
+
+    #[test]
+    fn pseudo_long_copy_is_readable_and_longer() {
+        let source = "Force stop\nPermission required";
+        let expanded = pseudo_long_text(source);
+        assert!(expanded.starts_with('⟦'));
+        assert!(expanded.ends_with('⟧'));
+        assert!(expanded.contains("Force stop"));
+        assert!(expanded.contains("Permission required"));
+        assert!(expanded.contains('\n'));
+        assert!(expanded.len() >= source.len() + 20);
     }
 
     #[test]
