@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.betteros.Manager1
+Exec=/usr/libexec/better-manager-daemon
+User=root
+SystemdService=better-manager-daemon.service

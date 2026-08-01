@@ -12,7 +12,8 @@ component manifests ──> better-core validation ──> manager-core
 collectors ──> monitor-core samples/incidents/export ──> monitor-gui
 
 better-ui provides GPUI presentation primitives to both GUI crates.
-Privileged execution is a future boundary and is not implemented here.
+Privileged execution lives in `manager-daemon`, a separate root process reached
+over the D-Bus system bus and authorized by polkit. See ADR 0007.
 
 Release builds package the final GUI binaries as `.deb` assets. Package
 metadata declares runtime dependencies; the development-only GPUI linker
@@ -27,9 +28,10 @@ prerequisite.
 3. `manager-store` loads a versioned JSON state file. A future schema is
    preserved, malformed current-schema input is backed up, and stale writers
    are rejected.
-4. `manager-platform` reports the host profile. Every shipped implementation is
-   a mock: it answers from supplied values, confirms an already declared
-   checksum without fetching, and refuses to apply a package change.
+4. `manager-platform` reports the host profile, fetches artifacts, and reads
+   installed versions from dpkg. Reading the host is unprivileged; changing it
+   is not, and only an executor holding an authorized connection to the
+   privileged service can do it.
 5. `manager-core` validates the state against the catalog, resolves declared
    download, release-note, and disk-space metadata, produces a deterministic
    dry-run plan, and owns every mock lifecycle transition. A plan carries the
@@ -56,7 +58,15 @@ prerequisite.
   corrupt-state, and restart-resume tests. It never decides a lifecycle state.
 - `manager-platform` is the host seam. Its tests assert that the mock reports
   the profile it was given, that an unavailable free-disk value stays
-  unavailable, and that no shipped backend applies a package change.
+  unavailable, and that no backend applies a change without an authorized
+  privileged connection. That last assertion replaced an earlier one that no
+  shipped backend could apply a change at all; real installation exists now, so
+  the invariant had to say something narrower and still true rather than be
+  deleted.
+- `manager-daemon` is the privileged seam. Its APT driver, host probe, health
+  probe, and authorizer are all traits, so every transaction path — including
+  each rollback outcome — is tested without privileges, plus a private
+  session-bus test of the D-Bus surface itself.
 - Monitor behavior uses a fake collector and in-memory history.
 - `manager-gui` uses the demo catalog and state to assert that its Update All
   path produces the same dry-run plan as `manager-core`, that every catalog
@@ -71,9 +81,11 @@ prerequisite.
 | Area | Required proof |
 | --- | --- |
 | Manifest | valid input, missing fields, schema version, cycles, conflicts, summary limit, closed icon set, restart scope |
-| Manager | list, status, declared disk-space preflight, release-note propagation, install/update/enable/disable/verify/restore mock lifecycle, no host mutation |
+| Manager | list, status, declared disk-space preflight, release-note propagation, install/update/enable/disable/verify/restore lifecycle, dpkg reconciliation, real-plan validation |
 | Manager store | schema preservation, atomic JSON writes, stale writers, restart resume |
-| Manager platform | profile reporting, unavailable values, no shipped package mutation |
+| Manager platform | profile reporting, unavailable values, checksum-named artifact cache, dpkg version parsing, no mutation without an authorized privileged connection |
+| Manager IPC | wire contract round-trips and every rejection case |
+| Manager daemon | plan revalidation, artifact staging, APT driver, health checks, rollback outcomes, D-Bus surface over a private session bus |
 | Monitor | sample storage, incident creation, export redaction boundary |
 | GUI | workspace build and launch smoke test on a Linux desktop, manifest-driven presentation, appearance default and migration |
 | Release package | no `*-dev` in `Depends`, clean APT install, dynamic-library check, manager and monitor launch |
@@ -91,7 +103,8 @@ replaceable until its storage decision is explicit.
 - GitHub Release assets will later provide checksums and signatures, but the
   signature format is intentionally not chosen yet.
 - Manifest lifecycle commands are data only. No component command is executed
-  by the current manager.
+  by the manager or by the privileged service. The service derives everything
+  it runs from the package name, never from a manifest-supplied string.
 - A manifest declares its own summary, icon, and restart scope. A component
   without a shipped translation is presented from those values rather than
   hidden. See [ADR 0006](docs/decisions/0006-manifest-declared-presentation.md).

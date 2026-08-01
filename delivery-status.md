@@ -2,12 +2,14 @@
 
 ## Current Phase
 
-Better Manager Issue #8 gap closure handed off for branch review
+Better Manager applies real component transactions; container end-to-end
+verification is the remaining gap
 
 ## Stage Objective
 
-Keep the component contract, non-privileged manager planning path, and the
-Issue #8 Better Manager UI verifiable before adding real system integration.
+Turn Better Manager from a planning-only tool into one that actually installs,
+updates, removes, and rolls back first-party components, without weakening the
+boundary that keeps privileged mutation out of the GUI and CLI.
 
 ## Active Workstreams
 
@@ -17,6 +19,7 @@ Issue #8 Better Manager UI verifiable before adding real system integration.
 - Manifest-declared presentation, platform boundary, and dark-first appearance
 - Monitor observation contracts
 - Release packaging contract, clean-install verification, and license notices
+- Privileged daemon IPC contract, real artifact download, and APT execution
 
 ## Milestones
 
@@ -32,8 +35,29 @@ Issue #8 Better Manager UI verifiable before adding real system integration.
 | M8 | v0.1.0 public release | agent | done | GitHub Release assets, public re-download checksum verification, and manifest checksum mapping |
 | M9 | Better Manager Issue #8 functional acceptance | agent | done | Chefer AppCipe passed fmt, workspace check/test, clippy, CLI lifecycle smoke, and GUI headless smoke |
 | M10 | Issue #8 remaining gap closure | agent | done | manifest presentation and restart metadata, `manager-platform`, manifest-driven GUI, dark-first appearance, ADRs 0004-0006 |
+| M11 | privileged IPC decision and wire contract | agent | done | ADR 0007, `manager-ipc` with 24 rejection and round-trip tests, `cargo fmt`/check/test/clippy `-D warnings` |
+| M12 | core execution seam and state schema v2 | agent | done | lifecycle suite green through the mock driver, v1 state migration, real-plan validation |
+| M13 | privileged daemon | agent | done | 39 unit tests against fake APT/host/health, 6 private session-bus tests, daemon `.deb` with unit, polkit policy, and bus config |
+| M14 | real download, dpkg reconciliation, and D-Bus client | agent | done | checksum-named artifact cache, drift detection blocking planning, CLI `--execution real` reporting `daemon.unavailable` |
+| M15 | GUI real execution | agent | done | background transaction with live progress, cancel offered only while honorable, real failure copy in both locales |
+| M16 | cutover and documentation | agent | done | real execution by default, daemon packaging verified, AGENTS/ENG/README/architecture/security updated |
+| M17 | container end-to-end verification | agent | todo | Chefer AppCipe install → update → rollback against real dpkg state |
 
 ## Current Blockers
+
+Better Manager can now install, update, remove, and roll back first-party
+components for real. The one thing not yet done is running that against a real
+polkit, a real dpkg, and a real bus: every path is covered by tests against
+fakes, and the container end-to-end script has never executed because its guard
+correctly refuses to run on this desktop. Until that run happens, the honest
+statement is that the code is complete and unverified end to end.
+
+No active blocker remains for the real-integration work. The privileged daemon
+IPC protocol, which `AGENTS.md` required to be decided before any real system
+installation or rollback, is decided in ADR 0007: a D-Bus system service
+authorized by polkit. Package signing and the public APT repository stay
+deferred by explicit scope choice, not by omission; the manager verifies
+artifact checksums instead.
 
 No active blocker remains for Ticket 06. The target-specific asset naming and
 manifest mapping decision is recorded in ADR 0002, the release packaging changes
@@ -51,13 +75,16 @@ policy still needs alignment.
 
 ## Next Verifiable Output
 
-The initial six-ticket delivery and Issue #8 are complete. Keep the next change
-scoped to a new ticket or an explicit decision about the deferred APT
-repository, signing, privileged IPC, or real system integration work.
+A real install, update, and rollback inside a disposable Chefer AppCipe, with
+`packaging/test-daemon-e2e.sh` and `BETTER_OS_E2E_CONTAINER=1`, asserting dpkg
+state and the daemon journal afterwards. Every code path is covered by tests
+against fakes; what has never run is the combination of a real polkit, a real
+dpkg, and a real bus.
 
 ## Next Ticket
 
-None — the initial planned tickets and Issue #8 are complete
+None — tickets 09 through 14 are complete. The next change is the container
+end-to-end run, or a new ticket.
 
 ## Decision Log
 
@@ -140,6 +167,41 @@ None — the initial planned tickets and Issue #8 are complete
   timestamp: 2026-08-01
   impacted_ticket_ids: [08]
 
+- decision: make the privileged boundary a D-Bus system service authorized by
+  polkit, implemented with zbus
+  rationale: the target desktop already runs polkit and the system bus for every
+  privileged desktop operation, so the authentication prompt and activation are
+  provided and already audited rather than reimplemented; see ADR 0007
+  timestamp: 2026-08-01
+  impacted_ticket_ids: [09, 11, 14]
+- decision: carry plans and outcomes as JSON documents defined once in a shared
+  `manager-ipc` crate, with the client downloading artifacts and the daemon
+  re-hashing what it receives over a file descriptor
+  rationale: one definition for both sides beats a hand-matched D-Bus encoding
+  for a schema this deep, and keeping TLS out of the root process costs nothing
+  in integrity because the daemon must treat the client as untrusted anyway
+  timestamp: 2026-08-01
+  impacted_ticket_ids: [09, 11, 12]
+- decision: make real execution the default for both the CLI and the GUI, with
+  an explicit demo mode that says so on screen
+  rationale: a manager that quietly simulated would report a change that never
+  happened; a missing privileged service is an error, not a reason to pretend
+  timestamp: 2026-08-01
+  impacted_ticket_ids: [13, 14]
+- decision: offer cancellation only while the transaction is still downloading
+  rationale: once the plan has gone to the privileged service the host may
+  already have changed, and a cancel button there would promise a restoration
+  nothing performed
+  timestamp: 2026-08-01
+  impacted_ticket_ids: [10, 13]
+- decision: keep package signing and the public APT repository deferred while
+  real installation lands
+  rationale: the user scoped this round to real execution; published checksums
+  are already the integrity mechanism and signing needs a key custody decision
+  of its own
+  timestamp: 2026-08-01
+  impacted_ticket_ids: [09, 14]
+
 ## Source Links
 
 - [Issue #1](https://github.com/TimLai666/better-os/issues/1)
@@ -152,6 +214,7 @@ None — the initial planned tickets and Issue #8 are complete
 - [ADR 0004: Dark-first themeable appearance](docs/decisions/0004-dark-first-themeable-appearance.md)
 - [ADR 0005: Platform boundary crate](docs/decisions/0005-platform-boundary.md)
 - [ADR 0006: Manifest-declared presentation](docs/decisions/0006-manifest-declared-presentation.md)
+- [ADR 0007: Privileged daemon IPC protocol](docs/decisions/0007-privileged-daemon-ipc.md)
 - [Third-party license inventory](docs/third-party-licenses.md)
 - [Pull request #15](https://github.com/TimLai666/better-os/pull/15)
 - [v0.1.0 release](https://github.com/TimLai666/better-os/releases/tag/v0.1.0)
@@ -205,6 +268,31 @@ package mutation ran.
 The temporary `better-manager-gpui-complete/` directory was moved to the
 desktop trash after the destination file set was verified.
 
+Real system integration is planned as tickets 09 through 14. Ticket 09 is done:
+ADR 0007 records the D-Bus and polkit decision with its rejected alternatives
+and its accepted residual risk, ADR 0005 no longer claims the protocol is
+undecided, and `manager-ipc` holds the wire contract both halves will share.
+Local `cargo fmt --all -- --check`, `cargo check --workspace --offline`,
+`cargo test --workspace --offline`, and `cargo clippy --workspace --all-targets
+--offline -- -D warnings` all passed; `manager-ipc` contributes 24 tests, mostly
+rejection cases. No daemon, no download code, and no APT invocation exists yet,
+so nothing in this branch can still apply a package change and the shipped
+backends all continue to refuse.
+
+Tickets 09 through 14 are done. Ticket 10 is done. `Manager::advance` now consumes a `StageOutcome` a driver
+produced rather than one the caller scripted; `advance_mock` translates the old
+scripted vocabulary into the same outcomes, which is why the 20 existing
+lifecycle tests still pass unchanged in meaning. Plan steps, component records,
+and snapshots carry artifact identity, so a real transaction can say what it is
+installing and a restore has something verifiable to reinstall. State schema
+version 2 migrates version 1 files in place instead of quarantining them, and a
+version 1 restore point is honest that it does not know which artifact produced
+it: simulations still offer that restore, real transactions refuse it. Local
+`cargo fmt --all -- --check`, `cargo check --workspace --offline`, `cargo test
+--workspace --offline`, and `cargo clippy --workspace --all-targets --offline --
+-D warnings` all passed, along with CLI install and `--fail-at installing`
+lifecycle smokes against a disposable state file.
+
 A branch audit against the Issue #8 text then found five gaps outside the
 acceptance-criteria list: no dark theme, no `manager-platform` crate,
 `replaces`/`enhances` never surfaced, component icon and purpose hardcoded to
@@ -213,3 +301,27 @@ five are closed under ticket 08, with ADRs 0004, 0005, and 0006 recording the
 decisions Issue #8 asked to be written down rather than made silently. The
 hardcoded-ID map also silently dropped any component outside that list from
 the GUI; presentation is now manifest-driven, so it does not.
+
+Tickets 11 through 14 completed the real path. `manager-daemon` is a D-Bus
+system service authorized by polkit that revalidates every plan from scratch
+against the host, applies it through local APT, health-checks what it applied,
+and rolls back what it can. `manager-platform` fetches artifacts into a cache
+named by checksum and reads installed versions from dpkg. The GUI runs the
+transaction off the UI thread and offers cancellation only while it can still
+be honored. Real execution is the default for both front ends; demo mode is
+explicit and visible.
+
+Local `cargo fmt --all -- --check`, `cargo check --workspace --offline`,
+`cargo test --workspace` (21 suites, no failures), and `cargo clippy --workspace
+--all-targets -- -D warnings` all passed. `packaging/build-deb.sh` and
+`packaging/verify-deb.sh` built and verified all three packages for
+ubuntu-24.04 on amd64, including the daemon's unit, polkit policy, and bus
+config. A `ZED_HEADLESS=1` GUI launch stayed alive for the full smoke window.
+CLI smokes confirmed that real mode without a daemon reports
+`daemon.unavailable` and writes no state, that `--execution mock` still walks
+the old lifecycle, and that reconciliation detects a recorded component dpkg
+has never heard of and blocks planning for it.
+
+What has not run: `packaging/test-daemon-e2e.sh` inside a container, and the
+four-way release/architecture packaging matrix. The daemon has never faced a
+real polkit or a real dpkg. That is milestone M17.

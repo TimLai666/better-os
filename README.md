@@ -7,19 +7,31 @@ at a time. It is not a Linux distribution fork.
 ## Current scaffold
 
 - `better-core` validates versioned component manifests.
-- `manager-core` creates deterministic non-privileged plans and mock lifecycle
-  transitions for install, update, enable, disable, verify, and restore.
-- `manager-store` persists only versioned local mock state with atomic writes,
+- `manager-core` plans install, update, enable, disable, verify, and restore,
+  and owns the lifecycle state machine. Whether a stage actually happened is
+  reported by a driver: a simulation scripts it, a real transaction observes it
+  at the privileged boundary.
+- `manager-store` persists versioned local state with atomic writes,
   stale-writer protection, corrupt-state backup, and restart resume.
 - `manager-platform` owns the system capability, download, package, and
-  privileged-executor interfaces. Every shipped implementation is a mock, and
-  no shipped code path applies a package change.
-- `manager-cli` and `manager-gui` share that core API and never execute
-  manifest lifecycle strings, APT, sudo, or shell commands.
+  privileged-executor interfaces. It downloads artifacts over HTTPS into a
+  cache named by checksum, reads installed versions from dpkg, and talks to the
+  privileged service. Applying a change requires an authorized connection to
+  that service; every executor that can be built without one refuses.
+- `manager-ipc` holds the wire contract the manager and the privileged service
+  share, so both are generated from one definition.
+- `manager-daemon` is the privileged service: a D-Bus system service authorized
+  by polkit that revalidates every plan against the host, applies it through
+  local APT, health-checks the result, and rolls back what it can on failure.
+  It ships as its own `better-manager-daemon` package.
+- `manager-cli` and `manager-gui` share the core API and never execute manifest
+  lifecycle strings, APT, sudo, or shell commands themselves. Every privileged
+  change goes through the service.
 - `monitor-core` defines samples, incidents, inventory, and redacted exports.
 - `better-ui`, `manager-gui`, and `monitor-gui` provide the GPUI application
-  boundary and mock screens. Better Manager is dark by default and also offers
-  light and system appearances.
+  boundary. Better Manager is dark by default and also offers light and system
+  appearances. It runs real transactions by default; a demo mode simulates them
+  and says so on screen.
 
 ## Development
 

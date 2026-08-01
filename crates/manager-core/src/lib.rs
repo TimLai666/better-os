@@ -1,21 +1,57 @@
-//! Shared, non-privileged component lifecycle planning and mock execution.
+//! Shared, non-privileged component lifecycle planning and execution control.
 //!
 //! Manifest lifecycle descriptors remain untrusted data. This crate never
 //! interprets them as shell commands, package-manager invocations, or system
-//! mutation. It only produces and advances deterministic mock state.
+//! mutation. It plans transactions and advances the lifecycle state machine;
+//! whether a stage was actually carried out on the host is decided by a driver
+//! in [`exec`], never here.
+
+pub mod exec;
 
 use better_core::{
     Artifact, ComponentCatalog, ComponentId, ComponentManifest, ComponentType, ManifestError,
     RestartScope,
 };
 pub use manager_platform::SystemProfile;
+use manager_platform::dpkg::{PackageStateProbe, upstream_version};
 use manager_platform::{PlatformError, SystemCapabilities};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
-pub const STATE_SCHEMA_VERSION: u32 = 1;
+/// Version 2 adds artifact identity to plan steps, component records, and
+/// snapshots, which a real execution path needs in order to know what it is
+/// installing and what it would restore.
+pub const STATE_SCHEMA_VERSION: u32 = 2;
+
+/// Whether a transaction is a deterministic simulation or a real host change.
+///
+/// A mock transaction never leaves this crate; a real one is carried out by a
+/// driver that talks to the privileged boundary. The distinction is persisted
+/// so a state file cannot be reloaded with the wrong meaning.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    #[default]
+    Mock,
+    Real,
+}
+
+/// The artifact a step installs, carried far enough into execution that a
+/// driver never has to re-derive it from the catalog.
+///
+/// `url` is absent for a restore, which reinstalls a version that is already
+/// cached rather than fetching it again.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PlanArtifact {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    pub sha256: String,
+    pub release_asset: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_bytes: Option<u64>,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -100,6 +136,13 @@ pub enum DesiredOperation {
 impl DesiredOperation {
     pub fn mutates_component(self) -> bool {
         !matches!(self, Self::Verify)
+    }
+
+    /// Whether the operation needs a package artifact to act on. Enabling,
+    /// disabling, verifying, and removing all work from what is already
+    /// installed.
+    pub fn uses_artifact(self) -> bool {
+        matches!(self, Self::Install | Self::Update | Self::Restore)
     }
 }
 
@@ -228,15 +271,26 @@ pub enum RecoveryStatus {
 pub struct FailureRecord {
     pub component: ComponentId,
     pub stage: OperationStage,
+    /// A stable machine key. Presentation layers own the localized wording.
     pub evidence: String,
+    /// Context a driver observed, such as the tail of a failed command. It is
+    /// diagnostic only: nothing branches on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     pub recovery: Option<RecoveryStatus>,
 }
 
+/// What a component looked like before a transaction touched it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ComponentSnapshot {
     pub installed_version: Option<String>,
     pub enabled: bool,
     pub health: HealthState,
+    /// The artifact that produced `installed_version`. Without it a restore has
+    /// a version to name but nothing to reinstall, which a real transaction
+    /// must refuse rather than pretend to satisfy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<PlanArtifact>,
 }
 
 impl ComponentSnapshot {
@@ -246,11 +300,13 @@ impl ComponentSnapshot {
                 installed_version: record.installed_version.clone(),
                 enabled: record.enabled,
                 health: record.health,
+                artifact: record.installed_artifact.clone(),
             },
             None => Self {
                 installed_version: None,
                 enabled: false,
                 health: HealthState::Healthy,
+                artifact: None,
             },
         }
     }
@@ -261,9 +317,17 @@ pub struct ComponentRecord {
     pub installed_version: Option<String>,
     pub enabled: bool,
     pub health: HealthState,
+    /// The artifact that produced `installed_version`, when the install was
+    /// recorded by a version of the manager that tracked one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_artifact: Option<PlanArtifact>,
     pub restore_snapshot: Option<ComponentSnapshot>,
     pub failure: Option<FailureRecord>,
     pub recovery: Option<RecoveryStatus>,
+    /// Set when the host and this record disagree. Reported, never silently
+    /// resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift: Option<DriftKind>,
 }
 
 impl Default for ComponentRecord {
@@ -272,9 +336,11 @@ impl Default for ComponentRecord {
             installed_version: None,
             enabled: false,
             health: HealthState::Healthy,
+            installed_artifact: None,
             restore_snapshot: None,
             failure: None,
             recovery: None,
+            drift: None,
         }
     }
 }
@@ -324,6 +390,9 @@ pub struct PlanStep {
     pub enhances: Vec<String>,
     pub paths: Vec<String>,
     pub restart_requirement: RestartRequirement,
+    /// The artifact this step acts on, for the operations that act on one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<PlanArtifact>,
     pub estimated_download_bytes: Option<u64>,
     #[serde(default)]
     pub required_disk_bytes: Option<u64>,
@@ -355,6 +424,15 @@ impl TransactionPlan {
 
     pub fn is_dry_run(&self) -> bool {
         self.dry_run
+    }
+
+    /// Whether carrying this plan out would change the host.
+    pub fn execution_mode(&self) -> ExecutionMode {
+        if self.dry_run {
+            ExecutionMode::Mock
+        } else {
+            ExecutionMode::Real
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -400,6 +478,17 @@ pub struct ActiveOperation {
     pub plan: TransactionPlan,
     pub stage: OperationStage,
     pub snapshots: BTreeMap<ComponentId, Option<ComponentRecord>>,
+}
+
+impl ActiveOperation {
+    /// Whether this transaction is putting a component back, which is the only
+    /// case where a partial or failed recovery is a meaningful outcome.
+    fn restores(&self) -> bool {
+        self.plan
+            .steps
+            .last()
+            .is_some_and(|step| matches!(step.operation, DesiredOperation::Restore))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -463,10 +552,28 @@ impl ManagerState {
                     "active plan revision is newer than state".to_string(),
                 ));
             }
+            // A real plan is now allowed, but only if it carries what a real
+            // execution needs. A step that would install something without
+            // naming the artifact it installs cannot be resumed or audited, so
+            // it is not a valid thing to have persisted.
             if !active.plan.dry_run {
-                return Err(StateValidationError::InvalidActivePlan(
-                    "active plan is not marked as a dry run".to_string(),
-                ));
+                for step in &active.plan.steps {
+                    if !step.operation.uses_artifact() {
+                        continue;
+                    }
+                    let Some(artifact) = &step.artifact else {
+                        return Err(StateValidationError::InvalidActivePlan(format!(
+                            "real plan step for {} has no artifact",
+                            step.component
+                        )));
+                    };
+                    if !is_sha256(&artifact.sha256) {
+                        return Err(StateValidationError::InvalidActivePlan(format!(
+                            "real plan step for {} has an invalid checksum",
+                            step.component
+                        )));
+                    }
+                }
             }
             if active.plan.roots.is_empty()
                 || active
@@ -533,9 +640,11 @@ impl ManagerState {
                 installed_version: Some(version.into()),
                 enabled,
                 health: HealthState::Healthy,
+                installed_artifact: None,
                 restore_snapshot: None,
                 failure: None,
                 recovery: None,
+                drift: None,
             },
         );
         self.bump_revision();
@@ -572,6 +681,13 @@ impl ManagerState {
             evidence,
         });
     }
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_uppercase())
 }
 
 fn validate_component_id(id: &ComponentId) -> Result<(), StateValidationError> {
@@ -612,11 +728,71 @@ fn validate_component_record(
     Ok(())
 }
 
+/// A scripted result used to drive the deterministic mock lifecycle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MockOutcome {
     Succeed,
     FailAt(OperationStage),
     RestorePartially,
+    RestoreRequiresManualRecovery,
+}
+
+/// Why a stage failed.
+///
+/// The key is stable and machine-readable so presentation layers can localize
+/// it; the detail is whatever the driver saw and is never branched on.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FailureEvidence {
+    pub key: String,
+    pub detail: Option<String>,
+}
+
+impl FailureEvidence {
+    pub fn new(key: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            detail: None,
+        }
+    }
+
+    pub fn with_detail(key: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            detail: Some(detail.into()),
+        }
+    }
+}
+
+/// How the host disagrees with what the manager recorded.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum DriftKind {
+    /// The record says installed; dpkg has never heard of it.
+    MissingOnHost,
+    /// Both agree it is installed, at different versions.
+    VersionMismatch { host: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DriftFinding {
+    pub component: ComponentId,
+    pub recorded: Option<String>,
+    pub drift: DriftKind,
+}
+
+/// What actually happened during a stage.
+///
+/// This replaces the caller-supplied [`MockOutcome`] at the lifecycle boundary.
+/// A driver reports what it observed; the state machine decides what that means
+/// for the transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StageOutcome {
+    Completed,
+    Failed(FailureEvidence),
+    /// A restore that put some, but not all, of the component back. Only
+    /// meaningful at the health check of a restore.
+    RestoredPartially,
+    /// A restore that could not put the component back at all.
     RestoreRequiresManualRecovery,
 }
 
@@ -633,6 +809,8 @@ pub enum DoctorCheckKind {
     Compatibility,
     ComponentHealth,
     RestoreData,
+    /// Whether the host still agrees with what was recorded.
+    HostReconciliation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -724,6 +902,29 @@ pub enum ManagerError {
     EmptyPlan,
     #[error("manager.error.no_active_operation")]
     NoActiveOperation,
+    /// A real restore has a version to name but no cached artifact to reinstall.
+    /// Planning refuses rather than promising a restore that cannot happen.
+    #[error("manager.error.restore_artifact_missing:{0}")]
+    RestoreArtifactMissing(ComponentId),
+    /// A recovery outcome arrived at a stage where it has no meaning.
+    #[error("manager.error.unexpected_stage_outcome:{stage:?}")]
+    UnexpectedStageOutcome { stage: OperationStage },
+    /// A real transaction is past the point where cancelling could put the host
+    /// back the way it was.
+    #[error("manager.error.not_cancelable:{stage:?}")]
+    NotCancelable { stage: OperationStage },
+    /// Progress could not be persisted. Continuing would leave the durable
+    /// state describing a transaction that has already moved on.
+    #[error("manager.error.state_not_saved:{0}")]
+    StateNotSaved(String),
+    /// The host could not be asked what it has installed.
+    #[error("manager.error.host_unreadable:{0}")]
+    HostUnreadable(ComponentId),
+    /// The host and the record disagree about this component. Planning is
+    /// blocked until that is resolved, rather than overwriting a state nobody
+    /// reviewed.
+    #[error("manager.error.host_drift:{0}")]
+    HostDrift(ComponentId),
 }
 
 /// The shared non-privileged planning and mock lifecycle API.
@@ -869,14 +1070,26 @@ impl Manager {
         }
     }
 
+    /// Plans one operation as a simulation.
     pub fn plan(
         &self,
         state: &ManagerState,
         id: &ComponentId,
         operation: DesiredOperation,
     ) -> Result<TransactionPlan, ManagerError> {
+        self.plan_in_mode(state, id, operation, ExecutionMode::Mock)
+    }
+
+    pub fn plan_in_mode(
+        &self,
+        state: &ManagerState,
+        id: &ComponentId,
+        operation: DesiredOperation,
+        mode: ExecutionMode,
+    ) -> Result<TransactionPlan, ManagerError> {
         self.validate_state(state)?;
         self.ensure_idle(state)?;
+        self.ensure_no_drift(state, id)?;
         let mut steps = Vec::new();
         let mut scheduled = BTreeSet::new();
         self.resolve(
@@ -887,17 +1100,19 @@ impl Manager {
             &mut scheduled,
             &mut steps,
         )?;
-        let disk_space = self.disk_space_check(&steps)?;
-        Ok(TransactionPlan {
-            state_revision: state.revision,
-            steps,
-            dry_run: true,
-            roots: vec![id.clone()],
-            disk_space,
-        })
+        self.finish_plan(state, steps, vec![id.clone()], mode)
     }
 
+    /// Plans every available update as a simulation.
     pub fn plan_all(&self, state: &ManagerState) -> Result<TransactionPlan, ManagerError> {
+        self.plan_all_in_mode(state, ExecutionMode::Mock)
+    }
+
+    pub fn plan_all_in_mode(
+        &self,
+        state: &ManagerState,
+        mode: ExecutionMode,
+    ) -> Result<TransactionPlan, ManagerError> {
         self.validate_state(state)?;
         self.ensure_idle(state)?;
         let mut steps = Vec::new();
@@ -907,6 +1122,7 @@ impl Manager {
             if self.status(state, &manifest.id)? != ComponentStatus::UpdateAvailable {
                 continue;
             }
+            self.ensure_no_drift(state, &manifest.id)?;
             roots.push(manifest.id.clone());
             self.resolve(
                 state,
@@ -917,11 +1133,32 @@ impl Manager {
                 &mut steps,
             )?;
         }
+        self.finish_plan(state, steps, roots, mode)
+    }
+
+    fn finish_plan(
+        &self,
+        state: &ManagerState,
+        steps: Vec<PlanStep>,
+        roots: Vec<ComponentId>,
+        mode: ExecutionMode,
+    ) -> Result<TransactionPlan, ManagerError> {
+        // A simulation may plan a restore against a snapshot recorded before
+        // artifacts were tracked. A real one may not: without the artifact
+        // there is nothing to reinstall, and saying otherwise would promise a
+        // restore that cannot happen.
+        if mode == ExecutionMode::Real {
+            for step in &steps {
+                if step.operation.uses_artifact() && step.artifact.is_none() {
+                    return Err(ManagerError::RestoreArtifactMissing(step.component.clone()));
+                }
+            }
+        }
         let disk_space = self.disk_space_check(&steps)?;
         Ok(TransactionPlan {
             state_revision: state.revision,
             steps,
-            dry_run: true,
+            dry_run: mode == ExecutionMode::Mock,
             roots,
             disk_space,
         })
@@ -971,10 +1208,16 @@ impl Manager {
         })
     }
 
+    /// Advances the lifecycle by one stage, given what actually happened during
+    /// it.
+    ///
+    /// The outcome is produced by a driver — deterministic in a simulation,
+    /// observed from the host in a real transaction — so the state machine
+    /// never decides for itself that a stage succeeded.
     pub fn advance(
         &self,
         state: &mut ManagerState,
-        outcome: MockOutcome,
+        outcome: StageOutcome,
     ) -> Result<OperationProgress, ManagerError> {
         self.validate_state(state)?;
         let active = state
@@ -982,8 +1225,22 @@ impl Manager {
             .clone()
             .ok_or(ManagerError::NoActiveOperation)?;
 
-        if matches!(outcome, MockOutcome::FailAt(stage) if stage == active.stage) {
-            return Ok(self.fail(state, active));
+        match outcome {
+            StageOutcome::Failed(evidence) => return Ok(self.fail(state, active, evidence)),
+            StageOutcome::RestoredPartially | StageOutcome::RestoreRequiresManualRecovery => {
+                if active.stage != OperationStage::CheckingHealth || !active.restores() {
+                    return Err(ManagerError::UnexpectedStageOutcome {
+                        stage: active.stage,
+                    });
+                }
+                let recovery = if outcome == StageOutcome::RestoredPartially {
+                    RecoveryStatus::PartiallyRestored
+                } else {
+                    RecoveryStatus::ManualRecoveryRequired
+                };
+                return Ok(self.fail_restore(state, active, recovery));
+            }
+            StageOutcome::Completed => {}
         }
 
         match active.stage {
@@ -1022,12 +1279,63 @@ impl Manager {
                 state.bump_revision();
                 Ok(OperationProgress::InProgress { stage: next })
             }
-            OperationStage::CheckingHealth => Ok(self.finish(state, active, outcome)),
+            OperationStage::CheckingHealth => Ok(self.finish(state, active)),
         }
     }
 
+    /// Advances using a scripted mock result.
+    ///
+    /// This is the deterministic path the demo and the lifecycle suite drive.
+    /// It translates a scripted intent into the same [`StageOutcome`] a real
+    /// driver would report, so both paths exercise one state machine.
+    pub fn advance_mock(
+        &self,
+        state: &mut ManagerState,
+        outcome: MockOutcome,
+    ) -> Result<OperationProgress, ManagerError> {
+        let active = state.active_operation.as_ref();
+        let stage = active.map(|active| active.stage);
+        let restores = active.is_some_and(ActiveOperation::restores);
+
+        let outcome = match outcome {
+            MockOutcome::FailAt(failing) if Some(failing) == stage => {
+                StageOutcome::Failed(FailureEvidence::new(failure_evidence(failing)))
+            }
+            MockOutcome::RestorePartially
+                if restores && stage == Some(OperationStage::CheckingHealth) =>
+            {
+                StageOutcome::RestoredPartially
+            }
+            MockOutcome::RestoreRequiresManualRecovery
+                if restores && stage == Some(OperationStage::CheckingHealth) =>
+            {
+                StageOutcome::RestoreRequiresManualRecovery
+            }
+            // A recovery outcome outside a restore's health check says nothing
+            // about this stage, which is how the mock lifecycle has always
+            // treated it.
+            _ => StageOutcome::Completed,
+        };
+        self.advance(state, outcome)
+    }
+
+    /// Abandons the active transaction and puts the component set back the way
+    /// it was.
+    ///
+    /// A real transaction can only be cancelled while it is still downloading.
+    /// Once the privileged boundary has begun applying packages, restoring the
+    /// recorded snapshot would claim the host was put back without anything
+    /// having put it back.
     pub fn cancel(&self, state: &mut ManagerState) -> Result<(), ManagerError> {
         self.validate_state(state)?;
+        if let Some(active) = &state.active_operation
+            && active.plan.execution_mode() == ExecutionMode::Real
+            && active.stage != OperationStage::Downloading
+        {
+            return Err(ManagerError::NotCancelable {
+                stage: active.stage,
+            });
+        }
         let active = state
             .active_operation
             .take()
@@ -1044,6 +1352,58 @@ impl Manager {
         Ok(())
     }
 
+    /// Compares what the manager recorded against what dpkg reports.
+    ///
+    /// Findings are reported, never applied: rewriting `installed_version` from
+    /// a probe would replace one unverified belief with another and lose the
+    /// evidence that the two disagree. Planning for a drifted component is
+    /// blocked until a person resolves it.
+    pub fn reconcile(
+        &self,
+        state: &mut ManagerState,
+        probe: &dyn PackageStateProbe,
+    ) -> Result<Vec<DriftFinding>, ManagerError> {
+        self.validate_state(state)?;
+        let mut findings = Vec::new();
+
+        for manifest in self.manifests().map(|manifest| manifest.id.clone()) {
+            let recorded = state
+                .component(&manifest)
+                .and_then(|record| record.installed_version.clone());
+            let host = probe
+                .installed_version(manifest.as_str())
+                .map_err(|_| ManagerError::HostUnreadable(manifest.clone()))?;
+
+            let drift = match (&recorded, &host) {
+                (None, _) => None,
+                (Some(_), None) => Some(DriftKind::MissingOnHost),
+                (Some(recorded), Some(host)) => {
+                    if upstream_version(host) == upstream_version(recorded) {
+                        None
+                    } else {
+                        Some(DriftKind::VersionMismatch { host: host.clone() })
+                    }
+                }
+            };
+
+            if let Some(record) = state.components.get_mut(&manifest) {
+                record.drift = drift.clone();
+            }
+            if let Some(drift) = drift {
+                findings.push(DriftFinding {
+                    component: manifest,
+                    recorded,
+                    drift,
+                });
+            }
+        }
+
+        if !findings.is_empty() {
+            state.bump_revision();
+        }
+        Ok(findings)
+    }
+
     pub fn doctor(&self, state: &ManagerState) -> Result<Vec<DoctorCheck>, ManagerError> {
         self.validate_state(state)?;
         let mut checks = vec![DoctorCheck {
@@ -1057,6 +1417,15 @@ impl Manager {
             } else {
                 DoctorCheckStatus::Warning
             };
+            if let Some(record) = state.component(&manifest.id)
+                && record.drift.is_some()
+            {
+                checks.push(DoctorCheck {
+                    kind: DoctorCheckKind::HostReconciliation,
+                    status: DoctorCheckStatus::Failed,
+                    component: Some(manifest.id.clone()),
+                });
+            }
             checks.push(DoctorCheck {
                 kind: DoctorCheckKind::Compatibility,
                 status: compatibility,
@@ -1389,6 +1758,27 @@ impl Manager {
         let mut conflicts = manifest.conflicts.clone();
         conflicts.sort();
         let artifact = self.artifact_for_profile(manifest);
+        let plan_artifact = match operation {
+            DesiredOperation::Install | DesiredOperation::Update => {
+                artifact.map(|artifact| PlanArtifact {
+                    url: Some(artifact.url.clone()),
+                    sha256: artifact.sha256.clone(),
+                    release_asset: artifact.release_asset.clone(),
+                    expected_bytes: artifact.download_size_bytes,
+                })
+            }
+            // A restore reinstalls what was already fetched once, so it names
+            // the recorded artifact rather than a URL to fetch again.
+            DesiredOperation::Restore => state
+                .component(&manifest.id)
+                .and_then(|record| record.restore_snapshot.as_ref())
+                .and_then(|snapshot| snapshot.artifact.clone())
+                .map(|artifact| PlanArtifact {
+                    url: None,
+                    ..artifact
+                }),
+            _ => None,
+        };
         PlanStep {
             component: manifest.id.clone(),
             operation,
@@ -1412,6 +1802,7 @@ impl Manager {
             } else {
                 RestartRequirement::NotRequired
             },
+            artifact: plan_artifact,
             estimated_download_bytes: uses_artifact
                 .then(|| artifact.and_then(|artifact| artifact.download_size_bytes))
                 .flatten(),
@@ -1480,6 +1871,7 @@ impl Manager {
             match step.operation {
                 DesiredOperation::Install | DesiredOperation::Update => {
                     record.installed_version = step.after_version.clone();
+                    record.installed_artifact = step.artifact.clone();
                     record.enabled = true;
                     record.health = HealthState::Degraded;
                 }
@@ -1500,11 +1892,13 @@ impl Manager {
                         .clone()
                         .ok_or_else(|| ManagerError::NoRestoreAvailable(step.component.clone()))?;
                     record.installed_version = snapshot.installed_version;
+                    record.installed_artifact = snapshot.artifact;
                     record.enabled = snapshot.enabled;
                     record.health = HealthState::Degraded;
                 }
                 DesiredOperation::Remove => {
                     record.installed_version = None;
+                    record.installed_artifact = None;
                     record.enabled = false;
                     record.health = HealthState::Healthy;
                 }
@@ -1513,32 +1907,13 @@ impl Manager {
         Ok(())
     }
 
-    fn finish(
-        &self,
-        state: &mut ManagerState,
-        active: ActiveOperation,
-        outcome: MockOutcome,
-    ) -> OperationProgress {
+    fn finish(&self, state: &mut ManagerState, active: ActiveOperation) -> OperationProgress {
         let operation = active
             .plan
             .steps
             .last()
             .map(|step| step.operation)
             .expect("active plan is non-empty");
-
-        if matches!(operation, DesiredOperation::Restore)
-            && matches!(
-                outcome,
-                MockOutcome::RestorePartially | MockOutcome::RestoreRequiresManualRecovery
-            )
-        {
-            let recovery = if outcome == MockOutcome::RestorePartially {
-                RecoveryStatus::PartiallyRestored
-            } else {
-                RecoveryStatus::ManualRecoveryRequired
-            };
-            return self.fail_restore(state, active, recovery);
-        }
 
         for step in &active.plan.steps {
             let snapshot = active
@@ -1605,6 +1980,7 @@ impl Manager {
             component: step.component.clone(),
             stage: OperationStage::CheckingHealth,
             evidence: "mock_restore_recheck_failed".to_string(),
+            detail: None,
             recovery: Some(recovery),
         };
         let record = state.components.entry(step.component.clone()).or_default();
@@ -1627,12 +2003,18 @@ impl Manager {
         OperationProgress::Failed { failure }
     }
 
-    fn fail(&self, state: &mut ManagerState, active: ActiveOperation) -> OperationProgress {
+    fn fail(
+        &self,
+        state: &mut ManagerState,
+        active: ActiveOperation,
+        evidence: FailureEvidence,
+    ) -> OperationProgress {
         let step = active.plan.steps.last().expect("active plan is non-empty");
         let failure = FailureRecord {
             component: step.component.clone(),
             stage: active.stage,
-            evidence: failure_evidence(active.stage).to_string(),
+            evidence: evidence.key,
+            detail: evidence.detail,
             recovery: None,
         };
         let changes_applied = matches!(
@@ -1681,6 +2063,17 @@ impl Manager {
             .iter()
             .filter_map(|(id, snapshot)| snapshot.clone().map(|snapshot| (id.clone(), snapshot)))
             .collect();
+    }
+
+    /// Refuses to plan for a component the host disagrees about.
+    ///
+    /// Applying a plan built from a record that no longer matches the machine
+    /// would overwrite a change the user never reviewed.
+    fn ensure_no_drift(&self, state: &ManagerState, id: &ComponentId) -> Result<(), ManagerError> {
+        match state.component(id).and_then(|record| record.drift.as_ref()) {
+            Some(_) => Err(ManagerError::HostDrift(id.clone())),
+            None => Ok(()),
+        }
     }
 
     fn ensure_idle(&self, state: &ManagerState) -> Result<(), ManagerError> {

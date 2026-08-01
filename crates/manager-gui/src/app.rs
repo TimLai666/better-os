@@ -2,6 +2,8 @@ use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
 use gpui::*;
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::{Theme, ThemeMode};
+use manager_core::ExecutionMode;
+use manager_core::exec::{CancelToken, RealDriver, RunnerEvent, StageProgress, TransactionRunner};
 use manager_core::{
     ActivityKind, ActivityRecord, ComponentFilterPreference, ComponentStatus, DesiredOperation,
     DiskSpaceCheck, DoctorCheck, HealthState, Manager, ManagerSettings, ManagerState, MockOutcome,
@@ -9,12 +11,27 @@ use manager_core::{
     StoredTheme, TransactionPlan,
 };
 use manager_platform::MockPlatform;
+use manager_platform::download::{ArtifactCache, HttpDownloader};
+use manager_platform::privileged::DbusPrivilegedExecutor;
 use manager_store::{JsonStore, StateStore};
 
 use crate::{
     i18n::{Locale, copy},
     model::{ActivityFilter, ComponentInfo, DetailTab, Page},
 };
+
+/// How this window runs transactions.
+///
+/// Real is the default: a manager that quietly simulated would tell a user
+/// their machine changed when it did not. The demo mode stays available for
+/// screenshots and for trying the flow without a privileged service, and says
+/// so on screen.
+fn default_execution_mode() -> ExecutionMode {
+    match std::env::var("BETTER_MANAGER_EXECUTION").as_deref() {
+        Ok("mock") | Ok("demo") => ExecutionMode::Mock,
+        _ => ExecutionMode::Real,
+    }
+}
 
 pub(crate) struct ManagerApp {
     pub(crate) page: Page,
@@ -28,7 +45,22 @@ pub(crate) struct ManagerApp {
     pub(crate) store: JsonStore,
     pub(crate) pending_plan: Option<TransactionPlan>,
     pub(crate) planning_error: Option<AppError>,
+    /// Whether this window simulates transactions or actually performs them.
+    pub(crate) execution: ExecutionMode,
+    /// Live progress from a running real transaction.
+    pub(crate) transfer: Option<Transfer>,
+    /// Set while a real transaction is running. Dropping it stops the work.
+    pub(crate) running: Option<Task<()>>,
+    pub(crate) cancel: Option<CancelToken>,
     pub(crate) _subscriptions: Vec<Subscription>,
+}
+
+/// What a real transaction is currently moving.
+#[derive(Clone, Debug)]
+pub(crate) struct Transfer {
+    pub(crate) component: String,
+    pub(crate) received_bytes: u64,
+    pub(crate) total_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,8 +108,34 @@ impl ManagerApp {
             store,
             pending_plan,
             planning_error,
+            execution: default_execution_mode(),
+            transfer: None,
+            running: None,
+            cancel: None,
             _subscriptions: vec![subscription],
         }
+    }
+
+    /// Whether this window can actually change the machine.
+    pub(crate) fn is_demo(&self) -> bool {
+        self.execution == ExecutionMode::Mock
+    }
+
+    /// Whether the user may still abandon the running transaction.
+    ///
+    /// A simulation can always be abandoned. A real one only until it has been
+    /// handed to the privileged service: after that the host may already have
+    /// changed, and offering a cancel would promise a restoration nothing
+    /// performed.
+    pub(crate) fn can_cancel_now(&self) -> bool {
+        if self.is_demo() {
+            return true;
+        }
+        self.state
+            .active_operation
+            .as_ref()
+            .map(|active| active.stage == OperationStage::Downloading)
+            .unwrap_or(true)
     }
 
     fn subscribe_to_search(
@@ -185,7 +243,7 @@ impl ManagerApp {
     }
 
     pub(crate) fn prepare_update_all(&mut self, cx: &mut Context<Self>) {
-        match self.manager.plan_all(&self.state) {
+        match self.manager.plan_all_in_mode(&self.state, self.execution) {
             Ok(plan) if !plan.is_empty() => {
                 self.pending_plan = Some(plan);
                 self.planning_error = None;
@@ -225,7 +283,10 @@ impl ManagerApp {
         operation: DesiredOperation,
         cx: &mut Context<Self>,
     ) {
-        match self.manager.plan(&self.state, id, operation) {
+        match self
+            .manager
+            .plan_in_mode(&self.state, id, operation, self.execution)
+        {
             Ok(plan) => {
                 self.pending_plan = Some(plan);
                 self.planning_error = None;
@@ -245,6 +306,9 @@ impl ManagerApp {
             Ok(_) => {
                 if self.commit_state(candidate) {
                     self.navigate(Page::Installing, cx);
+                    if !self.is_demo() {
+                        self.run_real_transaction(cx);
+                    }
                 } else {
                     cx.notify();
                 }
@@ -253,9 +317,119 @@ impl ManagerApp {
         }
     }
 
+    /// Runs the whole transaction off the UI thread.
+    ///
+    /// The runner owns the state and every save for the duration; the window
+    /// adopts what it reports rather than keeping a second copy in step. All
+    /// network and IPC happens on the background thread, so the interface keeps
+    /// drawing while packages are being fetched and applied.
+    fn run_real_transaction(&mut self, cx: &mut Context<Self>) {
+        let manager = self.manager.clone();
+        let store = self.store.clone();
+        let mut state = self.state.clone();
+        let profile = self.manager.profile().clone();
+        let cancel = CancelToken::new();
+        self.cancel = Some(cancel.clone());
+        self.transfer = None;
+
+        let (sender, receiver) = smol::channel::unbounded::<RunnerEvent>();
+        let worker = cx.background_spawn(async move {
+            let downloader = HttpDownloader::new(ArtifactCache::from_default_path());
+            let executor = match DbusPrivilegedExecutor::connect() {
+                Ok(executor) => executor,
+                Err(_) => {
+                    // Nothing was applied, so abandoning is honest here.
+                    let _ = manager.cancel(&mut state);
+                    let _ = store.save(&state);
+                    let _ = sender.send(RunnerEvent::StateSaved(Box::new(state))).await;
+                    return;
+                }
+            };
+            let driver = RealDriver::new(
+                &downloader,
+                &executor,
+                uuid::Uuid::new_v4().to_string(),
+                profile,
+            );
+            let mut runner = TransactionRunner::new(&manager, Box::new(driver), &store)
+                .with_cancel_token(cancel);
+            let _ = runner.run(&mut state, &mut |event| {
+                let _ = sender.send_blocking(event);
+            });
+        });
+
+        let pump = cx.spawn(async move |this, cx| {
+            while let Ok(event) = receiver.recv().await {
+                if this
+                    .update(cx, |app, cx| app.apply_runner_event(event, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        // Keeping the worker alive is the pump's job; the window only has to
+        // hold one handle.
+        self.running = Some(cx.background_spawn(async move {
+            worker.await;
+            pump.await;
+        }));
+    }
+
+    /// Adopts what the background transaction reported.
+    fn apply_runner_event(&mut self, event: RunnerEvent, cx: &mut Context<Self>) {
+        match event {
+            RunnerEvent::Progress(StageProgress::Downloading {
+                component,
+                received_bytes,
+                total_bytes,
+            }) => {
+                self.transfer = Some(Transfer {
+                    component,
+                    received_bytes,
+                    total_bytes,
+                });
+                cx.notify();
+            }
+            RunnerEvent::Progress(StageProgress::Applying { .. })
+            | RunnerEvent::StageEntered(_) => {
+                self.transfer = None;
+                cx.notify();
+            }
+            RunnerEvent::StateSaved(state) => {
+                self.state = *state;
+                self.pending_plan = self
+                    .state
+                    .active_operation
+                    .as_ref()
+                    .map(|active| active.plan.clone());
+                cx.notify();
+            }
+            RunnerEvent::Finished(progress) => {
+                self.transfer = None;
+                self.cancel = None;
+                match progress {
+                    OperationProgress::Finished { operation } => self.navigate(
+                        if operation == DesiredOperation::Restore {
+                            Page::Restored
+                        } else {
+                            Page::Finished
+                        },
+                        cx,
+                    ),
+                    OperationProgress::Failed { .. } => self.navigate(Page::Restore, cx),
+                    OperationProgress::InProgress { .. } => cx.notify(),
+                }
+            }
+        }
+    }
+
     pub(crate) fn advance_install(&mut self, cx: &mut Context<Self>) {
         let mut candidate = self.state.clone();
-        match self.manager.advance(&mut candidate, MockOutcome::Succeed) {
+        match self
+            .manager
+            .advance_mock(&mut candidate, MockOutcome::Succeed)
+        {
             Ok(progress) => {
                 if !self.commit_state(candidate) {
                     cx.notify();
@@ -279,6 +453,13 @@ impl ManagerApp {
     }
 
     pub(crate) fn cancel_install(&mut self, cx: &mut Context<Self>) {
+        // A real transaction is cancelled by asking the running work to stop,
+        // which it only honors while stopping still leaves the host as it was.
+        if let Some(cancel) = &self.cancel {
+            cancel.cancel();
+            cx.notify();
+            return;
+        }
         let mut candidate = self.state.clone();
         match self.manager.cancel(&mut candidate) {
             Ok(()) => {
@@ -299,7 +480,10 @@ impl ManagerApp {
         operation: DesiredOperation,
         cx: &mut Context<Self>,
     ) {
-        match self.manager.plan(&self.state, &component, operation) {
+        match self
+            .manager
+            .plan_in_mode(&self.state, &component, operation, self.execution)
+        {
             Ok(plan) => {
                 self.pending_plan = Some(plan);
                 self.planning_error = None;
@@ -553,7 +737,22 @@ impl ManagerApp {
             Some("mock_restore_recheck_failed") => c.restore_recheck_failed,
             Some("mock_restore_rechecked") | Some("mock_health_check_passed") => c.passed,
             Some("mock_operation_finished") => c.finished,
-            Some("mock_operation_cancelled") => c.cancel,
+            Some("mock_operation_cancelled") | Some("operation.cancelled") => c.cancel,
+            // Real execution reports what actually went wrong.
+            Some("download.network") => c.evidence_download_network,
+            Some("download.checksum_mismatch") => c.evidence_checksum_mismatch,
+            Some("daemon.unavailable") | Some("daemon.not_approved") => {
+                c.evidence_daemon_unavailable
+            }
+            Some("daemon.polkit_denied") => c.evidence_polkit_denied,
+            Some("restore.artifact_missing") => c.evidence_restore_artifact_missing,
+            Some(other) if other.starts_with("daemon.error.apt_busy") => c.evidence_apt_busy,
+            Some(other) if other.starts_with("daemon.error.apt_failed") => c.evidence_apt_failed,
+            Some(other) if other.starts_with("daemon.error.health_failed") => {
+                c.evidence_health_failed
+            }
+            Some(other) if other.starts_with("daemon.error.state_drift") => c.evidence_state_drift,
+            Some(other) if other.starts_with("daemon.") => c.evidence_daemon_refused,
             _ => c.none,
         }
     }

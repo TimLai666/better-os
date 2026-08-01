@@ -5,23 +5,6 @@ on:
   pull_request:
 
 jobs:
-  source-snapshot:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/upload-artifact@v4
-        with:
-          name: better-monitor-current-source
-          include-hidden-files: true
-          path: |
-            Cargo.toml
-            Cargo.lock
-            crates/better-ui
-            crates/monitor-core
-            crates/monitor-gui
-            docs/better-monitor-resources-v1.10.2-parity.md
-            delivery-status.md
-
   rust:
     runs-on: ubuntu-latest
     env:
@@ -76,6 +59,8 @@ jobs:
             arm64) test "$(uname -m)" = "aarch64" ;;
             *) exit 1 ;;
           esac
+      # Keep release target artifacts isolated by Ubuntu release. Proc-macro
+      # shared objects are linked against the runner's glibc.
       - name: Install GPUI and packaging dependencies
         run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
       - name: Build Debian packages

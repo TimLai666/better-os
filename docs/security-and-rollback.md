@@ -2,21 +2,43 @@
 
 ## Current guarantees
 
-- CLI and GUI create plans only.
-- No production code invokes `sudo`, `apt`, `dpkg`, or arbitrary manifest
-  commands.
+- CLI and GUI never change the system themselves. They plan, fetch, and ask.
+- Neither invokes `sudo`, `apt`, or an arbitrary manifest command. Reading
+  installed versions with `dpkg-query` is unprivileged and read-only.
+- A plan states whether it is a simulation or a real transaction, and a real
+  one must name the artifact of every step that installs something.
+- Only `manager-daemon` changes the system, and only for a caller polkit
+  authorized for `org.betteros.manager.apply-transaction`.
 - Monitor exports redact inventory values marked sensitive.
-- A transaction plan is observable and explicitly marked `dry_run`.
 
-## Future privileged boundary
+## The privileged boundary
 
-The privileged executor must be a separately reviewed process or service. It
-must receive a typed plan, validate it again, restrict allowed operations, log
-each step, run health checks, and preserve enough state to restore the previous
-component and default configuration.
+`manager-daemon` is a separately reviewed root process, reached over the D-Bus
+system bus and packaged on its own as `better-manager-daemon`. ADR 0007 records
+the protocol decision and its rejected alternatives.
 
-The IPC protocol is intentionally deferred. Do not infer a permanent protocol
-from the current Rust traits.
+It receives a typed plan and validates it again from scratch rather than
+trusting the client: payload shape and limits, a hard `better-*` component
+whitelist independent of any catalog, its own reading of the release and
+architecture, artifact names confined to its cache, a re-hash of the cached
+bytes immediately before installing, a cross-check of the `.deb` control fields,
+and a comparison of dpkg state against the plan's expected prior version. It
+logs every command it runs, health-checks what it applied, and keeps a rollback
+record per component.
+
+The rollback record is written immediately before the first APT call that
+touches a component, and never earlier. A plan refused during revalidation
+therefore leaves no restore point behind, because nothing changed. After a
+failure the daemon reports how far it got — restored, partially restored, or
+needing a person — and never claims a host was put back when it was not.
+
+If the daemon dies mid-transaction its journal entry stays in an executing
+state and is reported as needing manual recovery on the next start. An
+interrupted APT run is never silently resumed.
+
+APT executes dpkg maintainer scripts as root, and those are arbitrary code from
+dependency packages. That is inherent to installing Debian packages and is an
+accepted residual risk; see ADR 0007.
 
 ## Release security
 

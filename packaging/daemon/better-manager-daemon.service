@@ -1,0 +1,33 @@
+[Unit]
+Description=Better OS component transaction service
+Documentation=https://github.com/TimLai666/better-os/blob/main/docs/decisions/0007-privileged-daemon-ipc.md
+
+[Service]
+Type=dbus
+BusName=org.betteros.Manager1
+ExecStart=/usr/libexec/better-manager-daemon
+# The daemon exits on its own once idle. D-Bus activation starts it again on
+# the next request, so a package manager that is not managing packages is not
+# running.
+Restart=no
+
+# Hardening. See ADR 0007 for why the obvious remaining options are absent:
+# NoNewPrivileges is inherited by dpkg maintainer scripts that may legitimately
+# exec setuid helpers, ProtectSystem would stop dpkg writing /usr and /etc, and
+# PrivateNetwork would stop apt fetching dependencies from the archives.
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+DevicePolicy=closed
+
+# There is deliberately no [Install] section: this unit is only ever started by
+# D-Bus activation, never enabled at boot.

@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 871.
-- Packages with an SPDX license expression: 869.
+- Resolved Cargo packages: 876.
+- Packages with an SPDX license expression: 874.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `21ebb6b446915b76bc4db1db20bb24858c926757060e89212c704a827f8599ad`.
+- `Cargo.lock` SHA-256: `cf766666d48fdaf95aac473fbb2211b92caa97d130caf93da6cb5496dd79662b`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -25,14 +25,14 @@ source of truth for those packages.
 
 | License expression | Package records |
 | --- | ---: |
-| `MIT OR Apache-2.0` | 398 |
-| `MIT` | 185 |
-| `Apache-2.0 OR MIT` | 77 |
+| `MIT OR Apache-2.0` | 401 |
+| `MIT` | 186 |
+| `Apache-2.0 OR MIT` | 76 |
 | `MIT/Apache-2.0` | 35 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
-| `Zlib OR Apache-2.0 OR MIT` | 18 |
-| `GPL-3.0-or-later` | 12 |
+| `Zlib OR Apache-2.0 OR MIT` | 17 |
+| `GPL-3.0-or-later` | 14 |
 | `BSD-3-Clause` | 10 |
 | `MIT OR Apache-2.0 OR Zlib` | 10 |
 | `Apache-2.0/MIT` | 8 |
@@ -62,6 +62,7 @@ source of truth for those packages.
 | `BSD-2-Clause OR MIT OR Apache-2.0` | 1 |
 | `CC0-1.0 OR Apache-2.0` | 1 |
 | `CC0-1.0 OR MIT-0 OR Apache-2.0` | 1 |
+| `CDLA-Permissive-2.0` | 1 |
 | `MIT OR Zlib OR Apache-2.0` | 1 |
 | `bzip2-1.0.6` | 1 |
 
@@ -81,7 +82,9 @@ Better OS does not relicense or silently select a different expression.
 | `libfuzzer-sys` | `0.4.13` | `(MIT OR Apache-2.0) AND NCSA` | [crates.io](https://crates.io/crates/libfuzzer-sys/0.4.13) |
 | `manager-cli` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-core` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `manager-daemon` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-gui` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `manager-ipc` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-platform` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-store` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `monitor-core` | `0.1.0` | `GPL-3.0-or-later` | workspace |
@@ -90,9 +93,9 @@ Better OS does not relicense or silently select a different expression.
 | `r-efi` | `5.3.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/5.3.0) |
 | `r-efi` | `6.0.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/6.0.0) |
 | `self_cell` | `1.3.0` | `Apache-2.0 OR GPL-2.0-only` | [crates.io](https://crates.io/crates/self_cell/1.3.0) |
-| `zlog` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
-| `ztracing` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
-| `ztracing_macro` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `zlog` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `ztracing` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `ztracing_macro` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 
 ## Package inventory
 
@@ -122,7 +125,7 @@ Better OS does not relicense or silently select a different expression.
 | `anstyle-query` | `1.1.5` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/anstyle-query/1.1.5) |
 | `anstyle-wincon` | `3.0.11` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/anstyle-wincon/3.0.11) |
 | `anyhow` | `1.0.104` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/anyhow/1.0.104) |
-| `ar_archive_writer` | `0.5.3` | `Apache-2.0 WITH LLVM-exception` | [crates.io](https://crates.io/crates/ar_archive_writer/0.5.3) |
+| `ar_archive_writer` | `0.5.2` | `Apache-2.0 WITH LLVM-exception` | [crates.io](https://crates.io/crates/ar_archive_writer/0.5.2) |
 | `arbitrary` | `1.4.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/arbitrary/1.4.2) |
 | `arc-swap` | `1.9.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/arc-swap/1.9.2) |
 | `arg_enum_proc_macro` | `0.3.4` | `MIT` | [crates.io](https://crates.io/crates/arg_enum_proc_macro/0.3.4) |
@@ -197,8 +200,8 @@ Better OS does not relicense or silently select a different expression.
 | `chrono` | `0.4.45` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/chrono/0.4.45) |
 | `cipher` | `0.4.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/cipher/0.4.4) |
 | `clang-sys` | `1.9.1` | `Apache-2.0` | [crates.io](https://crates.io/crates/clang-sys/1.9.1) |
-| `clap` | `4.6.5` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/clap/4.6.5) |
-| `clap_builder` | `4.6.5` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/clap_builder/4.6.5) |
+| `clap` | `4.6.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/clap/4.6.4) |
+| `clap_builder` | `4.6.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/clap_builder/4.6.2) |
 | `clap_derive` | `4.6.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/clap_derive/4.6.4) |
 | `clap_lex` | `1.1.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/clap_lex/1.1.0) |
 | `cocoa` | `0.25.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/cocoa/0.25.0) |
@@ -206,7 +209,7 @@ Better OS does not relicense or silently select a different expression.
 | `cocoa-foundation` | `0.1.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/cocoa-foundation/0.1.2) |
 | `cocoa-foundation` | `0.2.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/cocoa-foundation/0.2.0) |
 | `codespan-reporting` | `0.13.1` | `Apache-2.0` | [crates.io](https://crates.io/crates/codespan-reporting/0.13.1) |
-| `collections` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `collections` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `color_quant` | `1.1.0` | `MIT` | [crates.io](https://crates.io/crates/color_quant/1.1.0) |
 | `colorchoice` | `1.0.5` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/colorchoice/1.0.5) |
 | `compression-codecs` | `0.4.38` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/compression-codecs/0.4.38) |
@@ -245,7 +248,7 @@ Better OS does not relicense or silently select a different expression.
 | `deranged` | `0.5.8` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/deranged/0.5.8) |
 | `derive_more` | `2.1.1` | `MIT` | [crates.io](https://crates.io/crates/derive_more/2.1.1) |
 | `derive_more-impl` | `2.1.1` | `MIT` | [crates.io](https://crates.io/crates/derive_more-impl/2.1.1) |
-| `derive_refineable` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `derive_refineable` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `digest` | `0.10.7` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/digest/0.10.7) |
 | `digest` | `0.11.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/digest/0.11.3) |
 | `dirs` | `6.0.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/dirs/6.0.0) |
@@ -334,19 +337,19 @@ Better OS does not relicense or silently select a different expression.
 | `gpu-allocator` | `0.28.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gpu-allocator/0.28.0) |
 | `gpu-descriptor` | `0.3.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gpu-descriptor/0.3.2) |
 | `gpu-descriptor-types` | `0.2.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gpu-descriptor-types/0.2.0) |
-| `gpui` | `0.2.2` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `gpui` | `0.2.2` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `gpui-component` | `0.5.2` | `Apache-2.0` | `git+https://github.com/longbridge/gpui-component?rev=88f102d13654fe25aa2fede076274b6b751a3704#88f102d13654fe25aa2fede076274b6b751a3704` |
 | `gpui-component-assets` | `0.5.1` | `Apache-2.0` | `git+https://github.com/longbridge/gpui-component?rev=88f102d13654fe25aa2fede076274b6b751a3704#88f102d13654fe25aa2fede076274b6b751a3704` |
 | `gpui-component-macros` | `0.5.1` | `Apache-2.0` | `git+https://github.com/longbridge/gpui-component?rev=88f102d13654fe25aa2fede076274b6b751a3704#88f102d13654fe25aa2fede076274b6b751a3704` |
-| `gpui_linux` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
-| `gpui_macos` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
-| `gpui_macros` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
-| `gpui_platform` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
-| `gpui_shared_string` | `0.1.0` | `missing package metadata` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
-| `gpui_util` | `0.1.0` | `missing package metadata` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
-| `gpui_web` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
-| `gpui_wgpu` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
-| `gpui_windows` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `gpui_linux` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `gpui_macos` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `gpui_macros` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `gpui_platform` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `gpui_shared_string` | `0.1.0` | `missing package metadata` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `gpui_util` | `0.1.0` | `missing package metadata` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `gpui_web` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `gpui_wgpu` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `gpui_windows` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `granit-parser` | `0.0.7` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/granit-parser/0.0.7) |
 | `grid` | `1.0.1` | `MIT` | [crates.io](https://crates.io/crates/grid/1.0.1) |
 | `h2` | `0.4.15` | `MIT` | [crates.io](https://crates.io/crates/h2/0.4.15) |
@@ -370,7 +373,7 @@ Better OS does not relicense or silently select a different expression.
 | `http` | `1.5.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/http/1.5.0) |
 | `http-body` | `1.1.0` | `MIT` | [crates.io](https://crates.io/crates/http-body/1.1.0) |
 | `http-body-util` | `0.1.4` | `MIT` | [crates.io](https://crates.io/crates/http-body-util/0.1.4) |
-| `http_client` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `http_client` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `httparse` | `1.10.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/httparse/1.10.1) |
 | `hybrid-array` | `0.4.14` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/hybrid-array/0.4.14) |
 | `hyper` | `1.11.0` | `MIT` | [crates.io](https://crates.io/crates/hyper/1.11.0) |
@@ -453,7 +456,9 @@ Better OS does not relicense or silently select a different expression.
 | `malloc_buf` | `0.0.6` | `MIT` | [crates.io](https://crates.io/crates/malloc_buf/0.0.6) |
 | `manager-cli` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-core` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `manager-daemon` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-gui` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `manager-ipc` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-platform` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-store` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `markdown` | `1.0.0` | `MIT` | [crates.io](https://crates.io/crates/markdown/1.0.0) |
@@ -461,7 +466,7 @@ Better OS does not relicense or silently select a different expression.
 | `markup5ever_rcdom` | `0.3.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/markup5ever_rcdom/0.3.0) |
 | `maybe-rayon` | `0.1.1` | `MIT` | [crates.io](https://crates.io/crates/maybe-rayon/0.1.1) |
 | `md-5` | `0.10.6` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/md-5/0.10.6) |
-| `media` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `media` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `memchr` | `2.8.3` | `Unlicense OR MIT` | [crates.io](https://crates.io/crates/memchr/2.8.3) |
 | `memmap2` | `0.9.11` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/memmap2/0.9.11) |
 | `memoffset` | `0.9.1` | `MIT` | [crates.io](https://crates.io/crates/memoffset/0.9.1) |
@@ -519,7 +524,6 @@ Better OS does not relicense or silently select a different expression.
 | `objc2-encode` | `4.1.0` | `MIT` | [crates.io](https://crates.io/crates/objc2-encode/4.1.0) |
 | `objc2-foundation` | `0.2.2` | `MIT` | [crates.io](https://crates.io/crates/objc2-foundation/0.2.2) |
 | `objc2-foundation` | `0.3.2` | `MIT` | [crates.io](https://crates.io/crates/objc2-foundation/0.3.2) |
-| `objc2-io-kit` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/objc2-io-kit/0.3.2) |
 | `objc2-io-surface` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/objc2-io-surface/0.3.2) |
 | `objc2-metal` | `0.2.2` | `MIT` | [crates.io](https://crates.io/crates/objc2-metal/0.2.2) |
 | `objc2-metal` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/objc2-metal/0.3.2) |
@@ -529,7 +533,6 @@ Better OS does not relicense or silently select a different expression.
 | `objc_exception` | `0.1.2` | `MIT` | [crates.io](https://crates.io/crates/objc_exception/0.1.2) |
 | `objc_id` | `0.1.1` | `MIT` | [crates.io](https://crates.io/crates/objc_id/0.1.1) |
 | `object` | `0.37.3` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/object/0.37.3) |
-| `object` | `0.39.1` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/object/0.39.1) |
 | `once_cell` | `1.21.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/once_cell/1.21.4) |
 | `once_cell_polyfill` | `1.70.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/once_cell_polyfill/1.70.2) |
 | `oo7` | `0.6.0` | `MIT` | [crates.io](https://crates.io/crates/oo7/0.6.0) |
@@ -547,7 +550,7 @@ Better OS does not relicense or silently select a different expression.
 | `pathfinder_simd` | `0.5.6` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pathfinder_simd/0.5.6) |
 | `pbkdf2` | `0.12.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pbkdf2/0.12.2) |
 | `percent-encoding` | `2.3.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/percent-encoding/2.3.2) |
-| `perf` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `perf` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `phf` | `0.11.3` | `MIT` | [crates.io](https://crates.io/crates/phf/0.11.3) |
 | `phf` | `0.13.1` | `MIT` | [crates.io](https://crates.io/crates/phf/0.13.1) |
 | `phf_codegen` | `0.11.3` | `MIT` | [crates.io](https://crates.io/crates/phf_codegen/0.11.3) |
@@ -622,7 +625,7 @@ Better OS does not relicense or silently select a different expression.
 | `redox_users` | `0.5.2` | `MIT` | [crates.io](https://crates.io/crates/redox_users/0.5.2) |
 | `ref-cast` | `1.0.26` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/ref-cast/1.0.26) |
 | `ref-cast-impl` | `1.0.26` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/ref-cast-impl/1.0.26) |
-| `refineable` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `refineable` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `regex` | `1.13.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/regex/1.13.1) |
 | `regex-automata` | `0.4.16` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/regex-automata/0.4.16) |
 | `regex-syntax` | `0.8.11` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/regex-syntax/0.8.11) |
@@ -656,7 +659,7 @@ Better OS does not relicense or silently select a different expression.
 | `ryu` | `1.0.23` | `Apache-2.0 OR BSL-1.0` | [crates.io](https://crates.io/crates/ryu/1.0.23) |
 | `same-file` | `1.0.6` | `Unlicense/MIT` | [crates.io](https://crates.io/crates/same-file/1.0.6) |
 | `schannel` | `0.1.29` | `MIT` | [crates.io](https://crates.io/crates/schannel/0.1.29) |
-| `scheduler` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `scheduler` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `schemars` | `1.2.2` | `MIT` | [crates.io](https://crates.io/crates/schemars/1.2.2) |
 | `schemars_derive` | `1.2.2` | `MIT` | [crates.io](https://crates.io/crates/schemars_derive/1.2.2) |
 | `scoped-tls` | `1.0.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/scoped-tls/1.0.1) |
@@ -717,7 +720,7 @@ Better OS does not relicense or silently select a different expression.
 | `strum` | `0.27.2` | `MIT` | [crates.io](https://crates.io/crates/strum/0.27.2) |
 | `strum_macros` | `0.27.2` | `MIT` | [crates.io](https://crates.io/crates/strum_macros/0.27.2) |
 | `subtle` | `2.6.1` | `BSD-3-Clause` | [crates.io](https://crates.io/crates/subtle/2.6.1) |
-| `sum_tree` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `sum_tree` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `sval` | `2.21.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/sval/2.21.0) |
 | `sval_buffer` | `2.21.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/sval_buffer/2.21.0) |
 | `sval_dynamic` | `2.21.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/sval_dynamic/2.21.0) |
@@ -736,7 +739,6 @@ Better OS does not relicense or silently select a different expression.
 | `synstructure` | `0.13.2` | `MIT` | [crates.io](https://crates.io/crates/synstructure/0.13.2) |
 | `sys-locale` | `0.3.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/sys-locale/0.3.2) |
 | `sysinfo` | `0.31.4` | `MIT` | [crates.io](https://crates.io/crates/sysinfo/0.31.4) |
-| `sysinfo` | `0.37.2` | `MIT` | [crates.io](https://crates.io/crates/sysinfo/0.37.2) |
 | `system-configuration` | `0.6.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/system-configuration/0.6.1) |
 | `system-configuration-sys` | `0.6.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/system-configuration-sys/0.6.0) |
 | `taffy` | `0.12.2` | `MIT` | [crates.io](https://crates.io/crates/taffy/0.12.2) |
@@ -760,6 +762,7 @@ Better OS does not relicense or silently select a different expression.
 | `tinyvec` | `1.12.0` | `Zlib OR Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/tinyvec/1.12.0) |
 | `tinyvec_macros` | `0.1.1` | `MIT OR Apache-2.0 OR Zlib` | [crates.io](https://crates.io/crates/tinyvec_macros/0.1.1) |
 | `tokio` | `1.53.1` | `MIT` | [crates.io](https://crates.io/crates/tokio/1.53.1) |
+| `tokio-macros` | `2.7.2` | `MIT` | [crates.io](https://crates.io/crates/tokio-macros/2.7.2) |
 | `tokio-rustls` | `0.26.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/tokio-rustls/0.26.4) |
 | `tokio-socks` | `0.5.3` | `MIT` | [crates.io](https://crates.io/crates/tokio-socks/0.5.3) |
 | `tokio-util` | `0.7.19` | `MIT` | [crates.io](https://crates.io/crates/tokio-util/0.7.19) |
@@ -801,13 +804,16 @@ Better OS does not relicense or silently select a different expression.
 | `unicode-xid` | `0.2.6` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/unicode-xid/0.2.6) |
 | `unsafe-libyaml` | `0.2.11` | `MIT` | [crates.io](https://crates.io/crates/unsafe-libyaml/0.2.11) |
 | `untrusted` | `0.9.0` | `ISC` | [crates.io](https://crates.io/crates/untrusted/0.9.0) |
+| `ureq` | `3.3.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/ureq/3.3.0) |
+| `ureq-proto` | `0.6.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/ureq-proto/0.6.0) |
 | `url` | `2.5.8` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/url/2.5.8) |
 | `usvg` | `0.45.1` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/usvg/0.45.1) |
 | `usvg` | `0.46.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/usvg/0.46.0) |
 | `utf-8` | `0.7.6` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/utf-8/0.7.6) |
+| `utf8-zero` | `0.8.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/utf8-zero/0.8.1) |
 | `utf8_iter` | `1.0.4` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/utf8_iter/1.0.4) |
 | `utf8parse` | `0.2.2` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/utf8parse/0.2.2) |
-| `util_macros` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `util_macros` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `uuid` | `1.24.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/uuid/1.24.0) |
 | `v_frame` | `0.3.9` | `BSD-2-Clause` | [crates.io](https://crates.io/crates/v_frame/0.3.9) |
 | `valuable` | `0.1.1` | `MIT` | [crates.io](https://crates.io/crates/valuable/0.1.1) |
@@ -839,6 +845,7 @@ Better OS does not relicense or silently select a different expression.
 | `wayland-sys` | `0.31.11` | `MIT` | [crates.io](https://crates.io/crates/wayland-sys/0.31.11) |
 | `web-sys` | `0.3.103` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/web-sys/0.3.103) |
 | `web-time` | `1.1.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/web-time/1.1.0) |
+| `webpki-roots` | `1.0.9` | `CDLA-Permissive-2.0` | [crates.io](https://crates.io/crates/webpki-roots/1.0.9) |
 | `weezl` | `0.1.12` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/weezl/0.1.12) |
 | `wgpu` | `29.0.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/wgpu/29.0.4) |
 | `wgpu-core` | `29.0.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/wgpu-core/29.0.4) |
@@ -923,7 +930,7 @@ Better OS does not relicense or silently select a different expression.
 | `x11rb` | `0.13.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/x11rb/0.13.2) |
 | `x11rb-protocol` | `0.13.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/x11rb-protocol/0.13.2) |
 | `xcb` | `1.7.0` | `MIT` | [crates.io](https://crates.io/crates/xcb/1.7.0) |
-| `xcursor` | `0.3.11` | `MIT` | [crates.io](https://crates.io/crates/xcursor/0.3.11) |
+| `xcursor` | `0.3.10` | `MIT` | [crates.io](https://crates.io/crates/xcursor/0.3.10) |
 | `xim-ctext` | `0.3.0` | `MIT` | `git+https://github.com/zed-industries/xim-rs.git?rev=16f35a2c881b815a2b6cdfd6687988e84f8447d8#16f35a2c881b815a2b6cdfd6687988e84f8447d8` |
 | `xim-parser` | `0.2.1` | `MIT` | `git+https://github.com/zed-industries/xim-rs.git?rev=16f35a2c881b815a2b6cdfd6687988e84f8447d8#16f35a2c881b815a2b6cdfd6687988e84f8447d8` |
 | `xkbcommon` | `0.8.0` | `MIT` | [crates.io](https://crates.io/crates/xkbcommon/0.8.0) |
@@ -941,6 +948,7 @@ Better OS does not relicense or silently select a different expression.
 | `zbus-lockstep-macros` | `0.5.2` | `MIT` | [crates.io](https://crates.io/crates/zbus-lockstep-macros/0.5.2) |
 | `zbus_macros` | `5.18.0` | `MIT` | [crates.io](https://crates.io/crates/zbus_macros/5.18.0) |
 | `zbus_names` | `4.3.4` | `MIT` | [crates.io](https://crates.io/crates/zbus_names/4.3.4) |
+| `zbus_polkit` | `5.0.0` | `MIT` | [crates.io](https://crates.io/crates/zbus_polkit/5.0.0) |
 | `zbus_xml` | `5.2.1` | `MIT` | [crates.io](https://crates.io/crates/zbus_xml/5.2.1) |
 | `zed-font-kit` | `0.14.1-zed` | `MIT OR Apache-2.0` | `git+https://github.com/zed-industries/font-kit?rev=94b0f28166665e8fd2f53ff6d268a14955c82269#94b0f28166665e8fd2f53ff6d268a14955c82269` |
 | `zed-reqwest` | `0.12.15-zed` | `MIT OR Apache-2.0` | `git+https://github.com/zed-industries/reqwest.git?rev=c15662463bda39148ba154100dd44d3fba5873a4#c15662463bda39148ba154100dd44d3fba5873a4` |
@@ -957,10 +965,10 @@ Better OS does not relicense or silently select a different expression.
 | `zerotrie` | `0.2.4` | `Unicode-3.0` | [crates.io](https://crates.io/crates/zerotrie/0.2.4) |
 | `zerovec` | `0.11.6` | `Unicode-3.0` | [crates.io](https://crates.io/crates/zerovec/0.11.6) |
 | `zerovec-derive` | `0.11.3` | `Unicode-3.0` | [crates.io](https://crates.io/crates/zerovec-derive/0.11.3) |
-| `zlog` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `zlog` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `zmij` | `1.0.23` | `MIT` | [crates.io](https://crates.io/crates/zmij/1.0.23) |
-| `ztracing` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
-| `ztracing_macro` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` |
+| `ztracing` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `ztracing_macro` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `zune-core` | `0.4.12` | `MIT OR Apache-2.0 OR Zlib` | [crates.io](https://crates.io/crates/zune-core/0.4.12) |
 | `zune-core` | `0.5.1` | `MIT OR Apache-2.0 OR Zlib` | [crates.io](https://crates.io/crates/zune-core/0.5.1) |
 | `zune-inflate` | `0.2.54` | `MIT OR Apache-2.0 OR Zlib` | [crates.io](https://crates.io/crates/zune-inflate/0.2.54) |
@@ -974,5 +982,5 @@ Better OS does not relicense or silently select a different expression.
 
 | Package | Version | Source | Review note |
 | --- | --- | --- | --- |
-| `gpui_shared_string` | `0.1.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` | Pinned upstream Zed workspace package has no package-level license metadata; retain the upstream GPL/APACHE notices and review file-level markings. |
-| `gpui_util` | `0.1.0` | `git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23` | Pinned upstream Zed workspace package has no package-level license metadata; retain the upstream GPL/APACHE notices and review file-level markings. |
+| `gpui_shared_string` | `0.1.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` | Pinned upstream Zed workspace package has no package-level license metadata; retain the upstream GPL/APACHE notices and review file-level markings. |
+| `gpui_util` | `0.1.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` | Pinned upstream Zed workspace package has no package-level license metadata; retain the upstream GPL/APACHE notices and review file-level markings. |

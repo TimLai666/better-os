@@ -1,22 +1,36 @@
 use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
 use clap::{Parser, Subcommand, ValueEnum};
+use manager_core::exec::{
+    MockDriver, MockRestoreOutcome, RealDriver, RunnerEvent, StageDriver, StageProgress,
+    TransactionRunner,
+};
 use manager_core::{
-    DesiredOperation, DiskSpaceCheck, Manager, ManagerState, MockOutcome, OperationProgress,
-    OperationStage, TransactionPlan,
+    DesiredOperation, DiskSpaceCheck, ExecutionMode, Manager, ManagerState, MockOutcome,
+    OperationProgress, OperationStage, TransactionPlan,
 };
 use manager_platform::MockPlatform;
+use manager_platform::download::{ArtifactCache, HttpDownloader};
+use manager_platform::dpkg::DpkgProbe;
+use manager_platform::privileged::DbusPrivilegedExecutor;
 use manager_store::{JsonStore, StateStore};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "better-manager",
-    about = "Inspect and simulate Better OS component lifecycle changes"
+    about = "Inspect, plan, and apply Better OS component lifecycle changes"
 )]
 struct Cli {
     /// Use a disposable JSON state file instead of the local default.
     #[arg(long, global = true)]
     state_path: Option<PathBuf>,
+    /// Whether lifecycle commands simulate or actually change this machine.
+    ///
+    /// Real is the default: a manager that quietly simulated would report a
+    /// change that never happened. Without the privileged service the command
+    /// says so and stops.
+    #[arg(long, global = true, value_enum, env = "BETTER_MANAGER_EXECUTION", default_value_t = ExecutionArg::Real)]
+    execution: ExecutionArg,
     #[command(subcommand)]
     command: Command,
 }
@@ -24,6 +38,8 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     List,
+    /// Compare recorded component versions against what dpkg reports.
+    Reconcile,
     Validate,
     Status {
         id: Option<String>,
@@ -63,6 +79,14 @@ enum Command {
         #[arg(long)]
         clear: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum ExecutionArg {
+    /// Walk the lifecycle deterministically without touching the machine.
+    Mock,
+    /// Download, verify, and apply through the privileged service.
+    Real,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -258,46 +282,86 @@ fn print_plan(plan: &TransactionPlan) {
     }
 }
 
+/// Everything a real transaction needs to reach the host.
+///
+/// Built before anything is written, so a missing daemon is reported while the
+/// state still says nothing is in progress. Discovering it after `begin` would
+/// leave a transaction recorded as started that never was.
+type RealContext = (HttpDownloader, DbusPrivilegedExecutor);
+
+fn real_context(mode: ExecutionMode) -> Result<Option<RealContext>, Box<dyn std::error::Error>> {
+    match mode {
+        ExecutionMode::Mock => Ok(None),
+        ExecutionMode::Real => Ok(Some((
+            HttpDownloader::new(ArtifactCache::from_default_path()),
+            DbusPrivilegedExecutor::connect()?,
+        ))),
+    }
+}
+
 fn advance_until_done(
     manager: &Manager,
     state: &mut ManagerState,
     store: &JsonStore,
     fail_at: Option<OperationStage>,
     restore_outcome: Option<MockOutcome>,
+    mode: ExecutionMode,
+    real: Option<RealContext>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    loop {
-        let stage = state
-            .active_operation
-            .as_ref()
-            .ok_or_else(|| std::io::Error::other("no active mock operation"))?
-            .stage;
-        let outcome = match fail_at == Some(stage) {
-            true => MockOutcome::FailAt(stage),
-            false if stage == OperationStage::CheckingHealth => {
-                restore_outcome.unwrap_or(MockOutcome::Succeed)
-            }
-            false => MockOutcome::Succeed,
-        };
-        match manager.advance(state, outcome)? {
-            OperationProgress::InProgress { stage } => {
-                store.save(state)?;
-                println!("mock stage: {stage:?}");
-            }
-            OperationProgress::Finished { operation } => {
-                store.save(state)?;
-                println!("mock operation finished: {operation:?}");
-                return Ok(());
-            }
-            OperationProgress::Failed { failure } => {
-                store.save(state)?;
-                println!(
-                    "mock operation failed at {:?}: {}",
-                    failure.stage, failure.evidence
-                );
-                return Ok(());
-            }
+    let restore_outcome = match restore_outcome {
+        Some(MockOutcome::RestorePartially) => MockRestoreOutcome::Partial,
+        Some(MockOutcome::RestoreRequiresManualRecovery) => MockRestoreOutcome::ManualRecovery,
+        _ => MockRestoreOutcome::Succeed,
+    };
+
+    let driver: Box<dyn StageDriver> = match &real {
+        None => Box::new(MockDriver::new(fail_at, restore_outcome)),
+        Some((downloader, executor)) => Box::new(RealDriver::new(
+            downloader,
+            executor,
+            uuid::Uuid::new_v4().to_string(),
+            manager.profile().clone(),
+        )),
+    };
+    let mut runner = TransactionRunner::new(manager, driver, store);
+
+    let progress = runner.run(state, &mut |event| match event {
+        RunnerEvent::StageEntered(stage) => println!("stage: {stage:?}"),
+        RunnerEvent::Progress(StageProgress::Downloading {
+            component,
+            received_bytes,
+            total_bytes,
+        }) => match total_bytes {
+            Some(total) => println!("  downloading {component}: {received_bytes}/{total} bytes"),
+            None => println!("  downloading {component}: {received_bytes} bytes"),
+        },
+        _ => {}
+    })?;
+
+    let label = match mode {
+        ExecutionMode::Mock => "mock operation",
+        ExecutionMode::Real => "operation",
+    };
+    match progress {
+        OperationProgress::Finished { operation } => {
+            println!("{label} finished: {operation:?}");
+        }
+        OperationProgress::Failed { failure } => {
+            println!(
+                "{label} failed at {:?}: {}{}",
+                failure.stage,
+                failure.evidence,
+                failure
+                    .detail
+                    .map(|detail| format!(" ({detail})"))
+                    .unwrap_or_default()
+            );
+        }
+        OperationProgress::InProgress { stage } => {
+            println!("{label} is still at {stage:?}");
         }
     }
+    Ok(())
 }
 
 fn run_plan(
@@ -307,11 +371,35 @@ fn run_plan(
     plan: TransactionPlan,
     fail_at: Option<OperationStage>,
     restore_outcome: Option<MockOutcome>,
+    mode: ExecutionMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Reaching the host is arranged first: if it cannot be reached, nothing
+    // should have been recorded as started.
+    let real = real_context(mode)?;
     print_plan(&plan);
     manager.begin(state, plan)?;
     store.save(state)?;
-    advance_until_done(manager, state, store, fail_at, restore_outcome)
+    advance_until_done(manager, state, store, fail_at, restore_outcome, mode, real)
+}
+
+/// Resolves the requested execution mode, refusing combinations that would
+/// misrepresent what is about to happen.
+fn execution_mode(
+    requested: ExecutionArg,
+    has_fail_at: bool,
+    has_restore_outcome: bool,
+) -> Result<ExecutionMode, Box<dyn std::error::Error>> {
+    match requested {
+        ExecutionArg::Mock => Ok(ExecutionMode::Mock),
+        ExecutionArg::Real if has_fail_at || has_restore_outcome => {
+            // Scripting an outcome only means something for a simulation. A
+            // real run reports what the machine did.
+            Err(Box::new(std::io::Error::other(
+                "manager.error.mock_flag_in_real_mode",
+            )))
+        }
+        ExecutionArg::Real => Ok(ExecutionMode::Real),
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -365,7 +453,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             operation,
             fail_at,
         } => {
-            let plan = manager.plan(&state, &ComponentId::new(id)?, operation.into())?;
+            let mode = execution_mode(cli.execution, fail_at.is_some(), false)?;
+            let plan =
+                manager.plan_in_mode(&state, &ComponentId::new(id)?, operation.into(), mode)?;
             run_plan(
                 &manager,
                 &mut state,
@@ -373,18 +463,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 plan,
                 fail_at.map(Into::into),
                 None,
+                mode,
             )?;
         }
         Command::Continue {
             fail_at,
             restore_outcome,
         } => {
+            let mode = execution_mode(cli.execution, fail_at.is_some(), restore_outcome.is_some())?;
+            let real = real_context(mode)?;
             advance_until_done(
                 &manager,
                 &mut state,
                 &store,
                 fail_at.map(Into::into),
                 restore_outcome.map(Into::into),
+                mode,
+                real,
             )?;
         }
         Command::Restore {
@@ -392,7 +487,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             fail_at,
             restore_outcome,
         } => {
-            let plan = manager.plan(&state, &ComponentId::new(id)?, DesiredOperation::Restore)?;
+            let mode = execution_mode(cli.execution, fail_at.is_some(), restore_outcome.is_some())?;
+            let plan = manager.plan_in_mode(
+                &state,
+                &ComponentId::new(id)?,
+                DesiredOperation::Restore,
+                mode,
+            )?;
             run_plan(
                 &manager,
                 &mut state,
@@ -400,7 +501,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 plan,
                 fail_at.map(Into::into),
                 restore_outcome.map(Into::into),
+                mode,
             )?;
+        }
+        Command::Reconcile => {
+            let findings = manager.reconcile(&mut state, &DpkgProbe)?;
+            // Reconciling changes nothing when the host agrees, and writing an
+            // unchanged state would collide with its own revision.
+            if !findings.is_empty() {
+                store.save(&state)?;
+            }
+            if findings.is_empty() {
+                println!("no drift: dpkg agrees with every recorded component");
+            }
+            for finding in findings {
+                println!(
+                    "drift {} recorded={} {:?}",
+                    finding.component,
+                    finding.recorded.as_deref().unwrap_or("not installed"),
+                    finding.drift
+                );
+            }
         }
         Command::Cancel => {
             manager.cancel(&mut state)?;
