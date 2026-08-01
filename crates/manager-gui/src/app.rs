@@ -255,7 +255,10 @@ impl ManagerApp {
 
     pub(crate) fn advance_install(&mut self, cx: &mut Context<Self>) {
         let mut candidate = self.state.clone();
-        match self.manager.advance(&mut candidate, MockOutcome::Succeed) {
+        match self
+            .manager
+            .advance_mock(&mut candidate, MockOutcome::Succeed)
+        {
             Ok(progress) => {
                 if !self.commit_state(candidate) {
                     cx.notify();

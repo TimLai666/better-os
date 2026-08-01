@@ -23,6 +23,14 @@ pub trait StateStore {
     fn save(&self, state: &ManagerState) -> Result<(), StoreError>;
 }
 
+/// Lets a transaction runner persist through this store. The failure is a
+/// string because `manager-core` cannot depend on this crate to name the error.
+impl manager_core::exec::StateSink for JsonStore {
+    fn save(&self, state: &ManagerState) -> Result<(), String> {
+        StateStore::save(self, state).map_err(|error| error.to_string())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct JsonStore {
     path: PathBuf,
@@ -63,6 +71,24 @@ enum DecodeError {
     UnsupportedSchema(u32),
 }
 
+/// Raises a version 1 state to version 2.
+///
+/// Version 2 added artifact identity to component records, snapshots, and plan
+/// steps. Every one of those fields is optional, and a version 1 file has no
+/// artifact history to invent, so the migration only restamps the version. A
+/// restore planned from a migrated record is still offered in a simulation and
+/// refused for a real transaction, which is the honest reading of "we do not
+/// know what artifact produced this".
+fn migrate_v1_to_v2(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "schema_version".to_string(),
+            serde_json::Value::from(STATE_SCHEMA_VERSION),
+        );
+    }
+    value
+}
+
 impl JsonStore {
     pub fn from_default_path() -> Self {
         Self::at_path(default_state_path())
@@ -90,10 +116,20 @@ impl JsonStore {
             })?;
         let schema_version = u32::try_from(schema_version)
             .map_err(|_| DecodeError::Invalid("schema_version exceeds u32".to_string()))?;
-        if schema_version != STATE_SCHEMA_VERSION {
+        if schema_version > STATE_SCHEMA_VERSION {
             return Err(DecodeError::UnsupportedSchema(schema_version));
         }
-        let state = serde_json::from_slice::<ManagerState>(bytes)
+
+        // Version 1 only added optional fields, so its content is readable as
+        // version 2 once the stamp is raised. Migrating here rather than
+        // rejecting keeps an existing install's history instead of quarantining
+        // it as corrupt.
+        let value = match schema_version {
+            1 => migrate_v1_to_v2(value),
+            STATE_SCHEMA_VERSION => value,
+            other => return Err(DecodeError::UnsupportedSchema(other)),
+        };
+        let state = serde_json::from_value::<ManagerState>(value)
             .map_err(|error| DecodeError::Invalid(error.to_string()))?;
         state.validate().map_err(|error| match error {
             StateValidationError::UnsupportedSchemaVersion(version) => {
@@ -435,6 +471,34 @@ mod tests {
             StoreError::UnsupportedSchema { version: 99, .. }
         ));
         assert!(path.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn migrates_a_version_one_state_instead_of_quarantining_it() {
+        let directory = temporary_directory("migrate");
+        let path = directory.join(STATE_FILE_NAME);
+        // A version 1 file as the previous release wrote it: no artifact
+        // identity anywhere, and a record the user would not want to lose.
+        fs::write(
+            &path,
+            r#"{"schema_version":1,"revision":4,"components":{"better-monitor":{"installed_version":"0.1.0","enabled":true,"health":"healthy","restore_snapshot":null,"failure":null,"recovery":null}},"activity":[],"settings":{"release_channel":"stable","locale":"system","check_updates":true,"auto_download":false,"diagnostic_logs":false,"onboarding_complete":true,"component_filter":"all"},"active_operation":null}"#,
+        )
+        .unwrap();
+
+        let outcome = JsonStore::at_path(&path).load().unwrap();
+        assert_eq!(outcome.state.schema_version, STATE_SCHEMA_VERSION);
+        assert_eq!(outcome.state.revision, 4);
+        assert!(outcome.recovered_corrupt_state.is_none());
+
+        let record = outcome
+            .state
+            .component(&ComponentId::new("better-monitor").unwrap())
+            .expect("the migrated record survives");
+        assert_eq!(record.installed_version.as_deref(), Some("0.1.0"));
+        // Nothing is invented: version 1 never recorded which artifact was
+        // installed, so the migrated record says it does not know.
+        assert!(record.installed_artifact.is_none());
         fs::remove_dir_all(directory).unwrap();
     }
 

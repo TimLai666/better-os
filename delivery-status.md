@@ -36,7 +36,8 @@ boundary that keeps privileged mutation out of the GUI and CLI.
 | M9 | Better Manager Issue #8 functional acceptance | agent | done | Chefer AppCipe passed fmt, workspace check/test, clippy, CLI lifecycle smoke, and GUI headless smoke |
 | M10 | Issue #8 remaining gap closure | agent | done | manifest presentation and restart metadata, `manager-platform`, manifest-driven GUI, dark-first appearance, ADRs 0004-0006 |
 | M11 | privileged IPC decision and wire contract | agent | done | ADR 0007, `manager-ipc` with 24 rejection and round-trip tests, `cargo fmt`/check/test/clippy `-D warnings` |
-| M12 | real install, update, remove, and rollback | agent | todo | tickets 10-14: Chefer container install/update/rollback against real dpkg state |
+| M12 | core execution seam and state schema v2 | agent | done | lifecycle suite green through the mock driver, v1 state migration, real-plan validation |
+| M13 | real install, update, remove, and rollback | agent | todo | tickets 11-14: Chefer container install/update/rollback against real dpkg state |
 
 ## Current Blockers
 
@@ -63,15 +64,15 @@ policy still needs alignment.
 
 ## Next Verifiable Output
 
-Ticket 10 lands the `manager-core` execution seam: `advance` consumes a stage
-outcome produced by a driver instead of one the caller scripted, plan steps
-carry artifact identity, and the state schema moves to version 2. The existing
-lifecycle suite must stay green through the mock driver, which is the evidence
-that the GUI and CLI contract did not change.
+Ticket 11 builds the privileged daemon: a zbus service that revalidates a plan
+independently, stages artifacts over a file descriptor, drives APT, health
+checks what it applied, and rolls back on failure. It is testable on CI without
+privileges through a private session bus, a fake authorizer, and a fake APT
+driver.
 
 ## Next Ticket
 
-10-core-execution-seam — blocked by nothing; ticket 11 can proceed in parallel
+11-privileged-daemon — blocked by nothing
 
 ## Decision Log
 
@@ -253,6 +254,20 @@ Local `cargo fmt --all -- --check`, `cargo check --workspace --offline`,
 rejection cases. No daemon, no download code, and no APT invocation exists yet,
 so nothing in this branch can still apply a package change and the shipped
 backends all continue to refuse.
+
+Ticket 10 is done. `Manager::advance` now consumes a `StageOutcome` a driver
+produced rather than one the caller scripted; `advance_mock` translates the old
+scripted vocabulary into the same outcomes, which is why the 20 existing
+lifecycle tests still pass unchanged in meaning. Plan steps, component records,
+and snapshots carry artifact identity, so a real transaction can say what it is
+installing and a restore has something verifiable to reinstall. State schema
+version 2 migrates version 1 files in place instead of quarantining them, and a
+version 1 restore point is honest that it does not know which artifact produced
+it: simulations still offer that restore, real transactions refuse it. Local
+`cargo fmt --all -- --check`, `cargo check --workspace --offline`, `cargo test
+--workspace --offline`, and `cargo clippy --workspace --all-targets --offline --
+-D warnings` all passed, along with CLI install and `--fail-at installing`
+lifecycle smokes against a disposable state file.
 
 A branch audit against the Issue #8 text then found five gaps outside the
 acceptance-criteria list: no dark theme, no `manager-platform` crate,

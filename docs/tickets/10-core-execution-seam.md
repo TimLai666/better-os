@@ -4,7 +4,7 @@
 **User Story:** 生命週期的每個階段結果來自實際執行器，而不是呼叫端自己指定的
 mock 結果；demo 與測試仍能走完全決定性的路徑。
 **Blocked by:** 09-privileged-ipc-contract
-**Status:** todo
+**Status:** done
 
 ## What it delivers
 
@@ -23,13 +23,13 @@ mock 結果；demo 與測試仍能走完全決定性的路徑。
 
 ## Acceptance criteria
 
-- [ ] 既有 `crates/manager-core/tests/lifecycle.rs` 全數通過，語意未變。
-- [ ] MockDriver 與 MockOutcome 的結果逐項對應，有 parity 測試。
-- [ ] v1 狀態檔載入後升為 v2；舊版程式讀 v2 走 `UnsupportedSchema` 拒絕路徑，
+- [x] 既有 `crates/manager-core/tests/lifecycle.rs` 全數通過，語意未變。
+- [x] MockDriver 與 MockOutcome 的結果逐項對應，有 parity 測試。
+- [x] v1 狀態檔載入後升為 v2；舊版程式讀 v2 走 `UnsupportedSchema` 拒絕路徑，
       不會被誤判為毀損而重設。
-- [ ] 非 dry-run 計畫缺 artifact 時 `validate` 拒絕。
-- [ ] Restore 缺快取 artifact 時規劃階段即失敗，且不寫入還原點。
-- [ ] `cargo fmt`、workspace check/test、clippy `-D warnings` 全數通過。
+- [x] 非 dry-run 計畫缺 artifact 時 `validate` 拒絕。
+- [x] Restore 缺快取 artifact 時規劃階段即失敗，且不寫入還原點。
+- [x] `cargo fmt`、workspace check/test、clippy `-D warnings` 全數通過。
 
 ## Verification
 
