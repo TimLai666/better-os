@@ -2,15 +2,14 @@ use std::cmp::Ordering;
 
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Sizable, StyledExt,
-    button::Button,
+    ActiveTheme, Sizable,
+    button::{Button, ButtonVariants},
     dialog::{
         AlertDialog, DialogAction, DialogClose, DialogDescription, DialogFooter, DialogHeader,
         DialogTitle,
     },
     h_flex,
     table::{Column, ColumnSort, TableDelegate, TableState},
-    v_flex,
 };
 use sysinfo::Signal;
 
