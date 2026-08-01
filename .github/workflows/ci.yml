@@ -17,10 +17,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Apply shared locale patch
+      - name: Apply shared locale state and shell copy
         run: |
-          git apply --recount --check .github/monitor-locale.patch
-          git apply --recount .github/monitor-locale.patch
+          git apply --recount --check \
+            --include=crates/better-ui/src/lib.rs \
+            --include=crates/manager-gui/src/i18n.rs \
+            --include=crates/monitor-gui/src/settings.rs \
+            .github/monitor-locale.patch
+          git apply --recount \
+            --include=crates/better-ui/src/lib.rs \
+            --include=crates/manager-gui/src/i18n.rs \
+            --include=crates/monitor-gui/src/settings.rs \
+            .github/monitor-locale.patch
+          python3 .github/apply-monitor-locale.py
           cargo fmt --all
       - name: Commit locale runtime
         run: |
