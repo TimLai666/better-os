@@ -1,4 +1,4 @@
-name: CI
+name: Interaction CI
 
 on:
   push:
@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 jobs:
-  apply-app-interactions:
+  repair:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,168 +16,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Add Apps split action and context menu
+      - name: Replace transient interaction contract with typed request
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
           path = Path("crates/monitor-gui/src/app_table.rs")
           source = path.read_text()
 
-          if "fn open_app_signal_dialog(" not in source:
-              source = source.replace(
-                  '''use gpui_component::{
-              ActiveTheme, Sizable,
-              button::{Button, ButtonVariants},
-              dialog::{
-                  AlertDialog, DialogAction, DialogClose, DialogDescription, DialogFooter, DialogHeader,
-                  DialogTitle,
-              },
-              h_flex,
-              table::{Column, ColumnSort, TableDelegate, TableState},
-          };
-          use sysinfo::Signal;
-          ''',
-                  '''use gpui_component::{
-              ActiveTheme, Sizable, WindowExt,
-              button::{Button, ButtonVariants, DropdownButton},
-              h_flex,
-              menu::{PopupMenu, PopupMenuItem},
-              table::{Column, ColumnSort, TableDelegate, TableState},
-          };
-          use sysinfo::{Pid, Signal};
-          ''',
-                  1,
-              )
-              source = source.replace(
-                  "    settings::MonitorSettings,\n",
-                  "    settings::{MonitorSettings, UnitBase},\n",
-                  1,
-              )
-              source = source.replace(
-                  "            Self::Actions => 410.0,",
-                  "            Self::Actions => 232.0,",
-                  1,
-              )
-
-              start = source.index("    fn render_actions(")
-              end = source.index("\n}\n\nimpl TableDelegate", start)
-              render_actions = '''    fn render_actions(
-                  &self,
-                  row_ix: usize,
-                  group: AppGroup,
-                  _: &mut Context<TableState<Self>>,
-              ) -> AnyElement {
-                  let info_group = group.clone();
-                  let info_unit = self.settings.unit_base;
-                  let term_monitor = self.monitor.clone();
-                  let term_group = group.clone();
-                  let menu_monitor = self.monitor.clone();
-                  let menu_group = group.clone();
-
-                  h_flex()
-                      .items_center()
-                      .gap_1()
-                      .child(
-                          Button::new(("app-information", row_ix))
-                              .outline()
-                              .small()
-                              .label("Info")
-                              .on_click(move |_, window, cx| {
-                                  open_app_information_dialog(
-                                      info_group.clone(),
-                                      info_unit,
-                                      row_ix,
-                                      window,
-                                      cx,
-                                  );
-                              }),
-                      )
-                      .child(
-                          DropdownButton::new(("app-actions", row_ix))
-                              .outline()
-                              .small()
-                              .button(
-                                  Button::new(("app-end-primary", row_ix))
-                                      .label("End")
-                                      .on_click(move |_, window, cx| {
-                                          open_app_signal_dialog(
-                                              term_monitor.clone(),
-                                              term_group.pids.clone(),
-                                              Signal::Term,
-                                              format!("End {}?", term_group.display_name),
-                                              "All processes in this application group will receive a graceful termination signal.",
-                                              "End Application",
-                                              row_ix,
-                                              false,
-                                              window,
-                                              cx,
-                                          );
-                                      }),
-                              )
-                              .dropdown_menu(move |menu, _, _| {
-                                  app_action_menu(
-                                      menu,
-                                      menu_monitor.clone(),
-                                      menu_group.clone(),
-                                      row_ix,
-                                  )
-                              }),
-                      )
-                      .into_any_element()
-              }
-          '''
-              source = source[:start] + render_actions + source[end:]
-
-              helpers = '''
-          fn app_information(group: &AppGroup, unit_base: UnitBase) -> String {
-              format!(
-                  "Identity: {}\\nGrouped processes: {}\\nGrouping evidence: {}\\nPIDs: {}\\nCPU: {:.1}%\\nMemory: {}\\nSwap: {}\\nRead: {} total, {}/s\\nWritten: {} total, {}/s",
-                  group.id,
-                  group.process_count,
-                  group.grouping_reason,
-                  group
-                      .pids
-                      .iter()
-                      .map(ToString::to_string)
-                      .collect::<Vec<_>>()
-                      .join(", "),
-                  group.cpu_usage,
-                  linux::format_bytes(group.memory, unit_base),
-                  linux::format_bytes(group.swap, unit_base),
-                  linux::format_bytes(group.read_total, unit_base),
-                  linux::format_bytes(group.read_speed, unit_base),
-                  linux::format_bytes(group.write_total, unit_base),
-                  linux::format_bytes(group.write_speed, unit_base),
-              )
-          }
-
-          fn open_app_information_dialog(
-              group: AppGroup,
-              unit_base: UnitBase,
-              row_ix: usize,
-              window: &mut Window,
-              cx: &mut App,
-          ) {
-              let title = format!("{} Information", group.display_name);
-              let description = app_information(&group, unit_base);
-              window.open_dialog(cx, move |dialog, _, _| {
-                  dialog
-                      .title(title.clone())
-                      .child(description.clone())
-                      .footer(move |_, _, _, _| {
-                          vec![
-                              Button::new(("app-info-close", row_ix))
-                                  .outline()
-                                  .label("Close")
-                                  .on_click(|_, window, cx| window.close_dialog(cx)),
-                          ]
-                      })
-              });
-          }
-
-          #[expect(
+          old_signature = '''#[expect(
               clippy::too_many_arguments,
               reason = "the dialog boundary carries the complete, typed application action contract"
           )]
@@ -219,169 +66,260 @@ jobs:
                       })
               });
           }
-
-          fn send_app_signal(
+          '''
+          new_signature = '''#[derive(Clone)]
+          struct AppSignalRequest {
               monitor: WeakEntity<MonitorWindow>,
               pids: Vec<Pid>,
               signal: Signal,
-              cx: &mut App,
-          ) {
-              let _ = monitor.update(cx, |monitor, cx| {
-                  monitor.signal_pids(&pids, signal);
-                  cx.notify();
-              });
+              title: String,
+              description: &'static str,
+              confirm_label: &'static str,
+              row_ix: usize,
+              destructive: bool,
           }
 
-          fn app_action_menu(
-              menu: PopupMenu,
-              monitor: WeakEntity<MonitorWindow>,
-              group: AppGroup,
-              row_ix: usize,
-          ) -> PopupMenu {
-              let force_monitor = monitor.clone();
-              let force_group = group.clone();
-              let pause_monitor = monitor.clone();
-              let pause_pids = group.pids.clone();
-              let resume_monitor = monitor;
-              let resume_pids = group.pids.clone();
+          fn open_app_signal_dialog(
+              request: AppSignalRequest,
+              window: &mut Window,
+              cx: &mut App,
+          ) {
+              window.open_dialog(cx, move |dialog, _, _| {
+                  let confirm_request = request.clone();
+                  dialog
+                      .title(request.title.clone())
+                      .child(request.description)
+                      .footer(move |_, _, _, _| {
+                          let action_request = confirm_request.clone();
+                          let confirm = Button::new((
+                              "app-action-confirm",
+                              action_request.row_ix,
+                          ))
+                          .label(action_request.confirm_label);
+                          let confirm = if action_request.destructive {
+                              confirm.warning()
+                          } else {
+                              confirm
+                          };
+                          vec![
+                              Button::new(("app-action-cancel", action_request.row_ix))
+                                  .outline()
+                                  .label("Cancel")
+                                  .on_click(|_, window, cx| window.close_dialog(cx)),
+                              confirm.on_click(move |_, window, cx| {
+                                  send_app_signal(
+                                      action_request.monitor.clone(),
+                                      action_request.pids.clone(),
+                                      action_request.signal,
+                                      cx,
+                                  );
+                                  window.close_dialog(cx);
+                              }),
+                          ]
+                      })
+              });
+          }
+          '''
+          if old_signature in source:
+              source = source.replace(old_signature, new_signature, 1)
+          elif "struct AppSignalRequest" not in source:
+              raise SystemExit("signal dialog signature anchor changed")
+
+          source = source.replace(
+              '''open_app_signal_dialog(
+                                      term_monitor.clone(),
+                                      term_group.pids.clone(),
+                                      Signal::Term,
+                                      format!("End {}?", term_group.display_name),
+                                      "All processes in this application group will receive a graceful termination signal.",
+                                      "End Application",
+                                      row_ix,
+                                      false,
+                                      window,
+                                      cx,
+                                  );''',
+              '''open_app_signal_dialog(
+                                      AppSignalRequest {
+                                          monitor: term_monitor.clone(),
+                                          pids: term_group.pids.clone(),
+                                          signal: Signal::Term,
+                                          title: format!("End {}?", term_group.display_name),
+                                          description: "All processes in this application group will receive a graceful termination signal.",
+                                          confirm_label: "End Application",
+                                          row_ix,
+                                          destructive: false,
+                                      },
+                                      window,
+                                      cx,
+                                  );''',
+          )
+          source = source.replace(
+              '''open_app_signal_dialog(
+                  force_monitor.clone(),
+                  force_group.pids.clone(),
+                  Signal::Kill,
+                  format!("Force stop {}?", force_group.display_name),
+                  "Every process in this application group will stop immediately without cleanup.",
+                  "Force stop",
+                  row_ix,
+                  true,
+                  window,
+                  cx,
+              );''',
+              '''open_app_signal_dialog(
+                  AppSignalRequest {
+                      monitor: force_monitor.clone(),
+                      pids: force_group.pids.clone(),
+                      signal: Signal::Kill,
+                      title: format!("Force stop {}?", force_group.display_name),
+                      description: "Every process in this application group will stop immediately without cleanup.",
+                      confirm_label: "Force stop",
+                      row_ix,
+                      destructive: true,
+                  },
+                  window,
+                  cx,
+              );''',
+          )
+          source = source.replace(
+              '''open_app_signal_dialog(
+                      action_monitor.clone(),
+                      action_group.pids.clone(),
+                      Signal::Term,
+                      format!("End {}?", action_group.display_name),
+                      "All processes in this application group will receive a graceful termination signal.",
+                      "End Application",
+                      row_ix,
+                      false,
+                      window,
+                      cx,
+                  );''',
+              '''open_app_signal_dialog(
+                      AppSignalRequest {
+                          monitor: action_monitor.clone(),
+                          pids: action_group.pids.clone(),
+                          signal: Signal::Term,
+                          title: format!("End {}?", action_group.display_name),
+                          description: "All processes in this application group will receive a graceful termination signal.",
+                          confirm_label: "End Application",
+                          row_ix,
+                          destructive: false,
+                      },
+                      window,
+                      cx,
+                  );''',
+          )
+
+          old_context = '''        let action_monitor = self.monitor.clone();
+              let action_group = group;
 
               menu.item(
-                  PopupMenuItem::new("Force stop").on_click(move |_, window, cx| {
+                  PopupMenuItem::new("Application information").on_click(
+                      move |_, window, cx| {
+                          open_app_information_dialog(
+                              info_group.clone(),
+                              info_unit,
+                              row_ix,
+                              window,
+                              cx,
+                          );
+                      },
+                  ),
+              )
+              .separator()
+              .item(
+                  PopupMenuItem::new("End application").on_click(move |_, window, cx| {
                       open_app_signal_dialog(
-                          force_monitor.clone(),
-                          force_group.pids.clone(),
-                          Signal::Kill,
-                          format!("Force stop {}?", force_group.display_name),
-                          "Every process in this application group will stop immediately without cleanup.",
-                          "Force stop",
-                          row_ix,
-                          true,
+                          AppSignalRequest {
+                              monitor: action_monitor.clone(),
+                              pids: action_group.pids.clone(),
+                              signal: Signal::Term,
+                              title: format!("End {}?", action_group.display_name),
+                              description: "All processes in this application group will receive a graceful termination signal.",
+                              confirm_label: "End Application",
+                              row_ix,
+                              destructive: false,
+                          },
                           window,
                           cx,
                       );
                   }),
               )
               .separator()
-              .item(
-                  PopupMenuItem::new("Pause").on_click(move |_, _, cx| {
-                      send_app_signal(
-                          pause_monitor.clone(),
-                          pause_pids.clone(),
-                          Signal::Stop,
-                          cx,
-                      );
-                  }),
-              )
-              .item(
-                  PopupMenuItem::new("Resume").on_click(move |_, _, cx| {
-                      send_app_signal(
-                          resume_monitor.clone(),
-                          resume_pids.clone(),
-                          Signal::Continue,
-                          cx,
-                      );
-                  }),
-              )
-          }
+              .submenu("More actions", move |menu, _, _| {
+                  app_action_menu(menu, self.monitor.clone(), self.groups[row_ix].clone(), row_ix)
+              })'''
+          new_context = '''        let end_monitor = self.monitor.clone();
+              let end_group = group.clone();
+              let action_monitor = self.monitor.clone();
+              let action_group = group;
 
-          '''
-              source = source.replace(
-                  "\n}\n\nimpl TableDelegate for AppTableDelegate {",
-                  "\n}\n\n" + helpers + "impl TableDelegate for AppTableDelegate {",
-                  1,
-              )
-
-              context_menu = '''    fn context_menu(
-                  &mut self,
-                  row_ix: usize,
-                  menu: PopupMenu,
-                  _: &mut Window,
-                  _: &mut Context<TableState<Self>>,
-              ) -> PopupMenu {
-                  let Some(group) = self.groups.get(row_ix).cloned() else {
-                      return menu;
-                  };
-                  let info_group = group.clone();
-                  let info_unit = self.settings.unit_base;
-                  let action_monitor = self.monitor.clone();
-                  let action_group = group;
-
-                  menu.item(
-                      PopupMenuItem::new("Application information").on_click(
-                          move |_, window, cx| {
-                              open_app_information_dialog(
-                                  info_group.clone(),
-                                  info_unit,
-                                  row_ix,
-                                  window,
-                                  cx,
-                              );
-                          },
-                      ),
-                  )
-                  .separator()
-                  .item(
-                      PopupMenuItem::new("End application").on_click(move |_, window, cx| {
-                          open_app_signal_dialog(
-                              action_monitor.clone(),
-                              action_group.pids.clone(),
-                              Signal::Term,
-                              format!("End {}?", action_group.display_name),
-                              "All processes in this application group will receive a graceful termination signal.",
-                              "End Application",
+              menu.item(
+                  PopupMenuItem::new("Application information").on_click(
+                      move |_, window, cx| {
+                          open_app_information_dialog(
+                              info_group.clone(),
+                              info_unit,
                               row_ix,
-                              false,
                               window,
                               cx,
                           );
-                      }),
-                  )
-                  .separator()
-                  .submenu("More actions", move |menu, _, _| {
-                      app_action_menu(menu, self.monitor.clone(), self.groups[row_ix].clone(), row_ix)
-                  })
-              }
-
-          '''
-              source = source.replace(
-                  "    fn perform_sort(\n",
-                  context_menu + "    fn perform_sort(\n",
-                  1,
+                      },
+                  ),
               )
+              .separator()
+              .item(
+                  PopupMenuItem::new("End application").on_click(move |_, window, cx| {
+                      open_app_signal_dialog(
+                          AppSignalRequest {
+                              monitor: end_monitor.clone(),
+                              pids: end_group.pids.clone(),
+                              signal: Signal::Term,
+                              title: format!("End {}?", end_group.display_name),
+                              description: "All processes in this application group will receive a graceful termination signal.",
+                              confirm_label: "End Application",
+                              row_ix,
+                              destructive: false,
+                          },
+                          window,
+                          cx,
+                      );
+                  }),
+              )
+              .separator()
+              .pipe(|menu| app_action_menu(menu, action_monitor, action_group, row_ix))'''
+          if old_context in source:
+              source = source.replace(old_context, new_context, 1)
+          elif ".submenu(" in source:
+              raise SystemExit("context menu anchor changed")
 
           path.write_text(source)
-
-          parity_path = Path("docs/better-monitor-resources-v1.10.2-parity.md")
-          parity = parity_path.read_text()
-          parity = re.sub(
-              r"^\| Split action button \|.*$",
-              "| Split action button | ✅ | Apps uses End as the primary action with Force stop, Pause, and Resume in the adjacent dropdown. |",
-              parity,
-              flags=re.MULTILINE,
-          )
-          parity = re.sub(
-              r"^\| End Application split action \|.*$",
-              "| End Application split action | ✅ | End is the primary action; Force stop, Pause, and Resume share the dropdown while preserving confirmations. |",
-              parity,
-              flags=re.MULTILINE,
-          )
-          parity = re.sub(
-              r"^\| Context menu \| ⬜ \| Missing\. \|$",
-              "| Context menu | ✅ | Apps exposes information, End, Force stop, Pause, and Resume from the row context menu. |",
-              parity,
-              count=1,
-              flags=re.MULTILINE,
-          )
-          parity_path.write_text(parity)
           PY
           cargo fmt --all
-      - name: Commit Apps interaction parity
+      - name: Commit repair
         run: |
           if git diff --quiet; then
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/monitor-gui/src/app_table.rs docs/better-monitor-resources-v1.10.2-parity.md
-          git commit -m "feat(monitor): add Apps split actions and context menu"
+          git add crates/monitor-gui/src/app_table.rs
+          git commit -m "fix(monitor): type Apps action requests"
           git push origin HEAD:feature/better-monitor-interactions
+
+  rust:
+    runs-on: ubuntu-latest
+    env:
+      RUST_FONTCONFIG_DLOPEN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install GPUI Linux dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - run: cargo fmt --all -- --check
+      - run: cargo check --workspace
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace
