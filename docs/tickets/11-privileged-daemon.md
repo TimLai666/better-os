@@ -42,6 +42,8 @@
 - `cargo clippy --workspace --all-targets --offline -- -D warnings`
 - 私有 `dbus-daemon --session` 整合測試（FakeAuthorizer + FakeAptDriver）
 - `packaging/build-deb.sh` 與 `packaging/verify-deb.sh`（ubuntu-24.04 / amd64）
+- `chefer run packaging/e2e/appcipe.yml`：真實 system bus 上取得 bus name、
+  回報協定版本、拒絕未授權的 `ApplyTransaction`
 
 ## Out of scope
 

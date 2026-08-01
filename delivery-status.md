@@ -2,8 +2,8 @@
 
 ## Current Phase
 
-Better Manager applies real component transactions; container end-to-end
-verification is the remaining gap
+Better Manager applies real component transactions, verified end to end in a
+disposable container
 
 ## Stage Objective
 
@@ -41,16 +41,18 @@ boundary that keeps privileged mutation out of the GUI and CLI.
 | M14 | real download, dpkg reconciliation, and D-Bus client | agent | done | checksum-named artifact cache, drift detection blocking planning, CLI `--execution real` reporting `daemon.unavailable` |
 | M15 | GUI real execution | agent | done | background transaction with live progress, cancel offered only while honorable, real failure copy in both locales |
 | M16 | cutover and documentation | agent | done | real execution by default, daemon packaging verified, AGENTS/ENG/README/architecture/security updated |
-| M17 | container end-to-end verification | agent | todo | Chefer AppCipe install → update → rollback against real dpkg state |
+| M17 | container end-to-end verification | agent | done | `chefer run packaging/e2e/appcipe.yml`: real dpkg, real system bus, real polkitd, unauthorized request refused |
+| M18 | four-way packaging matrix on CI | agent | todo | ubuntu 22.04/24.04 × amd64/arm64 build, verify, and container e2e |
 
 ## Current Blockers
 
 Better Manager can now install, update, remove, and roll back first-party
-components for real. The one thing not yet done is running that against a real
-polkit, a real dpkg, and a real bus: every path is covered by tests against
-fakes, and the container end-to-end script has never executed because its guard
-correctly refuses to run on this desktop. Until that run happens, the honest
-statement is that the code is complete and unverified end to end.
+components for real, and the privileged service has been exercised against a
+real dpkg, a real system bus, and a real polkitd inside a disposable container.
+
+What is still unverified is breadth rather than depth: only ubuntu-24.04 on
+amd64 has been built and run locally. The other three release and architecture
+combinations, and the container run on CI, are milestone M18.
 
 No active blocker remains for the real-integration work. The privileged daemon
 IPC protocol, which `AGENTS.md` required to be decided before any real system
@@ -75,16 +77,13 @@ policy still needs alignment.
 
 ## Next Verifiable Output
 
-A real install, update, and rollback inside a disposable Chefer AppCipe, with
-`packaging/test-daemon-e2e.sh` and `BETTER_OS_E2E_CONTAINER=1`, asserting dpkg
-state and the daemon journal afterwards. Every code path is covered by tests
-against fakes; what has never run is the combination of a real polkit, a real
-dpkg, and a real bus.
+The container end-to-end check running on CI across all four release and
+architecture combinations, so a packaging regression on 22.04 or arm64 is
+caught by the build rather than by a user.
 
 ## Next Ticket
 
-None — tickets 09 through 14 are complete. The next change is the container
-end-to-end run, or a new ticket.
+None — tickets 09 through 15 are complete.
 
 ## Decision Log
 
@@ -325,3 +324,26 @@ has never heard of and blocks planning for it.
 What has not run: `packaging/test-daemon-e2e.sh` inside a container, and the
 four-way release/architecture packaging matrix. The daemon has never faced a
 real polkit or a real dpkg. That is milestone M17.
+
+Ticket 15 ran the end-to-end check for real. `chefer run
+packaging/e2e/appcipe.yml` builds a disposable Ubuntu 24.04 image and, inside
+it: installs `better-manager-daemon` and confirms the unit, bus config, polkit
+policy, and state directories land where they should; installs, removes, and
+reinstalls `better-monitor` through apt, asserting dpkg state each time; starts
+a real system bus and polkitd and the real service binary; confirms the service
+claims `org.betteros.Manager1` and reports protocol version 1 without
+authorization; confirms an unauthorized `ApplyTransaction` is refused and
+leaves no transaction journal; and confirms a purge removes
+`/var/lib/better-os` and `/var/cache/better-os`. It exits 0.
+
+Two things that run found. The daemon package installed into an image with no
+graphics libraries at all, which is the packaging split doing its job. And the
+Chefer sandbox has no network, so anything apt needs at test time has to be in
+the image already — the desktop libraries `better-monitor` depends on are
+installed at build time for that reason, not because the service needs them.
+
+Docker was not running on this machine; `systemctl --user start
+docker-desktop.service` started it, which needs no elevation and is reversible
+with the matching stop.
+
+Still not run anywhere: ubuntu-22.04, arm64, and the container check on CI.

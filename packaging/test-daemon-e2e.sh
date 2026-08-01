@@ -96,20 +96,75 @@ dpkg-query -W -f='${db:Status-Status}' better-monitor | grep -q '^installed$' ||
     exit 1
 }
 
-printf '== the service refuses a plan it cannot authorize ==\n'
-# Without a polkit agent there is nobody to authenticate, so the service must
-# refuse rather than proceed. A success here would mean the authorization check
-# is not doing anything.
-if command -v busctl >/dev/null 2>&1 && [[ -S /run/dbus/system_bus_socket ]]; then
-    if busctl --system call org.betteros.Manager1 /org/betteros/Manager1 \
-        org.betteros.Manager1 ApplyTransaction s '{}' >/dev/null 2>&1; then
-        printf 'The service accepted an unauthorized, malformed plan\n' >&2
-        exit 1
-    fi
-    printf 'The service refused an unauthorized request, as it should\n'
-else
-    printf 'Skipped the bus check: no system bus in this container\n'
+printf '== the service on a real system bus ==\n'
+# Everything above this point exercises packaging. What follows is the part
+# that has no fake anywhere: a real system bus, a real polkitd, and the real
+# daemon binary deciding whether to act.
+mkdir -p /run/dbus
+if [[ ! -S /run/dbus/system_bus_socket ]]; then
+    dbus-daemon --system --fork
 fi
+for _ in $(seq 1 50); do
+    [[ -S /run/dbus/system_bus_socket ]] && break
+    sleep 0.1
+done
+[[ -S /run/dbus/system_bus_socket ]] || {
+    printf 'The system bus did not start\n' >&2
+    exit 1
+}
+
+if command -v /usr/lib/polkit-1/polkitd >/dev/null 2>&1; then
+    /usr/lib/polkit-1/polkitd --no-debug &
+    sleep 2
+fi
+
+# Started by hand rather than through systemd: a container has no init, and
+# what is being tested is the service, not the activation.
+/usr/libexec/better-manager-daemon &
+DAEMON_PID=$!
+trap 'kill "$DAEMON_PID" 2>/dev/null || true' EXIT
+sleep 2
+
+kill -0 "$DAEMON_PID" 2>/dev/null || {
+    printf 'The service exited immediately\n' >&2
+    exit 1
+}
+
+busctl --system list 2>/dev/null | grep -q 'org.betteros.Manager1' || {
+    printf 'The service did not claim org.betteros.Manager1\n' >&2
+    exit 1
+}
+printf 'The service claimed its bus name\n'
+
+# ProtocolVersion is ungated on purpose: a client needs to know what it is
+# talking to before it asks for anything.
+version="$(busctl --system get-property org.betteros.Manager1 /org/betteros/Manager1 \
+    org.betteros.Manager1 ProtocolVersion 2>/dev/null | awk '{print $2}')"
+[[ "$version" == "1" ]] || {
+    printf 'Unexpected protocol version: %s\n' "$version" >&2
+    exit 1
+}
+printf 'The service reports protocol version %s without authorization\n' "$version"
+
+# No authentication agent exists in this container, so polkit cannot satisfy
+# auth_admin and the service must refuse. A success here would mean the
+# authorization check is not actually gating anything.
+if busctl --system call org.betteros.Manager1 /org/betteros/Manager1 \
+    org.betteros.Manager1 ApplyTransaction s '{}' >/dev/null 2>&1; then
+    printf 'The service accepted an unauthorized request\n' >&2
+    exit 1
+fi
+printf 'The service refused an unauthorized request, as it should\n'
+
+# An unauthorized caller must not have caused any state to be written either.
+if [[ -n "$(ls -A /var/lib/better-os/transactions 2>/dev/null)" ]]; then
+    printf 'A refused request still wrote a transaction journal\n' >&2
+    exit 1
+fi
+printf 'A refused request left no transaction behind\n'
+
+kill "$DAEMON_PID" 2>/dev/null || true
+trap - EXIT
 
 printf '== purge leaves nothing behind ==\n'
 DEBIAN_FRONTEND=noninteractive apt-get purge -y better-manager-daemon
