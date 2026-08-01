@@ -34,7 +34,7 @@ This checklist is the merge gate for the GNOME Resources parity portion of Bette
 | Virtualized data table | ✅ | GPUI component `DataTable` is used for both Apps and Processes. |
 | Multi-selection toolbar | ✅ | Processes separates row focus from an explicit multi-PID selection set and batch toolbar. |
 | Split action button | ✅ | Apps uses End as the primary action with Force stop, Pause, and Resume in the adjacent dropdown. |
-| Context menu | 🟨 | Processes has a row context menu. Apps and batch-selection context menus remain incomplete. |
+| Context menu | ✅ | Apps and Processes expose row menus; Processes also exposes actions for the explicit multi-PID selection set. |
 | Confirmation dialog | ✅ | Graceful and force-stop actions use confirmation dialogs for Apps and Processes. |
 | Information dialog | ✅ | Application Information and Process Information dialogs exist; Process Options remains a separate GPUI window. |
 | Permission state | 🟨 | Typed permission-denied panels are used for process actions. A narrow Polkit helper flow is still missing. |
@@ -83,7 +83,7 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | Context menu | ✅ | Apps exposes information, End, Force stop, Pause, and Resume from the row context menu. |
 | Confirmation dialogs | ✅ | End and Force actions require confirmation. |
 | Background/system grouping | 🟨 | Grouping reason is visible; dedicated visual separation needs refinement. |
-| Temporary refresh hold during interaction | ⬜ | Missing. |
+| Temporary refresh hold during interaction | ✅ | Opening menus, changing selection, and invoking actions hold table row refresh for two seconds while collection continues. |
 
 ## Processes
 
@@ -105,10 +105,10 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | CPU affinity control | 🟨 | Linux affinity read/write and per-CPU switches exist. Real process tests pending. |
 | Graceful end / force / pause / resume | ✅ | Single-process actions exist. |
 | Batch actions | ✅ | End, Force, Pause, and Resume operate on the selected PID set with confirmations for destructive actions. |
-| Single/multi-selection context menus | ⬜ | Missing. |
+| Single/multi-selection context menus | ✅ | Row menus expose information, options, single-process actions, and batch actions for the selected PID set. |
 | Confirmation/error/permission/stale states | 🟨 | Errors are reported; dedicated confirmation, permission, and stale components are missing. |
 | Keyboard cell navigation and semantics | 🧪 | GPUI table baseline exists; full keyboard/accessibility audit pending. |
-| Temporary refresh hold during interaction | ⬜ | Missing. |
+| Temporary refresh hold during interaction | ✅ | Opening menus, changing selection, and invoking actions hold table row refresh for two seconds while collection continues. |
 
 ## Processor
 
