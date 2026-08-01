@@ -103,3 +103,88 @@ for package_name in better-manager better-monitor; do
 
     printf 'Verified %s (%s)\n' "$deb_path" "$actual_arch"
 done
+
+# The privileged service is packaged differently from the desktop applications:
+# it has no graphics dependencies, its binary lives in /usr/libexec because a
+# person never starts it, and it is the only package that ships the policy and
+# transport files that decide who may change this machine.
+daemon_name="better-manager-daemon"
+if [[ -n "$RELEASE_TARGET" ]]; then
+    daemon_paths=("$DIST_DIR/${daemon_name}_"*"_${RELEASE_TARGET}_${EXPECTED_ARCH}.deb")
+else
+    daemon_paths=("$DIST_DIR/${daemon_name}_"*.deb)
+fi
+if [[ ${#daemon_paths[@]} -ne 1 ]]; then
+    printf 'Expected exactly one target-specific package for %s\n' "$daemon_name" >&2
+    exit 1
+fi
+daemon_path="${daemon_paths[0]}"
+daemon_extract="$WORK_DIR/$daemon_name"
+
+if [[ ! -f "$daemon_path" || ! -f "$daemon_path.sha256" ]]; then
+    printf 'Missing package or checksum: %s\n' "$daemon_name" >&2
+    exit 1
+fi
+(
+    cd "$DIST_DIR"
+    sha256sum --check "$(basename "$daemon_path.sha256")"
+)
+
+daemon_depends="$(dpkg-deb -f "$daemon_path" Depends)"
+if [[ "$daemon_depends" =~ (^|,)[[:space:]]*[^,]*-dev([[:space:]]|,|$) ]]; then
+    printf 'Build-time development package leaked into %s: %s\n' "$daemon_name" "$daemon_depends" >&2
+    exit 1
+fi
+for required_dependency in dbus apt dpkg; do
+    if ! printf '%s\n' "$daemon_depends" | grep -Eq "(^|,)[[:space:]]*${required_dependency}([[:space:]]|,|$)"; then
+        printf 'Missing runtime dependency for %s: %s\n' "$daemon_name" "$required_dependency" >&2
+        exit 1
+    fi
+done
+if printf '%s\n' "$daemon_depends" | grep -Eq 'libwayland|libfontconfig|libxkbcommon'; then
+    printf 'Graphics dependency leaked into the privileged service: %s\n' "$daemon_depends" >&2
+    exit 1
+fi
+
+dpkg-deb --extract "$daemon_path" "$daemon_extract"
+for required_file in \
+    usr/libexec/better-manager-daemon \
+    usr/lib/systemd/system/better-manager-daemon.service \
+    usr/share/dbus-1/system-services/org.betteros.Manager1.service \
+    usr/share/dbus-1/system.d/org.betteros.Manager1.conf \
+    usr/share/polkit-1/actions/org.betteros.manager.policy \
+    usr/share/doc/better-manager-daemon/copyright \
+    usr/share/doc/better-manager-daemon/THIRD-PARTY-LICENSES.md; do
+    if [[ ! -s "$daemon_extract/$required_file" ]]; then
+        printf 'Missing %s in %s\n' "$required_file" "$daemon_name" >&2
+        exit 1
+    fi
+done
+[[ -x "$daemon_extract/usr/libexec/better-manager-daemon" ]] || {
+    printf 'The privileged service binary is not executable\n' >&2
+    exit 1
+}
+
+# The unit must stay D-Bus activated. An [Install] section would mean it runs
+# at boot, which is not what a package manager should do.
+if grep -q '^\[Install\]' "$daemon_extract/usr/lib/systemd/system/better-manager-daemon.service"; then
+    printf 'The privileged service must not be enabled at boot\n' >&2
+    exit 1
+fi
+grep -q '^BusName=org.betteros.Manager1$' \
+    "$daemon_extract/usr/lib/systemd/system/better-manager-daemon.service" || {
+    printf 'The privileged service unit does not claim the expected bus name\n' >&2
+    exit 1
+}
+grep -q 'org.betteros.manager.apply-transaction' \
+    "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
+    printf 'The polkit policy does not declare the apply action\n' >&2
+    exit 1
+}
+
+if ldd "$daemon_extract/usr/libexec/better-manager-daemon" | grep -q 'not found'; then
+    printf 'Unresolved dynamic library in %s\n' "$daemon_name" >&2
+    exit 1
+fi
+
+printf 'Verified %s (%s)\n' "$daemon_path" "$EXPECTED_ARCH"

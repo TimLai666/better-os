@@ -1,0 +1,36 @@
+[package]
+name = "manager-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "better-manager-daemon"
+path = "src/main.rs"
+
+[lib]
+name = "manager_daemon"
+path = "src/lib.rs"
+
+[dependencies]
+better-core.workspace = true
+manager-ipc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "io-util", "fs"] }
+# The daemon runs on tokio, so zbus must use it too rather than starting its
+# own async-io reactor alongside it.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+zbus_polkit = { version = "5", default-features = false, features = ["tokio"] }
+
+[features]
+# Fakes for the traits that touch the host or decide authorization. Never
+# enabled for the shipped binary: nothing in `main.rs` can construct them.
+test-support = []
+
+[dev-dependencies]
+manager-daemon = { path = ".", features = ["test-support"] }
+tokio = { version = "1", features = ["test-util"] }

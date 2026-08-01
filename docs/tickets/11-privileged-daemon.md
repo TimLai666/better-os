@@ -4,7 +4,7 @@
 **User Story:** 經過管理者授權後，系統上真的會安裝、更新、移除或還原第一方元件，
 而且每一步都有紀錄、有健康檢查、失敗時會回滾。
 **Blocked by:** 09-privileged-ipc-contract
-**Status:** todo
+**Status:** done
 
 ## What it delivers
 
@@ -24,15 +24,15 @@
 
 ## Acceptance criteria
 
-- [ ] 變更前失敗不寫回滾記錄；變更後失敗依記錄回滾並回報
+- [x] 變更前失敗不寫回滾記錄；變更後失敗依記錄回滾並回報
       Restored / PartiallyRestored / ManualRecoveryRequired。
-- [ ] 同一 transaction id 重送 `ApplyTransaction` 不會重跑，回傳現況。
-- [ ] 未授權的呼叫者被拒絕，且錯誤是穩定機器鍵。
-- [ ] `StageArtifact` 雜湊不符時檔案不落地。
-- [ ] 計畫的 target release/arch 與主機不符時拒絕執行。
-- [ ] .deb 的 control 欄位與步驟宣告不符時拒絕安裝。
-- [ ] daemon 崩潰後重啟，未完成的 journal 標記為需人工處理，不自動續跑。
-- [ ] 私有 session bus 的整合測試在 CI 上以非特權身分通過。
+- [x] 同一 transaction id 重送 `ApplyTransaction` 不會重跑，回傳現況。
+- [x] 未授權的呼叫者被拒絕，且錯誤是穩定機器鍵。
+- [x] `StageArtifact` 雜湊不符時檔案不落地。
+- [x] 計畫的 target release/arch 與主機不符時拒絕執行。
+- [x] .deb 的 control 欄位與步驟宣告不符時拒絕安裝。
+- [x] daemon 崩潰後重啟，未完成的 journal 標記為需人工處理，不自動續跑。
+- [x] 私有 session bus 的整合測試在 CI 上以非特權身分通過。
 
 ## Verification
 
@@ -41,8 +41,11 @@
 - `cargo test --workspace --offline`
 - `cargo clippy --workspace --all-targets --offline -- -D warnings`
 - 私有 `dbus-daemon --session` 整合測試（FakeAuthorizer + FakeAptDriver）
+- `packaging/build-deb.sh` 與 `packaging/verify-deb.sh`（ubuntu-24.04 / amd64）
 
 ## Out of scope
 
-- 封裝、systemd unit 與 polkit 政策檔落地（票 14）。
+- 非特權端的下載、dpkg 對帳與 D-Bus client（票 12）。
+- GUI 的非同步整合（票 13）。
+- 預設模式切換、文件重談與容器 e2e（票 14）。
 - 套件簽章與公開 APT repository。
