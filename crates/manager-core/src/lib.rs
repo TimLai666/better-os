@@ -13,6 +13,7 @@ use better_core::{
     RestartScope,
 };
 pub use manager_platform::SystemProfile;
+use manager_platform::dpkg::{PackageStateProbe, upstream_version};
 use manager_platform::{PlatformError, SystemCapabilities};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
@@ -323,6 +324,10 @@ pub struct ComponentRecord {
     pub restore_snapshot: Option<ComponentSnapshot>,
     pub failure: Option<FailureRecord>,
     pub recovery: Option<RecoveryStatus>,
+    /// Set when the host and this record disagree. Reported, never silently
+    /// resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift: Option<DriftKind>,
 }
 
 impl Default for ComponentRecord {
@@ -335,6 +340,7 @@ impl Default for ComponentRecord {
             restore_snapshot: None,
             failure: None,
             recovery: None,
+            drift: None,
         }
     }
 }
@@ -638,6 +644,7 @@ impl ManagerState {
                 restore_snapshot: None,
                 failure: None,
                 recovery: None,
+                drift: None,
             },
         );
         self.bump_revision();
@@ -756,6 +763,23 @@ impl FailureEvidence {
     }
 }
 
+/// How the host disagrees with what the manager recorded.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum DriftKind {
+    /// The record says installed; dpkg has never heard of it.
+    MissingOnHost,
+    /// Both agree it is installed, at different versions.
+    VersionMismatch { host: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DriftFinding {
+    pub component: ComponentId,
+    pub recorded: Option<String>,
+    pub drift: DriftKind,
+}
+
 /// What actually happened during a stage.
 ///
 /// This replaces the caller-supplied [`MockOutcome`] at the lifecycle boundary.
@@ -785,6 +809,8 @@ pub enum DoctorCheckKind {
     Compatibility,
     ComponentHealth,
     RestoreData,
+    /// Whether the host still agrees with what was recorded.
+    HostReconciliation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -891,6 +917,14 @@ pub enum ManagerError {
     /// state describing a transaction that has already moved on.
     #[error("manager.error.state_not_saved:{0}")]
     StateNotSaved(String),
+    /// The host could not be asked what it has installed.
+    #[error("manager.error.host_unreadable:{0}")]
+    HostUnreadable(ComponentId),
+    /// The host and the record disagree about this component. Planning is
+    /// blocked until that is resolved, rather than overwriting a state nobody
+    /// reviewed.
+    #[error("manager.error.host_drift:{0}")]
+    HostDrift(ComponentId),
 }
 
 /// The shared non-privileged planning and mock lifecycle API.
@@ -1055,6 +1089,7 @@ impl Manager {
     ) -> Result<TransactionPlan, ManagerError> {
         self.validate_state(state)?;
         self.ensure_idle(state)?;
+        self.ensure_no_drift(state, id)?;
         let mut steps = Vec::new();
         let mut scheduled = BTreeSet::new();
         self.resolve(
@@ -1087,6 +1122,7 @@ impl Manager {
             if self.status(state, &manifest.id)? != ComponentStatus::UpdateAvailable {
                 continue;
             }
+            self.ensure_no_drift(state, &manifest.id)?;
             roots.push(manifest.id.clone());
             self.resolve(
                 state,
@@ -1316,6 +1352,58 @@ impl Manager {
         Ok(())
     }
 
+    /// Compares what the manager recorded against what dpkg reports.
+    ///
+    /// Findings are reported, never applied: rewriting `installed_version` from
+    /// a probe would replace one unverified belief with another and lose the
+    /// evidence that the two disagree. Planning for a drifted component is
+    /// blocked until a person resolves it.
+    pub fn reconcile(
+        &self,
+        state: &mut ManagerState,
+        probe: &dyn PackageStateProbe,
+    ) -> Result<Vec<DriftFinding>, ManagerError> {
+        self.validate_state(state)?;
+        let mut findings = Vec::new();
+
+        for manifest in self.manifests().map(|manifest| manifest.id.clone()) {
+            let recorded = state
+                .component(&manifest)
+                .and_then(|record| record.installed_version.clone());
+            let host = probe
+                .installed_version(manifest.as_str())
+                .map_err(|_| ManagerError::HostUnreadable(manifest.clone()))?;
+
+            let drift = match (&recorded, &host) {
+                (None, _) => None,
+                (Some(_), None) => Some(DriftKind::MissingOnHost),
+                (Some(recorded), Some(host)) => {
+                    if upstream_version(host) == upstream_version(recorded) {
+                        None
+                    } else {
+                        Some(DriftKind::VersionMismatch { host: host.clone() })
+                    }
+                }
+            };
+
+            if let Some(record) = state.components.get_mut(&manifest) {
+                record.drift = drift.clone();
+            }
+            if let Some(drift) = drift {
+                findings.push(DriftFinding {
+                    component: manifest,
+                    recorded,
+                    drift,
+                });
+            }
+        }
+
+        if !findings.is_empty() {
+            state.bump_revision();
+        }
+        Ok(findings)
+    }
+
     pub fn doctor(&self, state: &ManagerState) -> Result<Vec<DoctorCheck>, ManagerError> {
         self.validate_state(state)?;
         let mut checks = vec![DoctorCheck {
@@ -1329,6 +1417,15 @@ impl Manager {
             } else {
                 DoctorCheckStatus::Warning
             };
+            if let Some(record) = state.component(&manifest.id)
+                && record.drift.is_some()
+            {
+                checks.push(DoctorCheck {
+                    kind: DoctorCheckKind::HostReconciliation,
+                    status: DoctorCheckStatus::Failed,
+                    component: Some(manifest.id.clone()),
+                });
+            }
             checks.push(DoctorCheck {
                 kind: DoctorCheckKind::Compatibility,
                 status: compatibility,
@@ -1966,6 +2063,17 @@ impl Manager {
             .iter()
             .filter_map(|(id, snapshot)| snapshot.clone().map(|snapshot| (id.clone(), snapshot)))
             .collect();
+    }
+
+    /// Refuses to plan for a component the host disagrees about.
+    ///
+    /// Applying a plan built from a record that no longer matches the machine
+    /// would overwrite a change the user never reviewed.
+    fn ensure_no_drift(&self, state: &ManagerState, id: &ComponentId) -> Result<(), ManagerError> {
+        match state.component(id).and_then(|record| record.drift.as_ref()) {
+            Some(_) => Err(ManagerError::HostDrift(id.clone())),
+            None => Ok(()),
+        }
     }
 
     fn ensure_idle(&self, state: &ManagerState) -> Result<(), ManagerError> {

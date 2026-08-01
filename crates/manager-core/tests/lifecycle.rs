@@ -1,9 +1,10 @@
 use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
 use manager_core::{
-    ComponentStatus, DesiredOperation, DiskSpaceCheck, ExecutionMode, HealthState, Manager,
-    ManagerError, ManagerState, MockOutcome, OperationProgress, OperationStage, RecoveryStatus,
-    RestartRequirement, StageOutcome, SystemProfile,
+    ComponentStatus, DesiredOperation, DiskSpaceCheck, DoctorCheckKind, DriftKind, ExecutionMode,
+    HealthState, Manager, ManagerError, ManagerState, MockOutcome, OperationProgress,
+    OperationStage, RecoveryStatus, RestartRequirement, StageOutcome, SystemProfile,
 };
+use manager_platform::dpkg::FixedPackageStateProbe;
 
 fn catalog() -> ComponentCatalog {
     let manifests = [
@@ -906,6 +907,93 @@ fn a_recovery_outcome_outside_a_restore_is_rejected_rather_than_silently_ignored
         manager.advance(&mut state, StageOutcome::RestoredPartially),
         Err(ManagerError::UnexpectedStageOutcome { .. })
     ));
+}
+
+#[test]
+fn a_host_that_agrees_with_the_record_produces_no_findings() {
+    let manager = Manager::new(catalog(), SystemProfile::default());
+    let mut state = ManagerState::default();
+    state.set_installed(id("better-monitor"), "0.1.0", true);
+
+    // Debian decoration is not disagreement: the same upstream version dressed
+    // up as an epoch and a revision is still the same version.
+    let probe = FixedPackageStateProbe::new(&[("better-monitor", "1:0.1.0-1~ubuntu24.04")]);
+    assert!(manager.reconcile(&mut state, &probe).unwrap().is_empty());
+    assert!(
+        state
+            .component(&id("better-monitor"))
+            .unwrap()
+            .drift
+            .is_none()
+    );
+}
+
+#[test]
+fn a_component_the_host_no_longer_has_is_reported_without_rewriting_the_record() {
+    let manager = Manager::new(catalog(), SystemProfile::default());
+    let mut state = ManagerState::default();
+    state.set_installed(id("better-monitor"), "0.1.0", true);
+
+    let findings = manager
+        .reconcile(&mut state, &FixedPackageStateProbe::new(&[]))
+        .unwrap();
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].drift, DriftKind::MissingOnHost);
+    // The record is evidence of the disagreement, so it stays as it was.
+    assert_eq!(
+        state
+            .component(&id("better-monitor"))
+            .unwrap()
+            .installed_version
+            .as_deref(),
+        Some("0.1.0")
+    );
+}
+
+#[test]
+fn a_version_the_host_disagrees_about_blocks_planning_until_it_is_resolved() {
+    let manager = Manager::new(catalog(), SystemProfile::default());
+    let mut state = ManagerState::default();
+    state.set_installed(id("better-monitor"), "0.0.1", true);
+
+    let findings = manager
+        .reconcile(
+            &mut state,
+            &FixedPackageStateProbe::new(&[("better-monitor", "0.9.9")]),
+        )
+        .unwrap();
+    assert_eq!(
+        findings[0].drift,
+        DriftKind::VersionMismatch {
+            host: "0.9.9".to_string()
+        }
+    );
+
+    assert!(matches!(
+        manager.plan(&state, &id("better-monitor"), DesiredOperation::Update),
+        Err(ManagerError::HostDrift(_))
+    ));
+
+    // Doctor is where a person is told why.
+    let checks = manager.doctor(&state).unwrap();
+    assert!(
+        checks
+            .iter()
+            .any(|check| check.kind == DoctorCheckKind::HostReconciliation)
+    );
+}
+
+#[test]
+fn a_component_that_was_never_installed_is_not_drift() {
+    let manager = Manager::new(catalog(), SystemProfile::default());
+    let mut state = ManagerState::default();
+
+    // The record says nothing is installed. Whatever the host has under that
+    // name was not put there by this manager, and claiming drift would invent a
+    // history that does not exist.
+    let probe = FixedPackageStateProbe::new(&[("better-monitor", "0.1.0")]);
+    assert!(manager.reconcile(&mut state, &probe).unwrap().is_empty());
 }
 
 fn complete(

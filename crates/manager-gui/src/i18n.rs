@@ -166,6 +166,7 @@ pub(crate) struct Copy {
     pub(crate) run_again: &'static str,
     pub(crate) back_to_health: &'static str,
     pub(crate) check_catalog: &'static str,
+    pub(crate) check_host_reconciliation: &'static str,
 
     // Activity
     pub(crate) activity_title: &'static str,
@@ -360,6 +361,7 @@ static EN: Copy = Copy {
     run_again: "Run again",
     back_to_health: "Back to system health",
     check_catalog: "Component catalog",
+    check_host_reconciliation: "Host agrees with records",
 
     activity_title: "Activity",
     activity_subtitle: "Review installations, updates, checks, failures, and restorations.",
@@ -551,6 +553,7 @@ static ZH_TW: Copy = Copy {
     run_again: "重新執行",
     back_to_health: "返回系統狀態",
     check_catalog: "元件目錄",
+    check_host_reconciliation: "主機與紀錄一致",
 
     activity_title: "活動紀錄",
     activity_subtitle: "查看安裝、更新、檢查、失敗與還原結果。",

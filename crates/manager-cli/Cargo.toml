@@ -9,5 +9,6 @@ license.workspace = true
 better-core.workspace = true
 clap.workspace = true
 manager-core.workspace = true
-manager-platform.workspace = true
+manager-platform = { workspace = true, features = ["dbus-client"] }
+uuid = { version = "1", features = ["v4"] }
 manager-store.workspace = true

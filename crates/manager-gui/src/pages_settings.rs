@@ -179,6 +179,7 @@ impl ManagerApp {
             DoctorCheckKind::Compatibility => c.compatibility,
             DoctorCheckKind::ComponentHealth => c.component_health_checks,
             DoctorCheckKind::RestoreData => c.restore_available,
+            DoctorCheckKind::HostReconciliation => c.check_host_reconciliation,
         };
         let status = match check.status {
             DoctorCheckStatus::Passed => Tag::success().small().rounded_full().child(c.passed),
