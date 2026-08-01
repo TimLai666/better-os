@@ -1,8 +1,8 @@
 use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
 use manager_core::{
-    ComponentStatus, DesiredOperation, DiskSpaceCheck, HealthState, Manager, ManagerError,
-    ManagerState, MockOutcome, OperationProgress, OperationStage, RecoveryStatus,
-    RestartRequirement, SystemProfile,
+    ComponentStatus, DesiredOperation, DiskSpaceCheck, ExecutionMode, HealthState, Manager,
+    ManagerError, ManagerState, MockOutcome, OperationProgress, OperationStage, RecoveryStatus,
+    RestartRequirement, StageOutcome, SystemProfile,
 };
 
 fn catalog() -> ComponentCatalog {
@@ -78,13 +78,15 @@ fn verification_failure_keeps_evidence_and_restores_the_snapshot_after_recheck()
     manager.begin(&mut state, plan).unwrap();
     for _ in 0..3 {
         assert!(matches!(
-            manager.advance(&mut state, MockOutcome::Succeed).unwrap(),
+            manager
+                .advance_mock(&mut state, MockOutcome::Succeed)
+                .unwrap(),
             OperationProgress::InProgress { .. }
         ));
     }
 
     let failed = manager
-        .advance(
+        .advance_mock(
             &mut state,
             MockOutcome::FailAt(OperationStage::CheckingHealth),
         )
@@ -105,7 +107,9 @@ fn verification_failure_keeps_evidence_and_restores_the_snapshot_after_recheck()
         .unwrap();
     manager.begin(&mut state, restore).unwrap();
     while state.active_operation.is_some() {
-        manager.advance(&mut state, MockOutcome::Succeed).unwrap();
+        manager
+            .advance_mock(&mut state, MockOutcome::Succeed)
+            .unwrap();
     }
 
     assert_eq!(
@@ -156,10 +160,12 @@ fn verification_failure_preserves_the_previous_update_snapshot() {
         .unwrap();
     manager.begin(&mut state, verify).unwrap();
     for _ in 0..3 {
-        manager.advance(&mut state, MockOutcome::Succeed).unwrap();
+        manager
+            .advance_mock(&mut state, MockOutcome::Succeed)
+            .unwrap();
     }
     manager
-        .advance(
+        .advance_mock(
             &mut state,
             MockOutcome::FailAt(OperationStage::CheckingHealth),
         )
@@ -288,7 +294,7 @@ fn failure_before_component_changes_does_not_invent_a_restore_point() {
         .unwrap();
     manager.begin(&mut state, plan).unwrap();
     manager
-        .advance(&mut state, MockOutcome::FailAt(OperationStage::Downloading))
+        .advance_mock(&mut state, MockOutcome::FailAt(OperationStage::Downloading))
         .unwrap();
 
     let record = state.component(&component).unwrap();
@@ -317,10 +323,12 @@ fn a_failed_restore_keeps_the_original_restore_point() {
         .unwrap();
     manager.begin(&mut state, restore).unwrap();
     for _ in 0..3 {
-        manager.advance(&mut state, MockOutcome::Succeed).unwrap();
+        manager
+            .advance_mock(&mut state, MockOutcome::Succeed)
+            .unwrap();
     }
     manager
-        .advance(
+        .advance_mock(
             &mut state,
             MockOutcome::FailAt(OperationStage::CheckingHealth),
         )
@@ -530,10 +538,12 @@ fn disable_enable_and_verify_use_one_persistable_lifecycle() {
         .unwrap();
     manager.begin(&mut state, verify).unwrap();
     for _ in 0..3 {
-        manager.advance(&mut state, MockOutcome::Succeed).unwrap();
+        manager
+            .advance_mock(&mut state, MockOutcome::Succeed)
+            .unwrap();
     }
     manager
-        .advance(
+        .advance_mock(
             &mut state,
             MockOutcome::FailAt(OperationStage::CheckingHealth),
         )
@@ -589,10 +599,12 @@ fn restore_can_report_partial_and_manual_recovery_without_hiding_the_result() {
         .unwrap();
     manager.begin(&mut state, update).unwrap();
     for _ in 0..3 {
-        manager.advance(&mut state, MockOutcome::Succeed).unwrap();
+        manager
+            .advance_mock(&mut state, MockOutcome::Succeed)
+            .unwrap();
     }
     manager
-        .advance(
+        .advance_mock(
             &mut state,
             MockOutcome::FailAt(OperationStage::CheckingHealth),
         )
@@ -751,6 +763,151 @@ fn the_manager_takes_host_capabilities_from_the_platform_backend() {
     ));
 }
 
+#[test]
+fn a_real_plan_carries_the_artifact_it_would_install() {
+    let manager = Manager::new(catalog(), SystemProfile::default());
+    let state = ManagerState::default();
+
+    let plan = manager
+        .plan_in_mode(
+            &state,
+            &id("better-monitor"),
+            DesiredOperation::Install,
+            ExecutionMode::Real,
+        )
+        .unwrap();
+
+    assert_eq!(plan.execution_mode(), ExecutionMode::Real);
+    assert!(!plan.is_dry_run());
+    let artifact = plan.steps()[0]
+        .artifact
+        .as_ref()
+        .expect("a real install names what it installs");
+    assert_eq!(artifact.sha256.len(), 64);
+    assert!(artifact.url.as_deref().unwrap().starts_with("https://"));
+    assert!(artifact.release_asset.ends_with(".deb"));
+}
+
+#[test]
+fn a_simulated_plan_stays_a_simulation() {
+    let manager = Manager::new(catalog(), SystemProfile::default());
+    let plan = manager
+        .plan(
+            &ManagerState::default(),
+            &id("better-monitor"),
+            DesiredOperation::Install,
+        )
+        .unwrap();
+
+    assert_eq!(plan.execution_mode(), ExecutionMode::Mock);
+    assert!(plan.is_dry_run());
+}
+
+#[test]
+fn a_persisted_real_plan_without_an_artifact_is_refused() {
+    let manager = Manager::new(catalog(), SystemProfile::default());
+    let mut state = ManagerState::default();
+    let plan = manager
+        .plan_in_mode(
+            &state,
+            &id("better-monitor"),
+            DesiredOperation::Install,
+            ExecutionMode::Real,
+        )
+        .unwrap();
+    manager.begin(&mut state, plan).unwrap();
+
+    // Strip the artifact the way a tampered or hand-edited state file would. A
+    // real transaction that cannot say what it installs is not resumable, and
+    // must not be loaded as if it were.
+    let mut document = serde_json::to_value(&state).unwrap();
+    document["active_operation"]["plan"]["steps"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("artifact");
+    let tampered: ManagerState = serde_json::from_value(document).unwrap();
+
+    assert!(tampered.validate().is_err());
+}
+
+#[test]
+fn a_real_transaction_records_which_artifact_produced_the_installed_version() {
+    let manager = Manager::new(catalog(), SystemProfile::default());
+    let mut state = ManagerState::default();
+    let plan = manager
+        .plan_in_mode(
+            &state,
+            &id("better-monitor"),
+            DesiredOperation::Install,
+            ExecutionMode::Real,
+        )
+        .unwrap();
+    let expected = plan.steps()[0].artifact.clone().unwrap();
+
+    manager.begin(&mut state, plan).unwrap();
+    while state.active_operation.is_some() {
+        manager
+            .advance(&mut state, StageOutcome::Completed)
+            .unwrap();
+    }
+
+    let record = state.component(&id("better-monitor")).unwrap();
+    assert_eq!(record.installed_artifact.as_ref(), Some(&expected));
+}
+
+#[test]
+fn a_real_restore_without_a_recorded_artifact_is_refused_rather_than_promised() {
+    let manager = Manager::new(catalog(), SystemProfile::default());
+    let mut state = ManagerState::default();
+
+    // A restore point recorded before artifacts were tracked, which is what a
+    // migrated version 1 state looks like.
+    state.set_installed(id("better-monitor"), "0.1.0", true);
+    let record = state.components.get_mut(&id("better-monitor")).unwrap();
+    record.restore_snapshot = Some(manager_core::ComponentSnapshot {
+        installed_version: Some("0.0.9".to_string()),
+        enabled: true,
+        health: HealthState::Healthy,
+        artifact: None,
+    });
+
+    // A simulation can still walk the restore.
+    manager
+        .plan(&state, &id("better-monitor"), DesiredOperation::Restore)
+        .unwrap();
+
+    // A real one cannot: there is no artifact to reinstall, and saying
+    // otherwise would offer a restore that cannot happen.
+    assert!(matches!(
+        manager.plan_in_mode(
+            &state,
+            &id("better-monitor"),
+            DesiredOperation::Restore,
+            ExecutionMode::Real,
+        ),
+        Err(ManagerError::RestoreArtifactMissing(_))
+    ));
+}
+
+#[test]
+fn a_recovery_outcome_outside_a_restore_is_rejected_rather_than_silently_ignored() {
+    let manager = Manager::new(catalog(), SystemProfile::default());
+    let mut state = ManagerState::default();
+    let plan = manager
+        .plan(
+            &ManagerState::default(),
+            &id("better-monitor"),
+            DesiredOperation::Install,
+        )
+        .unwrap();
+    manager.begin(&mut state, plan).unwrap();
+
+    assert!(matches!(
+        manager.advance(&mut state, StageOutcome::RestoredPartially),
+        Err(ManagerError::UnexpectedStageOutcome { .. })
+    ));
+}
+
 fn complete(
     manager: &Manager,
     state: &mut ManagerState,
@@ -765,6 +922,6 @@ fn complete(
         } else {
             MockOutcome::Succeed
         };
-        manager.advance(state, outcome).unwrap();
+        manager.advance_mock(state, outcome).unwrap();
     }
 }

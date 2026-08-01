@@ -1,5 +1,6 @@
 use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
 use clap::{Parser, Subcommand, ValueEnum};
+use manager_core::exec::{MockDriver, MockRestoreOutcome, RunnerEvent, TransactionRunner};
 use manager_core::{
     DesiredOperation, DiskSpaceCheck, Manager, ManagerState, MockOutcome, OperationProgress,
     OperationStage, TransactionPlan,
@@ -265,39 +266,35 @@ fn advance_until_done(
     fail_at: Option<OperationStage>,
     restore_outcome: Option<MockOutcome>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    loop {
-        let stage = state
-            .active_operation
-            .as_ref()
-            .ok_or_else(|| std::io::Error::other("no active mock operation"))?
-            .stage;
-        let outcome = match fail_at == Some(stage) {
-            true => MockOutcome::FailAt(stage),
-            false if stage == OperationStage::CheckingHealth => {
-                restore_outcome.unwrap_or(MockOutcome::Succeed)
-            }
-            false => MockOutcome::Succeed,
-        };
-        match manager.advance(state, outcome)? {
-            OperationProgress::InProgress { stage } => {
-                store.save(state)?;
-                println!("mock stage: {stage:?}");
-            }
-            OperationProgress::Finished { operation } => {
-                store.save(state)?;
-                println!("mock operation finished: {operation:?}");
-                return Ok(());
-            }
-            OperationProgress::Failed { failure } => {
-                store.save(state)?;
-                println!(
-                    "mock operation failed at {:?}: {}",
-                    failure.stage, failure.evidence
-                );
-                return Ok(());
-            }
+    let restore_outcome = match restore_outcome {
+        Some(MockOutcome::RestorePartially) => MockRestoreOutcome::Partial,
+        Some(MockOutcome::RestoreRequiresManualRecovery) => MockRestoreOutcome::ManualRecovery,
+        _ => MockRestoreOutcome::Succeed,
+    };
+    let driver = MockDriver::new(fail_at, restore_outcome);
+    let mut runner = TransactionRunner::new(manager, Box::new(driver), store);
+
+    let progress = runner.run(state, &mut |event| {
+        if let RunnerEvent::StageEntered(stage) = event {
+            println!("mock stage: {stage:?}");
+        }
+    })?;
+
+    match progress {
+        OperationProgress::Finished { operation } => {
+            println!("mock operation finished: {operation:?}");
+        }
+        OperationProgress::Failed { failure } => {
+            println!(
+                "mock operation failed at {:?}: {}",
+                failure.stage, failure.evidence
+            );
+        }
+        OperationProgress::InProgress { stage } => {
+            println!("mock operation is still at {stage:?}");
         }
     }
+    Ok(())
 }
 
 fn run_plan(
