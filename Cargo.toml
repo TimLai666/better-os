@@ -8,6 +8,7 @@ members = [
     "crates/manager-platform",
     "crates/manager-store",
     "crates/manager-cli",
+    "crates/manager-daemon",
     "crates/manager-gui",
     "crates/monitor-core",
     "crates/monitor-gui",

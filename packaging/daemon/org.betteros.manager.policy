@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
+<policyconfig>
+  <vendor>Better OS</vendor>
+  <vendor_url>https://github.com/TimLai666/better-os</vendor_url>
+
+  <action id="org.betteros.manager.apply-transaction">
+    <description>Install, update, remove, or restore Better OS components</description>
+    <description xml:lang="zh_TW">安裝、更新、移除或還原 Better OS 元件</description>
+    <message>Authentication is required to change Better OS components</message>
+    <message xml:lang="zh_TW">變更 Better OS 元件需要驗證身分</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <!-- A person installing one component and then updating another should
+           not be asked twice inside polkit's keep window. Remote and inactive
+           sessions always authenticate again. -->
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

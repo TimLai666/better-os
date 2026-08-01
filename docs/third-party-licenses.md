@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 868.
-- Packages with an SPDX license expression: 866.
+- Resolved Cargo packages: 872.
+- Packages with an SPDX license expression: 870.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `a039009c99626cd7bf001859aaa9709910b88eb65cf2141055cfcd1c50e70398`.
+- `Cargo.lock` SHA-256: `b1ede97e1a82cd59a91897b51b7c3452ccf1df1cd2f6fa8dee167a5afb36bd93`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -26,13 +26,13 @@ source of truth for those packages.
 | License expression | Package records |
 | --- | ---: |
 | `MIT OR Apache-2.0` | 398 |
-| `MIT` | 184 |
+| `MIT` | 186 |
 | `Apache-2.0 OR MIT` | 76 |
 | `MIT/Apache-2.0` | 35 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
 | `Zlib OR Apache-2.0 OR MIT` | 17 |
-| `GPL-3.0-or-later` | 12 |
+| `GPL-3.0-or-later` | 14 |
 | `BSD-3-Clause` | 10 |
 | `MIT OR Apache-2.0 OR Zlib` | 10 |
 | `Apache-2.0/MIT` | 8 |
@@ -81,7 +81,9 @@ Better OS does not relicense or silently select a different expression.
 | `libfuzzer-sys` | `0.4.13` | `(MIT OR Apache-2.0) AND NCSA` | [crates.io](https://crates.io/crates/libfuzzer-sys/0.4.13) |
 | `manager-cli` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-core` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `manager-daemon` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-gui` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `manager-ipc` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-platform` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-store` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `monitor-core` | `0.1.0` | `GPL-3.0-or-later` | workspace |
@@ -453,7 +455,9 @@ Better OS does not relicense or silently select a different expression.
 | `malloc_buf` | `0.0.6` | `MIT` | [crates.io](https://crates.io/crates/malloc_buf/0.0.6) |
 | `manager-cli` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-core` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `manager-daemon` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-gui` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `manager-ipc` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-platform` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-store` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `markdown` | `1.0.0` | `MIT` | [crates.io](https://crates.io/crates/markdown/1.0.0) |
@@ -757,6 +761,7 @@ Better OS does not relicense or silently select a different expression.
 | `tinyvec` | `1.12.0` | `Zlib OR Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/tinyvec/1.12.0) |
 | `tinyvec_macros` | `0.1.1` | `MIT OR Apache-2.0 OR Zlib` | [crates.io](https://crates.io/crates/tinyvec_macros/0.1.1) |
 | `tokio` | `1.53.1` | `MIT` | [crates.io](https://crates.io/crates/tokio/1.53.1) |
+| `tokio-macros` | `2.7.2` | `MIT` | [crates.io](https://crates.io/crates/tokio-macros/2.7.2) |
 | `tokio-rustls` | `0.26.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/tokio-rustls/0.26.4) |
 | `tokio-socks` | `0.5.3` | `MIT` | [crates.io](https://crates.io/crates/tokio-socks/0.5.3) |
 | `tokio-util` | `0.7.19` | `MIT` | [crates.io](https://crates.io/crates/tokio-util/0.7.19) |
@@ -938,6 +943,7 @@ Better OS does not relicense or silently select a different expression.
 | `zbus-lockstep-macros` | `0.5.2` | `MIT` | [crates.io](https://crates.io/crates/zbus-lockstep-macros/0.5.2) |
 | `zbus_macros` | `5.18.0` | `MIT` | [crates.io](https://crates.io/crates/zbus_macros/5.18.0) |
 | `zbus_names` | `4.3.4` | `MIT` | [crates.io](https://crates.io/crates/zbus_names/4.3.4) |
+| `zbus_polkit` | `5.0.0` | `MIT` | [crates.io](https://crates.io/crates/zbus_polkit/5.0.0) |
 | `zbus_xml` | `5.2.1` | `MIT` | [crates.io](https://crates.io/crates/zbus_xml/5.2.1) |
 | `zed-font-kit` | `0.14.1-zed` | `MIT OR Apache-2.0` | `git+https://github.com/zed-industries/font-kit?rev=94b0f28166665e8fd2f53ff6d268a14955c82269#94b0f28166665e8fd2f53ff6d268a14955c82269` |
 | `zed-reqwest` | `0.12.15-zed` | `MIT OR Apache-2.0` | `git+https://github.com/zed-industries/reqwest.git?rev=c15662463bda39148ba154100dd44d3fba5873a4#c15662463bda39148ba154100dd44d3fba5873a4` |
