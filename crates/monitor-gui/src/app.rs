@@ -55,6 +55,22 @@ enum MonitorPage {
 }
 
 impl MonitorPage {
+    const ALL: [Self; 14] = [
+        Self::Overview,
+        Self::Apps,
+        Self::Processes,
+        Self::Cpu,
+        Self::Memory,
+        Self::Gpu,
+        Self::Npu,
+        Self::Storage,
+        Self::Network,
+        Self::Battery,
+        Self::History,
+        Self::Incidents,
+        Self::Diagnostics,
+        Self::Settings,
+    ];
     const INVESTIGATE: [Self; 3] = [Self::History, Self::Incidents, Self::Diagnostics];
 
     const fn id(self) -> &'static str {
@@ -612,6 +628,36 @@ impl MonitorWindow {
                 this.active_page = page;
                 cx.notify();
             }))
+    }
+
+    fn compact_nav_button(&self, page: MonitorPage, cx: &mut Context<Self>) -> Button {
+        Button::new(format!("compact-{}", page.id()))
+            .ghost()
+            .small()
+            .flex_shrink_0()
+            .label(format!("{}  {}", page.marker(), page.label()))
+            .selected(self.active_page == page)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.active_page = page;
+                cx.notify();
+            }))
+    }
+
+    fn render_compact_navigation(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .w_full()
+            .flex_shrink_0()
+            .overflow_x_scrollbar()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().muted)
+            .child(
+                h_flex().items_center().gap_1().px_3().py_2().children(
+                    MonitorPage::ALL
+                        .into_iter()
+                        .map(|page| self.compact_nav_button(page, cx)),
+                ),
+            )
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> Div {
@@ -1879,29 +1925,41 @@ impl MonitorWindow {
 }
 
 impl Render for MonitorWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let compact_navigation = uses_compact_navigation(window.viewport_size().width);
+
         h_flex()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(self.render_resources_sidebar(cx))
+            .when(!compact_navigation, |this| {
+                this.child(self.render_resources_sidebar(cx))
+            })
             .child(
                 v_flex()
                     .h_full()
                     .flex_1()
                     .min_w_0()
                     .child(self.render_header(cx))
+                    .when(compact_navigation, |this| {
+                        this.child(self.render_compact_navigation(cx))
+                    })
                     .child(
                         div()
                             .flex_1()
                             .min_h(px(0.0))
                             .overflow_y_scrollbar()
-                            .p_5()
+                            .when(compact_navigation, |this| this.p_3())
+                            .when(!compact_navigation, |this| this.p_5())
                             .child(self.render_page(cx)),
                     )
                     .child(self.render_status_bar(cx)),
             )
     }
+}
+
+fn uses_compact_navigation(width: Pixels) -> bool {
+    width < px(980.0)
 }
 
 fn unix_time_ms() -> u64 {
@@ -1929,6 +1987,18 @@ fn option_yes_no(value: Option<bool>) -> String {
         || "N/A".to_string(),
         |value| if value { "Yes" } else { "No" }.to_string(),
     )
+}
+
+#[cfg(test)]
+mod adaptive_navigation_tests {
+    use super::*;
+
+    #[test]
+    fn compact_navigation_uses_the_documented_breakpoint() {
+        assert!(uses_compact_navigation(px(979.0)));
+        assert!(!uses_compact_navigation(px(980.0)));
+        assert!(!uses_compact_navigation(px(1360.0)));
+    }
 }
 
 pub fn run() {

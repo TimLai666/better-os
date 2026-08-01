@@ -23,7 +23,7 @@ This checklist is the merge gate for the GNOME Resources parity portion of Bette
 
 | Component | Status | Current implementation / missing work |
 |---|---:|---|
-| Adaptive split shell | 🟨 | Persistent desktop sidebar exists. Narrow-window sidebar replacement, back navigation, and breakpoint behavior are missing. |
+| Adaptive split shell | ✅ | The desktop sidebar remains above the breakpoint; below 980 logical px it is replaced by a horizontally scrollable page rail and reduced content padding. |
 | Resource sidebar row | 🟨 | Label, detail, selection, progress bar, and mini-graph modes exist. Resource icons and accessible names are incomplete. |
 | Selected-page header | 🟨 | Page label and description exist. Device-specific model/identifier and narrow back button are incomplete. |
 | Metric card | ✅ | Reusable metric card exists in `monitor-gui`. |
@@ -57,7 +57,7 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | Live sidebar meter | ✅ | Progress bar and mini-graph modes exist. |
 | User-facing device detail | 🟨 | Model/interface detail exists where exposed. Icons and some stable identifiers remain incomplete. |
 | Selected device title/model | 🟨 | Page title exists; device-specific secondary title is incomplete. |
-| Adaptive narrow layout | ⬜ | Needs breakpoint, sidebar replacement, and back behavior. |
+| Adaptive narrow layout | ✅ | Uses the 980 logical px breakpoint, replaces the sidebar with a compact page rail, and reacts directly to the current viewport size. |
 | Restore last selected page | ⬜ | Settings model does not yet persist page/device selection. |
 | Restore window size/maximized state | ⬜ | Not persisted. |
 | Pause graphical updates when hidden | ⬜ | Manual graph pause exists; visibility-driven throttling is missing. |
@@ -234,7 +234,7 @@ The answer to “are all required UI components built?” is therefore **no**. T
 ## Next implementation order
 
 1. Keep Process Options compiling and validated.
-2. Build shared parity interaction components: confirmation dialog, context menu, split action, multi-selection toolbar, support-state panel, and adaptive navigation.
+2. Build the remaining shared parity interaction components: context menu, split action, and support-state panel.
 3. Implement process multi-selection and batch actions.
 4. ✅ Convert Apps to a virtualized sortable table with persisted sort state and information/actions dialogs.
 5. Add persisted shell state and temporary refresh holds.
