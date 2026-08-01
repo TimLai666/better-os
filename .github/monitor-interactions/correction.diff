@@ -1,0 +1,91 @@
+--- monitor-interactions.patch
++++ monitor-interactions.patch
+@@ -193,88 +193,6 @@
+ +                                    .child(
+ +                                        DialogHeader::new()
+ +                                            .child(
+-+                                                DialogTitle:                       )
+-+                                    .child(
+-+                                        DialogFooter::new().child(
+-+                                            DialogClose::new().child(
+-+                                                Button::new(("app-information-close", index))
+-+                                                    .outline()
+-+                                                    .label("Close"),
+-+                                            ),
+-+                                        ),
+-+                                    )
+-+                            }),
+-                     )
+-                     .child(
+--                        Button::new(("app-kill", index))
+--                            .warning()
+--                            .small()
+--                            .label("Force")
+--                            .on_click(cx.listener(move |this, _, _, cx| {
+--                                this.signal_pids(&kill_pids, Signal::Kill);
+--                                cx.notify();
+--                            })),
+-+                        AlertDialog::new(cx)
+-+                            .trigger(
+-+                                Button::new(("app-term", index))
+-+                                    .outline()
+-+                                    .small()
+-+                                    .label("End"),
+-+                            )
+-+                            .on_ok(move |_, _, cx| {
+-+                                let _ = term_target.update(cx, |this, cx| {
+-+                                    this.signal_pids(&term_pids, Signal::Term);
+-+                                    cx.notify();
+-+                                });
+-+                                true
+-+                            })
+-+                            .content(move |content, _, _| {
+-+                                content
+-+                                    .child(
+-+                                        DialogHeader::new()
+-+                                            .child(
+-+                                                DialogTitle::new()
+-+                                                    .child(format!("End {app_name}?")),
+-+                                            )
+-+                                            .child(DialogDescription::new().child(
+-+                                                "All processes in this application group will receive a graceful termination signal.",
+-+                                            )),
+-+                                    )
+-+                                    .child(
+-+                                        DialogFooter::new()
+-+                                            .child(DialogClose::new().child(
+-+                                                Button::new(("app-term-cancel", index))
+-+                                                    .outline()
+-+                                                    .label("Cancel"),
+-+                                            ))
+-+                                            .child(DialogAction::new().child(
+-+                                                Button::new(("app-term-confirm", index))
+-+                                                    .warning()
+-+                                                    .label("End Application"),
+-+                                            )),
+-+                                    )
+-+                            }),
+-+                    )
+-+                    .child(
+-+                        AlertDialog::new(cx)
+-+                            .trigger(
+-+                                Button::new(("app-kill", index))
+-+                                    .warning()
+-+                                    .small()
+-+                                    .label("Force"),
+-+                            )
+-+                            .on_ok(move |_, _, cx| {
+-+                                let _ = kill_target.update(cx, |this, cx| {
+-+                                    this.signal_pids(&kill_pids, Signal::Kill);
+-+                                    cx.notify();
+-+                                });
+-+                                true
+-+                            })
+-+                            .content(move |content, _, _| {
+-+                                content
+-+                                    .child(
+-+                                        DialogHeader::new()
+-+                                            .child(
+ +                                                DialogTitle::new()
+ +                                                    .child("Force stop application?"),
+ +                                            )
