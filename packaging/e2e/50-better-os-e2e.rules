@@ -1,0 +1,19 @@
+// Grants the end-to-end check the authorization a person would otherwise
+// supply at an authentication prompt.
+//
+// This exists only inside the disposable test container. polkit's job is to
+// decide who may act and to collect that authentication; verifying that prompt
+// is polkit's business, not this project's. What this project has to prove is
+// what happens *after* polkit says yes — that the service then carries out the
+// transaction correctly — and a container has no interactive agent to get
+// there any other way.
+//
+// It must never be shipped in a package.
+polkit.addRule(function (action, subject) {
+    if (
+        action.id === "org.betteros.manager.apply-transaction" &&
+        subject.user === "root"
+    ) {
+        return polkit.Result.YES;
+    }
+});
