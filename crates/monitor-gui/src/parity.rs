@@ -1,6 +1,14 @@
 use super::*;
 
-use gpui_component::{Icon, IconName, input::Input, switch::Switch};
+use gpui_component::{
+    Icon, IconName,
+    dialog::{
+        AlertDialog, DialogAction, DialogClose, DialogDescription, DialogFooter, DialogHeader,
+        DialogTitle,
+    },
+    input::Input,
+    switch::Switch,
+};
 use sysinfo::Signal;
 
 impl MonitorWindow {
@@ -422,7 +430,7 @@ impl MonitorWindow {
             + if columns.decoder { 96.0 } else { 0.0 }
             + if columns.swap { 110.0 } else { 0.0 }
             + if columns.combined_memory { 130.0 } else { 0.0 }
-            + 270.0
+            + 410.0
     }
 
     fn render_app_header(&self, cx: &Context<Self>) -> Div {
@@ -471,7 +479,7 @@ impl MonitorWindow {
             .when(columns.combined_memory, |this| {
                 this.child(self.app_header_cell("Memory + swap", 130.0))
             })
-            .child(self.app_header_cell("Actions", 270.0))
+            .child(self.app_header_cell("Actions", 410.0))
     }
 
     fn app_header_cell(&self, label: &'static str, width: f32) -> Div {
@@ -484,6 +492,37 @@ impl MonitorWindow {
         let kill_pids = group.pids.clone();
         let stop_pids = group.pids.clone();
         let continue_pids = group.pids.clone();
+        let term_target = cx.entity().downgrade();
+        let kill_target = cx.entity().downgrade();
+        let app_name = group.display_name.clone();
+        let info_name = group.display_name.clone();
+        let info_description = format!(
+            "Identity: {}
+Grouped processes: {}
+Grouping evidence: {}
+PIDs: {}
+CPU: {:.1}%
+Memory: {}
+Swap: {}
+Read: {} total, {}/s
+Written: {} total, {}/s",
+            group.id,
+            group.process_count,
+            group.grouping_reason,
+            group
+                .pids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            group.cpu_usage,
+            linux::format_bytes(group.memory, self.settings.unit_base),
+            linux::format_bytes(group.swap, self.settings.unit_base),
+            linux::format_bytes(group.read_total, self.settings.unit_base),
+            linux::format_bytes(group.read_speed, self.settings.unit_base),
+            linux::format_bytes(group.write_total, self.settings.unit_base),
+            linux::format_bytes(group.write_speed, self.settings.unit_base),
+        );
 
         h_flex()
             .items_center()
@@ -604,28 +643,125 @@ impl MonitorWindow {
             })
             .child(
                 h_flex()
-                    .w(px(270.0))
+                    .w(px(410.0))
                     .flex_shrink_0()
+                    .flex_wrap()
                     .gap_1()
                     .child(
-                        Button::new(("app-term", index))
-                            .outline()
-                            .small()
-                            .label("End")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.signal_pids(&term_pids, Signal::Term);
-                                cx.notify();
-                            })),
+                        AlertDialog::new(cx)
+                            .trigger(
+                                Button::new(("app-information", index))
+                                    .outline()
+                                    .small()
+                                    .label("Info"),
+                            )
+                            .content(move |content, _, _| {
+                                content
+                                    .child(
+                                        DialogHeader::new()
+                                            .child(
+                                                DialogTitle::new()
+                                                    .child(format!("{info_name} Information")),
+                                            )
+                                            .child(
+                                                DialogDescription::new()
+                                                    .child(info_description.clone()),
+                                            ),
+                                    )
+                                    .child(
+                                        DialogFooter::new().child(
+                                            DialogClose::new().child(
+                                                Button::new(("app-information-close", index))
+                                                    .outline()
+                                                    .label("Close"),
+                                            ),
+                                        ),
+                                    )
+                            }),
                     )
                     .child(
-                        Button::new(("app-kill", index))
-                            .warning()
-                            .small()
-                            .label("Force")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.signal_pids(&kill_pids, Signal::Kill);
-                                cx.notify();
-                            })),
+                        AlertDialog::new(cx)
+                            .trigger(
+                                Button::new(("app-term", index))
+                                    .outline()
+                                    .small()
+                                    .label("End"),
+                            )
+                            .on_ok(move |_, _, cx| {
+                                let _ = term_target.update(cx, |this, cx| {
+                                    this.signal_pids(&term_pids, Signal::Term);
+                                    cx.notify();
+                                });
+                                true
+                            })
+                            .content(move |content, _, _| {
+                                content
+                                    .child(
+                                        DialogHeader::new()
+                                            .child(
+                                                DialogTitle::new()
+                                                    .child(format!("End {app_name}?")),
+                                            )
+                                            .child(DialogDescription::new().child(
+                                                "All processes in this application group will receive a graceful termination signal.",
+                                            )),
+                                    )
+                                    .child(
+                                        DialogFooter::new()
+                                            .child(DialogClose::new().child(
+                                                Button::new(("app-term-cancel", index))
+                                                    .outline()
+                                                    .label("Cancel"),
+                                            ))
+                                            .child(DialogAction::new().child(
+                                                Button::new(("app-term-confirm", index))
+                                                    .warning()
+                                                    .label("End Application"),
+                                            )),
+                                    )
+                            }),
+                    )
+                    .child(
+                        AlertDialog::new(cx)
+                            .trigger(
+                                Button::new(("app-kill", index))
+                                    .warning()
+                                    .small()
+                                    .label("Force"),
+                            )
+                            .on_ok(move |_, _, cx| {
+                                let _ = kill_target.update(cx, |this, cx| {
+                                    this.signal_pids(&kill_pids, Signal::Kill);
+                                    cx.notify();
+                                });
+                                true
+                            })
+                            .content(move |content, _, _| {
+                                content
+                                    .child(
+                                        DialogHeader::new()
+                                            .child(
+                                                DialogTitle::new()
+                                                    .child("Force stop application?"),
+                                            )
+                                            .child(DialogDescription::new().child(
+                                                "Every process in this application group will stop immediately without cleanup.",
+                                            )),
+                                    )
+                                    .child(
+                                        DialogFooter::new()
+                                            .child(DialogClose::new().child(
+                                                Button::new(("app-kill-cancel", index))
+                                                    .outline()
+                                                    .label("Cancel"),
+                                            ))
+                                            .child(DialogAction::new().child(
+                                                Button::new(("app-kill-confirm", index))
+                                                    .warning()
+                                                    .label("Force stop"),
+                                            )),
+                                    )
+                            }),
                     )
                     .child(
                         Button::new(("app-stop", index))
@@ -662,7 +798,22 @@ impl MonitorWindow {
 
     pub(super) fn render_processes_parity(&self, cx: &mut Context<Self>) -> Div {
         let selected = self.selected_process(cx);
-        let visible_count = self.process_table.read(cx).delegate().processes.len();
+        let (visible_count, batch_pids) = {
+            let table = self.process_table.read(cx);
+            (
+                table.delegate().processes.len(),
+                table.delegate().selected_pids(),
+            )
+        };
+        let action_pids = if batch_pids.is_empty() {
+            selected
+                .as_ref()
+                .map(|process| vec![process.pid])
+                .unwrap_or_default()
+        } else {
+            batch_pids.clone()
+        };
+        let batch_count = batch_pids.len();
 
         v_flex()
             .gap_4()
@@ -673,6 +824,7 @@ impl MonitorWindow {
                 h_flex()
                     .items_center()
                     .justify_between()
+                    .flex_wrap()
                     .gap_3()
                     .rounded(cx.theme().radius_lg)
                     .border_1()
@@ -680,22 +832,66 @@ impl MonitorWindow {
                     .bg(cx.theme().background)
                     .p_3()
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(match selected.as_ref() {
-                                Some(process) => format!(
-                                    "Selected: {} · PID {} · {}",
-                                    process.name, process.pid, process.user
-                                ),
-                                None => "Select a process row to enable actions".to_string(),
-                            }),
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_bold()
+                                    .child(if batch_count > 0 {
+                                        format!("{batch_count} processes selected for batch actions")
+                                    } else {
+                                        match selected.as_ref() {
+                                            Some(process) => format!(
+                                                "Focused: {} · PID {} · {}",
+                                                process.name, process.pid, process.user
+                                            ),
+                                            None => "Focus a row or use the selection switches".to_string(),
+                                        }
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        "Row focus is used for details. Selection switches are used for batch actions.",
+                                    ),
+                            ),
                     )
                     .child(
-                        self.process_action_buttons(
-                            selected.as_ref().map(|process| process.pid),
-                            cx,
-                        ),
+                        h_flex()
+                            .items_center()
+                            .flex_wrap()
+                            .gap_1()
+                            .child(
+                                Button::new("process-select-visible")
+                                    .ghost()
+                                    .small()
+                                    .disabled(visible_count == 0)
+                                    .label("Select visible")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.process_table.update(cx, |table, cx| {
+                                            table.delegate_mut().select_all_visible();
+                                            table.refresh(cx);
+                                            cx.notify();
+                                        });
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("process-clear-batch")
+                                    .ghost()
+                                    .small()
+                                    .disabled(batch_count == 0)
+                                    .label("Clear batch")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.clear_process_batch(cx);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(self.process_information_dialog(selected.clone(), cx))
+                            .child(self.process_action_buttons(action_pids, cx)),
                     ),
             )
             .child(
@@ -720,7 +916,7 @@ impl MonitorWindow {
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(format!(
-                                        "{visible_count} visible · {} total",
+                                        "{visible_count} visible · {} total · {batch_count} batch selected",
                                         self.system.processes().len()
                                     )),
                             ),
@@ -766,35 +962,200 @@ impl MonitorWindow {
             )
     }
 
-    fn process_action_buttons(&self, pid: Option<Pid>, cx: &mut Context<Self>) -> Div {
-        let enabled = pid.is_some();
-        h_flex()
-            .gap_1()
-            .child(
-                Button::new("process-term")
+    fn process_information_dialog(
+        &self,
+        process: Option<ProcessInfo>,
+        cx: &mut Context<Self>,
+    ) -> AlertDialog {
+        let enabled = process.is_some();
+        let process = process.unwrap_or(ProcessInfo {
+            pid: Pid::from_u32(0),
+            parent_pid: None,
+            name: "No process selected".to_string(),
+            user: "N/A".to_string(),
+            state: "N/A".to_string(),
+            cpu_usage: 0.0,
+            memory: 0,
+            swap: 0,
+            read_speed: 0,
+            read_total: 0,
+            write_speed: 0,
+            write_total: 0,
+            total_cpu_time_ticks: None,
+            user_cpu_time_ticks: None,
+            system_cpu_time_ticks: None,
+            priority: None,
+            nice: None,
+            threads: None,
+            file_descriptors: None,
+            command_line: String::new(),
+            executable: None,
+            working_directory: None,
+            cgroup: None,
+            app_id: None,
+        });
+        let description = format!(
+            "PID {} · Parent {} · User {} · State {}
+Threads: {} · File descriptors: {}
+Executable: {}
+Working directory: {}
+Cgroup: {}
+Command: {}",
+            process.pid,
+            process
+                .parent_pid
+                .map_or_else(|| "N/A".to_string(), |pid| pid.to_string()),
+            process.user,
+            process.state,
+            process
+                .threads
+                .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
+            process
+                .file_descriptors
+                .map_or_else(|| "N/A".to_string(), |value| value.to_string()),
+            process.executable.unwrap_or_else(|| "N/A".to_string()),
+            process
+                .working_directory
+                .unwrap_or_else(|| "N/A".to_string()),
+            process.cgroup.unwrap_or_else(|| "N/A".to_string()),
+            if process.command_line.is_empty() {
+                "N/A".to_string()
+            } else {
+                process.command_line
+            },
+        );
+
+        AlertDialog::new(cx)
+            .trigger(
+                Button::new("process-information")
                     .outline()
                     .small()
                     .disabled(!enabled)
-                    .label("End")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(pid) = pid {
-                            this.signal_pids(&[pid], Signal::Term);
+                    .label("Information"),
+            )
+            .content(move |content, _, _| {
+                content
+                    .child(
+                        DialogHeader::new()
+                            .child(DialogTitle::new().child("Process Information"))
+                            .child(DialogDescription::new().child(description.clone())),
+                    )
+                    .child(
+                        DialogFooter::new().child(
+                            DialogClose::new().child(
+                                Button::new("process-information-close")
+                                    .outline()
+                                    .label("Close"),
+                            ),
+                        ),
+                    )
+            })
+    }
+
+    fn process_action_buttons(&self, pids: Vec<Pid>, cx: &mut Context<Self>) -> Div {
+        let enabled = !pids.is_empty();
+        let count = pids.len();
+        let term_pids = pids.clone();
+        let kill_pids = pids.clone();
+        let stop_pids = pids.clone();
+        let continue_pids = pids;
+        let term_target = cx.entity().downgrade();
+        let kill_target = cx.entity().downgrade();
+
+        h_flex()
+            .flex_wrap()
+            .gap_1()
+            .child(
+                AlertDialog::new(cx)
+                    .trigger(
+                        Button::new("process-term")
+                            .outline()
+                            .small()
+                            .disabled(!enabled)
+                            .label(if count > 1 {
+                                format!("End {count}")
+                            } else {
+                                "End".to_string()
+                            }),
+                    )
+                    .on_ok(move |_, _, cx| {
+                        let _ = term_target.update(cx, |this, cx| {
+                            this.signal_pids(&term_pids, Signal::Term);
+                            this.clear_process_batch(cx);
                             cx.notify();
-                        }
-                    })),
+                        });
+                        true
+                    })
+                    .content(move |content, _, _| {
+                        content
+                            .child(
+                                DialogHeader::new()
+                                    .child(DialogTitle::new().child("End selected processes?"))
+                                    .child(DialogDescription::new().child(format!(
+                                        "A graceful termination signal will be sent to {count} process{}.",
+                                        if count == 1 { "" } else { "es" }
+                                    ))),
+                            )
+                            .child(
+                                DialogFooter::new()
+                                    .child(DialogClose::new().child(
+                                        Button::new("process-term-cancel")
+                                            .outline()
+                                            .label("Cancel"),
+                                    ))
+                                    .child(DialogAction::new().child(
+                                        Button::new("process-term-confirm")
+                                            .warning()
+                                            .label("End"),
+                                    )),
+                            )
+                    }),
             )
             .child(
-                Button::new("process-kill")
-                    .warning()
-                    .small()
-                    .disabled(!enabled)
-                    .label("Force stop")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(pid) = pid {
-                            this.signal_pids(&[pid], Signal::Kill);
+                AlertDialog::new(cx)
+                    .trigger(
+                        Button::new("process-kill")
+                            .warning()
+                            .small()
+                            .disabled(!enabled)
+                            .label(if count > 1 {
+                                format!("Force stop {count}")
+                            } else {
+                                "Force stop".to_string()
+                            }),
+                    )
+                    .on_ok(move |_, _, cx| {
+                        let _ = kill_target.update(cx, |this, cx| {
+                            this.signal_pids(&kill_pids, Signal::Kill);
+                            this.clear_process_batch(cx);
                             cx.notify();
-                        }
-                    })),
+                        });
+                        true
+                    })
+                    .content(move |content, _, _| {
+                        content
+                            .child(
+                                DialogHeader::new()
+                                    .child(DialogTitle::new().child("Force stop selected processes?"))
+                                    .child(DialogDescription::new().child(format!(
+                                        "{count} process{} will be stopped immediately and cannot clean up first.",
+                                        if count == 1 { "" } else { "es" }
+                                    ))),
+                            )
+                            .child(
+                                DialogFooter::new()
+                                    .child(DialogClose::new().child(
+                                        Button::new("process-kill-cancel")
+                                            .outline()
+                                            .label("Cancel"),
+                                    ))
+                                    .child(DialogAction::new().child(
+                                        Button::new("process-kill-confirm")
+                                            .warning()
+                                            .label("Force stop"),
+                                    )),
+                            )
+                    }),
             )
             .child(
                 Button::new("process-stop")
@@ -803,10 +1164,8 @@ impl MonitorWindow {
                     .disabled(!enabled)
                     .label("Pause")
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(pid) = pid {
-                            this.signal_pids(&[pid], Signal::Stop);
-                            cx.notify();
-                        }
+                        this.signal_pids(&stop_pids, Signal::Stop);
+                        cx.notify();
                     })),
             )
             .child(
@@ -816,10 +1175,8 @@ impl MonitorWindow {
                     .disabled(!enabled)
                     .label("Resume")
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(pid) = pid {
-                            this.signal_pids(&[pid], Signal::Continue);
-                            cx.notify();
-                        }
+                        this.signal_pids(&continue_pids, Signal::Continue);
+                        cx.notify();
                     })),
             )
     }
@@ -1904,21 +2261,30 @@ impl MonitorWindow {
             .cloned()
     }
 
+    fn clear_process_batch(&mut self, cx: &mut Context<Self>) {
+        self.process_table.update(cx, |table, cx| {
+            table.delegate_mut().clear_selected();
+            table.refresh(cx);
+            cx.notify();
+        });
+    }
+
     fn signal_pids(&mut self, pids: &[Pid], signal: Signal) {
         let mut succeeded = 0;
-        let mut unavailable = 0;
+        let mut stale = 0;
+        let mut denied_or_unsupported = 0;
         for pid in pids {
-            match self
-                .system
-                .process(*pid)
-                .and_then(|process| process.kill_with(signal))
-            {
+            let Some(process) = self.system.process(*pid) else {
+                stale += 1;
+                continue;
+            };
+            match process.kill_with(signal) {
                 Some(true) => succeeded += 1,
-                _ => unavailable += 1,
+                _ => denied_or_unsupported += 1,
             }
         }
         self.last_action = Some(format!(
-            "Signal {signal:?}: {succeeded} succeeded, {unavailable} unavailable or denied"
+            "Signal {signal:?}: {succeeded} succeeded, {stale} stale, {denied_or_unsupported} denied or unsupported"
         ));
     }
 

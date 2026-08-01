@@ -1,12 +1,13 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::BTreeSet};
 
 use gpui::*;
 use gpui_component::{
     ActiveTheme, Disableable, Root, Selectable, Sizable, StyledExt,
     button::Button,
     h_flex,
+    menu::{PopupMenu, PopupMenuItem},
     switch::Switch,
-    table::{Column, ColumnSort, TableDelegate, TableState},
+    table::{Column, ColumnSort, TableDelegate, TableEvent, TableState},
     v_flex,
 };
 use sysinfo::Pid;
@@ -47,6 +48,7 @@ pub struct ProcessInfo {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProcessColumn {
+    Selection,
     Name,
     Pid,
     User,
@@ -74,6 +76,7 @@ enum ProcessColumn {
 impl ProcessColumn {
     const fn id(self) -> &'static str {
         match self {
+            Self::Selection => "selection",
             Self::Name => "name",
             Self::Pid => "pid",
             Self::User => "user",
@@ -101,6 +104,7 @@ impl ProcessColumn {
 
     const fn title(self) -> &'static str {
         match self {
+            Self::Selection => "",
             Self::Name => "Process",
             Self::Pid => "PID",
             Self::User => "User",
@@ -128,6 +132,7 @@ impl ProcessColumn {
 
     const fn width(self) -> f32 {
         match self {
+            Self::Selection => 48.0,
             Self::Name => 240.0,
             Self::Pid => 78.0,
             Self::User => 112.0,
@@ -146,7 +151,12 @@ impl ProcessColumn {
     const fn sortable(self) -> bool {
         !matches!(
             self,
-            Self::Gpu | Self::GpuMemory | Self::Encoder | Self::Decoder | Self::Options
+            Self::Selection
+                | Self::Gpu
+                | Self::GpuMemory
+                | Self::Encoder
+                | Self::Decoder
+                | Self::Options
         )
     }
 }
@@ -160,6 +170,7 @@ pub struct ProcessTableDelegate {
     sort_order: ColumnSort,
     query: String,
     settings: MonitorSettings,
+    selected_pids: BTreeSet<u32>,
 }
 
 impl ProcessTableDelegate {
@@ -173,6 +184,7 @@ impl ProcessTableDelegate {
             sort_order: ColumnSort::Descending,
             query: String::new(),
             settings: settings.clone(),
+            selected_pids: BTreeSet::new(),
         };
         this.rebuild_columns();
         this
@@ -185,6 +197,11 @@ impl ProcessTableDelegate {
     }
 
     pub fn set_processes(&mut self, processes: Vec<ProcessInfo>) {
+        let live_pids = processes
+            .iter()
+            .map(|process| process.pid.as_u32())
+            .collect::<BTreeSet<_>>();
+        self.selected_pids.retain(|pid| live_pids.contains(pid));
         self.all_processes = processes;
         self.refresh_rows();
     }
@@ -198,9 +215,42 @@ impl ProcessTableDelegate {
         self.processes.get(row)
     }
 
+    pub fn selected_pids(&self) -> Vec<Pid> {
+        self.selected_pids
+            .iter()
+            .copied()
+            .map(Pid::from_u32)
+            .collect()
+    }
+
+    pub fn selected_count(&self) -> usize {
+        self.selected_pids.len()
+    }
+
+    pub fn select_all_visible(&mut self) {
+        self.selected_pids
+            .extend(self.processes.iter().map(|process| process.pid.as_u32()));
+    }
+
+    pub fn clear_selected(&mut self) {
+        self.selected_pids.clear();
+    }
+
+    fn set_selected(&mut self, pid: Pid, selected: bool) {
+        if selected {
+            self.selected_pids.insert(pid.as_u32());
+        } else {
+            self.selected_pids.remove(&pid.as_u32());
+        }
+    }
+
+    fn is_selected(&self, pid: Pid) -> bool {
+        self.selected_pids.contains(&pid.as_u32())
+    }
+
     fn rebuild_columns(&mut self) {
         let columns = &self.settings.process_columns;
-        let mut kinds = vec![ProcessColumn::Name];
+        let mut kinds = vec![ProcessColumn::Selection, ProcessColumn::Name];
         if columns.pid {
             kinds.push(ProcessColumn::Pid);
         }
@@ -318,6 +368,7 @@ impl ProcessTableDelegate {
         let column = self.sort_column;
         self.processes.sort_by(|a, b| {
             let ordering = match column {
+                ProcessColumn::Selection => Ordering::Equal,
                 ProcessColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
                 ProcessColumn::Pid => a.pid.as_u32().cmp(&b.pid.as_u32()),
                 ProcessColumn::User => a.user.to_lowercase().cmp(&b.user.to_lowercase()),
@@ -359,6 +410,13 @@ impl ProcessTableDelegate {
 
     fn cell_value(&self, process: &ProcessInfo, column: ProcessColumn) -> String {
         match column {
+            ProcessColumn::Selection => {
+                if self.is_selected(process.pid) {
+                    "Selected".to_string()
+                } else {
+                    String::new()
+                }
+            }
             ProcessColumn::Name => process.name.clone(),
             ProcessColumn::Pid => process.pid.to_string(),
             ProcessColumn::User => process.user.clone(),
@@ -431,6 +489,25 @@ impl TableDelegate for ProcessTableDelegate {
             return div().into_any_element();
         };
 
+        if column == ProcessColumn::Selection {
+            let pid = process.pid;
+            let checked = self.is_selected(pid);
+            return h_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .child(
+                    Switch::new(("process-selected", pid.as_u32() as usize))
+                        .checked(checked)
+                        .on_click(cx.listener(move |table, checked, _, cx| {
+                            table.delegate_mut().set_selected(pid, *checked);
+                            cx.emit(TableEvent::SelectRow(row_ix));
+                            cx.notify();
+                        })),
+                )
+                .into_any_element();
+        }
+
         if column == ProcessColumn::Options {
             let process = process.clone();
             let button_id = ("process-options", process.pid.as_u32() as usize);
@@ -465,6 +542,43 @@ impl TableDelegate for ProcessTableDelegate {
             .truncate()
             .child(value)
             .into_any_element()
+    }
+
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some(process) = self.processes.get(row_ix).cloned() else {
+            return menu;
+        };
+        let pid = process.pid;
+        let selected = self.is_selected(pid);
+        let table = cx.entity().downgrade();
+        let options_process = process.clone();
+
+        menu.item(
+            PopupMenuItem::new(if selected {
+                "Remove from batch"
+            } else {
+                "Add to batch"
+            })
+            .on_click(move |_, cx| {
+                let _ = table.update(cx, |table, cx| {
+                    table.delegate_mut().set_selected(pid, !selected);
+                    cx.emit(TableEvent::SelectRow(row_ix));
+                    cx.notify();
+                });
+            }),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new("Process Options").on_click(move |_, cx| {
+                open_process_options(options_process.clone(), cx);
+            }),
+        )
     }
 
     fn perform_sort(
