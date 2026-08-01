@@ -1,0 +1,12 @@
+# The same test-only authorization as 50-better-os-e2e.rules, for the older
+# polkit on Ubuntu 22.04, which reads .pkla files instead of JavaScript rules.
+# Each polkit version ignores the format it does not understand, so both are
+# installed and whichever applies takes effect.
+#
+# It must never be shipped in a package.
+[Better OS end-to-end check]
+Identity=unix-user:root
+Action=org.betteros.manager.apply-transaction
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes

@@ -35,7 +35,12 @@ RUN apt-get update \
 WORKDIR /opt/better-os
 COPY dist/e2e/ /opt/better-os/dist/
 COPY packaging/test-daemon-e2e.sh /opt/better-os/packaging/test-daemon-e2e.sh
-RUN chmod +x /opt/better-os/packaging/test-daemon-e2e.sh
+# The test-only polkit authorization and the client that drives the authorized
+# path. Neither is in any package: the rule would be a hole in a shipped
+# system, and the client is an example built for this check.
+COPY packaging/e2e/50-better-os-e2e.rules packaging/e2e/50-better-os-e2e.pkla /opt/better-os/e2e/
+COPY dist/e2e-client/e2e_client /opt/better-os/e2e_client
+RUN chmod +x /opt/better-os/packaging/test-daemon-e2e.sh /opt/better-os/e2e_client
 
 ENV BETTER_OS_E2E_CONTAINER=1
 
