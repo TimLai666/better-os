@@ -4,66 +4,13 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
-  apply-localization-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/better-monitor-ui
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Add shared locale and pseudo-long helpers
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('crates/better-ui/src/lib.rs')
-          s = p.read_text()
-          marker = '#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub enum SupportStateKind'
-          insert = '''/// Selects Traditional Chinese or English copy from the resolved locale.\npub fn localized(locale: Locale, en_us: &'static str, zh_tw: &'static str) -> &'static str {\n    match locale.resolved() {\n        Locale::ZhTw => zh_tw,\n        _ => en_us,\n    }\n}\n\n/// Expands interface copy for pseudo-localization overflow tests.\npub fn pseudo_long_text(input: &str) -> String {\n    const PAD: &str = " · extended";\n    let mut output = String::with_capacity(input.len().saturating_mul(2) + 8);\n    output.push('⟦');\n    for segment in input.split_inclusive('\\n') {\n        let (line, newline) = segment\n            .strip_suffix('\\n')\n            .map_or((segment, false), |line| (line, true));\n        output.push_str(line);\n        if !line.trim().is_empty() {\n            output.push_str(PAD);\n        }\n        if newline {\n            output.push('\\n');\n        }\n    }\n    output.push('⟧');\n    output\n}\n\n'''
-          if 'pub fn pseudo_long_text' not in s:
-              if s.count(marker) != 1:
-                  raise SystemExit('support-state marker mismatch')
-              s = s.replace(marker, insert + marker, 1)
-          test_marker = '    #[test]\n    fn support_state_keeps_semantics_separate_from_copy() {'
-          tests = '''    #[test]\n    fn localized_copy_uses_the_resolved_locale() {\n        assert_eq!(localized(Locale::EnUs, "Settings", "設定"), "Settings");\n        assert_eq!(localized(Locale::ZhTw, "Settings", "設定"), "設定");\n    }\n\n    #[test]\n    fn pseudo_long_copy_is_readable_and_longer() {\n        let source = "Force stop\\nPermission required";\n        let expanded = pseudo_long_text(source);\n        assert!(expanded.starts_with('⟦'));\n        assert!(expanded.ends_with('⟧'));\n        assert!(expanded.contains("Force stop"));\n        assert!(expanded.contains("Permission required"));\n        assert!(expanded.contains('\\n'));\n        assert!(expanded.len() >= source.len() + 20);\n    }\n\n'''
-          if 'fn pseudo_long_copy_is_readable_and_longer' not in s:
-              if s.count(test_marker) != 1:
-                  raise SystemExit('test marker mismatch')
-              s = s.replace(test_marker, tests + test_marker, 1)
-          p.write_text(s)
-
-          q = Path('docs/better-monitor-resources-v1.10.2-parity.md')
-          d = q.read_text()
-          d = d.replace(
-              '| Pseudo-long locale tests | ⬜ | Missing. |',
-              '| Pseudo-long locale tests | 🟨 | Shared readable expansion utility and unit tests exist; rendered screenshot coverage at required scale factors is still pending. |',
-          )
-          q.write_text(d)
-          PY
-          cargo fmt --all
-          cargo test -p better-ui
-      - name: Commit localization test helpers
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/better-ui/src/lib.rs docs/better-monitor-resources-v1.10.2-parity.md
-          git commit -m "feat(ui): add pseudo-long localization test helpers"
-          git push origin HEAD:feature/better-monitor-ui
-
   rust:
-    needs: apply-localization-tests
     runs-on: ubuntu-latest
     env:
       RUST_FONTCONFIG_DLOPEN: "1"
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: feature/better-monitor-ui
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -75,3 +22,71 @@ jobs:
       - run: cargo build --workspace
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
+
+  package:
+    needs: rust
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: ubuntu-22.04
+            asset_target: ubuntu-22.04
+            architecture: amd64
+          - runner: ubuntu-24.04
+            target: ubuntu-24.04
+            asset_target: ubuntu-24.04
+            architecture: amd64
+          - runner: ubuntu-22.04-arm
+            target: ubuntu-22.04-arm64
+            asset_target: ubuntu-22.04
+            architecture: arm64
+          - runner: ubuntu-24.04-arm
+            target: ubuntu-24.04-arm64
+            asset_target: ubuntu-24.04
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUST_FONTCONFIG_DLOPEN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify native runner architecture
+        run: |
+          test "$(dpkg --print-architecture)" = "${{ matrix.architecture }}"
+          case "${{ matrix.architecture }}" in
+            amd64) test "$(uname -m)" = "x86_64" ;;
+            arm64) test "$(uname -m)" = "aarch64" ;;
+            *) exit 1 ;;
+          esac
+      # Keep release target artifacts isolated by Ubuntu release. Proc-macro
+      # shared objects are linked against the runner's glibc.
+      - name: Install GPUI and packaging dependencies
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - name: Build Debian packages
+        run: bash packaging/build-deb.sh --output-dir "dist/${{ matrix.target }}" --target "${{ matrix.asset_target }}"
+      - name: Verify Debian packages
+        run: bash packaging/verify-deb.sh "dist/${{ matrix.target }}" "${{ matrix.asset_target }}"
+      # The privileged service is the only thing here that changes a machine, so
+      # it is exercised against a real dpkg, system bus, and polkitd rather than
+      # only against fakes. It runs in a throwaway container for the same reason
+      # the local script refuses to run on a host.
+      - name: Run the privileged service end-to-end
+        run: |
+          # ubuntu-24.04 -> 24.04 for the base image; the script still wants the
+          # full asset target to find the packages.
+          UBUNTU_RELEASE="${{ matrix.asset_target }}"
+          UBUNTU_RELEASE="${UBUNTU_RELEASE#ubuntu-}"
+          cp -r "dist/${{ matrix.target }}" dist/e2e
+          docker build -f packaging/e2e/Dockerfile \
+            --build-arg "UBUNTU_RELEASE=${UBUNTU_RELEASE}" \
+            -t "better-os-e2e:${{ matrix.target }}" .
+          docker run --rm "better-os-e2e:${{ matrix.target }}"
+          rm -rf dist/e2e
+      - name: Upload Debian packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: better-os-deb-packages-${{ matrix.target }}
+          path: |
+            dist/${{ matrix.target }}/*.deb
+            dist/${{ matrix.target }}/*.deb.sha256
