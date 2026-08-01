@@ -4,26 +4,42 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
-  source-snapshot:
+  apply-device-history:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Upload current Better Monitor sources
-        uses: actions/upload-artifact@v4
         with:
-          name: better-monitor-current-source
-          path: |
-            crates/monitor-gui
-            crates/better-ui/src/lib.rs
-            docs/better-monitor-resources-v1.10.2-parity.md
+          ref: feature/better-monitor-ui
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply device history and NetworkManager metadata patch
+        run: |
+          base64 -d .github/monitor-device-history.patch.gz.b64 | gzip -d > /tmp/monitor-device-history.patch
+          git apply --check /tmp/monitor-device-history.patch
+          git apply /tmp/monitor-device-history.patch
+          cargo fmt --all
+      - name: Commit device history parity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/monitor-gui/src/app.rs crates/monitor-gui/src/linux.rs crates/monitor-gui/src/parity.rs docs/better-monitor-resources-v1.10.2-parity.md
+          git commit -m "feat(monitor): add per-device history and network names"
+          git push origin HEAD:feature/better-monitor-ui
 
   rust:
+    needs: apply-device-history
     runs-on: ubuntu-latest
     env:
       RUST_FONTCONFIG_DLOPEN: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: feature/better-monitor-ui
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -72,18 +88,12 @@ jobs:
             arm64) test "$(uname -m)" = "aarch64" ;;
             *) exit 1 ;;
           esac
-      # Keep release target artifacts isolated by Ubuntu release. Proc-macro
-      # shared objects are linked against the runner's glibc.
       - name: Install GPUI and packaging dependencies
         run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
       - name: Build Debian packages
         run: bash packaging/build-deb.sh --output-dir "dist/${{ matrix.target }}" --target "${{ matrix.asset_target }}"
       - name: Verify Debian packages
         run: bash packaging/verify-deb.sh "dist/${{ matrix.target }}" "${{ matrix.asset_target }}"
-      # The privileged service is the only thing here that changes a machine, so
-      # it is exercised against a real dpkg, system bus, and polkitd rather than
-      # only against fakes. It runs in a throwaway container for the same reason
-      # the local script refuses to run on a host.
       - name: Run the privileged service end-to-end
         run: |
           UBUNTU_RELEASE="${{ matrix.asset_target }}"
