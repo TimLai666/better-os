@@ -301,27 +301,61 @@ impl ManagerApp {
                         cx,
                     ),
                 )
+                // What the transaction is actually moving right now. Only a
+                // real run has bytes to report; a simulation moves nothing.
+                .when_some(self.transfer.clone(), |this, transfer| {
+                    this.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(match transfer.total_bytes {
+                                Some(total) => format!(
+                                    "{} {} — {} / {}",
+                                    c.downloading_progress,
+                                    transfer.component,
+                                    transfer.received_bytes,
+                                    total
+                                ),
+                                None => format!(
+                                    "{} {} — {}",
+                                    c.downloading_progress,
+                                    transfer.component,
+                                    transfer.received_bytes
+                                ),
+                            }),
+                    )
+                })
                 .child(
                     h_flex()
                         .gap_3()
                         .flex_wrap()
-                        .child(
-                            Button::new("cancel-install")
-                                .danger()
-                                .outline()
-                                .label(c.cancel_installation)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.cancel_install(cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("continue-install")
-                                .primary()
-                                .label(c.continue_label)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.advance_install(cx);
-                                })),
-                        ),
+                        // Cancelling is only offered while it can still be
+                        // honored. Past that point the machine may already have
+                        // changed, and the button would promise a restoration
+                        // nothing performed.
+                        .when(self.can_cancel_now(), |this| {
+                            this.child(
+                                Button::new("cancel-install")
+                                    .danger()
+                                    .outline()
+                                    .label(c.cancel_installation)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.cancel_install(cx);
+                                    })),
+                            )
+                        })
+                        // A real transaction advances itself as the work
+                        // completes; only the simulation is stepped by hand.
+                        .when(self.is_demo(), |this| {
+                            this.child(
+                                Button::new("continue-install")
+                                    .primary()
+                                    .label(c.continue_label)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.advance_install(cx);
+                                    })),
+                            )
+                        }),
                 )
             })
             .into_any_element()
