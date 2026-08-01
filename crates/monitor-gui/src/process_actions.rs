@@ -7,9 +7,7 @@ use gpui_component::{
 };
 use sysinfo::{Pid, Signal};
 
-use crate::{
-    app::MonitorWindow, linux, process_table::ProcessInfo, settings::UnitBase,
-};
+use crate::{app::MonitorWindow, linux, process_table::ProcessInfo, settings::UnitBase};
 
 #[derive(Clone)]
 struct ProcessSignalRequest {
@@ -52,48 +50,47 @@ pub(crate) fn append_process_signal_actions(
 
     let mut menu = menu
         .separator()
-        .item(PopupMenuItem::new("End process").on_click(move |_, window, cx| {
-            open_process_signal_dialog(
-                ProcessSignalRequest {
-                    monitor: end_monitor.clone(),
-                    pids: vec![single_pid],
-                    signal: Signal::Term,
-                    title: format!("End {single_name}?"),
-                    description:
-                        "The process will receive a graceful termination signal.".to_string(),
-                    confirm_label: "End Process",
-                    action_id: row_ix,
-                    destructive: false,
-                },
-                window,
-                cx,
-            );
-        }))
-        .item(PopupMenuItem::new("Force stop").on_click(move |_, window, cx| {
-            open_process_signal_dialog(
-                ProcessSignalRequest {
-                    monitor: force_monitor.clone(),
-                    pids: vec![single_pid],
-                    signal: Signal::Kill,
-                    title: format!("Force stop {}?", process.name),
-                    description:
-                        "The process will stop immediately without cleanup.".to_string(),
-                    confirm_label: "Force stop",
-                    action_id: row_ix,
-                    destructive: true,
-                },
-                window,
-                cx,
-            );
-        }))
+        .item(
+            PopupMenuItem::new("End process").on_click(move |_, window, cx| {
+                open_process_signal_dialog(
+                    ProcessSignalRequest {
+                        monitor: end_monitor.clone(),
+                        pids: vec![single_pid],
+                        signal: Signal::Term,
+                        title: format!("End {single_name}?"),
+                        description: "The process will receive a graceful termination signal."
+                            .to_string(),
+                        confirm_label: "End Process",
+                        action_id: row_ix,
+                        destructive: false,
+                    },
+                    window,
+                    cx,
+                );
+            }),
+        )
+        .item(
+            PopupMenuItem::new("Force stop").on_click(move |_, window, cx| {
+                open_process_signal_dialog(
+                    ProcessSignalRequest {
+                        monitor: force_monitor.clone(),
+                        pids: vec![single_pid],
+                        signal: Signal::Kill,
+                        title: format!("Force stop {}?", process.name),
+                        description: "The process will stop immediately without cleanup."
+                            .to_string(),
+                        confirm_label: "Force stop",
+                        action_id: row_ix,
+                        destructive: true,
+                    },
+                    window,
+                    cx,
+                );
+            }),
+        )
         .separator()
         .item(PopupMenuItem::new("Pause").on_click(move |_, _, cx| {
-            send_process_signal(
-                pause_monitor.clone(),
-                vec![single_pid],
-                Signal::Stop,
-                cx,
-            );
+            send_process_signal(pause_monitor.clone(), vec![single_pid], Signal::Stop, cx);
         }))
         .item(PopupMenuItem::new("Resume").on_click(move |_, _, cx| {
             send_process_signal(
@@ -214,11 +211,7 @@ fn open_process_information_dialog(
     });
 }
 
-fn open_process_signal_dialog(
-    request: ProcessSignalRequest,
-    window: &mut Window,
-    cx: &mut App,
-) {
+fn open_process_signal_dialog(request: ProcessSignalRequest, window: &mut Window, cx: &mut App) {
     hold_table_refresh(request.monitor.clone(), cx);
     window.open_dialog(cx, move |dialog, _, _| {
         let action_request = request.clone();
