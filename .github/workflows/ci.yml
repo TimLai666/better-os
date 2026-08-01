@@ -17,19 +17,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Decode interaction patch
+      - name: Decode and verify interaction patch
         run: |
           cat .github/monitor-interactions/chunk-*.b64 \
             | tr -d '\n' \
             | base64 -d > /tmp/monitor-interactions.patch
-          sha256sum /tmp/monitor-interactions.patch
-          wc -c /tmp/monitor-interactions.patch
-          sed -n '220,240p' /tmp/monitor-interactions.patch
-      - name: Upload decoded patch
-        uses: actions/upload-artifact@v4
-        with:
-          name: decoded-monitor-interactions-patch
-          path: /tmp/monitor-interactions.patch
+          (
+            cd /tmp
+            patch monitor-interactions.patch \
+              < "$GITHUB_WORKSPACE/.github/monitor-interactions/correction.diff"
+          )
+          echo "3ba1d574419f19c9a4e68a3f436ac052c5f20996b64f065b7f6695a5f34e0a59  /tmp/monitor-interactions.patch" \
+            | sha256sum --check --strict
       - name: Apply interaction patch
         run: |
           if git apply --check /tmp/monitor-interactions.patch; then
