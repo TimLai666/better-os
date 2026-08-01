@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use better_ui::page_heading;
+use better_ui::{Locale, page_heading};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Disableable, Root, Selectable as _, Sizable, StyledExt,
@@ -92,22 +92,40 @@ impl MonitorPage {
         }
     }
 
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Overview => "Overview",
-            Self::Apps => "Apps",
-            Self::Processes => "Processes",
-            Self::Cpu => "Processor",
-            Self::Memory => "Memory",
-            Self::Gpu => "GPU",
-            Self::Npu => "NPU",
-            Self::Storage => "Drive",
-            Self::Network => "Network Interface",
-            Self::Battery => "Battery",
-            Self::History => "History",
-            Self::Incidents => "Incidents",
-            Self::Diagnostics => "Diagnostics",
-            Self::Settings => "Settings",
+    fn label(self, locale: Locale) -> &'static str {
+        match locale.resolved() {
+            Locale::ZhTw => match self {
+                Self::Overview => "總覽",
+                Self::Apps => "應用程式",
+                Self::Processes => "程序",
+                Self::Cpu => "處理器",
+                Self::Memory => "記憶體",
+                Self::Gpu => "GPU",
+                Self::Npu => "NPU",
+                Self::Storage => "磁碟",
+                Self::Network => "網路介面",
+                Self::Battery => "電池",
+                Self::History => "歷史記錄",
+                Self::Incidents => "事件標記",
+                Self::Diagnostics => "診斷",
+                Self::Settings => "設定",
+            },
+            _ => match self {
+                Self::Overview => "Overview",
+                Self::Apps => "Apps",
+                Self::Processes => "Processes",
+                Self::Cpu => "Processor",
+                Self::Memory => "Memory",
+                Self::Gpu => "GPU",
+                Self::Npu => "NPU",
+                Self::Storage => "Drive",
+                Self::Network => "Network Interface",
+                Self::Battery => "Battery",
+                Self::History => "History",
+                Self::Incidents => "Incidents",
+                Self::Diagnostics => "Diagnostics",
+                Self::Settings => "Settings",
+            },
         }
     }
 
@@ -130,22 +148,44 @@ impl MonitorPage {
         }
     }
 
-    const fn subtitle(self) -> &'static str {
-        match self {
-            Self::Overview => "Current resource activity and observation coverage",
-            Self::Apps => "Application groups, resource columns, search, details, and controls",
-            Self::Processes => "Sortable process metrics, search, details, and controls",
-            Self::Cpu => "Total or logical CPU usage, clocks, temperature, topology, and uptime",
-            Self::Memory => "Memory, swap, availability, and hardware-property coverage",
-            Self::Gpu => "Usage, media engines, memory, thermals, power, clocks, and driver",
-            Self::Npu => "Usage, memory, thermals, power, clocks, and driver",
-            Self::Storage => "Per-drive activity, throughput, totals, capacity, and properties",
-            Self::Network => "Per-interface traffic, totals, link, driver, and identity",
-            Self::Battery => "Charge, power, health, capacity, cycles, and identity",
-            Self::History => "Recent bounded samples and Better Monitor incident markers",
-            Self::Incidents => "User-marked slowdown moments and evidence capture boundaries",
-            Self::Diagnostics => "Collector health, support states, and observation blind spots",
-            Self::Settings => "Refresh, units, sidebar, graphs, devices, and table columns",
+    fn subtitle(self, locale: Locale) -> &'static str {
+        match locale.resolved() {
+            Locale::ZhTw => match self {
+                Self::Overview => "目前的資源活動與資料收集涵蓋範圍",
+                Self::Apps => "應用程式群組、資源欄位、搜尋、資訊與控制",
+                Self::Processes => "可排序的程序指標、搜尋、資訊與控制",
+                Self::Cpu => "整體或邏輯 CPU 使用率、時脈、溫度、拓撲與運作時間",
+                Self::Memory => "記憶體、交換空間、可用量與硬體資訊涵蓋範圍",
+                Self::Gpu => "使用率、媒體引擎、記憶體、溫度、功耗、時脈與驅動程式",
+                Self::Npu => "使用率、記憶體、溫度、功耗、時脈與驅動程式",
+                Self::Storage => "各磁碟活動、吞吐量、累計量、容量與屬性",
+                Self::Network => "各介面流量、累計量、連線、驅動程式與識別資訊",
+                Self::Battery => "電量、功耗、健康度、容量、循環次數與識別資訊",
+                Self::History => "近期有限長度的樣本與 Better Monitor 事件標記",
+                Self::Incidents => "使用者標記的變慢時刻與證據擷取邊界",
+                Self::Diagnostics => "資料收集器健康狀態、支援狀態與觀測盲點",
+                Self::Settings => "更新頻率、單位、側邊欄、圖表、裝置與表格欄位",
+            },
+            _ => match self {
+                Self::Overview => "Current resource activity and observation coverage",
+                Self::Apps => "Application groups, resource columns, search, details, and controls",
+                Self::Processes => "Sortable process metrics, search, details, and controls",
+                Self::Cpu => {
+                    "Total or logical CPU usage, clocks, temperature, topology, and uptime"
+                }
+                Self::Memory => "Memory, swap, availability, and hardware-property coverage",
+                Self::Gpu => "Usage, media engines, memory, thermals, power, clocks, and driver",
+                Self::Npu => "Usage, memory, thermals, power, clocks, and driver",
+                Self::Storage => "Per-drive activity, throughput, totals, capacity, and properties",
+                Self::Network => "Per-interface traffic, totals, link, driver, and identity",
+                Self::Battery => "Charge, power, health, capacity, cycles, and identity",
+                Self::History => "Recent bounded samples and Better Monitor incident markers",
+                Self::Incidents => "User-marked slowdown moments and evidence capture boundaries",
+                Self::Diagnostics => {
+                    "Collector health, support states, and observation blind spots"
+                }
+                Self::Settings => "Refresh, units, sidebar, graphs, devices, and table columns",
+            },
         }
     }
 }
@@ -622,7 +662,11 @@ impl MonitorWindow {
             .ghost()
             .small()
             .w_full()
-            .label(format!("{}   {}", page.marker(), page.label()))
+            .label(format!(
+                "{}   {}",
+                page.marker(),
+                page.label(self.settings.locale)
+            ))
             .selected(self.active_page == page)
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.active_page = page;
@@ -635,7 +679,11 @@ impl MonitorWindow {
             .ghost()
             .small()
             .flex_shrink_0()
-            .label(format!("{}  {}", page.marker(), page.label()))
+            .label(format!(
+                "{}  {}",
+                page.marker(),
+                page.label(self.settings.locale)
+            ))
             .selected(self.active_page == page)
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.active_page = page;
@@ -676,13 +724,13 @@ impl MonitorWindow {
                     .gap_1()
                     .font_bold()
                     .text_lg()
-                    .child(page_heading(self.active_page.label()))
+                    .child(page_heading(self.active_page.label(self.settings.locale)))
                     .child(
                         div()
                             .font_normal()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(self.active_page.subtitle()),
+                            .child(self.active_page.subtitle(self.settings.locale)),
                     ),
             )
             .child(
@@ -693,7 +741,10 @@ impl MonitorWindow {
                         Button::new("overview-page")
                             .ghost()
                             .small()
-                            .label("Overview")
+                            .label(match self.settings.locale.resolved() {
+                                Locale::ZhTw => "總覽",
+                                _ => "Overview",
+                            })
                             .selected(self.active_page == MonitorPage::Overview)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.active_page = MonitorPage::Overview;
@@ -704,11 +755,14 @@ impl MonitorWindow {
                         Button::new("pause-charts")
                             .outline()
                             .small()
-                            .label(if self.charts_paused {
-                                "Resume graphs"
-                            } else {
-                                "Pause graphs"
-                            })
+                            .label(
+                                match (self.settings.locale.resolved(), self.charts_paused) {
+                                    (Locale::ZhTw, true) => "繼續更新圖表",
+                                    (Locale::ZhTw, false) => "暫停更新圖表",
+                                    (_, true) => "Resume graphs",
+                                    (_, false) => "Pause graphs",
+                                },
+                            )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if this.charts_paused {
                                     this.charts_paused = false;

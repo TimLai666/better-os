@@ -1,5 +1,7 @@
 use std::{env, fs, path::PathBuf, time::Duration};
 
+use better_ui::Locale;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum UnitBase {
     Decimal,
@@ -232,6 +234,7 @@ impl Default for AppColumnSettings {
 
 #[derive(Clone, Debug)]
 pub struct MonitorSettings {
+    pub locale: Locale,
     pub unit_base: UnitBase,
     pub temperature_unit: TemperatureUnit,
     pub refresh_speed: RefreshSpeed,
@@ -253,6 +256,7 @@ pub struct MonitorSettings {
 impl Default for MonitorSettings {
     fn default() -> Self {
         Self {
+            locale: Locale::System,
             unit_base: UnitBase::Binary,
             temperature_unit: TemperatureUnit::Celsius,
             refresh_speed: RefreshSpeed::Normal,
@@ -329,6 +333,7 @@ impl MonitorSettings {
 
     fn apply(&mut self, key: &str, value: &str) {
         match key {
+            "locale" => self.locale = Locale::parse(value),
             "unit-base" => self.unit_base = UnitBase::parse(value),
             "temperature-unit" => self.temperature_unit = TemperatureUnit::parse(value),
             "refresh-speed" => self.refresh_speed = RefreshSpeed::parse(value),
@@ -409,6 +414,7 @@ impl MonitorSettings {
     fn to_config(&self) -> String {
         let mut lines = Vec::new();
         lines.push("# Better Monitor settings".to_string());
+        lines.push(format!("locale={}", self.locale.config_value()));
         lines.push(format!("unit-base={}", self.unit_base.config_value()));
         lines.push(format!(
             "temperature-unit={}",

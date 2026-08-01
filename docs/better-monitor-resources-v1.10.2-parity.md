@@ -42,7 +42,7 @@ This checklist is the merge gate for the GNOME Resources parity portion of Bette
 | Empty / unsupported / error state | 🟨 | Unsupported device page helper exists. Dedicated unknown, stale, permission-denied, and collector-error visuals are incomplete. |
 | Toast / result banner | ✅ | Action result banner exists. |
 | Settings row / switch | ✅ | Reusable preference rows and switches exist. |
-| Runtime language selector | ⬜ | `en-US`, `zh-TW`, system language, and pseudo-long test mode are missing. |
+| Runtime language selector | 🟨 | Shared `system`, `en-US`, and `zh-TW` locale state is persisted and switches shell/navigation copy immediately. Full page catalogs and pseudo-long mode remain incomplete. |
 | Accessible chart summary | ⬜ | Text summaries and table alternatives are missing. |
 | Keyboard focus model | 🟨 | Native controls are focusable. Complete table cell navigation, predictable focus order, shortcuts, and dialog focus trapping are missing. |
 | Authenticated hardware-information prompt | ⬜ | Required for DMI memory details when sysfs is insufficient. |
@@ -217,10 +217,10 @@ The answer to “are all required UI components built?” is therefore **no**. T
 
 | Requirement | Status | Notes |
 |---|---:|---|
-| `en-US` | 🟨 | English strings exist but are not in a locale catalog. |
-| `zh-TW` | ⬜ | Missing. |
-| System language | ⬜ | Missing. |
-| Runtime switching | ⬜ | Missing. |
+| `en-US` | 🟨 | Shell, navigation, selected-page headings, and language settings are locale-driven; remaining page copy is still being cataloged. |
+| `zh-TW` | 🟨 | Shell, navigation, selected-page headings, and language settings have Traditional Chinese copy; remaining page copy is incomplete. |
+| System language | ✅ | Shared Better OS locale resolves `LANG` to `zh-TW` or `en-US`. |
+| Runtime switching | 🟨 | Monitor switches and persists locale without restart; search placeholders, table headers, dialogs, and full page content still need catalog coverage. |
 | Pseudo-long locale tests | ⬜ | Missing. |
 | Light/dark themes | 🧪 | Uses theme tokens; real-session review pending. |
 | 100/125/150% scaling | 🧪 | Not validated. |

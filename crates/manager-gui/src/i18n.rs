@@ -1,30 +1,4 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Locale {
-    System,
-    EnUs,
-    ZhTw,
-}
-
-impl Locale {
-    pub(crate) fn resolved(self) -> Self {
-        match self {
-            Self::System => {
-                let language = std::env::var("LANG")
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                if language.contains("zh_tw")
-                    || language.contains("zh-tw")
-                    || language.contains("hant")
-                {
-                    Self::ZhTw
-                } else {
-                    Self::EnUs
-                }
-            }
-            locale => locale,
-        }
-    }
-}
+pub(crate) use better_ui::Locale;
 
 pub(crate) struct Copy {
     // Shared shell

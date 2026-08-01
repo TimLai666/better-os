@@ -4,6 +4,67 @@ use better_core::ComponentManifest;
 use gpui::{Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, div};
 use gpui_component::*;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Locale {
+    #[default]
+    System,
+    EnUs,
+    ZhTw,
+}
+
+impl Locale {
+    pub fn resolved(self) -> Self {
+        match self {
+            Self::System => {
+                let language = std::env::var("LANG")
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if language.contains("zh_tw")
+                    || language.contains("zh-tw")
+                    || language.contains("hant")
+                {
+                    Self::ZhTw
+                } else {
+                    Self::EnUs
+                }
+            }
+            locale => locale,
+        }
+    }
+
+    pub const fn config_value(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::EnUs => "en-US",
+            Self::ZhTw => "zh-TW",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "en-US" | "en-us" | "en" => Self::EnUs,
+            "zh-TW" | "zh-tw" | "zh_Hant" | "zh-hant" => Self::ZhTw,
+            _ => Self::System,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::System => "System language",
+            Self::EnUs => "English (United States)",
+            Self::ZhTw => "繁體中文（台灣）",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::System => Self::EnUs,
+            Self::EnUs => Self::ZhTw,
+            Self::ZhTw => Self::System,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatusCard {
     pub title: String,
@@ -60,5 +121,20 @@ impl ComponentTypeLabel for ComponentManifest {
             better_core::ComponentType::Enhancement => "enhancement",
             better_core::ComponentType::Diagnostic => "diagnostic",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locale_values_round_trip_and_cycle() {
+        for locale in [Locale::System, Locale::EnUs, Locale::ZhTw] {
+            assert_eq!(Locale::parse(locale.config_value()), locale);
+        }
+        assert_eq!(Locale::System.next(), Locale::EnUs);
+        assert_eq!(Locale::EnUs.next(), Locale::ZhTw);
+        assert_eq!(Locale::ZhTw.next(), Locale::System);
     }
 }

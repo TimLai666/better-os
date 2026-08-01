@@ -14,6 +14,7 @@ use sysinfo::Signal;
 impl MonitorWindow {
     pub(super) fn render_resources_sidebar(&self, cx: &mut Context<Self>) -> Div {
         let point = self.current_point();
+        let locale = self.settings.locale.resolved();
         let memory_detail = linux::format_bytes(self.system.used_memory(), self.settings.unit_base);
 
         v_flex()
@@ -47,7 +48,10 @@ impl MonitorWindow {
                         Button::new("sidebar-settings")
                             .ghost()
                             .small()
-                            .label("Settings")
+                            .label(match locale {
+                                Locale::ZhTw => "設定",
+                                _ => "Settings",
+                            })
                             .selected(self.active_page == MonitorPage::Settings)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.active_page = MonitorPage::Settings;
@@ -59,10 +63,16 @@ impl MonitorWindow {
                 div().flex_1().min_h(px(0.0)).overflow_y_scrollbar().child(
                     v_flex()
                         .gap_1()
-                        .child(self.sidebar_group_label("Applications", cx))
+                        .child(self.sidebar_group_label(
+                            match locale {
+                                Locale::ZhTw => "應用程式",
+                                _ => "Applications",
+                            },
+                            cx,
+                        ))
                         .child(self.sidebar_resource_row(
                             "sidebar-apps",
-                            "Apps".to_string(),
+                            MonitorPage::Apps.label(locale).to_string(),
                             format!("{} grouped apps", self.app_groups.len()),
                             self.app_groups.first().map(|app| app.cpu_usage as f64),
                             self.active_page == MonitorPage::Apps,
@@ -74,7 +84,7 @@ impl MonitorWindow {
                         ))
                         .child(self.sidebar_resource_row(
                             "sidebar-processes",
-                            "Processes".to_string(),
+                            MonitorPage::Processes.label(locale).to_string(),
                             format!("{} running", self.system.processes().len()),
                             Some(point.cpu),
                             self.active_page == MonitorPage::Processes,
@@ -84,11 +94,17 @@ impl MonitorWindow {
                             }),
                             cx,
                         ))
-                        .child(self.sidebar_group_label("System", cx))
+                        .child(self.sidebar_group_label(
+                            match locale {
+                                Locale::ZhTw => "系統",
+                                _ => "System",
+                            },
+                            cx,
+                        ))
                         .child(
                             self.sidebar_resource_row(
                                 "sidebar-cpu",
-                                "Processor".to_string(),
+                                MonitorPage::Cpu.label(locale).to_string(),
                                 self.cpu_details
                                     .model_name
                                     .clone()
@@ -104,7 +120,7 @@ impl MonitorWindow {
                         )
                         .child(self.sidebar_resource_row(
                             "sidebar-memory",
-                            "Memory".to_string(),
+                            MonitorPage::Memory.label(locale).to_string(),
                             memory_detail,
                             Some(point.memory),
                             self.active_page == MonitorPage::Memory,
@@ -150,7 +166,7 @@ impl MonitorWindow {
                                 (disk.total > 0).then_some(used as f64 / disk.total as f64 * 100.0);
                             self.sidebar_resource_row(
                                 ("sidebar-drive", index),
-                                "Drive".to_string(),
+                                MonitorPage::Storage.label(locale).to_string(),
                                 disk.metadata
                                     .model
                                     .clone()
@@ -200,7 +216,7 @@ impl MonitorWindow {
                         .children(self.batteries.iter().enumerate().map(|(index, battery)| {
                             self.sidebar_resource_row(
                                 ("sidebar-battery", index),
-                                "Battery".to_string(),
+                                MonitorPage::Battery.label(locale).to_string(),
                                 battery.name.clone(),
                                 battery.charge_percent,
                                 self.active_page == MonitorPage::Battery
@@ -234,15 +250,22 @@ impl MonitorWindow {
                             .items_center()
                             .gap_2()
                             .child(div().size_2().rounded(px(99.0)).bg(cx.theme().green))
-                            .child(div().text_sm().font_bold().child("Recording")),
+                            .child(div().text_sm().font_bold().child(match locale {
+                                Locale::ZhTw => "正在記錄",
+                                _ => "Recording",
+                            })),
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(format!(
-                                "{} samples · {}",
+                                "{} {} · {}",
                                 self.store.samples().len(),
+                                match locale {
+                                    Locale::ZhTw => "筆樣本",
+                                    _ => "samples",
+                                },
                                 self.settings.refresh_speed.label()
                             )),
                     ),
@@ -1222,6 +1245,28 @@ Command: {}",
                     "Settings compatible with GNOME Resources v1.10.2 behavior",
                     v_flex()
                         .gap_2()
+                        .child(
+                            self.setting_row(
+                                match self.settings.locale.resolved() {
+                                    Locale::ZhTw => "語言",
+                                    _ => "Language",
+                                },
+                                match self.settings.locale.resolved() {
+                                    Locale::ZhTw => "切換後立即套用，不需要重新啟動",
+                                    _ => "Changes apply immediately without restarting",
+                                },
+                                Button::new("setting-locale")
+                                    .outline()
+                                    .small()
+                                    .label(self.settings.locale.label())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.settings.locale = this.settings.locale.next();
+                                        this.persist_settings();
+                                        cx.notify();
+                                    })),
+                                cx,
+                            ),
+                        )
                         .child(
                             self.setting_row(
                                 "Refresh speed",
