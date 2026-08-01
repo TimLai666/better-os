@@ -3786,6 +3786,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "manager-ipc"
+version = "0.1.0"
+dependencies = [
+ "better-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "manager-platform"
 version = "0.1.0"
 dependencies = [
