@@ -17,6 +17,39 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - name: Make locale listener patch whitespace-independent
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/scripts/apply_monitor_app_i18n.py')
+          source = path.read_text()
+          start = source.index("old_listener = '''")
+          end = source.index("parity_path.write_text(parity)", start)
+          replacement = '''listener_pattern = re.compile(
+              r"\\.on_click\\(cx\\.listener\\(\\|this,\\s*_,\\s*_,\\s*cx\\|\\s*\\{"
+              r"\\s*this\\.settings\\.locale\\s*=\\s*this\\.settings\\.locale\\.next\\(\\);"
+              r"\\s*this\\.persist_settings\\(\\);"
+              r"\\s*cx\\.notify\\(\\);"
+              r"\\s*\\}\\)\\),"
+          )
+          new_listener = '''                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.settings.locale = this.settings.locale.next();
+                                        let placeholder = text(
+                                            this.settings.locale,
+                                            CopyKey::SearchPlaceholder,
+                                        );
+                                        this.search_input.update(cx, |input, cx| {
+                                            input.set_placeholder(placeholder, window, cx);
+                                        });
+                                        this.sync_table_settings(cx);
+                                    })),'''
+          parity, replacements = listener_pattern.subn(new_listener, parity, count=1)
+          if replacements != 1 and "input.set_placeholder" not in parity:
+              raise SystemExit("runtime locale listener not found")
+          parity_path.write_text(parity)'''
+          source = source[:start] + replacement + source[end + len("parity_path.write_text(parity)"):]
+          path.write_text(source)
+          PY
       - name: Apply Apps localization patch
         run: |
           python3 .github/scripts/apply_monitor_app_i18n.py
