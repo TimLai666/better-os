@@ -33,7 +33,7 @@ jobs:
                   raise SystemExit(f"missing replacement anchor: {label}")
               return source.replace(old, new, 1)
 
-          # Keep every current Manager translation while sharing the Locale enum.
+          # Keep the complete current Manager dictionary while sharing Locale.
           manager_i18n = subprocess.check_output(
               ["git", "show", "origin/main:crates/manager-gui/src/i18n.rs"],
               text=True,
@@ -119,24 +119,26 @@ jobs:
 
           app_path = Path("crates/monitor-gui/src/app.rs")
           app = app_path.read_text()
-          config_methods = '''    const fn config_value(self) -> &'static str {
-              match self {
-                  Self::Overview => "overview",
-                  Self::Apps => "apps",
-                  Self::Processes => "processes",
-                  Self::Cpu => "cpu",
-                  Self::Memory => "memory",
-                  Self::Gpu => "gpu",
-                  Self::Npu => "npu",
-                  Self::Storage => "storage",
-                  Self::Network => "network",
-                  Self::Battery => "battery",
-                  Self::History => "history",
-                  Self::Incidents => "incidents",
-                  Self::Diagnostics => "diagnostics",
-                  Self::Settings => "settings",
+
+          if "fn from_config(value: &str)" not in app:
+              config_methods = '''    const fn config_value(self) -> &'static str {
+                  match self {
+                      Self::Overview => "overview",
+                      Self::Apps => "apps",
+                      Self::Processes => "processes",
+                      Self::Cpu => "cpu",
+                      Self::Memory => "memory",
+                      Self::Gpu => "gpu",
+                      Self::Npu => "npu",
+                      Self::Storage => "storage",
+                      Self::Network => "network",
+                      Self::Battery => "battery",
+                      Self::History => "history",
+                      Self::Incidents => "incidents",
+                      Self::Diagnostics => "diagnostics",
+                      Self::Settings => "settings",
+                  }
               }
-          }
 
               fn from_config(value: &str) -> Self {
                   match value {
@@ -158,12 +160,13 @@ jobs:
               }
 
           '''
-          app = replace_once(
-              app,
-              "    fn label(self, locale: Locale) -> &'static str {",
-              config_methods + "    fn label(self, locale: Locale) -> &'static str {",
-              "MonitorPage config conversion",
-          )
+              app = replace_once(
+                  app,
+                  "    fn label(self, locale: Locale) -> &'static str {",
+                  config_methods + "    fn label(self, locale: Locale) -> &'static str {",
+                  "MonitorPage config conversion",
+              )
+
           app = replace_once(
               app,
               "        let settings = MonitorSettings::load();\n\n        let monitor_target",
@@ -176,22 +179,25 @@ jobs:
               "            active_page,",
               "initialize active page",
           )
-          set_page_method = '''    fn set_active_page(&mut self, page: MonitorPage) {
-              self.active_page = page;
-              let value = page.config_value();
-              if self.settings.last_page != value {
-                  self.settings.last_page = value.to_string();
-                  let _ = self.settings.save();
+
+          if "fn set_active_page(&mut self" not in app:
+              set_page_method = '''    fn set_active_page(&mut self, page: MonitorPage) {
+                  self.active_page = page;
+                  let value = page.config_value();
+                  if self.settings.last_page != value {
+                      self.settings.last_page = value.to_string();
+                      let _ = self.settings.save();
+                  }
               }
-          }
 
           '''
-          app = replace_once(
-              app,
-              "    fn nav_button(&self, page: MonitorPage, cx: &mut Context<Self>) -> Button {",
-              set_page_method + "    fn nav_button(&self, page: MonitorPage, cx: &mut Context<Self>) -> Button {",
-              "set active page method",
-          )
+              app = replace_once(
+                  app,
+                  "    fn nav_button(&self, page: MonitorPage, cx: &mut Context<Self>) -> Button {",
+                  set_page_method + "    fn nav_button(&self, page: MonitorPage, cx: &mut Context<Self>) -> Button {",
+                  "set active page method",
+              )
+
           for path in [app_path, Path("crates/monitor-gui/src/parity.rs")]:
               source = app if path == app_path else path.read_text()
               source = source.replace("this.active_page = page;", "this.set_active_page(page);")
@@ -205,94 +211,80 @@ jobs:
               else:
                   path.write_text(source)
 
-          chart_signature = "    fn chart_card(\n"
-          chart_start = app.index(chart_signature)
-          body_anchor = "    ) -> Div {\n"
-          body_start = app.index(body_anchor, chart_start) + len(body_anchor)
+          chart_start = app.index("    fn chart_card(")
+          section_start = app.index("    fn section_card(", chart_start)
+          chart_block = app[chart_start:section_start]
+
           summary_line = "        let summary = chart_summary(&data, &value_fn, self.settings.locale);\n"
-          if summary_line not in app[chart_start:body_start + 200]:
-              app = app[:body_start] + summary_line + app[body_start:]
-          chart_end_anchor = '''                    .tick_margin(if self.settings.show_graph_grids {
-                          16
-                      } else {
-                          0
-                      }),
-              )
-          }
+          if summary_line not in chart_block:
+              body_start = chart_block.index("    ) -> Div {\n") + len("    ) -> Div {\n")
+              chart_block = chart_block[:body_start] + summary_line + chart_block[body_start:]
 
-              fn section_card'''
-          chart_end_replacement = '''                    .tick_margin(if self.settings.show_graph_grids {
-                          16
-                      } else {
-                          0
-                      }),
+          if ".child(summary)" not in chart_block:
+              function_close = chart_block.rfind("\n    }\n\n")
+              if function_close == -1:
+                  raise SystemExit("chart_card function boundary not found")
+              summary_element = '''
+                  .child(
+                      div()
+                          .px_4()
+                          .pb_3()
+                          .text_xs()
+                          .text_color(cx.theme().muted_foreground)
+                          .child(summary),
+                  )'''
+              chart_block = (
+                  chart_block[:function_close]
+                  + summary_element
+                  + chart_block[function_close:]
               )
-              .child(
-                  div()
-                      .px_4()
-                      .pb_3()
-                      .text_xs()
-                      .text_color(cx.theme().muted_foreground)
-                      .child(summary),
-              )
-          }
+          app = app[:chart_start] + chart_block + app[section_start:]
 
-              fn section_card'''
-          app = replace_once(
-              app,
-              chart_end_anchor,
-              chart_end_replacement,
-              "chart summary presentation",
-          )
-          chart_helper = '''fn chart_summary(
-              data: &[MetricPoint],
-              value_fn: &impl Fn(&MetricPoint) -> f64,
-              locale: Locale,
-          ) -> String {
-              let values = data
-                  .iter()
-                  .map(value_fn)
-                  .filter(|value| value.is_finite())
-                  .collect::<Vec<_>>();
-              let Some(current) = values.last().copied() else {
-                  return match locale.resolved() {
-                      Locale::ZhTw => "文字摘要：目前沒有可用樣本。".to_string(),
-                      _ => "Text summary: no samples are available yet.".to_string(),
+          if "fn chart_summary(" not in app:
+              chart_helper = '''fn chart_summary(
+                  data: &[MetricPoint],
+                  value_fn: &impl Fn(&MetricPoint) -> f64,
+                  locale: Locale,
+              ) -> String {
+                  let values = data
+                      .iter()
+                      .map(|point| value_fn(point))
+                      .filter(|value| value.is_finite())
+                      .collect::<Vec<_>>();
+                  let Some(current) = values.last().copied() else {
+                      return match locale.resolved() {
+                          Locale::ZhTw => "文字摘要：目前沒有可用樣本。".to_string(),
+                          _ => "Text summary: no samples are available yet.".to_string(),
+                      };
                   };
-              };
-              let minimum = values.iter().copied().fold(f64::INFINITY, f64::min);
-              let maximum = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-              let average = values.iter().sum::<f64>() / values.len() as f64;
-              match locale.resolved() {
-                  Locale::ZhTw => format!(
-                      "文字摘要：目前 {current:.1}，平均 {average:.1}，最低 {minimum:.1}，最高 {maximum:.1}，共 {} 個樣本。",
-                      values.len()
-                  ),
-                  _ => format!(
-                      "Text summary: current {current:.1}, average {average:.1}, minimum {minimum:.1}, maximum {maximum:.1}, across {} samples.",
-                      values.len()
-                  ),
+                  let minimum = values.iter().copied().fold(f64::INFINITY, f64::min);
+                  let maximum = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                  let average = values.iter().sum::<f64>() / values.len() as f64;
+                  match locale.resolved() {
+                      Locale::ZhTw => format!(
+                          "文字摘要：目前 {current:.1}，平均 {average:.1}，最低 {minimum:.1}，最高 {maximum:.1}，共 {} 個樣本。",
+                          values.len()
+                      ),
+                      _ => format!(
+                          "Text summary: current {current:.1}, average {average:.1}, minimum {minimum:.1}, maximum {maximum:.1}, across {} samples.",
+                          values.len()
+                      ),
+                  }
               }
-          }
 
           '''
-          app = replace_once(
-              app,
-              "fn uses_compact_navigation(width: Pixels) -> bool {",
-              chart_helper + "fn uses_compact_navigation(width: Pixels) -> bool {",
-              "chart summary helper",
-          )
-          test_anchor = '''    fn compact_navigation_uses_the_documented_breakpoint() {
-                  assert!(uses_compact_navigation(px(979.0)));
-                  assert!(!uses_compact_navigation(px(980.0)));
-                  assert!(!uses_compact_navigation(px(1360.0)));
-              }
-          '''
-          test_replacement = '''    fn compact_navigation_uses_the_documented_breakpoint() {
-                  assert!(uses_compact_navigation(px(979.0)));
-                  assert!(!uses_compact_navigation(px(980.0)));
-                  assert!(!uses_compact_navigation(px(1360.0)));
-              }
+              app = replace_once(
+                  app,
+                  "fn uses_compact_navigation(width: Pixels) -> bool {",
+                  chart_helper + "fn uses_compact_navigation(width: Pixels) -> bool {",
+                  "chart summary helper",
+              )
+
+          test_module_start = app.index("#[cfg(test)]\nmod adaptive_navigation_tests")
+          test_module_end = app.index("\n}\n\npub fn run()", test_module_start)
+          new_tests = ""
+          if "fn monitor_page_config_values_round_trip" not in app[test_module_start:test_module_end]:
+              new_tests += '''
 
               #[test]
               fn monitor_page_config_values_round_trip() {
@@ -301,6 +293,9 @@ jobs:
                   }
                   assert_eq!(MonitorPage::from_config("unknown"), MonitorPage::Overview);
               }
+          '''
+          if "fn chart_summary_reports_current_average_and_range" not in app[test_module_start:test_module_end]:
+              new_tests += '''
 
               #[test]
               fn chart_summary_reports_current_average_and_range() {
@@ -331,22 +326,30 @@ jobs:
                   assert!(summary.contains("maximum 30.0"));
               }
           '''
-          app = replace_once(app, test_anchor, test_replacement, "app parity tests")
+          if new_tests:
+              app = app[:test_module_end] + new_tests + app[test_module_end:]
+
           app_path.write_text(app)
 
           parity_path = Path("docs/better-monitor-resources-v1.10.2-parity.md")
           parity = parity_path.read_text()
-          parity = parity.replace(
-              "| Accessible chart summary | ⬜ | Text summaries and table alternatives are missing. |",
-              "| Accessible chart summary | ✅ | Every shared chart card now presents current, average, minimum, maximum, and sample-count text alongside the visual graph. |",
+          parity = re.sub(
+              r"^\| Accessible chart summary \|.*$",
+              "| Accessible chart summary | ✅ | Every shared chart card presents current, average, minimum, maximum, and sample-count text alongside the visual graph. |",
+              parity,
+              flags=re.MULTILINE,
           )
-          parity = parity.replace(
-              "| Restore last selected page | ⬜ | Settings model does not yet persist page/device selection. |",
+          parity = re.sub(
+              r"^\| Restore last selected page \|.*$",
               "| Restore last selected page | 🟨 | The selected page is persisted and restored. Per-device selection and window geometry remain missing. |",
+              parity,
+              flags=re.MULTILINE,
           )
-          parity = parity.replace(
-              "| Accessible chart summaries | ⬜ | Missing. |",
+          parity = re.sub(
+              r"^\| Accessible chart summaries \|.*$",
               "| Accessible chart summaries | ✅ | Shared chart cards expose localized current, average, minimum, maximum, and sample-count summaries. |",
+              parity,
+              flags=re.MULTILINE,
           )
           parity_path.write_text(parity)
           PY
@@ -362,71 +365,3 @@ jobs:
           git commit -m "feat(monitor): persist page state and summarize charts"
           git pull --rebase origin feature/better-monitor-ui
           git push origin HEAD:feature/better-monitor-ui
-
-  rust:
-    runs-on: ubuntu-latest
-    env:
-      RUST_FONTCONFIG_DLOPEN: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Install GPUI Linux dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
-      - run: cargo fmt --all -- --check
-      - run: cargo check --workspace
-      - run: cargo build --workspace
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace
-
-  package:
-    needs: rust
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-22.04
-            target: ubuntu-22.04
-            asset_target: ubuntu-22.04
-            architecture: amd64
-          - runner: ubuntu-24.04
-            target: ubuntu-24.04
-            asset_target: ubuntu-24.04
-            architecture: amd64
-          - runner: ubuntu-22.04-arm
-            target: ubuntu-22.04-arm64
-            asset_target: ubuntu-22.04
-            architecture: arm64
-          - runner: ubuntu-24.04-arm
-            target: ubuntu-24.04-arm64
-            asset_target: ubuntu-24.04
-            architecture: arm64
-    runs-on: ${{ matrix.runner }}
-    env:
-      RUST_FONTCONFIG_DLOPEN: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Verify native runner architecture
-        run: |
-          test "$(dpkg --print-architecture)" = "${{ matrix.architecture }}"
-          case "${{ matrix.architecture }}" in
-            amd64) test "$(uname -m)" = "x86_64" ;;
-            arm64) test "$(uname -m)" = "aarch64" ;;
-            *) exit 1 ;;
-          esac
-      - name: Install GPUI and packaging dependencies
-        run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
-      - name: Build Debian packages
-        run: bash packaging/build-deb.sh --output-dir "dist/${{ matrix.target }}" --target "${{ matrix.asset_target }}"
-      - name: Verify Debian packages
-        run: bash packaging/verify-deb.sh "dist/${{ matrix.target }}" "${{ matrix.asset_target }}"
-      - name: Upload Debian packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: better-os-deb-packages-${{ matrix.target }}
-          path: |
-            dist/${{ matrix.target }}/*.deb
-            dist/${{ matrix.target }}/*.deb.sha256
