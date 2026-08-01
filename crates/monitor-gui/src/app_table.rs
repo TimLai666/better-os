@@ -333,55 +333,57 @@ impl AppTableDelegate {
         let menu_group = group.clone();
 
         h_flex()
-            .items_center()
-            .gap_1()
-            .child(
-                Button::new(("app-information", row_ix))
-                    .outline()
-                    .small()
-                    .label("Info")
-                    .on_click(move |_, window, cx| {
-                        open_app_information_dialog(
-                            info_group.clone(),
-                            info_unit,
-                            row_ix,
-                            window,
-                            cx,
-                        );
-                    }),
-            )
-            .child(
-                DropdownButton::new(("app-actions", row_ix))
-                    .outline()
-                    .small()
-                    .button(
-                        Button::new(("app-end-primary", row_ix))
-                            .label("End")
-                            .on_click(move |_, window, cx| {
-                                open_app_signal_dialog(
-                                    term_monitor.clone(),
-                                    term_group.pids.clone(),
-                                    Signal::Term,
-                                    format!("End {}?", term_group.display_name),
-                                    "All processes in this application group will receive a graceful termination signal.",
-                                    "End Application",
+        .items_center()
+        .gap_1()
+        .child(
+            Button::new(("app-information", row_ix))
+                .outline()
+                .small()
+                .label("Info")
+                .on_click(move |_, window, cx| {
+                    open_app_information_dialog(
+                        info_group.clone(),
+                        info_unit,
+                        row_ix,
+                        window,
+                        cx,
+                    );
+                }),
+        )
+        .child(
+            DropdownButton::new(("app-actions", row_ix))
+                .outline()
+                .small()
+                .button(
+                    Button::new(("app-end-primary", row_ix))
+                        .label("End")
+                        .on_click(move |_, window, cx| {
+                            open_app_signal_dialog(
+                                AppSignalRequest {
+                                    monitor: term_monitor.clone(),
+                                    pids: term_group.pids.clone(),
+                                    signal: Signal::Term,
+                                    title: format!("End {}?", term_group.display_name),
+                                    description: "All processes in this application group will receive a graceful termination signal.",
+                                    confirm_label: "End Application",
                                     row_ix,
-                                    false,
-                                    window,
-                                    cx,
-                                );
-                            }),
+                                    destructive: false,
+                                },
+                                window,
+                                cx,
+                            );
+                        }),
+                )
+                .dropdown_menu(move |menu, _, _| {
+                    app_action_menu(
+                        menu,
+                        menu_monitor.clone(),
+                        menu_group.clone(),
+                        row_ix,
                     )
-                    .dropdown_menu(move |menu, _, _| {
-                        app_action_menu(
-                            menu,
-                            menu_monitor.clone(),
-                            menu_group.clone(),
-                            row_ix,
-                        )
-                    }),
-            )
-            .into_any_element()
+                }),
+        )
+        .into_any_element()
     }
 }
 
@@ -431,11 +433,8 @@ fn open_app_information_dialog(
     });
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the dialog boundary carries the complete, typed application action contract"
-)]
-fn open_app_signal_dialog(
+#[derive(Clone)]
+struct AppSignalRequest {
     monitor: WeakEntity<MonitorWindow>,
     pids: Vec<Pid>,
     signal: Signal,
@@ -444,31 +443,37 @@ fn open_app_signal_dialog(
     confirm_label: &'static str,
     row_ix: usize,
     destructive: bool,
-    window: &mut Window,
-    cx: &mut App,
-) {
+}
+
+fn open_app_signal_dialog(request: AppSignalRequest, window: &mut Window, cx: &mut App) {
     window.open_dialog(cx, move |dialog, _, _| {
-        let confirm_monitor = monitor.clone();
-        let confirm_pids = pids.clone();
+        let confirm_request = request.clone();
         dialog
-            .title(title.clone())
-            .child(description)
+            .title(request.title.clone())
+            .child(request.description)
             .footer(move |_, _, _, _| {
-                let monitor = confirm_monitor.clone();
-                let pids = confirm_pids.clone();
-                let confirm = Button::new(("app-action-confirm", row_ix))
-                    .label(confirm_label)
-                    .when(destructive, |button| button.warning())
-                    .on_click(move |_, window, cx| {
-                        send_app_signal(monitor.clone(), pids.clone(), signal, cx);
-                        window.close_dialog(cx);
-                    });
+                let action_request = confirm_request.clone();
+                let confirm = Button::new(("app-action-confirm", action_request.row_ix))
+                    .label(action_request.confirm_label);
+                let confirm = if action_request.destructive {
+                    confirm.warning()
+                } else {
+                    confirm
+                };
                 vec![
-                    Button::new(("app-action-cancel", row_ix))
+                    Button::new(("app-action-cancel", action_request.row_ix))
                         .outline()
                         .label("Cancel")
                         .on_click(|_, window, cx| window.close_dialog(cx)),
-                    confirm,
+                    confirm.on_click(move |_, window, cx| {
+                        send_app_signal(
+                            action_request.monitor.clone(),
+                            action_request.pids.clone(),
+                            action_request.signal,
+                            cx,
+                        );
+                        window.close_dialog(cx);
+                    }),
                 ]
             })
     });
@@ -502,14 +507,16 @@ fn app_action_menu(
     menu.item(
         PopupMenuItem::new("Force stop").on_click(move |_, window, cx| {
             open_app_signal_dialog(
-                force_monitor.clone(),
-                force_group.pids.clone(),
-                Signal::Kill,
-                format!("Force stop {}?", force_group.display_name),
-                "Every process in this application group will stop immediately without cleanup.",
-                "Force stop",
-                row_ix,
-                true,
+                AppSignalRequest {
+                    monitor: force_monitor.clone(),
+                    pids: force_group.pids.clone(),
+                    signal: Signal::Kill,
+                    title: format!("Force stop {}?", force_group.display_name),
+                    description: "Every process in this application group will stop immediately without cleanup.",
+                    confirm_label: "Force stop",
+                    row_ix,
+                    destructive: true,
+                },
                 window,
                 cx,
             );
@@ -517,7 +524,12 @@ fn app_action_menu(
     )
     .separator()
     .item(PopupMenuItem::new("Pause").on_click(move |_, _, cx| {
-        send_app_signal(pause_monitor.clone(), pause_pids.clone(), Signal::Stop, cx);
+        send_app_signal(
+            pause_monitor.clone(),
+            pause_pids.clone(),
+            Signal::Stop,
+            cx,
+        );
     }))
     .item(PopupMenuItem::new("Resume").on_click(move |_, _, cx| {
         send_app_signal(
@@ -591,10 +603,12 @@ impl TableDelegate for AppTableDelegate {
         };
         let info_group = group.clone();
         let info_unit = self.settings.unit_base;
+        let end_monitor = self.monitor.clone();
+        let end_group = group.clone();
         let action_monitor = self.monitor.clone();
-        let action_group = group;
 
-        menu.item(
+        let menu = menu
+        .item(
             PopupMenuItem::new("Application information").on_click(
                 move |_, window, cx| {
                     open_app_information_dialog(
@@ -611,23 +625,23 @@ impl TableDelegate for AppTableDelegate {
         .item(
             PopupMenuItem::new("End application").on_click(move |_, window, cx| {
                 open_app_signal_dialog(
-                    action_monitor.clone(),
-                    action_group.pids.clone(),
-                    Signal::Term,
-                    format!("End {}?", action_group.display_name),
-                    "All processes in this application group will receive a graceful termination signal.",
-                    "End Application",
-                    row_ix,
-                    false,
+                    AppSignalRequest {
+                        monitor: end_monitor.clone(),
+                        pids: end_group.pids.clone(),
+                        signal: Signal::Term,
+                        title: format!("End {}?", end_group.display_name),
+                        description: "All processes in this application group will receive a graceful termination signal.",
+                        confirm_label: "End Application",
+                        row_ix,
+                        destructive: false,
+                    },
                     window,
                     cx,
                 );
             }),
         )
-        .separator()
-        .submenu("More actions", move |menu, _, _| {
-            app_action_menu(menu, self.monitor.clone(), self.groups[row_ix].clone(), row_ix)
-        })
+        .separator();
+        app_action_menu(menu, action_monitor, group, row_ix)
     }
 
     fn perform_sort(
