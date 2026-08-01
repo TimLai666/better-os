@@ -19,8 +19,8 @@ jobs:
           components: rustfmt
       - name: Apply shared locale patch
         run: |
-          git apply --check .github/monitor-locale.patch
-          git apply .github/monitor-locale.patch
+          git apply --recount --check .github/monitor-locale.patch
+          git apply --recount .github/monitor-locale.patch
           cargo fmt --all
       - name: Commit locale runtime
         run: |
