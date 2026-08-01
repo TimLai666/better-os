@@ -14,7 +14,8 @@ use gpui_component::{
 use sysinfo::Pid;
 
 use crate::{
-    linux,
+    app::MonitorWindow,
+    linux, process_actions,
     process_control::{self, PriorityPreset},
     settings::MonitorSettings,
     sort_preferences,
@@ -202,10 +203,11 @@ pub struct ProcessTableDelegate {
     query: String,
     settings: MonitorSettings,
     selected_pids: BTreeSet<u32>,
+    monitor: WeakEntity<MonitorWindow>,
 }
 
 impl ProcessTableDelegate {
-    pub fn new(settings: &MonitorSettings) -> Self {
+    pub fn new(settings: &MonitorSettings, monitor: WeakEntity<MonitorWindow>) -> Self {
         let preference = sort_preferences::load_process();
         let mut this = Self {
             all_processes: Vec::new(),
@@ -221,6 +223,7 @@ impl ProcessTableDelegate {
             query: String::new(),
             settings: settings.clone(),
             selected_pids: BTreeSet::new(),
+            monitor,
         };
         this.rebuild_columns();
         this
@@ -528,6 +531,7 @@ impl TableDelegate for ProcessTableDelegate {
         if column == ProcessColumn::Selection {
             let pid = process.pid;
             let checked = self.is_selected(pid);
+            let monitor = self.monitor.clone();
             return h_flex()
                 .size_full()
                 .items_center()
@@ -536,6 +540,9 @@ impl TableDelegate for ProcessTableDelegate {
                     Switch::new(("process-selected", pid.as_u32() as usize))
                         .checked(checked)
                         .on_click(cx.listener(move |table, checked, _, cx| {
+                            let _ = monitor.update(cx, |monitor, _| {
+                                monitor.hold_table_refresh();
+                            });
                             table.delegate_mut().set_selected(pid, *checked);
                             cx.emit(TableEvent::SelectRow(row_ix));
                             cx.notify();
@@ -546,6 +553,7 @@ impl TableDelegate for ProcessTableDelegate {
 
         if column == ProcessColumn::Options {
             let process = process.clone();
+            let monitor = self.monitor.clone();
             let button_id = ("process-options", process.pid.as_u32() as usize);
             return div()
                 .child(
@@ -554,6 +562,9 @@ impl TableDelegate for ProcessTableDelegate {
                         .small()
                         .label("Options")
                         .on_click(move |_, _, cx| {
+                            let _ = monitor.update(cx, |monitor, _| {
+                                monitor.hold_table_refresh();
+                            });
                             open_process_options(process.clone(), cx);
                         }),
                 )
@@ -590,30 +601,54 @@ impl TableDelegate for ProcessTableDelegate {
         let Some(process) = self.processes.get(row_ix).cloned() else {
             return menu;
         };
+        let _ = self.monitor.update(cx, |monitor, _| {
+            monitor.hold_table_refresh();
+        });
         let pid = process.pid;
         let selected = self.is_selected(pid);
+        let selected_pids = self.selected_pids();
         let table = cx.entity().downgrade();
+        let selection_monitor = self.monitor.clone();
+        let options_monitor = self.monitor.clone();
         let options_process = process.clone();
 
-        menu.item(
+        let menu = menu.item(
             PopupMenuItem::new(if selected {
                 "Remove from batch"
             } else {
                 "Add to batch"
             })
             .on_click(move |_, _, cx| {
+                let _ = selection_monitor.update(cx, |monitor, _| {
+                    monitor.hold_table_refresh();
+                });
                 let _ = table.update(cx, |table, cx| {
                     table.delegate_mut().set_selected(pid, !selected);
                     cx.emit(TableEvent::SelectRow(row_ix));
                     cx.notify();
                 });
             }),
+        );
+        let menu = process_actions::append_process_information(
+            menu.separator(),
+            process.clone(),
+            self.settings.unit_base,
+            row_ix,
         )
-        .separator()
         .item(
             PopupMenuItem::new("Process Options").on_click(move |_, _, cx| {
+                let _ = options_monitor.update(cx, |monitor, _| {
+                    monitor.hold_table_refresh();
+                });
                 open_process_options(options_process.clone(), cx);
             }),
+        );
+        process_actions::append_process_signal_actions(
+            menu,
+            self.monitor.clone(),
+            process,
+            selected_pids,
+            row_ix,
         )
     }
 

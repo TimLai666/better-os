@@ -300,6 +300,7 @@ pub(crate) struct MonitorWindow {
     _subscriptions: Vec<Subscription>,
     active_page: MonitorPage,
     charts_paused: bool,
+    table_refresh_hold_until: Option<Instant>,
     sample_index: usize,
     app_table: Entity<TableState<AppTableDelegate>>,
     process_table: Entity<TableState<ProcessTableDelegate>>,
@@ -329,10 +330,14 @@ impl MonitorWindow {
             .row_selectable(true)
         });
         let process_table = cx.new(|cx| {
-            TableState::new(ProcessTableDelegate::new(&settings), window, cx)
-                .col_selectable(false)
-                .col_movable(false)
-                .row_selectable(true)
+            TableState::new(
+                ProcessTableDelegate::new(&settings, monitor_target.clone()),
+                window,
+                cx,
+            )
+            .col_selectable(false)
+            .col_movable(false)
+            .row_selectable(true)
         });
         let search_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -406,6 +411,7 @@ impl MonitorWindow {
             _subscriptions: vec![table_subscription, search_subscription],
             active_page,
             charts_paused: false,
+            table_refresh_hold_until: None,
             sample_index: 0,
             app_table,
             process_table,
@@ -555,33 +561,38 @@ impl MonitorWindow {
             })
             .collect::<Vec<_>>();
         self.app_groups = linux::group_apps(&app_samples);
-        let app_groups = self.app_groups.clone();
-        let app_query = self.search_query.clone();
-        self.app_table.update(cx, |table, cx| {
-            table.delegate_mut().set_groups(app_groups);
-            table.delegate_mut().set_filter(app_query);
-            table.refresh(cx);
-            cx.notify();
-        });
+        let table_refresh_held = self.table_refresh_is_held();
+        if !table_refresh_held {
+            let app_groups = self.app_groups.clone();
+            let app_query = self.search_query.clone();
+            self.app_table.update(cx, |table, cx| {
+                table.delegate_mut().set_groups(app_groups);
+                table.delegate_mut().set_filter(app_query);
+                table.refresh(cx);
+                cx.notify();
+            });
+        }
         processes.sort_by(|a, b| {
             b.cpu_usage
                 .partial_cmp(&a.cpu_usage)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         self.top_processes = processes.iter().take(8).cloned().collect();
-        if self
-            .selected_pid
-            .is_some_and(|pid| !processes.iter().any(|process| process.pid == pid))
-        {
-            self.selected_pid = None;
+        if !table_refresh_held {
+            if self
+                .selected_pid
+                .is_some_and(|pid| !processes.iter().any(|process| process.pid == pid))
+            {
+                self.selected_pid = None;
+            }
+            let query = self.search_query.clone();
+            self.process_table.update(cx, |table, cx| {
+                table.delegate_mut().set_processes(processes);
+                table.delegate_mut().set_filter(query);
+                table.refresh(cx);
+                cx.notify();
+            });
         }
-        let query = self.search_query.clone();
-        self.process_table.update(cx, |table, cx| {
-            table.delegate_mut().set_processes(processes);
-            table.delegate_mut().set_filter(query);
-            table.refresh(cx);
-            cx.notify();
-        });
 
         self.refresh_disk_info();
         self.network_info = self
@@ -696,6 +707,15 @@ impl MonitorWindow {
         } else {
             self.history.iter().cloned().collect()
         }
+    }
+
+    pub(crate) fn hold_table_refresh(&mut self) {
+        self.table_refresh_hold_until = Some(Instant::now() + Duration::from_secs(2));
+    }
+
+    fn table_refresh_is_held(&self) -> bool {
+        self.table_refresh_hold_until
+            .is_some_and(|deadline| Instant::now() < deadline)
     }
 
     fn set_active_page(&mut self, page: MonitorPage) {

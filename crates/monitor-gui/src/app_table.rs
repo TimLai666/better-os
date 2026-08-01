@@ -374,7 +374,10 @@ impl AppTableDelegate {
                             );
                         }),
                 )
-                .dropdown_menu(move |menu, _, _| {
+                .dropdown_menu(move |menu, _, cx| {
+                    let _ = menu_monitor.update(cx, |monitor, _| {
+                        monitor.hold_table_refresh();
+                    });
                     app_action_menu(
                         menu,
                         menu_monitor.clone(),
@@ -446,6 +449,9 @@ struct AppSignalRequest {
 }
 
 fn open_app_signal_dialog(request: AppSignalRequest, window: &mut Window, cx: &mut App) {
+    let _ = request
+        .monitor
+        .update(cx, |monitor, _| monitor.hold_table_refresh());
     window.open_dialog(cx, move |dialog, _, _| {
         let action_request = request.clone();
         let click_request = action_request.clone();
@@ -489,6 +495,7 @@ fn send_app_signal(
     cx: &mut App,
 ) {
     let _ = monitor.update(cx, |monitor, cx| {
+        monitor.hold_table_refresh();
         monitor.signal_pids(&pids, signal);
         cx.notify();
     });
@@ -599,8 +606,11 @@ impl TableDelegate for AppTableDelegate {
         row_ix: usize,
         menu: PopupMenu,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
+        let _ = self.monitor.update(cx, |monitor, _| {
+            monitor.hold_table_refresh();
+        });
         let Some(group) = self.groups.get(row_ix).cloned() else {
             return menu;
         };
