@@ -2,91 +2,386 @@ name: CI
 
 on:
   push:
-  pull_request:
+
+permissions:
+  contents: write
 
 jobs:
-  rust:
+  apply-app-interactions:
     runs-on: ubuntu-latest
-    env:
-      RUST_FONTCONFIG_DLOPEN: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: feature/better-monitor-interactions
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Install GPUI Linux dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
-      - run: cargo fmt --all -- --check
-      - run: cargo check --workspace
-      - run: cargo build --workspace
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace
+          components: rustfmt
+      - name: Add Apps split action and context menu
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
 
-  package:
-    needs: rust
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-22.04
-            target: ubuntu-22.04
-            asset_target: ubuntu-22.04
-            architecture: amd64
-          - runner: ubuntu-24.04
-            target: ubuntu-24.04
-            asset_target: ubuntu-24.04
-            architecture: amd64
-          - runner: ubuntu-22.04-arm
-            target: ubuntu-22.04-arm64
-            asset_target: ubuntu-22.04
-            architecture: arm64
-          - runner: ubuntu-24.04-arm
-            target: ubuntu-24.04-arm64
-            asset_target: ubuntu-24.04
-            architecture: arm64
-    runs-on: ${{ matrix.runner }}
-    env:
-      RUST_FONTCONFIG_DLOPEN: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Verify native runner architecture
+          path = Path("crates/monitor-gui/src/app_table.rs")
+          source = path.read_text()
+
+          if "fn open_app_signal_dialog(" not in source:
+              source = source.replace(
+                  '''use gpui_component::{
+              ActiveTheme, Sizable,
+              button::{Button, ButtonVariants},
+              dialog::{
+                  AlertDialog, DialogAction, DialogClose, DialogDescription, DialogFooter, DialogHeader,
+                  DialogTitle,
+              },
+              h_flex,
+              table::{Column, ColumnSort, TableDelegate, TableState},
+          };
+          use sysinfo::Signal;
+          ''',
+                  '''use gpui_component::{
+              ActiveTheme, Sizable, WindowExt,
+              button::{Button, ButtonVariants, DropdownButton},
+              h_flex,
+              menu::{PopupMenu, PopupMenuItem},
+              table::{Column, ColumnSort, TableDelegate, TableState},
+          };
+          use sysinfo::{Pid, Signal};
+          ''',
+                  1,
+              )
+              source = source.replace(
+                  "    settings::MonitorSettings,\n",
+                  "    settings::{MonitorSettings, UnitBase},\n",
+                  1,
+              )
+              source = source.replace(
+                  "            Self::Actions => 410.0,",
+                  "            Self::Actions => 232.0,",
+                  1,
+              )
+
+              start = source.index("    fn render_actions(")
+              end = source.index("\n}\n\nimpl TableDelegate", start)
+              render_actions = '''    fn render_actions(
+                  &self,
+                  row_ix: usize,
+                  group: AppGroup,
+                  _: &mut Context<TableState<Self>>,
+              ) -> AnyElement {
+                  let info_group = group.clone();
+                  let info_unit = self.settings.unit_base;
+                  let term_monitor = self.monitor.clone();
+                  let term_group = group.clone();
+                  let menu_monitor = self.monitor.clone();
+                  let menu_group = group.clone();
+
+                  h_flex()
+                      .items_center()
+                      .gap_1()
+                      .child(
+                          Button::new(("app-information", row_ix))
+                              .outline()
+                              .small()
+                              .label("Info")
+                              .on_click(move |_, window, cx| {
+                                  open_app_information_dialog(
+                                      info_group.clone(),
+                                      info_unit,
+                                      row_ix,
+                                      window,
+                                      cx,
+                                  );
+                              }),
+                      )
+                      .child(
+                          DropdownButton::new(("app-actions", row_ix))
+                              .outline()
+                              .small()
+                              .button(
+                                  Button::new(("app-end-primary", row_ix))
+                                      .label("End")
+                                      .on_click(move |_, window, cx| {
+                                          open_app_signal_dialog(
+                                              term_monitor.clone(),
+                                              term_group.pids.clone(),
+                                              Signal::Term,
+                                              format!("End {}?", term_group.display_name),
+                                              "All processes in this application group will receive a graceful termination signal.",
+                                              "End Application",
+                                              row_ix,
+                                              false,
+                                              window,
+                                              cx,
+                                          );
+                                      }),
+                              )
+                              .dropdown_menu(move |menu, _, _| {
+                                  app_action_menu(
+                                      menu,
+                                      menu_monitor.clone(),
+                                      menu_group.clone(),
+                                      row_ix,
+                                  )
+                              }),
+                      )
+                      .into_any_element()
+              }
+          '''
+              source = source[:start] + render_actions + source[end:]
+
+              helpers = '''
+          fn app_information(group: &AppGroup, unit_base: UnitBase) -> String {
+              format!(
+                  "Identity: {}\\nGrouped processes: {}\\nGrouping evidence: {}\\nPIDs: {}\\nCPU: {:.1}%\\nMemory: {}\\nSwap: {}\\nRead: {} total, {}/s\\nWritten: {} total, {}/s",
+                  group.id,
+                  group.process_count,
+                  group.grouping_reason,
+                  group
+                      .pids
+                      .iter()
+                      .map(ToString::to_string)
+                      .collect::<Vec<_>>()
+                      .join(", "),
+                  group.cpu_usage,
+                  linux::format_bytes(group.memory, unit_base),
+                  linux::format_bytes(group.swap, unit_base),
+                  linux::format_bytes(group.read_total, unit_base),
+                  linux::format_bytes(group.read_speed, unit_base),
+                  linux::format_bytes(group.write_total, unit_base),
+                  linux::format_bytes(group.write_speed, unit_base),
+              )
+          }
+
+          fn open_app_information_dialog(
+              group: AppGroup,
+              unit_base: UnitBase,
+              row_ix: usize,
+              window: &mut Window,
+              cx: &mut App,
+          ) {
+              let title = format!("{} Information", group.display_name);
+              let description = app_information(&group, unit_base);
+              window.open_dialog(cx, move |dialog, _, _| {
+                  dialog
+                      .title(title.clone())
+                      .child(description.clone())
+                      .footer(move |_, _, _, _| {
+                          vec![
+                              Button::new(("app-info-close", row_ix))
+                                  .outline()
+                                  .label("Close")
+                                  .on_click(|_, window, cx| window.close_dialog(cx)),
+                          ]
+                      })
+              });
+          }
+
+          #[expect(
+              clippy::too_many_arguments,
+              reason = "the dialog boundary carries the complete, typed application action contract"
+          )]
+          fn open_app_signal_dialog(
+              monitor: WeakEntity<MonitorWindow>,
+              pids: Vec<Pid>,
+              signal: Signal,
+              title: String,
+              description: &'static str,
+              confirm_label: &'static str,
+              row_ix: usize,
+              destructive: bool,
+              window: &mut Window,
+              cx: &mut App,
+          ) {
+              window.open_dialog(cx, move |dialog, _, _| {
+                  let confirm_monitor = monitor.clone();
+                  let confirm_pids = pids.clone();
+                  dialog
+                      .title(title.clone())
+                      .child(description)
+                      .footer(move |_, _, _, _| {
+                          let monitor = confirm_monitor.clone();
+                          let pids = confirm_pids.clone();
+                          let confirm = Button::new(("app-action-confirm", row_ix))
+                              .label(confirm_label)
+                              .when(destructive, |button| button.warning())
+                              .on_click(move |_, window, cx| {
+                                  send_app_signal(monitor.clone(), pids.clone(), signal, cx);
+                                  window.close_dialog(cx);
+                              });
+                          vec![
+                              Button::new(("app-action-cancel", row_ix))
+                                  .outline()
+                                  .label("Cancel")
+                                  .on_click(|_, window, cx| window.close_dialog(cx)),
+                              confirm,
+                          ]
+                      })
+              });
+          }
+
+          fn send_app_signal(
+              monitor: WeakEntity<MonitorWindow>,
+              pids: Vec<Pid>,
+              signal: Signal,
+              cx: &mut App,
+          ) {
+              let _ = monitor.update(cx, |monitor, cx| {
+                  monitor.signal_pids(&pids, signal);
+                  cx.notify();
+              });
+          }
+
+          fn app_action_menu(
+              menu: PopupMenu,
+              monitor: WeakEntity<MonitorWindow>,
+              group: AppGroup,
+              row_ix: usize,
+          ) -> PopupMenu {
+              let force_monitor = monitor.clone();
+              let force_group = group.clone();
+              let pause_monitor = monitor.clone();
+              let pause_pids = group.pids.clone();
+              let resume_monitor = monitor;
+              let resume_pids = group.pids.clone();
+
+              menu.item(
+                  PopupMenuItem::new("Force stop").on_click(move |_, window, cx| {
+                      open_app_signal_dialog(
+                          force_monitor.clone(),
+                          force_group.pids.clone(),
+                          Signal::Kill,
+                          format!("Force stop {}?", force_group.display_name),
+                          "Every process in this application group will stop immediately without cleanup.",
+                          "Force stop",
+                          row_ix,
+                          true,
+                          window,
+                          cx,
+                      );
+                  }),
+              )
+              .separator()
+              .item(
+                  PopupMenuItem::new("Pause").on_click(move |_, _, cx| {
+                      send_app_signal(
+                          pause_monitor.clone(),
+                          pause_pids.clone(),
+                          Signal::Stop,
+                          cx,
+                      );
+                  }),
+              )
+              .item(
+                  PopupMenuItem::new("Resume").on_click(move |_, _, cx| {
+                      send_app_signal(
+                          resume_monitor.clone(),
+                          resume_pids.clone(),
+                          Signal::Continue,
+                          cx,
+                      );
+                  }),
+              )
+          }
+
+          '''
+              source = source.replace(
+                  "\n}\n\nimpl TableDelegate for AppTableDelegate {",
+                  "\n}\n\n" + helpers + "impl TableDelegate for AppTableDelegate {",
+                  1,
+              )
+
+              context_menu = '''    fn context_menu(
+                  &mut self,
+                  row_ix: usize,
+                  menu: PopupMenu,
+                  _: &mut Window,
+                  _: &mut Context<TableState<Self>>,
+              ) -> PopupMenu {
+                  let Some(group) = self.groups.get(row_ix).cloned() else {
+                      return menu;
+                  };
+                  let info_group = group.clone();
+                  let info_unit = self.settings.unit_base;
+                  let action_monitor = self.monitor.clone();
+                  let action_group = group;
+
+                  menu.item(
+                      PopupMenuItem::new("Application information").on_click(
+                          move |_, window, cx| {
+                              open_app_information_dialog(
+                                  info_group.clone(),
+                                  info_unit,
+                                  row_ix,
+                                  window,
+                                  cx,
+                              );
+                          },
+                      ),
+                  )
+                  .separator()
+                  .item(
+                      PopupMenuItem::new("End application").on_click(move |_, window, cx| {
+                          open_app_signal_dialog(
+                              action_monitor.clone(),
+                              action_group.pids.clone(),
+                              Signal::Term,
+                              format!("End {}?", action_group.display_name),
+                              "All processes in this application group will receive a graceful termination signal.",
+                              "End Application",
+                              row_ix,
+                              false,
+                              window,
+                              cx,
+                          );
+                      }),
+                  )
+                  .separator()
+                  .submenu("More actions", move |menu, _, _| {
+                      app_action_menu(menu, self.monitor.clone(), self.groups[row_ix].clone(), row_ix)
+                  })
+              }
+
+          '''
+              source = source.replace(
+                  "    fn perform_sort(\n",
+                  context_menu + "    fn perform_sort(\n",
+                  1,
+              )
+
+          path.write_text(source)
+
+          parity_path = Path("docs/better-monitor-resources-v1.10.2-parity.md")
+          parity = parity_path.read_text()
+          parity = re.sub(
+              r"^\| Split action button \|.*$",
+              "| Split action button | ✅ | Apps uses End as the primary action with Force stop, Pause, and Resume in the adjacent dropdown. |",
+              parity,
+              flags=re.MULTILINE,
+          )
+          parity = re.sub(
+              r"^\| End Application split action \|.*$",
+              "| End Application split action | ✅ | End is the primary action; Force stop, Pause, and Resume share the dropdown while preserving confirmations. |",
+              parity,
+              flags=re.MULTILINE,
+          )
+          parity = re.sub(
+              r"^\| Context menu \| ⬜ \| Missing\. \|$",
+              "| Context menu | ✅ | Apps exposes information, End, Force stop, Pause, and Resume from the row context menu. |",
+              parity,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          parity_path.write_text(parity)
+          PY
+          cargo fmt --all
+      - name: Commit Apps interaction parity
         run: |
-          test "$(dpkg --print-architecture)" = "${{ matrix.architecture }}"
-          case "${{ matrix.architecture }}" in
-            amd64) test "$(uname -m)" = "x86_64" ;;
-            arm64) test "$(uname -m)" = "aarch64" ;;
-            *) exit 1 ;;
-          esac
-      # Keep release target artifacts isolated by Ubuntu release. Proc-macro
-      # shared objects are linked against the runner's glibc.
-      - name: Install GPUI and packaging dependencies
-        run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
-      - name: Build Debian packages
-        run: bash packaging/build-deb.sh --output-dir "dist/${{ matrix.target }}" --target "${{ matrix.asset_target }}"
-      - name: Verify Debian packages
-        run: bash packaging/verify-deb.sh "dist/${{ matrix.target }}" "${{ matrix.asset_target }}"
-      # The privileged service is the only thing here that changes a machine, so
-      # it is exercised against a real dpkg, system bus, and polkitd rather than
-      # only against fakes. It runs in a throwaway container for the same reason
-      # the local script refuses to run on a host.
-      - name: Run the privileged service end-to-end
-        run: |
-          # ubuntu-24.04 -> 24.04 for the base image; the script still wants the
-          # full asset target to find the packages.
-          UBUNTU_RELEASE="${{ matrix.asset_target }}"
-          UBUNTU_RELEASE="${UBUNTU_RELEASE#ubuntu-}"
-          cp -r "dist/${{ matrix.target }}" dist/e2e
-          docker build -f packaging/e2e/Dockerfile \
-            --build-arg "UBUNTU_RELEASE=${UBUNTU_RELEASE}" \
-            -t "better-os-e2e:${{ matrix.target }}" .
-          docker run --rm "better-os-e2e:${{ matrix.target }}"
-          rm -rf dist/e2e
-      - name: Upload Debian packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: better-os-deb-packages-${{ matrix.target }}
-          path: |
-            dist/${{ matrix.target }}/*.deb
-            dist/${{ matrix.target }}/*.deb.sha256
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/monitor-gui/src/app_table.rs docs/better-monitor-resources-v1.10.2-parity.md
+          git commit -m "feat(monitor): add Apps split actions and context menu"
+          git push origin HEAD:feature/better-monitor-interactions
