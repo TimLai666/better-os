@@ -46,9 +46,11 @@ Manifest files, release metadata, collector output, and future remote data are
 untrusted. Parsing and validation happen before planning. A manifest also
 declares its own presentation and restart metadata, which is validated and
 restricted to a closed icon set before any screen uses it. The GUI never
-receives a privileged executor; the shipped executor refuses every request. A future privileged daemon must accept an explicit,
-validated transaction plan and return an execution log, health result, and
-rollback record.
+performs a privileged change itself; it asks the privileged service, which
+authorizes the caller through polkit and revalidates the plan against the host
+before acting. The service accepts an explicit, validated transaction plan and
+returns an execution log, health result, and rollback record. An executor
+without an authorized connection to it refuses every request.
 
 ## Manager transaction shape
 
@@ -59,16 +61,21 @@ rollback record.
    insufficient mock profile, and produce a dry-run plan that requires a
    current state revision at approval. Missing catalog or profile data stays
    explicitly unavailable rather than becoming a guessed estimate.
-4. Advance the approved plan through deterministic mock download, install,
-   settings, and health stages, persisting each state without host mutation.
-5. Record failure evidence and a mock restore outcome when verification fails.
+4. Advance the approved plan through download, install, settings, and health
+   stages, persisting each state as it goes. A driver decides what each stage
+   actually did: a simulation scripts it, a real transaction observes it.
+5. Record failure evidence and the restore outcome when verification fails.
    Carry the declared replacements, enhancements, and the widest restart
    requirement into the plan so a reviewer sees them before approving.
-6. In a future privileged boundary, execute validated operations through local
-   APT and replace the mock executor without changing the GUI or CLI contract.
+6. For a real transaction, fetch and verify every artifact, hand each to the
+   privileged service over a file descriptor, and give it the whole plan. The
+   service revalidates independently, applies through local APT, health-checks
+   what it applied, and rolls back what it can. The executor was replaced
+   without changing the GUI or CLI contract: the same lifecycle stages, driven
+   by a different driver.
 
-Only steps 1–5 exist in this scaffold. Lifecycle descriptors remain data and
-are never interpreted as commands.
+Lifecycle descriptors remain data and are never interpreted as commands, on
+either side of the privileged boundary.
 
 ## Monitor observation layers
 

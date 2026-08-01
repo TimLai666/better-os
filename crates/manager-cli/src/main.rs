@@ -18,7 +18,7 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(
     name = "better-manager",
-    about = "Inspect and simulate Better OS component lifecycle changes"
+    about = "Inspect, plan, and apply Better OS component lifecycle changes"
 )]
 struct Cli {
     /// Use a disposable JSON state file instead of the local default.
@@ -26,9 +26,10 @@ struct Cli {
     state_path: Option<PathBuf>,
     /// Whether lifecycle commands simulate or actually change this machine.
     ///
-    /// Real execution needs the privileged service; without it the command
-    /// reports that it could not run rather than quietly simulating.
-    #[arg(long, global = true, value_enum, env = "BETTER_MANAGER_EXECUTION", default_value_t = ExecutionArg::Mock)]
+    /// Real is the default: a manager that quietly simulated would report a
+    /// change that never happened. Without the privileged service the command
+    /// says so and stops.
+    #[arg(long, global = true, value_enum, env = "BETTER_MANAGER_EXECUTION", default_value_t = ExecutionArg::Real)]
     execution: ExecutionArg,
     #[command(subcommand)]
     command: Command,
