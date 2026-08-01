@@ -121,7 +121,7 @@ impl SupportStatePalette {
     }
 }
 
-pub fn support_state_panel(state: &SupportState, palette: SupportStatePalette) -> impl IntoElement {
+pub fn support_state_panel(state: SupportState, palette: SupportStatePalette) -> impl IntoElement {
     let accent = palette.accent(state.kind);
     h_flex()
         .items_center()

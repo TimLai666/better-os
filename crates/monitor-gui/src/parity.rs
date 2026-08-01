@@ -1913,12 +1913,12 @@ Command: {}",
                 div()
                     .w_full()
                     .max_w(px(680.0))
-                    .child(support_state_panel(&state, self.support_state_palette(cx))),
+                    .child(support_state_panel(state, self.support_state_palette(cx))),
             )
     }
 
     fn action_result_banner(&self, state: SupportState, cx: &Context<Self>) -> impl IntoElement {
-        support_state_panel(&state, self.support_state_palette(cx))
+        support_state_panel(state, self.support_state_palette(cx))
     }
 
     fn selected_process(&self, cx: &Context<Self>) -> Option<ProcessInfo> {
