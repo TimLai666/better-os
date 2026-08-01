@@ -4,7 +4,37 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
+  refresh-monitor-metadata:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/better-monitor-ui
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Refresh locked dependency metadata
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          cargo generate-lockfile
+          bash packaging/generate-third-party-notices.sh
+      - name: Commit metadata refresh
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock docs/third-party-licenses.md
+          git commit -m "build(monitor): refresh locked dependency metadata"
+          git push origin HEAD:feature/better-monitor-ui || {
+            git pull --rebase origin feature/better-monitor-ui
+            git push origin HEAD:feature/better-monitor-ui
+          }
+
   rust:
     runs-on: ubuntu-latest
     env:
