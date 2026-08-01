@@ -4,57 +4,24 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
-  apply-monitor-next:
+  capture-monitor-patch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: feature/better-monitor-ui
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Decode and verify Better Monitor patch
+      - name: Decode current patch chunks
         run: |
           cat .github/monitor-next/chunk-*.b64 \
             | tr -d '\n' \
             | base64 -d > /tmp/monitor-next.patch
-          echo "075b057658fefd72249a9761fe23624d546664143e9369805d75a22ec0d9dd3b  /tmp/monitor-next.patch" \
-            | sha256sum --check --strict
-      - name: Apply Apps table patch
-        run: |
-          if git apply --check /tmp/monitor-next.patch; then
-            git apply /tmp/monitor-next.patch
-            cargo fmt --all
-          elif git apply --reverse --check /tmp/monitor-next.patch; then
-            echo "Better Monitor patch is already applied."
-          else
-            echo "Patch cannot be applied or reversed cleanly."
-            exit 1
-          fi
-      - name: Commit Apps table and sorting
-        run: |
-          if git diff --quiet; then
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            crates/monitor-gui/src/app.rs \
-            crates/monitor-gui/src/app_table.rs \
-            crates/monitor-gui/src/main.rs \
-            crates/monitor-gui/src/parity.rs \
-            crates/monitor-gui/src/process_table.rs \
-            crates/monitor-gui/src/sort_preferences.rs \
-            docs/better-monitor-resources-v1.10.2-parity.md
-          git commit -m "feat(monitor): virtualize Apps and persist table sorting"
-          git push origin HEAD:feature/better-monitor-ui || {
-            git pull --rebase origin feature/better-monitor-ui
-            git push origin HEAD:feature/better-monitor-ui
-          }
+          sha256sum /tmp/monitor-next.patch
+          wc -c /tmp/monitor-next.patch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reconstructed-monitor-next-patch
+          path: /tmp/monitor-next.patch
 
   rust:
     runs-on: ubuntu-latest
