@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  apply-device-chart-refactor:
+  apply-battery-chart-refactor:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,23 +18,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Refactor the device chart presentation contract
+      - name: Refactor battery history chart calls
         run: |
-          base64 -d .github/device-chart-refactor.patch.gz.b64 | gzip -d > /tmp/device-chart-refactor.patch
-          git apply --check /tmp/device-chart-refactor.patch
-          git apply /tmp/device-chart-refactor.patch
+          base64 -d .github/battery-chart-refactor.patch.gz.b64 | gzip -d > /tmp/battery-chart-refactor.patch
+          git apply --check /tmp/battery-chart-refactor.patch
+          git apply /tmp/battery-chart-refactor.patch
           cargo fmt --all
-      - name: Commit the chart API refactor
+      - name: Commit the battery chart refactor
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/monitor-gui/src/app.rs
-          git commit -m "refactor(monitor): group device chart presentation"
+          git add crates/monitor-gui/src/parity.rs
+          git commit -m "refactor(monitor): group battery chart presentation"
           git pull --rebase origin feature/better-monitor-ui
           git push origin HEAD:feature/better-monitor-ui
 
   rust:
-    needs: apply-device-chart-refactor
+    needs: apply-battery-chart-refactor
     runs-on: ubuntu-latest
     env:
       RUST_FONTCONFIG_DLOPEN: "1"
