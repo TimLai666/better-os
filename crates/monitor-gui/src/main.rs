@@ -5,6 +5,7 @@ mod app;
 mod linux;
 mod process_control;
 mod process_table;
+mod process_table_debug;
 mod settings;
 
 fn main() {
