@@ -94,6 +94,44 @@ impl MonitorPage {
         }
     }
 
+    const fn config_value(self) -> &'static str {
+        match self {
+            Self::Overview => "overview",
+            Self::Apps => "apps",
+            Self::Processes => "processes",
+            Self::Cpu => "cpu",
+            Self::Memory => "memory",
+            Self::Gpu => "gpu",
+            Self::Npu => "npu",
+            Self::Storage => "storage",
+            Self::Network => "network",
+            Self::Battery => "battery",
+            Self::History => "history",
+            Self::Incidents => "incidents",
+            Self::Diagnostics => "diagnostics",
+            Self::Settings => "settings",
+        }
+    }
+
+    fn from_config(value: &str) -> Self {
+        match value {
+            "apps" => Self::Apps,
+            "processes" => Self::Processes,
+            "cpu" => Self::Cpu,
+            "memory" => Self::Memory,
+            "gpu" => Self::Gpu,
+            "npu" => Self::Npu,
+            "storage" => Self::Storage,
+            "network" => Self::Network,
+            "battery" => Self::Battery,
+            "history" => Self::History,
+            "incidents" => Self::Incidents,
+            "diagnostics" => Self::Diagnostics,
+            "settings" => Self::Settings,
+            _ => Self::Overview,
+        }
+    }
+
     fn label(self, locale: Locale) -> &'static str {
         match locale.resolved() {
             Locale::ZhTw => match self {
@@ -276,6 +314,7 @@ impl MonitorWindow {
         let mut system = System::new_all();
         system.refresh_all();
         let settings = MonitorSettings::load();
+        let active_page = MonitorPage::from_config(&settings.last_page);
 
         let monitor_target = cx.entity().downgrade();
         let app_settings = settings.clone();
@@ -365,7 +404,7 @@ impl MonitorWindow {
             selected_battery: 0,
             last_action: None,
             _subscriptions: vec![table_subscription, search_subscription],
-            active_page: MonitorPage::Overview,
+            active_page,
             charts_paused: false,
             sample_index: 0,
             app_table,
@@ -659,6 +698,15 @@ impl MonitorWindow {
         }
     }
 
+    fn set_active_page(&mut self, page: MonitorPage) {
+        self.active_page = page;
+        let value = page.config_value();
+        if self.settings.last_page != value {
+            self.settings.last_page = value.to_string();
+            let _ = self.settings.save();
+        }
+    }
+
     fn nav_button(&self, page: MonitorPage, cx: &mut Context<Self>) -> Button {
         Button::new(page.id())
             .ghost()
@@ -671,7 +719,7 @@ impl MonitorWindow {
             ))
             .selected(self.active_page == page)
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.active_page = page;
+                this.set_active_page(page);
                 cx.notify();
             }))
     }
@@ -688,7 +736,7 @@ impl MonitorWindow {
             ))
             .selected(self.active_page == page)
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.active_page = page;
+                this.set_active_page(page);
                 cx.notify();
             }))
     }
@@ -749,7 +797,7 @@ impl MonitorWindow {
                             })
                             .selected(self.active_page == MonitorPage::Overview)
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.active_page = MonitorPage::Overview;
+                                this.set_active_page(MonitorPage::Overview);
                                 cx.notify();
                             })),
                     )
@@ -784,7 +832,7 @@ impl MonitorWindow {
                             .label("The system was just slow")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.record_incident();
-                                this.active_page = MonitorPage::Incidents;
+                                this.set_active_page(MonitorPage::Incidents);
                                 cx.notify();
                             })),
                     ),
@@ -873,6 +921,7 @@ impl MonitorWindow {
         color: Hsla,
         cx: &Context<Self>,
     ) -> Div {
+        let summary = chart_summary(&data, &value_fn, self.settings.locale);
         v_flex()
             .flex_1()
             .min_w(px(330.))
@@ -906,6 +955,14 @@ impl MonitorWindow {
                     } else {
                         0
                     }),
+            )
+            .child(
+                div()
+                    .px_4()
+                    .pb_3()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(summary),
             )
     }
 
@@ -2014,6 +2071,37 @@ impl Render for MonitorWindow {
     }
 }
 
+fn chart_summary(
+    data: &[MetricPoint],
+    value_fn: &impl Fn(&MetricPoint) -> f64,
+    locale: Locale,
+) -> String {
+    let values = data
+        .iter()
+        .map(|point| value_fn(point))
+        .filter(|value| value.is_finite())
+        .collect::<Vec<_>>();
+    let Some(current) = values.last().copied() else {
+        return match locale.resolved() {
+            Locale::ZhTw => "文字摘要：目前沒有可用樣本。".to_string(),
+            _ => "Text summary: no samples are available yet.".to_string(),
+        };
+    };
+    let minimum = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let maximum = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let average = values.iter().sum::<f64>() / values.len() as f64;
+    match locale.resolved() {
+        Locale::ZhTw => format!(
+            "文字摘要：目前 {current:.1}，平均 {average:.1}，最低 {minimum:.1}，最高 {maximum:.1}，共 {} 個樣本。",
+            values.len()
+        ),
+        _ => format!(
+            "Text summary: current {current:.1}, average {average:.1}, minimum {minimum:.1}, maximum {maximum:.1}, across {} samples.",
+            values.len()
+        ),
+    }
+}
+
 fn uses_compact_navigation(width: Pixels) -> bool {
     width < px(980.0)
 }
@@ -2054,6 +2142,43 @@ mod adaptive_navigation_tests {
         assert!(uses_compact_navigation(px(979.0)));
         assert!(!uses_compact_navigation(px(980.0)));
         assert!(!uses_compact_navigation(px(1360.0)));
+    }
+
+    #[test]
+    fn monitor_page_config_values_round_trip() {
+        for page in MonitorPage::ALL {
+            assert_eq!(MonitorPage::from_config(page.config_value()), page);
+        }
+        assert_eq!(MonitorPage::from_config("unknown"), MonitorPage::Overview);
+    }
+
+    #[test]
+    fn chart_summary_reports_current_average_and_range() {
+        let data = vec![
+            MetricPoint {
+                time: "0s".to_string(),
+                cpu: 10.0,
+                memory: 0.0,
+                network_received: 0.0,
+                network_transmitted: 0.0,
+                disk_read: 0.0,
+                disk_written: 0.0,
+            },
+            MetricPoint {
+                time: "1s".to_string(),
+                cpu: 30.0,
+                memory: 0.0,
+                network_received: 0.0,
+                network_transmitted: 0.0,
+                disk_read: 0.0,
+                disk_written: 0.0,
+            },
+        ];
+        let summary = chart_summary(&data, &|point| point.cpu, Locale::EnUs);
+        assert!(summary.contains("current 30.0"));
+        assert!(summary.contains("average 20.0"));
+        assert!(summary.contains("minimum 10.0"));
+        assert!(summary.contains("maximum 30.0"));
     }
 }
 

@@ -54,7 +54,7 @@ impl MonitorWindow {
                             })
                             .selected(self.active_page == MonitorPage::Settings)
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.active_page = MonitorPage::Settings;
+                                this.set_active_page(MonitorPage::Settings);
                                 cx.notify();
                             })),
                     ),
@@ -77,7 +77,7 @@ impl MonitorWindow {
                             self.app_groups.first().map(|app| app.cpu_usage as f64),
                             self.active_page == MonitorPage::Apps,
                             cx.listener(|this, _, _, cx| {
-                                this.active_page = MonitorPage::Apps;
+                                this.set_active_page(MonitorPage::Apps);
                                 cx.notify();
                             }),
                             cx,
@@ -89,7 +89,7 @@ impl MonitorWindow {
                             Some(point.cpu),
                             self.active_page == MonitorPage::Processes,
                             cx.listener(|this, _, _, cx| {
-                                this.active_page = MonitorPage::Processes;
+                                this.set_active_page(MonitorPage::Processes);
                                 cx.notify();
                             }),
                             cx,
@@ -112,7 +112,7 @@ impl MonitorWindow {
                                 Some(point.cpu),
                                 self.active_page == MonitorPage::Cpu,
                                 cx.listener(|this, _, _, cx| {
-                                    this.active_page = MonitorPage::Cpu;
+                                    this.set_active_page(MonitorPage::Cpu);
                                     cx.notify();
                                 }),
                                 cx,
@@ -125,7 +125,7 @@ impl MonitorWindow {
                             Some(point.memory),
                             self.active_page == MonitorPage::Memory,
                             cx.listener(|this, _, _, cx| {
-                                this.active_page = MonitorPage::Memory;
+                                this.set_active_page(MonitorPage::Memory);
                                 cx.notify();
                             }),
                             cx,
@@ -139,7 +139,7 @@ impl MonitorWindow {
                                 self.active_page == MonitorPage::Gpu && self.selected_gpu == index,
                                 cx.listener(move |this, _, _, cx| {
                                     this.selected_gpu = index;
-                                    this.active_page = MonitorPage::Gpu;
+                                    this.set_active_page(MonitorPage::Gpu);
                                     cx.notify();
                                 }),
                                 cx,
@@ -154,7 +154,7 @@ impl MonitorWindow {
                                 self.active_page == MonitorPage::Npu && self.selected_npu == index,
                                 cx.listener(move |this, _, _, cx| {
                                     this.selected_npu = index;
-                                    this.active_page = MonitorPage::Npu;
+                                    this.set_active_page(MonitorPage::Npu);
                                     cx.notify();
                                 }),
                                 cx,
@@ -176,7 +176,7 @@ impl MonitorWindow {
                                     && self.selected_disk == index,
                                 cx.listener(move |this, _, _, cx| {
                                     this.selected_disk = index;
-                                    this.active_page = MonitorPage::Storage;
+                                    this.set_active_page(MonitorPage::Storage);
                                     cx.notify();
                                 }),
                                 cx,
@@ -206,7 +206,7 @@ impl MonitorWindow {
                                             && self.selected_network == index,
                                         cx.listener(move |this, _, _, cx| {
                                             this.selected_network = index;
-                                            this.active_page = MonitorPage::Network;
+                                            this.set_active_page(MonitorPage::Network);
                                             cx.notify();
                                         }),
                                         cx,
@@ -223,7 +223,7 @@ impl MonitorWindow {
                                     && self.selected_battery == index,
                                 cx.listener(move |this, _, _, cx| {
                                     this.selected_battery = index;
-                                    this.active_page = MonitorPage::Battery;
+                                    this.set_active_page(MonitorPage::Battery);
                                     cx.notify();
                                 }),
                                 cx,

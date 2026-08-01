@@ -43,7 +43,7 @@ This checklist is the merge gate for the GNOME Resources parity portion of Bette
 | Toast / result banner | ✅ | Action feedback uses the shared typed support-state panel instead of inferring semantics from message text. |
 | Settings row / switch | ✅ | Reusable preference rows and switches exist. |
 | Runtime language selector | 🟨 | Shared `system`, `en-US`, and `zh-TW` locale state is persisted and switches shell/navigation copy immediately. Full page catalogs and pseudo-long mode remain incomplete. |
-| Accessible chart summary | ⬜ | Text summaries and table alternatives are missing. |
+| Accessible chart summary | ✅ | Every shared chart card presents current, average, minimum, maximum, and sample-count text alongside the visual graph. |
 | Keyboard focus model | 🟨 | Native controls are focusable. Complete table cell navigation, predictable focus order, shortcuts, and dialog focus trapping are missing. |
 | Authenticated hardware-information prompt | ⬜ | Required for DMI memory details when sysfs is insufficient. |
 
@@ -58,7 +58,7 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | User-facing device detail | 🟨 | Model/interface detail exists where exposed. Icons and some stable identifiers remain incomplete. |
 | Selected device title/model | 🟨 | Page title exists; device-specific secondary title is incomplete. |
 | Adaptive narrow layout | ✅ | Uses the 980 logical px breakpoint, replaces the sidebar with a compact page rail, and reacts directly to the current viewport size. |
-| Restore last selected page | ⬜ | Settings model does not yet persist page/device selection. |
+| Restore last selected page | 🟨 | The selected page is persisted and restored. Per-device selection and window geometry remain missing. |
 | Restore window size/maximized state | ⬜ | Not persisted. |
 | Pause graphical updates when hidden | ⬜ | Manual graph pause exists; visibility-driven throttling is missing. |
 | Collection independent from rendering | 🟨 | Manual graph pause preserves collection. Long-running service ownership remains outside this PR. |
@@ -225,7 +225,7 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | Light/dark themes | 🧪 | Uses theme tokens; real-session review pending. |
 | 100/125/150% scaling | 🧪 | Not validated. |
 | Keyboard-only operation | 🟨 | Basic controls work; full flows and shortcuts incomplete. |
-| Accessible chart summaries | ⬜ | Missing. |
+| Accessible chart summaries | ✅ | Shared chart cards expose localized current, average, minimum, maximum, and sample-count summaries. |
 | Accessible table alternatives | 🟨 | Table semantics depend on GPUI component; audit and explicit labels missing. |
 | No color-only meaning | 🟨 | Text values accompany most colors; chart-series encoding needs review. |
 | Unknown/unsupported/stale/denied/zero distinct | 🟨 | Support-state direction exists; dedicated state components and action-level stale handling incomplete. |

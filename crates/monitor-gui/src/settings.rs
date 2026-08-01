@@ -235,6 +235,7 @@ impl Default for AppColumnSettings {
 #[derive(Clone, Debug)]
 pub struct MonitorSettings {
     pub locale: Locale,
+    pub last_page: String,
     pub unit_base: UnitBase,
     pub temperature_unit: TemperatureUnit,
     pub refresh_speed: RefreshSpeed,
@@ -257,6 +258,7 @@ impl Default for MonitorSettings {
     fn default() -> Self {
         Self {
             locale: Locale::System,
+            last_page: "overview".to_string(),
             unit_base: UnitBase::Binary,
             temperature_unit: TemperatureUnit::Celsius,
             refresh_speed: RefreshSpeed::Normal,
@@ -334,6 +336,7 @@ impl MonitorSettings {
     fn apply(&mut self, key: &str, value: &str) {
         match key {
             "locale" => self.locale = Locale::parse(value),
+            "last-page" if !value.is_empty() => self.last_page = value.to_string(),
             "unit-base" => self.unit_base = UnitBase::parse(value),
             "temperature-unit" => self.temperature_unit = TemperatureUnit::parse(value),
             "refresh-speed" => self.refresh_speed = RefreshSpeed::parse(value),
@@ -415,6 +418,7 @@ impl MonitorSettings {
         let mut lines = Vec::new();
         lines.push("# Better Monitor settings".to_string());
         lines.push(format!("locale={}", self.locale.config_value()));
+        lines.push(format!("last-page={}", self.last_page));
         lines.push(format!("unit-base={}", self.unit_base.config_value()));
         lines.push(format!(
             "temperature-unit={}",
@@ -512,5 +516,18 @@ impl MonitorSettings {
 
         lines.push(String::new());
         lines.join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn last_page_is_serialized_and_loaded() {
+        let mut settings = MonitorSettings::default();
+        settings.apply("last-page", "network");
+        assert_eq!(settings.last_page, "network");
+        assert!(settings.to_config().contains("last-page=network"));
     }
 }
