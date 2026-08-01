@@ -3,6 +3,9 @@ id: better-files-example
 display_name: Example File Manager Replacement
 component_type: replacement
 version: 0.1.0
+summary: Example replacement file manager used to exercise the manager flows.
+icon: files
+restart: logout
 targets:
   distributions: [zorin, ubuntu]
   releases: [24.04]

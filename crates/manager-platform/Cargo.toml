@@ -1,5 +1,5 @@
 [package]
-name = "manager-core"
+name = "manager-platform"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,5 @@ license.workspace = true
 
 [dependencies]
 better-core.workspace = true
-manager-platform.workspace = true
-semver.workspace = true
 serde.workspace = true
 thiserror.workspace = true

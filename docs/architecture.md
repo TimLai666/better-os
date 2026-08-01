@@ -12,13 +12,24 @@
                     └─────────┬──────────┘
                               │ domain contracts
                     ┌─────────▼──────────┐
-                    │   manager-core     │◄──── manager-cli
+                    │   manager-core     │◄──── manager-cli / manager-gui
+                    └────┬───────────┬───┘
+                         │           │ validated plans + deterministic
+                         │           │ mock lifecycle
+      host capabilities  │           │
+                    ┌────▼───────────▼───┐
+                    │  manager-platform  │
+                    │ capability/download│
+                    │ package/privileged │
                     └─────────┬──────────┘
-                              │ planning only
+                              │ every shipped implementation is a mock
                     ┌─────────▼──────────┐
-                    │ future privileged │
-                    │ execution boundary│
+                    │ future privileged  │
+                    │ execution boundary │
                     └────────────────────┘
+
+             manager-cli / manager-gui ─────► manager-store
+                                               versioned local JSON mock state
 
                     ┌────────────────────┐
                     │    monitor-core    │◄──── monitor-gui
@@ -32,20 +43,32 @@
 ## Trust boundaries
 
 Manifest files, release metadata, collector output, and future remote data are
-untrusted. Parsing and validation happen before planning. The GUI never receives
-a privileged executor. A future privileged daemon must accept an explicit,
+untrusted. Parsing and validation happen before planning. A manifest also
+declares its own presentation and restart metadata, which is validated and
+restricted to a closed icon set before any screen uses it. The GUI never
+receives a privileged executor; the shipped executor refuses every request. A future privileged daemon must accept an explicit,
 validated transaction plan and return an execution log, health result, and
 rollback record.
 
 ## Manager transaction shape
 
 1. Resolve a component and its manifest dependencies.
-2. Verify target compatibility and artifact metadata.
-3. Produce a dry-run plan.
-4. In a future privileged boundary, execute the plan through local APT.
-5. Run health checks and record rollback information.
+2. Verify target compatibility and artifact metadata against the profile
+   `manager-platform` reports.
+3. Resolve declared artifact download and disk requirements, reject an
+   insufficient mock profile, and produce a dry-run plan that requires a
+   current state revision at approval. Missing catalog or profile data stays
+   explicitly unavailable rather than becoming a guessed estimate.
+4. Advance the approved plan through deterministic mock download, install,
+   settings, and health stages, persisting each state without host mutation.
+5. Record failure evidence and a mock restore outcome when verification fails.
+   Carry the declared replacements, enhancements, and the widest restart
+   requirement into the plan so a reviewer sees them before approving.
+6. In a future privileged boundary, execute validated operations through local
+   APT and replace the mock executor without changing the GUI or CLI contract.
 
-Only steps 1–3 exist in this scaffold.
+Only steps 1–5 exist in this scaffold. Lifecycle descriptors remain data and
+are never interpreted as commands.
 
 ## Monitor observation layers
 

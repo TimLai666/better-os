@@ -6,7 +6,7 @@ use thiserror::Error;
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ComponentId(String);
 
@@ -45,6 +45,38 @@ pub enum ComponentType {
     Diagnostic,
 }
 
+/// The presentation icon a component asks for. This is a closed set so an
+/// untrusted manifest cannot make a presentation layer load arbitrary assets,
+/// and so a missing value stays visibly generic instead of being guessed from
+/// the component ID.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ComponentIcon {
+    Manager,
+    Monitor,
+    Files,
+    Launcher,
+    Touchpad,
+    #[default]
+    Generic,
+}
+
+/// How far a session must be interrupted before a component change takes
+/// effect. A manifest that omits this stays undeclared; the manager must not
+/// invent a scope.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartScope {
+    None,
+    Application,
+    Logout,
+    Reboot,
+}
+
+/// The longest summary a component row can show without crowding out its
+/// version, state, and action at the narrowest supported window width.
+pub const MAX_SUMMARY_LENGTH: usize = 120;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ComponentManifest {
     pub schema_version: u32,
@@ -52,6 +84,15 @@ pub struct ComponentManifest {
     pub display_name: String,
     pub component_type: ComponentType,
     pub version: Version,
+    /// One line describing what the component is for.
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub icon: ComponentIcon,
+    /// Declared restart or logout requirement. `None` means the manifest does
+    /// not declare one.
+    #[serde(default)]
+    pub restart: Option<RestartScope>,
     pub targets: TargetMatrix,
     #[serde(default)]
     pub replaces: Vec<String>,
@@ -71,6 +112,8 @@ pub struct ComponentManifest {
     pub permissions: Vec<Permission>,
     #[serde(default)]
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub release_notes: Vec<String>,
 }
 
 impl ComponentManifest {
@@ -87,6 +130,14 @@ impl ComponentManifest {
         }
         if self.display_name.trim().is_empty() {
             return Err(ManifestError::MissingField("display_name"));
+        }
+        if let Some(summary) = &self.summary {
+            if summary.trim().is_empty() {
+                return Err(ManifestError::MissingField("summary"));
+            }
+            if summary.chars().count() > MAX_SUMMARY_LENGTH {
+                return Err(ManifestError::SummaryTooLong(summary.chars().count()));
+            }
         }
         if self.targets.distributions.is_empty()
             || self.targets.releases.is_empty()
@@ -138,6 +189,9 @@ impl ComponentManifest {
                     architecture: artifact.architecture.clone(),
                 });
             }
+            if artifact.download_size_bytes == Some(0) || artifact.required_disk_bytes == Some(0) {
+                return Err(ManifestError::InvalidArtifactSize);
+            }
         }
 
         for release in &self.targets.releases {
@@ -160,6 +214,9 @@ impl ComponentManifest {
         }
         if self.conflicts.iter().any(|id| id == &self.id) {
             return Err(ManifestError::SelfConflict(self.id.clone()));
+        }
+        if self.release_notes.iter().any(|note| note.trim().is_empty()) {
+            return Err(ManifestError::EmptyReleaseNote);
         }
         Ok(())
     }
@@ -185,6 +242,12 @@ pub struct Artifact {
     pub url: String,
     pub sha256: String,
     pub release_asset: String,
+    /// Declared transfer size. `None` means the catalog does not declare one.
+    #[serde(default)]
+    pub download_size_bytes: Option<u64>,
+    /// Declared installed size. `None` means the catalog does not declare one.
+    #[serde(default)]
+    pub required_disk_bytes: Option<u64>,
     #[serde(default)]
     pub signature: Option<String>,
 }
@@ -225,6 +288,12 @@ pub enum ManifestError {
     MissingField(&'static str),
     #[error("artifact URL or SHA-256 checksum is invalid")]
     InvalidArtifact,
+    #[error("declared artifact size must be greater than zero")]
+    InvalidArtifactSize,
+    #[error("release notes must not contain an empty entry")]
+    EmptyReleaseNote,
+    #[error("summary is {0} characters and exceeds the {MAX_SUMMARY_LENGTH} character limit")]
+    SummaryTooLong(usize),
     #[error("artifact variant {release}/{architecture} is not declared by targets")]
     UnsupportedArtifactVariant {
         release: String,
@@ -434,6 +503,83 @@ mod tests {
         assert!(matches!(
             ComponentManifest::parse_yaml(&input),
             Err(ManifestError::InvalidComponentId(_))
+        ));
+    }
+
+    #[test]
+    fn parses_optional_release_and_disk_metadata() {
+        let input = yaml("better-monitor", None, None).replace(
+            "    sha256:",
+            "    download_size_bytes: 1024\n    required_disk_bytes: 2048\n    sha256:",
+        ) + "release_notes:\n  - Initial mock release\n";
+        let manifest = ComponentManifest::parse_yaml(&input).unwrap();
+
+        assert_eq!(manifest.artifacts[0].download_size_bytes, Some(1024));
+        assert_eq!(manifest.artifacts[0].required_disk_bytes, Some(2048));
+        assert_eq!(
+            manifest.release_notes,
+            vec!["Initial mock release".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_zero_declared_artifact_size() {
+        let input = yaml("better-monitor", None, None)
+            .replace("    sha256:", "    download_size_bytes: 0\n    sha256:");
+        assert!(matches!(
+            ComponentManifest::parse_yaml(&input),
+            Err(ManifestError::InvalidArtifactSize)
+        ));
+    }
+
+    #[test]
+    fn defaults_presentation_and_restart_metadata_when_undeclared() {
+        let manifest = ComponentManifest::parse_yaml(&yaml("better-monitor", None, None)).unwrap();
+
+        assert_eq!(manifest.summary, None);
+        assert_eq!(manifest.icon, ComponentIcon::Generic);
+        assert_eq!(manifest.restart, None);
+    }
+
+    #[test]
+    fn parses_declared_presentation_and_restart_metadata() {
+        let input = yaml("better-monitor", None, None)
+            + "summary: Low-cost desktop observation\nicon: monitor\nrestart: logout\n";
+        let manifest = ComponentManifest::parse_yaml(&input).unwrap();
+
+        assert_eq!(
+            manifest.summary.as_deref(),
+            Some("Low-cost desktop observation")
+        );
+        assert_eq!(manifest.icon, ComponentIcon::Monitor);
+        assert_eq!(manifest.restart, Some(RestartScope::Logout));
+    }
+
+    #[test]
+    fn rejects_an_empty_summary() {
+        let input = yaml("better-monitor", None, None) + "summary: '   '\n";
+        assert!(matches!(
+            ComponentManifest::parse_yaml(&input),
+            Err(ManifestError::MissingField("summary"))
+        ));
+    }
+
+    #[test]
+    fn rejects_a_summary_longer_than_the_row_budget() {
+        let input =
+            yaml("better-monitor", None, None) + &format!("summary: '{}'\n", "n".repeat(121));
+        assert!(matches!(
+            ComponentManifest::parse_yaml(&input),
+            Err(ManifestError::SummaryTooLong(121))
+        ));
+    }
+
+    #[test]
+    fn rejects_an_unknown_icon_key() {
+        let input = yaml("better-monitor", None, None) + "icon: spreadsheet\n";
+        assert!(matches!(
+            ComponentManifest::parse_yaml(&input),
+            Err(ManifestError::Parse(_))
         ));
     }
 

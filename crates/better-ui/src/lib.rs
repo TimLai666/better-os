@@ -1,7 +1,7 @@
 //! Shared UI view models. GPUI rendering primitives are added in the GUI slice.
 
 use better_core::ComponentManifest;
-use gpui::{IntoElement, ParentElement, SharedString, div};
+use gpui::{Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, div};
 use gpui_component::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -30,6 +30,23 @@ pub fn status_card(
 /// Shared root heading primitive used by both first-party desktop applications.
 pub fn page_heading(title: impl Into<SharedString>) -> impl IntoElement {
     div().child(title.into())
+}
+
+/// Theme-aware surface primitive shared by first-party desktop applications.
+pub fn surface(
+    child: impl IntoElement,
+    border: Hsla,
+    background: Hsla,
+    radius: Pixels,
+) -> impl IntoElement {
+    div()
+        .min_w_0()
+        .p_4()
+        .rounded(radius)
+        .border_1()
+        .border_color(border)
+        .bg(background)
+        .child(child)
 }
 
 trait ComponentTypeLabel {
