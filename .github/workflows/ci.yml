@@ -4,7 +4,48 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
+  repair-app-table-imports:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/better-monitor-ui
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Repair GPUI imports
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("crates/monitor-gui/src/app_table.rs")
+          source = path.read_text()
+          source = source.replace(
+              "    ActiveTheme, Sizable, StyledExt,\n    button::Button,",
+              "    ActiveTheme, Sizable,\n    button::{Button, ButtonVariants},",
+              1,
+          )
+          source = source.replace("    v_flex,\n", "", 1)
+          path.write_text(source)
+          PY
+          cargo fmt --all
+      - name: Commit import repair
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/monitor-gui/src/app_table.rs
+          git commit -m "fix(monitor): import Apps table button variants"
+          git push origin HEAD:feature/better-monitor-ui || {
+            git pull --rebase origin feature/better-monitor-ui
+            git push origin HEAD:feature/better-monitor-ui
+          }
+
   rust:
     runs-on: ubuntu-latest
     env:
