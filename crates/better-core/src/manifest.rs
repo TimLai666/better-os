@@ -6,7 +6,7 @@ use thiserror::Error;
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ComponentId(String);
 
@@ -71,6 +71,8 @@ pub struct ComponentManifest {
     pub permissions: Vec<Permission>,
     #[serde(default)]
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub release_notes: Vec<String>,
 }
 
 impl ComponentManifest {
@@ -97,6 +99,11 @@ impl ComponentManifest {
         if self.artifact.url.trim().is_empty() || self.artifact.sha256.len() != 64 {
             return Err(ManifestError::InvalidArtifact);
         }
+        if self.artifact.download_size_bytes == Some(0)
+            || self.artifact.required_disk_bytes == Some(0)
+        {
+            return Err(ManifestError::InvalidArtifactSize);
+        }
         if self.lifecycle.install.trim().is_empty()
             || self.lifecycle.enable.trim().is_empty()
             || self.lifecycle.disable.trim().is_empty()
@@ -107,6 +114,9 @@ impl ComponentManifest {
         }
         if self.conflicts.iter().any(|id| id == &self.id) {
             return Err(ManifestError::SelfConflict(self.id.clone()));
+        }
+        if self.release_notes.iter().any(|note| note.trim().is_empty()) {
+            return Err(ManifestError::EmptyReleaseNote);
         }
         Ok(())
     }
@@ -129,6 +139,10 @@ pub struct Dependency {
 pub struct Artifact {
     pub url: String,
     pub sha256: String,
+    #[serde(default)]
+    pub download_size_bytes: Option<u64>,
+    #[serde(default)]
+    pub required_disk_bytes: Option<u64>,
     #[serde(default)]
     pub release_asset: Option<String>,
     #[serde(default)]
@@ -171,6 +185,10 @@ pub enum ManifestError {
     MissingField(&'static str),
     #[error("artifact URL or SHA-256 checksum is invalid")]
     InvalidArtifact,
+    #[error("declared artifact size must be greater than zero")]
+    InvalidArtifactSize,
+    #[error("release notes must not contain an empty entry")]
+    EmptyReleaseNote,
     #[error("component {0} conflicts with itself")]
     SelfConflict(ComponentId),
     #[error("duplicate component id: {0}")]
@@ -310,6 +328,32 @@ mod tests {
         assert!(matches!(
             ComponentManifest::parse_yaml(&input),
             Err(ManifestError::InvalidComponentId(_))
+        ));
+    }
+
+    #[test]
+    fn parses_optional_release_and_disk_metadata() {
+        let input = yaml("better-monitor", None, None).replace(
+            "  sha256:",
+            "  download_size_bytes: 1024\n  required_disk_bytes: 2048\n  sha256:",
+        ) + "release_notes:\n  - Initial mock release\n";
+        let manifest = ComponentManifest::parse_yaml(&input).unwrap();
+
+        assert_eq!(manifest.artifact.download_size_bytes, Some(1024));
+        assert_eq!(manifest.artifact.required_disk_bytes, Some(2048));
+        assert_eq!(
+            manifest.release_notes,
+            vec!["Initial mock release".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_zero_declared_artifact_size() {
+        let input = yaml("better-monitor", None, None)
+            .replace("  sha256:", "  download_size_bytes: 0\n  sha256:");
+        assert!(matches!(
+            ComponentManifest::parse_yaml(&input),
+            Err(ManifestError::InvalidArtifactSize)
         ));
     }
 

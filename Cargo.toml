@@ -4,6 +4,7 @@ members = [
     "crates/better-core",
     "crates/better-ui",
     "crates/manager-core",
+    "crates/manager-store",
     "crates/manager-cli",
     "crates/manager-gui",
     "crates/monitor-core",
@@ -20,6 +21,7 @@ authors = ["Better OS contributors"]
 better-core = { path = "crates/better-core" }
 better-ui = { path = "crates/better-ui" }
 manager-core = { path = "crates/manager-core" }
+manager-store = { path = "crates/manager-store" }
 monitor-core = { path = "crates/monitor-core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

@@ -13,6 +13,7 @@ bench = false
 [dependencies]
 better-ui.workspace = true
 manager-core.workspace = true
+manager-store.workspace = true
 better-core.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true

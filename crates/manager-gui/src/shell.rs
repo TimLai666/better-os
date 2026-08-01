@@ -36,6 +36,9 @@ impl ManagerApp {
 
     pub(crate) fn sidebar(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale);
+        let profile = self.manager.profile();
+        let profile_label = format!("{} {}", profile.distribution, profile.release);
+        let architecture = profile.architecture.clone();
         let menu = SidebarMenu::new().children([
             self.nav_item(
                 c.overview,
@@ -101,14 +104,12 @@ impl ManagerApp {
                             row.child(
                                 v_flex()
                                     .min_w_0()
-                                    .child(
-                                        div().text_sm().font_semibold().child(c.distribution_value),
-                                    )
+                                    .child(div().text_sm().font_semibold().child(profile_label))
                                     .child(
                                         div()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
-                                            .child(c.runtime_details),
+                                            .child(architecture),
                                     ),
                             )
                         }),

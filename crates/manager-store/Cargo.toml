@@ -1,11 +1,13 @@
 [package]
-name = "manager-cli"
+name = "manager-store"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-better-core.workspace = true
-clap.workspace = true
 manager-core.workspace = true
-manager-store.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+better-core.workspace = true

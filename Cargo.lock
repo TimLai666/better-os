@@ -3754,6 +3754,7 @@ dependencies = [
  "better-core",
  "clap",
  "manager-core",
+ "manager-store",
 ]
 
 [[package]]
@@ -3761,6 +3762,8 @@ name = "manager-core"
 version = "0.1.0"
 dependencies = [
  "better-core",
+ "semver",
+ "serde",
  "thiserror 2.0.19",
 ]
 
@@ -3775,6 +3778,17 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "manager-core",
+ "manager-store",
+]
+
+[[package]]
+name = "manager-store"
+version = "0.1.0"
+dependencies = [
+ "better-core",
+ "manager-core",
+ "serde_json",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

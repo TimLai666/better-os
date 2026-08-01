@@ -60,3 +60,5 @@ GUI or dependency compiles when the relevant command was not executed.
 - Review the license implications of every copyleft dependency before release.
 - Add real Linux collectors and benchmark runners only after the mock contracts
   are stable.
+- Align the declared Rust 1.85 baseline with the lockfile dependency MSRV
+  before treating Rust 1.85 as a supported build target.

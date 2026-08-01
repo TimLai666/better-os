@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Better Manager UI integration on the shared planning scaffold
+Better Manager Issue #8 handed off for branch review
 
 ## Stage Objective
 
@@ -13,7 +13,7 @@ Issue #8 Better Manager UI verifiable before adding real system integration.
 
 - Shared manifest schema and validation
 - Manager dry-run planning and CLI
-- Better Manager GPUI shell, localization, review flow, and in-memory planning
+- Better Manager GPUI shell, shared mock lifecycle, persistence, and acceptance coverage
 - Monitor observation contracts
 - Release packaging contract and clean-install verification plan
 
@@ -27,25 +27,31 @@ Issue #8 Better Manager UI verifiable before adding real system integration.
 | M4 | docs and CI | agent | done | workflow file and docs review |
 | M5 | release packaging contract | agent | done | `docs/release-packaging.md` and ticket 06 acceptance criteria |
 | M6 | target-compatible `.deb` packaging | agent | done | GitHub Actions Ubuntu 22.04/24.04 amd64 and native arm64 matrix build, dependency metadata check, checksum verification |
-| M7 | Better Manager GPUI UI integration | agent | done | workspace format/check/test/clippy, manager-gui plan tests, and host launch smoke |
+| M7 | Better Manager Issue #8 functional acceptance | agent | done | Chefer AppCipe passed fmt, workspace check/test, clippy, CLI lifecycle smoke, and GUI headless smoke |
 
 ## Current Blockers
 
-No active blocker remains for the GUI smoke test or the target-compatible
-Ubuntu package matrix. Ticket 06 still needs release assets, manifest checksum
-verification, and an approved maintainer contact before publishing. The current
-matrix produces four same-named package assets, while each manifest has only one
-artifact checksum, so the target-specific asset naming and manifest mapping must
-be decided before a release can be created.
+Issue #8 has no active implementation blocker. Ticket 06 still needs public
+target-specific release assets, manifest checksum verification, and the
+approved maintainer contact before publishing. The current matrix produces four
+same-named package assets while each manifest has one artifact checksum, so the
+asset naming and manifest mapping must be decided before a release can be
+created.
+
+The declared Rust 1.85 baseline is also incompatible with the current lockfile:
+an isolated Rust 1.85 build stops before compilation because dependencies now
+require up to Rust 1.92. The GitHub workflow uses stable Rust. The Issue #8
+Chefer AppCipe passed with Rust 1.97. The supported toolchain policy still
+needs alignment.
 
 ## Next Verifiable Output
 
-After the asset naming, manifest mapping, and maintainer contact are approved,
-create public release assets and verify their manifest checksums.
+Publish uniquely named target-specific release assets, then derive and verify
+the manifest checksums from those public assets.
 
 ## Next Ticket
 
-06 — 使用者可以在乾淨的支援系統安裝並啟動 release package
+06 — Release packaging
 
 ## Decision Log
 
@@ -78,14 +84,12 @@ create public release assets and verify their manifest checksums.
   per Ubuntu release and architecture
   timestamp: 2026-07-31
   impacted_ticket_ids: [06]
-- decision: integrate the supplied Better Manager UI into `manager-gui` while
-  keeping Update All and component changes on the shared `manager-core` dry-run
-  API
-  rationale: Issue #8 requires the GPUI experience and a common planning path;
-  real privileged execution and persistent manager storage are still outside
-  the current scaffold boundary
+- decision: persist Better Manager's mock lifecycle in versioned local JSON and
+  show disk or release metadata only when its catalog declares it
+  rationale: the user chose JSON over a database; explicit unavailable values
+  preserve truthful review screens without inventing release data
   timestamp: 2026-07-31
-  impacted_ticket_ids: []
+  impacted_ticket_ids: [07]
 
 ## Source Links
 
@@ -122,11 +126,12 @@ asset naming and manifest mapping decision is also open.
 PR #9 is merged into `main` at `fb3520f`, and the feature branch has been
 deleted from both the local checkout and GitHub.
 
-Issue #8 UI integration moved the supplied GPUI screens into `crates/manager-gui`,
-added runtime `en-US`/`zh-TW`/`system` copy, and kept the install flow as an
-observable in-memory preview. Verified with `cargo fmt --all -- --check`,
-`cargo check --workspace`, `cargo test --workspace`, workspace clippy with
-`-D warnings`, and an 8-second host Wayland launch smoke. No privileged command,
-real package mutation, or persistent `manager-store` was added.
+Issue #8 now keeps the CLI and GPUI on the shared `manager-core` lifecycle API,
+persists mock state through `manager-store`, and localizes the GUI at runtime.
+The final disposable Chefer AppCipe passed `cargo fmt --all -- --check`,
+`cargo check --workspace --offline --quiet`, `cargo test --workspace --offline
+--quiet`, workspace clippy with `-D warnings`, CLI lifecycle smoke, and an
+8-second `ZED_HEADLESS=1` GUI launch smoke. No privileged command or real
+package mutation ran.
 The temporary `better-manager-gpui-complete/` directory was moved to the
 desktop trash after the destination file set was verified.

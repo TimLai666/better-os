@@ -11,7 +11,11 @@ Required groups:
 - lifecycle: install, enable, disable, remove, and rollback descriptors
 
 Optional groups describe replacements, enhancements, dependencies, conflicts,
-health checks, benchmarks, permissions, and touched paths.
+health checks, benchmarks, permissions, touched paths, and release notes.
+An artifact may also declare `download_size_bytes` and `required_disk_bytes`.
+Both sizes must be positive when present. The manager can only preflight disk
+space when the catalog declares the required size and the platform profile
+provides available space; otherwise it reports that the value is unavailable.
 
 The parser rejects unknown schema versions, empty required fields, malformed
 component IDs, invalid checksums, self-conflicts, missing dependencies, and

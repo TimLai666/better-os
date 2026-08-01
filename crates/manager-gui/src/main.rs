@@ -1,6 +1,7 @@
 mod app;
 mod components;
 mod i18n;
+mod layout;
 mod model;
 mod pages_flow;
 mod pages_main;
@@ -14,6 +15,7 @@ use app::ManagerApp;
 use gpui::*;
 use gpui_component::*;
 use gpui_component_assets::Assets;
+use layout::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 
 fn main() {
     let app = gpui_platform::application().with_assets(Assets);
@@ -25,6 +27,7 @@ fn main() {
 
         let window_options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1280.0), px(820.0)), cx)),
+            window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
             ..Default::default()
         };
 

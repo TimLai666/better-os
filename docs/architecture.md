@@ -12,13 +12,16 @@
                     └─────────┬──────────┘
                               │ domain contracts
                     ┌─────────▼──────────┐
-                    │   manager-core     │◄──── manager-cli
+                    │   manager-core     │◄──── manager-cli / manager-gui
                     └─────────┬──────────┘
-                              │ planning only
+                              │ validated plans + deterministic mock lifecycle
                     ┌─────────▼──────────┐
                     │ future privileged │
                     │ execution boundary│
                     └────────────────────┘
+
+             manager-cli / manager-gui ─────► manager-store
+                                               versioned local JSON mock state
 
                     ┌────────────────────┐
                     │    monitor-core    │◄──── monitor-gui
@@ -41,11 +44,18 @@ rollback record.
 
 1. Resolve a component and its manifest dependencies.
 2. Verify target compatibility and artifact metadata.
-3. Produce a dry-run plan.
-4. In a future privileged boundary, execute the plan through local APT.
-5. Run health checks and record rollback information.
+3. Resolve declared artifact download and disk requirements, reject an
+   insufficient mock profile, and produce a dry-run plan that requires a
+   current state revision at approval. Missing catalog or profile data stays
+   explicitly unavailable rather than becoming a guessed estimate.
+4. Advance the approved plan through deterministic mock download, install,
+   settings, and health stages, persisting each state without host mutation.
+5. Record failure evidence and a mock restore outcome when verification fails.
+6. In a future privileged boundary, execute validated operations through local
+   APT and replace the mock executor without changing the GUI or CLI contract.
 
-Only steps 1–3 exist in this scaffold.
+Only steps 1–5 exist in this scaffold. Lifecycle descriptors remain data and
+are never interpreted as commands.
 
 ## Monitor observation layers
 

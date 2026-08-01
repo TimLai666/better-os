@@ -1,8 +1,7 @@
-use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{ActiveTheme, scroll::ScrollableElement, *};
 
-use crate::{app::ManagerApp, model::Page};
+use crate::{app::ManagerApp, layout::COMPACT_VIEWPORT_WIDTH, model::Page};
 
 impl ManagerApp {
     fn render_page(
@@ -26,14 +25,13 @@ impl ManagerApp {
             Page::DoctorResults => self.doctor_results_page(compact, cx),
             Page::Activity => self.activity_page(compact, cx),
             Page::Settings => self.settings_page(compact, window, cx),
-            Page::EdgeStates => self.edge_states_page(compact, cx),
         }
     }
 }
 
 impl Render for ManagerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let compact = window.viewport_size().width < px(1040.0);
+        let compact = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
 
         if self.page == Page::FirstRun {
             return div()
@@ -66,11 +64,6 @@ impl Render for ManagerApp {
                     ),
             );
 
-        div()
-            .relative()
-            .size_full()
-            .child(shell)
-            .when_some(self.modal_overlay(cx), |root, modal| root.child(modal))
-            .into_any_element()
+        div().relative().size_full().child(shell).into_any_element()
     }
 }

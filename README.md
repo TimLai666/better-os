@@ -7,28 +7,32 @@ at a time. It is not a Linux distribution fork.
 ## Current scaffold
 
 - `better-core` validates versioned component manifests.
-- `manager-core` creates non-privileged dry-run plans.
-- `manager-cli` lists, validates, reports status, and prints plans for example
-  components.
+- `manager-core` creates deterministic non-privileged plans and mock lifecycle
+  transitions for install, update, enable, disable, verify, and restore.
+- `manager-store` persists only versioned local mock state with atomic writes,
+  stale-writer protection, corrupt-state backup, and restart resume.
+- `manager-cli` and `manager-gui` share that core API and never execute
+  manifest lifecycle strings, APT, sudo, or shell commands.
 - `monitor-core` defines samples, incidents, inventory, and redacted exports.
 - `better-ui`, `manager-gui`, and `monitor-gui` provide the GPUI application
   boundary and mock screens.
 
 ## Development
 
-```bash
-RUST_FONTCONFIG_DLOPEN=1 PATH="$HOME/.cargo/bin:$PATH" cargo fmt --all -- --check
-RUST_FONTCONFIG_DLOPEN=1 PATH="$HOME/.cargo/bin:$PATH" cargo test --workspace
-RUST_FONTCONFIG_DLOPEN=1 PATH="$HOME/.cargo/bin:$PATH" cargo clippy --workspace --all-targets --all-features -- -D warnings
-```
+Run unreleased builds only in a disposable Chefer AppCipe, as required by
+[`AGENTS.md`](AGENTS.md). The isolated verification command runs formatting,
+workspace checks, tests, clippy, and CLI lifecycle smoke coverage without
+installing a build or touching package state on the host.
 
-Run the CLI from the repository root:
+Inside that disposable environment, use a scoped state path:
 
 ```bash
-PATH="$HOME/.cargo/bin:$PATH" cargo run -p manager-cli -- validate
-PATH="$HOME/.cargo/bin:$PATH" cargo run -p manager-cli -- plan better-monitor
+cargo run -p manager-cli -- --state-path /tmp/better-manager-state.json validate
+cargo run -p manager-cli -- --state-path /tmp/better-manager-state.json run better-monitor install
+cargo run -p manager-cli -- --state-path /tmp/better-manager-state.json status better-monitor
 ```
 
 Read [`AGENTS.md`](AGENTS.md) before changing the project. The architecture
 and current handoff state live in [`ENG.md`](ENG.md) and
-[`delivery-status.md`](delivery-status.md).
+[`delivery-status.md`](delivery-status.md). The manager screen behavior is
+defined in [`docs/manager-ux-logic.md`](docs/manager-ux-logic.md).
