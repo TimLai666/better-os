@@ -33,6 +33,10 @@ state and is honest that it is doing so; the platform crate refuses instead.
 
 ## Deferred
 
-The privileged daemon IPC protocol, its authentication flow, the real APT
-backend, and real artifact downloading remain undecided. They are the
-implementations these traits exist to receive.
+The real APT backend and real artifact downloading remain unimplemented. They
+are the implementations these traits exist to receive.
+
+The privileged daemon IPC protocol and its authentication flow are no longer
+deferred: ADR 0007 chose a D-Bus system service authorized by polkit, and the
+client half of that protocol lives in this crate behind a `dbus-client`
+feature.

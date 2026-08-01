@@ -4,6 +4,7 @@ members = [
     "crates/better-core",
     "crates/better-ui",
     "crates/manager-core",
+    "crates/manager-ipc",
     "crates/manager-platform",
     "crates/manager-store",
     "crates/manager-cli",
@@ -23,6 +24,7 @@ license = "GPL-3.0-or-later"
 better-core = { path = "crates/better-core" }
 better-ui = { path = "crates/better-ui" }
 manager-core = { path = "crates/manager-core" }
+manager-ipc = { path = "crates/manager-ipc" }
 manager-platform = { path = "crates/manager-platform" }
 manager-store = { path = "crates/manager-store" }
 monitor-core = { path = "crates/monitor-core" }
