@@ -422,14 +422,14 @@ fn open_app_information_dialog(
         dialog
             .title(title.clone())
             .child(description.clone())
-            .footer(move |_, _, _, _| {
-                vec![
+            .footer(
+                h_flex().justify_end().gap_2().child(
                     Button::new(("app-info-close", row_ix))
                         .outline()
                         .label("Close")
                         .on_click(|_, window, cx| window.close_dialog(cx)),
-                ]
-            })
+                ),
+            )
     });
 }
 
@@ -447,35 +447,38 @@ struct AppSignalRequest {
 
 fn open_app_signal_dialog(request: AppSignalRequest, window: &mut Window, cx: &mut App) {
     window.open_dialog(cx, move |dialog, _, _| {
-        let confirm_request = request.clone();
+        let action_request = request.clone();
+        let click_request = action_request.clone();
+        let confirm = Button::new(("app-action-confirm", action_request.row_ix))
+            .label(action_request.confirm_label);
+        let confirm = if action_request.destructive {
+            confirm.warning()
+        } else {
+            confirm
+        };
         dialog
             .title(request.title.clone())
             .child(request.description)
-            .footer(move |_, _, _, _| {
-                let action_request = confirm_request.clone();
-                let confirm = Button::new(("app-action-confirm", action_request.row_ix))
-                    .label(action_request.confirm_label);
-                let confirm = if action_request.destructive {
-                    confirm.warning()
-                } else {
-                    confirm
-                };
-                vec![
-                    Button::new(("app-action-cancel", action_request.row_ix))
-                        .outline()
-                        .label("Cancel")
-                        .on_click(|_, window, cx| window.close_dialog(cx)),
-                    confirm.on_click(move |_, window, cx| {
+            .footer(
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new(("app-action-cancel", action_request.row_ix))
+                            .outline()
+                            .label("Cancel")
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(confirm.on_click(move |_, window, cx| {
                         send_app_signal(
-                            action_request.monitor.clone(),
-                            action_request.pids.clone(),
-                            action_request.signal,
+                            click_request.monitor.clone(),
+                            click_request.pids.clone(),
+                            click_request.signal,
                             cx,
                         );
                         window.close_dialog(cx);
-                    }),
-                ]
-            })
+                    })),
+            )
     });
 }
 
