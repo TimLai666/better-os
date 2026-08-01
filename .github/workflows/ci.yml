@@ -5,6 +5,23 @@ on:
   pull_request:
 
 jobs:
+  source-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: better-monitor-current-source
+          include-hidden-files: true
+          path: |
+            Cargo.toml
+            Cargo.lock
+            crates/better-ui
+            crates/monitor-core
+            crates/monitor-gui
+            docs/better-monitor-resources-v1.10.2-parity.md
+            delivery-status.md
+
   rust:
     runs-on: ubuntu-latest
     env:
