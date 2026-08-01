@@ -1,0 +1,23 @@
+# Chefer recipe for the privileged-service end-to-end check.
+#
+# Run it from the repository root, after building the packages into dist/e2e:
+#
+#   packaging/build-deb.sh --output-dir dist/e2e --target ubuntu-24.04
+#   chefer run packaging/e2e/appcipe.yml
+#
+# Everything happens inside a disposable container. Nothing here should ever be
+# pointed at a machine anyone cares about.
+version: "0.1"
+
+name: BetterOsDaemonE2E
+app_version: "0.1.0"
+
+services:
+  e2e:
+    image:
+      source: dockerfile
+      # Paths are resolved relative to this recipe.
+      file: ./Dockerfile
+      # The build context is the repository root, so the image can copy both
+      # the freshly built packages and the test script.
+      context: ../..
