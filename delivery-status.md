@@ -37,7 +37,9 @@ boundary that keeps privileged mutation out of the GUI and CLI.
 | M10 | Issue #8 remaining gap closure | agent | done | manifest presentation and restart metadata, `manager-platform`, manifest-driven GUI, dark-first appearance, ADRs 0004-0006 |
 | M11 | privileged IPC decision and wire contract | agent | done | ADR 0007, `manager-ipc` with 24 rejection and round-trip tests, `cargo fmt`/check/test/clippy `-D warnings` |
 | M12 | core execution seam and state schema v2 | agent | done | lifecycle suite green through the mock driver, v1 state migration, real-plan validation |
-| M13 | real install, update, remove, and rollback | agent | todo | tickets 11-14: Chefer container install/update/rollback against real dpkg state |
+| M13 | privileged daemon | agent | done | 39 unit tests against fake APT/host/health, 6 private session-bus tests, daemon `.deb` with unit, polkit policy, and bus config |
+| M14 | real download, dpkg reconciliation, and D-Bus client | agent | done | checksum-named artifact cache, drift detection blocking planning, CLI `--execution real` reporting `daemon.unavailable` |
+| M15 | GUI real execution, cutover, and container e2e | agent | todo | tickets 13-14 |
 
 ## Current Blockers
 
@@ -64,15 +66,14 @@ policy still needs alignment.
 
 ## Next Verifiable Output
 
-Ticket 11 builds the privileged daemon: a zbus service that revalidates a plan
-independently, stages artifacts over a file descriptor, drives APT, health
-checks what it applied, and rolls back on failure. It is testable on CI without
-privileges through a private session bus, a fake authorizer, and a fake APT
-driver.
+Ticket 13 moves the GUI onto the real path: the transaction runs on a
+background thread, progress reaches the screen as it happens, cancelling is
+offered only while it can still be honored, and the new failure keys get copy
+in both locales.
 
 ## Next Ticket
 
-11-privileged-daemon — blocked by nothing
+13-gui-real-execution — blocked by nothing
 
 ## Decision Log
 

@@ -4,7 +4,7 @@
 **User Story:** 元件的 .deb 會真的從發佈頁下載並驗證雜湊，而且管理器知道主機上
 實際裝了什麼版本。
 **Blocked by:** 10-core-execution-seam, 11-privileged-daemon
-**Status:** todo
+**Status:** done
 
 ## What it delivers
 
@@ -22,14 +22,15 @@
 
 ## Acceptance criteria
 
-- [ ] 雜湊不符的下載會刪除暫存檔並回報 `download.checksum_mismatch`。
-- [ ] 中斷的下載可續傳，且續傳後仍以完整雜湊驗證。
-- [ ] daemon 不可用時回報 `daemon.unavailable`，不會靜默退回 mock。
-- [ ] 主機漂移（紀錄有、dpkg 沒有／版本不同）會被偵測並阻擋規劃，
+- [x] 雜湊不符的下載會刪除暫存檔並回報 `download.checksum_mismatch`。
+- [x] 中斷的下載可續傳，且續傳後仍以完整雜湊驗證。
+- [x] daemon 不可用時回報 `daemon.unavailable`，不會靜默退回 mock。
+- [x] 主機漂移（紀錄有、dpkg 沒有／版本不同）會被偵測並阻擋規劃，
       且不改寫 `installed_version`。
-- [ ] deb 版本的 epoch 與 revision 後綴在比較前被正確剝離，有測試表。
-- [ ] 下載階段可取消；取消後還原完整開始前快照。
-- [ ] `cargo fmt`、workspace check/test、clippy `-D warnings` 全數通過。
+- [x] deb 版本的 epoch 與 revision 後綴在比較前被正確剝離，有測試表。
+- [x] 下載階段可取消；取消後還原完整開始前快照，安裝開始後不再提供取消。
+- [x] real 模式連不上 daemon 時，狀態檔不會留下「已開始」的交易。
+- [x] `cargo fmt`、workspace check/test、clippy `-D warnings` 全數通過。
 
 ## Verification
 

@@ -5,7 +5,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# The client half of the privileged protocol. Off by default so nothing links
+# a D-Bus stack unless it is actually going to talk to the daemon.
+dbus-client = ["dep:zbus"]
+
 [dependencies]
 better-core.workspace = true
+manager-ipc.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
 thiserror.workspace = true
+ureq = "3"
+zbus = { version = "5", optional = true }
