@@ -1189,31 +1189,35 @@ Command: {}",
                     .flex_wrap()
                     .gap_4()
                     .child(self.device_chart_card(
-                        "Charge history",
-                        option_percent(battery.charge_percent),
-                        "Recent charge percentage for this battery".to_string(),
+                        DeviceChartHeader {
+                            title: "Charge history",
+                            value: option_percent(battery.charge_percent),
+                            detail: "Recent charge percentage for this battery".to_string(),
+                            color: cx.theme().green,
+                        },
                         history_data.clone(),
                         |point| point.primary,
-                        cx.theme().green,
                         cx,
                     ))
-                    .child(
-                        self.device_chart_card(
-                            "Power history",
-                            battery
-                                .power_watts
-                                .map_or_else(|| "N/A".to_string(), |value| format!("{value:.2} W")),
-                            if highest_power > 0.0 {
+                    .child(self.device_chart_card(
+                        DeviceChartHeader {
+                            title: "Power history",
+                            value:
+                                battery.power_watts.map_or_else(
+                                    || "N/A".to_string(),
+                                    |value| format!("{value:.2} W"),
+                                ),
+                            detail: if highest_power > 0.0 {
                                 format!("Highest {highest_power:.2} W since Better Monitor started")
                             } else {
                                 "No verified power reading yet".to_string()
                             },
-                            history_data,
-                            |point| point.secondary,
-                            cx.theme().blue,
-                            cx,
-                        ),
-                    ),
+                            color: cx.theme().blue,
+                        },
+                        history_data,
+                        |point| point.secondary,
+                        cx,
+                    )),
             )
             .child(
                 self.section_card(
