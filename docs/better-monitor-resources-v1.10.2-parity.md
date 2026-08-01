@@ -220,8 +220,8 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | `en-US` | 🟨 | Shell, navigation, selected-page headings, and language settings are locale-driven; remaining page copy is still being cataloged. |
 | `zh-TW` | 🟨 | Shell, navigation, selected-page headings, and language settings have Traditional Chinese copy; remaining page copy is incomplete. |
 | System language | ✅ | Shared Better OS locale resolves `LANG` to `zh-TW` or `en-US`. |
-| Runtime switching | 🟨 | Monitor switches and persists locale without restart; search placeholders, table headers, dialogs, and full page content still need catalog coverage. |
-| Pseudo-long locale tests | ⬜ | Missing. |
+| Runtime switching | 🟨 | Shell, Apps table headers/actions/dialogs, and the shared search placeholder switch immediately; Processes and remaining page copy still need catalog coverage. |
+| Pseudo-long locale tests | 🟨 | The scoped Apps catalog is expanded to at least 200% in tests; Processes and remaining pages still need catalog coverage. |
 | Light/dark themes | 🧪 | Uses theme tokens; real-session review pending. |
 | 100/125/150% scaling | 🧪 | Not validated. |
 | Keyboard-only operation | 🟨 | Basic controls work; full flows and shortcuts incomplete. |

@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 
+use better_ui::Locale;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, Sizable, WindowExt,
@@ -12,6 +13,10 @@ use sysinfo::{Pid, Signal};
 
 use crate::{
     app::MonitorWindow,
+    i18n::{
+        CopyKey, app_information_title, app_process_count, end_application_title,
+        force_stop_application_title, text,
+    },
     linux::{self, AppGroup},
     settings::{MonitorSettings, UnitBase},
     sort_preferences,
@@ -75,23 +80,26 @@ impl AppColumn {
         })
     }
 
-    const fn title(self) -> &'static str {
-        match self {
-            Self::Name => "App",
-            Self::Memory => "Memory",
-            Self::Cpu => "CPU %",
-            Self::ReadSpeed => "Read/s",
-            Self::ReadTotal => "Read total",
-            Self::WriteSpeed => "Write/s",
-            Self::WriteTotal => "Write total",
-            Self::Gpu => "GPU %",
-            Self::GpuMemory => "GPU memory",
-            Self::Encoder => "Encoder %",
-            Self::Decoder => "Decoder %",
-            Self::Swap => "Swap",
-            Self::CombinedMemory => "Memory + swap",
-            Self::Actions => "Actions",
-        }
+    fn title(self, locale: Locale) -> &'static str {
+        text(
+            locale,
+            match self {
+                Self::Name => CopyKey::App,
+                Self::Memory => CopyKey::Memory,
+                Self::Cpu => CopyKey::CpuPercent,
+                Self::ReadSpeed => CopyKey::ReadPerSecond,
+                Self::ReadTotal => CopyKey::ReadTotal,
+                Self::WriteSpeed => CopyKey::WritePerSecond,
+                Self::WriteTotal => CopyKey::WriteTotal,
+                Self::Gpu => CopyKey::GpuPercent,
+                Self::GpuMemory => CopyKey::GpuMemory,
+                Self::Encoder => CopyKey::EncoderPercent,
+                Self::Decoder => CopyKey::DecoderPercent,
+                Self::Swap => CopyKey::Swap,
+                Self::CombinedMemory => CopyKey::CombinedMemory,
+                Self::Actions => CopyKey::Actions,
+            },
+        )
     }
 
     const fn width(self) -> f32 {
@@ -209,7 +217,8 @@ impl AppTableDelegate {
         self.columns = kinds
             .iter()
             .map(|kind| {
-                let column = Column::new(kind.id(), kind.title()).width(kind.width());
+                let column =
+                    Column::new(kind.id(), kind.title(self.settings.locale)).width(kind.width());
                 let column = if kind.sortable() {
                     column.sortable()
                 } else {
@@ -292,9 +301,11 @@ impl AppTableDelegate {
 
     fn cell_value(&self, group: &AppGroup, column: AppColumn) -> String {
         match column {
-            AppColumn::Name => {
-                format!("{} · {} processes", group.display_name, group.process_count)
-            }
+            AppColumn::Name => format!(
+                "{} · {}",
+                group.display_name,
+                app_process_count(self.settings.locale, group.process_count)
+            ),
             AppColumn::Memory => linux::format_bytes(group.memory, self.settings.unit_base),
             AppColumn::Cpu => format!("{:.1}%", group.cpu_usage),
             AppColumn::ReadSpeed => {
@@ -308,14 +319,16 @@ impl AppTableDelegate {
                 linux::format_bytes(group.write_total, self.settings.unit_base)
             }
             AppColumn::Gpu | AppColumn::GpuMemory | AppColumn::Encoder | AppColumn::Decoder => {
-                "N/A".to_string()
+                text(self.settings.locale, CopyKey::Unavailable).to_string()
             }
             AppColumn::Swap => linux::format_bytes(group.swap, self.settings.unit_base),
             AppColumn::CombinedMemory => linux::format_bytes(
                 group.memory.saturating_add(group.swap),
                 self.settings.unit_base,
             ),
-            AppColumn::Actions => "Application actions".to_string(),
+            AppColumn::Actions => {
+                text(self.settings.locale, CopyKey::ApplicationActions).to_string()
+            }
         }
     }
 
@@ -327,86 +340,103 @@ impl AppTableDelegate {
     ) -> AnyElement {
         let info_group = group.clone();
         let info_unit = self.settings.unit_base;
+        let locale = self.settings.locale;
         let term_monitor = self.monitor.clone();
         let term_group = group.clone();
         let menu_monitor = self.monitor.clone();
         let menu_group = group.clone();
 
         h_flex()
-        .items_center()
-        .gap_1()
-        .child(
-            Button::new(("app-information", row_ix))
-                .outline()
-                .small()
-                .label("Info")
-                .on_click(move |_, window, cx| {
-                    open_app_information_dialog(
-                        info_group.clone(),
-                        info_unit,
-                        row_ix,
-                        window,
-                        cx,
-                    );
-                }),
-        )
-        .child(
-            DropdownButton::new(("app-actions", row_ix))
-                .outline()
-                .small()
-                .button(
-                    Button::new(("app-end-primary", row_ix))
-                        .label("End")
-                        .on_click(move |_, window, cx| {
-                            open_app_signal_dialog(
-                                AppSignalRequest {
-                                    monitor: term_monitor.clone(),
-                                    pids: term_group.pids.clone(),
-                                    signal: Signal::Term,
-                                    title: format!("End {}?", term_group.display_name),
-                                    description: "All processes in this application group will receive a graceful termination signal.",
-                                    confirm_label: "End Application",
-                                    row_ix,
-                                    destructive: false,
-                                },
-                                window,
-                                cx,
-                            );
-                        }),
-                )
-                .dropdown_menu(move |menu, _, cx| {
-                    let _ = menu_monitor.update(cx, |monitor, _| {
-                        monitor.hold_table_refresh();
-                    });
-                    app_action_menu(
-                        menu,
-                        menu_monitor.clone(),
-                        menu_group.clone(),
-                        row_ix,
+            .items_center()
+            .gap_1()
+            .child(
+                Button::new(("app-information", row_ix))
+                    .outline()
+                    .small()
+                    .label(text(locale, CopyKey::Info))
+                    .on_click(move |_, window, cx| {
+                        open_app_information_dialog(
+                            info_group.clone(),
+                            info_unit,
+                            row_ix,
+                            window,
+                            cx,
+                        );
+                    }),
+            )
+            .child(
+                DropdownButton::new(("app-actions", row_ix))
+                    .outline()
+                    .small()
+                    .button(
+                        Button::new(("app-end-primary", row_ix))
+                            .label(text(locale, CopyKey::End))
+                            .on_click(move |_, window, cx| {
+                                open_app_signal_dialog(
+                                    AppSignalRequest {
+                                        monitor: term_monitor.clone(),
+                                        pids: term_group.pids.clone(),
+                                        signal: Signal::Term,
+                                        title: end_application_title(
+                                            locale,
+                                            &term_group.display_name,
+                                        ),
+                                        description: text(
+                                            locale,
+                                            CopyKey::GracefulApplicationDescription,
+                                        ),
+                                        confirm_label: text(locale, CopyKey::EndApplication),
+                                        row_ix,
+                                        destructive: false,
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            }),
                     )
-                }),
-        )
-        .into_any_element()
+                    .dropdown_menu(move |menu, _, cx| {
+                        let _ = menu_monitor.update(cx, |monitor, _| {
+                            monitor.hold_table_refresh();
+                        });
+                        app_action_menu(
+                            menu,
+                            menu_monitor.clone(),
+                            menu_group.clone(),
+                            row_ix,
+                            locale,
+                        )
+                    }),
+            )
+            .into_any_element()
     }
 }
 
-fn app_information(group: &AppGroup, unit_base: UnitBase) -> String {
+fn app_information(group: &AppGroup, unit_base: UnitBase, locale: Locale) -> String {
     format!(
-        "Identity: {}\nGrouped processes: {}\nGrouping evidence: {}\nPIDs: {}\nCPU: {:.1}%\nMemory: {}\nSwap: {}\nRead: {} total, {}/s\nWritten: {} total, {}/s",
+        "{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {:.1}%\n{}: {}\n{}: {}\n{}: {} total, {}/s\n{}: {} total, {}/s",
+        text(locale, CopyKey::Identity),
         group.id,
+        text(locale, CopyKey::GroupedProcesses),
         group.process_count,
+        text(locale, CopyKey::GroupingEvidence),
         group.grouping_reason,
+        text(locale, CopyKey::Pids),
         group
             .pids
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", "),
+        text(locale, CopyKey::Cpu),
         group.cpu_usage,
+        text(locale, CopyKey::Memory),
         linux::format_bytes(group.memory, unit_base),
+        text(locale, CopyKey::Swap),
         linux::format_bytes(group.swap, unit_base),
+        text(locale, CopyKey::Read),
         linux::format_bytes(group.read_total, unit_base),
         linux::format_bytes(group.read_speed, unit_base),
+        text(locale, CopyKey::Written),
         linux::format_bytes(group.write_total, unit_base),
         linux::format_bytes(group.write_speed, unit_base),
     )
@@ -415,12 +445,13 @@ fn app_information(group: &AppGroup, unit_base: UnitBase) -> String {
 fn open_app_information_dialog(
     group: AppGroup,
     unit_base: UnitBase,
+    locale: Locale,
     row_ix: usize,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let title = format!("{} Information", group.display_name);
-    let description = app_information(&group, unit_base);
+    let title = app_information_title(locale, &group.display_name);
+    let description = app_information(&group, unit_base, locale);
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
             .title(title.clone())
@@ -429,7 +460,7 @@ fn open_app_information_dialog(
                 h_flex().justify_end().gap_2().child(
                     Button::new(("app-info-close", row_ix))
                         .outline()
-                        .label("Close")
+                        .label(text(locale, CopyKey::Close))
                         .on_click(|_, window, cx| window.close_dialog(cx)),
                 ),
             )
@@ -472,7 +503,7 @@ fn open_app_signal_dialog(request: AppSignalRequest, window: &mut Window, cx: &m
                     .child(
                         Button::new(("app-action-cancel", action_request.row_ix))
                             .outline()
-                            .label("Cancel")
+                            .label(text(locale, CopyKey::Cancel))
                             .on_click(|_, window, cx| window.close_dialog(cx)),
                     )
                     .child(confirm.on_click(move |_, window, cx| {
@@ -506,6 +537,7 @@ fn app_action_menu(
     monitor: WeakEntity<MonitorWindow>,
     group: AppGroup,
     row_ix: usize,
+    locale: Locale,
 ) -> PopupMenu {
     let force_monitor = monitor.clone();
     let force_group = group.clone();
@@ -515,16 +547,17 @@ fn app_action_menu(
     let resume_pids = group.pids.clone();
 
     menu.item(
-        PopupMenuItem::new("Force stop").on_click(move |_, window, cx| {
+        PopupMenuItem::new(text(locale, CopyKey::ForceStop)).on_click(move |_, window, cx| {
             open_app_signal_dialog(
                 AppSignalRequest {
                     monitor: force_monitor.clone(),
                     pids: force_group.pids.clone(),
                     signal: Signal::Kill,
-                    title: format!("Force stop {}?", force_group.display_name),
-                    description: "Every process in this application group will stop immediately without cleanup.",
-                    confirm_label: "Force stop",
+                    title: force_stop_application_title(locale, &force_group.display_name),
+                    description: text(locale, CopyKey::ForceApplicationDescription),
+                    confirm_label: text(locale, CopyKey::ForceStop),
                     row_ix,
+                    locale,
                     destructive: true,
                 },
                 window,
@@ -533,22 +566,21 @@ fn app_action_menu(
         }),
     )
     .separator()
-    .item(PopupMenuItem::new("Pause").on_click(move |_, _, cx| {
-        send_app_signal(
-            pause_monitor.clone(),
-            pause_pids.clone(),
-            Signal::Stop,
-            cx,
-        );
-    }))
-    .item(PopupMenuItem::new("Resume").on_click(move |_, _, cx| {
-        send_app_signal(
-            resume_monitor.clone(),
-            resume_pids.clone(),
-            Signal::Continue,
-            cx,
-        );
-    }))
+    .item(
+        PopupMenuItem::new(text(locale, CopyKey::Pause)).on_click(move |_, _, cx| {
+            send_app_signal(pause_monitor.clone(), pause_pids.clone(), Signal::Stop, cx);
+        }),
+    )
+    .item(
+        PopupMenuItem::new(text(locale, CopyKey::Resume)).on_click(move |_, _, cx| {
+            send_app_signal(
+                resume_monitor.clone(),
+                resume_pids.clone(),
+                Signal::Continue,
+                cx,
+            );
+        }),
+    )
 }
 
 impl TableDelegate for AppTableDelegate {
@@ -616,45 +648,48 @@ impl TableDelegate for AppTableDelegate {
         };
         let info_group = group.clone();
         let info_unit = self.settings.unit_base;
+        let locale = self.settings.locale;
         let end_monitor = self.monitor.clone();
         let end_group = group.clone();
         let action_monitor = self.monitor.clone();
 
         let menu = menu
-        .item(
-            PopupMenuItem::new("Application information").on_click(
-                move |_, window, cx| {
-                    open_app_information_dialog(
-                        info_group.clone(),
-                        info_unit,
-                        row_ix,
-                        window,
-                        cx,
-                    );
-                },
-            ),
-        )
-        .separator()
-        .item(
-            PopupMenuItem::new("End application").on_click(move |_, window, cx| {
-                open_app_signal_dialog(
-                    AppSignalRequest {
-                        monitor: end_monitor.clone(),
-                        pids: end_group.pids.clone(),
-                        signal: Signal::Term,
-                        title: format!("End {}?", end_group.display_name),
-                        description: "All processes in this application group will receive a graceful termination signal.",
-                        confirm_label: "End Application",
-                        row_ix,
-                        destructive: false,
+            .item(
+                PopupMenuItem::new(text(locale, CopyKey::ApplicationInformation)).on_click(
+                    move |_, window, cx| {
+                        open_app_information_dialog(
+                            info_group.clone(),
+                            info_unit,
+                            row_ix,
+                            window,
+                            cx,
+                        );
                     },
-                    window,
-                    cx,
-                );
-            }),
-        )
-        .separator();
-        app_action_menu(menu, action_monitor, group, row_ix)
+                ),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(text(locale, CopyKey::EndApplication)).on_click(
+                    move |_, window, cx| {
+                        open_app_signal_dialog(
+                            AppSignalRequest {
+                                monitor: end_monitor.clone(),
+                                pids: end_group.pids.clone(),
+                                signal: Signal::Term,
+                                title: end_application_title(locale, &end_group.display_name),
+                                description: text(locale, CopyKey::GracefulApplicationDescription),
+                                confirm_label: text(locale, CopyKey::EndApplication),
+                                row_ix,
+                                destructive: false,
+                            },
+                            window,
+                            cx,
+                        );
+                    },
+                ),
+            )
+            .separator();
+        app_action_menu(menu, action_monitor, group, row_ix, locale)
     }
 
     fn perform_sort(
