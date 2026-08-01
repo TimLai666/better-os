@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  restore-investigation-pages:
+  apply-device-chart-refactor:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,39 +18,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Restore History, Incidents, and Diagnostics
+      - name: Refactor the device chart presentation contract
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          app = Path('crates/monitor-gui/src/app.rs')
-          source = app.read_text()
-          if 'fn render_history(&self' not in source:
-              block = Path('/tmp/monitor-missing-pages.rs')
-              import base64, gzip
-              encoded = Path('.github/monitor-missing-pages.rs.gz.b64').read_bytes()
-              block.write_bytes(gzip.decompress(base64.b64decode(encoded)))
-              marker = '    fn empty_hardware_page('
-              if source.count(marker) != 1:
-                  raise SystemExit(f'empty page marker count: {source.count(marker)}')
-              source = source.replace(marker, block.read_text() + marker, 1)
-              app.write_text(source)
-          PY
+          base64 -d .github/device-chart-refactor.patch.gz.b64 | gzip -d > /tmp/device-chart-refactor.patch
+          git apply --check /tmp/device-chart-refactor.patch
+          git apply /tmp/device-chart-refactor.patch
           cargo fmt --all
-      - name: Commit page recovery
+      - name: Commit the chart API refactor
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add crates/monitor-gui/src/app.rs
-          if git diff --cached --quiet; then
-            echo "Pages already present"
-            exit 0
-          fi
-          git commit -m "fix(monitor): restore investigation pages"
+          git commit -m "refactor(monitor): group device chart presentation"
           git pull --rebase origin feature/better-monitor-ui
           git push origin HEAD:feature/better-monitor-ui
 
   rust:
-    needs: restore-investigation-pages
+    needs: apply-device-chart-refactor
     runs-on: ubuntu-latest
     env:
       RUST_FONTCONFIG_DLOPEN: "1"
