@@ -8,13 +8,19 @@ license.workspace = true
 [[bin]]
 name = "manager-gui"
 path = "src/main.rs"
-test = false
+test = true
 bench = false
 
 [dependencies]
 better-ui.workspace = true
 manager-core.workspace = true
+manager-platform.workspace = true
+manager-store.workspace = true
 better-core.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
+gpui-component-assets.workspace = true
 gpui-platform.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

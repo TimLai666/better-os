@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 866.
-- Packages with an SPDX license expression: 864.
+- Resolved Cargo packages: 868.
+- Packages with an SPDX license expression: 866.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `de40244b5e3ea5ecb13bc908116f0b25cb15cd00f5c996270ed3a7a76c225e0f`.
+- `Cargo.lock` SHA-256: `a039009c99626cd7bf001859aaa9709910b88eb65cf2141055cfcd1c50e70398`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -32,8 +32,8 @@ source of truth for those packages.
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
 | `Zlib OR Apache-2.0 OR MIT` | 17 |
+| `GPL-3.0-or-later` | 12 |
 | `BSD-3-Clause` | 10 |
-| `GPL-3.0-or-later` | 10 |
 | `MIT OR Apache-2.0 OR Zlib` | 10 |
 | `Apache-2.0/MIT` | 8 |
 | `Unlicense OR MIT` | 8 |
@@ -82,6 +82,8 @@ Better OS does not relicense or silently select a different expression.
 | `manager-cli` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-core` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-gui` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `manager-platform` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `manager-store` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `monitor-core` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `monitor-gui` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `option-ext` | `0.2.0` | `MPL-2.0` | [crates.io](https://crates.io/crates/option-ext/0.2.0) |
@@ -333,9 +335,9 @@ Better OS does not relicense or silently select a different expression.
 | `gpu-descriptor` | `0.3.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gpu-descriptor/0.3.2) |
 | `gpu-descriptor-types` | `0.2.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gpu-descriptor-types/0.2.0) |
 | `gpui` | `0.2.2` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
-| `gpui-component` | `0.5.2` | `Apache-2.0` | `git+https://github.com/longbridge/gpui-component#88f102d13654fe25aa2fede076274b6b751a3704` |
-| `gpui-component-assets` | `0.5.1` | `Apache-2.0` | `git+https://github.com/longbridge/gpui-component#88f102d13654fe25aa2fede076274b6b751a3704` |
-| `gpui-component-macros` | `0.5.1` | `Apache-2.0` | `git+https://github.com/longbridge/gpui-component#88f102d13654fe25aa2fede076274b6b751a3704` |
+| `gpui-component` | `0.5.2` | `Apache-2.0` | `git+https://github.com/longbridge/gpui-component?rev=88f102d13654fe25aa2fede076274b6b751a3704#88f102d13654fe25aa2fede076274b6b751a3704` |
+| `gpui-component-assets` | `0.5.1` | `Apache-2.0` | `git+https://github.com/longbridge/gpui-component?rev=88f102d13654fe25aa2fede076274b6b751a3704#88f102d13654fe25aa2fede076274b6b751a3704` |
+| `gpui-component-macros` | `0.5.1` | `Apache-2.0` | `git+https://github.com/longbridge/gpui-component?rev=88f102d13654fe25aa2fede076274b6b751a3704#88f102d13654fe25aa2fede076274b6b751a3704` |
 | `gpui_linux` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `gpui_macos` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `gpui_macros` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
@@ -452,6 +454,8 @@ Better OS does not relicense or silently select a different expression.
 | `manager-cli` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-core` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `manager-gui` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `manager-platform` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `manager-store` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `markdown` | `1.0.0` | `MIT` | [crates.io](https://crates.io/crates/markdown/1.0.0) |
 | `markup5ever` | `0.12.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/markup5ever/0.12.1) |
 | `markup5ever_rcdom` | `0.3.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/markup5ever_rcdom/0.3.0) |

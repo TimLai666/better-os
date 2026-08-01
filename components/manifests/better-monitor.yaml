@@ -3,10 +3,15 @@ id: better-monitor
 display_name: Better Monitor
 component_type: diagnostic
 version: 0.1.0
+summary: Low-cost desktop observation with samples, incidents, and export.
+icon: monitor
+restart: application
 targets:
   distributions: [zorin, ubuntu]
   releases: [22.04, 24.04]
   architectures: [amd64, arm64]
+enhances:
+  - gnome-system-monitor
 artifacts:
   - release: "22.04"
     architecture: amd64
