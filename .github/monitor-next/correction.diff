@@ -1,0 +1,20 @@
+--- monitor-next.patch
++++ monitor-next.patch
+@@ -1175,17 +1175,6 @@
+ -                                                    .warning()
+ -                                                    .label("Force stop"),
+ -                                            )),
+--                                      )
+--                             }),
+--                    )
+--                    .child(
+--                        Button::new(("app-stop", index))
+--                            .ghost()
+--                            .small()
+--                            .label("Pause")
+--                            .on_click(cx.listener(move |this, _, _, cx| {
+--                                this.signal_pids(&stop_pids, Signal::Stop);
+--                                cx.notify();
+ -                                    )
+ -                            }),
+ -                    )
