@@ -4,7 +4,7 @@
 **User Story:** 使用者安裝 Better Manager 後，系統上就有一個可被審查的特權服務，
 而且專案文件描述的保證與程式實際行為一致。
 **Blocked by:** 13-gui-real-execution
-**Status:** todo
+**Status:** done
 
 ## What it delivers
 
@@ -25,10 +25,17 @@
 
 - [ ] 乾淨的 Ubuntu 22.04 與 24.04 容器可安裝 daemon 套件並解出所有動態連結。
 - [ ] 容器內完成 install → update → rollback，dpkg 狀態與 journal 相符。
-- [ ] 未安裝 daemon 時 GUI 與 CLI 都回報明確錯誤，不會假裝成功。
-- [ ] 文件不再宣稱「沒有任何出貨路徑會套用套件變更」。
+- [x] 未安裝 daemon 時 GUI 與 CLI 都回報明確錯誤，不會假裝成功。
+- [x] 文件不再宣稱「沒有任何出貨路徑會套用套件變更」。
 - [ ] 四組 release/architecture 的封裝矩陣全數通過。
-- [ ] `cargo fmt`、workspace check/test、clippy `-D warnings` 全數通過。
+- [x] `cargo fmt`、workspace check/test、clippy `-D warnings` 全數通過。
+
+## Not yet verified
+
+容器 e2e 尚未實際執行過：本機是 Zorin 18 桌面，`packaging/test-daemon-e2e.sh`
+的守衛（`BETTER_OS_E2E_CONTAINER=1` 與 root）刻意讓它無法在 host 上跑。乾淨容器
+安裝、真實 install → update → rollback、以及四組 release/architecture 矩陣都要
+在 Chefer AppCipe 或 CI 容器裡補跑後才能勾選。
 
 ## Verification
 

@@ -17,8 +17,10 @@ updated, verified, and rolled back through shared manager operations.
 
 ## Working rules
 
-- Keep privileged system mutation outside GUI and CLI code. This issue only
-  permits planning and mock/in-memory execution.
+- Keep privileged system mutation outside GUI and CLI code. It belongs in
+  `manager-daemon`, reached over D-Bus and authorized by polkit. Read-only host
+  queries such as `dpkg-query` are allowed unprivileged; changing the host is
+  not.
 - When testing an unreleased Better OS build or first-party component, use
   [Chefer](https://github.com/TimLai666/chefer) to package it as a disposable
   AppCipe and run it in an isolated containerized environment. Keep test data,
@@ -33,9 +35,10 @@ updated, verified, and rolled back through shared manager operations.
   shared presentation primitives.
 - Treat manifests as untrusted input: validate schema, targets, artifacts,
   dependencies, conflicts, and lifecycle metadata before planning.
-- Do not add a project license, public APT repository, signing implementation,
-  privileged daemon IPC protocol, or automatic optimizer without an explicit
-  decision.
+- Do not add a public APT repository, signing implementation, or automatic
+  optimizer without an explicit decision. The project license (ADR 0003) and
+  the privileged daemon IPC protocol (ADR 0007) are decided; changing either
+  needs a new ADR.
 - Every behavior change needs tests. Run formatting, linting, workspace checks,
   and tests before handoff.
 
@@ -55,10 +58,12 @@ GUI or dependency compiles when the relevant command was not executed.
   release artifact.
 - Update GitHub Actions dependencies after the Node.js 20 deprecation warning
   on `actions/checkout` and `actions/upload-artifact` is addressed.
-- Decide the privileged daemon IPC protocol before implementing real system
-  installation or rollback.
 - Review the license implications of every copyleft dependency before release.
 - Add real Linux collectors and benchmark runners only after the mock contracts
-  are stable.
+  are stable. Better Monitor is still observation-only.
+- Decide the package signature format before offering a signed distribution
+  channel. Checksums are currently the only integrity mechanism.
+- Decide whether the daemon should offer a `dpkg --configure -a` repair action
+  for a transaction interrupted by a crash or power loss.
 - Align the declared Rust 1.85 baseline with the lockfile dependency MSRV
   before treating Rust 1.85 as a supported build target.

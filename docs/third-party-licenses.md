@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 872.
-- Packages with an SPDX license expression: 870.
+- Resolved Cargo packages: 876.
+- Packages with an SPDX license expression: 874.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `b1ede97e1a82cd59a91897b51b7c3452ccf1df1cd2f6fa8dee167a5afb36bd93`.
+- `Cargo.lock` SHA-256: `cf766666d48fdaf95aac473fbb2211b92caa97d130caf93da6cb5496dd79662b`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -25,7 +25,7 @@ source of truth for those packages.
 
 | License expression | Package records |
 | --- | ---: |
-| `MIT OR Apache-2.0` | 398 |
+| `MIT OR Apache-2.0` | 401 |
 | `MIT` | 186 |
 | `Apache-2.0 OR MIT` | 76 |
 | `MIT/Apache-2.0` | 35 |
@@ -62,6 +62,7 @@ source of truth for those packages.
 | `BSD-2-Clause OR MIT OR Apache-2.0` | 1 |
 | `CC0-1.0 OR Apache-2.0` | 1 |
 | `CC0-1.0 OR MIT-0 OR Apache-2.0` | 1 |
+| `CDLA-Permissive-2.0` | 1 |
 | `MIT OR Zlib OR Apache-2.0` | 1 |
 | `bzip2-1.0.6` | 1 |
 
@@ -803,10 +804,13 @@ Better OS does not relicense or silently select a different expression.
 | `unicode-xid` | `0.2.6` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/unicode-xid/0.2.6) |
 | `unsafe-libyaml` | `0.2.11` | `MIT` | [crates.io](https://crates.io/crates/unsafe-libyaml/0.2.11) |
 | `untrusted` | `0.9.0` | `ISC` | [crates.io](https://crates.io/crates/untrusted/0.9.0) |
+| `ureq` | `3.3.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/ureq/3.3.0) |
+| `ureq-proto` | `0.6.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/ureq-proto/0.6.0) |
 | `url` | `2.5.8` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/url/2.5.8) |
 | `usvg` | `0.45.1` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/usvg/0.45.1) |
 | `usvg` | `0.46.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/usvg/0.46.0) |
 | `utf-8` | `0.7.6` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/utf-8/0.7.6) |
+| `utf8-zero` | `0.8.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/utf8-zero/0.8.1) |
 | `utf8_iter` | `1.0.4` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/utf8_iter/1.0.4) |
 | `utf8parse` | `0.2.2` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/utf8parse/0.2.2) |
 | `util_macros` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
@@ -841,6 +845,7 @@ Better OS does not relicense or silently select a different expression.
 | `wayland-sys` | `0.31.11` | `MIT` | [crates.io](https://crates.io/crates/wayland-sys/0.31.11) |
 | `web-sys` | `0.3.103` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/web-sys/0.3.103) |
 | `web-time` | `1.1.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/web-time/1.1.0) |
+| `webpki-roots` | `1.0.9` | `CDLA-Permissive-2.0` | [crates.io](https://crates.io/crates/webpki-roots/1.0.9) |
 | `weezl` | `0.1.12` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/weezl/0.1.12) |
 | `wgpu` | `29.0.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/wgpu/29.0.4) |
 | `wgpu-core` | `29.0.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/wgpu-core/29.0.4) |

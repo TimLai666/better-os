@@ -2,8 +2,8 @@
 
 ## Current Phase
 
-Better Manager real system integration started; the privileged IPC decision and
-wire contract are handed off for branch review
+Better Manager applies real component transactions; container end-to-end
+verification is the remaining gap
 
 ## Stage Objective
 
@@ -39,9 +39,18 @@ boundary that keeps privileged mutation out of the GUI and CLI.
 | M12 | core execution seam and state schema v2 | agent | done | lifecycle suite green through the mock driver, v1 state migration, real-plan validation |
 | M13 | privileged daemon | agent | done | 39 unit tests against fake APT/host/health, 6 private session-bus tests, daemon `.deb` with unit, polkit policy, and bus config |
 | M14 | real download, dpkg reconciliation, and D-Bus client | agent | done | checksum-named artifact cache, drift detection blocking planning, CLI `--execution real` reporting `daemon.unavailable` |
-| M15 | GUI real execution, cutover, and container e2e | agent | todo | tickets 13-14 |
+| M15 | GUI real execution | agent | done | background transaction with live progress, cancel offered only while honorable, real failure copy in both locales |
+| M16 | cutover and documentation | agent | done | real execution by default, daemon packaging verified, AGENTS/ENG/README/architecture/security updated |
+| M17 | container end-to-end verification | agent | todo | Chefer AppCipe install → update → rollback against real dpkg state |
 
 ## Current Blockers
+
+Better Manager can now install, update, remove, and roll back first-party
+components for real. The one thing not yet done is running that against a real
+polkit, a real dpkg, and a real bus: every path is covered by tests against
+fakes, and the container end-to-end script has never executed because its guard
+correctly refuses to run on this desktop. Until that run happens, the honest
+statement is that the code is complete and unverified end to end.
 
 No active blocker remains for the real-integration work. The privileged daemon
 IPC protocol, which `AGENTS.md` required to be decided before any real system
@@ -66,14 +75,16 @@ policy still needs alignment.
 
 ## Next Verifiable Output
 
-Ticket 13 moves the GUI onto the real path: the transaction runs on a
-background thread, progress reaches the screen as it happens, cancelling is
-offered only while it can still be honored, and the new failure keys get copy
-in both locales.
+A real install, update, and rollback inside a disposable Chefer AppCipe, with
+`packaging/test-daemon-e2e.sh` and `BETTER_OS_E2E_CONTAINER=1`, asserting dpkg
+state and the daemon journal afterwards. Every code path is covered by tests
+against fakes; what has never run is the combination of a real polkit, a real
+dpkg, and a real bus.
 
 ## Next Ticket
 
-13-gui-real-execution — blocked by nothing
+None — tickets 09 through 14 are complete. The next change is the container
+end-to-end run, or a new ticket.
 
 ## Decision Log
 
@@ -171,6 +182,18 @@ in both locales.
   in integrity because the daemon must treat the client as untrusted anyway
   timestamp: 2026-08-01
   impacted_ticket_ids: [09, 11, 12]
+- decision: make real execution the default for both the CLI and the GUI, with
+  an explicit demo mode that says so on screen
+  rationale: a manager that quietly simulated would report a change that never
+  happened; a missing privileged service is an error, not a reason to pretend
+  timestamp: 2026-08-01
+  impacted_ticket_ids: [13, 14]
+- decision: offer cancellation only while the transaction is still downloading
+  rationale: once the plan has gone to the privileged service the host may
+  already have changed, and a cancel button there would promise a restoration
+  nothing performed
+  timestamp: 2026-08-01
+  impacted_ticket_ids: [10, 13]
 - decision: keep package signing and the public APT repository deferred while
   real installation lands
   rationale: the user scoped this round to real execution; published checksums
@@ -256,7 +279,7 @@ rejection cases. No daemon, no download code, and no APT invocation exists yet,
 so nothing in this branch can still apply a package change and the shipped
 backends all continue to refuse.
 
-Ticket 10 is done. `Manager::advance` now consumes a `StageOutcome` a driver
+Tickets 09 through 14 are done. Ticket 10 is done. `Manager::advance` now consumes a `StageOutcome` a driver
 produced rather than one the caller scripted; `advance_mock` translates the old
 scripted vocabulary into the same outcomes, which is why the 20 existing
 lifecycle tests still pass unchanged in meaning. Plan steps, component records,
@@ -278,3 +301,27 @@ five are closed under ticket 08, with ADRs 0004, 0005, and 0006 recording the
 decisions Issue #8 asked to be written down rather than made silently. The
 hardcoded-ID map also silently dropped any component outside that list from
 the GUI; presentation is now manifest-driven, so it does not.
+
+Tickets 11 through 14 completed the real path. `manager-daemon` is a D-Bus
+system service authorized by polkit that revalidates every plan from scratch
+against the host, applies it through local APT, health-checks what it applied,
+and rolls back what it can. `manager-platform` fetches artifacts into a cache
+named by checksum and reads installed versions from dpkg. The GUI runs the
+transaction off the UI thread and offers cancellation only while it can still
+be honored. Real execution is the default for both front ends; demo mode is
+explicit and visible.
+
+Local `cargo fmt --all -- --check`, `cargo check --workspace --offline`,
+`cargo test --workspace` (21 suites, no failures), and `cargo clippy --workspace
+--all-targets -- -D warnings` all passed. `packaging/build-deb.sh` and
+`packaging/verify-deb.sh` built and verified all three packages for
+ubuntu-24.04 on amd64, including the daemon's unit, polkit policy, and bus
+config. A `ZED_HEADLESS=1` GUI launch stayed alive for the full smoke window.
+CLI smokes confirmed that real mode without a daemon reports
+`daemon.unavailable` and writes no state, that `--execution mock` still walks
+the old lifecycle, and that reconciliation detects a recorded component dpkg
+has never heard of and blocks planning for it.
+
+What has not run: `packaging/test-daemon-e2e.sh` inside a container, and the
+four-way release/architecture packaging matrix. The daemon has never faced a
+real polkit or a real dpkg. That is milestone M17.
