@@ -37,10 +37,10 @@ This checklist is the merge gate for the GNOME Resources parity portion of Bette
 | Context menu | 🟨 | Processes has a row context menu. Apps and batch-selection context menus remain incomplete. |
 | Confirmation dialog | ✅ | Graceful and force-stop actions use confirmation dialogs for Apps and Processes. |
 | Information dialog | ✅ | Application Information and Process Information dialogs exist; Process Options remains a separate GPUI window. |
-| Permission state | 🟨 | Process control returns Linux errors. Dedicated permission UI and narrow Polkit helper flow are missing. |
-| Stale-process state | 🟨 | Selections are pruned and action results count stale PIDs separately; a dedicated stale-state visual remains missing. |
-| Empty / unsupported / error state | 🟨 | Unsupported device page helper exists. Dedicated unknown, stale, permission-denied, and collector-error visuals are incomplete. |
-| Toast / result banner | ✅ | Action result banner exists. |
+| Permission state | 🟨 | Typed permission-denied panels are used for process actions. A narrow Polkit helper flow is still missing. |
+| Stale-process state | ✅ | Selections are pruned and typed stale feedback is rendered separately when a PID has already disappeared. |
+| Empty / unsupported / error state | 🟨 | A shared typed panel now covers unavailable, permission-denied, stale, collector-error, success, and info states. Collector-specific adoption and unknown-state copy remain incomplete. |
+| Toast / result banner | ✅ | Action feedback uses the shared typed support-state panel instead of inferring semantics from message text. |
 | Settings row / switch | ✅ | Reusable preference rows and switches exist. |
 | Runtime language selector | 🟨 | Shared `system`, `en-US`, and `zh-TW` locale state is persisted and switches shell/navigation copy immediately. Full page catalogs and pseudo-long mode remain incomplete. |
 | Accessible chart summary | ⬜ | Text summaries and table alternatives are missing. |
@@ -234,7 +234,7 @@ The answer to “are all required UI components built?” is therefore **no**. T
 ## Next implementation order
 
 1. Keep Process Options compiling and validated.
-2. Build the remaining shared parity interaction components: context menu, split action, and support-state panel.
+2. Build the remaining shared parity interaction components: context menu and split action.
 3. Implement process multi-selection and batch actions.
 4. ✅ Convert Apps to a virtualized sortable table with persisted sort state and information/actions dialogs.
 5. Add persisted shell state and temporary refresh holds.

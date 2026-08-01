@@ -1,7 +1,7 @@
 //! Shared UI view models. GPUI rendering primitives are added in the GUI slice.
 
 use better_core::ComponentManifest;
-use gpui::{Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, div};
+use gpui::{Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, div, px};
 use gpui_component::*;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -63,6 +63,93 @@ impl Locale {
             Self::ZhTw => Self::System,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SupportStateKind {
+    Success,
+    Info,
+    Unavailable,
+    PermissionDenied,
+    Stale,
+    CollectorError,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupportState {
+    pub kind: SupportStateKind,
+    pub title: String,
+    pub detail: String,
+}
+
+impl SupportState {
+    pub fn new(
+        kind: SupportStateKind,
+        title: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            title: title.into(),
+            detail: detail.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct SupportStatePalette {
+    pub border: Hsla,
+    pub background: Hsla,
+    pub foreground: Hsla,
+    pub muted_foreground: Hsla,
+    pub success: Hsla,
+    pub warning: Hsla,
+    pub danger: Hsla,
+    pub info: Hsla,
+    pub radius: Pixels,
+}
+
+impl SupportStatePalette {
+    fn accent(self, kind: SupportStateKind) -> Hsla {
+        match kind {
+            SupportStateKind::Success => self.success,
+            SupportStateKind::Info => self.info,
+            SupportStateKind::Unavailable => self.muted_foreground,
+            SupportStateKind::PermissionDenied | SupportStateKind::CollectorError => self.danger,
+            SupportStateKind::Stale => self.warning,
+        }
+    }
+}
+
+pub fn support_state_panel(state: &SupportState, palette: SupportStatePalette) -> impl IntoElement {
+    let accent = palette.accent(state.kind);
+    h_flex()
+        .items_center()
+        .gap_3()
+        .min_w_0()
+        .rounded(palette.radius)
+        .border_1()
+        .border_color(palette.border)
+        .bg(palette.background)
+        .p_3()
+        .child(div().size_3().flex_shrink_0().rounded(px(99.0)).bg(accent))
+        .child(
+            v_flex()
+                .min_w_0()
+                .gap_1()
+                .child(
+                    div()
+                        .font_bold()
+                        .text_color(accent)
+                        .child(state.title.clone()),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(palette.muted_foreground)
+                        .child(state.detail.clone()),
+                ),
+        )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -136,5 +223,17 @@ mod tests {
         assert_eq!(Locale::System.next(), Locale::EnUs);
         assert_eq!(Locale::EnUs.next(), Locale::ZhTw);
         assert_eq!(Locale::ZhTw.next(), Locale::System);
+    }
+
+    #[test]
+    fn support_state_keeps_semantics_separate_from_copy() {
+        let state = SupportState::new(
+            SupportStateKind::PermissionDenied,
+            "Permission required",
+            "Linux rejected the operation",
+        );
+        assert_eq!(state.kind, SupportStateKind::PermissionDenied);
+        assert_eq!(state.title, "Permission required");
+        assert_eq!(state.detail, "Linux rejected the operation");
     }
 }

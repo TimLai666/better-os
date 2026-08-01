@@ -1879,43 +1879,46 @@ Command: {}",
             .child(div().flex_1().text_sm().child(value))
     }
 
+    fn support_state_palette(&self, cx: &Context<Self>) -> SupportStatePalette {
+        SupportStatePalette {
+            border: cx.theme().border,
+            background: cx.theme().background,
+            foreground: cx.theme().foreground,
+            muted_foreground: cx.theme().muted_foreground,
+            success: cx.theme().green,
+            warning: cx.theme().yellow,
+            danger: cx.theme().red,
+            info: cx.theme().blue,
+            radius: cx.theme().radius,
+        }
+    }
+
     fn unavailable_page(
         &self,
         title: &'static str,
         description: &'static str,
         cx: &Context<Self>,
     ) -> Div {
+        let state = SupportState::new(SupportStateKind::Unavailable, title, description);
         v_flex()
             .items_center()
             .justify_center()
-            .gap_2()
             .min_h(px(420.0))
             .rounded(cx.theme().radius_lg)
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
-            .child(div().text_lg().font_bold().child(title))
+            .p_5()
             .child(
                 div()
-                    .max_w(px(620.0))
-                    .text_center()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(description),
+                    .w_full()
+                    .max_w(px(680.0))
+                    .child(support_state_panel(&state, self.support_state_palette(cx))),
             )
     }
 
-    fn action_result_banner(&self, message: String, cx: &Context<Self>) -> Div {
-        h_flex()
-            .items_center()
-            .gap_2()
-            .rounded(cx.theme().radius)
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
-            .p_3()
-            .child(div().size_2().rounded(px(99.0)).bg(cx.theme().blue))
-            .child(div().text_sm().child(message))
+    fn action_result_banner(&self, state: SupportState, cx: &Context<Self>) -> impl IntoElement {
+        support_state_panel(&state, self.support_state_palette(cx))
     }
 
     fn selected_process(&self, cx: &Context<Self>) -> Option<ProcessInfo> {
@@ -1940,7 +1943,8 @@ Command: {}",
     pub(crate) fn signal_pids(&mut self, pids: &[Pid], signal: Signal) {
         let mut succeeded = 0;
         let mut stale = 0;
-        let mut denied_or_unsupported = 0;
+        let mut denied = 0;
+        let mut unsupported = 0;
         for pid in pids {
             let Some(process) = self.system.process(*pid) else {
                 stale += 1;
@@ -1948,18 +1952,64 @@ Command: {}",
             };
             match process.kill_with(signal) {
                 Some(true) => succeeded += 1,
-                _ => denied_or_unsupported += 1,
+                Some(false) => denied += 1,
+                None => unsupported += 1,
             }
         }
-        self.last_action = Some(format!(
-            "Signal {signal:?}: {succeeded} succeeded, {stale} stale, {denied_or_unsupported} denied or unsupported"
-        ));
+
+        let kind = if denied > 0 {
+            SupportStateKind::PermissionDenied
+        } else if unsupported > 0 {
+            SupportStateKind::Unavailable
+        } else if stale > 0 {
+            SupportStateKind::Stale
+        } else {
+            SupportStateKind::Success
+        };
+        let locale = self.settings.locale.resolved();
+        let title = match (locale, kind) {
+            (Locale::ZhTw, SupportStateKind::PermissionDenied) => "需要額外權限",
+            (Locale::ZhTw, SupportStateKind::Unavailable) => "此操作無法使用",
+            (Locale::ZhTw, SupportStateKind::Stale) => "程序已經結束",
+            (Locale::ZhTw, _) => "程序操作完成",
+            (_, SupportStateKind::PermissionDenied) => "Permission required",
+            (_, SupportStateKind::Unavailable) => "Action unavailable",
+            (_, SupportStateKind::Stale) => "Process already ended",
+            (_, _) => "Process action finished",
+        };
+        let detail = match locale {
+            Locale::ZhTw => format!(
+                "{signal:?}：成功 {succeeded} 個、已結束 {stale} 個、權限不足 {denied} 個、不支援 {unsupported} 個"
+            ),
+            _ => format!(
+                "Signal {signal:?}: {succeeded} succeeded, {stale} stale, {denied} denied, {unsupported} unsupported"
+            ),
+        };
+        self.last_action = Some(SupportState::new(kind, title, detail));
     }
 
     fn persist_settings(&mut self) {
+        let locale = self.settings.locale.resolved();
         self.last_action = match self.settings.save() {
-            Ok(()) => Some("Settings saved".to_string()),
-            Err(error) => Some(format!("Could not save settings: {error}")),
+            Ok(()) => Some(SupportState::new(
+                SupportStateKind::Success,
+                match locale {
+                    Locale::ZhTw => "設定已儲存",
+                    _ => "Settings saved",
+                },
+                match locale {
+                    Locale::ZhTw => "新的偏好設定已寫入使用者設定檔。",
+                    _ => "The updated preferences were written to the user configuration.",
+                },
+            )),
+            Err(error) => Some(SupportState::new(
+                SupportStateKind::CollectorError,
+                match locale {
+                    Locale::ZhTw => "無法儲存設定",
+                    _ => "Could not save settings",
+                },
+                error.to_string(),
+            )),
         };
     }
 

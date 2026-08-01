@@ -3,7 +3,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use better_ui::{Locale, page_heading};
+use better_ui::{
+    Locale, SupportState, SupportStateKind, SupportStatePalette, page_heading, support_state_panel,
+};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Disableable, Root, Selectable as _, Sizable, StyledExt,
@@ -256,7 +258,7 @@ pub(crate) struct MonitorWindow {
     selected_disk: usize,
     selected_network: usize,
     selected_battery: usize,
-    last_action: Option<String>,
+    last_action: Option<SupportState>,
     _subscriptions: Vec<Subscription>,
     active_page: MonitorPage,
     charts_paused: bool,
