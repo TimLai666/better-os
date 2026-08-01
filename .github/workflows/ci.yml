@@ -78,11 +78,16 @@ jobs:
           UBUNTU_RELEASE="${{ matrix.asset_target }}"
           UBUNTU_RELEASE="${UBUNTU_RELEASE#ubuntu-}"
           cp -r "dist/${{ matrix.target }}" dist/e2e
+          # The client that drives the authorized path. It is an example rather
+          # than a package binary, so it is built here and copied in separately.
+          cargo build --release -p manager-platform --features dbus-client --example e2e_client
+          mkdir -p dist/e2e-client
+          cp target/release/examples/e2e_client dist/e2e-client/
           docker build -f packaging/e2e/Dockerfile \
             --build-arg "UBUNTU_RELEASE=${UBUNTU_RELEASE}" \
             -t "better-os-e2e:${{ matrix.target }}" .
           docker run --rm "better-os-e2e:${{ matrix.target }}"
-          rm -rf dist/e2e
+          rm -rf dist/e2e dist/e2e-client
       - name: Upload Debian packages
         uses: actions/upload-artifact@v4
         with:
