@@ -1993,6 +1993,282 @@ impl MonitorWindow {
             )
     }
 
+    fn render_history(&self, cx: &Context<Self>) -> Div {
+        let point = self.current_point();
+        let history = self.chart_data();
+        v_flex()
+            .gap_4()
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .child(self.metric_card(
+                        "Samples",
+                        self.store.samples().len().to_string(),
+                        "Current GUI session".to_string(),
+                        cx.theme().green,
+                        cx,
+                    ))
+                    .child(self.metric_card(
+                        "Graph window",
+                        format!("{} points", self.history.len()),
+                        format!("Maximum {}", self.settings.clamped_graph_points()),
+                        cx.theme().blue,
+                        cx,
+                    ))
+                    .child(self.metric_card(
+                        "Incident markers",
+                        self.incidents.len().to_string(),
+                        "Markers preserve sample positions".to_string(),
+                        cx.theme().yellow,
+                        cx,
+                    )),
+            )
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_4()
+                    .child(self.chart_card(
+                        "Processor history",
+                        format!("{:.1}%", point.cpu),
+                        history.clone(),
+                        |point| point.cpu,
+                        cx.theme().blue,
+                        cx,
+                    ))
+                    .child(self.chart_card(
+                        "Memory history",
+                        format!("{:.1}%", point.memory),
+                        history,
+                        |point| point.memory,
+                        cx.theme().green,
+                        cx,
+                    )),
+            )
+            .child(self.section_card(
+                "Persistence boundary",
+                "Resources parity is live; Better Monitor history is an additional product layer",
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        "A restart-safe service, time-series storage, downsampling, retention budgets, migrations, and recovery remain separate from this GUI parity slice.",
+                    ),
+                cx,
+            ))
+    }
+
+    fn render_incidents(&self, cx: &mut Context<Self>) -> Div {
+        v_flex()
+            .gap_4()
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .rounded(cx.theme().radius_lg)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .p_4()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(div().font_bold().child("Mark a slowdown moment"))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        "Records the current sample position for the future before-and-after capture service.",
+                                    ),
+                            ),
+                    )
+                    .child(
+                        Button::new("record-incident-page")
+                            .warning()
+                            .label("Record incident")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.record_incident();
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_3()
+                    .when(self.incidents.is_empty(), |this| {
+                        this.child(
+                            v_flex()
+                                .items_center()
+                                .justify_center()
+                                .min_h(px(260.0))
+                                .rounded(cx.theme().radius_lg)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .bg(cx.theme().background)
+                                .child(div().font_bold().child("No incidents recorded"))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("Use the marker when the system feels slow."),
+                                ),
+                        )
+                    })
+                    .children(self.incidents.iter().rev().map(|incident| {
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_4()
+                            .rounded(cx.theme().radius_lg)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().background)
+                            .p_4()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .font_bold()
+                                            .child(format!("Slowdown marker #{}", incident.sequence)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(format!(
+                                                "Sample {} • unix {} ms",
+                                                incident.sample_index, incident.recorded_at_ms
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().yellow)
+                                    .child("Deep capture pending"),
+                            )
+                    })),
+            )
+    }
+
+    fn render_diagnostics(&self, cx: &Context<Self>) -> Div {
+        v_flex()
+            .gap_4()
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .child(self.metric_card(
+                        "Collector loop",
+                        "Healthy".to_string(),
+                        self.settings.refresh_speed.label().to_string(),
+                        cx.theme().green,
+                        cx,
+                    ))
+                    .child(self.metric_card(
+                        "Processes",
+                        self.system.processes().len().to_string(),
+                        "sysinfo plus /proc enrichment".to_string(),
+                        cx.theme().green,
+                        cx,
+                    ))
+                    .child(self.metric_card(
+                        "Application groups",
+                        self.app_groups.len().to_string(),
+                        "cgroup identity with explicit fallback".to_string(),
+                        cx.theme().green,
+                        cx,
+                    ))
+                    .child(
+                        self.metric_card(
+                            "Dynamic device pages",
+                            (self.gpus.len()
+                                + self.npus.len()
+                                + self.disk_info.len()
+                                + self.network_info.len()
+                                + self.batteries.len())
+                            .to_string(),
+                            "GPU, NPU, drive, network, and battery".to_string(),
+                            cx.theme().blue,
+                            cx,
+                        ),
+                    ),
+            )
+            .child(
+                self.section_card(
+                    "Collector matrix",
+                    "Support state is part of every metric",
+                    v_flex()
+                        .gap_3()
+                        .child(self.health_row(
+                            "CPU / memory / process baseline",
+                            "Active via sysinfo and /proc",
+                            cx.theme().green,
+                            cx,
+                        ))
+                        .child(self.health_row(
+                            "Application grouping",
+                            "Active via cgroup v2 with named fallback",
+                            cx.theme().green,
+                            cx,
+                        ))
+                        .child(self.health_row(
+                            "GPU / NPU adapters",
+                            "DRM, accel, and driver sysfs where exposed",
+                            cx.theme().green,
+                            cx,
+                        ))
+                        .child(self.health_row(
+                            "Drive and network metadata",
+                            "Active via sysfs and kernel counters",
+                            cx.theme().green,
+                            cx,
+                        ))
+                        .child(self.health_row(
+                            "Memory hardware properties",
+                            "Awaiting narrow Polkit DMI helper",
+                            cx.theme().yellow,
+                            cx,
+                        ))
+                        .child(self.health_row(
+                            "CPU affinity and priority mutation",
+                            "Not connected yet",
+                            cx.theme().yellow,
+                            cx,
+                        ))
+                        .child(self.health_row(
+                            "Linux PSI and persistent history",
+                            "Not connected yet",
+                            cx.theme().yellow,
+                            cx,
+                        )),
+                    cx,
+                ),
+            )
+    }
+
+    fn simple_property_row(&self, label: &'static str, value: String, cx: &Context<Self>) -> Div {
+        h_flex()
+            .items_start()
+            .justify_between()
+            .gap_5()
+            .py_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .w(px(190.0))
+                    .flex_shrink_0()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label),
+            )
+            .child(div().flex_1().text_sm().child(value))
+    }
+
     fn empty_hardware_page(
         &self,
         title: &'static str,
