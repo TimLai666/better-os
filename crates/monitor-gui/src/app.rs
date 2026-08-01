@@ -279,6 +279,13 @@ struct DeviceHistory {
     highest_secondary: f64,
 }
 
+struct DeviceChartHeader {
+    title: &'static str,
+    value: String,
+    detail: String,
+    color: Hsla,
+}
+
 #[derive(Clone)]
 struct IncidentMarker {
     sequence: usize,
@@ -1105,14 +1112,17 @@ impl MonitorWindow {
 
     fn device_chart_card(
         &self,
-        title: &'static str,
-        value: String,
-        detail: String,
+        header: DeviceChartHeader,
         data: Vec<DeviceMetricPoint>,
         value_fn: impl Fn(&DeviceMetricPoint) -> f64 + 'static,
-        color: Hsla,
         cx: &Context<Self>,
     ) -> Div {
+        let DeviceChartHeader {
+            title,
+            value,
+            detail,
+            color,
+        } = header;
         v_flex()
             .flex_1()
             .min_w(px(330.0))
@@ -1730,27 +1740,39 @@ impl MonitorWindow {
                     .flex_wrap()
                     .gap_4()
                     .child(self.device_chart_card(
-                        "Read throughput",
-                        linux::format_rate(disk.read_speed, false, self.settings.unit_base),
-                        format!(
-                            "Highest {} since Better Monitor started",
-                            linux::format_rate(highest_read, false, self.settings.unit_base)
-                        ),
+                        DeviceChartHeader {
+                            title: "Read throughput",
+                            value: linux::format_rate(
+                                disk.read_speed,
+                                false,
+                                self.settings.unit_base,
+                            ),
+                            detail: format!(
+                                "Highest {} since Better Monitor started",
+                                linux::format_rate(highest_read, false, self.settings.unit_base)
+                            ),
+                            color: cx.theme().blue,
+                        },
                         history_data.clone(),
                         |point| point.primary,
-                        cx.theme().blue,
                         cx,
                     ))
                     .child(self.device_chart_card(
-                        "Write throughput",
-                        linux::format_rate(disk.write_speed, false, self.settings.unit_base),
-                        format!(
-                            "Highest {} since Better Monitor started",
-                            linux::format_rate(highest_write, false, self.settings.unit_base)
-                        ),
+                        DeviceChartHeader {
+                            title: "Write throughput",
+                            value: linux::format_rate(
+                                disk.write_speed,
+                                false,
+                                self.settings.unit_base,
+                            ),
+                            detail: format!(
+                                "Highest {} since Better Monitor started",
+                                linux::format_rate(highest_write, false, self.settings.unit_base)
+                            ),
+                            color: cx.theme().green,
+                        },
                         history_data,
                         |point| point.secondary,
-                        cx.theme().green,
                         cx,
                     )),
             )
@@ -1886,43 +1908,47 @@ impl MonitorWindow {
                     .flex_wrap()
                     .gap_4()
                     .child(self.device_chart_card(
-                        "Receive throughput",
-                        linux::format_rate(
-                            interface.received,
-                            self.settings.network_bits,
-                            self.settings.unit_base,
-                        ),
-                        format!(
-                            "Highest {} since Better Monitor started",
-                            linux::format_rate(
-                                highest_received,
+                        DeviceChartHeader {
+                            title: "Receive throughput",
+                            value: linux::format_rate(
+                                interface.received,
                                 self.settings.network_bits,
                                 self.settings.unit_base,
-                            )
-                        ),
+                            ),
+                            detail: format!(
+                                "Highest {} since Better Monitor started",
+                                linux::format_rate(
+                                    highest_received,
+                                    self.settings.network_bits,
+                                    self.settings.unit_base,
+                                )
+                            ),
+                            color: cx.theme().green,
+                        },
                         history_data.clone(),
                         |point| point.primary,
-                        cx.theme().green,
                         cx,
                     ))
                     .child(self.device_chart_card(
-                        "Send throughput",
-                        linux::format_rate(
-                            interface.transmitted,
-                            self.settings.network_bits,
-                            self.settings.unit_base,
-                        ),
-                        format!(
-                            "Highest {} since Better Monitor started",
-                            linux::format_rate(
-                                highest_transmitted,
+                        DeviceChartHeader {
+                            title: "Send throughput",
+                            value: linux::format_rate(
+                                interface.transmitted,
                                 self.settings.network_bits,
                                 self.settings.unit_base,
-                            )
-                        ),
+                            ),
+                            detail: format!(
+                                "Highest {} since Better Monitor started",
+                                linux::format_rate(
+                                    highest_transmitted,
+                                    self.settings.network_bits,
+                                    self.settings.unit_base,
+                                )
+                            ),
+                            color: cx.theme().blue,
+                        },
                         history_data,
                         |point| point.secondary,
-                        cx.theme().blue,
                         cx,
                     )),
             )
