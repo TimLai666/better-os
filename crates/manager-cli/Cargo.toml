@@ -8,4 +8,5 @@ rust-version.workspace = true
 better-core.workspace = true
 clap.workspace = true
 manager-core.workspace = true
+manager-platform.workspace = true
 manager-store.workspace = true

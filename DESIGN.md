@@ -55,7 +55,7 @@ Better Manager is a native utility for making component lifecycle decisions visi
 - **Tertiary:** `#4f6df5` for the single primary action and selected state.
 - **Neutral:** `#f4f7fb` for the light application canvas.
 
-The light theme is the default and the only committed theme in this slice. Dark theme support remains a later decision from Issue #8.
+Dark is the default appearance. Light and system-follow are explicit user choices stored with the rest of the manager settings, and the window applies the stored choice once the saved settings have been read. See [ADR 0002](docs/decisions/0002-dark-first-themeable-appearance.md). The values above describe the light appearance; the dark appearance uses the component library's dark palette with the same roles.
 
 ## Typography
 
@@ -82,4 +82,6 @@ Primary buttons use one clear verb such as `Update All` or `Install updates`. Re
 - Do keep lifecycle wording user-facing: `Review changes`, `Install updates`, `Applying settings`, `Checking that everything works`, and `Restore previous version`.
 - Do localize all UI copy at runtime for `zh-TW`, `en-US`, and `system` fallback.
 - Don't use fixed card or button widths that can clip translated content.
-- Don't introduce privileged commands, real package mutation, or a dark-theme inversion in this UI slice.
+- Do let every surface read its colors from the active theme so both appearances stay correct.
+- Don't introduce privileged commands or real package mutation in this UI slice.
+- Don't hardcode a component's name, purpose, or icon by ID. Those come from the manifest, or from a shipped translation for a first-party component.

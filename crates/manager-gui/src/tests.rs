@@ -1,9 +1,14 @@
 use crate::{
-    app::demo_manager,
+    app::{demo_manager, translated_component},
     i18n::{Locale, copy},
     layout::{ActionLayout, MIN_WINDOW_WIDTH, action_layout},
+    model::ComponentInfo,
 };
-use manager_core::{ComponentStatus, DesiredOperation};
+use better_core::{ComponentIcon, ComponentId};
+use manager_core::{
+    ComponentStatus, DesiredOperation, ManagerSettings, ManagerState, RestartRequirement,
+    StoredTheme,
+};
 
 #[test]
 fn required_visible_copy_exists_in_both_locales() {
@@ -45,6 +50,152 @@ fn update_all_uses_the_same_core_plan_as_the_cli_path() {
         manager.status(&state, &plan.steps()[0].component).unwrap(),
         ComponentStatus::UpdateAvailable
     );
+}
+
+#[test]
+fn an_untranslated_component_is_presented_from_its_own_manifest() {
+    let manifest = better_core::ComponentManifest::parse_yaml(
+        "schema_version: 1\nid: third-party-tool\ndisplay_name: Third Party Tool\ncomponent_type: enhancement\nversion: 2.0.0\nsummary: Speeds up an unrelated desktop workflow\nicon: launcher\nrestart: reboot\nreplaces:\n  - org.example.Old\ntargets:\n  distributions: [ubuntu]\n  releases: ['24.04']\n  architectures: [amd64]\nartifact:\n  url: https://example.com/tool.deb\n  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nlifecycle:\n  install: mock-install\n  enable: mock-enable\n  disable: mock-disable\n  remove: mock-remove\n  rollback: mock-rollback\n",
+    )
+    .expect("the manifest must be valid");
+
+    let info = ComponentInfo::present(
+        &manifest,
+        None,
+        ComponentStatus::Available,
+        translated_component(Locale::EnUs, &manifest.id),
+    );
+
+    assert_eq!(info.name, "Third Party Tool");
+    assert_eq!(info.summary, "Speeds up an unrelated desktop workflow");
+    assert_eq!(info.detail, info.summary);
+    assert_eq!(info.icon, ComponentIcon::Launcher);
+    assert_eq!(info.restart_requirement, RestartRequirement::Reboot);
+    assert_eq!(info.replaces, vec!["org.example.Old".to_string()]);
+    assert_eq!(info.element_id("install"), "install-third-party-tool");
+}
+
+#[test]
+fn a_shipped_component_keeps_its_translated_name_in_both_locales() {
+    let (manager, _) = demo_manager();
+    let manifest = manager
+        .manifests()
+        .find(|manifest| manifest.id.as_str() == "better-monitor")
+        .expect("the demo catalog must carry the monitor");
+
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let info = ComponentInfo::present(
+            manifest,
+            None,
+            ComponentStatus::Available,
+            translated_component(locale, &manifest.id),
+        );
+        assert_eq!(info.name, copy(locale).monitor_name);
+        assert_eq!(info.summary, copy(locale).monitor_purpose);
+        assert_eq!(info.icon, ComponentIcon::Monitor);
+        assert_eq!(
+            info.restart_requirement,
+            RestartRequirement::RestartApplication
+        );
+        assert_eq!(info.enhances, vec!["gnome-system-monitor".to_string()]);
+    }
+}
+
+#[test]
+fn every_catalog_component_is_presentable() {
+    let (manager, state) = demo_manager();
+
+    for manifest in manager.manifests() {
+        let status = manager
+            .status(&state, &manifest.id)
+            .expect("every catalog component must resolve a status");
+        let info = ComponentInfo::present(
+            manifest,
+            state.component(&manifest.id),
+            status,
+            translated_component(Locale::EnUs, &manifest.id),
+        );
+        assert!(!info.name.trim().is_empty());
+        assert!(!info.summary.trim().is_empty());
+    }
+}
+
+#[test]
+fn every_restart_requirement_has_copy_in_both_locales() {
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let c = copy(locale);
+        for label in [
+            c.not_declared,
+            c.restart_not_required,
+            c.restart_application,
+            c.restart_log_out,
+            c.restart_reboot,
+            c.replaces_label,
+            c.enhances_label,
+        ] {
+            assert!(!label.trim().is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_transaction_reports_the_widest_interruption_it_requires() {
+    let (manager, state) = demo_manager();
+    let plan = manager
+        .plan(
+            &state,
+            &ComponentId::new("better-files-example").expect("id must be valid"),
+            DesiredOperation::Install,
+        )
+        .expect("the example component must be plannable");
+
+    assert_eq!(plan.restart_requirement(), RestartRequirement::LogOut);
+    assert_eq!(plan.replaces(), vec!["org.gnome.Nautilus".to_string()]);
+}
+
+#[test]
+fn an_unconfigured_manager_opens_dark() {
+    assert_eq!(ManagerSettings::default().theme, StoredTheme::Dark);
+}
+
+#[test]
+fn state_saved_before_the_theme_setting_existed_loads_dark() {
+    let legacy = serde_json::json!({
+        "schema_version": 1,
+        "revision": 3,
+        "components": {},
+        "activity": [],
+        "settings": {
+            "release_channel": "stable",
+            "locale": "system",
+            "check_updates": true,
+            "auto_download": false,
+            "diagnostic_logs": true,
+            "onboarding_complete": true,
+            "component_filter": "all"
+        },
+        "active_operation": null
+    });
+
+    let state: ManagerState =
+        serde_json::from_value(legacy).expect("a pre-theme state file must still load");
+    assert_eq!(state.settings.theme, StoredTheme::Dark);
+}
+
+#[test]
+fn every_theme_choice_has_copy_in_both_locales() {
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let c = copy(locale);
+        for label in [
+            c.appearance,
+            c.appearance_description,
+            c.dark_theme,
+            c.light_theme,
+            c.system_default,
+        ] {
+            assert!(!label.trim().is_empty());
+        }
+    }
 }
 
 #[test]

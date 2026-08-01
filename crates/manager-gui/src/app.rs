@@ -1,17 +1,19 @@
 use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
 use gpui::*;
 use gpui_component::input::{InputEvent, InputState};
+use gpui_component::{Theme, ThemeMode};
 use manager_core::{
     ActivityKind, ActivityRecord, ComponentFilterPreference, ComponentStatus, DesiredOperation,
     DiskSpaceCheck, DoctorCheck, HealthState, Manager, ManagerSettings, ManagerState, MockOutcome,
-    MockSystemProfile, OperationProgress, OperationStage, PlanStep, ReleaseChannel,
-    RestartRequirement, StoredLocale, TransactionPlan,
+    OperationProgress, OperationStage, PlanStep, ReleaseChannel, RestartRequirement, StoredLocale,
+    StoredTheme, TransactionPlan,
 };
+use manager_platform::MockPlatform;
 use manager_store::{JsonStore, StateStore};
 
 use crate::{
     i18n::{Locale, copy},
-    model::{ActivityFilter, ComponentInfo, DetailTab, Page, ui_id_for_component},
+    model::{ActivityFilter, ComponentInfo, DetailTab, Page},
 };
 
 pub(crate) struct ManagerApp {
@@ -47,6 +49,7 @@ impl ManagerApp {
             Ok(_) | Err(_) => (ManagerState::default(), Some(AppError::Storage)),
         };
         let locale = locale_from_stored(state.settings.locale);
+        apply_theme(state.settings.theme, window, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(copy(locale).search));
         let subscription = Self::subscribe_to_search(&search, window, cx);
         let page = if state.active_operation.is_some() {
@@ -136,6 +139,24 @@ impl ManagerApp {
         cx.notify();
     }
 
+    pub(crate) fn set_theme(
+        &mut self,
+        theme: StoredTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut candidate = self.state.clone();
+        let mut settings = candidate.settings.clone();
+        settings.theme = theme;
+        candidate.update_settings(settings);
+        if !self.commit_state(candidate) {
+            cx.notify();
+            return;
+        }
+        apply_theme(theme, window, cx);
+        cx.notify();
+    }
+
     pub(crate) fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(copy(self.locale).search));
         let subscription = Self::subscribe_to_search(&search, window, cx);
@@ -178,8 +199,8 @@ impl ManagerApp {
         }
     }
 
-    pub(crate) fn prepare_component_change(&mut self, id: &'static str, cx: &mut Context<Self>) {
-        let Some(component) = self.component_by_ui_id(id) else {
+    pub(crate) fn prepare_component_change(&mut self, id: &ComponentId, cx: &mut Context<Self>) {
+        let Some(component) = self.component_by_id(id) else {
             self.show_planning_error(Page::Components, cx);
             return;
         };
@@ -200,15 +221,11 @@ impl ManagerApp {
 
     pub(crate) fn prepare_component_operation(
         &mut self,
-        id: &'static str,
+        id: &ComponentId,
         operation: DesiredOperation,
         cx: &mut Context<Self>,
     ) {
-        let Some(core_id) = core_component_id(id) else {
-            self.show_planning_error(Page::Components, cx);
-            return;
-        };
-        match self.manager.plan(&self.state, &core_id, operation) {
+        match self.manager.plan(&self.state, id, operation) {
             Ok(plan) => {
                 self.pending_plan = Some(plan);
                 self.planning_error = None;
@@ -348,38 +365,33 @@ impl ManagerApp {
         self.manager
             .manifests()
             .filter_map(|manifest| {
-                let ui_id = ui_id_for_component(&manifest.id)?;
                 let record = self.state.component(&manifest.id);
                 let state = self.manager.status(&self.state, &manifest.id).ok()?;
-                Some(ComponentInfo {
-                    ui_id,
-                    core_id: manifest.id.clone(),
-                    installed_version: record.and_then(|record| record.installed_version.clone()),
-                    enabled: record.is_some_and(|record| record.enabled),
-                    available_version: manifest.version.to_string(),
+                Some(ComponentInfo::present(
+                    manifest,
+                    record,
                     state,
-                    health: record.map(|record| record.health).unwrap_or_default(),
-                    restart_requirement: RestartRequirement::NotDeclared,
-                    restore_available: record
-                        .and_then(|record| record.restore_snapshot.as_ref())
-                        .is_some(),
-                    kind: manifest.component_type.clone().into(),
-                    paths: manifest.paths.clone(),
-                    release_notes: manifest.release_notes.clone(),
-                })
+                    translated_component(self.locale, &manifest.id),
+                ))
             })
             .collect()
     }
 
-    pub(crate) fn component_by_ui_id(&self, id: &str) -> Option<ComponentInfo> {
+    pub(crate) fn component_by_id(&self, id: &ComponentId) -> Option<ComponentInfo> {
         self.components()
             .into_iter()
-            .find(|component| component.ui_id == id)
+            .find(|component| &component.core_id == id)
     }
 
     pub(crate) fn plan_component_name(&self, id: &ComponentId) -> String {
-        ui_id_for_component(id)
-            .map(|ui_id| self.component_name(ui_id).to_string())
+        translated_component(self.locale, id)
+            .map(|translation| translation.name.to_string())
+            .or_else(|| {
+                self.manager
+                    .manifests()
+                    .find(|manifest| &manifest.id == id)
+                    .map(|manifest| manifest.display_name.clone())
+            })
             .unwrap_or_else(|| id.to_string())
     }
 
@@ -419,6 +431,14 @@ impl ManagerApp {
             .unwrap_or_default()
     }
 
+    /// The interruption the pending transaction as a whole would require.
+    pub(crate) fn pending_restart_requirement(&self) -> RestartRequirement {
+        self.pending_plan
+            .as_ref()
+            .map(|plan| plan.restart_requirement())
+            .unwrap_or(RestartRequirement::NotDeclared)
+    }
+
     pub(crate) fn pending_disk_space(&self) -> DiskSpaceCheck {
         self.pending_plan
             .as_ref()
@@ -434,46 +454,25 @@ impl ManagerApp {
             .unwrap_or_else(|| self.pending_steps())
     }
 
-    pub(crate) fn open_component(&mut self, id: &'static str, cx: &mut Context<Self>) {
-        self.page = Page::ComponentDetail(id);
+    pub(crate) fn open_component(&mut self, id: &ComponentId, cx: &mut Context<Self>) {
+        self.page = Page::ComponentDetail(id.clone());
         self.detail_tab = DetailTab::Overview;
         cx.notify();
     }
 
     pub(crate) fn selected_component(&self) -> Option<ComponentInfo> {
-        match self.page {
-            Page::ComponentDetail(id) => self.component_by_ui_id(id),
+        match &self.page {
+            Page::ComponentDetail(id) => self.component_by_id(id),
             _ => None,
         }
     }
 
-    pub(crate) fn purpose(&self, id: &str) -> &'static str {
-        let c = copy(self.locale);
-        match id {
-            "manager" => c.manager_purpose,
-            "monitor" => c.monitor_purpose,
-            "files" => c.files_purpose,
-            _ => c.none,
-        }
-    }
-
-    pub(crate) fn detail(&self, id: &str) -> &'static str {
-        let c = copy(self.locale);
-        match id {
-            "manager" => c.manager_detail,
-            "monitor" => c.monitor_detail,
-            "files" => c.files_detail,
-            _ => c.none,
-        }
-    }
-
-    pub(crate) fn component_name(&self, id: &str) -> &'static str {
-        let c = copy(self.locale);
-        match id {
-            "manager" => c.manager_name,
-            "monitor" => c.monitor_name,
-            "files" => c.files_name,
-            _ => c.manager_name,
+    /// Presentation text for a value a component did not declare.
+    pub(crate) fn declared_or_not(&self, value: &str) -> String {
+        if value.trim().is_empty() {
+            copy(self.locale).not_declared.to_string()
+        } else {
+            value.to_string()
         }
     }
 
@@ -482,7 +481,7 @@ impl ManagerApp {
             .unwrap_or_else(|| copy(self.locale).manager.to_string())
     }
 
-    pub(crate) fn page_is_active(&self, page: Page) -> bool {
+    pub(crate) fn page_is_active(&self, page: &Page) -> bool {
         match page {
             Page::Components => matches!(self.page, Page::Components | Page::ComponentDetail(_)),
             Page::Updates => matches!(
@@ -495,7 +494,7 @@ impl ManagerApp {
                     | Page::Restored
             ),
             Page::Health => matches!(self.page, Page::Health | Page::DoctorResults),
-            other => self.page == other,
+            other => &self.page == other,
         }
     }
 
@@ -587,14 +586,50 @@ impl ManagerApp {
     }
 }
 
-fn core_component_id(id: &str) -> Option<ComponentId> {
-    let core_id = match id {
-        "manager" => "better-manager",
-        "monitor" => "better-monitor",
-        "files" => "better-files-example",
-        _ => return None,
-    };
-    ComponentId::new(core_id).ok()
+/// Applies a stored theme choice to the running window. `System` follows the
+/// desktop appearance; the other two are explicit and override it.
+pub(crate) fn apply_theme(theme: StoredTheme, window: &mut Window, cx: &mut App) {
+    match theme {
+        StoredTheme::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
+        StoredTheme::Light => Theme::change(ThemeMode::Light, Some(window), cx),
+        StoredTheme::System => Theme::sync_system_appearance(Some(window), cx),
+    }
+}
+
+/// The copy this build ships for a first-party component.
+#[derive(Clone, Copy)]
+pub(crate) struct ComponentTranslation {
+    pub(crate) name: &'static str,
+    pub(crate) summary: &'static str,
+    pub(crate) detail: &'static str,
+}
+
+/// The copy this build ships for a first-party component. A component without
+/// a translation is presented from its own manifest instead of being dropped
+/// from the catalog.
+pub(crate) fn translated_component(
+    locale: Locale,
+    id: &ComponentId,
+) -> Option<ComponentTranslation> {
+    let c = copy(locale);
+    match id.as_str() {
+        "better-manager" => Some(ComponentTranslation {
+            name: c.manager_name,
+            summary: c.manager_purpose,
+            detail: c.manager_detail,
+        }),
+        "better-monitor" => Some(ComponentTranslation {
+            name: c.monitor_name,
+            summary: c.monitor_purpose,
+            detail: c.monitor_detail,
+        }),
+        "better-files-example" => Some(ComponentTranslation {
+            name: c.files_name,
+            summary: c.files_purpose,
+            detail: c.files_detail,
+        }),
+        _ => None,
+    }
 }
 
 fn catalog_manager() -> Manager {
@@ -606,10 +641,11 @@ fn catalog_manager() -> Manager {
     .into_iter()
     .map(|input| ComponentManifest::parse_yaml(input).expect("example manifest must be valid"))
     .collect::<Vec<_>>();
-    Manager::new(
+    Manager::probe(
         ComponentCatalog::from_manifests(manifests).expect("example catalog must be valid"),
-        MockSystemProfile::default(),
+        &MockPlatform::default(),
     )
+    .expect("the mock platform always reports a profile")
 }
 
 #[cfg(test)]

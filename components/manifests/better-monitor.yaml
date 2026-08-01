@@ -3,10 +3,15 @@ id: better-monitor
 display_name: Better Monitor
 component_type: diagnostic
 version: 0.1.0
+summary: Low-cost desktop observation with samples, incidents, and export.
+icon: monitor
+restart: application
 targets:
   distributions: [zorin, ubuntu]
   releases: [22.04, 24.04]
   architectures: [amd64, arm64]
+enhances:
+  - gnome-system-monitor
 artifact:
   url: https://github.com/TimLai666/better-os/releases/download/better-monitor-v0.1.0/better-monitor.deb
   sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb

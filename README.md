@@ -11,11 +11,15 @@ at a time. It is not a Linux distribution fork.
   transitions for install, update, enable, disable, verify, and restore.
 - `manager-store` persists only versioned local mock state with atomic writes,
   stale-writer protection, corrupt-state backup, and restart resume.
+- `manager-platform` owns the system capability, download, package, and
+  privileged-executor interfaces. Every shipped implementation is a mock, and
+  no shipped code path applies a package change.
 - `manager-cli` and `manager-gui` share that core API and never execute
   manifest lifecycle strings, APT, sudo, or shell commands.
 - `monitor-core` defines samples, incidents, inventory, and redacted exports.
 - `better-ui`, `manager-gui`, and `monitor-gui` provide the GPUI application
-  boundary and mock screens.
+  boundary and mock screens. Better Manager is dark by default and also offers
+  light and system appearances.
 
 ## Development
 
@@ -35,4 +39,5 @@ cargo run -p manager-cli -- --state-path /tmp/better-manager-state.json status b
 Read [`AGENTS.md`](AGENTS.md) before changing the project. The architecture
 and current handoff state live in [`ENG.md`](ENG.md) and
 [`delivery-status.md`](delivery-status.md). The manager screen behavior is
-defined in [`docs/manager-ux-logic.md`](docs/manager-ux-logic.md).
+defined in [`docs/manager-ux-logic.md`](docs/manager-ux-logic.md). Accepted
+decisions live in [`docs/decisions/`](docs/decisions/).

@@ -1,3 +1,4 @@
+use better_core::ComponentIcon;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
@@ -290,12 +291,16 @@ impl ManagerApp {
         }
     }
 
-    pub(crate) fn component_icon(&self, id: &str) -> IconName {
-        match id {
-            "manager" => IconName::Settings,
-            "monitor" => IconName::Inspector,
-            "files" => IconName::Folder,
-            _ => IconName::Inbox,
+    /// Maps the icon a manifest declares onto a shipped glyph. The manifest
+    /// chooses from a closed set, so this never guesses from a component ID.
+    pub(crate) fn component_icon(&self, icon: ComponentIcon) -> IconName {
+        match icon {
+            ComponentIcon::Manager => IconName::Settings,
+            ComponentIcon::Monitor => IconName::Inspector,
+            ComponentIcon::Files => IconName::Folder,
+            ComponentIcon::Launcher => IconName::LayoutDashboard,
+            ComponentIcon::Touchpad => IconName::Frame,
+            ComponentIcon::Generic => IconName::Inbox,
         }
     }
 
@@ -305,45 +310,45 @@ impl ManagerApp {
         cx: &mut Context<Self>,
     ) -> Button {
         let c = copy(self.locale);
-        let id = component.ui_id;
+        let id = component.core_id.clone();
         if self.is_pending(&component.core_id) {
-            return Button::new(format!("review-{id}"))
+            return Button::new(component.element_id("review"))
                 .label(c.review_changes)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.navigate(Page::ReviewChanges, cx);
                 }));
         }
         match component.state {
-            ComponentStatus::Available => Button::new(format!("install-{id}"))
+            ComponentStatus::Available => Button::new(component.element_id("install"))
                 .primary()
                 .label(c.install)
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.prepare_component_change(id, cx);
+                    this.prepare_component_change(&id, cx);
                 })),
-            ComponentStatus::UpdateAvailable => Button::new(format!("update-{id}"))
+            ComponentStatus::UpdateAvailable => Button::new(component.element_id("update"))
                 .primary()
                 .label(c.update)
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.prepare_component_change(id, cx);
+                    this.prepare_component_change(&id, cx);
                 })),
-            ComponentStatus::Disabled => Button::new(format!("enable-{id}"))
+            ComponentStatus::Disabled => Button::new(component.element_id("enable"))
                 .primary()
                 .label(c.enable)
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.prepare_component_change(id, cx);
+                    this.prepare_component_change(&id, cx);
                 })),
             ComponentStatus::RestoreAvailable
             | ComponentStatus::Failed
-            | ComponentStatus::Degraded => Button::new(format!("recover-{id}"))
+            | ComponentStatus::Degraded => Button::new(component.element_id("recover"))
                 .danger()
                 .label(c.view_recovery)
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.open_component(id, cx);
+                    this.open_component(&id, cx);
                 })),
-            _ => Button::new(format!("details-{id}"))
+            _ => Button::new(component.element_id("details"))
                 .label(c.details)
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.open_component(id, cx);
+                    this.open_component(&id, cx);
                 })),
         }
     }
@@ -354,7 +359,7 @@ impl ManagerApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let c = copy(self.locale);
-        let id = component.ui_id;
+        let id = component.core_id.clone();
         let can_change = !self.is_pending(&component.core_id)
             && component.state != ComponentStatus::Incompatible;
         let installed = component.installed_version.is_some();
@@ -368,39 +373,55 @@ impl ManagerApp {
         let restore_view = view.clone();
         let remove_view = view;
 
-        Button::new(format!("component-actions-{id}"))
+        Button::new(component.element_id("component-actions"))
             .ghost()
             .icon(IconName::Ellipsis)
             .tooltip(c.more_actions)
             .dropdown_menu(move |menu, window, _| {
+                let details_id = id.clone();
                 let menu = menu.item(PopupMenuItem::new(c.details).on_click(
                     window.listener_for(&details_view, move |this, _, _, cx| {
-                        this.open_component(id, cx)
+                        this.open_component(&details_id, cx)
                     }),
                 ));
                 let menu = if can_change && installed && enabled {
+                    let disable_id = id.clone();
                     menu.item(PopupMenuItem::new(c.disable).on_click(window.listener_for(
                         &disable_view,
                         move |this, _, _, cx| {
-                            this.prepare_component_operation(id, DesiredOperation::Disable, cx)
+                            this.prepare_component_operation(
+                                &disable_id,
+                                DesiredOperation::Disable,
+                                cx,
+                            )
                         },
                     )))
                 } else if can_change && installed {
+                    let enable_id = id.clone();
                     menu.item(PopupMenuItem::new(c.enable).on_click(window.listener_for(
                         &enable_view,
                         move |this, _, _, cx| {
-                            this.prepare_component_operation(id, DesiredOperation::Enable, cx)
+                            this.prepare_component_operation(
+                                &enable_id,
+                                DesiredOperation::Enable,
+                                cx,
+                            )
                         },
                     )))
                 } else {
                     menu
                 };
                 let menu = if can_change && installed {
+                    let verify_id = id.clone();
                     menu.item(
                         PopupMenuItem::new(c.retry_check).on_click(window.listener_for(
                             &verify_view,
                             move |this, _, _, cx| {
-                                this.prepare_component_operation(id, DesiredOperation::Verify, cx)
+                                this.prepare_component_operation(
+                                    &verify_id,
+                                    DesiredOperation::Verify,
+                                    cx,
+                                )
                             },
                         )),
                     )
@@ -409,18 +430,28 @@ impl ManagerApp {
                 };
                 let menu =
                     if can_change && restore_available {
+                        let restore_id = id.clone();
                         menu.item(PopupMenuItem::new(c.restore_previous).on_click(
                             window.listener_for(&restore_view, move |this, _, _, cx| {
-                                this.prepare_component_operation(id, DesiredOperation::Restore, cx)
+                                this.prepare_component_operation(
+                                    &restore_id,
+                                    DesiredOperation::Restore,
+                                    cx,
+                                )
                             }),
                         ))
                     } else {
                         menu
                     };
                 if can_change && installed {
+                    let remove_id = id.clone();
                     menu.separator().item(PopupMenuItem::new(c.remove).on_click(
                         window.listener_for(&remove_view, move |this, _, _, cx| {
-                            this.prepare_component_operation(id, DesiredOperation::Remove, cx)
+                            this.prepare_component_operation(
+                                &remove_id,
+                                DesiredOperation::Remove,
+                                cx,
+                            )
                         }),
                     ))
                 } else {
@@ -436,7 +467,6 @@ impl ManagerApp {
         compact: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let id = component.ui_id;
         let pending = self.is_pending(&component.core_id);
         let action = self.component_action_button(component, cx);
         let overflow = self.component_overflow_menu(component, cx);
@@ -464,19 +494,27 @@ impl ManagerApp {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .child(Icon::new(self.component_icon(id)).small()),
+                                .child(Icon::new(self.component_icon(component.icon)).small()),
                         )
                         .child(
                             v_flex()
                                 .min_w_0()
                                 .gap_1()
-                                .child(div().font_semibold().child(self.component_name(id)))
+                                .child(div().font_semibold().child(component.name.clone()))
                                 .child(
                                     div()
                                         .text_sm()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(self.purpose(id)),
-                                ),
+                                        .child(self.declared_or_not(&component.summary)),
+                                )
+                                .when_some(self.replacement_label(component), |view, label| {
+                                    view.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(label),
+                                    )
+                                }),
                         ),
                 )
                 .child(
@@ -590,9 +628,33 @@ impl ManagerApp {
         &self,
         requirement: RestartRequirement,
     ) -> &'static str {
+        let c = copy(self.locale);
         match requirement {
-            RestartRequirement::NotDeclared => copy(self.locale).not_declared,
+            RestartRequirement::NotDeclared => c.not_declared,
+            RestartRequirement::NotRequired => c.restart_not_required,
+            RestartRequirement::RestartApplication => c.restart_application,
+            RestartRequirement::LogOut => c.restart_log_out,
+            RestartRequirement::Reboot => c.restart_reboot,
         }
+    }
+
+    /// What a component takes over from or augments, as one line. Returns
+    /// `None` when the manifest declares neither.
+    pub(crate) fn replacement_label(&self, component: &ComponentInfo) -> Option<String> {
+        let c = copy(self.locale);
+        self.declared_relationship(c.replaces_label, &component.replaces)
+            .or_else(|| self.declared_relationship(c.enhances_label, &component.enhances))
+    }
+
+    pub(crate) fn declared_relationship(
+        &self,
+        label: &'static str,
+        values: &[String],
+    ) -> Option<String> {
+        if values.is_empty() {
+            return None;
+        }
+        Some(format!("{label}: {}", values.join(", ")))
     }
 
     pub(crate) fn error_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

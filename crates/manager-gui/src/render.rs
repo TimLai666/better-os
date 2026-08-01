@@ -10,7 +10,7 @@ impl ManagerApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        match self.page {
+        match &self.page {
             Page::FirstRun => self.first_run_page(compact, cx),
             Page::Overview => self.overview_page(compact, cx),
             Page::Components => self.components_page(compact, cx),

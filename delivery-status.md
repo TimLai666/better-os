@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Better Manager Issue #8 handed off for branch review
+Better Manager Issue #8 gap closure handed off for branch review
 
 ## Stage Objective
 
@@ -14,6 +14,7 @@ Issue #8 Better Manager UI verifiable before adding real system integration.
 - Shared manifest schema and validation
 - Manager dry-run planning and CLI
 - Better Manager GPUI shell, shared mock lifecycle, persistence, and acceptance coverage
+- Manifest-declared presentation, platform boundary, and dark-first appearance
 - Monitor observation contracts
 - Release packaging contract and clean-install verification plan
 
@@ -28,10 +29,13 @@ Issue #8 Better Manager UI verifiable before adding real system integration.
 | M5 | release packaging contract | agent | done | `docs/release-packaging.md` and ticket 06 acceptance criteria |
 | M6 | target-compatible `.deb` packaging | agent | done | GitHub Actions Ubuntu 22.04/24.04 amd64 and native arm64 matrix build, dependency metadata check, checksum verification |
 | M7 | Better Manager Issue #8 functional acceptance | agent | done | Chefer AppCipe passed fmt, workspace check/test, clippy, CLI lifecycle smoke, and GUI headless smoke |
+| M8 | Issue #8 remaining gap closure | agent | done | manifest presentation and restart metadata, `manager-platform`, manifest-driven GUI, dark-first appearance, ADRs 0002–0004 |
 
 ## Current Blockers
 
-Issue #8 has no active implementation blocker. Ticket 06 still needs public
+Issue #8 has no active implementation blocker. Every acceptance criterion in
+the issue is now met, and the five remaining gaps from the branch audit are
+closed under ticket 08. Ticket 06 still needs public
 target-specific release assets, manifest checksum verification, and the
 approved maintainer contact before publishing. The current matrix produces four
 same-named package assets while each manifest has one artifact checksum, so the
@@ -90,6 +94,26 @@ the manifest checksums from those public assets.
   preserve truthful review screens without inventing release data
   timestamp: 2026-07-31
   impacted_ticket_ids: [07]
+- decision: open Better Manager dark by default and keep light and
+  system-follow as explicit stored choices
+  rationale: Issue #8 states a dark-first UI direction, and the shipped
+  light-only slice contradicted it; see ADR 0002
+  timestamp: 2026-08-01
+  impacted_ticket_ids: [08]
+- decision: move every host-facing interface into `manager-platform` and keep
+  each shipped implementation a mock that refuses to apply a package change
+  rationale: Issue #8 lists the crate boundary and requires the privileged
+  executor to stay an interface until its security design is approved; a mock
+  that returned success would claim the host changed; see ADR 0003
+  timestamp: 2026-08-01
+  impacted_ticket_ids: [08]
+- decision: declare component summary, icon, and restart scope in the manifest
+  with a closed icon set, and present untranslated components from those values
+  rationale: the GUI matched three hardcoded component IDs and dropped every
+  other component; manifests are untrusted, so the icon set stays closed; see
+  ADR 0004
+  timestamp: 2026-08-01
+  impacted_ticket_ids: [08]
 
 ## Source Links
 
@@ -104,6 +128,7 @@ the manifest checksums from those public assets.
 - [CI run 30625827340](https://github.com/TimLai666/better-os/actions/runs/30625827340)
 - [Main CI run 30631266909](https://github.com/TimLai666/better-os/actions/runs/30631266909)
 - [Tickets](docs/tickets/)
+- [Decisions](docs/decisions/)
 
 ## Handoff Notes
 
@@ -135,3 +160,12 @@ The final disposable Chefer AppCipe passed `cargo fmt --all -- --check`,
 package mutation ran.
 The temporary `better-manager-gpui-complete/` directory was moved to the
 desktop trash after the destination file set was verified.
+
+A branch audit against the Issue #8 text then found five gaps outside the
+acceptance-criteria list: no dark theme, no `manager-platform` crate,
+`replaces`/`enhances` never surfaced, component icon and purpose hardcoded to
+three component IDs, and a `RestartRequirement` with only `NotDeclared`. All
+five are closed under ticket 08, with ADRs 0002, 0003, and 0004 recording the
+decisions Issue #8 asked to be written down rather than made silently. The
+hardcoded-ID map also silently dropped any component outside that list from
+the GUI; presentation is now manifest-driven, so it does not.

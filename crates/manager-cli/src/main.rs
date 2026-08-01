@@ -1,9 +1,10 @@
 use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
 use clap::{Parser, Subcommand, ValueEnum};
 use manager_core::{
-    DesiredOperation, DiskSpaceCheck, Manager, ManagerState, MockOutcome, MockSystemProfile,
-    OperationProgress, OperationStage, TransactionPlan,
+    DesiredOperation, DiskSpaceCheck, Manager, ManagerState, MockOutcome, OperationProgress,
+    OperationStage, TransactionPlan,
 };
+use manager_platform::MockPlatform;
 use manager_store::{JsonStore, StateStore};
 use std::path::PathBuf;
 
@@ -160,6 +161,10 @@ fn print_plan(plan: &TransactionPlan) {
         plan.state_revision(),
         plan.steps().len()
     );
+    println!(
+        "transaction restart requirement: {:?}",
+        plan.restart_requirement()
+    );
     for step in plan.steps() {
         let before = step.before_version.as_deref().unwrap_or("not installed");
         let after = step.after_version.as_deref().unwrap_or("removed");
@@ -189,6 +194,22 @@ fn print_plan(plan: &TransactionPlan) {
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(", ")
+            }
+        );
+        println!(
+            "  replaces: {}",
+            if step.replaces.is_empty() {
+                "none".to_string()
+            } else {
+                step.replaces.join(", ")
+            }
+        );
+        println!(
+            "  enhances: {}",
+            if step.enhances.is_empty() {
+                "none".to_string()
+            } else {
+                step.enhances.join(", ")
             }
         );
         println!(
@@ -295,7 +316,7 @@ fn run_plan(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let manager = Manager::new(load_catalog()?, MockSystemProfile::default());
+    let manager = Manager::probe(load_catalog()?, &MockPlatform::default())?;
     let store = store_for(cli.state_path);
     let mut state = load_state(&store, &manager)?;
 

@@ -24,13 +24,13 @@ impl ManagerApp {
     ) -> SidebarMenuItem {
         let item = SidebarMenuItem::new(label)
             .icon(icon)
-            .active(self.page_is_active(page));
+            .active(self.page_is_active(&page));
         let item = match suffix {
             Some(suffix) => item.suffix(move |_, _| div().text_xs().child(suffix.clone())),
             None => item,
         };
         item.on_click(cx.listener(move |this, _, _, cx| {
-            this.navigate(page, cx);
+            this.navigate(page.clone(), cx);
         }))
     }
 

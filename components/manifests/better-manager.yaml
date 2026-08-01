@@ -3,6 +3,9 @@ id: better-manager
 display_name: Better Manager
 component_type: diagnostic
 version: 0.1.0
+summary: Installs, updates, verifies, and rolls back every Better OS component.
+icon: manager
+restart: none
 targets:
   distributions: [zorin, ubuntu]
   releases: [22.04, 24.04]

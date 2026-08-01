@@ -1,8 +1,8 @@
 use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
 use manager_core::{
     ComponentStatus, DesiredOperation, DiskSpaceCheck, HealthState, Manager, ManagerError,
-    ManagerState, MockOutcome, MockSystemProfile, OperationProgress, OperationStage,
-    RecoveryStatus,
+    ManagerState, MockOutcome, OperationProgress, OperationStage, RecoveryStatus,
+    RestartRequirement, SystemProfile,
 };
 
 fn catalog() -> ComponentCatalog {
@@ -61,13 +61,13 @@ fn custom_manifest(
 fn custom_manager(manifests: Vec<ComponentManifest>) -> Manager {
     Manager::new(
         ComponentCatalog::from_manifests(manifests).unwrap(),
-        MockSystemProfile::default(),
+        SystemProfile::default(),
     )
 }
 
 #[test]
 fn verification_failure_keeps_evidence_and_restores_the_snapshot_after_recheck() {
-    let manager = Manager::new(catalog(), MockSystemProfile::default());
+    let manager = Manager::new(catalog(), SystemProfile::default());
     let component = id("better-monitor");
     let mut state = ManagerState::default();
     state.set_installed(component.clone(), "0.0.1", true);
@@ -134,7 +134,7 @@ fn verification_failure_keeps_evidence_and_restores_the_snapshot_after_recheck()
 
 #[test]
 fn verification_failure_preserves_the_previous_update_snapshot() {
-    let manager = Manager::new(catalog(), MockSystemProfile::default());
+    let manager = Manager::new(catalog(), SystemProfile::default());
     let component = id("better-monitor");
     let mut state = ManagerState::default();
     state.set_installed(component.clone(), "0.0.1", true);
@@ -193,7 +193,7 @@ fn verification_failure_preserves_the_previous_update_snapshot() {
 
 #[test]
 fn successful_verification_keeps_the_previous_update_snapshot() {
-    let manager = Manager::new(catalog(), MockSystemProfile::default());
+    let manager = Manager::new(catalog(), SystemProfile::default());
     let component = id("better-monitor");
     let mut state = ManagerState::default();
     state.set_installed(component.clone(), "0.0.1", true);
@@ -230,9 +230,9 @@ fn planning_checks_declared_disk_space_and_exposes_release_notes() {
     let component = id("component");
     let manager = Manager::new(
         ComponentCatalog::from_manifests([manifest.clone()]).unwrap(),
-        MockSystemProfile {
+        SystemProfile {
             free_disk_bytes: Some(4096),
-            ..MockSystemProfile::default()
+            ..SystemProfile::default()
         },
     );
 
@@ -259,9 +259,9 @@ fn planning_checks_declared_disk_space_and_exposes_release_notes() {
 
     let insufficient_manager = Manager::new(
         ComponentCatalog::from_manifests([manifest]).unwrap(),
-        MockSystemProfile {
+        SystemProfile {
             free_disk_bytes: Some(2047),
-            ..MockSystemProfile::default()
+            ..SystemProfile::default()
         },
     );
     assert!(matches!(
@@ -279,7 +279,7 @@ fn planning_checks_declared_disk_space_and_exposes_release_notes() {
 
 #[test]
 fn failure_before_component_changes_does_not_invent_a_restore_point() {
-    let manager = Manager::new(catalog(), MockSystemProfile::default());
+    let manager = Manager::new(catalog(), SystemProfile::default());
     let component = id("better-monitor");
     let mut state = ManagerState::default();
 
@@ -302,7 +302,7 @@ fn failure_before_component_changes_does_not_invent_a_restore_point() {
 
 #[test]
 fn a_failed_restore_keeps_the_original_restore_point() {
-    let manager = Manager::new(catalog(), MockSystemProfile::default());
+    let manager = Manager::new(catalog(), SystemProfile::default());
     let component = id("better-monitor");
     let mut state = ManagerState::default();
     state.set_installed(component.clone(), "0.0.1", true);
@@ -439,7 +439,7 @@ fn planning_rejects_removing_an_installed_dependency() {
 
 #[test]
 fn install_disable_enable_verify_remove_and_restore_share_one_lifecycle() {
-    let manager = Manager::new(catalog(), MockSystemProfile::default());
+    let manager = Manager::new(catalog(), SystemProfile::default());
     let component = id("better-monitor");
     let mut state = ManagerState::default();
 
@@ -485,7 +485,7 @@ fn install_disable_enable_verify_remove_and_restore_share_one_lifecycle() {
 
 #[test]
 fn update_all_is_stable_and_excludes_components_that_are_already_current() {
-    let manager = Manager::new(catalog(), MockSystemProfile::default());
+    let manager = Manager::new(catalog(), SystemProfile::default());
     let mut state = ManagerState::default();
     state.set_installed(id("better-manager"), "0.1.0", true);
     state.set_installed(id("better-monitor"), "0.0.1", true);
@@ -502,7 +502,7 @@ fn update_all_is_stable_and_excludes_components_that_are_already_current() {
 
 #[test]
 fn disable_enable_and_verify_use_one_persistable_lifecycle() {
-    let manager = Manager::new(catalog(), MockSystemProfile::default());
+    let manager = Manager::new(catalog(), SystemProfile::default());
     let component = id("better-monitor");
     let mut state = ManagerState::default();
     state.set_installed(component.clone(), "0.1.0", true);
@@ -560,7 +560,7 @@ fn disable_enable_and_verify_use_one_persistable_lifecycle() {
 
 #[test]
 fn rejects_an_active_state_that_skips_a_lifecycle_stage() {
-    let manager = Manager::new(catalog(), MockSystemProfile::default());
+    let manager = Manager::new(catalog(), SystemProfile::default());
     let component = id("better-monitor");
     let mut state = ManagerState::default();
     let plan = manager
@@ -580,7 +580,7 @@ fn rejects_an_active_state_that_skips_a_lifecycle_stage() {
 
 #[test]
 fn restore_can_report_partial_and_manual_recovery_without_hiding_the_result() {
-    let manager = Manager::new(catalog(), MockSystemProfile::default());
+    let manager = Manager::new(catalog(), SystemProfile::default());
     let component = id("better-monitor");
     let mut state = ManagerState::default();
     state.set_installed(component.clone(), "0.0.1", true);
@@ -625,6 +625,130 @@ fn restore_can_report_partial_and_manual_recovery_without_hiding_the_result() {
         state.component(&component).unwrap().recovery,
         Some(RecoveryStatus::ManualRecoveryRequired)
     );
+}
+
+#[test]
+fn a_plan_carries_the_declared_replacements_enhancements_and_restart_scope() {
+    let manifest = ComponentManifest::parse_yaml(include_str!(
+        "../../../components/manifests/better-files-example.yaml"
+    ))
+    .unwrap();
+    let component = manifest.id.clone();
+    let manager = Manager::new(
+        ComponentCatalog::from_manifests([manifest]).unwrap(),
+        SystemProfile {
+            release: "24.04".to_string(),
+            ..SystemProfile::default()
+        },
+    );
+
+    let plan = manager
+        .plan(
+            &ManagerState::default(),
+            &component,
+            DesiredOperation::Install,
+        )
+        .unwrap();
+
+    assert_eq!(plan.steps()[0].replaces, vec!["org.gnome.Nautilus"]);
+    assert!(plan.steps()[0].enhances.is_empty());
+    assert_eq!(
+        plan.steps()[0].restart_requirement,
+        RestartRequirement::LogOut
+    );
+    assert_eq!(plan.replaces(), vec!["org.gnome.Nautilus".to_string()]);
+    assert_eq!(plan.restart_requirement(), RestartRequirement::LogOut);
+    assert!(plan.restart_requirement().interrupts_session());
+}
+
+#[test]
+fn a_plan_reports_declared_enhancements_without_claiming_a_replacement() {
+    let manager = Manager::new(catalog(), SystemProfile::default());
+
+    let plan = manager
+        .plan(
+            &ManagerState::default(),
+            &id("better-monitor"),
+            DesiredOperation::Install,
+        )
+        .unwrap();
+
+    assert_eq!(plan.enhances(), vec!["gnome-system-monitor".to_string()]);
+    assert!(plan.replaces().is_empty());
+    assert_eq!(
+        plan.restart_requirement(),
+        RestartRequirement::RestartApplication
+    );
+}
+
+#[test]
+fn verification_does_not_claim_a_replacement_or_a_session_interruption() {
+    let manager = Manager::new(catalog(), SystemProfile::default());
+    let component = id("better-monitor");
+    let mut state = ManagerState::default();
+    state.set_installed(component.clone(), "0.1.0", true);
+
+    let plan = manager
+        .plan(&state, &component, DesiredOperation::Verify)
+        .unwrap();
+
+    assert!(plan.steps()[0].replaces.is_empty());
+    assert!(plan.steps()[0].enhances.is_empty());
+    assert_eq!(plan.restart_requirement(), RestartRequirement::NotRequired);
+    assert!(!plan.restart_requirement().interrupts_session());
+}
+
+#[test]
+fn an_undeclared_restart_scope_is_never_reported_as_not_required() {
+    let manager = custom_manager(vec![custom_manifest("component", "1.0.0", &[], &[])]);
+
+    let plan = manager
+        .plan(
+            &ManagerState::default(),
+            &id("component"),
+            DesiredOperation::Install,
+        )
+        .unwrap();
+    assert_eq!(plan.restart_requirement(), RestartRequirement::NotDeclared);
+
+    assert_eq!(
+        RestartRequirement::widest([
+            RestartRequirement::NotRequired,
+            RestartRequirement::NotDeclared,
+        ]),
+        RestartRequirement::NotDeclared
+    );
+    assert_eq!(
+        RestartRequirement::widest([
+            RestartRequirement::NotDeclared,
+            RestartRequirement::Reboot,
+            RestartRequirement::RestartApplication,
+        ]),
+        RestartRequirement::Reboot
+    );
+    assert_eq!(
+        RestartRequirement::widest([]),
+        RestartRequirement::NotDeclared
+    );
+}
+
+#[test]
+fn the_manager_takes_host_capabilities_from_the_platform_backend() {
+    let platform = manager_platform::MockPlatform::new(SystemProfile {
+        distribution: "zorin".to_string(),
+        release: "18".to_string(),
+        architecture: "arm64".to_string(),
+        free_disk_bytes: Some(8192),
+    });
+
+    let manager = Manager::probe(catalog(), &platform).unwrap();
+
+    assert_eq!(manager.profile().distribution, "zorin");
+    assert_eq!(manager.profile().free_disk_bytes, Some(8192));
+    assert!(matches!(
+        manager.status(&ManagerState::default(), &id("better-monitor")),
+        Ok(ComponentStatus::Incompatible)
+    ));
 }
 
 fn complete(

@@ -45,6 +45,38 @@ pub enum ComponentType {
     Diagnostic,
 }
 
+/// The presentation icon a component asks for. This is a closed set so an
+/// untrusted manifest cannot make a presentation layer load arbitrary assets,
+/// and so a missing value stays visibly generic instead of being guessed from
+/// the component ID.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ComponentIcon {
+    Manager,
+    Monitor,
+    Files,
+    Launcher,
+    Touchpad,
+    #[default]
+    Generic,
+}
+
+/// How far a session must be interrupted before a component change takes
+/// effect. A manifest that omits this stays undeclared; the manager must not
+/// invent a scope.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartScope {
+    None,
+    Application,
+    Logout,
+    Reboot,
+}
+
+/// The longest summary a component row can show without crowding out its
+/// version, state, and action at the narrowest supported window width.
+pub const MAX_SUMMARY_LENGTH: usize = 120;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ComponentManifest {
     pub schema_version: u32,
@@ -52,6 +84,15 @@ pub struct ComponentManifest {
     pub display_name: String,
     pub component_type: ComponentType,
     pub version: Version,
+    /// One line describing what the component is for.
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub icon: ComponentIcon,
+    /// Declared restart or logout requirement. `None` means the manifest does
+    /// not declare one.
+    #[serde(default)]
+    pub restart: Option<RestartScope>,
     pub targets: TargetMatrix,
     #[serde(default)]
     pub replaces: Vec<String>,
@@ -89,6 +130,14 @@ impl ComponentManifest {
         }
         if self.display_name.trim().is_empty() {
             return Err(ManifestError::MissingField("display_name"));
+        }
+        if let Some(summary) = &self.summary {
+            if summary.trim().is_empty() {
+                return Err(ManifestError::MissingField("summary"));
+            }
+            if summary.chars().count() > MAX_SUMMARY_LENGTH {
+                return Err(ManifestError::SummaryTooLong(summary.chars().count()));
+            }
         }
         if self.targets.distributions.is_empty()
             || self.targets.releases.is_empty()
@@ -189,6 +238,8 @@ pub enum ManifestError {
     InvalidArtifactSize,
     #[error("release notes must not contain an empty entry")]
     EmptyReleaseNote,
+    #[error("summary is {0} characters and exceeds the {MAX_SUMMARY_LENGTH} character limit")]
+    SummaryTooLong(usize),
     #[error("component {0} conflicts with itself")]
     SelfConflict(ComponentId),
     #[error("duplicate component id: {0}")]
@@ -354,6 +405,57 @@ mod tests {
         assert!(matches!(
             ComponentManifest::parse_yaml(&input),
             Err(ManifestError::InvalidArtifactSize)
+        ));
+    }
+
+    #[test]
+    fn defaults_presentation_and_restart_metadata_when_undeclared() {
+        let manifest = ComponentManifest::parse_yaml(&yaml("better-monitor", None, None)).unwrap();
+
+        assert_eq!(manifest.summary, None);
+        assert_eq!(manifest.icon, ComponentIcon::Generic);
+        assert_eq!(manifest.restart, None);
+    }
+
+    #[test]
+    fn parses_declared_presentation_and_restart_metadata() {
+        let input = yaml("better-monitor", None, None)
+            + "summary: Low-cost desktop observation\nicon: monitor\nrestart: logout\n";
+        let manifest = ComponentManifest::parse_yaml(&input).unwrap();
+
+        assert_eq!(
+            manifest.summary.as_deref(),
+            Some("Low-cost desktop observation")
+        );
+        assert_eq!(manifest.icon, ComponentIcon::Monitor);
+        assert_eq!(manifest.restart, Some(RestartScope::Logout));
+    }
+
+    #[test]
+    fn rejects_an_empty_summary() {
+        let input = yaml("better-monitor", None, None) + "summary: '   '\n";
+        assert!(matches!(
+            ComponentManifest::parse_yaml(&input),
+            Err(ManifestError::MissingField("summary"))
+        ));
+    }
+
+    #[test]
+    fn rejects_a_summary_longer_than_the_row_budget() {
+        let input =
+            yaml("better-monitor", None, None) + &format!("summary: '{}'\n", "n".repeat(121));
+        assert!(matches!(
+            ComponentManifest::parse_yaml(&input),
+            Err(ManifestError::SummaryTooLong(121))
+        ));
+    }
+
+    #[test]
+    fn rejects_an_unknown_icon_key() {
+        let input = yaml("better-monitor", None, None) + "icon: spreadsheet\n";
+        assert!(matches!(
+            ComponentManifest::parse_yaml(&input),
+            Err(ManifestError::Parse(_))
         ));
     }
 

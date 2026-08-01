@@ -4,7 +4,11 @@
 //! interprets them as shell commands, package-manager invocations, or system
 //! mutation. It only produces and advances deterministic mock state.
 
-use better_core::{ComponentCatalog, ComponentId, ComponentManifest, ComponentType, ManifestError};
+use better_core::{
+    ComponentCatalog, ComponentId, ComponentManifest, ComponentType, ManifestError, RestartScope,
+};
+pub use manager_platform::SystemProfile;
+use manager_platform::{PlatformError, SystemCapabilities};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,6 +33,17 @@ pub enum StoredLocale {
     ZhTw,
 }
 
+/// Better OS is dark-first: a manager that has never been configured opens
+/// dark, and the other two values are explicit user choices.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredTheme {
+    #[default]
+    Dark,
+    Light,
+    System,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentFilterPreference {
@@ -44,6 +59,9 @@ pub enum ComponentFilterPreference {
 pub struct ManagerSettings {
     pub release_channel: ReleaseChannel,
     pub locale: StoredLocale,
+    /// Older state files predate the theme choice and load as dark-first.
+    #[serde(default)]
+    pub theme: StoredTheme,
     pub check_updates: bool,
     pub auto_download: bool,
     pub diagnostic_logs: bool,
@@ -56,6 +74,7 @@ impl Default for ManagerSettings {
         Self {
             release_channel: ReleaseChannel::Stable,
             locale: StoredLocale::System,
+            theme: StoredTheme::Dark,
             check_updates: true,
             auto_download: false,
             diagnostic_logs: true,
@@ -136,11 +155,52 @@ pub enum HealthState {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// How far a session must be interrupted before a planned change takes effect.
+/// A manifest that declares nothing stays `NotDeclared`; the manager must not
+/// downgrade an undeclared component to "no restart needed".
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RestartRequirement {
-    /// Manifests currently do not expose restart metadata. Do not invent it.
+    #[default]
     NotDeclared,
+    NotRequired,
+    RestartApplication,
+    LogOut,
+    Reboot,
+}
+
+impl From<Option<RestartScope>> for RestartRequirement {
+    fn from(scope: Option<RestartScope>) -> Self {
+        match scope {
+            None => Self::NotDeclared,
+            Some(RestartScope::None) => Self::NotRequired,
+            Some(RestartScope::Application) => Self::RestartApplication,
+            Some(RestartScope::Logout) => Self::LogOut,
+            Some(RestartScope::Reboot) => Self::Reboot,
+        }
+    }
+}
+
+impl RestartRequirement {
+    /// Whether the user has to interrupt something before the change applies.
+    pub fn interrupts_session(self) -> bool {
+        matches!(self, Self::RestartApplication | Self::LogOut | Self::Reboot)
+    }
+
+    /// The requirement a whole transaction inherits, which is the widest
+    /// interruption any of its steps declares.
+    pub fn widest(steps: impl IntoIterator<Item = Self>) -> Self {
+        steps
+            .into_iter()
+            .max_by_key(|requirement| match requirement {
+                Self::NotRequired => 0,
+                Self::NotDeclared => 1,
+                Self::RestartApplication => 2,
+                Self::LogOut => 3,
+                Self::Reboot => 4,
+            })
+            .unwrap_or(Self::NotDeclared)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -254,6 +314,13 @@ pub struct PlanStep {
     pub after_version: Option<String>,
     pub dependencies: Vec<ComponentId>,
     pub conflicts: Vec<ComponentId>,
+    /// Third-party software this component takes over from, as declared by the
+    /// manifest. Reviewers need this before approving a replacement.
+    #[serde(default)]
+    pub replaces: Vec<String>,
+    /// Third-party software this component augments without displacing.
+    #[serde(default)]
+    pub enhances: Vec<String>,
     pub paths: Vec<String>,
     pub restart_requirement: RestartRequirement,
     pub estimated_download_bytes: Option<u64>,
@@ -299,6 +366,31 @@ impl TransactionPlan {
 
     pub fn disk_space(&self) -> DiskSpaceCheck {
         self.disk_space
+    }
+
+    /// The interruption the whole transaction inherits from its steps.
+    pub fn restart_requirement(&self) -> RestartRequirement {
+        RestartRequirement::widest(self.steps.iter().map(|step| step.restart_requirement))
+    }
+
+    /// Third-party software this transaction takes over from, deduplicated
+    /// across steps.
+    pub fn replaces(&self) -> Vec<String> {
+        Self::collect(self.steps.iter().flat_map(|step| step.replaces.iter()))
+    }
+
+    /// Third-party software this transaction augments, deduplicated across
+    /// steps.
+    pub fn enhances(&self) -> Vec<String> {
+        Self::collect(self.steps.iter().flat_map(|step| step.enhances.iter()))
+    }
+
+    fn collect<'a>(values: impl Iterator<Item = &'a String>) -> Vec<String> {
+        values
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 }
 
@@ -519,25 +611,6 @@ fn validate_component_record(
     Ok(())
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MockSystemProfile {
-    pub distribution: String,
-    pub release: String,
-    pub architecture: String,
-    pub free_disk_bytes: Option<u64>,
-}
-
-impl Default for MockSystemProfile {
-    fn default() -> Self {
-        Self {
-            distribution: "ubuntu".to_string(),
-            release: "24.04".to_string(),
-            architecture: "amd64".to_string(),
-            free_disk_bytes: None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MockOutcome {
     Succeed,
@@ -656,12 +729,22 @@ pub enum ManagerError {
 #[derive(Clone)]
 pub struct Manager {
     catalog: ComponentCatalog,
-    profile: MockSystemProfile,
+    profile: SystemProfile,
 }
 
 impl Manager {
-    pub fn new(catalog: ComponentCatalog, profile: MockSystemProfile) -> Self {
+    pub fn new(catalog: ComponentCatalog, profile: SystemProfile) -> Self {
         Self { catalog, profile }
+    }
+
+    /// Builds a manager from whatever the platform reports about the host.
+    /// The manager never probes the system itself; capability reporting is the
+    /// platform crate's boundary.
+    pub fn probe(
+        catalog: ComponentCatalog,
+        capabilities: &dyn SystemCapabilities,
+    ) -> Result<Self, PlatformError> {
+        Ok(Self::new(catalog, capabilities.profile()?))
     }
 
     pub fn manifests(&self) -> impl Iterator<Item = &ComponentManifest> {
@@ -670,7 +753,7 @@ impl Manager {
         manifests.into_iter()
     }
 
-    pub fn profile(&self) -> &MockSystemProfile {
+    pub fn profile(&self) -> &SystemProfile {
         &self.profile
     }
 
@@ -1299,8 +1382,22 @@ impl Manager {
             after_version,
             dependencies,
             conflicts,
+            replaces: if operation.mutates_component() {
+                manifest.replaces.clone()
+            } else {
+                Vec::new()
+            },
+            enhances: if operation.mutates_component() {
+                manifest.enhances.clone()
+            } else {
+                Vec::new()
+            },
             paths: manifest.paths.clone(),
-            restart_requirement: RestartRequirement::NotDeclared,
+            restart_requirement: if operation.mutates_component() {
+                RestartRequirement::from(manifest.restart)
+            } else {
+                RestartRequirement::NotRequired
+            },
             estimated_download_bytes: uses_artifact
                 .then_some(manifest.artifact.download_size_bytes)
                 .flatten(),
@@ -1653,7 +1750,7 @@ mod tests {
     fn incompatible_profile_is_reported_before_planning() {
         let manager = Manager::new(
             catalog(),
-            MockSystemProfile {
+            SystemProfile {
                 distribution: "ubuntu".to_string(),
                 release: "22.04".to_string(),
                 architecture: "arm64".to_string(),
@@ -1677,7 +1774,7 @@ mod tests {
 
     #[test]
     fn stale_reviewed_plan_cannot_start() {
-        let manager = Manager::new(catalog(), MockSystemProfile::default());
+        let manager = Manager::new(catalog(), SystemProfile::default());
         let mut state = ManagerState::default();
         let component = id("better-monitor");
         let plan = manager
@@ -1692,7 +1789,7 @@ mod tests {
 
     #[test]
     fn lifecycle_descriptors_are_never_part_of_steps_or_activity() {
-        let manager = Manager::new(catalog(), MockSystemProfile::default());
+        let manager = Manager::new(catalog(), SystemProfile::default());
         let state = ManagerState::default();
         let plan = manager
             .plan(&state, &id("better-monitor"), DesiredOperation::Install)

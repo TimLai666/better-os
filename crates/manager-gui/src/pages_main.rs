@@ -290,14 +290,8 @@ impl ManagerApp {
             .filter(|component| self.matches_component_filter(component, filter))
             .filter(|component| {
                 query.is_empty()
-                    || self
-                        .component_name(component.ui_id)
-                        .to_ascii_lowercase()
-                        .contains(&query)
-                    || self
-                        .purpose(component.ui_id)
-                        .to_ascii_lowercase()
-                        .contains(&query)
+                    || component.name.to_ascii_lowercase().contains(&query)
+                    || component.summary.to_ascii_lowercase().contains(&query)
                     || component.core_id.as_str().contains(&query)
             })
             .collect::<Vec<_>>();
@@ -439,8 +433,10 @@ impl ManagerApp {
                 cx,
             );
         };
-        let id = component.ui_id;
         let pending = self.is_pending(&component.core_id);
+        let disable_id = component.core_id.clone();
+        let verify_id = component.core_id.clone();
+        let restore_id = component.core_id.clone();
         let body = match self.detail_tab {
             DetailTab::Overview => self.surface(
                 v_flex()
@@ -450,8 +446,31 @@ impl ManagerApp {
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child(self.detail(id)),
+                            .child(self.declared_or_not(&component.detail)),
                     )
+                    .child(self.key_value_row(
+                        c.replaces_label,
+                        if component.replaces.is_empty() {
+                            c.none.to_string()
+                        } else {
+                            component.replaces.join(", ")
+                        },
+                        cx,
+                    ))
+                    .child(self.key_value_row(
+                        c.enhances_label,
+                        if component.enhances.is_empty() {
+                            c.none.to_string()
+                        } else {
+                            component.enhances.join(", ")
+                        },
+                        cx,
+                    ))
+                    .child(self.key_value_row(
+                        c.restart_requirement,
+                        self.restart_requirement_label(component.restart_requirement),
+                        cx,
+                    ))
                     .child(self.key_value_row(c.current_version, component.version_label(), cx))
                     .child(self.key_value_row(
                         c.health,
@@ -521,7 +540,7 @@ impl ManagerApp {
                             .min_w(px(240.0))
                             .flex_1()
                             .gap_2()
-                            .child(div().text_2xl().font_bold().child(self.component_name(id)))
+                            .child(div().text_2xl().font_bold().child(component.name.clone()))
                             .child(
                                 h_flex()
                                     .gap_2()
@@ -584,7 +603,7 @@ impl ManagerApp {
                             row.child(Button::new("detail-disable").label(c.disable).on_click(
                                 cx.listener(move |this, _, _, cx| {
                                     this.prepare_component_operation(
-                                        id,
+                                        &disable_id,
                                         DesiredOperation::Disable,
                                         cx,
                                     );
@@ -600,7 +619,7 @@ impl ManagerApp {
                             row.child(Button::new("detail-verify").label(c.retry_check).on_click(
                                 cx.listener(move |this, _, _, cx| {
                                     this.prepare_component_operation(
-                                        id,
+                                        &verify_id,
                                         DesiredOperation::Verify,
                                         cx,
                                     );
@@ -617,7 +636,7 @@ impl ManagerApp {
                                     .label(c.restore_previous)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.prepare_component_operation(
-                                            id,
+                                            &restore_id,
                                             DesiredOperation::Restore,
                                             cx,
                                         );

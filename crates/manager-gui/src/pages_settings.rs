@@ -7,7 +7,7 @@ use gpui_component::{
     tag::Tag,
     *,
 };
-use manager_core::{DoctorCheck, DoctorCheckKind, DoctorCheckStatus, ReleaseChannel};
+use manager_core::{DoctorCheck, DoctorCheckKind, DoctorCheckStatus, ReleaseChannel, StoredTheme};
 
 use crate::{
     app::ManagerApp,
@@ -284,6 +284,46 @@ impl ManagerApp {
                 self.surface(
                     v_flex()
                         .gap_4()
+                        .child(div().text_lg().font_semibold().child(c.appearance))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(c.appearance_description),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .flex_wrap()
+                                .child(self.theme_button(
+                                    "theme-dark",
+                                    StoredTheme::Dark,
+                                    c.dark_theme,
+                                    window,
+                                    cx,
+                                ))
+                                .child(self.theme_button(
+                                    "theme-light",
+                                    StoredTheme::Light,
+                                    c.light_theme,
+                                    window,
+                                    cx,
+                                ))
+                                .child(self.theme_button(
+                                    "theme-system",
+                                    StoredTheme::System,
+                                    c.system_default,
+                                    window,
+                                    cx,
+                                )),
+                        ),
+                    cx,
+                ),
+            )
+            .child(
+                self.surface(
+                    v_flex()
+                        .gap_4()
                         .child(div().text_lg().font_semibold().child(c.updates_section))
                         .child(div().text_sm().font_medium().child(c.release_channel))
                         .child(
@@ -348,6 +388,22 @@ impl ManagerApp {
                 ),
             )
             .into_any_element()
+    }
+
+    fn theme_button(
+        &self,
+        id: &'static str,
+        theme: StoredTheme,
+        label: &'static str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        Button::new(id)
+            .label(label)
+            .selected(self.state.settings.theme == theme)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.set_theme(theme, window, cx);
+            }))
     }
 
     fn release_channel_button(

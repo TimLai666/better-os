@@ -59,14 +59,23 @@ impl ManagerApp {
                         cx,
                     ),
                 )
-                .child(self.surface(
-                    self.key_value_row(
-                        c.required_disk_space,
-                        self.disk_space_label(self.pending_disk_space()),
+                .child(
+                    self.surface(
+                        v_flex()
+                            .gap_1()
+                            .child(self.key_value_row(
+                                c.required_disk_space,
+                                self.disk_space_label(self.pending_disk_space()),
+                                cx,
+                            ))
+                            .child(self.key_value_row(
+                                c.restart_requirement,
+                                self.restart_requirement_label(self.pending_restart_requirement()),
+                                cx,
+                            )),
                         cx,
                     ),
-                    cx,
-                ))
+                )
                 .children(steps.iter().map(|step| self.review_step(step, cx)))
                 .child(
                     self.surface(
@@ -165,6 +174,24 @@ impl ManagerApp {
                 )
                 .child(self.key_value_row(c.dependencies, dependencies, cx))
                 .child(self.key_value_row(c.conflicts, conflicts, cx))
+                .child(self.key_value_row(
+                    c.replaces_label,
+                    if step.replaces.is_empty() {
+                        c.none.to_string()
+                    } else {
+                        step.replaces.join(", ")
+                    },
+                    cx,
+                ))
+                .child(self.key_value_row(
+                    c.enhances_label,
+                    if step.enhances.is_empty() {
+                        c.none.to_string()
+                    } else {
+                        step.enhances.join(", ")
+                    },
+                    cx,
+                ))
                 .child(self.key_value_row(c.files_touched, paths, cx))
                 .child(self.key_value_row(
                     c.restart_requirement,

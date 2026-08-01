@@ -361,7 +361,7 @@ fn default_state_path() -> PathBuf {
 mod tests {
     use super::*;
     use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
-    use manager_core::{DesiredOperation, Manager, MockSystemProfile, OperationStage};
+    use manager_core::{DesiredOperation, Manager, OperationStage, SystemProfile};
 
     fn temporary_directory(name: &str) -> PathBuf {
         let path = env::temp_dir().join(format!(
@@ -385,7 +385,7 @@ mod tests {
         .collect::<Vec<_>>();
         Manager::new(
             ComponentCatalog::from_manifests(manifests).unwrap(),
-            MockSystemProfile::default(),
+            SystemProfile::default(),
         )
     }
 
