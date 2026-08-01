@@ -266,6 +266,20 @@ struct NetworkInfo {
 }
 
 #[derive(Clone)]
+struct DeviceMetricPoint {
+    time: String,
+    primary: f64,
+    secondary: f64,
+}
+
+#[derive(Clone, Default)]
+struct DeviceHistory {
+    points: VecDeque<DeviceMetricPoint>,
+    highest_primary: f64,
+    highest_secondary: f64,
+}
+
+#[derive(Clone)]
 struct IncidentMarker {
     sequence: usize,
     sample_index: usize,
@@ -282,6 +296,9 @@ pub(crate) struct MonitorWindow {
     app_groups: Vec<AppGroup>,
     disk_info: Vec<DiskInfo>,
     network_info: Vec<NetworkInfo>,
+    disk_history: HashMap<String, DeviceHistory>,
+    network_history: HashMap<String, DeviceHistory>,
+    battery_history: HashMap<String, DeviceHistory>,
     cpu_details: CpuDetails,
     gpus: Vec<GpuDevice>,
     npus: Vec<NpuDevice>,
@@ -393,6 +410,9 @@ impl MonitorWindow {
             app_groups: Vec::new(),
             disk_info: Vec::new(),
             network_info: Vec::new(),
+            disk_history: HashMap::new(),
+            network_history: HashMap::new(),
+            battery_history: HashMap::new(),
             cpu_details,
             gpus: linux::scan_gpus(),
             npus: linux::scan_npus(),
@@ -609,11 +629,77 @@ impl MonitorWindow {
             .collect();
         self.network_info.sort_by(|a, b| a.name.cmp(&b.name));
 
+        let history_time = format!("{}s", self.sample_index);
+        let history_limit = self.settings.clamped_graph_points();
+        let disk_samples = self
+            .disk_info
+            .iter()
+            .map(|disk| {
+                (
+                    disk.metadata.device.clone(),
+                    disk.read_speed as f64,
+                    disk.write_speed as f64,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (key, read_speed, write_speed) in disk_samples {
+            Self::record_device_sample(
+                &mut self.disk_history,
+                key,
+                history_time.clone(),
+                read_speed,
+                write_speed,
+                history_limit,
+            );
+        }
+        let network_samples = self
+            .network_info
+            .iter()
+            .map(|interface| {
+                (
+                    interface.name.clone(),
+                    interface.received as f64,
+                    interface.transmitted as f64,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (key, received, transmitted) in network_samples {
+            Self::record_device_sample(
+                &mut self.network_history,
+                key,
+                history_time.clone(),
+                received,
+                transmitted,
+                history_limit,
+            );
+        }
+
         if self.sample_index % 2 == 0 {
             self.cpu_details = linux::cpu_details(&self.system);
             self.gpus = linux::scan_gpus();
             self.npus = linux::scan_npus();
             self.batteries = linux::scan_batteries();
+            let battery_samples = self
+                .batteries
+                .iter()
+                .map(|battery| {
+                    (
+                        battery.id.clone(),
+                        battery.charge_percent.unwrap_or_default(),
+                        battery.power_watts.unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            for (key, charge, power) in battery_samples {
+                Self::record_device_sample(
+                    &mut self.battery_history,
+                    key,
+                    history_time.clone(),
+                    charge,
+                    power,
+                    history_limit,
+                );
+            }
             self.selected_gpu = self.selected_gpu.min(self.gpus.len().saturating_sub(1));
             self.selected_npu = self.selected_npu.min(self.npus.len().saturating_sub(1));
             self.selected_battery = self
@@ -707,6 +793,37 @@ impl MonitorWindow {
         } else {
             self.history.iter().cloned().collect()
         }
+    }
+
+    fn record_device_sample(
+        histories: &mut HashMap<String, DeviceHistory>,
+        key: String,
+        time: String,
+        primary: f64,
+        secondary: f64,
+        limit: usize,
+    ) {
+        let history = histories.entry(key).or_default();
+        history.highest_primary = history.highest_primary.max(primary);
+        history.highest_secondary = history.highest_secondary.max(secondary);
+        if history.points.len() >= limit {
+            history.points.pop_front();
+        }
+        history.points.push_back(DeviceMetricPoint {
+            time,
+            primary,
+            secondary,
+        });
+    }
+
+    fn device_history_data(
+        histories: &HashMap<String, DeviceHistory>,
+        key: &str,
+    ) -> Vec<DeviceMetricPoint> {
+        histories
+            .get(key)
+            .map(|history| history.points.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     pub(crate) fn hold_table_refresh(&mut self) {
@@ -983,6 +1100,64 @@ impl MonitorWindow {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(summary),
+            )
+    }
+
+    fn device_chart_card(
+        &self,
+        title: &'static str,
+        value: String,
+        detail: String,
+        data: Vec<DeviceMetricPoint>,
+        value_fn: impl Fn(&DeviceMetricPoint) -> f64 + 'static,
+        color: Hsla,
+        cx: &Context<Self>,
+    ) -> Div {
+        v_flex()
+            .flex_1()
+            .min_w(px(330.0))
+            .min_h(px(220.0))
+            .rounded(cx.theme().radius_lg)
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .overflow_hidden()
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .px_4()
+                    .py_3()
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .gap_1()
+                            .child(div().text_sm().font_bold().child(title))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(detail),
+                            ),
+                    )
+                    .child(div().text_sm().text_color(color).child(value)),
+            )
+            .child(
+                AreaChart::new(data)
+                    .x(|point| point.time.clone())
+                    .y(value_fn)
+                    .stroke(color)
+                    .fill(linear_gradient(
+                        0.0,
+                        linear_color_stop(color.opacity(0.34), 1.0),
+                        linear_color_stop(cx.theme().background.opacity(0.05), 0.0),
+                    ))
+                    .tick_margin(if self.settings.show_graph_grids {
+                        16
+                    } else {
+                        0
+                    }),
             )
     }
 
@@ -1496,6 +1671,11 @@ impl MonitorWindow {
         } else {
             0.0
         };
+        let history = self.disk_history.get(&disk.metadata.device);
+        let highest_read = history.map_or(0.0, |history| history.highest_primary) as u64;
+        let highest_write = history.map_or(0.0, |history| history.highest_secondary) as u64;
+        let history_data = Self::device_history_data(&self.disk_history, &disk.metadata.device);
+
         v_flex()
             .gap_4()
             .child(
@@ -1519,8 +1699,9 @@ impl MonitorWindow {
                         "Read Speed",
                         linux::format_rate(disk.read_speed, false, self.settings.unit_base),
                         format!(
-                            "Total {}",
-                            linux::format_bytes(disk.total_read, self.settings.unit_base)
+                            "Total {} · Highest {}",
+                            linux::format_bytes(disk.total_read, self.settings.unit_base),
+                            linux::format_rate(highest_read, false, self.settings.unit_base)
                         ),
                         cx.theme().blue,
                         cx,
@@ -1529,8 +1710,9 @@ impl MonitorWindow {
                         "Write Speed",
                         linux::format_rate(disk.write_speed, false, self.settings.unit_base),
                         format!(
-                            "Total {}",
-                            linux::format_bytes(disk.total_written, self.settings.unit_base)
+                            "Total {} · Highest {}",
+                            linux::format_bytes(disk.total_written, self.settings.unit_base),
+                            linux::format_rate(highest_write, false, self.settings.unit_base)
                         ),
                         cx.theme().green,
                         cx,
@@ -1540,6 +1722,35 @@ impl MonitorWindow {
                         linux::format_bytes(disk.total, self.settings.unit_base),
                         format!("{capacity_percent:.1}% used at {}", disk.mount_point),
                         cx.theme().blue,
+                        cx,
+                    )),
+            )
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_4()
+                    .child(self.device_chart_card(
+                        "Read throughput",
+                        linux::format_rate(disk.read_speed, false, self.settings.unit_base),
+                        format!(
+                            "Highest {} since Better Monitor started",
+                            linux::format_rate(highest_read, false, self.settings.unit_base)
+                        ),
+                        history_data.clone(),
+                        |point| point.primary,
+                        cx.theme().blue,
+                        cx,
+                    ))
+                    .child(self.device_chart_card(
+                        "Write throughput",
+                        linux::format_rate(disk.write_speed, false, self.settings.unit_base),
+                        format!(
+                            "Highest {} since Better Monitor started",
+                            linux::format_rate(highest_write, false, self.settings.unit_base)
+                        ),
+                        history_data,
+                        |point| point.secondary,
+                        cx.theme().green,
                         cx,
                     )),
             )
@@ -1601,6 +1812,11 @@ impl MonitorWindow {
                 cx,
             );
         };
+        let history = self.network_history.get(&interface.name);
+        let highest_received = history.map_or(0.0, |history| history.highest_primary) as u64;
+        let highest_transmitted = history.map_or(0.0, |history| history.highest_secondary) as u64;
+        let history_data = Self::device_history_data(&self.network_history, &interface.name);
+
         v_flex()
             .gap_4()
             .child(
@@ -1615,8 +1831,13 @@ impl MonitorWindow {
                             self.settings.unit_base,
                         ),
                         format!(
-                            "Total {}",
-                            linux::format_bytes(interface.total_received, self.settings.unit_base)
+                            "Total {} · Highest {}",
+                            linux::format_bytes(interface.total_received, self.settings.unit_base),
+                            linux::format_rate(
+                                highest_received,
+                                self.settings.network_bits,
+                                self.settings.unit_base,
+                            )
                         ),
                         cx.theme().green,
                         cx,
@@ -1629,10 +1850,15 @@ impl MonitorWindow {
                             self.settings.unit_base,
                         ),
                         format!(
-                            "Total {}",
+                            "Total {} · Highest {}",
                             linux::format_bytes(
                                 interface.total_transmitted,
                                 self.settings.unit_base
+                            ),
+                            linux::format_rate(
+                                highest_transmitted,
+                                self.settings.network_bits,
+                                self.settings.unit_base,
                             )
                         ),
                         cx.theme().blue,
@@ -1654,6 +1880,51 @@ impl MonitorWindow {
                             cx,
                         ),
                     ),
+            )
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_4()
+                    .child(self.device_chart_card(
+                        "Receive throughput",
+                        linux::format_rate(
+                            interface.received,
+                            self.settings.network_bits,
+                            self.settings.unit_base,
+                        ),
+                        format!(
+                            "Highest {} since Better Monitor started",
+                            linux::format_rate(
+                                highest_received,
+                                self.settings.network_bits,
+                                self.settings.unit_base,
+                            )
+                        ),
+                        history_data.clone(),
+                        |point| point.primary,
+                        cx.theme().green,
+                        cx,
+                    ))
+                    .child(self.device_chart_card(
+                        "Send throughput",
+                        linux::format_rate(
+                            interface.transmitted,
+                            self.settings.network_bits,
+                            self.settings.unit_base,
+                        ),
+                        format!(
+                            "Highest {} since Better Monitor started",
+                            linux::format_rate(
+                                highest_transmitted,
+                                self.settings.network_bits,
+                                self.settings.unit_base,
+                            )
+                        ),
+                        history_data,
+                        |point| point.secondary,
+                        cx.theme().blue,
+                        cx,
+                    )),
             )
             .child(
                 self.section_card(
@@ -1720,282 +1991,6 @@ impl MonitorWindow {
                     cx,
                 ),
             )
-    }
-
-    fn render_history(&self, cx: &Context<Self>) -> Div {
-        let point = self.current_point();
-        let history = self.chart_data();
-        v_flex()
-            .gap_4()
-            .child(
-                h_flex()
-                    .flex_wrap()
-                    .gap_3()
-                    .child(self.metric_card(
-                        "Samples",
-                        self.store.samples().len().to_string(),
-                        "Current GUI session".to_string(),
-                        cx.theme().green,
-                        cx,
-                    ))
-                    .child(self.metric_card(
-                        "Graph window",
-                        format!("{} points", self.history.len()),
-                        format!("Maximum {}", self.settings.clamped_graph_points()),
-                        cx.theme().blue,
-                        cx,
-                    ))
-                    .child(self.metric_card(
-                        "Incident markers",
-                        self.incidents.len().to_string(),
-                        "Markers preserve sample positions".to_string(),
-                        cx.theme().yellow,
-                        cx,
-                    )),
-            )
-            .child(
-                h_flex()
-                    .flex_wrap()
-                    .gap_4()
-                    .child(self.chart_card(
-                        "Processor history",
-                        format!("{:.1}%", point.cpu),
-                        history.clone(),
-                        |point| point.cpu,
-                        cx.theme().blue,
-                        cx,
-                    ))
-                    .child(self.chart_card(
-                        "Memory history",
-                        format!("{:.1}%", point.memory),
-                        history,
-                        |point| point.memory,
-                        cx.theme().green,
-                        cx,
-                    )),
-            )
-            .child(self.section_card(
-                "Persistence boundary",
-                "Resources parity is live; Better Monitor history is an additional product layer",
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(
-                        "A restart-safe service, time-series storage, downsampling, retention budgets, migrations, and recovery remain separate from this GUI parity slice.",
-                    ),
-                cx,
-            ))
-    }
-
-    fn render_incidents(&self, cx: &mut Context<Self>) -> Div {
-        v_flex()
-            .gap_4()
-            .child(
-                h_flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_4()
-                    .rounded(cx.theme().radius_lg)
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().background)
-                    .p_4()
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .child(div().font_bold().child("Mark a slowdown moment"))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(
-                                        "Records the current sample position for the future before-and-after capture service.",
-                                    ),
-                            ),
-                    )
-                    .child(
-                        Button::new("record-incident-page")
-                            .warning()
-                            .label("Record incident")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.record_incident();
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_3()
-                    .when(self.incidents.is_empty(), |this| {
-                        this.child(
-                            v_flex()
-                                .items_center()
-                                .justify_center()
-                                .min_h(px(260.0))
-                                .rounded(cx.theme().radius_lg)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().background)
-                                .child(div().font_bold().child("No incidents recorded"))
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child("Use the marker when the system feels slow."),
-                                ),
-                        )
-                    })
-                    .children(self.incidents.iter().rev().map(|incident| {
-                        h_flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_4()
-                            .rounded(cx.theme().radius_lg)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().background)
-                            .p_4()
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .font_bold()
-                                            .child(format!("Slowdown marker #{}", incident.sequence)),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!(
-                                                "Sample {} • unix {} ms",
-                                                incident.sample_index, incident.recorded_at_ms
-                                            )),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().yellow)
-                                    .child("Deep capture pending"),
-                            )
-                    })),
-            )
-    }
-
-    fn render_diagnostics(&self, cx: &Context<Self>) -> Div {
-        v_flex()
-            .gap_4()
-            .child(
-                h_flex()
-                    .flex_wrap()
-                    .gap_3()
-                    .child(self.metric_card(
-                        "Collector loop",
-                        "Healthy".to_string(),
-                        self.settings.refresh_speed.label().to_string(),
-                        cx.theme().green,
-                        cx,
-                    ))
-                    .child(self.metric_card(
-                        "Processes",
-                        self.system.processes().len().to_string(),
-                        "sysinfo plus /proc enrichment".to_string(),
-                        cx.theme().green,
-                        cx,
-                    ))
-                    .child(self.metric_card(
-                        "Application groups",
-                        self.app_groups.len().to_string(),
-                        "cgroup identity with explicit fallback".to_string(),
-                        cx.theme().green,
-                        cx,
-                    ))
-                    .child(
-                        self.metric_card(
-                            "Dynamic device pages",
-                            (self.gpus.len()
-                                + self.npus.len()
-                                + self.disk_info.len()
-                                + self.network_info.len()
-                                + self.batteries.len())
-                            .to_string(),
-                            "GPU, NPU, drive, network, and battery".to_string(),
-                            cx.theme().blue,
-                            cx,
-                        ),
-                    ),
-            )
-            .child(
-                self.section_card(
-                    "Collector matrix",
-                    "Support state is part of every metric",
-                    v_flex()
-                        .gap_3()
-                        .child(self.health_row(
-                            "CPU / memory / process baseline",
-                            "Active via sysinfo and /proc",
-                            cx.theme().green,
-                            cx,
-                        ))
-                        .child(self.health_row(
-                            "Application grouping",
-                            "Active via cgroup v2 with named fallback",
-                            cx.theme().green,
-                            cx,
-                        ))
-                        .child(self.health_row(
-                            "GPU / NPU adapters",
-                            "DRM, accel, and driver sysfs where exposed",
-                            cx.theme().green,
-                            cx,
-                        ))
-                        .child(self.health_row(
-                            "Drive and network metadata",
-                            "Active via sysfs and kernel counters",
-                            cx.theme().green,
-                            cx,
-                        ))
-                        .child(self.health_row(
-                            "Memory hardware properties",
-                            "Awaiting narrow Polkit DMI helper",
-                            cx.theme().yellow,
-                            cx,
-                        ))
-                        .child(self.health_row(
-                            "CPU affinity and priority mutation",
-                            "Not connected yet",
-                            cx.theme().yellow,
-                            cx,
-                        ))
-                        .child(self.health_row(
-                            "Linux PSI and persistent history",
-                            "Not connected yet",
-                            cx.theme().yellow,
-                            cx,
-                        )),
-                    cx,
-                ),
-            )
-    }
-
-    fn simple_property_row(&self, label: &'static str, value: String, cx: &Context<Self>) -> Div {
-        h_flex()
-            .items_start()
-            .justify_between()
-            .gap_5()
-            .py_2()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                div()
-                    .w(px(190.0))
-                    .flex_shrink_0()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(label),
-            )
-            .child(div().flex_1().text_sm().child(value))
     }
 
     fn empty_hardware_page(

@@ -1144,6 +1144,9 @@ Command: {}",
                 cx,
             );
         };
+        let history = self.battery_history.get(&battery.id);
+        let highest_power = history.map_or(0.0, |history| history.highest_secondary);
+        let history_data = Self::device_history_data(&self.battery_history, &battery.id);
 
         v_flex()
             .gap_4()
@@ -1164,7 +1167,11 @@ Command: {}",
                             battery
                                 .power_watts
                                 .map_or_else(|| "N/A".to_string(), |value| format!("{value:.2} W")),
-                            "Current charge or discharge rate".to_string(),
+                            if highest_power > 0.0 {
+                                format!("Highest {highest_power:.2} W since Better Monitor started")
+                            } else {
+                                "Current charge or discharge rate".to_string()
+                            },
                             cx.theme().green,
                             cx,
                         ),
@@ -1176,6 +1183,37 @@ Command: {}",
                         cx.theme().blue,
                         cx,
                     )),
+            )
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_4()
+                    .child(self.device_chart_card(
+                        "Charge history",
+                        option_percent(battery.charge_percent),
+                        "Recent charge percentage for this battery".to_string(),
+                        history_data.clone(),
+                        |point| point.primary,
+                        cx.theme().green,
+                        cx,
+                    ))
+                    .child(
+                        self.device_chart_card(
+                            "Power history",
+                            battery
+                                .power_watts
+                                .map_or_else(|| "N/A".to_string(), |value| format!("{value:.2} W")),
+                            if highest_power > 0.0 {
+                                format!("Highest {highest_power:.2} W since Better Monitor started")
+                            } else {
+                                "No verified power reading yet".to_string()
+                            },
+                            history_data,
+                            |point| point.secondary,
+                            cx.theme().blue,
+                            cx,
+                        ),
+                    ),
             )
             .child(
                 self.section_card(

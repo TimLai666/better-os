@@ -3,6 +3,7 @@ use std::{
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use sysinfo::{Pid, System};
@@ -535,6 +536,25 @@ pub fn scan_batteries() -> Vec<BatteryDevice> {
     batteries
 }
 
+fn network_manager_connection_name(interface: &str) -> Option<String> {
+    let output = Command::new("nmcli")
+        .args([
+            "--terse",
+            "--get-values",
+            "GENERAL.CONNECTION",
+            "device",
+            "show",
+            interface,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!value.is_empty() && value != "--").then_some(value)
+}
+
 pub fn network_metadata(interface: &str) -> NetworkMetadata {
     let path = PathBuf::from("/sys/class/net").join(interface);
     let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
@@ -568,7 +588,7 @@ pub fn network_metadata(interface: &str) -> NetworkMetadata {
         manufacturer: vendor_id.map(|_| vendor_name(vendor_id)),
         driver,
         hardware_address: read_trimmed(path.join("address")),
-        network_name: None,
+        network_name: network_manager_connection_name(interface),
         link: read_trimmed(path.join("operstate")),
         link_speed_mbps: speed,
         is_virtual,

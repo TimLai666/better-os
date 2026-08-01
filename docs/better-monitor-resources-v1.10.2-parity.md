@@ -163,7 +163,7 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | One page per drive | ✅ | Dynamic pages exist. |
 | Activity | ✅ | `/proc/diskstats`-based activity. |
 | Read/write speed and totals | ✅ | Implemented. |
-| Highest read/write speed | ⬜ | Current history model does not persist per-device maxima. |
+| Highest read/write speed | ✅ | Per-drive bounded history and session maxima are retained and rendered with throughput graphs. |
 | Type/path/capacity/writable/removable | 🟨 | Metadata exists; support needs real-device validation. |
 | Link type/speed | 🧩 | Shown where sysfs exposes it. |
 | Friendly identity | 🟨 | Model fallback exists. |
@@ -175,9 +175,9 @@ The answer to “are all required UI components built?” is therefore **no**. T
 |---|---:|---|
 | One page per interface | ✅ | Dynamic pages exist. |
 | Receive/send throughput and totals | ✅ | Implemented. |
-| Highest receive/send throughput | ⬜ | Per-interface maxima are not retained. |
+| Highest receive/send throughput | ✅ | Per-interface bounded history and session maxima are retained and rendered with throughput graphs. |
 | Manufacturer/driver/interface/address | 🟨 | Metadata exists; privacy presentation requires review. |
-| Wi-Fi SSID | ⬜ | NetworkManager typed adapter missing. |
+| Wi-Fi SSID | 🟨 | NetworkManager connection names are read through `nmcli` when available; direct D-Bus coverage and real-session validation remain. |
 | Link details/speed | 🧩 | Shown where sysfs exposes it. |
 | Bytes/bits setting | ✅ | Implemented and persisted. |
 | Virtual-interface setting | ✅ | Implemented and persisted. |
@@ -188,8 +188,8 @@ The answer to “are all required UI components built?” is therefore **no**. T
 |---|---:|---|
 | One page per battery | ✅ | Dynamic pages exist. |
 | Charge percentage/state | ✅ | Implemented. |
-| Charge graph | ⬜ | Current battery page uses cards rather than retained battery history. |
-| Power use graph / highest power | ⬜ | Current value exists where available; history/max missing. |
+| Charge graph | ✅ | Per-battery bounded charge history is retained and graphed. |
+| Power use graph / highest power | ✅ | Per-battery power history and session maximum are retained where the driver reports power. |
 | Health/design capacity/cycles/technology | 🧩 | Power-supply metadata adapter exists. |
 | Manufacturer/model/device | 🧩 | Implemented where exposed. |
 
