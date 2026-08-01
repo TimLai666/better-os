@@ -4,82 +4,13 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
-  apply-battery-chart-refactor:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/better-monitor-ui
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Refactor battery history chart calls
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('crates/monitor-gui/src/parity.rs')
-          source = path.read_text()
-          start_marker = '                    .child(self.device_chart_card(\n                        "Charge history",'
-          end_marker = '            .child(self.section_card(\n                "Properties",'
-          start = source.index(start_marker)
-          end = source.index(end_marker, start)
-          replacement = '''                    .child(self.device_chart_card(
-                        DeviceChartHeader {
-                            title: "Charge history",
-                            value: option_percent(battery.charge_percent),
-                            detail: "Recent charge percentage for this battery".to_string(),
-                            color: cx.theme().green,
-                        },
-                        history_data.clone(),
-                        |point| point.primary,
-                        cx,
-                    ))
-                    .child(self.device_chart_card(
-                        DeviceChartHeader {
-                            title: "Power history",
-                            value: battery.power_watts.map_or_else(
-                                || "N/A".to_string(),
-                                |value| format!("{value:.2} W"),
-                            ),
-                            detail: if highest_power > 0.0 {
-                                format!("Highest {highest_power:.2} W since Better Monitor started")
-                            } else {
-                                "No verified power reading yet".to_string()
-                            },
-                            color: cx.theme().blue,
-                        },
-                        history_data,
-                        |point| point.secondary,
-                        cx,
-                    )),
-            )
-'''
-          path.write_text(source[:start] + replacement + source[end:])
-          PY
-          cargo fmt --all
-      - name: Commit the battery chart refactor
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/monitor-gui/src/parity.rs
-          git commit -m "refactor(monitor): group battery chart presentation"
-          git pull --rebase origin feature/better-monitor-ui
-          git push origin HEAD:feature/better-monitor-ui
-
   rust:
-    needs: apply-battery-chart-refactor
     runs-on: ubuntu-latest
     env:
       RUST_FONTCONFIG_DLOPEN: "1"
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: feature/better-monitor-ui
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
