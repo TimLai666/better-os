@@ -2,8 +2,8 @@ use std::cmp::Ordering;
 
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Disableable, Root, Sizable, StyledExt,
-    button::{Button, ButtonVariants},
+    ActiveTheme, Disableable, Root, Selectable, Sizable, StyledExt,
+    button::Button,
     h_flex,
     switch::Switch,
     table::{Column, ColumnSort, TableDelegate, TableState},
@@ -614,7 +614,7 @@ impl Render for ProcessOptionsView {
                 div()
                     .flex_1()
                     .min_h(px(0.0))
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .p_5()
                     .child(
                         v_flex()
