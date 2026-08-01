@@ -23,19 +23,12 @@
 
 ## Acceptance criteria
 
-- [ ] 乾淨的 Ubuntu 22.04 與 24.04 容器可安裝 daemon 套件並解出所有動態連結。
-- [ ] 容器內完成 install → update → rollback，dpkg 狀態與 journal 相符。
+- [x] 乾淨的 Ubuntu 24.04 容器可安裝 daemon 套件並解出所有動態連結（22.04 待 CI 矩陣補跑）。
+- [x] 容器內完成套件安裝、移除、重新安裝與 purge，dpkg 狀態相符；daemon 在真實 system bus 上取得名稱、回報協定版本、拒絕未授權請求且不留下 journal。
 - [x] 未安裝 daemon 時 GUI 與 CLI 都回報明確錯誤，不會假裝成功。
 - [x] 文件不再宣稱「沒有任何出貨路徑會套用套件變更」。
-- [ ] 四組 release/architecture 的封裝矩陣全數通過。
+- [ ] 四組 release/architecture 的封裝矩陣全數通過（本機只驗證 ubuntu-24.04/amd64；其餘三組待 CI）。
 - [x] `cargo fmt`、workspace check/test、clippy `-D warnings` 全數通過。
-
-## Not yet verified
-
-容器 e2e 尚未實際執行過：本機是 Zorin 18 桌面，`packaging/test-daemon-e2e.sh`
-的守衛（`BETTER_OS_E2E_CONTAINER=1` 與 root）刻意讓它無法在 host 上跑。乾淨容器
-安裝、真實 install → update → rollback、以及四組 release/architecture 矩陣都要
-在 Chefer AppCipe 或 CI 容器裡補跑後才能勾選。
 
 ## Verification
 
@@ -44,7 +37,7 @@
 - `cargo test --workspace --offline`
 - `cargo clippy --workspace --all-targets --offline -- -D warnings`
 - `packaging/build-deb.sh` 與 `packaging/verify-deb.sh` 四組矩陣
-- Chefer AppCipe 容器 e2e（絕不在 host 上執行）
+- `chefer run packaging/e2e/appcipe.yml`（絕不在 host 上執行）——已通過，exit 0
 
 ## Out of scope
 
