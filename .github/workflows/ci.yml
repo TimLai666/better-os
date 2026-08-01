@@ -4,47 +4,7 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
-  repair-adaptive-navigation:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/better-monitor-ui
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Repair compact navigation return type
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("crates/monitor-gui/src/app.rs")
-          source = path.read_text()
-          old = "fn render_compact_navigation(&self, cx: &mut Context<Self>) -> Div {"
-          new = "fn render_compact_navigation(&self, cx: &mut Context<Self>) -> impl IntoElement {"
-          if source.count(old) != 1:
-              raise SystemExit(f"expected exactly one compact navigation signature, found {source.count(old)}")
-          path.write_text(source.replace(old, new, 1))
-          PY
-          cargo fmt --all
-      - name: Commit adaptive navigation repair
-        run: |
-          if git diff --quiet; then
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/monitor-gui/src/app.rs
-          git commit -m "fix(monitor): return scrollable compact navigation"
-          git push origin HEAD:feature/better-monitor-ui || {
-            git pull --rebase origin feature/better-monitor-ui
-            git push origin HEAD:feature/better-monitor-ui
-          }
-
   rust:
     runs-on: ubuntu-latest
     env:
