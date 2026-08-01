@@ -643,7 +643,7 @@ impl MonitorWindow {
             }))
     }
 
-    fn render_compact_navigation(&self, cx: &mut Context<Self>) -> Div {
+    fn render_compact_navigation(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .w_full()
             .flex_shrink_0()
