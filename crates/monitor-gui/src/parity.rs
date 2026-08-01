@@ -264,10 +264,6 @@ impl MonitorWindow {
         clippy::too_many_arguments,
         reason = "a dynamic sidebar row carries its full resource presentation and navigation contract"
     )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a dynamic sidebar row carries its full resource presentation and navigation contract"
-    )]
     fn sidebar_resource_row(
         &self,
         id: impl Into<ElementId>,
@@ -359,441 +355,68 @@ impl MonitorWindow {
     }
 
     pub(super) fn render_apps_parity(&self, cx: &mut Context<Self>) -> Div {
-        let query = self.search_query.trim().to_lowercase();
-        let groups = self
-            .app_groups
-            .iter()
-            .filter(|group| {
-                query.is_empty()
-                    || group.display_name.to_lowercase().contains(&query)
-                    || group.id.to_lowercase().contains(&query)
-                    || group.grouping_reason.to_lowercase().contains(&query)
-            })
-            .collect::<Vec<_>>();
+        let visible_count = self.app_table.read(cx).delegate().groups.len();
 
         v_flex()
             .gap_4()
-            .child(self.render_search_toolbar("Search apps…", cx))
+            .child(self.render_search_toolbar("Search apps… Use | to require multiple terms", cx))
             .child(
-                div()
-                    .overflow_x_scrollbar()
+                v_flex()
+                    .min_h(px(520.0))
                     .rounded(cx.theme().radius_lg)
                     .border_1()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().background)
+                    .overflow_hidden()
                     .child(
-                        v_flex()
-                            .min_w(px(self.app_table_width()))
-                            .overflow_hidden()
-                            .child(self.render_app_header(cx))
-                            .when(groups.is_empty(), |this| {
-                                this.child(
-                                    v_flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .min_h(px(260.0))
-                                        .child(
-                                            div().font_bold().child("No matching applications"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(
-                                                    "Clear the search or wait for application groups.",
-                                                ),
-                                        ),
-                                )
-                            })
-                            .children(groups.into_iter().enumerate().map(|(index, group)| {
-                                self.render_app_row(index, group, cx)
-                            })),
-                    ),
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .px_4()
+                            .py_3()
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .child(div().font_bold().child("Applications"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!(
+                                        "{visible_count} visible · {} grouped",
+                                        self.app_groups.len()
+                                    )),
+                            ),
+                    )
+                    .when(visible_count == 0, |this| {
+                        this.child(
+                            v_flex()
+                                .flex_1()
+                                .items_center()
+                                .justify_center()
+                                .gap_1()
+                                .child(div().font_bold().child("No matching applications"))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("Clear the search or wait for application groups."),
+                                ),
+                        )
+                    })
+                    .when(visible_count > 0, |this| {
+                        this.child(
+                            div().flex_1().child(
+                                DataTable::new(&self.app_table)
+                                    .bordered(false)
+                                    .stripe(true)
+                                    .small(),
+                            ),
+                        )
+                    }),
             )
             .when_some(self.last_action.clone(), |this, message| {
                 this.child(self.action_result_banner(message, cx))
             })
-    }
-
-    fn app_table_width(&self) -> f32 {
-        let columns = &self.settings.app_columns;
-        250.0
-            + if columns.memory { 110.0 } else { 0.0 }
-            + if columns.cpu { 86.0 } else { 0.0 }
-            + if columns.read_speed { 108.0 } else { 0.0 }
-            + if columns.read_total { 116.0 } else { 0.0 }
-            + if columns.write_speed { 108.0 } else { 0.0 }
-            + if columns.write_total { 116.0 } else { 0.0 }
-            + if columns.gpu { 86.0 } else { 0.0 }
-            + if columns.gpu_memory { 116.0 } else { 0.0 }
-            + if columns.encoder { 96.0 } else { 0.0 }
-            + if columns.decoder { 96.0 } else { 0.0 }
-            + if columns.swap { 110.0 } else { 0.0 }
-            + if columns.combined_memory { 130.0 } else { 0.0 }
-            + 410.0
-    }
-
-    fn render_app_header(&self, cx: &Context<Self>) -> Div {
-        let columns = &self.settings.app_columns;
-        h_flex()
-            .items_center()
-            .gap_3()
-            .px_4()
-            .py_3()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(self.app_header_cell("App", 250.0))
-            .when(columns.memory, |this| {
-                this.child(self.app_header_cell("Memory", 110.0))
-            })
-            .when(columns.cpu, |this| {
-                this.child(self.app_header_cell("CPU", 86.0))
-            })
-            .when(columns.read_speed, |this| {
-                this.child(self.app_header_cell("Read/s", 108.0))
-            })
-            .when(columns.read_total, |this| {
-                this.child(self.app_header_cell("Read total", 116.0))
-            })
-            .when(columns.write_speed, |this| {
-                this.child(self.app_header_cell("Write/s", 108.0))
-            })
-            .when(columns.write_total, |this| {
-                this.child(self.app_header_cell("Write total", 116.0))
-            })
-            .when(columns.gpu, |this| {
-                this.child(self.app_header_cell("GPU", 86.0))
-            })
-            .when(columns.gpu_memory, |this| {
-                this.child(self.app_header_cell("GPU memory", 116.0))
-            })
-            .when(columns.encoder, |this| {
-                this.child(self.app_header_cell("Encoder", 96.0))
-            })
-            .when(columns.decoder, |this| {
-                this.child(self.app_header_cell("Decoder", 96.0))
-            })
-            .when(columns.swap, |this| {
-                this.child(self.app_header_cell("Swap", 110.0))
-            })
-            .when(columns.combined_memory, |this| {
-                this.child(self.app_header_cell("Memory + swap", 130.0))
-            })
-            .child(self.app_header_cell("Actions", 410.0))
-    }
-
-    fn app_header_cell(&self, label: &'static str, width: f32) -> Div {
-        div().w(px(width)).flex_shrink_0().font_bold().child(label)
-    }
-
-    fn render_app_row(&self, index: usize, group: &AppGroup, cx: &mut Context<Self>) -> Div {
-        let columns = &self.settings.app_columns;
-        let term_pids = group.pids.clone();
-        let kill_pids = group.pids.clone();
-        let stop_pids = group.pids.clone();
-        let continue_pids = group.pids.clone();
-        let term_target = cx.entity().downgrade();
-        let kill_target = cx.entity().downgrade();
-        let app_name = group.display_name.clone();
-        let info_name = group.display_name.clone();
-        let info_description = format!(
-            "Identity: {}
-Grouped processes: {}
-Grouping evidence: {}
-PIDs: {}
-CPU: {:.1}%
-Memory: {}
-Swap: {}
-Read: {} total, {}/s
-Written: {} total, {}/s",
-            group.id,
-            group.process_count,
-            group.grouping_reason,
-            group
-                .pids
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-            group.cpu_usage,
-            linux::format_bytes(group.memory, self.settings.unit_base),
-            linux::format_bytes(group.swap, self.settings.unit_base),
-            linux::format_bytes(group.read_total, self.settings.unit_base),
-            linux::format_bytes(group.read_speed, self.settings.unit_base),
-            linux::format_bytes(group.write_total, self.settings.unit_base),
-            linux::format_bytes(group.write_speed, self.settings.unit_base),
-        );
-
-        h_flex()
-            .items_center()
-            .gap_3()
-            .px_4()
-            .py_3()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                v_flex()
-                    .w(px(250.0))
-                    .flex_shrink_0()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_bold()
-                            .truncate()
-                            .child(group.display_name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .truncate()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} processes · {}",
-                                group.process_count, group.grouping_reason
-                            )),
-                    ),
-            )
-            .when(columns.memory, |this| {
-                this.child(self.app_value_cell(
-                    linux::format_bytes(group.memory, self.settings.unit_base),
-                    110.0,
-                    cx.theme().foreground,
-                ))
-            })
-            .when(columns.cpu, |this| {
-                this.child(self.app_value_cell(
-                    format!("{:.1}%", group.cpu_usage),
-                    86.0,
-                    cx.theme().blue,
-                ))
-            })
-            .when(columns.read_speed, |this| {
-                this.child(self.app_value_cell(
-                    linux::format_rate(group.read_speed, false, self.settings.unit_base),
-                    108.0,
-                    cx.theme().foreground,
-                ))
-            })
-            .when(columns.read_total, |this| {
-                this.child(self.app_value_cell(
-                    linux::format_bytes(group.read_total, self.settings.unit_base),
-                    116.0,
-                    cx.theme().foreground,
-                ))
-            })
-            .when(columns.write_speed, |this| {
-                this.child(self.app_value_cell(
-                    linux::format_rate(group.write_speed, false, self.settings.unit_base),
-                    108.0,
-                    cx.theme().foreground,
-                ))
-            })
-            .when(columns.write_total, |this| {
-                this.child(self.app_value_cell(
-                    linux::format_bytes(group.write_total, self.settings.unit_base),
-                    116.0,
-                    cx.theme().foreground,
-                ))
-            })
-            .when(columns.gpu, |this| {
-                this.child(self.app_value_cell(
-                    "N/A".to_string(),
-                    86.0,
-                    cx.theme().muted_foreground,
-                ))
-            })
-            .when(columns.gpu_memory, |this| {
-                this.child(self.app_value_cell(
-                    "N/A".to_string(),
-                    116.0,
-                    cx.theme().muted_foreground,
-                ))
-            })
-            .when(columns.encoder, |this| {
-                this.child(self.app_value_cell(
-                    "N/A".to_string(),
-                    96.0,
-                    cx.theme().muted_foreground,
-                ))
-            })
-            .when(columns.decoder, |this| {
-                this.child(self.app_value_cell(
-                    "N/A".to_string(),
-                    96.0,
-                    cx.theme().muted_foreground,
-                ))
-            })
-            .when(columns.swap, |this| {
-                this.child(self.app_value_cell(
-                    linux::format_bytes(group.swap, self.settings.unit_base),
-                    110.0,
-                    cx.theme().foreground,
-                ))
-            })
-            .when(columns.combined_memory, |this| {
-                this.child(self.app_value_cell(
-                    linux::format_bytes(
-                        group.memory.saturating_add(group.swap),
-                        self.settings.unit_base,
-                    ),
-                    130.0,
-                    cx.theme().foreground,
-                ))
-            })
-            .child(
-                h_flex()
-                    .w(px(410.0))
-                    .flex_shrink_0()
-                    .flex_wrap()
-                    .gap_1()
-                    .child(
-                        AlertDialog::new(cx)
-                            .trigger(
-                                Button::new(("app-information", index))
-                                    .outline()
-                                    .small()
-                                    .label("Info"),
-                            )
-                            .content(move |content, _, _| {
-                                content
-                                    .child(
-                                        DialogHeader::new()
-                                            .child(
-                                                DialogTitle::new()
-                                                    .child(format!("{info_name} Information")),
-                                            )
-                                            .child(
-                                                DialogDescription::new()
-                                                    .child(info_description.clone()),
-                                            ),
-                                    )
-                                    .child(
-                                        DialogFooter::new().child(
-                                            DialogClose::new().child(
-                                                Button::new(("app-information-close", index))
-                                                    .outline()
-                                                    .label("Close"),
-                                            ),
-                                        ),
-                                    )
-                            }),
-                    )
-                    .child(
-                        AlertDialog::new(cx)
-                            .trigger(
-                                Button::new(("app-term", index))
-                                    .outline()
-                                    .small()
-                                    .label("End"),
-                            )
-                            .on_ok(move |_, _, cx| {
-                                let _ = term_target.update(cx, |this, cx| {
-                                    this.signal_pids(&term_pids, Signal::Term);
-                                    cx.notify();
-                                });
-                                true
-                            })
-                            .content(move |content, _, _| {
-                                content
-                                    .child(
-                                        DialogHeader::new()
-                                            .child(
-                                                DialogTitle::new()
-                                                    .child(format!("End {app_name}?")),
-                                            )
-                                            .child(DialogDescription::new().child(
-                                                "All processes in this application group will receive a graceful termination signal.",
-                                            )),
-                                    )
-                                    .child(
-                                        DialogFooter::new()
-                                            .child(DialogClose::new().child(
-                                                Button::new(("app-term-cancel", index))
-                                                    .outline()
-                                                    .label("Cancel"),
-                                            ))
-                                            .child(DialogAction::new().child(
-                                                Button::new(("app-term-confirm", index))
-                                                    .warning()
-                                                    .label("End Application"),
-                                            )),
-                                    )
-                            }),
-                    )
-                    .child(
-                        AlertDialog::new(cx)
-                            .trigger(
-                                Button::new(("app-kill", index))
-                                    .warning()
-                                    .small()
-                                    .label("Force"),
-                            )
-                            .on_ok(move |_, _, cx| {
-                                let _ = kill_target.update(cx, |this, cx| {
-                                    this.signal_pids(&kill_pids, Signal::Kill);
-                                    cx.notify();
-                                });
-                                true
-                            })
-                            .content(move |content, _, _| {
-                                content
-                                    .child(
-                                        DialogHeader::new()
-                                            .child(
-                                                DialogTitle::new()
-                                                    .child("Force stop application?"),
-                                            )
-                                            .child(DialogDescription::new().child(
-                                                "Every process in this application group will stop immediately without cleanup.",
-                                            )),
-                                    )
-                                    .child(
-                                        DialogFooter::new()
-                                            .child(DialogClose::new().child(
-                                                Button::new(("app-kill-cancel", index))
-                                                    .outline()
-                                                    .label("Cancel"),
-                                            ))
-                                            .child(DialogAction::new().child(
-                                                Button::new(("app-kill-confirm", index))
-                                                    .warning()
-                                                    .label("Force stop"),
-                                            )),
-                                    )
-                            }),
-                    )
-                    .child(
-                        Button::new(("app-stop", index))
-                            .ghost()
-                            .small()
-                            .label("Pause")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.signal_pids(&stop_pids, Signal::Stop);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new(("app-cont", index))
-                            .ghost()
-                            .small()
-                            .label("Resume")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.signal_pids(&continue_pids, Signal::Continue);
-                                cx.notify();
-                            })),
-                    ),
-            )
-    }
-
-    fn app_value_cell(&self, value: String, width: f32, color: Hsla) -> Div {
-        div()
-            .w(px(width))
-            .flex_shrink_0()
-            .text_sm()
-            .text_color(color)
-            .truncate()
-            .child(value)
     }
 
     pub(super) fn render_processes_parity(&self, cx: &mut Context<Self>) -> Div {
@@ -2269,7 +1892,7 @@ Command: {}",
         });
     }
 
-    fn signal_pids(&mut self, pids: &[Pid], signal: Signal) {
+    pub(crate) fn signal_pids(&mut self, pids: &[Pid], signal: Signal) {
         let mut succeeded = 0;
         let mut stale = 0;
         let mut denied_or_unsupported = 0;
@@ -2297,6 +1920,12 @@ Command: {}",
 
     fn sync_table_settings(&mut self, cx: &mut Context<Self>) {
         let settings = self.settings.clone();
+        let app_settings = settings.clone();
+        self.app_table.update(cx, |table, cx| {
+            table.delegate_mut().set_settings(&app_settings);
+            table.refresh(cx);
+            cx.notify();
+        });
         self.process_table.update(cx, |table, cx| {
             table.delegate_mut().set_settings(&settings);
             table.refresh(cx);

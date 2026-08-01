@@ -17,6 +17,7 @@ use crate::{
     linux,
     process_control::{self, PriorityPreset},
     settings::MonitorSettings,
+    sort_preferences,
 };
 
 #[derive(Clone, Debug)]
@@ -103,6 +104,35 @@ impl ProcessColumn {
         }
     }
 
+    fn from_id(value: &str) -> Option<Self> {
+        Some(match value {
+            "selection" => Self::Selection,
+            "name" => Self::Name,
+            "pid" => Self::Pid,
+            "user" => Self::User,
+            "memory" => Self::Memory,
+            "cpu" => Self::Cpu,
+            "read-speed" => Self::ReadSpeed,
+            "read-total" => Self::ReadTotal,
+            "write-speed" => Self::WriteSpeed,
+            "write-total" => Self::WriteTotal,
+            "gpu" => Self::Gpu,
+            "gpu-memory" => Self::GpuMemory,
+            "encoder" => Self::Encoder,
+            "decoder" => Self::Decoder,
+            "total-cpu-time" => Self::TotalCpuTime,
+            "user-cpu-time" => Self::UserCpuTime,
+            "system-cpu-time" => Self::SystemCpuTime,
+            "priority" => Self::Priority,
+            "swap" => Self::Swap,
+            "combined-memory" => Self::CombinedMemory,
+            "command-line" => Self::CommandLine,
+            "state" => Self::State,
+            "options" => Self::Options,
+            _ => return None,
+        })
+    }
+
     const fn title(self) -> &'static str {
         match self {
             Self::Selection => "",
@@ -176,13 +206,18 @@ pub struct ProcessTableDelegate {
 
 impl ProcessTableDelegate {
     pub fn new(settings: &MonitorSettings) -> Self {
+        let preference = sort_preferences::load_process();
         let mut this = Self {
             all_processes: Vec::new(),
             processes: Vec::new(),
             columns: Vec::new(),
             column_kinds: Vec::new(),
-            sort_column: ProcessColumn::Cpu,
-            sort_order: ColumnSort::Descending,
+            sort_column: ProcessColumn::from_id(&preference.column).unwrap_or(ProcessColumn::Cpu),
+            sort_order: if preference.descending {
+                ColumnSort::Descending
+            } else {
+                ColumnSort::Ascending
+            },
             query: String::new(),
             settings: settings.clone(),
             selected_pids: BTreeSet::new(),
@@ -598,6 +633,11 @@ impl TableDelegate for ProcessTableDelegate {
         self.sort_column = column;
         self.sort_order = sort;
         self.sort_processes();
+        if let Err(error) =
+            sort_preferences::save_process(column.id(), matches!(sort, ColumnSort::Descending))
+        {
+            eprintln!("could not save Processes sort preference: {error}");
+        }
     }
 
     fn cell_text(&self, row_ix: usize, col_ix: usize, _: &App) -> String {

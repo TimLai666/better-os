@@ -20,6 +20,7 @@ use smol::Timer;
 use sysinfo::{Disks, Networks, Pid, System};
 
 use crate::{
+    app_table::AppTableDelegate,
     linux::{
         self, AppGroup, AppProcessSample, BatteryDevice, BlockCounters, CpuDetails, GpuDevice,
         NetworkMetadata, NpuDevice,
@@ -175,7 +176,7 @@ struct IncidentMarker {
     recorded_at_ms: u64,
 }
 
-struct MonitorWindow {
+pub(crate) struct MonitorWindow {
     system: System,
     disks: Disks,
     networks: Networks,
@@ -204,6 +205,7 @@ struct MonitorWindow {
     active_page: MonitorPage,
     charts_paused: bool,
     sample_index: usize,
+    app_table: Entity<TableState<AppTableDelegate>>,
     process_table: Entity<TableState<ProcessTableDelegate>>,
     incidents: Vec<IncidentMarker>,
     store: MonitorStore,
@@ -217,6 +219,18 @@ impl MonitorWindow {
         system.refresh_all();
         let settings = MonitorSettings::load();
 
+        let monitor_target = cx.entity().downgrade();
+        let app_settings = settings.clone();
+        let app_table = cx.new(|cx| {
+            TableState::new(
+                AppTableDelegate::new(&app_settings, monitor_target.clone()),
+                window,
+                cx,
+            )
+            .col_selectable(false)
+            .col_movable(false)
+            .row_selectable(true)
+        });
         let process_table = cx.new(|cx| {
             TableState::new(ProcessTableDelegate::new(&settings), window, cx)
                 .col_selectable(false)
@@ -250,6 +264,12 @@ impl MonitorWindow {
                 if matches!(event, InputEvent::Change) {
                     this.search_query = input.read(cx).value().to_string();
                     let query = this.search_query.clone();
+                    let app_query = query.clone();
+                    this.app_table.update(cx, |table, cx| {
+                        table.delegate_mut().set_filter(app_query);
+                        table.refresh(cx);
+                        cx.notify();
+                    });
                     this.process_table.update(cx, |table, cx| {
                         table.delegate_mut().set_filter(query);
                         table.refresh(cx);
@@ -290,6 +310,7 @@ impl MonitorWindow {
             active_page: MonitorPage::Overview,
             charts_paused: false,
             sample_index: 0,
+            app_table,
             process_table,
             incidents: Vec::new(),
             store: MonitorStore::default(),
@@ -437,6 +458,14 @@ impl MonitorWindow {
             })
             .collect::<Vec<_>>();
         self.app_groups = linux::group_apps(&app_samples);
+        let app_groups = self.app_groups.clone();
+        let app_query = self.search_query.clone();
+        self.app_table.update(cx, |table, cx| {
+            table.delegate_mut().set_groups(app_groups);
+            table.delegate_mut().set_filter(app_query);
+            table.refresh(cx);
+            cx.notify();
+        });
         processes.sort_by(|a, b| {
             b.cpu_usage
                 .partial_cmp(&a.cpu_usage)

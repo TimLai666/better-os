@@ -31,14 +31,14 @@ This checklist is the merge gate for the GNOME Resources parity portion of Bette
 | Device page shell | 🟨 | Graph-first and grouped property layout exists on several pages, but is not a shared typed component yet. |
 | Property group / row | ✅ | Reusable section and property-row helpers exist. |
 | Search toolbar | ✅ | Shared Apps / Processes search toolbar exists. Processes supports `|` terms. |
-| Virtualized data table | ✅ | GPUI component `DataTable` is used for Processes. Apps still uses custom rows rather than a virtualized sortable table. |
-| Multi-selection toolbar | ⬜ | Required for batch process actions. |
+| Virtualized data table | ✅ | GPUI component `DataTable` is used for both Apps and Processes. |
+| Multi-selection toolbar | ✅ | Processes separates row focus from an explicit multi-PID selection set and batch toolbar. |
 | Split action button | ⬜ | Required for End Application and alternate force/pause/resume actions. |
-| Context menu | ⬜ | Required for Apps and single/multi-process selections. |
-| Confirmation dialog | ⬜ | Required before destructive app/process actions. |
-| Information dialog | 🟨 | Process Options has a separate GPUI window. Application Information and Process Information dialogs are missing. |
+| Context menu | 🟨 | Processes has a row context menu. Apps and batch-selection context menus remain incomplete. |
+| Confirmation dialog | ✅ | Graceful and force-stop actions use confirmation dialogs for Apps and Processes. |
+| Information dialog | ✅ | Application Information and Process Information dialogs exist; Process Options remains a separate GPUI window. |
 | Permission state | 🟨 | Process control returns Linux errors. Dedicated permission UI and narrow Polkit helper flow are missing. |
-| Stale-process state | ⬜ | Process disappearance clears selection, but action-specific stale handling is missing. |
+| Stale-process state | 🟨 | Selections are pruned and action results count stale PIDs separately; a dedicated stale-state visual remains missing. |
 | Empty / unsupported / error state | 🟨 | Unsupported device page helper exists. Dedicated unknown, stale, permission-denied, and collector-error visuals are incomplete. |
 | Toast / result banner | ✅ | Action result banner exists. |
 | Settings row / switch | ✅ | Reusable preference rows and switches exist. |
@@ -70,18 +70,18 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | cgroup/systemd/application grouping | 🟨 | Typed grouping with explicit fallback exists; grouping quality and identity coverage need real-session tests. |
 | App icon and name | 🟨 | Name exists; icon resolution is missing. |
 | Search | ✅ | Search filters app groups. |
-| Sortable table | ⬜ | Current Apps surface is custom rows and not sortable. |
-| Remember sort column/direction | ⬜ | Missing. |
+| Sortable table | ✅ | Apps uses a virtualized GPUI `DataTable`; supported metric columns sort. |
+| Remember sort column/direction | ✅ | Apps persists its last sort column and direction in the monitor table-sort preferences. |
 | Column visibility | ✅ | Required preference switches exist. |
 | Memory / CPU | ✅ | Aggregated. |
 | Drive read/write speed and totals | ✅ | Aggregated. |
 | GPU / GPU memory / encoder / decoder | 🟨 | Columns exist with explicit unavailable values; attribution adapters are missing. |
 | Swap / combined memory | ✅ | Aggregated. |
-| Application information dialog | ⬜ | Missing. |
+| Application information dialog | ✅ | Implemented in the Apps action column. |
 | End Application split action | ⬜ | Separate row buttons exist; Resources-style split action is missing. |
 | Graceful end / force / pause / resume | ✅ | Signals are implemented with explicit denied/unavailable results. |
 | Context menu | ⬜ | Missing. |
-| Confirmation dialogs | ⬜ | Missing. |
+| Confirmation dialogs | ✅ | End and Force actions require confirmation. |
 | Background/system grouping | 🟨 | Grouping reason is visible; dedicated visual separation needs refinement. |
 | Temporary refresh hold during interaction | ⬜ | Missing. |
 
@@ -91,20 +91,20 @@ The answer to “are all required UI components built?” is therefore **no**. T
 |---|---:|---|
 | Searchable virtualized table | ✅ | GPUI `DataTable`; `|` multi-term behavior implemented. |
 | Sortable columns | ✅ | Supported columns sort; unavailable GPU columns and Options do not claim sorting. |
-| Remember sort column/direction | ⬜ | Current sort is in-memory only. |
-| Multi-selection | ⬜ | Table currently records one selected PID. |
+| Remember sort column/direction | ✅ | Processes restores and persists its last sort column and direction. |
+| Multi-selection | ✅ | Dedicated switches maintain a PID set independently from row focus. |
 | Column visibility | ✅ | Required settings exist. |
 | Name / PID / user / memory / CPU | ✅ | Implemented. |
 | Read/write speed and totals | ✅ | Implemented. |
 | GPU / GPU memory / encoder / decoder | 🟨 | Visible explicit unavailable state; attribution missing. |
 | Total/user/system CPU time | ✅ | Implemented from Linux process counters. |
 | Priority / swap / combined memory / command line | ✅ | Implemented with privacy work still required for command arguments. |
-| Process information dialog | ⬜ | Inline details exist; dedicated dialog is missing. |
+| Process information dialog | ✅ | Dedicated information dialog is available from the Processes toolbar. |
 | Process options dialog | 🟨 | Separate GPUI window exists with priority and affinity controls; final CI and real-session interaction review pending. |
 | Priority/niceness control | 🟨 | Linux `setpriority` boundary exists. Polkit path for privileged changes is missing. |
 | CPU affinity control | 🟨 | Linux affinity read/write and per-CPU switches exist. Real process tests pending. |
 | Graceful end / force / pause / resume | ✅ | Single-process actions exist. |
-| Batch actions | ⬜ | Depends on multi-selection toolbar and confirmations. |
+| Batch actions | ✅ | End, Force, Pause, and Resume operate on the selected PID set with confirmations for destructive actions. |
 | Single/multi-selection context menus | ⬜ | Missing. |
 | Confirmation/error/permission/stale states | 🟨 | Errors are reported; dedicated confirmation, permission, and stale components are missing. |
 | Keyboard cell navigation and semantics | 🧪 | GPUI table baseline exists; full keyboard/accessibility audit pending. |
@@ -207,7 +207,7 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | Virtual drives/interfaces | ✅ | Persisted. |
 | Network bytes/bits | ✅ | Persisted. |
 | Apps/Processes columns | ✅ | Persisted. |
-| Apps/Processes sorting | ⬜ | Missing persistence. |
+| Apps/Processes sorting | ✅ | Both tables persist sort column and direction. |
 | Logical CPU display | ✅ | Persisted. |
 | CPU normalization | ✅ | Persisted. |
 | Detailed priority | ✅ | Persisted. |
@@ -236,7 +236,7 @@ The answer to “are all required UI components built?” is therefore **no**. T
 1. Keep Process Options compiling and validated.
 2. Build shared parity interaction components: confirmation dialog, context menu, split action, multi-selection toolbar, support-state panel, and adaptive navigation.
 3. Implement process multi-selection and batch actions.
-4. Convert Apps to a virtualized sortable table with persisted sort state and information/actions dialogs.
+4. ✅ Convert Apps to a virtualized sortable table with persisted sort state and information/actions dialogs.
 5. Add persisted shell state and temporary refresh holds.
 6. Add localization runtime and pseudo-long tests.
 7. Add SMBIOS/DMI memory adapter with a narrow authenticated helper boundary.
