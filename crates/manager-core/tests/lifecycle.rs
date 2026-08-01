@@ -52,7 +52,7 @@ fn custom_manifest(
         )
     };
     ComponentManifest::parse_yaml(&format!(
-        "schema_version: 1\nid: {component}\ndisplay_name: {component}\ncomponent_type: diagnostic\nversion: {version}\ntargets:\n  distributions: [ubuntu]\n  releases: [24.04]\n  architectures: [amd64]\nartifact:\n  url: https://example.com/{component}.deb\n  sha256: {checksum}\nlifecycle:\n  install: mock-install\n  enable: mock-enable\n  disable: mock-disable\n  remove: mock-remove\n  rollback: mock-rollback\n{dependency_section}\n{conflict_section}\n",
+        "schema_version: 2\nid: {component}\ndisplay_name: {component}\ncomponent_type: diagnostic\nversion: {version}\ntargets:\n  distributions: [ubuntu]\n  releases: [\"24.04\"]\n  architectures: [amd64]\nartifacts:\n  - release: \"24.04\"\n    architecture: amd64\n    url: https://example.com/{component}_{version}_ubuntu-24.04_amd64.deb\n    sha256: {checksum}\n    release_asset: {component}_{version}_ubuntu-24.04_amd64.deb\nlifecycle:\n  install: mock-install\n  enable: mock-enable\n  disable: mock-disable\n  remove: mock-remove\n  rollback: mock-rollback\n{dependency_section}\n{conflict_section}\n",
         checksum = "a".repeat(64),
     ))
     .unwrap()
@@ -224,8 +224,8 @@ fn successful_verification_keeps_the_previous_update_snapshot() {
 #[test]
 fn planning_checks_declared_disk_space_and_exposes_release_notes() {
     let mut manifest = custom_manifest("component", "1.0.0", &[], &[]);
-    manifest.artifact.download_size_bytes = Some(512);
-    manifest.artifact.required_disk_bytes = Some(2048);
+    manifest.artifacts[0].download_size_bytes = Some(512);
+    manifest.artifacts[0].required_disk_bytes = Some(2048);
     manifest.release_notes = vec!["Initial mock release".to_string()];
     let component = id("component");
     let manager = Manager::new(

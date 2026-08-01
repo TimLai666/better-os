@@ -5,7 +5,8 @@
 //! mutation. It only produces and advances deterministic mock state.
 
 use better_core::{
-    ComponentCatalog, ComponentId, ComponentManifest, ComponentType, ManifestError, RestartScope,
+    Artifact, ComponentCatalog, ComponentId, ComponentManifest, ComponentType, ManifestError,
+    RestartScope,
 };
 pub use manager_platform::SystemProfile;
 use manager_platform::{PlatformError, SystemCapabilities};
@@ -757,6 +758,18 @@ impl Manager {
         &self.profile
     }
 
+    /// The artifact built for this host's Ubuntu release and architecture. A
+    /// validated manifest declares one for every supported combination, so
+    /// `None` means the host is not a target this component ships for.
+    fn artifact_for_profile<'a>(&self, manifest: &'a ComponentManifest) -> Option<&'a Artifact> {
+        manifest.artifacts.iter().find(|artifact| {
+            artifact.release == self.profile.release
+                && artifact
+                    .architecture
+                    .eq_ignore_ascii_case(&self.profile.architecture)
+        })
+    }
+
     pub fn validate_state(&self, state: &ManagerState) -> Result<(), ManagerError> {
         state.validate()?;
         for id in state.components.keys() {
@@ -1375,6 +1388,7 @@ impl Manager {
         dependencies.sort();
         let mut conflicts = manifest.conflicts.clone();
         conflicts.sort();
+        let artifact = self.artifact_for_profile(manifest);
         PlanStep {
             component: manifest.id.clone(),
             operation,
@@ -1399,10 +1413,10 @@ impl Manager {
                 RestartRequirement::NotRequired
             },
             estimated_download_bytes: uses_artifact
-                .then_some(manifest.artifact.download_size_bytes)
+                .then(|| artifact.and_then(|artifact| artifact.download_size_bytes))
                 .flatten(),
             required_disk_bytes: uses_artifact
-                .then_some(manifest.artifact.required_disk_bytes)
+                .then(|| artifact.and_then(|artifact| artifact.required_disk_bytes))
                 .flatten(),
             release_notes: if uses_artifact {
                 manifest.release_notes.clone()

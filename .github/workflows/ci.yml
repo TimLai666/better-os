@@ -31,15 +31,19 @@ jobs:
         include:
           - runner: ubuntu-22.04
             target: ubuntu-22.04
+            asset_target: ubuntu-22.04
             architecture: amd64
           - runner: ubuntu-24.04
             target: ubuntu-24.04
+            asset_target: ubuntu-24.04
             architecture: amd64
           - runner: ubuntu-22.04-arm
             target: ubuntu-22.04-arm64
+            asset_target: ubuntu-22.04
             architecture: arm64
           - runner: ubuntu-24.04-arm
             target: ubuntu-24.04-arm64
+            asset_target: ubuntu-24.04
             architecture: arm64
     runs-on: ${{ matrix.runner }}
     env:
@@ -60,9 +64,9 @@ jobs:
       - name: Install GPUI and packaging dependencies
         run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
       - name: Build Debian packages
-        run: bash packaging/build-deb.sh --output-dir "dist/${{ matrix.target }}"
+        run: bash packaging/build-deb.sh --output-dir "dist/${{ matrix.target }}" --target "${{ matrix.asset_target }}"
       - name: Verify Debian packages
-        run: bash packaging/verify-deb.sh "dist/${{ matrix.target }}"
+        run: bash packaging/verify-deb.sh "dist/${{ matrix.target }}" "${{ matrix.asset_target }}"
       - name: Upload Debian packages
         uses: actions/upload-artifact@v4
         with:

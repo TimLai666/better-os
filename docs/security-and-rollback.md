@@ -21,5 +21,7 @@ from the current Rust traits.
 ## Release security
 
 The manager verifies artifact checksums before installation. Package signing is
-deferred and must be decided before public releases. The project license is also
-deferred, so no `LICENSE` file is added by the initial scaffold.
+deferred and must be decided before a future signed distribution channel. The
+project is licensed under GPL-3.0-or-later. Every Debian package carries the
+root license and the generated third-party license inventory under
+`/usr/share/doc/<package>/`.

@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 id: better-manager
 display_name: Better Manager
 component_type: diagnostic
@@ -10,10 +10,27 @@ targets:
   distributions: [zorin, ubuntu]
   releases: [22.04, 24.04]
   architectures: [amd64, arm64]
-artifact:
-  url: https://github.com/TimLai666/better-os/releases/download/better-manager-v0.1.0/better-manager.deb
-  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  release_asset: better-manager.deb
+artifacts:
+  - release: "22.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-manager_0.1.0_ubuntu-22.04_amd64.deb
+    sha256: 8430065f3fec3bfa10881703cceaa95bd5524473f891d4e808ff875329b8c78f
+    release_asset: better-manager_0.1.0_ubuntu-22.04_amd64.deb
+  - release: "22.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-manager_0.1.0_ubuntu-22.04_arm64.deb
+    sha256: eadc902a23ef43ca9de2ad7901b0ba6de3e68d614b08f954072bff45334e41ae
+    release_asset: better-manager_0.1.0_ubuntu-22.04_arm64.deb
+  - release: "24.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-manager_0.1.0_ubuntu-24.04_amd64.deb
+    sha256: c4735a5e3f3993db1f89b3523ad8f298425b6c38fa827a98a43db3b38f6e2eae
+    release_asset: better-manager_0.1.0_ubuntu-24.04_amd64.deb
+  - release: "24.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-manager_0.1.0_ubuntu-24.04_arm64.deb
+    sha256: f3d04eb9084694a954e1dcd4e9fdcce70e2f283dc38b05491195e9b9b8df19cc
+    release_asset: better-manager_0.1.0_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable

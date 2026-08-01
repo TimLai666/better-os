@@ -3,12 +3,29 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${1:-$ROOT_DIR/dist}"
+RELEASE_TARGET="${2:-}"
 EXPECTED_ARCH="$(dpkg --print-architecture)"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
+if [[ -n "$RELEASE_TARGET" && ! "$RELEASE_TARGET" =~ ^[a-z0-9][a-z0-9.-]*$ ]]; then
+    printf 'Invalid release target: %s\n' "$RELEASE_TARGET" >&2
+    exit 1
+fi
+
+shopt -s nullglob
+
 for package_name in better-manager better-monitor; do
-    deb_path="$DIST_DIR/$package_name.deb"
+    if [[ -n "$RELEASE_TARGET" ]]; then
+        package_paths=("$DIST_DIR/${package_name}_"*"_${RELEASE_TARGET}_${EXPECTED_ARCH}.deb")
+    else
+        package_paths=("$DIST_DIR/${package_name}_"*.deb)
+    fi
+    if [[ ${#package_paths[@]} -ne 1 ]]; then
+        printf 'Expected exactly one target-specific package for %s\n' "$package_name" >&2
+        exit 1
+    fi
+    deb_path="${package_paths[0]}"
     checksum_path="$deb_path.sha256"
     extract_dir="$WORK_DIR/$package_name"
 
@@ -19,7 +36,7 @@ for package_name in better-manager better-monitor; do
 
     (
         cd "$DIST_DIR"
-        sha256sum --check "${package_name}.deb.sha256"
+        sha256sum --check "$(basename "$checksum_path")"
     )
 
     actual_name="$(dpkg-deb -f "$deb_path" Package)"
@@ -60,6 +77,25 @@ for package_name in better-manager better-monitor; do
         printf 'Missing executable in %s\n' "$package_name" >&2
         exit 1
     }
+
+    notice_dir="$extract_dir/usr/share/doc/$package_name"
+    [[ -s "$notice_dir/copyright" ]] || {
+        printf 'Missing project license notice in %s\n' "$package_name" >&2
+        exit 1
+    }
+    [[ -s "$notice_dir/THIRD-PARTY-LICENSES.md" ]] || {
+        printf 'Missing third-party license notice inventory in %s\n' "$package_name" >&2
+        exit 1
+    }
+    cmp "$ROOT_DIR/LICENSE" "$notice_dir/copyright" >/dev/null || {
+        printf 'Project license notice does not match repository LICENSE in %s\n' "$package_name" >&2
+        exit 1
+    }
+    grep -q '^# Third-Party License Notices$' "$notice_dir/THIRD-PARTY-LICENSES.md" || {
+        printf 'Invalid third-party license notice inventory in %s\n' "$package_name" >&2
+        exit 1
+    }
+
     if ldd "$binary_path" | grep -q 'not found'; then
         printf 'Unresolved dynamic library in %s\n' "$package_name" >&2
         exit 1

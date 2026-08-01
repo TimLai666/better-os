@@ -1,4 +1,4 @@
-# ADR 0003: Platform Boundary Crate
+# ADR 0005: Platform Boundary Crate
 
 ## Status
 

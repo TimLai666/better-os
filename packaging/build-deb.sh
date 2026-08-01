@@ -5,9 +5,11 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR="$ROOT_DIR/dist"
 VERSION="${VERSION:-}"
 ARCH="${DEB_HOST_ARCH:-}"
+RELEASE_TARGET="local"
+MAINTAINER="TimLai666 <tim930102@icloud.com>"
 
 usage() {
-    printf 'Usage: %s [--output-dir DIR]\n' "$0"
+    printf 'Usage: %s [--output-dir DIR] [--target TARGET]\n' "$0"
 }
 
 while (($# > 0)); do
@@ -18,6 +20,14 @@ while (($# > 0)); do
                 exit 2
             fi
             OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        --target)
+            if (($# < 2)); then
+                usage >&2
+                exit 2
+            fi
+            RELEASE_TARGET="$2"
             shift 2
             ;;
         --help)
@@ -31,7 +41,7 @@ while (($# > 0)); do
     esac
 done
 
-for command_name in cargo dpkg dpkg-deb dpkg-shlibdeps install sha256sum; do
+for command_name in cargo dpkg dpkg-deb dpkg-shlibdeps install sha256sum jq; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         printf 'Missing required command: %s\n' "$command_name" >&2
         exit 1
@@ -81,8 +91,14 @@ case "$ARCH" in
         ;;
 esac
 
+if [[ ! "$RELEASE_TARGET" =~ ^[a-z0-9][a-z0-9.-]*$ ]]; then
+    printf 'Invalid release target: %s\n' "$RELEASE_TARGET" >&2
+    exit 1
+fi
+
 cd "$ROOT_DIR"
 export RUST_FONTCONFIG_DLOPEN="${RUST_FONTCONFIG_DLOPEN:-1}"
+"$ROOT_DIR/packaging/generate-third-party-notices.sh" --check
 cargo build --release -p manager-gui -p monitor-gui
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
@@ -98,7 +114,8 @@ make_package() {
     local staging_dir="$WORK_DIR/$package_name"
     local dependency_control_dir="$WORK_DIR/$package_name-deps"
     local binary_path="$BUILD_DIR/$binary_name"
-    local deb_path="$OUTPUT_DIR/$package_name.deb"
+    local deb_filename="${package_name}_${VERSION}_${RELEASE_TARGET}_${ARCH}.deb"
+    local deb_path="$OUTPUT_DIR/$deb_filename"
     local shlib_dependencies
     local runtime_dependencies
 
@@ -107,15 +124,18 @@ make_package() {
         exit 1
     fi
 
-    mkdir -p "$staging_dir/DEBIAN" "$staging_dir/usr/bin"
+    mkdir -p "$staging_dir/DEBIAN" "$staging_dir/usr/bin" "$staging_dir/usr/share/doc/$package_name"
     install -m 0755 "$binary_path" "$staging_dir/usr/bin/$package_name"
+    install -m 0644 "$ROOT_DIR/LICENSE" "$staging_dir/usr/share/doc/$package_name/copyright"
+    install -m 0644 "$ROOT_DIR/docs/third-party-licenses.md" \
+        "$staging_dir/usr/share/doc/$package_name/THIRD-PARTY-LICENSES.md"
 
     mkdir -p "$dependency_control_dir/debian"
     printf '%s\n' \
         'Source: better-os-packaging' \
         'Section: utils' \
         'Priority: optional' \
-        'Maintainer: Better OS contributors' \
+        "Maintainer: $MAINTAINER" \
         'Package: '"$package_name" \
         'Architecture: any' \
         'Depends: ${shlibs:Depends}' \
@@ -146,7 +166,7 @@ make_package() {
         'Section: utils' \
         'Priority: optional' \
         'Architecture: '"$ARCH" \
-        'Maintainer: Better OS contributors' \
+        "Maintainer: $MAINTAINER" \
         "Depends: $runtime_dependencies" \
         "Description: $description" \
         ' Better OS desktop application built with the shared manager and monitor contracts.' \
@@ -155,7 +175,7 @@ make_package() {
     dpkg-deb --build --root-owner-group "$staging_dir" "$deb_path" >/dev/null
     (
         cd "$OUTPUT_DIR"
-        sha256sum "${package_name}.deb"
+        sha256sum "$deb_filename"
     ) > "$deb_path.sha256"
     printf 'Built %s (%s, %s)\n' "$deb_path" "$VERSION" "$ARCH"
     printf 'Depends: %s\n' "$runtime_dependencies"

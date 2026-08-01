@@ -55,7 +55,7 @@ Better Manager is a native utility for making component lifecycle decisions visi
 - **Tertiary:** `#4f6df5` for the single primary action and selected state.
 - **Neutral:** `#f4f7fb` for the light application canvas.
 
-Dark is the default appearance. Light and system-follow are explicit user choices stored with the rest of the manager settings, and the window applies the stored choice once the saved settings have been read. See [ADR 0002](docs/decisions/0002-dark-first-themeable-appearance.md). The values above describe the light appearance; the dark appearance uses the component library's dark palette with the same roles.
+Dark is the default appearance. Light and system-follow are explicit user choices stored with the rest of the manager settings, and the window applies the stored choice once the saved settings have been read. See [ADR 0004](docs/decisions/0004-dark-first-themeable-appearance.md). The values above describe the light appearance; the dark appearance uses the component library's dark palette with the same roles.
 
 ## Typography
 

@@ -94,7 +94,7 @@ replaceable until its storage decision is explicit.
   by the current manager.
 - A manifest declares its own summary, icon, and restart scope. A component
   without a shipped translation is presented from those values rather than
-  hidden. See [ADR 0004](docs/decisions/0004-manifest-declared-presentation.md).
+  hidden. See [ADR 0006](docs/decisions/0006-manifest-declared-presentation.md).
 - GPUI is pre-1.0 and may require the latest stable Rust and Linux display
   dependencies.
 - The final runtime dependency list is target- and architecture-specific and

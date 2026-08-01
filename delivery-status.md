@@ -16,7 +16,7 @@ Issue #8 Better Manager UI verifiable before adding real system integration.
 - Better Manager GPUI shell, shared mock lifecycle, persistence, and acceptance coverage
 - Manifest-declared presentation, platform boundary, and dark-first appearance
 - Monitor observation contracts
-- Release packaging contract and clean-install verification plan
+- Release packaging contract, clean-install verification, and license notices
 
 ## Milestones
 
@@ -28,34 +28,36 @@ Issue #8 Better Manager UI verifiable before adding real system integration.
 | M4 | docs and CI | agent | done | workflow file and docs review |
 | M5 | release packaging contract | agent | done | `docs/release-packaging.md` and ticket 06 acceptance criteria |
 | M6 | target-compatible `.deb` packaging | agent | done | GitHub Actions Ubuntu 22.04/24.04 amd64 and native arm64 matrix build, dependency metadata check, checksum verification |
-| M7 | Better Manager Issue #8 functional acceptance | agent | done | Chefer AppCipe passed fmt, workspace check/test, clippy, CLI lifecycle smoke, and GUI headless smoke |
-| M8 | Issue #8 remaining gap closure | agent | done | manifest presentation and restart metadata, `manager-platform`, manifest-driven GUI, dark-first appearance, ADRs 0002–0004 |
+| M7 | package license notices | agent | done | generated locked Cargo inventory, package payload notice checks, and post-merge CI verifier |
+| M8 | v0.1.0 public release | agent | done | GitHub Release assets, public re-download checksum verification, and manifest checksum mapping |
+| M9 | Better Manager Issue #8 functional acceptance | agent | done | Chefer AppCipe passed fmt, workspace check/test, clippy, CLI lifecycle smoke, and GUI headless smoke |
+| M10 | Issue #8 remaining gap closure | agent | done | manifest presentation and restart metadata, `manager-platform`, manifest-driven GUI, dark-first appearance, ADRs 0004-0006 |
 
 ## Current Blockers
 
-Issue #8 has no active implementation blocker. Every acceptance criterion in
-the issue is now met, and the five remaining gaps from the branch audit are
-closed under ticket 08. Ticket 06 still needs public
-target-specific release assets, manifest checksum verification, and the
-approved maintainer contact before publishing. The current matrix produces four
-same-named package assets while each manifest has one artifact checksum, so the
-asset naming and manifest mapping must be decided before a release can be
-created.
+No active blocker remains for Ticket 06. The target-specific asset naming and
+manifest mapping decision is recorded in ADR 0002, the release packaging changes
+are merged into `main`, and the first public release is available.
 
-The declared Rust 1.85 baseline is also incompatible with the current lockfile:
-an isolated Rust 1.85 build stops before compilation because dependencies now
-require up to Rust 1.92. The GitHub workflow uses stable Rust. The Issue #8
-Chefer AppCipe passed with Rust 1.97. The supported toolchain policy still
-needs alignment.
+Issue #8 has no active implementation blocker either. Every acceptance
+criterion in the issue is met, and the five remaining gaps from the branch
+audit are closed under ticket 08.
+
+The declared Rust 1.85 baseline is still incompatible with the current
+lockfile: an isolated Rust 1.85 build stops before compilation because
+dependencies now require up to Rust 1.92. The GitHub workflow uses stable Rust.
+The Issue #8 Chefer AppCipe passed with Rust 1.97. The supported toolchain
+policy still needs alignment.
 
 ## Next Verifiable Output
 
-Publish uniquely named target-specific release assets, then derive and verify
-the manifest checksums from those public assets.
+The initial six-ticket delivery and Issue #8 are complete. Keep the next change
+scoped to a new ticket or an explicit decision about the deferred APT
+repository, signing, privileged IPC, or real system integration work.
 
 ## Next Ticket
 
-06 — Release packaging
+None — the initial planned tickets and Issue #8 are complete
 
 ## Decision Log
 
@@ -88,6 +90,29 @@ the manifest checksums from those public assets.
   per Ubuntu release and architecture
   timestamp: 2026-07-31
   impacted_ticket_ids: [06]
+- decision: use one version Release with target-specific package assets and
+  schema v2 artifact variants keyed by Ubuntu release and architecture
+  rationale: avoid filename collisions across the four package jobs and let
+  every manifest checksum map to exactly one published package
+  timestamp: 2026-07-31
+  impacted_ticket_ids: [06]
+- decision: license the root project under GPL-3.0-or-later
+  rationale: make the project license explicit before distribution and align the
+  first-party workspace with the GPL-3.0-or-later GUI dependency chain
+  timestamp: 2026-07-31
+  impacted_ticket_ids: [05, 06]
+- decision: use the GitHub account contact as Debian maintainer
+  rationale: provide a reachable package contact without inventing a project
+  mailbox that does not exist yet
+  timestamp: 2026-07-31
+  impacted_ticket_ids: [06]
+- decision: ship the root license and generated Cargo dependency license
+  inventory inside every Debian package
+  rationale: make the current locked dependency graph and its copyleft or
+  notice-sensitive records reviewable from the binary distribution, while
+  failing the package build if the committed inventory becomes stale
+  timestamp: 2026-08-01
+  impacted_ticket_ids: [06]
 - decision: persist Better Manager's mock lifecycle in versioned local JSON and
   show disk or release metadata only when its catalog declares it
   rationale: the user chose JSON over a database; explicit unavailable values
@@ -97,21 +122,21 @@ the manifest checksums from those public assets.
 - decision: open Better Manager dark by default and keep light and
   system-follow as explicit stored choices
   rationale: Issue #8 states a dark-first UI direction, and the shipped
-  light-only slice contradicted it; see ADR 0002
+  light-only slice contradicted it; see ADR 0004
   timestamp: 2026-08-01
   impacted_ticket_ids: [08]
 - decision: move every host-facing interface into `manager-platform` and keep
   each shipped implementation a mock that refuses to apply a package change
   rationale: Issue #8 lists the crate boundary and requires the privileged
   executor to stay an interface until its security design is approved; a mock
-  that returned success would claim the host changed; see ADR 0003
+  that returned success would claim the host changed; see ADR 0005
   timestamp: 2026-08-01
   impacted_ticket_ids: [08]
 - decision: declare component summary, icon, and restart scope in the manifest
   with a closed icon set, and present untranslated components from those values
   rationale: the GUI matched three hardcoded component IDs and dropped every
   other component; manifests are untrusted, so the icon set stays closed; see
-  ADR 0004
+  ADR 0006
   timestamp: 2026-08-01
   impacted_ticket_ids: [08]
 
@@ -122,11 +147,22 @@ the manifest checksums from those public assets.
 - [ENG.md](ENG.md)
 - [Architecture](docs/architecture.md)
 - [Release packaging](docs/release-packaging.md)
+- [ADR 0002: Target-specific release assets](docs/decisions/0002-release-artifact-mapping.md)
+- [ADR 0003: GPL-3.0-or-later root license](docs/decisions/0003-project-license.md)
+- [ADR 0004: Dark-first themeable appearance](docs/decisions/0004-dark-first-themeable-appearance.md)
+- [ADR 0005: Platform boundary crate](docs/decisions/0005-platform-boundary.md)
+- [ADR 0006: Manifest-declared presentation](docs/decisions/0006-manifest-declared-presentation.md)
+- [Third-party license inventory](docs/third-party-licenses.md)
+- [Pull request #15](https://github.com/TimLai666/better-os/pull/15)
+- [v0.1.0 release](https://github.com/TimLai666/better-os/releases/tag/v0.1.0)
 - [Pull request #9](https://github.com/TimLai666/better-os/pull/9)
 - [Pull request #11](https://github.com/TimLai666/better-os/pull/11)
+- [Pull request #12](https://github.com/TimLai666/better-os/pull/12)
 - [CI run 30616628027](https://github.com/TimLai666/better-os/actions/runs/30616628027)
 - [CI run 30625827340](https://github.com/TimLai666/better-os/actions/runs/30625827340)
 - [Main CI run 30631266909](https://github.com/TimLai666/better-os/actions/runs/30631266909)
+- [Main CI run 30638535908](https://github.com/TimLai666/better-os/actions/runs/30638535908)
+- [Main CI run 30650287246](https://github.com/TimLai666/better-os/actions/runs/30650287246)
 - [Tickets](docs/tickets/)
 - [Decisions](docs/decisions/)
 
@@ -141,15 +177,23 @@ dependency checks, checksums, and artifact upload. Clean Ubuntu containers for
 all four target/architecture pairs installed the downloaded artifacts with APT,
 had no `*-dev` packages, resolved all dynamic libraries, and passed checksum
 verification. Both GUI binaries stayed alive in GPUI headless mode.
-The post-merge `main` CI run passed Rust checks and all four package jobs.
+The post-merge `main` CI run 30650287246 passed Rust checks and all four package
+jobs. PR #15 is merged into `main` at `3a6d98b`; the release artifact mapping
+decision is recorded in ADR 0002, and `main` validates schema v2 manifests and
+emits target-specific package filenames.
 The package payload also started both GUI binaries for 12 seconds in the host's
 Zorin OS 18.1 GNOME Wayland session with `ZED_HEADLESS` unset. Docker's Xvfb and
 host-socket tests still failed because they did not provide a usable compositor,
-but the direct host session passed. No public release asset exists yet, and
-manifest checksum values and maintainer approval remain open. The four-platform
-asset naming and manifest mapping decision is also open.
-PR #9 is merged into `main` at `fb3520f`, and the feature branch has been
-deleted from both the local checkout and GitHub.
+but the direct host session passed. The public `v0.1.0` release contains eight
+target-specific `.deb` assets and eight sidecars, and all public sidecars were
+verified after re-download. Both release-eligible manifests now contain the
+actual package checksums. Local `cargo fmt`, `cargo check`, `cargo clippy`,
+workspace tests, package build, package verifier, and inventory freshness checks
+also passed.
+The approved Debian maintainer is `TimLai666 <tim930102@icloud.com>`, and the
+root project license is GPL-3.0-or-later.
+PR #9 is merged into `main` at `fb3520f`. PR #12 and PR #15 feature branches
+have been deleted from both the local checkout and GitHub.
 
 Issue #8 now keeps the CLI and GPUI on the shared `manager-core` lifecycle API,
 persists mock state through `manager-store`, and localizes the GUI at runtime.
@@ -165,7 +209,7 @@ A branch audit against the Issue #8 text then found five gaps outside the
 acceptance-criteria list: no dark theme, no `manager-platform` crate,
 `replaces`/`enhances` never surfaced, component icon and purpose hardcoded to
 three component IDs, and a `RestartRequirement` with only `NotDeclared`. All
-five are closed under ticket 08, with ADRs 0002, 0003, and 0004 recording the
+five are closed under ticket 08, with ADRs 0004, 0005, and 0006 recording the
 decisions Issue #8 asked to be written down rather than made silently. The
 hardcoded-ID map also silently dropped any component outside that list from
 the GUI; presentation is now manifest-driven, so it does not.

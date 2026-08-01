@@ -1,4 +1,4 @@
-# ADR 0002: Dark-First Themeable Appearance
+# ADR 0004: Dark-First Themeable Appearance
 
 ## Status
 

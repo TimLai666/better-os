@@ -1,4 +1,4 @@
-# ADR 0004: Manifest-Declared Presentation and Restart Metadata
+# ADR 0006: Manifest-Declared Presentation and Restart Metadata
 
 ## Status
 

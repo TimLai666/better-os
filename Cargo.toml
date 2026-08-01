@@ -17,6 +17,7 @@ edition = "2024"
 version = "0.1.0"
 rust-version = "1.85"
 authors = ["Better OS contributors"]
+license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
 better-core = { path = "crates/better-core" }

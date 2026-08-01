@@ -19,5 +19,7 @@ components to be versioned and validated without cloning code into system paths.
 
 ## Deferred
 
-Root license, package signing, privileged IPC, public APT repository design,
-release channels, and future per-component licensing remain undecided.
+Root license was deferred in this initial scaffold and is now recorded in
+[ADR 0003](0003-project-license.md). Package signing, privileged IPC, public
+APT repository design, release channels, and future per-component licensing
+remain undecided.
