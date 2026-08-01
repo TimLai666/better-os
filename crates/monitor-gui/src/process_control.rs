@@ -40,16 +40,6 @@ impl PriorityPreset {
         }
     }
 
-    pub const fn next(self) -> Self {
-        match self {
-            Self::VeryHigh => Self::High,
-            Self::High => Self::Normal,
-            Self::Normal => Self::Low,
-            Self::Low => Self::VeryLow,
-            Self::VeryLow => Self::VeryHigh,
-        }
-    }
-
     pub const fn from_nice(nice: i64) -> Self {
         match nice {
             i64::MIN..=-8 => Self::VeryHigh,
@@ -218,11 +208,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn priority_presets_are_ordered() {
-        assert_eq!(PriorityPreset::VeryHigh.next(), PriorityPreset::High);
-        assert_eq!(PriorityPreset::VeryLow.next(), PriorityPreset::VeryHigh);
+    fn priority_presets_map_to_linux_nice_values() {
         assert!(PriorityPreset::VeryHigh.nice() < PriorityPreset::Normal.nice());
         assert!(PriorityPreset::Normal.nice() < PriorityPreset::VeryLow.nice());
+        assert_eq!(PriorityPreset::from_nice(-15), PriorityPreset::VeryHigh);
+        assert_eq!(PriorityPreset::from_nice(15), PriorityPreset::VeryLow);
     }
 
     #[test]
