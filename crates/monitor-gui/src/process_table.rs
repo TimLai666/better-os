@@ -6,6 +6,7 @@ use gpui_component::{
     button::Button,
     h_flex,
     menu::{PopupMenu, PopupMenuItem},
+    scroll::ScrollableElement,
     switch::Switch,
     table::{Column, ColumnSort, TableDelegate, TableEvent, TableState},
     v_flex,
@@ -565,7 +566,7 @@ impl TableDelegate for ProcessTableDelegate {
             } else {
                 "Add to batch"
             })
-            .on_click(move |_, cx| {
+            .on_click(move |_, _, cx| {
                 let _ = table.update(cx, |table, cx| {
                     table.delegate_mut().set_selected(pid, !selected);
                     cx.emit(TableEvent::SelectRow(row_ix));
@@ -575,7 +576,7 @@ impl TableDelegate for ProcessTableDelegate {
         )
         .separator()
         .item(
-            PopupMenuItem::new("Process Options").on_click(move |_, cx| {
+            PopupMenuItem::new("Process Options").on_click(move |_, _, cx| {
                 open_process_options(options_process.clone(), cx);
             }),
         )
