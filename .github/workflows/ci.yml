@@ -4,7 +4,37 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
+  apply-adaptive-navigation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/better-monitor-ui
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Verify and apply adaptive navigation patch
+        run: |
+          echo "095b2f765bc92b2d7186829d21b002a48eabf04fb66b52eda3207a0bb65da56b  .github/adaptive-navigation.patch" \
+            | sha256sum --check --strict
+          git apply --check .github/adaptive-navigation.patch
+          git apply .github/adaptive-navigation.patch
+          cargo fmt --all
+      - name: Commit adaptive navigation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/monitor-gui/src/app.rs docs/better-monitor-resources-v1.10.2-parity.md
+          git commit -m "feat(monitor): add adaptive narrow-window navigation"
+          git push origin HEAD:feature/better-monitor-ui || {
+            git pull --rebase origin feature/better-monitor-ui
+            git push origin HEAD:feature/better-monitor-ui
+          }
+
   rust:
     runs-on: ubuntu-latest
     env:
@@ -59,8 +89,6 @@ jobs:
             arm64) test "$(uname -m)" = "aarch64" ;;
             *) exit 1 ;;
           esac
-      # Keep release target artifacts isolated by Ubuntu release. Proc-macro
-      # shared objects are linked against the runner's glibc.
       - name: Install GPUI and packaging dependencies
         run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
       - name: Build Debian packages
