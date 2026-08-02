@@ -1,18 +1,15 @@
-name: Apply Better Monitor window and NetworkManager parity
+name: Refresh Better Monitor lockfile
 
 on:
   push:
     branches:
       - feature/better-monitor-ui
-  pull_request:
-    branches:
-      - main
 
 permissions:
   contents: write
 
 jobs:
-  apply:
+  refresh-lockfile:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,22 +17,16 @@ jobs:
           ref: feature/better-monitor-ui
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Apply and format
-        run: |
-          if ! grep -q 'fn network_manager_dbus_name' crates/monitor-gui/src/linux.rs; then
-            python3 .github/apply_monitor_window_network.py
-          fi
-          cargo fmt --all
-      - name: Commit
+      - name: Refresh the locked dependency graph
+        run: cargo generate-lockfile
+      - name: Commit the lockfile
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/monitor-gui/Cargo.toml crates/monitor-gui/src/app.rs crates/monitor-gui/src/linux.rs crates/monitor-gui/src/settings.rs docs/better-monitor-resources-v1.10.2-parity.md docs/better-monitor-window-and-network-state.md
+          git add Cargo.lock
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "feat(monitor): persist window state and query NetworkManager over D-Bus"
+          git commit -m "build(monitor): lock direct zbus dependency"
           git pull --rebase origin feature/better-monitor-ui
           git push origin HEAD:feature/better-monitor-ui
