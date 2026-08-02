@@ -117,13 +117,18 @@ version="$(busctl --system get-property org.betteros.Monitor1 /org/betteros/Moni
 }
 printf 'Monitor1 reports protocol version %s before authorization\n' "$version"
 
+# Root is an administrator in polkit and may be authorized without a prompt,
+# so it is not a meaningful subject for the denial check. The system bus policy
+# permits an ordinary process to address Monitor1; polkit must still reject the
+# method for an unprivileged, inactive caller.
 set +e
-unauthorized_output="$(busctl --system call org.betteros.Monitor1 /org/betteros/Monitor1 \
+unauthorized_output="$(runuser -u nobody -- busctl --system call \
+    org.betteros.Monitor1 /org/betteros/Monitor1 \
     org.betteros.Monitor1 ReadMemoryDevices 2>&1)"
 unauthorized_status=$?
 set -e
 if [[ $unauthorized_status -eq 0 ]]; then
-    printf 'Monitor1 accepted a DMI read without authorization\n' >&2
+    printf 'Monitor1 accepted a DMI read from an unprivileged caller\n' >&2
     exit 1
 fi
 printf '%s\n' "$unauthorized_output" | grep -q 'daemon.error.unauthorized' || {
@@ -131,7 +136,7 @@ printf '%s\n' "$unauthorized_output" | grep -q 'daemon.error.unauthorized' || {
         "$unauthorized_output" >&2
     exit 1
 }
-printf 'Monitor1 refused the unauthenticated DMI read\n'
+printf 'Monitor1 refused the unprivileged DMI read\n'
 
 [[ -s "$POLKIT_RULE_SOURCE" ]] || {
     printf 'Missing the container-only Monitor DMI polkit rule\n' >&2
