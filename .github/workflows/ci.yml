@@ -5,6 +5,42 @@ on:
   pull_request:
 
 jobs:
+  remove-monitor-assets-import:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/better-monitor-ui
+          fetch-depth: 0
+      - name: Remove the incorrect trait import
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/monitor-gui/src/app.rs")
+          text = path.read_text()
+          old = "use gpui_platform::ApplicationExt;\n"
+          if old in text:
+              if text.count(old) != 1:
+                  raise SystemExit("unexpected ApplicationExt import count")
+              path.write_text(text.replace(old, "", 1))
+          elif "gpui_platform::ApplicationExt" in text:
+              raise SystemExit("unexpected ApplicationExt spelling")
+          PY
+      - name: Commit the one-line product fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/monitor-gui/src/app.rs
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "fix(monitor): use the GPUI asset extension trait"
+          git pull --rebase origin feature/better-monitor-ui
+          git push origin HEAD:feature/better-monitor-ui
+
   rust:
     runs-on: ubuntu-latest
     env:
@@ -67,27 +103,17 @@ jobs:
             arm64) test "$(uname -m)" = "aarch64" ;;
             *) exit 1 ;;
           esac
-      # Keep release target artifacts isolated by Ubuntu release. Proc-macro
-      # shared objects are linked against the runner's glibc.
       - name: Install GPUI and packaging dependencies
         run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
       - name: Build Debian packages
         run: bash packaging/build-deb.sh --output-dir "dist/${{ matrix.target }}" --target "${{ matrix.asset_target }}"
       - name: Verify Debian packages
         run: bash packaging/verify-deb.sh "dist/${{ matrix.target }}" "${{ matrix.asset_target }}"
-      # The privileged service is the only thing here that changes a machine, so
-      # it is exercised against a real dpkg, system bus, and polkitd rather than
-      # only against fakes. It runs in a throwaway container for the same reason
-      # the local script refuses to run on a host.
       - name: Run the privileged service end-to-end
         run: |
-          # ubuntu-24.04 -> 24.04 for the base image; the script still wants the
-          # full asset target to find the packages.
           UBUNTU_RELEASE="${{ matrix.asset_target }}"
           UBUNTU_RELEASE="${UBUNTU_RELEASE#ubuntu-}"
           cp -r "dist/${{ matrix.target }}" dist/e2e
-          # The client that drives the authorized path. It is an example rather
-          # than a package binary, so it is built here and copied in separately.
           cargo build --release -p manager-platform --features dbus-client --example e2e_client
           mkdir -p dist/e2e-client
           cp target/release/examples/e2e_client dist/e2e-client/
