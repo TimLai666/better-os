@@ -11,13 +11,13 @@ use std::sync::Arc;
 
 use manager_ipc::{
     ExecutionStage, HealthResult, OutcomeStatus, PROTOCOL_VERSION, RollbackRecord, StepReport,
-    TransactionOutcome, WireAction, WirePlan, WireRecovery, WireStep,
+    TransactionOutcome, WireAction, WireArtifact, WirePlan, WireRecovery, WireStep,
 };
 
 use crate::apt::AptDriver;
 use crate::health::{self, HealthProbe};
 use crate::host::HostProbe;
-use crate::store::{ArtifactStore, Journal, JournalState};
+use crate::store::{ArtifactStore, InstalledArtifact, Journal, JournalState};
 use crate::{DaemonError, revalidate};
 
 /// Reported as a step moves, so a client can show progress without polling.
@@ -114,13 +114,32 @@ impl Executor {
             }
 
             progress(step_index, ExecutionStage::CheckingHealth);
+            let applied_version = self.apt.installed_version(&step.component)?;
+            if let Err(error) = self.record_applied_artifact(step, applied_version.as_deref()) {
+                reports.push(StepReport {
+                    component: step.component.clone(),
+                    action: step.action,
+                    applied_version: applied_version.clone(),
+                    health: HealthResult::Undetermined(
+                        "the installed artifact record could not be written".to_string(),
+                    ),
+                    log: log.clone(),
+                });
+                return self.finish_failed(
+                    plan,
+                    reports,
+                    rollback_records,
+                    Some(step_index),
+                    error,
+                );
+            }
+
             let health = health::check(
                 &step.component,
                 step.action,
                 self.apt.as_ref(),
                 self.health.as_ref(),
             );
-            let applied_version = self.apt.installed_version(&step.component)?;
             let healthy = matches!(health, HealthResult::Healthy);
             reports.push(StepReport {
                 component: step.component.clone(),
@@ -168,6 +187,32 @@ impl Executor {
         }
     }
 
+    fn record_applied_artifact(
+        &self,
+        step: &WireStep,
+        applied_version: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        if step.action == WireAction::Remove {
+            return self.journal.remove_installed_artifact(&step.component);
+        }
+
+        let version = applied_version.ok_or_else(|| {
+            DaemonError::Storage(format!(
+                "no installed version for {} after apply",
+                step.component
+            ))
+        })?;
+        let artifact = step.artifact.as_ref().ok_or_else(|| {
+            DaemonError::Storage(format!("no artifact for {} after apply", step.component))
+        })?;
+        self.journal.write_installed_artifact(&InstalledArtifact {
+            component: step.component.clone(),
+            version: version.to_string(),
+            filename: artifact.filename.clone(),
+            sha256: artifact.sha256.clone(),
+        })
+    }
+
     /// What it would take to undo this step, or an honest statement that the
     /// component was not installed before.
     fn rollback_record_for(
@@ -180,20 +225,27 @@ impl Executor {
         // installed version whose .deb is no longer cached is recorded as a
         // version without an artifact, so a rollback attempt reports that it
         // needs a person rather than silently doing nothing.
-        let previous_artifact = self
-            .journal
-            .read_rollback(&step.component)
-            .ok()
-            .flatten()
-            .and_then(|earlier| earlier.previous_artifact)
-            .filter(|artifact| self.artifacts.contains(&artifact.filename))
-            .or_else(|| {
-                step.artifact
-                    .as_ref()
-                    .filter(|_| previous_version.is_some())
-                    .filter(|artifact| self.artifacts.contains(&artifact.filename))
-                    .cloned()
-            });
+        let previous_artifact = match previous_version.as_deref() {
+            Some(previous_version) => self
+                .journal
+                .read_installed_artifact(&step.component)?
+                .filter(|installed| {
+                    installed.component == step.component
+                        && manager_ipc::strip_epoch(&installed.version)
+                            == manager_ipc::strip_epoch(previous_version)
+                        && self.artifacts.contains(&installed.filename)
+                })
+                .map(|installed| {
+                    let size_bytes = self.artifacts.size_bytes(&installed.filename)?;
+                    Ok::<WireArtifact, DaemonError>(WireArtifact {
+                        filename: installed.filename,
+                        sha256: installed.sha256,
+                        size_bytes,
+                    })
+                })
+                .transpose()?,
+            None => None,
+        };
 
         Ok(RollbackRecord {
             component: step.component.clone(),
@@ -242,29 +294,11 @@ impl Executor {
         for record in records.iter().rev() {
             let undone = match (&record.previous_version, &record.previous_artifact) {
                 // It was not installed before, so undoing means removing it.
-                (None, _) => self
-                    .apt
-                    .remove(&record.component)
-                    .map(|run| run.succeeded())
-                    .unwrap_or(false),
+                (None, _) => self.rollback_remove(record),
                 // It was installed before and we still have that package. Its
                 // checksum is re-verified even here: rolling back onto bytes we
                 // have not re-checked would be its own kind of damage.
-                (Some(_), Some(artifact)) => {
-                    self.artifacts
-                        .verify(&artifact.filename, &artifact.sha256)
-                        .is_ok()
-                        && self
-                            .artifacts
-                            .path_for(&artifact.filename)
-                            .map(|path| {
-                                self.apt
-                                    .install_local_deb(&path, true)
-                                    .map(|run| run.succeeded())
-                                    .unwrap_or(false)
-                            })
-                            .unwrap_or(false)
-                }
+                (Some(version), Some(artifact)) => self.rollback_install(record, version, artifact),
                 // It was installed before and we cannot get that version back.
                 (Some(_), None) => false,
             };
@@ -280,6 +314,75 @@ impl Executor {
         } else {
             WireRecovery::ManualRecoveryRequired
         }
+    }
+
+    fn rollback_remove(&self, record: &RollbackRecord) -> bool {
+        let removed = self
+            .apt
+            .remove(&record.component)
+            .map(|run| run.succeeded())
+            .unwrap_or(false);
+        if !removed {
+            return false;
+        }
+        self.apt
+            .installed_version(&record.component)
+            .map(|installed| installed.is_none())
+            .unwrap_or(false)
+            && self
+                .journal
+                .remove_installed_artifact(&record.component)
+                .is_ok()
+    }
+
+    fn rollback_install(
+        &self,
+        record: &RollbackRecord,
+        version: &str,
+        artifact: &WireArtifact,
+    ) -> bool {
+        if self
+            .artifacts
+            .verify(&artifact.filename, &artifact.sha256)
+            .is_err()
+        {
+            return false;
+        }
+        let Ok(path) = self.artifacts.path_for(&artifact.filename) else {
+            return false;
+        };
+        let Ok(fields) = self.apt.deb_control_fields(&path) else {
+            return false;
+        };
+        if fields.package != record.component
+            || manager_ipc::strip_epoch(&fields.version) != manager_ipc::strip_epoch(version)
+        {
+            return false;
+        }
+        let installed = self
+            .apt
+            .install_local_deb(&path, true)
+            .map(|run| run.succeeded())
+            .unwrap_or(false)
+            && self
+                .apt
+                .installed_version(&record.component)
+                .map(|current| {
+                    current.is_some_and(|current| {
+                        manager_ipc::strip_epoch(&current) == manager_ipc::strip_epoch(version)
+                    })
+                })
+                .unwrap_or(false);
+        installed
+            && self
+                .journal
+                .write_installed_artifact(&InstalledArtifact {
+                    component: record.component.clone(),
+                    version: version.to_string(),
+                    filename: artifact.filename.clone(),
+                    sha256: artifact.sha256.clone(),
+                })
+                .is_ok()
     }
 }
 
@@ -301,6 +404,7 @@ mod tests {
     use std::path::PathBuf;
 
     const MONITOR_DEB: &str = "better-monitor_0.1.0_ubuntu-24.04_amd64.deb";
+    const OLD_MONITOR_DEB: &str = "better-monitor_0.0.9_ubuntu-24.04_amd64.deb";
     const FILES_DEB: &str = "better-files-example_0.1.0_ubuntu-24.04_amd64.deb";
 
     struct Harness {
@@ -370,9 +474,13 @@ mod tests {
     }
 
     fn fields(package: &str) -> DebFields {
+        fields_with_version(package, "0.1.0")
+    }
+
+    fn fields_with_version(package: &str, version: &str) -> DebFields {
         DebFields {
             package: package.to_string(),
-            version: "0.1.0".to_string(),
+            version: version.to_string(),
             architecture: "amd64".to_string(),
         }
     }
@@ -409,7 +517,11 @@ mod tests {
             vec!["better-monitor"],
         );
         let checksum = harness.stage(MONITOR_DEB);
-        let plan = plan(vec![install_step("better-monitor", MONITOR_DEB, checksum)]);
+        let plan = plan(vec![install_step(
+            "better-monitor",
+            MONITOR_DEB,
+            checksum.clone(),
+        )]);
 
         let outcome = harness.executor().execute(&plan, &mut |_, _| {}).unwrap();
 
@@ -418,6 +530,18 @@ mod tests {
         assert_eq!(outcome.reports[0].health, HealthResult::Healthy);
         assert_eq!(outcome.reports[0].applied_version.as_deref(), Some("0.1.0"));
         assert!(!outcome.reports[0].log.is_empty());
+        assert_eq!(
+            harness
+                .journal
+                .read_installed_artifact("better-monitor")
+                .unwrap(),
+            Some(InstalledArtifact {
+                component: "better-monitor".to_string(),
+                version: "0.1.0".to_string(),
+                filename: MONITOR_DEB.to_string(),
+                sha256: checksum,
+            })
+        );
     }
 
     #[test]
@@ -554,11 +678,13 @@ mod tests {
     fn a_rollback_that_cannot_reinstall_the_previous_version_asks_for_a_person() {
         // The component was already installed, but no cached .deb of the old
         // version exists, so there is nothing to put back.
-        let apt = FakeAptDriver::new()
-            .with_installed("better-monitor", "0.0.9")
-            .with_deb(MONITOR_DEB, fields("better-monitor"));
-        apt.fail_install("better-monitor");
-        let harness = Harness::new("manual", apt, Vec::new());
+        let harness = Harness::new(
+            "manual",
+            FakeAptDriver::new()
+                .with_installed("better-monitor", "0.0.9")
+                .with_deb(MONITOR_DEB, fields("better-monitor")),
+            Vec::new(),
+        );
         let checksum = harness.stage(MONITOR_DEB);
 
         let mut step = install_step("better-monitor", MONITOR_DEB, checksum);
@@ -572,6 +698,101 @@ mod tests {
             panic!("expected a failure");
         };
         assert_eq!(*recovery, Some(WireRecovery::ManualRecoveryRequired));
+    }
+
+    #[test]
+    fn a_failed_update_reinstalls_the_artifact_for_the_previous_version() {
+        let harness = Harness::new(
+            "rollback-target",
+            FakeAptDriver::new()
+                .with_installed("better-monitor", "0.0.9")
+                .with_deb(MONITOR_DEB, fields("better-monitor"))
+                .with_deb(
+                    OLD_MONITOR_DEB,
+                    fields_with_version("better-monitor", "0.0.9"),
+                ),
+            Vec::new(),
+        );
+        let new_checksum = harness.stage(MONITOR_DEB);
+        let old_checksum = harness.stage(OLD_MONITOR_DEB);
+        harness
+            .journal
+            .write_installed_artifact(&InstalledArtifact {
+                component: "better-monitor".to_string(),
+                version: "0.0.9".to_string(),
+                filename: OLD_MONITOR_DEB.to_string(),
+                sha256: old_checksum,
+            })
+            .unwrap();
+
+        let mut step = install_step("better-monitor", MONITOR_DEB, new_checksum);
+        step.action = WireAction::Update;
+        step.before_version = Some("0.0.9".to_string());
+        let plan = plan(vec![step]);
+
+        let outcome = harness.executor().execute(&plan, &mut |_, _| {}).unwrap();
+
+        let OutcomeStatus::Failed {
+            error_key,
+            recovery,
+            ..
+        } = &outcome.status
+        else {
+            panic!("expected a failure");
+        };
+        assert_eq!(error_key, "daemon.error.health_failed:better-monitor");
+        assert_eq!(*recovery, Some(WireRecovery::Restored));
+        assert_eq!(
+            harness.apt.installed_version("better-monitor").unwrap(),
+            Some("0.0.9".to_string())
+        );
+        assert_eq!(
+            harness
+                .journal
+                .read_installed_artifact("better-monitor")
+                .unwrap()
+                .map(|record| (record.version, record.filename)),
+            Some(("0.0.9".to_string(), OLD_MONITOR_DEB.to_string()))
+        );
+    }
+
+    #[test]
+    fn a_mismatched_installed_artifact_record_is_not_used_for_rollback() {
+        let harness = Harness::new(
+            "rollback-mismatch",
+            FakeAptDriver::new()
+                .with_installed("better-monitor", "0.0.9")
+                .with_deb(MONITOR_DEB, fields("better-monitor")),
+            Vec::new(),
+        );
+        let checksum = harness.stage(MONITOR_DEB);
+        harness
+            .journal
+            .write_installed_artifact(&InstalledArtifact {
+                component: "better-monitor".to_string(),
+                version: "0.0.8".to_string(),
+                filename: MONITOR_DEB.to_string(),
+                sha256: checksum.clone(),
+            })
+            .unwrap();
+
+        let mut step = install_step("better-monitor", MONITOR_DEB, checksum);
+        step.action = WireAction::Update;
+        step.before_version = Some("0.0.9".to_string());
+        let outcome = harness
+            .executor()
+            .execute(&plan(vec![step]), &mut |_, _| {})
+            .unwrap();
+
+        let OutcomeStatus::Failed { recovery, .. } = &outcome.status else {
+            panic!("expected a failure");
+        };
+        assert_eq!(*recovery, Some(WireRecovery::ManualRecoveryRequired));
+        assert_eq!(
+            harness.apt.installed_version("better-monitor").unwrap(),
+            Some("0.1.0".to_string()),
+            "a mismatched record must not make the new artifact look restorable"
+        );
     }
 
     #[test]

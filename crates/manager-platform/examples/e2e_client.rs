@@ -8,6 +8,7 @@
 //!
 //! Usage:
 //!   e2e_client install <release> <arch> <path-to-deb>
+//!   e2e_client update  <release> <arch> <before-version> <path-to-deb>
 //!   e2e_client remove  <release> <arch> <component> <installed-version>
 //!
 //! Prints the outcome document on success and exits non-zero on refusal.
@@ -75,7 +76,7 @@ fn transaction_id(seed: &str) -> String {
 
 fn main() -> Result<(), String> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: e2e_client install <release> <arch> <deb>\n       e2e_client remove <release> <arch> <component> <version>";
+    let usage = "usage: e2e_client install <release> <arch> <deb>\n       e2e_client update  <release> <arch> <before-version> <deb>\n       e2e_client remove  <release> <arch> <component> <version>";
 
     let (action, release, architecture) = match arguments.as_slice() {
         [action, release, architecture, ..] => {
@@ -87,8 +88,16 @@ fn main() -> Result<(), String> {
     let executor = DbusPrivilegedExecutor::connect().map_err(|error| error.to_string())?;
 
     let (step, artifact_path) = match action.as_str() {
-        "install" => {
-            let path = Path::new(arguments.get(3).ok_or(usage)?);
+        action @ ("install" | "update") => {
+            let (before_version, path_argument) = if action == "install" {
+                (None, arguments.get(3).ok_or(usage)?)
+            } else {
+                (
+                    Some(arguments.get(3).ok_or(usage)?.clone()),
+                    arguments.get(4).ok_or(usage)?,
+                )
+            };
+            let path = Path::new(path_argument);
             let filename = path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -108,8 +117,12 @@ fn main() -> Result<(), String> {
             (
                 WireStep {
                     component,
-                    action: WireAction::Install,
-                    before_version: None,
+                    action: if action == "install" {
+                        WireAction::Install
+                    } else {
+                        WireAction::Update
+                    },
+                    before_version,
                     after_version: Some(version),
                     artifact: Some(WireArtifact {
                         filename,

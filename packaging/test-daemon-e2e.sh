@@ -50,6 +50,29 @@ find_package() {
 
 DAEMON_DEB="$(find_package better-manager-daemon)"
 MONITOR_DEB="$(find_package better-monitor)"
+FIXTURE_DIR=/opt/better-os/e2e-fixtures
+ROLLBACK_COMPONENT=better-rollback-fixture
+ROLLBACK_OLD_DEB="$FIXTURE_DIR/${ROLLBACK_COMPONENT}_0.0.9_${RELEASE_TARGET}_${ARCH}.deb"
+ROLLBACK_NEW_DEB="$FIXTURE_DIR/${ROLLBACK_COMPONENT}_0.1.0_${RELEASE_TARGET}_${ARCH}.deb"
+
+assert_completed_journal() {
+    local outcome="$1"
+    local transaction_id
+    transaction_id="$(printf '%s' "$outcome" | sed -n 's/.*"transaction_id":"\([^"]*\)".*/\1/p')"
+    [[ -n "$transaction_id" ]] || {
+        printf 'The outcome did not contain a transaction id\n' >&2
+        exit 1
+    }
+    local journal="/var/lib/better-os/transactions/$transaction_id.json"
+    [[ -f "$journal" ]] || {
+        printf 'Missing journal %s\n' "$journal" >&2
+        exit 1
+    }
+    grep -q '"state":"completed"' "$journal" || {
+        printf 'Journal %s did not reach completed\n' "$journal" >&2
+        exit 1
+    }
+}
 
 printf '== installing the privileged service ==\n'
 apt-get update -qq
@@ -70,6 +93,7 @@ done
 for required_dir in \
     /var/lib/better-os/transactions \
     /var/lib/better-os/rollback \
+    /var/lib/better-os/installed \
     /var/cache/better-os/archives; do
     [[ -d "$required_dir" ]] || {
         printf 'Missing %s after install\n' "$required_dir" >&2
@@ -189,6 +213,131 @@ install -m 0644 /opt/better-os/e2e/50-better-os-e2e.pkla \
     /etc/polkit-1/localauthority/50-local.d/50-better-os-e2e.pkla 2>/dev/null || true
 # polkit reloads its policy on its own, but not instantly.
 sleep 2
+
+printf '== a real failed install is rolled back by removing the package ==\n'
+[[ -f "$ROLLBACK_OLD_DEB" && -f "$ROLLBACK_NEW_DEB" ]] || {
+    printf 'The rollback fixture packages were not built in the container\n' >&2
+    exit 1
+}
+if dpkg-query -W -f='${db:Status-Status}' "$ROLLBACK_COMPONENT" 2>/dev/null | grep -q '^installed$'; then
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y "$ROLLBACK_COMPONENT" >/dev/null
+fi
+[[ ! -e "/var/lib/better-os/installed/$ROLLBACK_COMPONENT.json" ]] || {
+    printf 'The fresh-install fixture already has an installed artifact record\n' >&2
+    exit 1
+}
+
+if outcome="$("$CLIENT" install "$RELEASE_ID" "$ARCH" "$ROLLBACK_NEW_DEB" 2>/tmp/rollback-fresh.stderr)"; then
+    printf 'The unhealthy fresh install unexpectedly succeeded\n' >&2
+    exit 1
+fi
+printf 'fresh-install outcome: %s\n' "$outcome"
+printf '%s' "$outcome" | grep -q '"state":"failed"' || {
+    printf 'The unhealthy fresh install did not fail\n' >&2
+    exit 1
+}
+printf '%s' "$outcome" | grep -q '"error_key":"daemon.error.health_failed:'"$ROLLBACK_COMPONENT"'"' || {
+    printf 'The fresh failure did not report the health error key\n' >&2
+    exit 1
+}
+printf '%s' "$outcome" | grep -q '"recovery":"restored"' || {
+    printf 'The fresh failure was not reported as restored\n' >&2
+    exit 1
+}
+printf '%s' "$outcome" | grep -q '"applied_version":"0.1.0"' || {
+    printf 'The fresh failure did not prove the unhealthy package was applied\n' >&2
+    exit 1
+}
+assert_completed_journal "$outcome"
+if dpkg-query -W -f='${db:Status-Status}' "$ROLLBACK_COMPONENT" 2>/dev/null | grep -q '^installed$'; then
+    printf 'The failed fresh install left the package installed\n' >&2
+    exit 1
+fi
+[[ ! -e "/var/lib/better-os/installed/$ROLLBACK_COMPONENT.json" ]] || {
+    printf 'The failed fresh install left an installed artifact record\n' >&2
+    exit 1
+}
+printf 'The real failed install removed the package and its record\n'
+
+printf '== a real failed update reinstalls the previous artifact ==\n'
+old_fixture_sha256="$(sha256sum "$ROLLBACK_OLD_DEB" | awk '{print $1}')"
+outcome="$("$CLIENT" install "$RELEASE_ID" "$ARCH" "$ROLLBACK_OLD_DEB")" || {
+    printf 'The healthy rollback fixture install was refused\n' >&2
+    exit 1
+}
+printf '%s' "$outcome" | grep -q '"state":"succeeded"' || {
+    printf 'The healthy rollback fixture did not install\n' >&2
+    exit 1
+}
+dpkg-query -W -f='${db:Status-Status} ${Version}' "$ROLLBACK_COMPONENT" | grep -q '^installed 0.0.9$' || {
+    printf 'The healthy rollback fixture is not installed at 0.0.9\n' >&2
+    exit 1
+}
+installed_record="/var/lib/better-os/installed/$ROLLBACK_COMPONENT.json"
+grep -q '"version":"0.0.9"' "$installed_record" || {
+    printf 'The successful install did not persist version 0.0.9\n' >&2
+    exit 1
+}
+grep -q '"filename":"'"$(basename "$ROLLBACK_OLD_DEB")"'"' "$installed_record" || {
+    printf 'The successful install did not persist the old filename\n' >&2
+    exit 1
+}
+grep -q '"sha256":"'"$old_fixture_sha256"'"' "$installed_record" || {
+    printf 'The successful install did not persist the old checksum\n' >&2
+    exit 1
+}
+assert_completed_journal "$outcome"
+
+if outcome="$("$CLIENT" update "$RELEASE_ID" "$ARCH" 0.0.9 "$ROLLBACK_NEW_DEB" 2>/tmp/rollback-update.stderr)"; then
+    printf 'The unhealthy update unexpectedly succeeded\n' >&2
+    exit 1
+fi
+printf 'failed-update outcome: %s\n' "$outcome"
+printf '%s' "$outcome" | grep -q '"state":"failed"' || {
+    printf 'The unhealthy update did not fail\n' >&2
+    exit 1
+}
+printf '%s' "$outcome" | grep -q '"error_key":"daemon.error.health_failed:'"$ROLLBACK_COMPONENT"'"' || {
+    printf 'The update failure did not report the health error key\n' >&2
+    exit 1
+}
+printf '%s' "$outcome" | grep -q '"recovery":"restored"' || {
+    printf 'The update failure was not reported as restored\n' >&2
+    exit 1
+}
+printf '%s' "$outcome" | grep -q '"applied_version":"0.1.0"' || {
+    printf 'The update failure did not prove the unhealthy package was applied\n' >&2
+    exit 1
+}
+assert_completed_journal "$outcome"
+dpkg-query -W -f='${db:Status-Status} ${Version}' "$ROLLBACK_COMPONENT" | grep -q '^installed 0.0.9$' || {
+    printf 'Rollback did not restore the old dpkg version\n' >&2
+    exit 1
+}
+grep -q '"filename":"'"$(basename "$ROLLBACK_OLD_DEB")"'"' "$installed_record" || {
+    printf 'Rollback did not restore the old installed artifact record\n' >&2
+    exit 1
+}
+if grep -q '"filename":"'"$(basename "$ROLLBACK_NEW_DEB")"'"' "$installed_record"; then
+    printf 'Rollback left the new artifact in the installed record\n' >&2
+    exit 1
+fi
+printf 'The real failed update restored dpkg and the old artifact record\n'
+
+outcome="$("$CLIENT" remove "$RELEASE_ID" "$ARCH" "$ROLLBACK_COMPONENT" 0.0.9)" || {
+    printf 'The rollback fixture cleanup was refused\n' >&2
+    exit 1
+}
+assert_completed_journal "$outcome"
+if dpkg-query -W -f='${db:Status-Status}' "$ROLLBACK_COMPONENT" 2>/dev/null | grep -q '^installed$'; then
+    printf 'The rollback fixture cleanup left the package installed\n' >&2
+    exit 1
+fi
+[[ ! -e "$installed_record" ]] || {
+    printf 'The removal did not clear the installed artifact record\n' >&2
+    exit 1
+}
+printf 'The rollback fixture cleanup removed the package and its record\n'
 
 # Start from a machine that does not have the component, so a successful
 # install is visible rather than assumed.
