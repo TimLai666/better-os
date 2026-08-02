@@ -158,7 +158,7 @@ pub enum IpcError {
 mod tests {
     use super::*;
 
-    fn report() -> MemoryReport {
+    fn sample_report() -> MemoryReport {
         MemoryReport {
             protocol_version: PROTOCOL_VERSION,
             smbios_major: 3,
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn report_round_trips() {
-        let report = report();
+        let report = sample_report();
         assert_eq!(
             MemoryReport::from_json(&report.to_json().unwrap()).unwrap(),
             report
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn oversized_and_sensitive_strings_are_refused() {
-        let mut report = report();
+        let mut report = sample_report();
         report.devices[0].part_number = Some("x".repeat(MAX_TEXT_BYTES + 1));
         assert!(matches!(
             report.validate(),
@@ -201,7 +201,7 @@ mod tests {
             })
         ));
 
-        let mut report = report();
+        let mut report = sample_report();
         report.devices[0].locator = "DIMM\0A0".to_string();
         assert!(matches!(
             report.validate(),
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn empty_slots_cannot_claim_capacity() {
-        let mut report = report();
+        let mut report = sample_report();
         report.devices[0].installed = false;
         assert_eq!(report.validate(), Err(IpcError::EmptySlotHasSize));
     }
