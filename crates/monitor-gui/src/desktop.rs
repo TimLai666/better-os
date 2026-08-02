@@ -223,7 +223,10 @@ fn identity_keys(identity: &str) -> Vec<String> {
 }
 
 fn normalize_key(value: &str) -> String {
-    value.trim().trim_end_matches(".desktop").to_ascii_lowercase()
+    value
+        .trim()
+        .trim_end_matches(".desktop")
+        .to_ascii_lowercase()
 }
 
 fn application_directories() -> Vec<PathBuf> {
@@ -420,7 +423,9 @@ fn is_safe_direct_icon(path: &Path) -> bool {
         return false;
     }
     fs::metadata(path)
-        .map(|metadata| metadata.is_file() && metadata.len() > 0 && metadata.len() <= MAX_ICON_BYTES)
+        .map(|metadata| {
+            metadata.is_file() && metadata.len() > 0 && metadata.len() <= MAX_ICON_BYTES
+        })
         .unwrap_or(false)
 }
 
@@ -444,8 +449,10 @@ mod tests {
     fn cgroup_and_process_identities_produce_lookup_keys() {
         assert!(identity_keys("org.gnome.Nautilus").contains(&"org.gnome.nautilus".to_string()));
         assert!(identity_keys("process:firefox").contains(&"firefox".to_string()));
-        assert!(identity_keys("cgroup:/app-org.example.App@123.scope")
-            .contains(&"org.example.app".to_string()));
+        assert!(
+            identity_keys("cgroup:/app-org.example.App@123.scope")
+                .contains(&"org.example.app".to_string())
+        );
     }
 
     #[test]
@@ -456,7 +463,9 @@ mod tests {
         );
         assert!(
             icon_score(Path::new("/icons/hicolor/64x64/apps/example.png"))
-                > icon_score(Path::new("/icons/hicolor/symbolic/apps/example-symbolic.svg"))
+                > icon_score(Path::new(
+                    "/icons/hicolor/symbolic/apps/example-symbolic.svg"
+                ))
         );
     }
 }

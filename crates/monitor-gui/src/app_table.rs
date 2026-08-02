@@ -339,16 +339,10 @@ impl AppTableDelegate {
             .gap_2()
             .min_w_0()
             .child(icon)
-            .child(
-                div()
-                    .min_w_0()
-                    .text_sm()
-                    .truncate()
-                    .child(format!(
-                        "{} · {} processes",
-                        group.display_name, group.process_count
-                    )),
-            )
+            .child(div().min_w_0().text_sm().truncate().child(format!(
+                "{} · {} processes",
+                group.display_name, group.process_count
+            )))
             .into_any_element()
     }
 
@@ -431,13 +425,7 @@ fn generic_app_icon(color: Hsla, border: Hsla) -> AnyElement {
         .border_1()
         .border_color(border)
         .p(px(4.0))
-        .child(
-            div()
-                .h(px(3.0))
-                .w_full()
-                .rounded(px(1.5))
-                .bg(color),
-        )
+        .child(div().h(px(3.0)).w_full().rounded(px(1.5)).bg(color))
         .child(
             div()
                 .mt(px(4.0))
