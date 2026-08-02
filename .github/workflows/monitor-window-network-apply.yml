@@ -27,7 +27,8 @@ jobs:
       - name: Apply and validate
         run: |
           if ! grep -q 'fn network_manager_dbus_name' crates/monitor-gui/src/linux.rs; then
-            base64 -d .github/monitor-window-network.patch.gz.b64 | gzip -d > /tmp/monitor-window-network.patch
+            cat .github/monitor-window-network/chunk-* | base64 -d | gzip -d > /tmp/monitor-window-network.patch
+            test "$(sha256sum /tmp/monitor-window-network.patch | cut -d' ' -f1)" = "37c98157d99418c4d8416d83caaceb8fa825949bccba539548d479a164e3d507"
             git apply --check /tmp/monitor-window-network.patch
             git apply /tmp/monitor-window-network.patch
           fi
