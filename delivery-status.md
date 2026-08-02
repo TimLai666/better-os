@@ -418,4 +418,8 @@ package installs, fails the real health check, and is really removed; and a
 failed update over 0.0.9 ends with `dpkg-query` reporting 0.0.9 with the record
 pointing at the 0.0.9 artifact.
 
-The four-way CI matrix has not run for this change yet.
+CI run 30743821076 then ran the same change across all four supported
+combinations. Every one reached the new rollback scenarios: a real failed update
+ended with dpkg back at the previous version and the installed-artifact record
+pointing at the previous artifact, on ubuntu 22.04 and 24.04, amd64 and native
+arm64.
