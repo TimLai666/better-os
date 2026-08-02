@@ -12,6 +12,7 @@ use sysinfo::{Pid, Signal};
 
 use crate::{
     app::MonitorWindow,
+    desktop,
     linux::{self, AppGroup},
     settings::{MonitorSettings, UnitBase},
     sort_preferences,
@@ -319,6 +320,38 @@ impl AppTableDelegate {
         }
     }
 
+    fn render_name(&self, group: &AppGroup, cx: &Context<TableState<Self>>) -> AnyElement {
+        let icon_color = cx.theme().muted_foreground;
+        let icon_border = cx.theme().border;
+        let icon = desktop::app_icon_path(&group.id).map_or_else(
+            || generic_app_icon(icon_color, icon_border),
+            |path| {
+                img(path)
+                    .size(px(28.0))
+                    .rounded(px(6.0))
+                    .with_fallback(move || generic_app_icon(icon_color, icon_border))
+                    .into_any_element()
+            },
+        );
+
+        h_flex()
+            .items_center()
+            .gap_2()
+            .min_w_0()
+            .child(icon)
+            .child(
+                div()
+                    .min_w_0()
+                    .text_sm()
+                    .truncate()
+                    .child(format!(
+                        "{} · {} processes",
+                        group.display_name, group.process_count
+                    )),
+            )
+            .into_any_element()
+    }
+
     fn render_actions(
         &self,
         row_ix: usize,
@@ -388,6 +421,33 @@ impl AppTableDelegate {
         )
         .into_any_element()
     }
+}
+
+fn generic_app_icon(color: Hsla, border: Hsla) -> AnyElement {
+    div()
+        .size(px(28.0))
+        .flex_none()
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(border)
+        .p(px(4.0))
+        .child(
+            div()
+                .h(px(3.0))
+                .w_full()
+                .rounded(px(1.5))
+                .bg(color),
+        )
+        .child(
+            div()
+                .mt(px(4.0))
+                .h(px(11.0))
+                .w_full()
+                .rounded(px(2.0))
+                .border_1()
+                .border_color(color),
+        )
+        .into_any_element()
 }
 
 fn app_information(group: &AppGroup, unit_base: UnitBase) -> String {
@@ -580,6 +640,9 @@ impl TableDelegate for AppTableDelegate {
 
         if column == AppColumn::Actions {
             return self.render_actions(row_ix, group.clone(), cx);
+        }
+        if column == AppColumn::Name {
+            return self.render_name(group, cx);
         }
 
         let value = self.cell_value(group, column);
