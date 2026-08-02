@@ -4,9 +4,15 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 use sysinfo::{Pid, System};
+use zbus::{
+    blocking::{Connection, Proxy},
+    zvariant::OwnedObjectPath,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct CpuDetails {
@@ -536,7 +542,89 @@ pub fn scan_batteries() -> Vec<BatteryDevice> {
     batteries
 }
 
-fn network_manager_connection_name(interface: &str) -> Option<String> {
+const NETWORK_MANAGER_DESTINATION: &str = "org.freedesktop.NetworkManager";
+const NETWORK_MANAGER_PATH: &str = "/org/freedesktop/NetworkManager";
+const NETWORK_MANAGER_INTERFACE: &str = "org.freedesktop.NetworkManager";
+const NETWORK_MANAGER_DEVICE_INTERFACE: &str = "org.freedesktop.NetworkManager.Device";
+const NETWORK_MANAGER_WIRELESS_INTERFACE: &str = "org.freedesktop.NetworkManager.Device.Wireless";
+const NETWORK_MANAGER_ACCESS_POINT_INTERFACE: &str = "org.freedesktop.NetworkManager.AccessPoint";
+const NETWORK_MANAGER_ACTIVE_CONNECTION_INTERFACE: &str =
+    "org.freedesktop.NetworkManager.Connection.Active";
+const NETWORK_NAME_CACHE_TTL: Duration = Duration::from_secs(5);
+
+type NetworkNameCache = HashMap<String, (Instant, Option<String>)>;
+
+fn usable_network_name(value: impl Into<String>) -> Option<String> {
+    let value = value.into();
+    let value = value.trim().trim_matches(' ');
+    (!value.is_empty() && value != "--").then(|| value.to_string())
+}
+
+fn decode_network_manager_ssid(bytes: &[u8]) -> Option<String> {
+    usable_network_name(String::from_utf8_lossy(bytes).into_owned())
+}
+
+fn network_manager_connection() -> Option<&'static Connection> {
+    static CONNECTION: OnceLock<Option<Connection>> = OnceLock::new();
+    CONNECTION
+        .get_or_init(|| Connection::system().ok())
+        .as_ref()
+}
+
+fn network_manager_dbus_name(interface: &str) -> Option<String> {
+    let connection = network_manager_connection()?;
+    let manager = Proxy::new(
+        connection,
+        NETWORK_MANAGER_DESTINATION,
+        NETWORK_MANAGER_PATH,
+        NETWORK_MANAGER_INTERFACE,
+    )
+    .ok()?;
+    let device_path: OwnedObjectPath = manager.call("GetDeviceByIpIface", &(interface,)).ok()?;
+    let device_path = device_path.as_str();
+
+    if let Ok(wireless) = Proxy::new(
+        connection,
+        NETWORK_MANAGER_DESTINATION,
+        device_path,
+        NETWORK_MANAGER_WIRELESS_INTERFACE,
+    ) && let Ok(access_point_path) =
+        wireless.get_property::<OwnedObjectPath>("ActiveAccessPoint")
+        && access_point_path.as_str() != "/"
+        && let Ok(access_point) = Proxy::new(
+            connection,
+            NETWORK_MANAGER_DESTINATION,
+            access_point_path.as_str(),
+            NETWORK_MANAGER_ACCESS_POINT_INTERFACE,
+        )
+        && let Ok(ssid) = access_point.get_property::<Vec<u8>>("Ssid")
+        && let Some(ssid) = decode_network_manager_ssid(&ssid)
+    {
+        return Some(ssid);
+    }
+
+    let device = Proxy::new(
+        connection,
+        NETWORK_MANAGER_DESTINATION,
+        device_path,
+        NETWORK_MANAGER_DEVICE_INTERFACE,
+    )
+    .ok()?;
+    let active_connection_path: OwnedObjectPath = device.get_property("ActiveConnection").ok()?;
+    if active_connection_path.as_str() == "/" {
+        return None;
+    }
+    let active_connection = Proxy::new(
+        connection,
+        NETWORK_MANAGER_DESTINATION,
+        active_connection_path.as_str(),
+        NETWORK_MANAGER_ACTIVE_CONNECTION_INTERFACE,
+    )
+    .ok()?;
+    usable_network_name(active_connection.get_property::<String>("Id").ok()?)
+}
+
+fn network_manager_nmcli_name(interface: &str) -> Option<String> {
     let output = Command::new("nmcli")
         .args([
             "--terse",
@@ -551,8 +639,25 @@ fn network_manager_connection_name(interface: &str) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!value.is_empty() && value != "--").then_some(value)
+    usable_network_name(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn network_manager_connection_name(interface: &str) -> Option<String> {
+    static CACHE: OnceLock<Mutex<NetworkNameCache>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = cache.lock()
+        && let Some((sampled_at, value)) = cache.get(interface)
+        && sampled_at.elapsed() < NETWORK_NAME_CACHE_TTL
+    {
+        return value.clone();
+    }
+
+    let value =
+        network_manager_dbus_name(interface).or_else(|| network_manager_nmcli_name(interface));
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(interface.to_string(), (Instant::now(), value.clone()));
+    }
+    value
 }
 
 pub fn network_metadata(interface: &str) -> NetworkMetadata {
@@ -949,4 +1054,32 @@ where
     T: std::str::FromStr,
 {
     read_trimmed(path)?.parse::<T>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_names_reject_empty_and_placeholder_values() {
+        assert_eq!(
+            usable_network_name("  Home Wi-Fi  "),
+            Some("Home Wi-Fi".to_string())
+        );
+        assert_eq!(usable_network_name("--"), None);
+        assert_eq!(usable_network_name("  "), None);
+    }
+
+    #[test]
+    fn network_manager_ssid_decoding_is_lossy_but_stable() {
+        assert_eq!(
+            decode_network_manager_ssid(b"Cafe Wi-Fi"),
+            Some("Cafe Wi-Fi".to_string())
+        );
+        assert_eq!(
+            decode_network_manager_ssid(&[0xff, b'A']),
+            Some("�A".to_string())
+        );
+        assert_eq!(decode_network_manager_ssid(b" "), None);
+    }
 }

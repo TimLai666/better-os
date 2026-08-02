@@ -59,7 +59,7 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | Selected device title/model | 🟨 | Page title exists; device-specific secondary title is incomplete. |
 | Adaptive narrow layout | ✅ | Uses the 980 logical px breakpoint, replaces the sidebar with a compact page rail, and reacts directly to the current viewport size. |
 | Restore last selected page | 🟨 | The selected page is persisted and restored. Per-device selection and window geometry remain missing. |
-| Restore window size/maximized state | ⬜ | Not persisted. |
+| Restore window size/maximized state | ✅ | Logical window size and maximized state are persisted on close and restored on launch; Wayland remains responsible for final placement. |
 | Pause graphical updates when hidden | ⬜ | Manual graph pause exists; visibility-driven throttling is missing. |
 | Collection independent from rendering | 🟨 | Manual graph pause preserves collection. Long-running service ownership remains outside this PR. |
 
@@ -177,7 +177,7 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | Receive/send throughput and totals | ✅ | Implemented. |
 | Highest receive/send throughput | ✅ | Per-interface bounded history and session maxima are retained and rendered with throughput graphs. |
 | Manufacturer/driver/interface/address | 🟨 | Metadata exists; privacy presentation requires review. |
-| Wi-Fi SSID | 🟨 | NetworkManager connection names are read through `nmcli` when available; direct D-Bus coverage and real-session validation remain. |
+| Wi-Fi SSID | 🧩 | The active access point SSID is read directly from NetworkManager D-Bus, with active connection ID and `nmcli` as fallbacks; real Wi-Fi session validation remains. |
 | Link details/speed | 🧩 | Shown where sysfs exposes it. |
 | Bytes/bits setting | ✅ | Implemented and persisted. |
 | Virtual-interface setting | ✅ | Implemented and persisted. |
@@ -211,7 +211,7 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | Logical CPU display | ✅ | Persisted. |
 | CPU normalization | ✅ | Persisted. |
 | Detailed priority | ✅ | Persisted. |
-| Last page/window/maximized | ⬜ | Missing. |
+| Last page/window/maximized | ✅ | Last page, logical window size, and maximized state are persisted. Wayland compositor placement is intentionally not fabricated. |
 
 ## Localization, accessibility, and validation
 

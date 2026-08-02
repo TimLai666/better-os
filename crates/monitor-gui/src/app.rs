@@ -474,6 +474,20 @@ impl MonitorWindow {
         monitor
     }
 
+    fn remember_window_state(&mut self, window: &Window) {
+        let bounds = match window.window_bounds() {
+            WindowBounds::Windowed(bounds)
+            | WindowBounds::Maximized(bounds)
+            | WindowBounds::Fullscreen(bounds) => bounds,
+        };
+        self.settings.remember_window(
+            bounds.size.width.as_f32(),
+            bounds.size.height.as_f32(),
+            window.is_maximized(),
+        );
+        let _ = self.settings.save();
+    }
+
     fn collect_metrics(&mut self, cx: &mut Context<Self>) {
         self.system.refresh_all();
         self.disks.refresh(true);
@@ -2502,13 +2516,33 @@ mod adaptive_navigation_tests {
 pub fn run() {
     gpui_platform::application().run(move |cx| {
         gpui_component::init(cx);
+        let settings = MonitorSettings::load();
+        let (window_width, window_height) = settings.window_size();
+        let centered = WindowBounds::centered(size(px(window_width), px(window_height)), cx);
+        let window_bounds = if settings.window_maximized {
+            let bounds = match centered {
+                WindowBounds::Windowed(bounds)
+                | WindowBounds::Maximized(bounds)
+                | WindowBounds::Fullscreen(bounds) => bounds,
+            };
+            WindowBounds::Maximized(bounds)
+        } else {
+            centered
+        };
         let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1360.0), px(860.0)), cx)),
+            window_bounds: Some(window_bounds),
             ..Default::default()
         };
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
                 let view = cx.new(|cx| MonitorWindow::new(window, cx));
+                let monitor = view.downgrade();
+                window.on_window_should_close(cx, move |window, cx| {
+                    if let Some(monitor) = monitor.upgrade() {
+                        monitor.update(cx, |monitor, _| monitor.remember_window_state(window));
+                    }
+                    true
+                });
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("failed to open Better Monitor window");

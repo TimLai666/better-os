@@ -20,3 +20,4 @@ gpui-platform.workspace = true
 libc = "0.2"
 smol = "2"
 sysinfo = "0.37"
+zbus = "5"

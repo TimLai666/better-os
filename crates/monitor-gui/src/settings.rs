@@ -236,6 +236,9 @@ impl Default for AppColumnSettings {
 pub struct MonitorSettings {
     pub locale: Locale,
     pub last_page: String,
+    pub window_width: f32,
+    pub window_height: f32,
+    pub window_maximized: bool,
     pub unit_base: UnitBase,
     pub temperature_unit: TemperatureUnit,
     pub refresh_speed: RefreshSpeed,
@@ -259,6 +262,9 @@ impl Default for MonitorSettings {
         Self {
             locale: Locale::System,
             last_page: "overview".to_string(),
+            window_width: 1360.0,
+            window_height: 860.0,
+            window_maximized: false,
             unit_base: UnitBase::Binary,
             temperature_unit: TemperatureUnit::Celsius,
             refresh_speed: RefreshSpeed::Normal,
@@ -315,6 +321,21 @@ impl MonitorSettings {
         self.graph_data_points.clamp(30, 600)
     }
 
+    pub fn window_size(&self) -> (f32, f32) {
+        (
+            self.window_width.clamp(720.0, 8192.0),
+            self.window_height.clamp(520.0, 8192.0),
+        )
+    }
+
+    pub fn remember_window(&mut self, width: f32, height: f32, maximized: bool) {
+        if width.is_finite() && height.is_finite() {
+            self.window_width = width.clamp(720.0, 8192.0);
+            self.window_height = height.clamp(520.0, 8192.0);
+        }
+        self.window_maximized = maximized;
+    }
+
     fn config_path() -> PathBuf {
         if let Some(config_home) = env::var_os("XDG_CONFIG_HOME") {
             return PathBuf::from(config_home)
@@ -337,6 +358,17 @@ impl MonitorSettings {
         match key {
             "locale" => self.locale = Locale::parse(value),
             "last-page" if !value.is_empty() => self.last_page = value.to_string(),
+            "window-width" => {
+                if let Ok(width) = value.parse::<f32>() {
+                    self.window_width = width.clamp(720.0, 8192.0);
+                }
+            }
+            "window-height" => {
+                if let Ok(height) = value.parse::<f32>() {
+                    self.window_height = height.clamp(520.0, 8192.0);
+                }
+            }
+            "window-maximized" => self.window_maximized = Self::bool_value(value),
             "unit-base" => self.unit_base = UnitBase::parse(value),
             "temperature-unit" => self.temperature_unit = TemperatureUnit::parse(value),
             "refresh-speed" => self.refresh_speed = RefreshSpeed::parse(value),
@@ -419,6 +451,10 @@ impl MonitorSettings {
         lines.push("# Better Monitor settings".to_string());
         lines.push(format!("locale={}", self.locale.config_value()));
         lines.push(format!("last-page={}", self.last_page));
+        let (window_width, window_height) = self.window_size();
+        lines.push(format!("window-width={window_width:.0}"));
+        lines.push(format!("window-height={window_height:.0}"));
+        lines.push(format!("window-maximized={}", self.window_maximized));
         lines.push(format!("unit-base={}", self.unit_base.config_value()));
         lines.push(format!(
             "temperature-unit={}",
@@ -529,5 +565,30 @@ mod tests {
         settings.apply("last-page", "network");
         assert_eq!(settings.last_page, "network");
         assert!(settings.to_config().contains("last-page=network"));
+    }
+
+    #[test]
+    fn window_state_is_clamped_and_serialized() {
+        let mut settings = MonitorSettings::default();
+        settings.apply("window-width", "300");
+        settings.apply("window-height", "20000");
+        settings.apply("window-maximized", "true");
+
+        assert_eq!(settings.window_size(), (720.0, 8192.0));
+        assert!(settings.window_maximized);
+        let config = settings.to_config();
+        assert!(config.contains("window-width=720"));
+        assert!(config.contains("window-height=8192"));
+        assert!(config.contains("window-maximized=true"));
+    }
+
+    #[test]
+    fn invalid_window_samples_do_not_replace_the_last_good_size() {
+        let mut settings = MonitorSettings::default();
+        settings.remember_window(1200.0, 760.0, false);
+        settings.remember_window(f32::NAN, f32::INFINITY, true);
+
+        assert_eq!(settings.window_size(), (1200.0, 760.0));
+        assert!(settings.window_maximized);
     }
 }
