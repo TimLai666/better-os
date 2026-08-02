@@ -35,11 +35,12 @@ RUN apt-get update \
 
 WORKDIR /opt/better-os
 COPY dist/e2e/ /opt/better-os/dist/
+COPY packaging/test-monitor-dmi-e2e.sh /opt/better-os/packaging/test-monitor-dmi-e2e.sh
 COPY packaging/test-daemon-e2e.sh /opt/better-os/packaging/test-daemon-e2e.sh
-# The test-only polkit authorization and the client that drives the authorized
-# path. Neither is in any package: the rule would be a hole in a shipped
-# system, and the client is an example built for this check.
-COPY packaging/e2e/50-better-os-e2e.rules packaging/e2e/50-better-os-e2e.pkla /opt/better-os/e2e/
+# The test-only polkit authorizations and the client that drives the authorized
+# paths. None is in any package: the rules would be holes in a shipped system,
+# and the client is an example built for this check.
+COPY packaging/e2e/40-better-monitor-e2e.rules packaging/e2e/50-better-os-e2e.rules packaging/e2e/50-better-os-e2e.pkla /opt/better-os/e2e/
 COPY dist/e2e-client/e2e_client /opt/better-os/e2e_client
 
 # These fixtures are deliberately built in the disposable container rather
@@ -64,10 +65,12 @@ RUN set -eu; \
         "$fixture_dir/better-rollback-fixture_0.1.0_ubuntu-${UBUNTU_RELEASE}_${architecture}.deb"; \
     rm -rf "$fixture_dir/0.0.9" "$fixture_dir/0.1.0"
 
-RUN chmod +x /opt/better-os/packaging/test-daemon-e2e.sh /opt/better-os/e2e_client
+RUN chmod +x \
+    /opt/better-os/packaging/test-monitor-dmi-e2e.sh \
+    /opt/better-os/packaging/test-daemon-e2e.sh \
+    /opt/better-os/e2e_client
 
 ENV BETTER_OS_E2E_CONTAINER=1
-
 ENV RELEASE_TARGET=ubuntu-${UBUNTU_RELEASE}
 
-CMD ["/bin/sh", "-c", "/opt/better-os/packaging/test-daemon-e2e.sh /opt/better-os/dist \"$RELEASE_TARGET\""]
+CMD ["/bin/sh", "-c", "/opt/better-os/packaging/test-monitor-dmi-e2e.sh /opt/better-os/dist \"$RELEASE_TARGET\" && /opt/better-os/packaging/test-daemon-e2e.sh /opt/better-os/dist \"$RELEASE_TARGET\""]
