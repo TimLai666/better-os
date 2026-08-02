@@ -1,4 +1,4 @@
-name: Refresh Better Monitor lockfile
+name: Repair Better Monitor lockfile
 
 on:
   push:
@@ -9,24 +9,35 @@ permissions:
   contents: write
 
 jobs:
-  refresh-lockfile:
+  repair-lockfile:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: feature/better-monitor-ui
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Refresh the locked dependency graph
-        run: cargo generate-lockfile
-      - name: Commit the lockfile
+      - name: Restore the pinned graph and add only zbus
+        run: |
+          git show 594ff1a5299486a0d8fddc02bf26fcae47b8c530^:Cargo.lock > Cargo.lock
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("Cargo.lock")
+          text = path.read_text()
+          start = text.index('[[package]]\nname = "monitor-gui"')
+          end = text.index('\n[[package]]', start + 1)
+          block = text[start:end]
+          if ' "zbus",' not in block:
+              block = block.replace(' "sysinfo 0.37.2",\n', ' "sysinfo 0.37.2",\n "zbus",\n')
+          text = text[:start] + block + text[end:]
+          path.write_text(text)
+          PY
+          grep -q 'source = "git+https://github.com/zed-industries/zed#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"' Cargo.lock
+          sed -n '/name = "monitor-gui"/,/^$/p' Cargo.lock | grep -q ' "zbus",'
+      - name: Commit the corrected lockfile
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.lock
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "build(monitor): lock direct zbus dependency"
+          git commit -m "build(monitor): preserve pinned graph while locking zbus"
           git pull --rebase origin feature/better-monitor-ui
           git push origin HEAD:feature/better-monitor-ui
