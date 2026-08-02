@@ -4022,6 +4022,7 @@ dependencies = [
  "better-ui",
  "gpui",
  "gpui-component",
+ "gpui-component-assets",
  "gpui_platform",
  "libc",
  "monitor-core",
