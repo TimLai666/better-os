@@ -1,0 +1,11 @@
+// Grants only the Better Monitor DMI read action inside the disposable
+// end-to-end container. This file is copied into the test image directly and
+// must never be installed by a Debian package.
+polkit.addRule(function (action, subject) {
+    if (
+        action.id === "org.betteros.monitor.read-memory-devices" &&
+        subject.user === "root"
+    ) {
+        return polkit.Result.YES;
+    }
+});
