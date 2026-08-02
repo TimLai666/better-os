@@ -62,8 +62,12 @@ jobs:
           PY
       - name: Format DMI implementation
         run: cargo fmt --all
-      - name: Check DMI crates
-        run: cargo check -p monitor-ipc -p manager-daemon -p monitor-gui
+      - name: Check monitor IPC
+        run: cargo check -p monitor-ipc
+      - name: Check privileged DMI service
+        run: cargo check -p manager-daemon --all-targets --all-features
+      - name: Check Monitor GUI
+        run: cargo check -p monitor-gui --all-targets
       - name: Regenerate third-party notices
         run: bash packaging/generate-third-party-notices.sh
       - name: Confirm final formatting
