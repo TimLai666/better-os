@@ -6,7 +6,6 @@ on:
 
 jobs:
   apply-monitor-assets:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/better-monitor-ui'
     runs-on: ubuntu-latest
     permissions:
       contents: write
