@@ -9,6 +9,7 @@ use std::fs;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
 
+#[cfg(any(test, feature = "test-support"))]
 use dmidecode::structures::memory_device::{
     Detail, FormFactor, MemoryDevice as RawMemoryDevice, Type,
 };
