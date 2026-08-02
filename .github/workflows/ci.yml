@@ -31,6 +31,22 @@ jobs:
             python3 -m py_compile /tmp/apply_monitor_dmi.py
             python3 /tmp/apply_monitor_dmi.py
           fi
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/manager-daemon/src/dmi.rs")
+          text = path.read_text()
+          text = text.replace("use std::sync::Arc;\n", "")
+          text = text.replace(
+              "report.validate().map_err(Into::into)?;",
+              "report.validate().map_err(DaemonError::from)?;",
+          )
+          text = text.replace(
+              "detail_labels(device.type_detail),",
+              "detail_labels(device.type_detail.clone()),",
+          )
+          path.write_text(text)
+          PY
           cargo fmt --all
           cargo check -p monitor-ipc -p manager-daemon -p monitor-gui
           bash packaging/generate-third-party-notices.sh
