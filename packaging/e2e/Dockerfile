@@ -8,6 +8,7 @@ ARG UBUNTU_RELEASE=24.04
 FROM ubuntu:${UBUNTU_RELEASE}
 
 ENV DEBIAN_FRONTEND=noninteractive
+ARG UBUNTU_RELEASE=24.04
 
 # dbus and polkitd are what the service is authorized through, so they are the
 # point of the exercise rather than incidental dependencies.
@@ -40,12 +41,33 @@ COPY packaging/test-daemon-e2e.sh /opt/better-os/packaging/test-daemon-e2e.sh
 # system, and the client is an example built for this check.
 COPY packaging/e2e/50-better-os-e2e.rules packaging/e2e/50-better-os-e2e.pkla /opt/better-os/e2e/
 COPY dist/e2e-client/e2e_client /opt/better-os/e2e_client
+
+# These fixtures are deliberately built in the disposable container rather
+# than copied from dist/. The old package has the executable the real health
+# probe expects; the new package has no /usr/bin/better-rollback-fixture, so a
+# real update can apply successfully and then fail its health check.
+RUN set -eu; \
+    fixture_dir=/opt/better-os/e2e-fixtures; \
+    architecture="$(dpkg --print-architecture)"; \
+    for version in 0.0.9 0.1.0; do \
+        root="$fixture_dir/$version"; \
+        mkdir -p "$root/DEBIAN"; \
+        printf 'Package: better-rollback-fixture\nVersion: %s\nArchitecture: %s\nDescription: Better OS rollback fixture\n' \
+            "$version" "$architecture" > "$root/DEBIAN/control"; \
+    done; \
+    mkdir -p "$fixture_dir/0.0.9/usr/bin"; \
+    printf '#!/bin/sh\nexit 0\n' > "$fixture_dir/0.0.9/usr/bin/better-rollback-fixture"; \
+    chmod 0755 "$fixture_dir/0.0.9/usr/bin/better-rollback-fixture"; \
+    dpkg-deb --build --root-owner-group "$fixture_dir/0.0.9" \
+        "$fixture_dir/better-rollback-fixture_0.0.9_ubuntu-${UBUNTU_RELEASE}_${architecture}.deb"; \
+    dpkg-deb --build --root-owner-group "$fixture_dir/0.1.0" \
+        "$fixture_dir/better-rollback-fixture_0.1.0_ubuntu-${UBUNTU_RELEASE}_${architecture}.deb"; \
+    rm -rf "$fixture_dir/0.0.9" "$fixture_dir/0.1.0"
+
 RUN chmod +x /opt/better-os/packaging/test-daemon-e2e.sh /opt/better-os/e2e_client
 
 ENV BETTER_OS_E2E_CONTAINER=1
 
-# Repeated after FROM: an ARG before it is not in scope afterwards.
-ARG UBUNTU_RELEASE=24.04
 ENV RELEASE_TARGET=ubuntu-${UBUNTU_RELEASE}
 
 CMD ["/bin/sh", "-c", "/opt/better-os/packaging/test-daemon-e2e.sh /opt/better-os/dist \"$RELEASE_TARGET\""]

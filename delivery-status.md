@@ -2,8 +2,8 @@
 
 ## Current Phase
 
-Better Manager applies real component transactions, verified end to end in a
-disposable container
+Better Manager applies real component transactions, including rollback after a
+real mutation failure
 
 ## Stage Objective
 
@@ -44,24 +44,28 @@ boundary that keeps privileged mutation out of the GUI and CLI.
 | M17 | container end-to-end verification | agent | done | `chefer run packaging/e2e/appcipe.yml`: real dpkg, real system bus, real polkitd, unauthorized request refused |
 | M18 | four-way packaging matrix on CI | agent | done | CI run 30688730458: build, verify, and container end-to-end passed on ubuntu 22.04/24.04 × amd64/arm64 |
 | M19 | authorized transaction verified end to end | agent | done | real apt install and removal through the service, confirmed against dpkg; a deadlock in the D-Bus client found and fixed |
+| M20 | rollback target correctness and mutation-failure coverage | agent | done | installed-artifact record replaces the guessed rollback target; container run proved a failed update reinstalls 0.0.9, not the version that just failed |
 
 ## Current Blockers
 
-Better Manager can now install, update, remove, and roll back first-party
-components for real, and the privileged service has been exercised against a
-real dpkg, a real system bus, and a real polkitd inside a disposable container.
+Better Manager now records the installed artifact that belongs to each
+successful package change, instead of guessing a rollback target from the
+artifact it is about to install. That guess was a real defect: a failed update
+would have reinstalled the version that just failed and reported the host as
+restored. The container run confirms the fix — a failed update now ends with
+`dpkg-query` reporting 0.0.9 and the record pointing at the 0.0.9 artifact.
 
-CI run 30688730458 then ran the same check on all four supported combinations —
+CI run 30688730458 previously ran the authorized install/removal check on all
+four supported combinations —
 ubuntu 22.04 and 24.04, amd64 and arm64 — and every one passed, including the
 service claiming its bus name and refusing an unauthorized request on native
 arm64 hardware.
 
-No active blocker remains for the real-integration work. The privileged daemon
-IPC protocol, which `AGENTS.md` required to be decided before any real system
-installation or rollback, is decided in ADR 0007: a D-Bus system service
-authorized by polkit. Package signing and the public APT repository stay
-deferred by explicit scope choice, not by omission; the manager verifies
-artifact checksums instead.
+The privileged daemon IPC protocol, which `AGENTS.md` required to be decided
+before any real system installation or rollback, is decided in ADR 0007: a
+D-Bus system service authorized by polkit. Package signing and the public APT
+repository stay deferred by explicit scope choice, not by omission; the
+manager verifies artifact checksums instead.
 
 No active blocker remains for Ticket 06. The target-specific asset naming and
 manifest mapping decision is recorded in ADR 0002, the release packaging changes
@@ -80,13 +84,13 @@ policy still needs alignment.
 ## Next Verifiable Output
 
 None outstanding. The next change should be scoped to a new ticket or to one of
-the recorded follow-ups: package signing, the public APT repository, the
-authenticated end of the authorization path, or a repair action for a
-transaction interrupted mid-flight.
+the recorded follow-ups: package signing, the public APT repository, a repair
+action for a transaction interrupted mid-flight, or aligning the declared Rust
+baseline with what the lockfile actually requires.
 
 ## Next Ticket
 
-None — tickets 09 through 15 are complete.
+None — tickets 09 through 17 are complete.
 
 ## Decision Log
 
@@ -203,6 +207,13 @@ None — tickets 09 through 15 are complete.
   of its own
   timestamp: 2026-08-01
   impacted_ticket_ids: [09, 14]
+- decision: make the installed artifact record authoritative for rollback target selection
+  rationale: a transaction rollback record describes one prior transaction, while
+  only a version-matched component record can prove which cached artifact produced
+  the version dpkg currently reports; the new artifact must never be a fallback
+  for an old version
+  timestamp: 2026-08-02
+  impacted_ticket_ids: [17]
 
 ## Source Links
 
@@ -376,3 +387,39 @@ but has never rolled back a real package.
 Interactive polkit authentication is deliberately out of scope: collecting a
 password is polkit's responsibility, and what this project has to prove is what
 happens after polkit says yes.
+
+Ticket 17 adds the durable installed-artifact mapping, strict rollback target
+matching, metadata synchronization after rollback, and a container fixture for
+an unhealthy update. The manager-daemon suite now passes with 42 unit tests and
+6 D-Bus tests, the workspace fmt/check/test/clippy gates pass, the e2e client
+builds, and the Debian package plus verifier pass.
+The real mutation-failure container check is still blocked by the Docker API
+permission failure described above.
+The requested Issue #23 body update was attempted through the GitHub connector,
+but the external mutation was rejected by the environment, so the issue remains
+unchanged and open.
+
+Ticket 17 fixed a rollback-target defect and proved the fix in a container. The
+daemon used to derive `previous_artifact` from the artifact it was about to
+install, so a failed update would have reinstalled the version that had just
+failed and reported `Restored`. It now keeps a durable installed-artifact record
+per component, written after each successful apply, and only uses it when its
+version matches what dpkg reports and the file is still cached.
+
+A rollback also verifies its own result now rather than trusting an exit code:
+a removal is only counted once dpkg no longer reports the package, and a
+reinstall only once dpkg reports the expected version.
+
+Local `cargo fmt --all -- --check`, `cargo test --workspace` (21 suites, no
+failures), `cargo clippy --workspace --all-targets -- -D warnings`, and the same
+clippy run with the `dbus-client` feature all passed. `docker run` of the
+container check passed on ubuntu-24.04/amd64: a deliberately unhealthy fixture
+package installs, fails the real health check, and is really removed; and a
+failed update over 0.0.9 ends with `dpkg-query` reporting 0.0.9 with the record
+pointing at the 0.0.9 artifact.
+
+CI run 30743821076 then ran the same change across all four supported
+combinations. Every one reached the new rollback scenarios: a real failed update
+ended with dpkg back at the previous version and the installed-artifact record
+pointing at the previous artifact, on ubuntu 22.04 and 24.04, amd64 and native
+arm64.
