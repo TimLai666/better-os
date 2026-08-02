@@ -11,6 +11,14 @@ jobs:
       RUST_FONTCONFIG_DLOPEN: "1"
     steps:
       - uses: actions/checkout@v4
+      - name: Validate packaging scripts
+        run: |
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(find packaging -type f -name '*.sh' -print0)
+          test "$(sed -n '1p' packaging/verify-deb.sh)" = '#!/usr/bin/env bash'
+          test "$(sed -n '2p' packaging/verify-deb.sh)" = 'set -euo pipefail'
+          test "$(wc -l < packaging/verify-deb.sh)" -gt 100
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
