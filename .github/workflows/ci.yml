@@ -27,20 +27,8 @@ jobs:
           if [[ ! -d crates/monitor-ipc ]]; then
             cat .github/monitor-dmi-migration/chunk-* | base64 -d | gzip -d > /tmp/apply_monitor_dmi.py
             test "$(sha256sum /tmp/apply_monitor_dmi.py | cut -d' ' -f1)" = "1395fce49e1976afad1cbadef3a0ae5f48702e5c787f630ca87e84ce3dd23552"
-            python3 - <<'PY'
-          from pathlib import Path
-          path = Path("/tmp/apply_monitor_dmi.py")
-          text = path.read_text()
-          old = 'text = replace_once(text, old_render, new_render, "memory page")'
-          new = '''memory_start = text.find("    fn render_memory(")
-          memory_end = text.find("\\n    fn render_storage(", memory_start)
-          if memory_start < 0 or memory_end < 0:
-              raise SystemExit("memory page: function boundaries not found")
-          text = text[:memory_start] + new_render.rstrip("\\n") + text[memory_end:]'''
-          if text.count(old) != 1:
-              raise SystemExit("memory page: migration marker is not unique")
-          path.write_text(text.replace(old, new, 1))
-          PY
+            python3 .github/patch_monitor_dmi_migration.py
+            python3 -m py_compile /tmp/apply_monitor_dmi.py
             python3 /tmp/apply_monitor_dmi.py
           fi
           cargo fmt --all
