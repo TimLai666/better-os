@@ -79,6 +79,15 @@ impl ArtifactStore {
             .unwrap_or(false)
     }
 
+    pub fn size_bytes(&self, filename: &str) -> Result<u64, DaemonError> {
+        let path = self.path_for(filename)?;
+        fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .map_err(|_| DaemonError::ArtifactMissing {
+                component: filename.to_string(),
+            })
+    }
+
     /// Copies bytes into the cache, hashing as it goes, and keeps the result
     /// only if the digest matches what was promised.
     pub fn stage(
@@ -176,6 +185,20 @@ pub struct JournalEntry {
     pub outcome: Option<TransactionOutcome>,
 }
 
+/// The artifact that produced the version currently installed for a component.
+///
+/// Rollback records describe one transaction. This record describes the host's
+/// durable current state, so a later transaction never has to guess which
+/// cached package corresponds to the version dpkg reports.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstalledArtifact {
+    pub component: String,
+    pub version: String,
+    pub filename: String,
+    pub sha256: String,
+}
+
 /// The daemon's durable memory of what it has been asked to do.
 pub struct Journal {
     root: PathBuf,
@@ -192,6 +215,10 @@ impl Journal {
 
     fn rollbacks(&self) -> PathBuf {
         self.root.join("rollback")
+    }
+
+    fn installed(&self) -> PathBuf {
+        self.root.join("installed")
     }
 
     fn entry_path(&self, transaction_id: &str) -> Result<PathBuf, DaemonError> {
@@ -286,6 +313,42 @@ impl Journal {
         match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(storage),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(storage(error)),
+        }
+    }
+
+    pub fn installed_artifact_path(&self, component: &str) -> Result<PathBuf, DaemonError> {
+        if !crate::is_first_party_component(component) {
+            return Err(DaemonError::PlanRejected(format!(
+                "unknown component {component}"
+            )));
+        }
+        Ok(self.installed().join(format!("{component}.json")))
+    }
+
+    pub fn write_installed_artifact(&self, record: &InstalledArtifact) -> Result<(), DaemonError> {
+        let path = self.installed_artifact_path(&record.component)?;
+        let bytes = serde_json::to_vec(record).map_err(storage)?;
+        write_atomically(&path, &bytes)
+    }
+
+    pub fn read_installed_artifact(
+        &self,
+        component: &str,
+    ) -> Result<Option<InstalledArtifact>, DaemonError> {
+        let path = self.installed_artifact_path(component)?;
+        match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(storage),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(storage(error)),
+        }
+    }
+
+    pub fn remove_installed_artifact(&self, component: &str) -> Result<(), DaemonError> {
+        let path = self.installed_artifact_path(component)?;
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(storage(error)),
         }
     }
@@ -413,6 +476,30 @@ mod tests {
         let journal = Journal::new(&root);
         assert!(journal.rollback_path("bash").is_err());
         assert!(journal.rollback_path("better-monitor").is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_installed_artifact_record_round_trips_and_can_be_removed() {
+        let root = temporary("installed-artifact");
+        let journal = Journal::new(&root);
+        let record = InstalledArtifact {
+            component: "better-monitor".to_string(),
+            version: "0.1.0".to_string(),
+            filename: "better-monitor_0.1.0_ubuntu-24.04_amd64.deb".to_string(),
+            sha256: "a".repeat(64),
+        };
+
+        journal.write_installed_artifact(&record).unwrap();
+        assert_eq!(
+            journal.read_installed_artifact("better-monitor").unwrap(),
+            Some(record)
+        );
+        journal.remove_installed_artifact("better-monitor").unwrap();
+        assert_eq!(
+            journal.read_installed_artifact("better-monitor").unwrap(),
+            None
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

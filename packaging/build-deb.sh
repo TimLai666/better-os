@@ -286,6 +286,7 @@ if [ "$1" = "configure" ]; then
     install -d -m 0755 -o root -g root /var/lib/better-os
     install -d -m 0755 -o root -g root /var/lib/better-os/transactions
     install -d -m 0755 -o root -g root /var/lib/better-os/rollback
+    install -d -m 0755 -o root -g root /var/lib/better-os/installed
     install -d -m 0755 -o root -g root /var/cache/better-os
     install -d -m 0755 -o root -g root /var/cache/better-os/archives
 

@@ -26,6 +26,13 @@ and a comparison of dpkg state against the plan's expected prior version. It
 logs every command it runs, health-checks what it applied, and keeps a rollback
 record per component.
 
+After an install, update, or restore is applied, it atomically records the
+actual installed version and the artifact filename and checksum under
+`/var/lib/better-os/installed/<component>.json`. Rollback accepts that artifact
+only when its recorded version matches the version dpkg reports before the
+transaction. A missing or mismatched record is manual recovery; the artifact
+being applied is never a fallback for an older version.
+
 The rollback record is written immediately before the first APT call that
 touches a component, and never earlier. A plan refused during revalidation
 therefore leaves no restore point behind, because nothing changed. After a
