@@ -1590,6 +1590,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dmidecode"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a898086945b8e1c1e12f0996773ae65442d84f8dcafd5ab88a4c80b1da3d3008"
+dependencies = [
+ "bitflags 2.13.1",
+ "uuid",
+]
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3777,8 +3787,10 @@ name = "manager-daemon"
 version = "0.1.0"
 dependencies = [
  "better-core",
+ "dmidecode",
  "manager-daemon",
  "manager-ipc",
+ "monitor-ipc",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4013,9 +4025,19 @@ dependencies = [
  "gpui_platform",
  "libc",
  "monitor-core",
+ "monitor-ipc",
  "smol",
  "sysinfo 0.37.2",
  "zbus",
+]
+
+[[package]]
+name = "monitor-ipc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

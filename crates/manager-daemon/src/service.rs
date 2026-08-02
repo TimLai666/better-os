@@ -17,14 +17,14 @@ use zbus::zvariant::OwnedFd;
 use zbus::{fdo, interface};
 
 use crate::DaemonError;
-use crate::authorize::Authorizer;
+use crate::authorize::{APPLY_ACTION, Authorizer};
 use crate::executor::Executor;
 use crate::store::{ArtifactStore, Journal};
 
 pub const BUS_NAME: &str = "org.betteros.Manager1";
 pub const OBJECT_PATH: &str = "/org/betteros/Manager1";
 
-fn refuse(error: DaemonError) -> fdo::Error {
+pub(crate) fn refuse(error: DaemonError) -> fdo::Error {
     match error {
         DaemonError::Unauthorized => fdo::Error::AccessDenied(error.to_string()),
         DaemonError::Busy => fdo::Error::LimitsExceeded(error.to_string()),
@@ -60,7 +60,7 @@ impl<A: Authorizer + 'static> ManagerService<A> {
     }
 
     async fn authorize(&self, header: &Header<'_>) -> Result<(), fdo::Error> {
-        match self.authorizer.check(header).await {
+        match self.authorizer.check(header, APPLY_ACTION).await {
             Ok(true) => Ok(()),
             Ok(false) => Err(refuse(DaemonError::Unauthorized)),
             // A polkit that cannot be reached is not permission to proceed.

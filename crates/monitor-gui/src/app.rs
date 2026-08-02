@@ -18,6 +18,7 @@ use gpui_component::{
     v_flex,
 };
 use monitor_core::{Incident, MonitorStore, Sample};
+use monitor_ipc::{MemoryDevice as DmiMemoryDevice, MemoryReport};
 use smol::Timer;
 use sysinfo::{Disks, Networks, Pid, System};
 
@@ -291,6 +292,16 @@ struct DeviceChartHeader {
     color: Hsla,
 }
 
+#[derive(Clone, Default)]
+enum DmiMemoryState {
+    #[default]
+    Locked,
+    Loading,
+    Ready(MemoryReport),
+    Denied,
+    Unavailable(String),
+}
+
 #[derive(Clone)]
 struct IncidentMarker {
     sequence: usize,
@@ -338,6 +349,7 @@ pub(crate) struct MonitorWindow {
     previous_block_counters: HashMap<String, BlockCounters>,
     last_disk_sample: Instant,
     last_surface_refresh: Instant,
+    dmi_memory: DmiMemoryState,
 }
 
 impl MonitorWindow {
@@ -455,6 +467,7 @@ impl MonitorWindow {
                 .checked_sub(Duration::from_secs(1))
                 .unwrap_or_else(Instant::now),
             last_surface_refresh: Instant::now(),
+            dmi_memory: DmiMemoryState::Locked,
         };
 
         let window_handle = window.window_handle();
@@ -1605,13 +1618,15 @@ impl MonitorWindow {
             })
     }
 
-    fn render_memory(&self, cx: &Context<Self>) -> Div {
-        let point = self.current_point();
+    fn render_memory(&self, cx: &mut Context<Self>) -> Div {
         let total = self.system.total_memory();
         let used = self.system.used_memory();
         let available = self.system.available_memory();
         let swap_total = self.system.total_swap();
         let swap_used = self.system.used_swap();
+        let point = self.current_point();
+        let history = self.chart_data();
+
         v_flex()
             .gap_4()
             .child(
@@ -1619,89 +1634,303 @@ impl MonitorWindow {
                     .flex_wrap()
                     .gap_3()
                     .child(self.metric_card(
-                        "Memory",
+                        "Used",
+                        linux::format_bytes(used, self.settings.unit_base),
                         format!(
-                            "{} / {}",
-                            linux::format_bytes(used, self.settings.unit_base),
+                            "{:.1}% of {}",
+                            point.memory,
                             linux::format_bytes(total, self.settings.unit_base)
                         ),
-                        format!("{:.1}% used", point.memory),
                         cx.theme().green,
                         cx,
                     ))
                     .child(self.metric_card(
                         "Available",
                         linux::format_bytes(available, self.settings.unit_base),
-                        "Available memory includes reclaimable cache".to_string(),
+                        "Reported by the kernel".to_string(),
                         cx.theme().blue,
                         cx,
                     ))
                     .child(self.metric_card(
                         "Swap",
-                        if swap_total == 0 {
-                            "N/A".to_string()
-                        } else {
-                            format!(
-                                "{} / {}",
-                                linux::format_bytes(swap_used, self.settings.unit_base),
-                                linux::format_bytes(swap_total, self.settings.unit_base)
-                            )
-                        },
-                        "System swap usage".to_string(),
+                        linux::format_bytes(swap_used, self.settings.unit_base),
+                        format!(
+                            "of {}",
+                            linux::format_bytes(swap_total, self.settings.unit_base)
+                        ),
                         cx.theme().yellow,
                         cx,
                     )),
             )
-            .child(
-                h_flex()
-                    .flex_wrap()
-                    .gap_4()
-                    .child(self.chart_card(
+            .child(self.chart_card(
+                "Memory activity",
+                format!("{:.1}%", point.memory),
+                history,
+                |point| point.memory,
+                cx.theme().green,
+                cx,
+            ))
+            .child(self.render_dmi_memory_properties(total, cx))
+    }
+
+    fn request_dmi_memory(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.dmi_memory, DmiMemoryState::Loading) {
+            return;
+        }
+        self.dmi_memory = DmiMemoryState::Loading;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = smol::unblock(crate::dmi::read_memory_report).await;
+            let _ = this.update(cx, |this, cx| {
+                this.dmi_memory = match result {
+                    Ok(report) => DmiMemoryState::Ready(report),
+                    Err(crate::dmi::DmiClientError::Denied) => DmiMemoryState::Denied,
+                    Err(crate::dmi::DmiClientError::Unavailable(detail))
+                    | Err(crate::dmi::DmiClientError::Protocol(detail)) => {
+                        DmiMemoryState::Unavailable(detail)
+                    }
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_dmi_memory_properties(&self, total_memory: u64, cx: &mut Context<Self>) -> Div {
+        match &self.dmi_memory {
+            DmiMemoryState::Locked => self.section_card(
+                "Memory properties",
+                "Detailed module information is read only after system authentication",
+                v_flex()
+                    .gap_3()
+                    .child(self.simple_property_row(
                         "Memory",
-                        format!("{:.1}%", point.memory),
-                        self.chart_data(),
-                        |point| point.memory,
-                        cx.theme().green,
+                        linux::format_bytes(total_memory, self.settings.unit_base),
                         cx,
                     ))
-                    .when(swap_total > 0, |this| {
-                        let swap_percent = swap_used as f64 / swap_total as f64 * 100.0;
-                        this.child(self.metric_card(
-                            "Swap history",
-                            format!("{swap_percent:.1}%"),
-                            "Live swap graph requires a dedicated sampled series".to_string(),
-                            cx.theme().yellow,
-                            cx,
-                        ))
-                    }),
-            )
-            .child(self.section_card(
-                "Memory properties",
-                "Slots, speed, form factor, type, and type detail require DMI access",
-                v_flex()
-                    .gap_2()
-                    .child(self.simple_property_row("Slots Used", "Permission required".to_string(), cx))
-                    .child(self.simple_property_row("Speed", "Permission required".to_string(), cx))
-                    .child(self.simple_property_row("Form Factor", "Permission required".to_string(), cx))
-                    .child(self.simple_property_row("Type", "Permission required".to_string(), cx))
-                    .child(self.simple_property_row("Type Detail", "Permission required".to_string(), cx))
                     .child(
                         div()
-                            .mt_2()
-                            .rounded(cx.theme().radius)
-                            .border_1()
-                            .border_color(cx.theme().yellow)
-                            .p_3()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .child(
-                                "A narrow Polkit-reviewed DMI helper is still required. The GPUI app will not run dmidecode as root itself.",
+                                "Better Monitor asks the root-owned service for a bounded SMBIOS report. It never returns serial numbers, asset tags, raw firmware bytes, or filesystem paths.",
                             ),
+                    )
+                    .child(
+                        Button::new("read-memory-devices")
+                            .primary()
+                            .label("Show memory hardware details")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.request_dmi_memory(cx);
+                            })),
                     ),
                 cx,
-            ))
+            ),
+            DmiMemoryState::Loading => self.section_card(
+                "Memory properties",
+                "Waiting for system authentication",
+                v_flex()
+                    .gap_2()
+                    .child(self.simple_property_row(
+                        "Memory",
+                        linux::format_bytes(total_memory, self.settings.unit_base),
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Complete or cancel the system authentication prompt."),
+                    ),
+                cx,
+            ),
+            DmiMemoryState::Denied => self.section_card(
+                "Memory properties",
+                "Authentication was declined",
+                v_flex()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(
+                                "Live memory usage remains available. Hardware module details were not read.",
+                            ),
+                    )
+                    .child(
+                        Button::new("retry-memory-devices-denied")
+                            .label("Try again")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.request_dmi_memory(cx);
+                            })),
+                    ),
+                cx,
+            ),
+            DmiMemoryState::Unavailable(detail) => self.section_card(
+                "Memory properties",
+                "The privileged hardware reader is unavailable",
+                v_flex()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(detail.clone()),
+                    )
+                    .child(
+                        Button::new("retry-memory-devices-unavailable")
+                            .label("Retry")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.request_dmi_memory(cx);
+                            })),
+                    ),
+                cx,
+            ),
+            DmiMemoryState::Ready(report) => {
+                let installed = report.installed_devices().count();
+                let speeds = joined_unique(report.installed_devices().filter_map(|device| {
+                    device
+                        .configured_speed_mt_s
+                        .or(device.speed_mt_s)
+                        .map(|speed| format!("{speed} MT/s"))
+                }));
+                let form_factors = joined_unique(
+                    report
+                        .installed_devices()
+                        .map(|device| device.form_factor.clone()),
+                );
+                let memory_types = joined_unique(
+                    report
+                        .installed_devices()
+                        .map(|device| device.memory_type.clone()),
+                );
+                let details = joined_unique(
+                    report
+                        .installed_devices()
+                        .flat_map(|device| device.type_detail.clone()),
+                );
+
+                self.section_card(
+                    "Memory properties",
+                    "Authenticated, read-only SMBIOS inventory",
+                    v_flex()
+                        .gap_3()
+                        .child(self.simple_property_row(
+                            "Memory",
+                            linux::format_bytes(total_memory, self.settings.unit_base),
+                            cx,
+                        ))
+                        .child(self.simple_property_row(
+                            "Slots Used",
+                            format!("{installed} of {}", report.devices.len()),
+                            cx,
+                        ))
+                        .child(self.simple_property_row("Speed", speeds, cx))
+                        .child(self.simple_property_row(
+                            "Form Factor",
+                            form_factors,
+                            cx,
+                        ))
+                        .child(self.simple_property_row("Type", memory_types, cx))
+                        .child(self.simple_property_row("Type Detail", details, cx))
+                        .child(self.simple_property_row(
+                            "SMBIOS",
+                            format!("{}.{}", report.smbios_major, report.smbios_minor),
+                            cx,
+                        ))
+                        .children(
+                            report
+                                .installed_devices()
+                                .enumerate()
+                                .map(|(index, device)| self.memory_device_card(index, device, cx)),
+                        ),
+                    cx,
+                )
+            }
+        }
     }
 
+    fn memory_device_card(
+        &self,
+        index: usize,
+        device: &DmiMemoryDevice,
+        cx: &Context<Self>,
+    ) -> Div {
+        v_flex()
+            .gap_2()
+            .rounded(cx.theme().radius_lg)
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().secondary)
+            .p_3()
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(div().font_bold().child(format!(
+                        "Module {} · {}",
+                        index + 1,
+                        device.locator
+                    )))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(
+                                device
+                                    .size_bytes
+                                    .map(|size| linux::format_bytes(size, self.settings.unit_base))
+                                    .unwrap_or_else(|| "N/A".to_string()),
+                            ),
+                    ),
+            )
+            .child(self.simple_property_row(
+                "Bank",
+                device.bank.clone().unwrap_or_else(|| "N/A".to_string()),
+                cx,
+            ))
+            .child(
+                self.simple_property_row(
+                    "Manufacturer",
+                    device
+                        .manufacturer
+                        .clone()
+                        .unwrap_or_else(|| "N/A".to_string()),
+                    cx,
+                ),
+            )
+            .child(
+                self.simple_property_row(
+                    "Part Number",
+                    device
+                        .part_number
+                        .clone()
+                        .unwrap_or_else(|| "N/A".to_string()),
+                    cx,
+                ),
+            )
+            .child(
+                self.simple_property_row(
+                    "Configured Speed",
+                    device
+                        .configured_speed_mt_s
+                        .map(|speed| format!("{speed} MT/s"))
+                        .unwrap_or_else(|| "N/A".to_string()),
+                    cx,
+                ),
+            )
+            .child(
+                self.simple_property_row(
+                    "Configured Voltage",
+                    device
+                        .configured_voltage_mv
+                        .map(|voltage| format!("{voltage} mV"))
+                        .unwrap_or_else(|| "N/A".to_string()),
+                    cx,
+                ),
+            )
+    }
     fn render_storage(&self, cx: &Context<Self>) -> Div {
         let disks = self
             .disk_info
@@ -2295,7 +2524,7 @@ impl MonitorWindow {
                         ))
                         .child(self.health_row(
                             "Memory hardware properties",
-                            "Awaiting narrow Polkit DMI helper",
+                            "Authenticated read-only D-Bus helper available on demand",
                             cx.theme().yellow,
                             cx,
                         ))
@@ -2463,6 +2692,20 @@ fn uses_compact_navigation(width: Pixels) -> bool {
     width < px(980.0)
 }
 
+fn joined_unique(values: impl IntoIterator<Item = String>) -> String {
+    let mut values = values
+        .into_iter()
+        .filter(|value| !value.trim().is_empty() && value != "Unknown")
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    if values.is_empty() {
+        "N/A".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
 fn unix_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2596,5 +2839,24 @@ mod visibility_tests {
             false,
             INACTIVE_SURFACE_REFRESH_INTERVAL,
         ));
+    }
+}
+
+#[cfg(test)]
+mod memory_property_tests {
+    use super::*;
+
+    #[test]
+    fn memory_property_values_are_sorted_and_deduplicated() {
+        assert_eq!(
+            joined_unique([
+                "DDR5".to_string(),
+                "DDR4".to_string(),
+                "DDR5".to_string(),
+                "Unknown".to_string(),
+            ]),
+            "DDR4, DDR5"
+        );
+        assert_eq!(joined_unique(Vec::<String>::new()), "N/A");
     }
 }

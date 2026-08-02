@@ -45,7 +45,7 @@ This checklist is the merge gate for the GNOME Resources parity portion of Bette
 | Runtime language selector | 🟨 | Shared `system`, `en-US`, and `zh-TW` locale state is persisted and switches shell/navigation copy immediately. Full page catalogs and pseudo-long mode remain incomplete. |
 | Accessible chart summary | ✅ | Every shared chart card presents current, average, minimum, maximum, and sample-count text alongside the visual graph. |
 | Keyboard focus model | 🟨 | Native controls are focusable. Complete table cell navigation, predictable focus order, shortcuts, and dialog focus trapping are missing. |
-| Authenticated hardware-information prompt | ⬜ | Required for DMI memory details when sysfs is insufficient. |
+| Authenticated hardware-information prompt | ✅ | The Memory page explicitly requests a narrow Polkit action and keeps denial, unavailable service, loading, and success distinct. |
 
 The answer to “are all required UI components built?” is therefore **no**. The core visual primitives exist, but parity-specific interaction, accessibility, adaptive, localization, and privileged-boundary components are still being implemented.
 

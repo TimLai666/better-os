@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 879.
-- Packages with an SPDX license expression: 877.
+- Resolved Cargo packages: 881.
+- Packages with an SPDX license expression: 879.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `b52cda909ac88ff639a5757d6941bc2d6bde916bb345eda1d8bf56fd115bc954`.
+- `Cargo.lock` SHA-256: `92523636ac67997d07572096a8467a671de6ae898ac6f7f2fd8dc307dacc8945`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -26,13 +26,13 @@ source of truth for those packages.
 | License expression | Package records |
 | --- | ---: |
 | `MIT OR Apache-2.0` | 401 |
-| `MIT` | 187 |
+| `MIT` | 188 |
 | `Apache-2.0 OR MIT` | 77 |
 | `MIT/Apache-2.0` | 35 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
 | `Zlib OR Apache-2.0 OR MIT` | 18 |
-| `GPL-3.0-or-later` | 14 |
+| `GPL-3.0-or-later` | 15 |
 | `BSD-3-Clause` | 10 |
 | `MIT OR Apache-2.0 OR Zlib` | 10 |
 | `Apache-2.0/MIT` | 8 |
@@ -89,6 +89,7 @@ Better OS does not relicense or silently select a different expression.
 | `manager-store` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `monitor-core` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `monitor-gui` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `monitor-ipc` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `option-ext` | `0.2.0` | `MPL-2.0` | [crates.io](https://crates.io/crates/option-ext/0.2.0) |
 | `r-efi` | `5.3.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/5.3.0) |
 | `r-efi` | `6.0.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/6.0.0) |
@@ -257,6 +258,7 @@ Better OS does not relicense or silently select a different expression.
 | `dispatch2` | `0.3.1` | `Zlib OR Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/dispatch2/0.3.1) |
 | `displaydoc` | `0.2.7` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/displaydoc/0.2.7) |
 | `dlib` | `0.5.3` | `MIT` | [crates.io](https://crates.io/crates/dlib/0.5.3) |
+| `dmidecode` | `1.0.1` | `MIT` | [crates.io](https://crates.io/crates/dmidecode/1.0.1) |
 | `document-features` | `0.2.12` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/document-features/0.2.12) |
 | `downcast-rs` | `1.2.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/downcast-rs/1.2.1) |
 | `dunce` | `1.0.5` | `CC0-1.0 OR MIT-0 OR Apache-2.0` | [crates.io](https://crates.io/crates/dunce/1.0.5) |
@@ -478,6 +480,7 @@ Better OS does not relicense or silently select a different expression.
 | `mio` | `1.2.2` | `MIT` | [crates.io](https://crates.io/crates/mio/1.2.2) |
 | `monitor-core` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `monitor-gui` | `0.1.0` | `GPL-3.0-or-later` | workspace |
+| `monitor-ipc` | `0.1.0` | `GPL-3.0-or-later` | workspace |
 | `moxcms` | `0.8.1` | `BSD-3-Clause OR Apache-2.0` | [crates.io](https://crates.io/crates/moxcms/0.8.1) |
 | `naga` | `29.0.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/naga/29.0.4) |
 | `ndk-sys` | `0.6.0+11769913` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/ndk-sys/0.6.0+11769913) |

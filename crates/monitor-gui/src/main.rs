@@ -1,5 +1,6 @@
 mod app;
 mod app_table;
+mod dmi;
 mod linux;
 mod process_actions;
 mod process_control;

@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.betteros.Monitor1
+SystemdService=better-manager-daemon.service
+User=root

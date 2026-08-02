@@ -37,6 +37,11 @@
                               │ samples, events, exports
                          local-first store
 
+                    monitor-gui ──► monitor-ipc ──► org.betteros.Monitor1
+                                                      │ distinct Polkit action
+                                                      ▼
+                                              bounded SMBIOS memory report
+
                     better-ui ────────► manager-gui / monitor-gui
 ```
 
@@ -100,3 +105,13 @@ metadata must declare the runtime libraries so `apt install ./<package>.deb`
 works on a clean supported desktop without manual development-package setup.
 See [Release Packaging Specification](release-packaging.md) for the release
 verification contract.
+
+
+### Monitor privileged-read boundary
+
+Memory usage and all normal collectors remain unprivileged. The only privileged
+monitor operation is an explicit, user-triggered SMBIOS memory inventory. The
+root daemon exposes it on `org.betteros.Monitor1`, separate from package
+mutation, and checks `org.betteros.monitor.read-memory-devices` through Polkit.
+Raw firmware data never crosses D-Bus; `monitor-ipc` excludes serial numbers,
+asset tags, and paths and validates every string and collection bound.
