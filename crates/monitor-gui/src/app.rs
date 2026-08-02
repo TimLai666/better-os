@@ -8,7 +8,7 @@ use better_ui::{
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Root, Selectable as _, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, Root, Selectable as _, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     chart::AreaChart,
     h_flex,
@@ -17,6 +17,7 @@ use gpui_component::{
     table::{DataTable, TableEvent, TableState},
     v_flex,
 };
+use gpui_platform::ApplicationExt;
 use monitor_core::{Incident, MonitorStore, Sample};
 use monitor_ipc::{MemoryDevice as DmiMemoryDevice, MemoryReport};
 use smol::Timer;
@@ -175,22 +176,19 @@ impl MonitorPage {
         }
     }
 
-    const fn marker(self) -> &'static str {
+    const fn icon_path(self) -> &'static str {
         match self {
-            Self::Overview => "◫",
-            Self::Apps => "▦",
-            Self::Processes => "≡",
-            Self::Cpu => "◇",
-            Self::Memory => "▤",
-            Self::Gpu => "▰",
-            Self::Npu => "◇",
-            Self::Storage => "▱",
-            Self::Network => "⌁",
-            Self::Battery => "▥",
-            Self::History => "↗",
-            Self::Incidents => "!",
-            Self::Diagnostics => "⊙",
-            Self::Settings => "⚙",
+            Self::Overview => "icons/gauge.svg",
+            Self::Apps => "icons/layout-grid.svg",
+            Self::Processes => "icons/search.svg",
+            Self::Cpu | Self::Gpu | Self::Npu => "icons/cpu.svg",
+            Self::Memory => "icons/memory-stick.svg",
+            Self::Storage => "icons/hard-drive.svg",
+            Self::Network => "icons/network.svg",
+            Self::Battery => "icons/battery.svg",
+            Self::History | Self::Diagnostics => "icons/gauge.svg",
+            Self::Incidents => "icons/triangle-alert.svg",
+            Self::Settings => "icons/settings.svg",
         }
     }
 
@@ -909,11 +907,8 @@ impl MonitorWindow {
             .ghost()
             .small()
             .w_full()
-            .label(format!(
-                "{}   {}",
-                page.marker(),
-                page.label(self.settings.locale)
-            ))
+            .icon(Icon::default().path(page.icon_path()))
+            .label(page.label(self.settings.locale))
             .selected(self.active_page == page)
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.set_active_page(page);
@@ -926,11 +921,8 @@ impl MonitorWindow {
             .ghost()
             .small()
             .flex_shrink_0()
-            .label(format!(
-                "{}  {}",
-                page.marker(),
-                page.label(self.settings.locale)
-            ))
+            .icon(Icon::default().path(page.icon_path()))
+            .label(page.label(self.settings.locale))
             .selected(self.active_page == page)
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.set_active_page(page);
@@ -2783,41 +2775,43 @@ mod adaptive_navigation_tests {
 }
 
 pub fn run() {
-    gpui_platform::application().run(move |cx| {
-        gpui_component::init(cx);
-        let settings = MonitorSettings::load();
-        let (window_width, window_height) = settings.window_size();
-        let centered = WindowBounds::centered(size(px(window_width), px(window_height)), cx);
-        let window_bounds = if settings.window_maximized {
-            let bounds = match centered {
-                WindowBounds::Windowed(bounds)
-                | WindowBounds::Maximized(bounds)
-                | WindowBounds::Fullscreen(bounds) => bounds,
+    gpui_platform::application()
+        .with_assets(gpui_component_assets::Assets)
+        .run(move |cx| {
+            gpui_component::init(cx);
+            let settings = MonitorSettings::load();
+            let (window_width, window_height) = settings.window_size();
+            let centered = WindowBounds::centered(size(px(window_width), px(window_height)), cx);
+            let window_bounds = if settings.window_maximized {
+                let bounds = match centered {
+                    WindowBounds::Windowed(bounds)
+                    | WindowBounds::Maximized(bounds)
+                    | WindowBounds::Fullscreen(bounds) => bounds,
+                };
+                WindowBounds::Maximized(bounds)
+            } else {
+                centered
             };
-            WindowBounds::Maximized(bounds)
-        } else {
-            centered
-        };
-        let window_options = WindowOptions {
-            window_bounds: Some(window_bounds),
-            ..Default::default()
-        };
-        cx.spawn(async move |cx| {
-            cx.open_window(window_options, |window, cx| {
-                let view = cx.new(|cx| MonitorWindow::new(window, cx));
-                let monitor = view.downgrade();
-                window.on_window_should_close(cx, move |window, cx| {
-                    if let Some(monitor) = monitor.upgrade() {
-                        monitor.update(cx, |monitor, _| monitor.remember_window_state(window));
-                    }
-                    true
-                });
-                cx.new(|cx| Root::new(view, window, cx))
+            let window_options = WindowOptions {
+                window_bounds: Some(window_bounds),
+                ..Default::default()
+            };
+            cx.spawn(async move |cx| {
+                cx.open_window(window_options, |window, cx| {
+                    let view = cx.new(|cx| MonitorWindow::new(window, cx));
+                    let monitor = view.downgrade();
+                    window.on_window_should_close(cx, move |window, cx| {
+                        if let Some(monitor) = monitor.upgrade() {
+                            monitor.update(cx, |monitor, _| monitor.remember_window_state(window));
+                        }
+                        true
+                    });
+                    cx.new(|cx| Root::new(view, window, cx))
+                })
+                .expect("failed to open Better Monitor window");
             })
-            .expect("failed to open Better Monitor window");
-        })
-        .detach();
-    });
+            .detach();
+        });
 }
 
 #[cfg(test)]
