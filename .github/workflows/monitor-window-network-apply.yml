@@ -1,0 +1,45 @@
+name: Apply Better Monitor window and NetworkManager parity
+
+on:
+  push:
+    branches:
+      - feature/better-monitor-ui
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/better-monitor-ui
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install GPUI Linux dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - name: Apply and validate
+        run: |
+          if ! grep -q 'fn network_manager_dbus_name' crates/monitor-gui/src/linux.rs; then
+            base64 -d .github/monitor-window-network.patch.gz.b64 | gzip -d > /tmp/monitor-window-network.patch
+            git apply --check /tmp/monitor-window-network.patch
+            git apply /tmp/monitor-window-network.patch
+          fi
+          cargo fmt --all
+          cargo check -p monitor-gui
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock crates/monitor-gui/Cargo.toml crates/monitor-gui/src/app.rs crates/monitor-gui/src/linux.rs crates/monitor-gui/src/settings.rs docs/better-monitor-resources-v1.10.2-parity.md docs/better-monitor-window-and-network-state.md
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "feat(monitor): persist window state and query NetworkManager over D-Bus"
+          git push origin HEAD:feature/better-monitor-ui
