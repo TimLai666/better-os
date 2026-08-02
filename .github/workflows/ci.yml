@@ -5,34 +5,6 @@ on:
   pull_request:
 
 jobs:
-  apply-monitor-assets:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/better-monitor-ui
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Register assets and replace text markers
-        run: |
-          python3 .github/apply_monitor_assets.py
-          cargo fmt --all
-      - name: Commit product files only
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/monitor-gui/src/app.rs crates/monitor-gui/Cargo.toml Cargo.lock
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "feat(monitor): register embedded navigation icons"
-          git pull --rebase origin feature/better-monitor-ui
-          git push origin HEAD:feature/better-monitor-ui
-
   rust:
     runs-on: ubuntu-latest
     env:
