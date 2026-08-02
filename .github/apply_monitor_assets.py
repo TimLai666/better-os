@@ -98,8 +98,8 @@ replace_once(
 """,
 )
 replace_once(
-    "    let app = gpui_platform::application();\n",
-    "    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);\n",
+    "    gpui_platform::application().run(move |cx| {\n",
+    "    gpui_platform::application()\n        .with_assets(gpui_component_assets::Assets)\n        .run(move |cx| {\n",
 )
 
 path.write_text(text)
