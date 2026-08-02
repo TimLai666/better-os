@@ -9,6 +9,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -33,17 +34,51 @@ struct DesktopCatalog {
     resolved: HashMap<String, Option<PathBuf>>,
 }
 
-static CATALOG: OnceLock<Mutex<DesktopCatalog>> = OnceLock::new();
+#[derive(Default)]
+struct CatalogState {
+    catalog: DesktopCatalog,
+    loading: bool,
+}
+
+static CATALOG: OnceLock<Mutex<CatalogState>> = OnceLock::new();
 
 pub fn app_icon_path(identity: &str) -> Option<PathBuf> {
-    let cache = CATALOG.get_or_init(|| Mutex::new(DesktopCatalog::default()));
-    let mut catalog = cache.lock().ok()?;
-    if catalog
-        .loaded_at
-        .is_none_or(|loaded| loaded.elapsed() >= CACHE_TTL)
+    let cache = CATALOG.get_or_init(|| Mutex::new(CatalogState::default()));
+    let should_load = {
+        let mut state = cache.lock().ok()?;
+        let stale = state
+            .catalog
+            .loaded_at
+            .is_none_or(|loaded| loaded.elapsed() >= CACHE_TTL);
+        if stale && !state.loading {
+            state.loading = true;
+            true
+        } else {
+            false
+        }
+    };
+
+    if should_load
+        && thread::Builder::new()
+            .name("better-monitor-icon-index".to_string())
+            .spawn(|| {
+                let catalog = load_catalog();
+                if let Some(cache) = CATALOG.get()
+                    && let Ok(mut state) = cache.lock()
+                {
+                    state.catalog = catalog;
+                    state.loading = false;
+                }
+            })
+            .is_err()
+        && let Ok(mut state) = cache.lock()
     {
-        *catalog = load_catalog();
+        state.loading = false;
     }
+
+    let mut state = cache.lock().ok()?;
+    let catalog = &mut state.catalog;
+    catalog.loaded_at?;
 
     let cache_key = identity.to_ascii_lowercase();
     if let Some(path) = catalog.resolved.get(&cache_key) {
@@ -362,7 +397,7 @@ fn is_supported_icon(path: &Path) -> bool {
             .and_then(|value| value.to_str())
             .map(str::to_ascii_lowercase)
             .as_deref(),
-        Some("svg" | "png" | "xpm" | "ico" | "webp")
+        Some("svg" | "png" | "ico" | "webp")
     )
 }
 
@@ -399,7 +434,6 @@ fn icon_score(path: &Path) -> i32 {
             Some("png") => 4,
             Some("webp") => 3,
             Some("ico") => 2,
-            Some("xpm") => 1,
             _ => 0,
         }
 }
