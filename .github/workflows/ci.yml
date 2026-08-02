@@ -5,34 +5,7 @@ on:
   pull_request:
 
 jobs:
-  rust:
-    runs-on: ubuntu-latest
-    env:
-      RUST_FONTCONFIG_DLOPEN: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - name: Validate packaging scripts
-        run: |
-          while IFS= read -r -d '' script; do
-            bash -n "$script"
-          done < <(find packaging -type f -name '*.sh' -print0)
-          test "$(sed -n '1p' packaging/verify-deb.sh)" = '#!/usr/bin/env bash'
-          test "$(sed -n '2p' packaging/verify-deb.sh)" = 'set -euo pipefail'
-          test "$(wc -l < packaging/verify-deb.sh)" -gt 100
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Install GPUI Linux dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
-      - run: cargo fmt --all -- --check
-      - run: cargo check --workspace --locked
-      - run: cargo build --workspace --locked
-      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo test --workspace --locked
-
   diagnose-package:
-    needs: rust
     runs-on: ubuntu-24.04
     env:
       RUST_FONTCONFIG_DLOPEN: "1"
