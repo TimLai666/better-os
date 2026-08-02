@@ -13,6 +13,7 @@ use crate::DaemonError;
 
 /// The one action that gates every mutating method.
 pub const APPLY_ACTION: &str = "org.betteros.manager.apply-transaction";
+pub const READ_DMI_ACTION: &str = "org.betteros.monitor.read-memory-devices";
 
 pub trait Authorizer: Send + Sync {
     /// Whether this caller may apply a transaction. An error means the question
@@ -20,6 +21,7 @@ pub trait Authorizer: Send + Sync {
     fn check(
         &self,
         header: &Header<'_>,
+        action: &'static str,
     ) -> impl std::future::Future<Output = Result<bool, DaemonError>> + Send;
 }
 
@@ -35,7 +37,7 @@ impl PolkitAuthorizer {
 }
 
 impl Authorizer for PolkitAuthorizer {
-    async fn check(&self, header: &Header<'_>) -> Result<bool, DaemonError> {
+    async fn check(&self, header: &Header<'_>, action: &'static str) -> Result<bool, DaemonError> {
         let authority = AuthorityProxy::new(&self.connection)
             .await
             .map_err(|error| DaemonError::Protocol(error.to_string()))?;
@@ -49,7 +51,7 @@ impl Authorizer for PolkitAuthorizer {
         let result = authority
             .check_authorization(
                 &subject,
-                APPLY_ACTION,
+                action,
                 &HashMap::new(),
                 // The caller is a desktop application acting for a person, so
                 // polkit is allowed to put up its authentication dialog.
@@ -69,7 +71,11 @@ pub struct FakeAuthorizer(pub bool);
 
 #[cfg(any(test, feature = "test-support"))]
 impl Authorizer for FakeAuthorizer {
-    async fn check(&self, _header: &Header<'_>) -> Result<bool, DaemonError> {
+    async fn check(
+        &self,
+        _header: &Header<'_>,
+        _action: &'static str,
+    ) -> Result<bool, DaemonError> {
         Ok(self.0)
     }
 }

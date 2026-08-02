@@ -9,10 +9,16 @@ use std::time::Duration;
 
 use manager_daemon::apt::AptGetDriver;
 use manager_daemon::authorize::PolkitAuthorizer;
+use manager_daemon::dmi::SystemMemoryInventory;
 use manager_daemon::executor::Executor;
 use manager_daemon::health::SystemHealthProbe;
 use manager_daemon::host::SystemHostProbe;
-use manager_daemon::service::{BUS_NAME, ManagerService, OBJECT_PATH};
+use manager_daemon::monitor_service::{
+    BUS_NAME as MONITOR_BUS_NAME, MonitorService, OBJECT_PATH as MONITOR_OBJECT_PATH,
+};
+use manager_daemon::service::{
+    BUS_NAME as MANAGER_BUS_NAME, ManagerService, OBJECT_PATH as MANAGER_OBJECT_PATH,
+};
 use manager_daemon::store::{ArtifactStore, Journal};
 use manager_daemon::{ARCHIVE_DIR, STATE_DIR};
 
@@ -43,15 +49,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let connection = zbus::connection::Builder::system()?.build().await?;
-    let service = ManagerService::new(
+    let manager_service = ManagerService::new(
         PolkitAuthorizer::new(connection.clone()),
         executor,
         artifacts,
         journal,
     );
+    let monitor_service = MonitorService::new(
+        PolkitAuthorizer::new(connection.clone()),
+        Arc::new(SystemMemoryInventory),
+    );
 
-    connection.object_server().at(OBJECT_PATH, service).await?;
-    connection.request_name(BUS_NAME).await?;
+    connection
+        .object_server()
+        .at(MANAGER_OBJECT_PATH, manager_service)
+        .await?;
+    connection
+        .object_server()
+        .at(MONITOR_OBJECT_PATH, monitor_service)
+        .await?;
+    connection.request_name(MANAGER_BUS_NAME).await?;
+    connection.request_name(MONITOR_BUS_NAME).await?;
 
     // Nothing to do but wait to be called. D-Bus activation starts us again on
     // the next request.

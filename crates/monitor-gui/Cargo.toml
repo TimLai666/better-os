@@ -14,6 +14,12 @@ bench = false
 [dependencies]
 better-ui.workspace = true
 monitor-core.workspace = true
+monitor-ipc.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
+gpui-component-assets.workspace = true
 gpui-platform.workspace = true
+libc = "0.2"
+smol = "2"
+sysinfo = "0.37"
+zbus = "5"

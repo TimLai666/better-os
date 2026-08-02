@@ -423,3 +423,14 @@ combinations. Every one reached the new rollback scenarios: a real failed update
 ended with dpkg back at the previous version and the installed-artifact record
 pointing at the previous artifact, on ubuntu 22.04 and 24.04, amd64 and native
 arm64.
+
+
+## Better Monitor parity progress
+
+- DMI memory inventory: implemented behind a distinct read-only
+  `org.betteros.Monitor1` interface and Polkit action.
+- Raw SMBIOS Type 17 is decoded in the root daemon and reduced to a bounded
+  `monitor-ipc` report.
+- Serial numbers, asset tags, raw firmware bytes, and paths are excluded.
+- Remaining validation: real firmware tables and the interactive Polkit prompt
+  in a GNOME Wayland session.

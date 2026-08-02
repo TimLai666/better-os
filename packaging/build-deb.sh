@@ -226,6 +226,10 @@ make_daemon_package() {
         "$staging_dir/usr/share/dbus-1/system-services/org.betteros.Manager1.service"
     install -m 0644 "$ROOT_DIR/packaging/daemon/org.betteros.Manager1.conf" \
         "$staging_dir/usr/share/dbus-1/system.d/org.betteros.Manager1.conf"
+    install -m 0644 "$ROOT_DIR/packaging/daemon/org.betteros.Monitor1.service" \
+        "$staging_dir/usr/share/dbus-1/system-services/org.betteros.Monitor1.service"
+    install -m 0644 "$ROOT_DIR/packaging/daemon/org.betteros.Monitor1.conf" \
+        "$staging_dir/usr/share/dbus-1/system.d/org.betteros.Monitor1.conf"
     install -m 0644 "$ROOT_DIR/packaging/daemon/org.betteros.manager.policy" \
         "$staging_dir/usr/share/polkit-1/actions/org.betteros.manager.policy"
     install -m 0644 "$ROOT_DIR/LICENSE" "$staging_dir/usr/share/doc/$package_name/copyright"
@@ -344,5 +348,6 @@ POSTRM
 
 make_package better-manager manager-gui 'Better OS manager desktop application' \
     "better-manager-daemon (= $VERSION)"
-make_package better-monitor monitor-gui 'Better OS monitor desktop application'
+make_package better-monitor monitor-gui 'Better OS monitor desktop application' \
+    "better-manager-daemon (= $VERSION)"
 make_daemon_package

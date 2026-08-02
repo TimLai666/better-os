@@ -151,7 +151,9 @@ for required_file in \
     usr/libexec/better-manager-daemon \
     usr/lib/systemd/system/better-manager-daemon.service \
     usr/share/dbus-1/system-services/org.betteros.Manager1.service \
+    usr/share/dbus-1/system-services/org.betteros.Monitor1.service \
     usr/share/dbus-1/system.d/org.betteros.Manager1.conf \
+    usr/share/dbus-1/system.d/org.betteros.Monitor1.conf \
     usr/share/polkit-1/actions/org.betteros.manager.policy \
     usr/share/doc/better-manager-daemon/copyright \
     usr/share/doc/better-manager-daemon/THIRD-PARTY-LICENSES.md; do
@@ -179,6 +181,11 @@ grep -q '^BusName=org.betteros.Manager1$' \
 grep -q 'org.betteros.manager.apply-transaction' \
     "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
     printf 'The polkit policy does not declare the apply action\n' >&2
+    exit 1
+}
+grep -q 'org.betteros.monitor.read-memory-devices' \
+    "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
+    printf 'The polkit policy does not declare the monitor DMI action\n' >&2
     exit 1
 }
 

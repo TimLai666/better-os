@@ -15,7 +15,9 @@ path = "src/lib.rs"
 
 [dependencies]
 better-core.workspace = true
+dmidecode = "1.0.1"
 manager-ipc.workspace = true
+monitor-ipc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"

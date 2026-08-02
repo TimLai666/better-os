@@ -113,3 +113,12 @@ replaceable until its storage decision is explicit.
 - The final runtime dependency list is target- and architecture-specific and
   must be taken from the packaged binaries rather than copied from CI's
   build-time package list.
+
+
+## Better Monitor privileged hardware reads
+
+Better Monitor never runs as root. The existing D-Bus-activated daemon also
+owns a separate `org.betteros.Monitor1` read-only interface. A distinct Polkit
+action gates SMBIOS memory inventory, and the daemon returns only the bounded
+`monitor-ipc` document. Package mutation remains on `org.betteros.Manager1`;
+the two capabilities do not share an authorization decision.

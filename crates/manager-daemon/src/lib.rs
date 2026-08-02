@@ -17,9 +17,11 @@
 
 pub mod apt;
 pub mod authorize;
+pub mod dmi;
 pub mod executor;
 pub mod health;
 pub mod host;
+pub mod monitor_service;
 pub mod revalidate;
 pub mod service;
 pub mod store;
@@ -75,6 +77,12 @@ pub enum DaemonError {
 
 impl From<manager_ipc::IpcError> for DaemonError {
     fn from(error: manager_ipc::IpcError) -> Self {
+        DaemonError::Protocol(error.to_string())
+    }
+}
+
+impl From<monitor_ipc::IpcError> for DaemonError {
+    fn from(error: monitor_ipc::IpcError) -> Self {
         DaemonError::Protocol(error.to_string())
     }
 }
