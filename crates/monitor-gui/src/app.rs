@@ -36,6 +36,11 @@ mod parity;
 
 const MIB: f64 = 1024.0 * 1024.0;
 const SECTOR_SIZE: u64 = 512;
+const INACTIVE_SURFACE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+fn surface_refresh_due(window_active: bool, elapsed_since_refresh: Duration) -> bool {
+    window_active || elapsed_since_refresh >= INACTIVE_SURFACE_REFRESH_INTERVAL
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum MonitorPage {
@@ -332,6 +337,7 @@ pub(crate) struct MonitorWindow {
     store: MonitorStore,
     previous_block_counters: HashMap<String, BlockCounters>,
     last_disk_sample: Instant,
+    last_surface_refresh: Instant,
 }
 
 impl MonitorWindow {
@@ -448,9 +454,11 @@ impl MonitorWindow {
             last_disk_sample: Instant::now()
                 .checked_sub(Duration::from_secs(1))
                 .unwrap_or_else(Instant::now),
+            last_surface_refresh: Instant::now(),
         };
 
-        monitor.collect_metrics(cx);
+        let window_handle = window.window_handle();
+        monitor.collect_metrics(true, cx);
         cx.spawn(async move |this, cx| {
             loop {
                 let delay = match this.update(cx, |this, _| this.settings.refresh_interval()) {
@@ -458,10 +466,17 @@ impl MonitorWindow {
                     Err(_) => break,
                 };
                 Timer::after(delay).await;
+                let window_active = window_handle
+                    .update(cx, |_, window, _| window.is_window_active())
+                    .unwrap_or(true);
                 if this
                     .update(cx, |this, cx| {
-                        this.collect_metrics(cx);
-                        cx.notify();
+                        let refresh_surfaces =
+                            this.should_refresh_surfaces(window_active, Instant::now());
+                        this.collect_metrics(refresh_surfaces, cx);
+                        if refresh_surfaces {
+                            cx.notify();
+                        }
                     })
                     .is_err()
                 {
@@ -488,7 +503,18 @@ impl MonitorWindow {
         let _ = self.settings.save();
     }
 
-    fn collect_metrics(&mut self, cx: &mut Context<Self>) {
+    fn should_refresh_surfaces(&mut self, window_active: bool, now: Instant) -> bool {
+        let should_refresh = surface_refresh_due(
+            window_active,
+            now.saturating_duration_since(self.last_surface_refresh),
+        );
+        if should_refresh {
+            self.last_surface_refresh = now;
+        }
+        should_refresh
+    }
+
+    fn collect_metrics(&mut self, refresh_surfaces: bool, cx: &mut Context<Self>) {
         self.system.refresh_all();
         self.disks.refresh(true);
         self.networks.refresh(true);
@@ -603,7 +629,7 @@ impl MonitorWindow {
             .collect::<Vec<_>>();
         self.app_groups = linux::group_apps(&app_samples);
         let table_refresh_held = self.table_refresh_is_held();
-        if !table_refresh_held {
+        if refresh_surfaces && !table_refresh_held {
             let app_groups = self.app_groups.clone();
             let app_query = self.search_query.clone();
             self.app_table.update(cx, |table, cx| {
@@ -619,7 +645,7 @@ impl MonitorWindow {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         self.top_processes = processes.iter().take(8).cloned().collect();
-        if !table_refresh_held {
+        if refresh_surfaces && !table_refresh_held {
             if self
                 .selected_pid
                 .is_some_and(|pid| !processes.iter().any(|process| process.pid == pid))
@@ -2549,4 +2575,26 @@ pub fn run() {
         })
         .detach();
     });
+}
+
+#[cfg(test)]
+mod visibility_tests {
+    use super::*;
+
+    #[test]
+    fn active_windows_refresh_every_sample() {
+        assert!(surface_refresh_due(true, Duration::ZERO));
+    }
+
+    #[test]
+    fn inactive_windows_coalesce_surface_refreshes() {
+        assert!(!surface_refresh_due(
+            false,
+            INACTIVE_SURFACE_REFRESH_INTERVAL - Duration::from_millis(1),
+        ));
+        assert!(surface_refresh_due(
+            false,
+            INACTIVE_SURFACE_REFRESH_INTERVAL,
+        ));
+    }
 }

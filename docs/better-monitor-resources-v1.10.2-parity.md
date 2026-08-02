@@ -60,8 +60,8 @@ The answer to “are all required UI components built?” is therefore **no**. T
 | Adaptive narrow layout | ✅ | Uses the 980 logical px breakpoint, replaces the sidebar with a compact page rail, and reacts directly to the current viewport size. |
 | Restore last selected page | 🟨 | The selected page is persisted and restored. Per-device selection and window geometry remain missing. |
 | Restore window size/maximized state | ✅ | Logical window size and maximized state are persisted on close and restored on launch; Wayland remains responsible for final placement. |
-| Pause graphical updates when hidden | ⬜ | Manual graph pause exists; visibility-driven throttling is missing. |
-| Collection independent from rendering | 🟨 | Manual graph pause preserves collection. Long-running service ownership remains outside this PR. |
+| Pause graphical updates when hidden | ✅ | Collection remains at the configured interval; an inactive window coalesces table/chart redraws to at most once every five seconds and resumes full-rate rendering when active. |
+| Collection independent from rendering | 🟨 | Manual graph pause and inactive-window throttling preserve collection. Long-running service ownership remains outside this PR. |
 
 ## Apps
 
