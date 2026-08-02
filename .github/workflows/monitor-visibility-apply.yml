@@ -1,0 +1,38 @@
+name: Apply Better Monitor visibility throttling
+
+on:
+  push:
+    branches:
+      - feature/better-monitor-ui
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/better-monitor-ui
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply and format
+        run: |
+          if ! grep -q 'INACTIVE_SURFACE_REFRESH_INTERVAL' crates/monitor-gui/src/app.rs; then
+            python3 .github/apply_monitor_visibility.py
+          fi
+          cargo fmt --all
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/monitor-gui/src/app.rs docs/better-monitor-resources-v1.10.2-parity.md docs/better-monitor-visibility-throttling.md
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "perf(monitor): throttle inactive window rendering"
+          git pull --rebase origin feature/better-monitor-ui
+          git push origin HEAD:feature/better-monitor-ui
