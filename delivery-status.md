@@ -42,7 +42,8 @@ boundary that keeps privileged mutation out of the GUI and CLI.
 | M15 | GUI real execution | agent | done | background transaction with live progress, cancel offered only while honorable, real failure copy in both locales |
 | M16 | cutover and documentation | agent | done | real execution by default, daemon packaging verified, AGENTS/ENG/README/architecture/security updated |
 | M17 | container end-to-end verification | agent | done | `chefer run packaging/e2e/appcipe.yml`: real dpkg, real system bus, real polkitd, unauthorized request refused |
-| M18 | four-way packaging matrix on CI | agent | todo | ubuntu 22.04/24.04 × amd64/arm64 build, verify, and container e2e |
+| M18 | four-way packaging matrix on CI | agent | done | CI run 30688730458: build, verify, and container end-to-end passed on ubuntu 22.04/24.04 × amd64/arm64 |
+| M19 | authorized transaction verified end to end | agent | done | real apt install and removal through the service, confirmed against dpkg; a deadlock in the D-Bus client found and fixed |
 
 ## Current Blockers
 
@@ -50,9 +51,10 @@ Better Manager can now install, update, remove, and roll back first-party
 components for real, and the privileged service has been exercised against a
 real dpkg, a real system bus, and a real polkitd inside a disposable container.
 
-What is still unverified is breadth rather than depth: only ubuntu-24.04 on
-amd64 has been built and run locally. The other three release and architecture
-combinations, and the container run on CI, are milestone M18.
+CI run 30688730458 then ran the same check on all four supported combinations —
+ubuntu 22.04 and 24.04, amd64 and arm64 — and every one passed, including the
+service claiming its bus name and refusing an unauthorized request on native
+arm64 hardware.
 
 No active blocker remains for the real-integration work. The privileged daemon
 IPC protocol, which `AGENTS.md` required to be decided before any real system
@@ -77,9 +79,10 @@ policy still needs alignment.
 
 ## Next Verifiable Output
 
-The container end-to-end check running on CI across all four release and
-architecture combinations, so a packaging regression on 22.04 or arm64 is
-caught by the build rather than by a user.
+None outstanding. The next change should be scoped to a new ticket or to one of
+the recorded follow-ups: package signing, the public APT repository, the
+authenticated end of the authorization path, or a repair action for a
+transaction interrupted mid-flight.
 
 ## Next Ticket
 
@@ -346,4 +349,30 @@ Docker was not running on this machine; `systemctl --user start
 docker-desktop.service` started it, which needs no elevation and is reversible
 with the matching stop.
 
-Still not run anywhere: ubuntu-22.04, arm64, and the container check on CI.
+CI run 30688730458 closed the remaining gap: the four-way packaging matrix and
+the container end-to-end check both passed on ubuntu 22.04 and 24.04 across
+amd64 and native arm64.
+
+Ticket 16 then closed that gap. With a test-only polkit rule granting
+authorization inside the container, the check now drives the real
+`DbusPrivilegedExecutor` through a real install and a real removal: apt runs,
+dpkg confirms the package arrived and later left, the reported version matches
+what dpkg holds, the health result is healthy, and the journal and rollback
+record land on disk. A plan naming a prior version dpkg disagrees with is
+refused and changes nothing.
+
+That run immediately found a deadlock in shipped client code.
+`execute_plan` watched `StepProgress` on a second thread, and that signal
+iterator does not end when the call returns, so `std::thread::scope` waited
+forever. Any real client — the CLI or the GUI — would have hung the moment it
+reached a live daemon. Every test against fakes had passed. It now reads the
+result from the outcome alone.
+
+What remains untested is a failure after a real mutation: forcing the real
+health check to fail would need a component built to fail it, and the catalog
+has none. Rollback is covered against `FakeAptDriver` for all three outcomes,
+but has never rolled back a real package.
+
+Interactive polkit authentication is deliberately out of scope: collecting a
+password is polkit's responsibility, and what this project has to prove is what
+happens after polkit says yes.

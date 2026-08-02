@@ -120,35 +120,17 @@ impl PrivilegedTransactionExecutor for DbusPrivilegedExecutor {
             .to_json()
             .map_err(|error| PlatformError::DaemonRefused(error.to_string()))?;
 
-        // Progress arrives as signals while the call is outstanding. The call
-        // itself is what carries the result, so a client that misses a signal
-        // still learns what happened.
-        let proxy = self.proxy()?;
-        let signals = proxy
-            .receive_signal("StepProgress")
-            .map_err(|error| PlatformError::DaemonUnavailable(error.to_string()))?;
-
-        let outcome: String = std::thread::scope(|scope| {
-            let watcher = scope.spawn(move || {
-                for message in signals {
-                    let Ok((_transaction, step_index, stage)) =
-                        message.body().deserialize::<(String, u32, String)>()
-                    else {
-                        continue;
-                    };
-                    if let Some(stage) = parse_stage(&stage) {
-                        // The receiver is on this side of the boundary; the
-                        // daemon only ever reports, never asks.
-                        let _ = (step_index, stage);
-                    }
-                }
-            });
-            let reply = proxy
-                .call::<_, _, String>("ApplyTransaction", &(document,))
-                .map_err(translate);
-            drop(watcher);
-            reply
-        })?;
+        // The call carries the result, so a client that never sees a progress
+        // signal still learns everything that happened. Streaming per-step
+        // progress would mean reading signals while this call is outstanding,
+        // which a blocking connection cannot do on one thread — and watching
+        // them on another deadlocks, because the signal iterator does not end
+        // when the call returns. The long part of a transaction is the
+        // download, and that reports progress from this side already.
+        let outcome: String = self
+            .proxy()?
+            .call("ApplyTransaction", &(document,))
+            .map_err(translate)?;
 
         let outcome = TransactionOutcome::from_json(&outcome)
             .map_err(|error| PlatformError::DaemonRefused(error.to_string()))?;
@@ -162,30 +144,9 @@ impl PrivilegedTransactionExecutor for DbusPrivilegedExecutor {
     }
 }
 
-fn parse_stage(value: &str) -> Option<ExecutionStage> {
-    match value {
-        "verifying" => Some(ExecutionStage::Verifying),
-        "applying" => Some(ExecutionStage::Applying),
-        "checking_health" => Some(ExecutionStage::CheckingHealth),
-        "rolling_back" => Some(ExecutionStage::RollingBack),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stage_names_from_the_daemon_are_understood() {
-        assert_eq!(parse_stage("applying"), Some(ExecutionStage::Applying));
-        assert_eq!(
-            parse_stage("checking_health"),
-            Some(ExecutionStage::CheckingHealth)
-        );
-        // An unknown stage is ignored rather than guessed at.
-        assert_eq!(parse_stage("teleporting"), None);
-    }
 
     #[test]
     fn a_refusal_from_polkit_is_told_apart_from_the_service_being_absent() {

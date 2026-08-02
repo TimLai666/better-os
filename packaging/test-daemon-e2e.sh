@@ -26,6 +26,12 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${1:-$ROOT_DIR/dist}"
 RELEASE_TARGET="${2:-}"
 ARCH="$(dpkg --print-architecture)"
+# The wire contract wants the bare release, the packaging contract wants the
+# `ubuntu-` prefixed target.
+RELEASE_ID="${RELEASE_TARGET#ubuntu-}"
+if [[ -z "$RELEASE_ID" ]]; then
+    RELEASE_ID="$(sed -n 's/^VERSION_ID="\?\([^"]*\)"\?/\1/p' /etc/os-release)"
+fi
 
 find_package() {
     local name="$1"
@@ -162,6 +168,114 @@ if [[ -n "$(ls -A /var/lib/better-os/transactions 2>/dev/null)" ]]; then
     exit 1
 fi
 printf 'A refused request left no transaction behind\n'
+
+printf '== the authorized path, end to end ==\n'
+# Everything above proves the service refuses what it should. This proves it
+# does what it should when polkit says yes — which until now had only ever run
+# against a fake authorizer, along with the real APT driver, the real health
+# check, and the real rollback.
+CLIENT=/opt/better-os/e2e_client
+if [[ ! -x "$CLIENT" ]]; then
+    printf 'Missing the end-to-end client at %s\n' "$CLIENT" >&2
+    exit 1
+fi
+
+# The test-only polkit authorization, dropped in now so the refusal checks
+# above ran without it.
+install -m 0644 /opt/better-os/e2e/50-better-os-e2e.rules \
+    /etc/polkit-1/rules.d/50-better-os-e2e.rules 2>/dev/null || true
+mkdir -p /etc/polkit-1/localauthority/50-local.d
+install -m 0644 /opt/better-os/e2e/50-better-os-e2e.pkla \
+    /etc/polkit-1/localauthority/50-local.d/50-better-os-e2e.pkla 2>/dev/null || true
+# polkit reloads its policy on its own, but not instantly.
+sleep 2
+
+# Start from a machine that does not have the component, so a successful
+# install is visible rather than assumed.
+if dpkg-query -W -f='${db:Status-Status}' better-monitor 2>/dev/null | grep -q '^installed$'; then
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y better-monitor >/dev/null
+fi
+
+MONITOR_ASSET="$(basename "$MONITOR_DEB")"
+cp "$MONITOR_DEB" "/tmp/$MONITOR_ASSET"
+
+printf 'Installing %s through the privileged service\n' "$MONITOR_ASSET"
+outcome="$("$CLIENT" install "$RELEASE_ID" "$ARCH" "/tmp/$MONITOR_ASSET")" || {
+    printf 'The authorized install was refused\n' >&2
+    exit 1
+}
+printf 'outcome: %s\n' "$outcome"
+
+printf '%s' "$outcome" | grep -q '"state":"succeeded"' || {
+    printf 'The transaction did not succeed\n' >&2
+    exit 1
+}
+printf '%s' "$outcome" | grep -q '"state":"healthy"' || {
+    printf 'The service did not report a healthy component\n' >&2
+    exit 1
+}
+
+# The claim that matters: dpkg, not the outcome document, says it is installed.
+installed_now="$(dpkg-query -W -f='${db:Status-Status} ${Version}' better-monitor)"
+printf 'dpkg reports: %s\n' "$installed_now"
+printf '%s' "$installed_now" | grep -q '^installed ' || {
+    printf 'The service reported success but dpkg disagrees\n' >&2
+    exit 1
+}
+applied_version="${installed_now##* }"
+printf '%s' "$outcome" | grep -q "\"applied_version\":\"$applied_version\"" || {
+    printf 'The reported version does not match what dpkg installed\n' >&2
+    exit 1
+}
+printf 'The service installed the component for real\n'
+
+# A completed transaction has to be readable afterwards, which is what a client
+# that lost its connection depends on.
+[[ -n "$(ls -A /var/lib/better-os/transactions 2>/dev/null)" ]] || {
+    printf 'A completed transaction left no journal\n' >&2
+    exit 1
+}
+grep -q 'completed' /var/lib/better-os/transactions/*.json || {
+    printf 'The journal does not record a completed transaction\n' >&2
+    exit 1
+}
+# The component was absent before, so undoing this install means removing it.
+grep -q '"component":"better-monitor"' /var/lib/better-os/rollback/better-monitor.json || {
+    printf 'No rollback record was written for the installed component\n' >&2
+    exit 1
+}
+printf 'The transaction journal and rollback record are on disk\n'
+
+printf 'Removing %s through the privileged service\n' better-monitor
+outcome="$("$CLIENT" remove "$RELEASE_ID" "$ARCH" better-monitor "$applied_version")" || {
+    printf 'The authorized removal was refused\n' >&2
+    exit 1
+}
+printf '%s' "$outcome" | grep -q '"state":"succeeded"' || {
+    printf 'The removal transaction did not succeed\n' >&2
+    exit 1
+}
+if dpkg-query -W -f='${db:Status-Status}' better-monitor 2>/dev/null | grep -q '^installed$'; then
+    printf 'The service reported a removal but the package is still installed\n' >&2
+    exit 1
+fi
+printf 'The service removed the component for real\n'
+
+printf '== a host that moved since planning is refused ==\n'
+# Reinstall, then claim a prior version that is not what dpkg has. The service
+# must refuse rather than overwrite a state nobody reviewed.
+"$CLIENT" install "$RELEASE_ID" "$ARCH" "/tmp/$MONITOR_ASSET" >/dev/null
+if "$CLIENT" remove "$RELEASE_ID" "$ARCH" better-monitor 9.9.9 >/dev/null 2>&1; then
+    printf 'The service acted on a plan whose expected version was wrong\n' >&2
+    exit 1
+fi
+dpkg-query -W -f='${db:Status-Status}' better-monitor | grep -q '^installed$' || {
+    printf 'A refused transaction removed the package anyway\n' >&2
+    exit 1
+}
+printf 'The service refused a plan that disagreed with dpkg, and changed nothing\n'
+
+DEBIAN_FRONTEND=noninteractive apt-get remove -y better-monitor >/dev/null
 
 kill "$DAEMON_PID" 2>/dev/null || true
 trap - EXIT
