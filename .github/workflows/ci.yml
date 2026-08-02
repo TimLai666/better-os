@@ -46,6 +46,23 @@ jobs:
               "detail_labels(device.type_detail.clone()),",
           )
           path.write_text(text)
+
+          path = Path("crates/monitor-gui/src/app.rs")
+          text = path.read_text()
+          for value in (
+              "used",
+              "total",
+              "available",
+              "swap_used",
+              "swap_total",
+              "total_memory",
+              "size",
+          ):
+              text = text.replace(
+                  f"self.format_bytes({value})",
+                  f"linux::format_bytes({value}, self.settings.unit_base)",
+              )
+          path.write_text(text)
           PY
           cargo fmt --all
           cargo check -p monitor-ipc -p manager-daemon -p monitor-gui
