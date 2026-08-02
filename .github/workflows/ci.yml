@@ -22,15 +22,8 @@ jobs:
           components: rustfmt
       - name: Install validation dependencies
         run: sudo apt-get update && sudo apt-get install -y jq libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
-      - name: Apply DMI helper migration
+      - name: Apply idempotent DMI source fixes
         run: |
-          if [[ ! -d crates/monitor-ipc ]]; then
-            cat .github/monitor-dmi-migration/chunk-* | base64 -d | gzip -d > /tmp/apply_monitor_dmi.py
-            test "$(sha256sum /tmp/apply_monitor_dmi.py | cut -d' ' -f1)" = "1395fce49e1976afad1cbadef3a0ae5f48702e5c787f630ca87e84ce3dd23552"
-            python3 .github/patch_monitor_dmi_migration.py
-            python3 -m py_compile /tmp/apply_monitor_dmi.py
-            python3 /tmp/apply_monitor_dmi.py
-          fi
           python3 - <<'PY'
           from pathlib import Path
 
@@ -67,10 +60,14 @@ jobs:
               )
           path.write_text(text)
           PY
-          cargo fmt --all
-          cargo check -p monitor-ipc -p manager-daemon -p monitor-gui
-          bash packaging/generate-third-party-notices.sh
-          cargo fmt --all
+      - name: Format DMI implementation
+        run: cargo fmt --all
+      - name: Check DMI crates
+        run: cargo check -p monitor-ipc -p manager-daemon -p monitor-gui
+      - name: Regenerate third-party notices
+        run: bash packaging/generate-third-party-notices.sh
+      - name: Confirm final formatting
+        run: cargo fmt --all -- --check
       - name: Commit validated implementation
         run: |
           git config user.name "github-actions[bot]"
@@ -79,7 +76,7 @@ jobs:
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "fix(monitor): keep DMI test fixtures compilable"
+          git commit -m "fix(monitor): keep DMI validation reproducible"
           git pull --rebase origin feature/better-monitor-ui
           git push origin HEAD:feature/better-monitor-ui
 
