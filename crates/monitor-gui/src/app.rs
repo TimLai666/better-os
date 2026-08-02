@@ -17,7 +17,6 @@ use gpui_component::{
     table::{DataTable, TableEvent, TableState},
     v_flex,
 };
-use gpui_platform::ApplicationExt;
 use monitor_core::{Incident, MonitorStore, Sample};
 use monitor_ipc::{MemoryDevice as DmiMemoryDevice, MemoryReport};
 use smol::Timer;
