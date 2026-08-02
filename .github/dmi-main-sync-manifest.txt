@@ -1,0 +1,1 @@
+This temporary manifest is removed in the merge commit.
