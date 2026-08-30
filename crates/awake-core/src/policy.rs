@@ -167,6 +167,7 @@ mod tests {
             battery_stop_percent: battery,
             end: EndCondition::Indefinite,
             started_at_unix_seconds: 1_000,
+            rule: None,
         }
     }
 
