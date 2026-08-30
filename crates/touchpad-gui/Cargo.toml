@@ -16,8 +16,11 @@ test = false
 bench = false
 
 [dependencies]
+better-actions.workspace = true
 better-ui.workspace = true
 touchpad-core.workspace = true
+touchpad-gestures.workspace = true
+touchpad-session.workspace = true
 touchpad-platform.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true

@@ -19,9 +19,11 @@ use touchpad_core::{
     RestoreScope, RunState, ScrollFactor, Section, Sensitivity, SettingId, SettingValue,
     TouchpadStore,
 };
+use touchpad_gestures::{ConflictResolution, GestureId, GestureStore, RunState as GestureRunState};
 use touchpad_platform::TouchpadBackend;
 
-use crate::i18n::Locale;
+use crate::gestures_model::GestureScreen;
+use crate::i18n::{Locale, copy};
 use crate::model::{Control, Page, PointerTrace, TouchpadModel};
 use crate::startup::{Startup, now};
 
@@ -36,6 +38,8 @@ pub struct TouchpadApp {
     pub(crate) surface: Rc<Cell<Bounds<Pixels>>>,
     pub(crate) sliders: Vec<(SettingId, Entity<SliderState>)>,
     pub(crate) busy: bool,
+    pub(crate) gestures: GestureScreen,
+    pub(crate) gesture_store: GestureStore,
 }
 
 impl TouchpadApp {
@@ -44,6 +48,9 @@ impl TouchpadApp {
             model,
             backend,
             store,
+            gestures,
+            gesture_store,
+            page,
         } = startup;
 
         let mut sliders = Vec::new();
@@ -83,12 +90,100 @@ impl TouchpadApp {
             model,
             backend,
             store,
-            page: Page::Overview,
+            page,
             pointer: PointerTrace::idle(),
             surface: Rc::new(Cell::new(Bounds::default())),
             sliders,
             busy: false,
+            gestures,
+            gesture_store,
         }
+    }
+
+    pub fn gestures(&self) -> &GestureScreen {
+        &self.gestures
+    }
+
+    /// Builds the preview. Nothing is applied here, and a fresh preview clears
+    /// any earlier confirmation.
+    pub fn preview_preset(&mut self, cx: &mut Context<Self>) {
+        self.gestures.preview_preset();
+        cx.notify();
+    }
+
+    pub fn cancel_preview(&mut self, cx: &mut Context<Self>) {
+        self.gestures.cancel_preview();
+        cx.notify();
+    }
+
+    pub fn confirm_preset(&mut self, confirmed: bool, cx: &mut Context<Self>) {
+        self.gestures.confirm(confirmed);
+        cx.notify();
+    }
+
+    pub fn resolve_conflict(
+        &mut self,
+        gesture: GestureId,
+        resolution: ConflictResolution,
+        cx: &mut Context<Self>,
+    ) {
+        self.gestures.resolve(gesture, resolution);
+        cx.notify();
+    }
+
+    /// Applies the confirmed preset. The gesture store is a different pair of
+    /// files from the settings store, so nothing here can touch pointer or
+    /// scrolling state.
+    pub fn apply_preset(&mut self, cx: &mut Context<Self>) -> Option<GestureRunState> {
+        let outcome = self.gestures.apply_preset(Some(&self.gesture_store)).ok();
+        cx.notify();
+        outcome
+    }
+
+    pub fn restore_gestures(&mut self, cx: &mut Context<Self>) -> Option<GestureRunState> {
+        let outcome = self.gestures.restore(Some(&self.gesture_store));
+        cx.notify();
+        outcome
+    }
+
+    pub fn disable_gestures(&mut self, cx: &mut Context<Self>) -> GestureRunState {
+        let outcome = self.gestures.disable(Some(&self.gesture_store));
+        cx.notify();
+        outcome
+    }
+
+    pub fn toggle_gesture(&mut self, gesture: &GestureId, enabled: bool, cx: &mut Context<Self>) {
+        self.gestures
+            .set_enabled(gesture, enabled, Some(&self.gesture_store));
+        cx.notify();
+    }
+
+    pub fn edit_gesture(&mut self, gesture: &GestureId, cx: &mut Context<Self>) {
+        self.gestures.edit(gesture);
+        cx.notify();
+    }
+
+    pub fn cancel_edit(&mut self, cx: &mut Context<Self>) {
+        self.gestures.cancel_edit();
+        cx.notify();
+    }
+
+    pub fn commit_edit(&mut self, cx: &mut Context<Self>) {
+        let _ = self.gestures.commit_edit(Some(&self.gesture_store));
+        cx.notify();
+    }
+
+    /// Replays a gesture and shows what the recognizer saw. No system action is
+    /// performed unless live testing has been turned on.
+    pub fn test_gesture(&mut self, gesture: &GestureId, cx: &mut Context<Self>) {
+        let c = copy(self.model.locale());
+        self.gestures.test_gesture(gesture, c);
+        cx.notify();
+    }
+
+    pub fn set_live_testing(&mut self, live: bool, cx: &mut Context<Self>) {
+        self.gestures.set_live_testing(live);
+        cx.notify();
     }
 
     pub fn model(&self) -> &TouchpadModel {

@@ -176,6 +176,34 @@ impl TouchpadStore {
         }
     }
 
+    /// Reads a file in this store's directory, or `None` when there is none.
+    ///
+    /// This and the two writers below exist for the sibling crates that keep
+    /// their own state beside the touchpad configuration — `touchpad-gestures`
+    /// is the first — so that a second atomic-write implementation is never
+    /// written. They take a path rather than a name because this crate has no
+    /// business knowing what a gesture file is called.
+    pub fn read_text(&self, path: &Path) -> Result<Option<String>, StoreError> {
+        match fs::read_to_string(path) {
+            Ok(text) => Ok(Some(text)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(io(path)(error)),
+        }
+    }
+
+    /// Writes a file in this store's directory, atomically.
+    pub fn write_text(&self, path: &Path, contents: &str) -> Result<(), StoreError> {
+        self.write_atomically(path, contents)
+    }
+
+    /// Writes a file that must never be replaced, which is what a capture is.
+    pub fn write_once(&self, path: &Path, contents: &str) -> Result<(), StoreError> {
+        if path.exists() {
+            return Err(StoreError::CaptureExists(path.to_path_buf()));
+        }
+        self.write_atomically(path, contents)
+    }
+
     fn write_atomically(&self, path: &Path, contents: &str) -> Result<(), StoreError> {
         fs::create_dir_all(&self.directory).map_err(io(&self.directory))?;
         let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
@@ -233,6 +261,32 @@ mod tests {
             fs::read_to_string(store.config_path()).unwrap(),
             "{ not json"
         );
+    }
+
+    #[test]
+    fn a_neighbouring_crates_state_is_written_atomically_and_read_back() {
+        let (_guard, store) = store();
+        let path = store.directory().join("gestures.json");
+        assert_eq!(store.read_text(&path).unwrap(), None);
+        store.write_text(&path, "{}").unwrap();
+        assert_eq!(store.read_text(&path).unwrap().as_deref(), Some("{}"));
+        store.write_text(&path, "{\"a\":1}").unwrap();
+        assert_eq!(
+            store.read_text(&path).unwrap().as_deref(),
+            Some("{\"a\":1}")
+        );
+    }
+
+    #[test]
+    fn a_write_once_file_is_never_replaced_whatever_asks() {
+        let (_guard, store) = store();
+        let path = store.directory().join("gestures-backup.json");
+        store.write_once(&path, "first").unwrap();
+        assert!(matches!(
+            store.write_once(&path, "second"),
+            Err(StoreError::CaptureExists(_))
+        ));
+        assert_eq!(store.read_text(&path).unwrap().as_deref(), Some("first"));
     }
 
     #[test]

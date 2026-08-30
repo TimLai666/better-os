@@ -139,7 +139,26 @@ suite, not only the two that exist today.
   model, preset, and conflict detection; `touchpad-session` is a narrow adapter
   that invokes typed `better-actions` and never accepts an arbitrary shell
   string from configuration. The launcher's gesture seam is the same boundary
-  seen from the other side.
+  seen from the other side, and the two speak one vocabulary: Better Touchpad's
+  event kinds map onto `launcher-platform`'s four phases with nothing lost, and
+  a test drives the launcher's own recognizer from a Better Touchpad stream.
+- **Arbitrary execution is unrepresentable, not merely forbidden.**
+  `better-actions` is a closed enum with no command, path, or free-text
+  variant. Its one piece of user text is a keyboard shortcut whose key comes
+  from a fixed table behind a private field, so a stored file, a D-Bus message,
+  and a GUI field all have nowhere to put a shell string.
+- **A recognizer is business logic, not integration.**
+  `touchpad-gestures::recognizer` takes contact-point frames and emits gesture
+  events, holds no clock, and knows about no device. Activation, cancellation,
+  cooldown, thumb detection, and every preset gesture are therefore tested by
+  replaying a stream, and whichever backend ADR 0012 delivers plugs in front of
+  it without moving a decision into it.
+- **The gesture half keeps its own state.** `gestures.json` and
+  `gestures-backup.json` sit beside the pointer, scrolling, and clicking files
+  and are written through `touchpad-core`'s own atomic-write and write-once
+  machinery. A failing gesture adapter, or a gesture configuration that will
+  not parse, cannot reach pointer movement or two-finger scrolling — which is
+  asserted, not reasoned about.
 
 ## Data flow
 

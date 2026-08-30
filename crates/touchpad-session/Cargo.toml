@@ -1,0 +1,20 @@
+[package]
+name = "touchpad-session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["launcher-activation"]
+# The one production route in this build: the Better Launcher action reaches the
+# running overlay through `launcher-platform`'s existing activation mechanism.
+# It is a feature so the crate — and every test in it — builds and runs with no
+# session bus anywhere near it.
+launcher-activation = ["dep:launcher-platform"]
+
+[dependencies]
+better-actions.workspace = true
+launcher-platform = { workspace = true, optional = true }
+serde.workspace = true
+thiserror.workspace = true

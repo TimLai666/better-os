@@ -16,7 +16,7 @@ use gpui_component::{Root, Theme, ThemeMode};
 use gpui_component_assets::Assets;
 use touchpad_core::TouchpadStore;
 use touchpad_gui::{
-    Locale, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, Startup, StartupOptions, TouchpadApp,
+    Locale, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, Page, Startup, StartupOptions, TouchpadApp,
 };
 
 fn main() {
@@ -48,6 +48,7 @@ fn main() {
         // The headless smoke test opens the window with no session bus, so it
         // must be able to say "do not go looking for one".
         offline: arguments.iter().any(|argument| argument == "--offline"),
+        page: page_from(&arguments),
         ..StartupOptions::default()
     };
 
@@ -89,6 +90,22 @@ fn main() {
         })
         .detach();
     });
+}
+
+/// `--page gestures` opens on that screen. The headless launch smoke uses it,
+/// so "the Gestures screen renders" is something a command proves rather than
+/// something a reviewer assumes.
+fn page_from(arguments: &[String]) -> Page {
+    let wanted = arguments.iter().enumerate().find_map(|(index, argument)| {
+        if argument == "--page" {
+            return arguments.get(index + 1).cloned();
+        }
+        argument.strip_prefix("--page=").map(str::to_string)
+    });
+    wanted
+        .as_deref()
+        .and_then(Page::parse)
+        .unwrap_or(Page::Overview)
 }
 
 fn locale_from(arguments: &[String]) -> Locale {
