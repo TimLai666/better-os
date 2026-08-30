@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::policy::SessionPolicy;
+use crate::rules::RuleId;
 
 /// Battery percentage a session stops at unless the user chose otherwise.
 /// Issue #13 fixes the tray wording at `低於 20% 電量時停止`, so this is the
@@ -86,9 +87,9 @@ impl std::fmt::Display for Reason {
     }
 }
 
-/// Who asked for the session. Phase 1 only creates manual sessions; the trigger
-/// origin exists so the state machine and the tray already distinguish them
-/// when the rule engine lands in ticket 26.
+/// Who asked for the session. A manual session is one a person started; a
+/// trigger session is one an automatic rule is holding. They may run together,
+/// and ending either never ends the other.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionOrigin {
@@ -171,6 +172,10 @@ pub struct SessionRequest {
     /// `None` means the session never stops itself for battery level.
     pub battery_stop_percent: Option<u8>,
     pub end: EndCondition,
+    /// The automatic rule holding this session, when one is. Always `None` for a
+    /// manual session, which is what lets the service tell, after a restart,
+    /// which sessions belong to rules it must now re-evaluate.
+    pub rule: Option<RuleId>,
 }
 
 impl SessionRequest {
@@ -183,6 +188,7 @@ impl SessionRequest {
             policy: SessionPolicy::quick_default(),
             battery_stop_percent: Some(DEFAULT_BATTERY_STOP_PERCENT),
             end,
+            rule: None,
         }
     }
 }
@@ -205,6 +211,8 @@ pub struct Session {
     pub battery_stop_percent: Option<u8>,
     pub end: EndCondition,
     pub started_at_unix_seconds: u64,
+    /// The automatic rule holding this session, when one is.
+    pub rule: Option<RuleId>,
 }
 
 impl Session {
@@ -277,6 +285,7 @@ mod tests {
             battery_stop_percent: Some(DEFAULT_BATTERY_STOP_PERCENT),
             end,
             started_at_unix_seconds: 1_000,
+            rule: None,
         }
     }
 

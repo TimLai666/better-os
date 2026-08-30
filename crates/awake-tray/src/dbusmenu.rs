@@ -249,6 +249,12 @@ mod tests {
             attention: None,
             interrupted_previous_session: None,
             reduced_security_confirmed: false,
+            active_rules: Vec::new(),
+            rule_summary: awake_ipc::WireRuleSummary::default(),
+            rules_suppression: None,
+            conflicts: Vec::new(),
+            providers: Vec::new(),
+            battery_protection: awake_ipc::WireBatteryProtection::default(),
             now_unix_seconds: 1_700_000_000,
         };
         crate::menu::build(
@@ -256,6 +262,7 @@ mod tests {
             QuickOptions::default(),
             Locale::EnUs,
             UtcOffset::UTC,
+            false,
         )
     }
 

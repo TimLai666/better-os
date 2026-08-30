@@ -77,7 +77,31 @@ pub struct Labels {
     pub end_session: &'static str,
     pub automatic_rules: &'static str,
     pub pause_automatic_rules: &'static str,
-    pub not_available_yet: &'static str,
+    pub pause_15_minutes: &'static str,
+    pub pause_1_hour: &'static str,
+    pub pause_until_resumed: &'static str,
+    pub resume_automatic_rules: &'static str,
+    /// The unarmed override control. Activating it only arms; see
+    /// [`crate::menu::OverrideConfirmation`] for why.
+    pub override_all_rules: &'static str,
+    /// The armed override control. Activating *this* is what switches every
+    /// rule off, so it reads as a confirmation rather than as a command.
+    pub confirm_override_all_rules: &'static str,
+    /// The four states the `Automatic rules` line can report.
+    pub rules_on: &'static str,
+    pub rules_paused_until: &'static str,
+    pub rules_paused_until_resumed: &'static str,
+    pub rules_overridden: &'static str,
+    /// Rules exist but every one of them is switched off.
+    pub rules_off: &'static str,
+    /// No rule has been created yet, which is not the same as all of them being
+    /// switched off.
+    pub no_rules_yet: &'static str,
+    /// Rules are running and none of them currently matches.
+    pub no_rules_match: &'static str,
+    /// Ends the manual session only. Shown when a rule is also holding a
+    /// session, so it is clear what survives.
+    pub end_manual_session_keep_rules: &'static str,
     pub open_application: &'static str,
     pub quit: &'static str,
     pub attention: &'static str,
@@ -127,7 +151,20 @@ pub const ZH_TW: Labels = Labels {
     end_session: "結束工作階段",
     automatic_rules: "自動規則",
     pause_automatic_rules: "暫停自動規則",
-    not_available_yet: "尚未提供",
+    pause_15_minutes: "暫停 15 分鐘",
+    pause_1_hour: "暫停 1 小時",
+    pause_until_resumed: "暫停到手動恢復",
+    resume_automatic_rules: "恢復自動規則",
+    override_all_rules: "覆寫所有自動規則",
+    confirm_override_all_rules: "再點一次確認覆寫",
+    rules_on: "已啟用",
+    rules_paused_until: "暫停到 {time}",
+    rules_paused_until_resumed: "已暫停",
+    rules_overridden: "已覆寫",
+    rules_off: "全部關閉",
+    no_rules_yet: "尚未建立規則",
+    no_rules_match: "目前沒有符合的規則",
+    end_manual_session_keep_rules: "結束工作階段，保留規則",
     open_application: "開啟 Better Awake…",
     quit: "結束 Better Awake",
     attention: "需要處理",
@@ -174,7 +211,20 @@ pub const EN_US: Labels = Labels {
     end_session: "End session",
     automatic_rules: "Automatic rules",
     pause_automatic_rules: "Pause automatic rules",
-    not_available_yet: "Not available yet",
+    pause_15_minutes: "Pause for 15 minutes",
+    pause_1_hour: "Pause for 1 hour",
+    pause_until_resumed: "Pause until resumed",
+    resume_automatic_rules: "Resume automatic rules",
+    override_all_rules: "Override all rules",
+    confirm_override_all_rules: "Click again to override all",
+    rules_on: "On",
+    rules_paused_until: "Paused until {time}",
+    rules_paused_until_resumed: "Paused",
+    rules_overridden: "Overridden",
+    rules_off: "Off",
+    no_rules_yet: "No rules yet",
+    no_rules_match: "No rules match right now",
+    end_manual_session_keep_rules: "End session, keep rules",
     open_application: "Open Better Awake…",
     quit: "Quit Better Awake",
     attention: "Needs attention",
@@ -261,6 +311,20 @@ mod tests {
                 labels.end_session,
                 labels.automatic_rules,
                 labels.pause_automatic_rules,
+                labels.pause_15_minutes,
+                labels.pause_1_hour,
+                labels.pause_until_resumed,
+                labels.resume_automatic_rules,
+                labels.override_all_rules,
+                labels.confirm_override_all_rules,
+                labels.rules_on,
+                labels.rules_paused_until,
+                labels.rules_paused_until_resumed,
+                labels.rules_overridden,
+                labels.rules_off,
+                labels.no_rules_yet,
+                labels.no_rules_match,
+                labels.end_manual_session_keep_rules,
                 labels.open_application,
                 labels.quit,
                 labels.backend_unavailable,
@@ -273,5 +337,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_automatic_rule_label_is_translated_in_both_locales() {
+        // The struct makes a missing field a compile error; this catches the
+        // other half, a field filled in with an empty string or left as the
+        // English wording in the zh-TW table.
+        for locale in [Locale::ZhTw, Locale::EnUs] {
+            let labels = locale.labels();
+            for (name, label) in [
+                ("pause_15_minutes", labels.pause_15_minutes),
+                ("pause_1_hour", labels.pause_1_hour),
+                ("pause_until_resumed", labels.pause_until_resumed),
+                ("resume_automatic_rules", labels.resume_automatic_rules),
+                ("override_all_rules", labels.override_all_rules),
+                (
+                    "confirm_override_all_rules",
+                    labels.confirm_override_all_rules,
+                ),
+                ("rules_on", labels.rules_on),
+                ("rules_paused_until", labels.rules_paused_until),
+                (
+                    "rules_paused_until_resumed",
+                    labels.rules_paused_until_resumed,
+                ),
+                ("rules_overridden", labels.rules_overridden),
+                ("rules_off", labels.rules_off),
+                ("no_rules_yet", labels.no_rules_yet),
+                ("no_rules_match", labels.no_rules_match),
+                (
+                    "end_manual_session_keep_rules",
+                    labels.end_manual_session_keep_rules,
+                ),
+            ] {
+                assert!(
+                    !label.trim().is_empty(),
+                    "{} has no wording for {name}",
+                    locale.tag()
+                );
+                assert!(
+                    label.chars().count() <= 32,
+                    "{} {name} is too long for a panel menu: {label}",
+                    locale.tag()
+                );
+            }
+        }
+
+        assert_ne!(
+            ZH_TW.override_all_rules, EN_US.override_all_rules,
+            "the zh-TW table must be translated, not copied"
+        );
+        assert!(
+            ZH_TW.rules_paused_until.contains("{time}")
+                && EN_US.rules_paused_until.contains("{time}"),
+            "both locales must keep the placeholder the menu substitutes"
+        );
     }
 }

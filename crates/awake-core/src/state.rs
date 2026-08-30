@@ -8,8 +8,9 @@
 use thiserror::Error;
 
 use crate::policy::{BackendCapabilities, EffectivePolicy, PolicyGap, SessionPolicy};
+use crate::rules::RuleId;
 use crate::session::{
-    EndCondition, EndConditionError, Session, SessionChange, SessionId, SessionOrigin,
+    EndCondition, EndConditionError, Reason, Session, SessionChange, SessionId, SessionOrigin,
     SessionRequest,
 };
 
@@ -34,6 +35,13 @@ pub enum EndCause {
     ServiceShutdown,
     /// Replaced by a different session the user started in its place.
     Replaced,
+    /// The automatic rule holding this session stopped matching.
+    TriggerCleared,
+    /// Automatic rules were paused or overridden, so the rule that was holding
+    /// this session is no longer allowed to act. Kept apart from
+    /// `TriggerCleared` because the rule still matches; only permission changed,
+    /// and a history entry that conflated the two would misexplain the machine.
+    RulesSuppressed,
 }
 
 impl EndCause {
@@ -46,6 +54,8 @@ impl EndCause {
             EndCause::BackendFailure => "backend_failure",
             EndCause::ServiceShutdown => "service_shutdown",
             EndCause::Replaced => "replaced",
+            EndCause::TriggerCleared => "trigger_cleared",
+            EndCause::RulesSuppressed => "rules_suppressed",
         }
     }
 }
@@ -76,6 +86,16 @@ impl IndicatorState {
     }
 }
 
+/// One rule that is currently satisfied, in the form the state machine needs to
+/// hold a session for it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TriggerSession {
+    pub rule: RuleId,
+    pub reason: Reason,
+    pub policy: SessionPolicy,
+    pub battery_stop_percent: Option<u8>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
     Start {
@@ -96,6 +116,25 @@ pub enum Command {
     End {
         session: SessionId,
         cause: EndCause,
+    },
+    /// Ends the manual session and leaves every trigger session running.
+    ///
+    /// This exists as its own command rather than as an `End` the tray aims by
+    /// hand, because "End session" in a menu must never be able to take a rule's
+    /// session with it by picking the wrong id.
+    EndManual,
+    /// Brings the trigger sessions in line with the rules that currently match.
+    ///
+    /// Rules that newly match gain a session; rules that stopped matching lose
+    /// theirs with `clear_cause`. Manual sessions are never touched.
+    SyncTriggerSessions {
+        desired: Vec<TriggerSession>,
+        clear_cause: EndCause,
+    },
+    /// Records whether automatic rules are currently suspended, which is what
+    /// the paused-rules icon state is drawn from.
+    RulesSuppressed {
+        suppressed: bool,
     },
     /// Ends every session whose end condition has arrived.
     Expire,
@@ -128,6 +167,13 @@ pub enum Effect {
     PolicyChanged(EffectivePolicy),
     AttentionRaised(String),
     AttentionCleared,
+    /// A matching rule could not be given a session, and why. Reported rather
+    /// than dropped, because a rule the user wrote that silently never fires is
+    /// the worst outcome available.
+    TriggerRefused {
+        rule: RuleId,
+        error_key: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
@@ -144,6 +190,8 @@ pub enum TransitionError {
     SecurityConfirmationRequired,
     #[error("awake.error.backend_unavailable")]
     BackendUnavailable,
+    #[error("awake.error.no_manual_session")]
+    NoManualSession,
 }
 
 /// What the service knows about its inhibitor backend right now.
@@ -162,6 +210,8 @@ pub struct AwakeState {
     /// Whether the user has already been shown, and accepted, the consequence
     /// of a session that keeps the display on or stops the screen locking.
     reduced_security_confirmed: bool,
+    /// Whether automatic rules are paused or overridden right now.
+    rules_suppressed: bool,
 }
 
 impl AwakeState {
@@ -174,6 +224,7 @@ impl AwakeState {
             backend: BackendState::Unavailable("awake.backend.not_probed".to_string()),
             attention: None,
             reduced_security_confirmed: false,
+            rules_suppressed: false,
         }
     }
 
@@ -201,6 +252,24 @@ impl AwakeState {
 
     pub fn reduced_security_confirmed(&self) -> bool {
         self.reduced_security_confirmed
+    }
+
+    pub fn rules_suppressed(&self) -> bool {
+        self.rules_suppressed
+    }
+
+    /// The session an automatic rule is holding, if it is holding one.
+    pub fn session_for_rule(&self, rule: RuleId) -> Option<&Session> {
+        self.sessions
+            .iter()
+            .find(|session| session.rule == Some(rule))
+    }
+
+    /// The one manual session, if there is one.
+    pub fn manual_session(&self) -> Option<&Session> {
+        self.sessions
+            .iter()
+            .find(|session| session.origin == SessionOrigin::Manual)
     }
 
     /// Lets a restarting service restore the acknowledgement it recorded, so
@@ -239,10 +308,16 @@ impl AwakeState {
         {
             return IndicatorState::ActiveManual;
         }
-        if self.sessions.is_empty() {
-            IndicatorState::Inactive
+        if !self.sessions.is_empty() {
+            return IndicatorState::ActiveTrigger;
+        }
+        // Nothing is being held. Paused rules are worth saying out loud, because
+        // the difference between "no rule matches" and "your rules are switched
+        // off" is the difference between working and not.
+        if self.rules_suppressed {
+            IndicatorState::PausedRules
         } else {
-            IndicatorState::ActiveTrigger
+            IndicatorState::Inactive
         }
     }
 
@@ -303,6 +378,24 @@ impl AwakeState {
                 let index = self.index_of(session)?;
                 self.sessions.remove(index);
                 effects.push(Effect::SessionEnded { session, cause });
+            }
+            Command::EndManual => {
+                let session = self
+                    .manual_session()
+                    .map(|session| session.id)
+                    .ok_or(TransitionError::NoManualSession)?;
+                self.sessions.retain(|active| active.id != session);
+                effects.push(Effect::SessionEnded {
+                    session,
+                    cause: EndCause::UserRequest,
+                });
+            }
+            Command::SyncTriggerSessions {
+                desired,
+                clear_cause,
+            } => effects.extend(self.sync_triggers(&desired, clear_cause, now_unix_seconds)),
+            Command::RulesSuppressed { suppressed } => {
+                self.rules_suppressed = suppressed;
             }
             Command::Expire => {
                 let expired: Vec<SessionId> = self
@@ -368,6 +461,73 @@ impl AwakeState {
         Ok(effects)
     }
 
+    /// Brings the trigger sessions in line with the rules that currently match.
+    ///
+    /// Sessions are ended before any is started, so a set of rules that swapped
+    /// wholesale never transiently exceeds the session cap. A rule that already
+    /// holds a session keeps it, including its start time, so a rule that has
+    /// matched continuously for an hour does not look like it just began.
+    fn sync_triggers(
+        &mut self,
+        desired: &[TriggerSession],
+        clear_cause: EndCause,
+        now_unix_seconds: u64,
+    ) -> Vec<Effect> {
+        let mut effects = Vec::new();
+
+        let stale: Vec<(SessionId, RuleId)> = self
+            .sessions
+            .iter()
+            .filter_map(|session| session.rule.map(|rule| (session.id, rule)))
+            .filter(|(_, rule)| !desired.iter().any(|wanted| wanted.rule == *rule))
+            .collect();
+        for (session, _) in stale {
+            self.sessions.retain(|active| active.id != session);
+            effects.push(Effect::SessionEnded {
+                session,
+                cause: clear_cause,
+            });
+        }
+
+        for wanted in desired {
+            if let Some(existing) = self.session_for_rule(wanted.rule) {
+                // The rule is already holding one. Its policy may have been
+                // edited, so the held session follows the rule rather than
+                // keeping whatever it started with.
+                let id = existing.id;
+                if let Some(session) = self.sessions.iter_mut().find(|session| session.id == id) {
+                    session.reason = wanted.reason.clone();
+                    session.policy = wanted.policy;
+                    session.battery_stop_percent = wanted.battery_stop_percent;
+                }
+                continue;
+            }
+
+            let request = SessionRequest {
+                reason: wanted.reason.clone(),
+                origin: SessionOrigin::Trigger,
+                policy: wanted.policy,
+                battery_stop_percent: wanted.battery_stop_percent,
+                end: EndCondition::Indefinite,
+                rule: Some(wanted.rule),
+            };
+            // A trigger session is never the moment to raise a first-time
+            // security dialog: nobody is at the keyboard to answer it. The
+            // acknowledgement must already have been given when the rule was
+            // saved, and if it was not, the rule is refused with a reason rather
+            // than quietly weakening the machine at three in the morning.
+            match self.start(request, false, now_unix_seconds) {
+                Ok(id) => effects.push(Effect::SessionStarted(id)),
+                Err(error) => effects.push(Effect::TriggerRefused {
+                    rule: wanted.rule,
+                    error_key: error.to_string(),
+                }),
+            }
+        }
+
+        effects
+    }
+
     fn start(
         &mut self,
         request: SessionRequest,
@@ -407,6 +567,7 @@ impl AwakeState {
             battery_stop_percent: request.battery_stop_percent,
             end: request.end,
             started_at_unix_seconds: now_unix_seconds,
+            rule: request.rule,
         });
         Ok(id)
     }
@@ -700,6 +861,7 @@ mod tests {
             policy,
             battery_stop_percent: Some(DEFAULT_BATTERY_STOP_PERCENT),
             end: EndCondition::Indefinite,
+            rule: None,
         };
 
         assert_eq!(
@@ -838,6 +1000,7 @@ mod tests {
                         },
                         battery_stop_percent: None,
                         end: EndCondition::Indefinite,
+                        rule: None,
                     },
                     security_confirmed: true,
                 },
@@ -846,6 +1009,261 @@ mod tests {
             .unwrap();
 
         assert_eq!(state.unmet_policy(), vec![PolicyGap::DisplaySleep]);
+    }
+
+    // ---- Trigger sessions -------------------------------------------------
+
+    fn trigger(rule: u64, reason: &str) -> TriggerSession {
+        TriggerSession {
+            rule: RuleId(rule),
+            reason: Reason::new(reason).unwrap(),
+            policy: SessionPolicy::quick_default(),
+            battery_stop_percent: Some(DEFAULT_BATTERY_STOP_PERCENT),
+        }
+    }
+
+    fn sync(desired: Vec<TriggerSession>) -> Command {
+        Command::SyncTriggerSessions {
+            desired,
+            clear_cause: EndCause::TriggerCleared,
+        }
+    }
+
+    #[test]
+    fn a_matching_rule_gains_a_trigger_session_and_a_stopped_one_loses_it() {
+        let mut state = state();
+
+        let effects = state
+            .apply(sync(vec![trigger(1, "Build is running")]), NOW)
+            .unwrap();
+        assert!(matches!(effects[0], Effect::SessionStarted(_)));
+        assert_eq!(state.sessions().len(), 1);
+        assert_eq!(state.sessions()[0].origin, SessionOrigin::Trigger);
+        assert_eq!(state.sessions()[0].rule, Some(RuleId(1)));
+        assert_eq!(state.indicator(), IndicatorState::ActiveTrigger);
+
+        let effects = state.apply(sync(Vec::new()), NOW + 60).unwrap();
+        assert!(matches!(
+            effects[0],
+            Effect::SessionEnded {
+                cause: EndCause::TriggerCleared,
+                ..
+            }
+        ));
+        assert!(state.sessions().is_empty());
+    }
+
+    #[test]
+    fn a_rule_that_keeps_matching_keeps_the_session_it_already_had() {
+        let mut state = state();
+        state
+            .apply(sync(vec![trigger(1, "Build is running")]), NOW)
+            .unwrap();
+        let id = state.sessions()[0].id;
+
+        let effects = state
+            .apply(sync(vec![trigger(1, "Build is running")]), NOW + 3_600)
+            .unwrap();
+
+        assert!(
+            effects.is_empty(),
+            "a rule that never stopped matching must not restart its session"
+        );
+        assert_eq!(state.sessions()[0].id, id);
+        assert_eq!(
+            state.sessions()[0].started_at_unix_seconds,
+            NOW,
+            "an hour of continuous matching must not look like it just began"
+        );
+    }
+
+    #[test]
+    fn editing_a_rule_updates_the_session_it_is_already_holding() {
+        let mut state = state();
+        state
+            .apply(sync(vec![trigger(1, "Build is running")]), NOW)
+            .unwrap();
+
+        let mut edited = trigger(1, "Build is running (renamed)");
+        edited.battery_stop_percent = Some(40);
+        state.apply(sync(vec![edited]), NOW + 10).unwrap();
+
+        assert_eq!(state.sessions().len(), 1);
+        assert_eq!(
+            state.sessions()[0].reason.as_str(),
+            "Build is running (renamed)"
+        );
+        assert_eq!(state.effective_policy().battery_stop_percent, Some(40));
+    }
+
+    #[test]
+    fn ending_a_manual_session_leaves_every_trigger_session_running() {
+        let mut state = state();
+        started(&mut state, EndCondition::Indefinite);
+        state
+            .apply(
+                sync(vec![
+                    trigger(1, "Build is running"),
+                    trigger(2, "External display is connected"),
+                ]),
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(state.sessions().len(), 3);
+
+        let effects = state.apply(Command::EndManual, NOW).unwrap();
+        assert!(matches!(
+            effects[0],
+            Effect::SessionEnded {
+                cause: EndCause::UserRequest,
+                ..
+            }
+        ));
+        assert_eq!(state.sessions().len(), 2);
+        assert!(
+            state
+                .sessions()
+                .iter()
+                .all(|session| session.origin == SessionOrigin::Trigger),
+            "the two rule-held sessions must survive the user ending their own"
+        );
+        assert_eq!(state.indicator(), IndicatorState::ActiveTrigger);
+        assert_eq!(state.effective_policy().reasons.len(), 2);
+    }
+
+    #[test]
+    fn ending_a_manual_session_that_is_not_there_is_refused() {
+        let mut state = state();
+        state.apply(sync(vec![trigger(1, "Build")]), NOW).unwrap();
+        assert_eq!(
+            state.apply(Command::EndManual, NOW),
+            Err(TransitionError::NoManualSession)
+        );
+        assert_eq!(state.sessions().len(), 1);
+    }
+
+    #[test]
+    fn several_active_reasons_merge_into_one_policy_with_every_reason_named() {
+        let mut state = state();
+        started(&mut state, EndCondition::Indefinite);
+
+        let mut presenting = trigger(2, "External display is connected");
+        presenting.policy = SessionPolicy {
+            prevent_display_sleep: true,
+            ..SessionPolicy::quick_default()
+        };
+        // The rule's reduced-security choice was accepted when it was saved.
+        state.set_reduced_security_confirmed(true);
+        state
+            .apply(
+                sync(vec![trigger(1, "Large download is running"), presenting]),
+                NOW,
+            )
+            .unwrap();
+
+        let effective = state.effective_policy();
+        assert_eq!(effective.reasons.len(), 3);
+        assert!(effective.policy.prevent_system_suspend);
+        assert!(effective.policy.prevent_display_sleep);
+
+        // One reason ending leaves the others explaining the machine.
+        state
+            .apply(sync(vec![trigger(1, "Large download is running")]), NOW)
+            .unwrap();
+        let effective = state.effective_policy();
+        assert_eq!(effective.reasons.len(), 2);
+        assert!(
+            !effective.policy.prevent_display_sleep,
+            "the display rule ended, so its part of the policy ends with it"
+        );
+        assert!(effective.policy.prevent_system_suspend);
+    }
+
+    #[test]
+    fn a_rule_whose_policy_was_never_confirmed_is_refused_with_a_reason() {
+        let mut state = state();
+        let mut unlocking = trigger(1, "Presenting");
+        unlocking.policy = SessionPolicy {
+            prevent_automatic_lock: true,
+            ..SessionPolicy::quick_default()
+        };
+
+        let effects = state.apply(sync(vec![unlocking]), NOW).unwrap();
+
+        assert_eq!(
+            effects,
+            vec![Effect::TriggerRefused {
+                rule: RuleId(1),
+                error_key: "awake.error.security_confirmation_required".to_string(),
+            }],
+            "nobody is at the keyboard to answer a security prompt at trigger time"
+        );
+        assert!(state.sessions().is_empty());
+    }
+
+    #[test]
+    fn suppressing_rules_clears_their_sessions_with_a_cause_of_its_own() {
+        let mut state = state();
+        state.apply(sync(vec![trigger(1, "Build")]), NOW).unwrap();
+
+        let effects = state
+            .apply(
+                Command::SyncTriggerSessions {
+                    desired: Vec::new(),
+                    clear_cause: EndCause::RulesSuppressed,
+                },
+                NOW,
+            )
+            .unwrap();
+        assert!(matches!(
+            effects[0],
+            Effect::SessionEnded {
+                cause: EndCause::RulesSuppressed,
+                ..
+            }
+        ));
+
+        state
+            .apply(Command::RulesSuppressed { suppressed: true }, NOW)
+            .unwrap();
+        assert_eq!(
+            state.indicator(),
+            IndicatorState::PausedRules,
+            "paused rules and no rule matching are not the same state"
+        );
+
+        state
+            .apply(Command::RulesSuppressed { suppressed: false }, NOW)
+            .unwrap();
+        assert_eq!(state.indicator(), IndicatorState::Inactive);
+    }
+
+    #[test]
+    fn a_manual_session_still_names_the_icon_while_rules_are_paused() {
+        let mut state = state();
+        started(&mut state, EndCondition::Indefinite);
+        state
+            .apply(Command::RulesSuppressed { suppressed: true }, NOW)
+            .unwrap();
+        assert_eq!(state.indicator(), IndicatorState::ActiveManual);
+    }
+
+    #[test]
+    fn a_battery_stop_ends_a_trigger_session_the_same_way_it_ends_a_manual_one() {
+        let mut state = state();
+        state.apply(sync(vec![trigger(1, "Build")]), NOW).unwrap();
+
+        let effects = state
+            .apply(Command::BatteryLevel { percent: 19 }, NOW)
+            .unwrap();
+        assert!(matches!(
+            effects[0],
+            Effect::SessionEnded {
+                cause: EndCause::BatteryThreshold { percent: 19 },
+                ..
+            }
+        ));
+        assert!(state.sessions().is_empty());
     }
 
     #[test]

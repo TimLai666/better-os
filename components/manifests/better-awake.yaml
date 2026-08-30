@@ -1,0 +1,83 @@
+schema_version: 2
+id: better-awake
+display_name: Better Awake
+component_type: enhancement
+version: 0.1.0
+summary: Keep-awake sessions and automatic rules, with every reason the machine is awake shown.
+icon: generic
+restart: application
+targets:
+  distributions: [zorin, ubuntu]
+  releases: [22.04, 24.04]
+  architectures: [amd64, arm64]
+# Placeholder checksums, the same repeated-d convention Better Launcher uses:
+# packaging/build-deb.sh builds no better-awake package yet, so there is nothing
+# to hash. The manifest is validated on every test run; it is not installable.
+artifacts:
+  - release: "22.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-awake_0.1.0_ubuntu-22.04_amd64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-awake_0.1.0_ubuntu-22.04_amd64.deb
+  - release: "22.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-awake_0.1.0_ubuntu-22.04_arm64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-awake_0.1.0_ubuntu-22.04_arm64.deb
+  - release: "24.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-awake_0.1.0_ubuntu-24.04_amd64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-awake_0.1.0_ubuntu-24.04_amd64.deb
+  - release: "24.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-awake_0.1.0_ubuntu-24.04_arm64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-awake_0.1.0_ubuntu-24.04_arm64.deb
+lifecycle:
+  install: plan-local-apt-install
+  enable: plan-enable
+  disable: plan-disable
+  remove: plan-remove
+  rollback: plan-rollback
+health_checks:
+  - awake-service-unit-check
+  - awake-inhibitor-backend-check
+  - awake-tray-registration-check
+benchmarks:
+  - name: idle-overhead
+    workload: service-running-with-no-active-session
+    metric: cpu-percent
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 1
+permissions:
+  - name: session-bus-name
+    reason: owns org.betteros.Awake1 so the tray and the settings window talk to one service
+  - name: logind-inhibitor
+    reason: holds systemd-logind sleep and idle locks; display-blank and automatic-lock have no logind lock and are reported unmet rather than faked
+  - name: status-notifier-item
+    reason: the tray needs the StatusNotifierItem protocol; a missing StatusNotifierWatcher host is reported, never assumed present
+  - name: systemd-user-unit
+    reason: installs a systemd user unit for the service and an XDG autostart entry for the tray
+  - name: procfs-read
+    reason: trigger providers read /proc for running processes, CPU utilization, and network throughput
+  - name: sysfs-read
+    reason: trigger providers read /sys/class/power_supply, /sys/class/drm, and /sys/class/net for power, display, and interface state
+  - name: filesystem-watch
+    reason: the watched-path trigger provider watches user-selected files and directories for activity
+paths:
+  - /usr/bin/better-awake-service
+  - /usr/bin/awake-tray
+  - /usr/bin/awake-gui
+  - /usr/share/applications/better-awake.desktop
+  - /etc/xdg/autostart/better-awake-tray.desktop
+  - /usr/lib/systemd/user/better-awake.service
+  - ~/.local/state/better-awake/awake-rules.json
+  - ~/.local/state/better-awake/awake-history.json
+  - ~/.local/state/better-awake/awake-service-state.json
+release_notes:
+  - Keep-awake sessions started by hand or by an automatic rule, with every active reason listed and the battery stop threshold on by default.
+  - Uninstall stops the service and releases every inhibitor it holds before the package is removed, so the machine is never left awake with nobody left to explain why.
+  - Uninstall disables the better-awake systemd user unit and removes the tray autostart entry, and the tray unregisters itself from the StatusNotifierWatcher host rather than leaving a dead icon behind.
+  - Your rules and history are kept by default when the component is removed. Deleting them is a separate, explicit choice at uninstall time, never the default.
+  - Rollback reinstalls the previously installed version and restores its systemd user unit and autostart entry. Rules and history are left untouched by a rollback, so a failed update never costs you the rules you wrote.

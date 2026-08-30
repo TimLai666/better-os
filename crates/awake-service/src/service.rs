@@ -55,7 +55,16 @@ impl<B: InhibitorBackend + 'static> AwakeDbusService<B> {
             Ok(request) => request,
             Err(error) => return rejection(error),
         };
-        let query_only = matches!(request.body, awake_ipc::RequestBody::QueryStatus);
+        // A read changes nothing, so it must not make every other client redraw.
+        // Listed rather than negated, so a request added later is treated as a
+        // change until someone deliberately says it is not.
+        let query_only = matches!(
+            request.body,
+            awake_ipc::RequestBody::QueryStatus
+                | awake_ipc::RequestBody::QueryRules
+                | awake_ipc::RequestBody::QueryHistory { .. }
+                | awake_ipc::RequestBody::TestRule { .. }
+        );
 
         let response = self.engine.handle(request).await;
 

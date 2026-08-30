@@ -1,0 +1,20 @@
+[package]
+name = "awake-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+awake-core.workspace = true
+libc.workspace = true
+notify.workspace = true
+
+[features]
+# Exposes the fixture builders that write a fake `/proc` or `/sys` node, so the
+# service can drive a battery-safety test through the same providers production
+# uses. Nothing in a shipped binary enables it.
+test-support = []
+
+[dev-dependencies]
+tempfile.workspace = true

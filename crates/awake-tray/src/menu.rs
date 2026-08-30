@@ -6,7 +6,9 @@
 //! file knows that D-Bus exists.
 
 use awake_core::PolicyGap;
-use awake_ipc::{StatusDocument, WireEnd, WireIndicator, WireRemaining, WireSession};
+use awake_ipc::{
+    StatusDocument, WireEnd, WireIndicator, WireRemaining, WireSession, WireSuppression,
+};
 
 use crate::labels::{Labels, Locale};
 use crate::localtime::{UtcOffset, clock_time};
@@ -61,9 +63,68 @@ pub enum MenuAction {
     ExtendMinutes(u64),
     /// Needs the full window for the same reason.
     ChangeSession,
+    /// Ends the manual session and leaves every rule's session running.
     EndSession,
+    /// Pauses every rule. `None` means until resumed.
+    PauseRules(Option<u64>),
+    ResumeRules,
+    /// The first half of the override. Changes the label and nothing else.
+    ArmOverrideAllRules,
+    /// The second half. Only this one reaches the service.
+    ConfirmOverrideAllRules,
     OpenApplication,
     Quit,
+}
+
+/// The two pause lengths the tray offers, in seconds. The service refuses any
+/// other length, so the menu offers exactly these.
+pub const PAUSE_SHORT_SECONDS: u64 = awake_core::PAUSE_SHORT_SECONDS;
+pub const PAUSE_LONG_SECONDS: u64 = awake_core::PAUSE_LONG_SECONDS;
+
+/// How long an armed override stays armed, in seconds.
+pub const OVERRIDE_ARM_SECONDS: u64 = 10;
+
+/// The tray's stand-in for a confirmation dialog.
+///
+/// `OverrideAllRules { confirmed: true }` switches every automatic rule off
+/// until someone turns them back on, and the protocol deliberately makes that
+/// flag un-omittable so a client cannot send it by accident. A panel menu has
+/// nowhere to show a modal, so the tray cannot ask the question the flag stands
+/// for — and sending it straight from one activation would mean a single stray
+/// click, a mis-aimed pointer or a host replaying an event, silently disables
+/// the whole rule set.
+///
+/// So the control is armed first. The unarmed item carries
+/// [`MenuAction::ArmOverrideAllRules`], which asks the service for nothing and
+/// only changes the label; the confirming item exists in the menu at all only
+/// while the arming is live, and the controller checks the arming again before
+/// it builds the request. Two independent checks, so neither a stale cached
+/// layout nor a duplicated activation is enough on its own.
+///
+/// The arming is dropped by any other menu action and expires after
+/// [`OVERRIDE_ARM_SECONDS`], so an arm someone walked away from cannot be
+/// completed by an unrelated click later. Time is passed in rather than read,
+/// which is what keeps the whole thing testable without a clock.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OverrideConfirmation {
+    /// Monotonic seconds since the tray started, not a wall clock: a clock
+    /// stepping backwards must not extend an arming.
+    armed_at: Option<u64>,
+}
+
+impl OverrideConfirmation {
+    pub fn arm(&mut self, now_seconds: u64) {
+        self.armed_at = Some(now_seconds);
+    }
+
+    pub fn clear(&mut self) {
+        self.armed_at = None;
+    }
+
+    pub fn is_armed(self, now_seconds: u64) -> bool {
+        self.armed_at
+            .is_some_and(|at| now_seconds.saturating_sub(at) < OVERRIDE_ARM_SECONDS)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -218,11 +279,16 @@ impl Menu {
 }
 
 /// Builds the popup for the state the service reported.
+///
+/// `override_armed` is the only thing here that is not read from the status: it
+/// is the tray-local half of the two-step override, and it decides whether the
+/// confirming item exists at all.
 pub fn build(
     status: &StatusDocument,
     options: QuickOptions,
     locale: Locale,
     offset: UtcOffset,
+    override_armed: bool,
 ) -> Menu {
     let labels = locale.labels();
     let mut items = if status.is_active() {
@@ -232,7 +298,7 @@ pub fn build(
     };
 
     items.push(MenuItem::separator());
-    items.push(automatic_rules(labels));
+    items.push(automatic_rules(status, labels, offset, override_armed));
     items.push(MenuItem::standard(
         labels.open_application,
         MenuAction::OpenApplication,
@@ -388,10 +454,17 @@ fn active_items(status: &StatusDocument, labels: &Labels, offset: UtcOffset) -> 
         labels.change_session,
         MenuAction::ChangeSession,
     ));
-    items.push(MenuItem::standard(
-        labels.end_session,
-        MenuAction::EndSession,
-    ));
+    if status.manual_session().is_some() {
+        // End session ends the manual session and nothing else. When a rule is
+        // also holding a session the label says so, because "End session" next
+        // to a machine that stays awake afterwards reads as a failure.
+        let end = if status.active_rules.is_empty() {
+            labels.end_session
+        } else {
+            labels.end_manual_session_keep_rules
+        };
+        items.push(MenuItem::standard(end, MenuAction::EndSession));
+    }
     items
 }
 
@@ -423,14 +496,91 @@ fn policy_row(name: &str, prevented: bool, unmet: bool, labels: &Labels) -> Menu
     MenuItem::info(format!("{name}: {value}"))
 }
 
-/// Automatic rules exist from ticket 26 onward. Until then the row states that
-/// plainly instead of showing a switch that does nothing.
-fn automatic_rules(labels: &Labels) -> MenuItem {
-    MenuItem::submenu(
-        format!("{}: {}", labels.automatic_rules, labels.not_available_yet),
-        vec![MenuItem::info(labels.pause_automatic_rules)],
-    )
-    .disabled()
+/// What the `Automatic rules` line reports, from the suppression first and the
+/// rule counts second. A pause applies whatever the counts say, so it is read
+/// first; "no rules yet" and "every rule switched off" are kept apart, because
+/// one of them is answered by writing a rule and the other by switching one on.
+fn rules_state(status: &StatusDocument, labels: &Labels, offset: UtcOffset) -> String {
+    match status.rules_suppression {
+        Some(WireSuppression::PausedUntil { unix_seconds }) => labels
+            .rules_paused_until
+            .replace("{time}", &clock_time(unix_seconds, offset)),
+        Some(WireSuppression::PausedUntilResumed) => labels.rules_paused_until_resumed.to_string(),
+        Some(WireSuppression::Overridden) => labels.rules_overridden.to_string(),
+        None if status.rule_summary.total == 0 => labels.no_rules_yet.to_string(),
+        None if status.rule_summary.enabled == 0 => labels.rules_off.to_string(),
+        None => labels.rules_on.to_string(),
+    }
+}
+
+/// The rule section: what the rules are doing, and the controls that change it.
+///
+/// With nothing to control — no rule written yet, or every rule switched off
+/// and nothing suspended — this is one stated line rather than a submenu whose
+/// Pause and Override would act on nothing.
+fn automatic_rules(
+    status: &StatusDocument,
+    labels: &Labels,
+    offset: UtcOffset,
+    override_armed: bool,
+) -> MenuItem {
+    let header = format!(
+        "{}: {}",
+        labels.automatic_rules,
+        rules_state(status, labels, offset)
+    );
+    let suppressed = status.rules_suppression.is_some();
+    if !suppressed && status.rule_summary.enabled == 0 {
+        return MenuItem::info(header);
+    }
+
+    let mut children = Vec::new();
+    if status.active_rules.is_empty() {
+        if !suppressed {
+            children.push(MenuItem::info(labels.no_rules_match));
+        }
+    } else {
+        // By name. A session id says nothing about which rule is holding the
+        // machine awake, which is the question this list answers.
+        for rule in &status.active_rules {
+            children.push(MenuItem::info(format!("• {}", rule.name)));
+        }
+    }
+    if !children.is_empty() {
+        children.push(MenuItem::separator());
+    }
+
+    if suppressed {
+        children.push(MenuItem::standard(
+            labels.resume_automatic_rules,
+            MenuAction::ResumeRules,
+        ));
+    } else {
+        children.push(MenuItem::submenu(
+            labels.pause_automatic_rules,
+            vec![
+                MenuItem::standard(
+                    labels.pause_15_minutes,
+                    MenuAction::PauseRules(Some(PAUSE_SHORT_SECONDS)),
+                ),
+                MenuItem::standard(
+                    labels.pause_1_hour,
+                    MenuAction::PauseRules(Some(PAUSE_LONG_SECONDS)),
+                ),
+                MenuItem::standard(labels.pause_until_resumed, MenuAction::PauseRules(None)),
+            ],
+        ));
+        children.push(if override_armed {
+            MenuItem::standard(
+                labels.confirm_override_all_rules,
+                MenuAction::ConfirmOverrideAllRules,
+            )
+        } else {
+            MenuItem::standard(labels.override_all_rules, MenuAction::ArmOverrideAllRules)
+        });
+    }
+
+    MenuItem::submenu(header, children)
 }
 
 fn remaining_text(session: &WireSession, labels: &Labels) -> String {
@@ -478,8 +628,12 @@ fn assign_ids(menu: &mut Menu) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::menu_request;
     use awake_core::{BackendCapabilities, SessionOrigin, SessionPolicy};
-    use awake_ipc::{WireBackend, WireInterrupted, WireReason};
+    use awake_ipc::{
+        RequestBody, WireActiveRule, WireBackend, WireBatteryProtection, WireInterrupted,
+        WireReason, WireRuleSummary,
+    };
 
     const NOW: u64 = 1_700_000_000;
 
@@ -509,8 +663,48 @@ mod tests {
             attention: None,
             interrupted_previous_session: None,
             reduced_security_confirmed: false,
+            active_rules: Vec::new(),
+            rule_summary: WireRuleSummary::default(),
+            rules_suppression: None,
+            conflicts: Vec::new(),
+            providers: Vec::new(),
+            battery_protection: WireBatteryProtection::default(),
             now_unix_seconds: NOW,
         }
+    }
+
+    /// A status with rules written and switched on, and none of them matching.
+    fn with_rules(total: u32, enabled: u32) -> StatusDocument {
+        StatusDocument {
+            rule_summary: WireRuleSummary {
+                total,
+                enabled,
+                refused: 0,
+            },
+            ..inactive()
+        }
+    }
+
+    fn active_rule(rule_id: u64, name: &str) -> WireActiveRule {
+        WireActiveRule {
+            rule_id,
+            name: name.to_string(),
+            session_id: rule_id + 10,
+            priority: 50,
+        }
+    }
+
+    /// Every action the menu can produce, depth-first.
+    fn actions(menu: &Menu) -> Vec<MenuAction> {
+        let mut found = Vec::new();
+        for item in &menu.items {
+            item.walk(&mut |candidate| {
+                if let Some(action) = candidate.action {
+                    found.push(action);
+                }
+            });
+        }
+        found
     }
 
     fn session(end: WireEnd, remaining: WireRemaining) -> WireSession {
@@ -544,7 +738,23 @@ mod tests {
     }
 
     fn menu(status: &StatusDocument, locale: Locale) -> Menu {
-        build(status, QuickOptions::default(), locale, UtcOffset::UTC)
+        build(
+            status,
+            QuickOptions::default(),
+            locale,
+            UtcOffset::UTC,
+            false,
+        )
+    }
+
+    fn armed_menu(status: &StatusDocument, locale: Locale) -> Menu {
+        build(
+            status,
+            QuickOptions::default(),
+            locale,
+            UtcOffset::UTC,
+            true,
+        )
     }
 
     #[test]
@@ -565,8 +775,7 @@ mod tests {
                 "Quick options",
                 "Allow display to turn off",
                 "Stop below 20% battery",
-                "Automatic rules: Not available yet",
-                "Pause automatic rules",
+                "Automatic rules: No rules yet",
                 "Open Better Awake…",
                 "Quit Better Awake",
             ]
@@ -601,7 +810,7 @@ mod tests {
 
     #[test]
     fn the_zh_tw_menu_uses_the_wording_the_issue_fixes() {
-        let menu = menu(&inactive(), Locale::ZhTw);
+        let menu = menu(&with_rules(2, 2), Locale::ZhTw);
         let labels = menu.labels();
         for expected in [
             "保持清醒",
@@ -611,7 +820,12 @@ mod tests {
             "直到指定時間",
             "允許螢幕關閉",
             "低於 20% 電量時停止",
+            "自動規則: 已啟用",
             "暫停自動規則",
+            "暫停 15 分鐘",
+            "暫停 1 小時",
+            "暫停到手動恢復",
+            "覆寫所有自動規則",
             "開啟 Better Awake…",
         ] {
             assert!(labels.contains(&expected), "missing {expected}");
@@ -788,5 +1002,228 @@ mod tests {
 
         let zh = Locale::ZhTw.labels();
         assert_eq!(duration_label(5_400, zh), "1 小時 30 分鐘");
+    }
+
+    // ---- Automatic rules ---------------------------------------------------
+
+    #[test]
+    fn a_status_with_two_active_rules_lists_both_rule_names_rather_than_session_ids() {
+        let mut status = with_rules(3, 3);
+        status.active_rules = vec![
+            active_rule(1, "External display is connected"),
+            active_rule(2, "Android Studio is running"),
+        ];
+
+        let menu = menu(&status, Locale::EnUs);
+        let labels = menu.labels();
+        assert!(labels.contains(&"• External display is connected"));
+        assert!(labels.contains(&"• Android Studio is running"));
+        assert!(
+            !labels.iter().any(|label| label.contains("11")),
+            "a session id is not an explanation: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn the_automatic_rules_line_reads_on_when_nothing_suppresses_them() {
+        let mut status = with_rules(3, 3);
+        status.active_rules = vec![active_rule(1, "Presenting")];
+        assert!(
+            menu(&status, Locale::EnUs)
+                .labels()
+                .contains(&"Automatic rules: On")
+        );
+    }
+
+    #[test]
+    fn the_automatic_rules_line_reads_paused_while_a_pause_is_in_force() {
+        let mut until = with_rules(3, 3);
+        until.rules_suppression = Some(WireSuppression::PausedUntil {
+            unix_seconds: NOW + 900,
+        });
+        assert!(
+            menu(&until, Locale::EnUs)
+                .labels()
+                .contains(&"Automatic rules: Paused until 22:28"),
+            "a pause with an end says when it ends"
+        );
+
+        let mut open_ended = with_rules(3, 3);
+        open_ended.rules_suppression = Some(WireSuppression::PausedUntilResumed);
+        assert!(
+            menu(&open_ended, Locale::EnUs)
+                .labels()
+                .contains(&"Automatic rules: Paused")
+        );
+    }
+
+    #[test]
+    fn the_automatic_rules_line_reads_overridden_while_an_override_is_in_force() {
+        let mut status = with_rules(3, 3);
+        status.rules_suppression = Some(WireSuppression::Overridden);
+        assert!(
+            menu(&status, Locale::EnUs)
+                .labels()
+                .contains(&"Automatic rules: Overridden")
+        );
+    }
+
+    #[test]
+    fn a_paused_status_offers_resume_and_none_of_the_pause_choices() {
+        let mut status = with_rules(3, 3);
+        status.rules_suppression = Some(WireSuppression::PausedUntil {
+            unix_seconds: NOW + 900,
+        });
+        let menu = menu(&status, Locale::EnUs);
+
+        let actions = actions(&menu);
+        assert!(actions.contains(&MenuAction::ResumeRules));
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, MenuAction::PauseRules(_))),
+            "pausing an already paused rule set would say nothing true"
+        );
+        assert!(!actions.contains(&MenuAction::ArmOverrideAllRules));
+        assert!(!menu.labels().contains(&"No rules match right now"));
+    }
+
+    #[test]
+    fn a_running_rule_set_offers_the_three_pause_lengths_the_service_accepts() {
+        let actions = actions(&menu(&with_rules(3, 3), Locale::EnUs));
+        assert!(actions.contains(&MenuAction::PauseRules(Some(PAUSE_SHORT_SECONDS))));
+        assert!(actions.contains(&MenuAction::PauseRules(Some(PAUSE_LONG_SECONDS))));
+        assert!(actions.contains(&MenuAction::PauseRules(None)));
+        assert!(!actions.contains(&MenuAction::ResumeRules));
+    }
+
+    #[test]
+    fn a_rule_set_that_matches_nothing_says_so_instead_of_showing_an_empty_list() {
+        let menu = menu(&with_rules(3, 3), Locale::EnUs);
+        let labels = menu.labels();
+        assert!(labels.contains(&"Automatic rules: On"));
+        assert!(labels.contains(&"No rules match right now"));
+    }
+
+    #[test]
+    fn a_status_with_no_rules_at_all_states_that_and_offers_no_control_over_nothing() {
+        let menu = menu(&inactive(), Locale::EnUs);
+        let labels = menu.labels();
+
+        assert!(labels.contains(&"Automatic rules: No rules yet"));
+        assert!(!labels.contains(&"No rules match right now"));
+        assert!(!labels.contains(&"Pause automatic rules"));
+        assert!(!labels.contains(&"Override all rules"));
+
+        let actions = actions(&menu);
+        assert!(
+            !actions.iter().any(|action| matches!(
+                action,
+                MenuAction::PauseRules(_)
+                    | MenuAction::ResumeRules
+                    | MenuAction::ArmOverrideAllRules
+                    | MenuAction::ConfirmOverrideAllRules
+            )),
+            "there is nothing to pause, resume, or override"
+        );
+    }
+
+    #[test]
+    fn rules_that_all_exist_but_are_switched_off_are_reported_as_off_not_as_missing() {
+        let menu = menu(&with_rules(3, 0), Locale::EnUs);
+        let labels = menu.labels();
+        assert!(labels.contains(&"Automatic rules: Off"));
+        assert!(!labels.contains(&"Automatic rules: No rules yet"));
+        assert!(!labels.contains(&"Pause automatic rules"));
+    }
+
+    #[test]
+    fn overriding_every_rule_takes_two_activations_and_one_alone_asks_for_nothing() {
+        let status = with_rules(3, 3);
+
+        let unarmed = menu(&status, Locale::EnUs);
+        let control = unarmed
+            .find_by_label("Override all rules")
+            .expect("the override control is offered");
+        assert_eq!(control.action, Some(MenuAction::ArmOverrideAllRules));
+        assert!(
+            unarmed
+                .find_by_label("Click again to override all")
+                .is_none()
+        );
+
+        // The whole unarmed menu, not just that one item: nothing anywhere in
+        // it turns into the confirmed override.
+        for action in actions(&unarmed) {
+            assert_ne!(
+                menu_request(action).map(|request| request.body),
+                Some(RequestBody::OverrideAllRules { confirmed: true }),
+                "one activation must never override every rule: {action:?}"
+            );
+        }
+
+        // The second activation is offered only once the first has armed it.
+        let armed = armed_menu(&status, Locale::EnUs);
+        let confirm = armed
+            .find_by_label("Click again to override all")
+            .expect("the armed control shows the confirming wording");
+        assert_eq!(confirm.action, Some(MenuAction::ConfirmOverrideAllRules));
+        assert!(armed.find_by_label("Override all rules").is_none());
+        assert_eq!(
+            menu_request(MenuAction::ConfirmOverrideAllRules).map(|request| request.body),
+            Some(RequestBody::OverrideAllRules { confirmed: true })
+        );
+    }
+
+    #[test]
+    fn an_arming_expires_so_a_forgotten_confirmation_cannot_be_completed_later() {
+        let mut confirmation = OverrideConfirmation::default();
+        assert!(!confirmation.is_armed(0), "nothing is armed to begin with");
+
+        confirmation.arm(100);
+        assert!(confirmation.is_armed(100));
+        assert!(confirmation.is_armed(100 + OVERRIDE_ARM_SECONDS - 1));
+        assert!(
+            !confirmation.is_armed(100 + OVERRIDE_ARM_SECONDS),
+            "an arm nobody confirmed must not stay live"
+        );
+
+        confirmation.arm(100);
+        confirmation.clear();
+        assert!(
+            !confirmation.is_armed(100),
+            "choosing anything else drops the arming"
+        );
+    }
+
+    #[test]
+    fn ending_a_session_while_a_rule_holds_one_says_the_rule_survives_it() {
+        let mut status = active(WireEnd::Indefinite, WireRemaining::UntilEnded);
+        status.rule_summary = WireRuleSummary {
+            total: 2,
+            enabled: 2,
+            refused: 0,
+        };
+        status.active_rules = vec![active_rule(1, "External display is connected")];
+
+        let menu = menu(&status, Locale::EnUs);
+        assert!(menu.labels().contains(&"End session, keep rules"));
+        assert_eq!(
+            menu.find_by_label("End session, keep rules")
+                .and_then(|item| item.action),
+            Some(MenuAction::EndSession)
+        );
+    }
+
+    #[test]
+    fn a_session_that_belongs_only_to_a_rule_offers_no_end_session_to_aim_at_it() {
+        let mut status = active(WireEnd::Indefinite, WireRemaining::UntilEnded);
+        status.sessions[0].origin = SessionOrigin::Trigger;
+        status.indicator = WireIndicator::ActiveTrigger;
+
+        assert!(
+            !actions(&menu(&status, Locale::EnUs)).contains(&MenuAction::EndSession),
+            "there is no manual session to end"
+        );
     }
 }

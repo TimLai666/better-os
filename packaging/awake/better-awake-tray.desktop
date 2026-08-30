@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Better Awake Tray
+Name[zh_TW]=保持清醒工具列圖示
+Comment=Shows whether the machine is being kept awake and starts or ends a session from the system tray
+Comment[zh_TW]=在系統匣顯示電腦是否正在保持清醒，並可從這裡開始或結束一次保持清醒
+Exec=awake-tray
+Icon=better-awake
+Terminal=false
+StartupNotify=false
+# Autostart only. The tray is an indicator for the service, not an application
+# a user launches, so it stays out of the application menu.
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

@@ -1,5 +1,11 @@
 //! Versioned persistence for `awake-service`.
 //!
+//! The crate owns three files, each with its own schema stamp so one can be
+//! migrated without touching the others: `awake-service-state.json` here, the
+//! user's automatic rules in [`rules`], and the session history in [`history`].
+//! All three live in the same per-user state directory, so an uninstall that
+//! offers to remove user data has one place to look.
+//!
 //! The service is the only writer, so this store carries no revision fencing.
 //! What it does carry is the reason it exists at all: after a crash, the next
 //! run must be able to say that a session was interrupted rather than pretend
@@ -20,6 +26,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use awake_core::{EndCondition, SessionOrigin, SessionPolicy};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub mod history;
+pub mod rules;
+
+pub use history::{
+    HISTORY_FILE_NAME, HISTORY_SCHEMA_VERSION, History, HistoryDocument, HistoryEntry, HistoryLoad,
+    HistoryStore, MAX_HISTORY_ENTRIES, MAX_HISTORY_REASON_CHARS, REDACTION_MARKER, StartedSession,
+    redact_reason,
+};
+pub use rules::{RULES_FILE_NAME, RULES_SCHEMA_VERSION, RulesDocument, RulesLoad, RulesStore};
 
 /// The only schema this crate writes.
 ///

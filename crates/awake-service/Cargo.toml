@@ -14,6 +14,7 @@ name = "awake_service"
 path = "src/lib.rs"
 
 [dependencies]
+awake-platform.workspace = true
 awake-core.workspace = true
 awake-ipc.workspace = true
 awake-store.workspace = true
@@ -32,4 +33,9 @@ test-support = []
 
 [dev-dependencies]
 awake-service = { path = ".", features = ["test-support"] }
+# The fixture builders that write a fake `/proc` and `/sys` node, so the
+# battery-safety test drives the real providers against a captured tree rather
+# than against whatever this machine happens to report.
+awake-platform = { workspace = true, features = ["test-support"] }
+better-core.workspace = true
 tempfile.workspace = true

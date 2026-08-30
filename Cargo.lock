@@ -660,6 +660,7 @@ name = "awake-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror 2.0.19",
 ]
 
@@ -667,12 +668,17 @@ dependencies = [
 name = "awake-gui"
 version = "0.1.0"
 dependencies = [
+ "awake-core",
  "awake-ipc",
- "awake-tray",
  "better-ui",
  "gpui",
  "gpui-component",
+ "gpui-component-assets",
  "gpui_platform",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
  "tokio",
  "zbus",
 ]
@@ -688,13 +694,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "awake-platform"
+version = "0.1.0"
+dependencies = [
+ "awake-core",
+ "libc",
+ "notify",
+ "tempfile",
+]
+
+[[package]]
 name = "awake-service"
 version = "0.1.0"
 dependencies = [
  "awake-core",
  "awake-ipc",
+ "awake-platform",
  "awake-service",
  "awake-store",
+ "better-core",
  "serde",
  "serde_json",
  "tempfile",
