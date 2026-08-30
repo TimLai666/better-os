@@ -13,6 +13,8 @@ members = [
     "crates/awake-tray",
     "crates/better-core",
     "crates/better-ui",
+    "crates/files-core",
+    "crates/files-platform",
     "crates/launcher-core",
     "crates/launcher-platform",
     "crates/launcher-gui",
@@ -56,6 +58,8 @@ awake-gui = { path = "crates/awake-gui" }
 awake-tray = { path = "crates/awake-tray" }
 better-core = { path = "crates/better-core" }
 better-ui = { path = "crates/better-ui" }
+files-core = { path = "crates/files-core" }
+files-platform = { path = "crates/files-platform" }
 launcher-core = { path = "crates/launcher-core" }
 launcher-platform = { path = "crates/launcher-platform" }
 launcher-gui = { path = "crates/launcher-gui" }

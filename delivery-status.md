@@ -76,7 +76,7 @@ privileged mutation out of the GUI and CLI.
 | M32 | ticket 29 — Better Touchpad pointer, scrolling, clicking, devices | agent | todo | workspace gate plus apply-and-read-back tests per control and input-latency benchmarks |
 | M33 | ticket 30 — Mac-style gestures, typed actions, backend ADR (needs M32) | agent | todo | workspace gate plus recognizer replay tests, conflict detection, and the gesture backend ADR |
 | M34 | ticket 31 — safe direct-removal external storage | agent | done | crate-scoped gates with 129 tests (13 event-sequence scenarios, 6 private-session-bus), live doctor probe on the host, synthetic state/latency benchmarks; hardware flush-completion benchmarks recorded as a follow-up; full workspace gate ran after merge |
-| M35 | ticket 32 — files-core typed locations and navigation (needs M21, M34) | agent | todo | workspace gate plus 100,000-entry listing benchmarks and a navigation cancellation test |
+| M35 | ticket 32 — files-core typed locations and navigation (needs M21, M34) | agent | done | crate-scoped fmt/check/test/clippy gate, 145 tests, a `Cargo.lock` closure test proving no GPUI dependency, and 100,000-entry benchmarks (first batch 1.6 ms, full listing 125 ms, 38.3 MB, cancellation latency 0.021 ms); full workspace gate ran after merge |
 | M36 | ticket 33 — files-operations durable job engine (needs M35) | agent | todo | workspace gate plus a job-survives-window-drop test and copy/move benchmarks |
 | M37 | ticket 34 — files-gui window, sidebar, views, operations (needs M36) | agent | todo | workspace gate plus the 100,000-entry progressive render benchmark and bookmark persistence tests |
 | M38 | ticket 35 — Applications, devices, preview, search, benchmarks (needs M22, M37) | agent | todo | workspace gate plus the full Better Files benchmark harness and manifest validation |
@@ -138,10 +138,10 @@ requires.
 
 ## Next Ticket
 
-Tickets 18, 19, 20, 21, 22, 23, 25, 27, 28, and 31 are done. Ready now
-(blockers met): 24 (needs 22, in progress), 26 (needs 25), 29, and 32
-(needs 18 and 31, in progress). Remaining dependency edges, in ticket order:
-30 needs 29; 33 needs 32; 34 needs 33; 35 needs 19 and 34.
+Tickets 18, 19, 20, 21, 22, 23, 25, 27, 28, 31, and 32 are done. Ready now
+(blockers met): 24 (needs 22, in progress), 26 (needs 25), 29, and 33 (needs
+32, in progress). Remaining dependency edges, in ticket order: 30 needs 29; 34
+needs 33; 35 needs 19 and 34.
 
 Ticket 30 now inherits a decision it must make rather than a blank page: ADR
 0008 compares the four gesture integration paths and adopts none, and the
@@ -863,6 +863,8 @@ passing. The full workspace gate has not run on this branch and belongs on the
 main checkout after merge. `manager-gui` is untouched; the Defaults screens are
 ticket 28, which consumes `defaults-core` unchanged.
 
+### Ticket 31 — Direct Removal storage crates
+
 Ticket 31 added the three storage crates on branch `ticket-31`, not merged.
 `storage-core` is the whole decision: normalized device identity, the Direct
 Removal and Performance policies, six distinct states, the evidence model, the
@@ -904,3 +906,62 @@ worktree; the workspace gate belongs on the main checkout after merge. Real
 device throughput across exFAT, NTFS, and ext4 on flash, SSD, and spinning
 external disks needs hardware and is recorded as a follow-up in the ticket, not
 approximated by the synthetic benchmarks.
+
+### Ticket 32 — Better Files typed locations, streaming listing, navigation
+
+Two new crates on branch `ticket-32`, which also carries the merge of
+`ticket-31`: `files-core` for the domain model and `files-platform` for the
+host. Nothing outside them changed except the workspace member list, this file,
+the ticket, and a new `docs/files-listing-performance.md`.
+
+The rule Issue #6 asks to be enforced from the first commit is enforced by the
+type system rather than by review. `Location` is a closed enum, and
+`as_local_path` — the only route to a `PathBuf` — answers `None` for
+Applications, Recent, Trash, network, and unsupported locations. A device
+location cannot produce a path at all until a caller supplies the mount point
+the device is currently at, because while it is unplugged there is no honest
+answer. An Applications row is an `EntryBody::Application` carrying a desktop
+ID, with no path accessor, no `From` impl, and no `Deref`; opening one yields a
+typed launch intent and the spawning stays in `app-catalog-platform`. A URI
+scheme this build does not understand becomes `Location::Unsupported` holding
+the original string verbatim, so a session saved by a later version survives
+being read by this one instead of silently opening the wrong directory.
+
+Listing is a stream, not a return value. A reader thread pushes into a
+`ListingSink` that checks a cancellation token on every push, so a producer
+cannot emit an entry without being cancellable; the check sits before each
+entry's `stat`, which is the expensive half. Dropping the consumer cancels the
+producer, and dropping a sink without finishing reports cancellation rather than
+leaving a view waiting forever.
+
+The benchmark found two performance bugs and both were fixed rather than
+published. The sort comparison allocated a `String` per digit run and an
+`EntryId` per tie-break, across tens of millions of comparisons. And merging
+every batch into a growing ordered list is quadratic: `apply` now stages and
+`commit` merges, and `Pane::pump` drains a frame's worth of batches and commits
+once. Assembling a 100,000-entry directory went from 5,794 ms to 356 ms. The
+benchmark still prints the merge-per-batch row so the difference stays visible.
+
+Numbers on the development host, warm cache: first batch of 256 entries visible
+in 1.6 ms, full 100,000-entry listing in 125 ms, model 38.3 MB, cancellation
+latency 0.021 ms with the reader stopped after 256 of 100,000 entries. Type
+detection is the most expensive thing a listing can be asked to do — about
+fifteen times slower on the mixed-media fixture — which is why it is off by
+default and name-based rather than content-sniffing.
+
+Gates were crate-scoped, to avoid rebuilding the GPUI world in the worktree.
+`cargo fmt --all -- --check` passed across the whole workspace; check, test, and
+clippy `-D warnings` passed for both crates, 145 tests. `cargo bench -p
+files-core` ran in full. The workspace gate has not run on this branch and
+belongs on the main checkout after merge.
+
+What this ticket did not do, and should not be assumed done: `Location::Recent`
+is modelled and reports as not listable, with nothing populating it; every
+network scheme is representable and none is implemented; the trash is read-only
+here, because restore and delete are ticket 33's durable jobs. A real
+over-`PATH_MAX` path is never created and a device is never really unplugged —
+both are covered by testing the kernel error translation, the same honest limit
+ticket 31 records. `MountTable` builds only the volatile identity a mount table
+supports and says so; a consumer holding a real identity from `storage-service`
+should prefer it. A frame can still cost about 28 ms while a 100,000-entry
+directory loads, and precomputing a sort key per entry is the named follow-up.

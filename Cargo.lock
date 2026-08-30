@@ -2022,6 +2022,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "files-core"
+version = "0.1.0"
+dependencies = [
+ "app-catalog-core",
+ "files-platform",
+ "storage-core",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "files-platform"
+version = "0.1.0"
+dependencies = [
+ "app-catalog-core",
+ "app-chooser-core",
+ "files-core",
+ "notify",
+ "storage-core",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "filetime"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
