@@ -31,10 +31,14 @@
              manager-cli / manager-gui ─────► manager-store
                                                versioned local JSON mock state
 
-                    ┌────────────────────┐
+      /proc, /sys ──► monitor-collectors-linux
+                                   │ typed reports, one timestamp per round
+                    ┌──────────────▼─────┐
                     │    monitor-core    │◄──── monitor-gui
+                    │ metric identity,   │
+                    │ five-state reading │
                     └─────────┬──────────┘
-                              │ samples, events, exports
+                              │ reports, events, exports
                          local-first store
 
                     better-ui ────────► manager-gui / monitor-gui
@@ -79,13 +83,28 @@ either side of the privileged boundary.
 
 ## Monitor observation layers
 
-- Continuous: low-cost CPU, memory, PSI, and inventory samples.
+- Continuous: low-cost CPU, memory, PSI, process, storage, and network
+  collection.
 - Periodic: audits that refresh component and system state.
 - Event-triggered: deeper profiling around a user-marked incident or detected
   regression.
 
-The monitor stores locally by default. Export is explicit and redacts sensitive
-values before data leaves the local process.
+Collectors read `/proc` and `/sys` directly. They never run a command or parse
+a tool's human-formatted output, because the kernel already publishes a stable
+structured interface for everything they collect. Every read goes through a
+root-path parameter, so tests exercise the production path against captured
+`/proc` snapshots.
+
+A reading is only meaningful next to its metric identity, which names the unit,
+the semantic type, the source file, and how the value has to be sampled. The
+absence of a reading is data too: unknown, unsupported, permission denied,
+stale, and a measured zero are five distinct states, so an unobserved subsystem
+can never be presented as an idle one.
+
+The monitor stores locally by default. Export is explicit, keeps the
+observation state of every reading, and redacts sensitive values before data
+leaves the local process. Process command lines are not collected unless
+collection is explicitly configured to include them.
 
 ## Linux GUI prerequisites
 

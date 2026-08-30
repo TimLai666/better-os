@@ -9,7 +9,8 @@ component manifests ──> better-core validation ──> manager-core
                        capability/download/package       └── manager-gui ──┼── manager-store JSON
                        privileged executor (refuses)                       └── versioned local state
 
-collectors ──> monitor-core samples/incidents/export ──> monitor-gui
+monitor-collectors-linux (/proc, /sys) ──> monitor-core metric contracts,
+                                           reports/incidents/export ──> monitor-gui
 
 better-ui provides GPUI presentation primitives to both GUI crates.
 Privileged execution lives in `manager-daemon`, a separate root process reached
@@ -128,8 +129,13 @@ suite, not only the two that exist today.
    layers own localized user-facing wording.
 6. The CLI and GUI both review the same plan, persist each mock stage, and can
    resume a valid active operation after restart.
-7. Monitor collectors later emit samples into `monitor-core`; this stage only
-   defines the collector, storage, incident, and export contracts.
+7. `monitor-collectors-linux` reads `/proc` and `/sys` directly and emits
+   `monitor-core` reports. A metric identity carries its unit, semantic type,
+   source, and sampling behavior, and an observation keeps unknown,
+   unsupported, permission-denied, stale, and a measured zero apart. Every
+   read goes through a root path, so tests drive the production path against
+   captured `/proc` snapshots. Storage remains in-memory until the time-series
+   decision has an ADR.
 8. Release packaging derives and verifies runtime dependencies from the final
    binaries for each supported target and architecture.
 9. A clean desktop environment installs the `.deb` through local APT and runs
@@ -153,7 +159,12 @@ suite, not only the two that exist today.
   probe, and authorizer are all traits, so every transaction path — including
   each rollback outcome — is tested without privileges, plus a private
   session-bus test of the D-Bus surface itself.
-- Monitor behavior uses a fake collector and in-memory history.
+- Monitor contract behavior uses in-memory history and asserts that the five
+  observation states stay distinct. Collector behavior is tested against
+  captured `/proc` and `/sys` fixture trees through the `Roots` seam, including
+  truncated and malformed input, two-sample deltas, a kernel without
+  `CONFIG_PSI`, and an unreadable descriptor directory. Collection cost is
+  measured rather than asserted from a budget.
 - `manager-gui` uses the demo catalog and state to assert that its Update All
   path produces the same dry-run plan as `manager-core`, that every catalog
   component is presentable from its manifest with no hardcoded component IDs,
@@ -195,7 +206,8 @@ suite, not only the two that exist today.
 | Manager platform | profile reporting, unavailable values, checksum-named artifact cache, dpkg version parsing, no mutation without an authorized privileged connection |
 | Manager IPC | wire contract round-trips and every rejection case |
 | Manager daemon | plan revalidation, artifact staging, APT driver, health checks, rollback outcomes, D-Bus surface over a private session bus |
-| Monitor | sample storage, incident creation, export redaction boundary |
+| Monitor contracts | metric identity validation, the five distinct observation states, capability resolution, report storage, incident creation, export redaction boundary and coverage |
+| Monitor collectors | CPU time categories with guest folding, load, frequency, temperature support state, memory and swap breakdown, paging units, PSI presence and absence, process identity and CPU deltas across PID reuse, command-line privacy, block-device filtering and sector units, interface counters and link attributes, truncated and malformed input, measured overhead |
 | GUI | workspace build and launch smoke test on a Linux desktop, manifest-driven presentation, appearance default and migration |
 | Release package | no `*-dev` in `Depends`, clean APT install, dynamic-library check, manager and monitor launch |
 | App catalog | XDG discovery, each exclusion rule separately, malformed entry rejection, change watching, launch argument vector, 5,000-record benchmarks |

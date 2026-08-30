@@ -26,7 +26,7 @@ privileged mutation out of the GUI and CLI.
 - Manager dry-run planning and CLI
 - Better Manager GPUI shell, shared mock lifecycle, persistence, and acceptance coverage
 - Manifest-declared presentation, platform boundary, and dark-first appearance
-- Monitor observation contracts
+- Monitor metric contracts and Linux collectors
 - Release packaging contract, clean-install verification, and license notices
 - Privileged daemon IPC contract, real artifact download, and APT execution
 - Shared application catalog and Better App Chooser (Issue #4)
@@ -62,11 +62,11 @@ privileged mutation out of the GUI and CLI.
 | M18 | four-way packaging matrix on CI | agent | done | CI run 30688730458: build, verify, and container end-to-end passed on ubuntu 22.04/24.04 × amd64/arm64 |
 | M19 | authorized transaction verified end to end | agent | done | real apt install and removal through the service, confirmed against dpkg; a deadlock in the D-Bus client found and fixed |
 | M20 | rollback target correctness and mutation-failure coverage | agent | done | installed-artifact record replaces the guessed rollback target; container run proved a failed update reinstalls 0.0.9, not the version that just failed |
-| M21 | ticket 18 — shared app catalog core and platform | agent | todo | workspace gate plus 5,000-record catalog benchmarks and a launch argument-vector smoke |
-| M22 | ticket 19 — Better App Chooser (needs M21) | agent | todo | workspace gate plus a `mimeapps.list` single-association diff and rollback byte equality |
+| M21 | ticket 18 — shared app catalog core and platform | agent | done | workspace gate passed; 5,000-record benchmarks (cold 44.6 ms, warm 40.4 ms, 20.1 MB) and a launch smoke proving the argument vector was never shell-interpreted |
+| M22 | ticket 19 — Better App Chooser (needs M21) | agent | done | workspace gate passed; `mimeapps.list` single-association diff and rollback byte equality proven over six fixture shapes; headless chooser smoke in both modes |
 | M23 | ticket 20 — launcher-core index and ranking (needs M21) | agent | todo | workspace gate plus query latency p95 under 50 ms on 5,000 synthetic records |
 | M24 | ticket 21 — launcher overlay, activation, gesture ADR (needs M23) | agent | todo | workspace gate plus headless overlay smoke, manifest validation, and the gesture-options ADR |
-| M25 | ticket 22 — monitor metric contracts and Linux collectors | agent | todo | workspace gate plus fixture-tree collector tests and per-collector overhead benchmarks |
+| M25 | ticket 22 — monitor metric contracts and Linux collectors | agent | done | typed metric/capability contracts with five distinct observation states, six `/proc` and `/sys` collectors, 157 tests against captured fixture trees, measured overhead 10.2 ms/round for 1,359 tasks; full workspace gate ran after merge |
 | M26 | ticket 23 — Apps, Processes, actions, real Overview (needs M25) | agent | todo | workspace gate plus the 10,000-process table benchmark and locale/scaling overflow tests |
 | M27 | ticket 24 — monitor service, history, incidents, export, CLI (needs M25) | agent | todo | workspace gate plus collection-after-GUI-close smoke and a seeded-secret export test |
 | M28 | ticket 25 — Better Awake tray-first manual sessions | agent | todo | workspace gate plus a private session-bus tray test and a tray-restart session survival test |
@@ -123,9 +123,9 @@ policy still needs alignment.
 
 ## Next Verifiable Output
 
-`app-catalog-core` and `app-catalog-platform` discovering real XDG desktop
-applications, with the 5,000-record synthetic benchmarks reported and a launch
-smoke proving the argument vector was never shell-interpreted.
+Better Monitor's Overview, Apps, and Processes views rendering the real
+collector output (ticket 23), and `launcher-core` matching and ranking over the
+shared catalog with its p95 latency benchmark (ticket 20).
 
 The Better Manager follow-ups remain open and unscheduled: package signing, the
 public APT repository, a repair action for a transaction interrupted mid-flight,
@@ -134,17 +134,10 @@ requires.
 
 ## Next Ticket
 
-18-app-catalog. It has no blockers, and four later tickets depend on it: the
-chooser (19), the launcher index (20), and the Better Files core and
-integration tickets (32 and 35). Nothing in the suite should parse a `.desktop`
-file before it lands.
-
-Tickets 01 through 17 are complete. Tickets 18 through 35 are cut from issues
-#2, #3, #4, #5, #6, #10, #13, and #16 and are all `todo`. Their dependency
-edges, in ticket order: 19 needs 18; 20 needs 18; 21 needs 20; 23 and 24 both
-need 22; 26 needs 25; 28 needs 27; 30 needs 29; 32 needs 18 and 31; 33 needs
-32; 34 needs 33; 35 needs 19 and 34. Tickets 18, 22, 25, 27, 29, and 31 have no
-blockers and can start in parallel.
+Tickets 18, 19, and 22 are done. Ready now (blockers met): 20 (needs 18),
+23 and 24 (need 22), 26 (needs 25, in progress), 27, 29, and 31. Remaining
+dependency edges, in ticket order: 21 needs 20; 28 needs 27; 30 needs 29; 32
+needs 18 and 31; 33 needs 32; 34 needs 33; 35 needs 19 and 34.
 
 ## Decision Log
 
@@ -261,6 +254,29 @@ blockers and can start in parallel.
   of its own
   timestamp: 2026-08-01
   impacted_ticket_ids: [09, 14]
+- decision: make "no value" a five-way distinction in the monitor contract —
+  unknown, unsupported, permission denied, stale, and a measured zero — instead
+  of `Option`
+  rationale: a monitor that collapses them tells the user a machine is idle when
+  it is actually unobserved; PSI on a kernel without `CONFIG_PSI` and a
+  descriptor count on another user's process are the cases that forced it
+  timestamp: 2026-08-30
+  impacted_ticket_ids: [22]
+- decision: read `/proc` and `/sys` directly rather than adopting `sysinfo` for
+  the metrics in ticket 22
+  rationale: the eight CPU time categories, PSI, vmstat paging counters,
+  diskstats queue and service time, and per-process cgroup paths are either
+  absent from a portable abstraction or flattened by it, and a portable API
+  reports zero where an interface is missing; revisiting it for battery,
+  component naming, and disk identity stays open
+  timestamp: 2026-08-30
+  impacted_ticket_ids: [22]
+- decision: give every collector a `Roots` parameter so no path is hardcoded
+  rationale: tests then drive the production read path against captured `/proc`
+  snapshots instead of a parser in isolation, which is what caught the
+  `/proc/net/dev` column-padding and AMD per-core temperature cases
+  timestamp: 2026-08-30
+  impacted_ticket_ids: [22]
 - decision: make the installed artifact record authoritative for rollback target selection
   rationale: a transaction rollback record describes one prior transaction, while
   only a version-matched component record can prove which cached artifact produced
@@ -281,6 +297,7 @@ blockers and can start in parallel.
 - [Issue #10: Better Defaults](https://github.com/TimLai666/better-os/issues/10)
 - [Issue #13: Better Awake](https://github.com/TimLai666/better-os/issues/13)
 - [Issue #16: Better Monitor](https://github.com/TimLai666/better-os/issues/16)
+- [Monitor collector source traceability](docs/monitor-collector-sources.md)
 - [ENG.md](ENG.md)
 - [Architecture](docs/architecture.md)
 - [Release packaging](docs/release-packaging.md)
@@ -579,3 +596,41 @@ mean touching a second line the user wrote. Usage history is currently inferred
 from the associations file, because no shared favorites or history model exists
 yet — Issue #4 defers how that is shared with Better Launcher. And the chooser
 handles one selected file; multi-file selection is out of scope for this ticket.
+
+Ticket 22 replaced Better Monitor's mock `Sample` with typed metric and
+capability contracts and added `monitor-collectors-linux`. A metric now carries
+its unit, semantic type, source, support state, and sampling behaviour, and an
+observation keeps unknown, unsupported, permission denied, stale, and a measured
+zero apart. Six collectors read `/proc` and `/sys` directly — CPU, memory, PSI,
+processes, storage throughput, and network interfaces — with no command
+execution and no CLI parsing anywhere.
+
+Every read goes through a `Roots` seam, so the tests drive the production path
+against 597 fixture files: two `/proc` and `/sys` snapshots captured from this
+machine three seconds apart, hand-authored synthetic pairs with exact expected
+deltas, plus truncated, malformed, and no-PSI trees. 157 tests pass — 26 in
+`monitor-core`, 117 collector unit tests, and 14 integration tests, two of which
+run against the live host.
+
+Four semantic traps the fixtures caught, all documented in
+`docs/monitor-collector-sources.md`: `/proc/net/dev` pads interface names into a
+fixed column so `tailscale0:` has no space before its first counter; `/proc/stat`
+already folds guest time into `user`, so summing the ten columns double counts;
+`/proc/vmstat`'s `pgpgin` counts kibibytes while `pswpin` in the same file counts
+pages; and the capture machine is AMD, where `k10temp` publishes only `Tctl`, so
+per-core temperature is genuinely unsupported rather than zero.
+
+Measured overhead on this machine with 1,359 tasks, 100 rounds in release: mean
+10.198 ms per full round, worst 12.209 ms, 99.0% CPU-bound. The process table is
+9.178 ms of that; everything else together is about 1 ms. The 10,000-process
+scenario from issue #16 has not been measured.
+
+Gates run for ticket 22 were crate-scoped to avoid rebuilding GPUI in the
+worktree: `cargo fmt --all -- --check`, `cargo check -p monitor-core -p
+monitor-collectors-linux`, `cargo test -p monitor-core -p
+monitor-collectors-linux`, `cargo clippy -p monitor-core -p
+monitor-collectors-linux --all-targets -- -D warnings`, and `cargo check -p
+monitor-gui`, all passing. `monitor-gui` was updated only far enough to speak
+the new contract and still renders a fixed demonstration round. The full
+workspace gate has not run on this branch and belongs on the main checkout after
+merge. That full workspace gate ran on `main` immediately after this merge.

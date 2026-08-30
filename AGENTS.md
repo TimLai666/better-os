@@ -56,8 +56,16 @@ GUI or dependency compiles when the relevant command was not executed.
 - Update GitHub Actions dependencies after the Node.js 20 deprecation warning
   on `actions/checkout` and `actions/upload-artifact` is addressed.
 - Review the license implications of every copyleft dependency before release.
-- Add real Linux collectors and benchmark runners only after the mock contracts
-  are stable. Better Monitor is still observation-only.
+- Better Monitor is still observation-only. Real Linux collectors now exist in
+  `monitor-collectors-linux`, reading `/proc` and `/sys` directly; the views
+  that present them, process control actions, the persistent history store, and
+  the large-process benchmark scenarios are still outstanding.
+- Decide the Better Monitor time-series storage engine and retention policy in
+  an ADR before any collector output is persisted. Issue #16 lists SQLite as a
+  candidate, not a decision.
+- Decide whether `sysinfo` becomes a dependency for battery, component naming,
+  or disk identity. It was evaluated and not adopted for the `/proc`-backed
+  metrics; the reasoning is in `docs/monitor-collector-sources.md`.
 - Decide the package signature format before offering a signed distribution
   channel. Checksums are currently the only integrity mechanism.
 - Decide whether the daemon should offer a `dpkg --configure -a` repair action
