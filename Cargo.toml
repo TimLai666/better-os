@@ -8,6 +8,7 @@ members = [
     "crates/awake-core",
     "crates/awake-gui",
     "crates/awake-ipc",
+    "crates/awake-platform",
     "crates/awake-service",
     "crates/awake-store",
     "crates/awake-tray",
@@ -50,6 +51,7 @@ app-chooser-core = { path = "crates/app-chooser-core" }
 app-chooser-gui = { path = "crates/app-chooser-gui" }
 awake-core = { path = "crates/awake-core" }
 awake-ipc = { path = "crates/awake-ipc" }
+awake-platform = { path = "crates/awake-platform" }
 awake-service = { path = "crates/awake-service" }
 awake-store = { path = "crates/awake-store" }
 awake-gui = { path = "crates/awake-gui" }

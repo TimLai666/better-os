@@ -1,0 +1,49 @@
+[Unit]
+Description=Better Awake keep-awake session service
+Documentation=https://github.com/TimLai666/better-os/blob/main/docs/tickets/26-awake-application-and-rules.md
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# Type=simple, not Type=dbus. The service connects to the session bus and
+# requests org.betteros.Awake1 after it has already started and probed its
+# inhibitor backend, so there is no bus name for systemd to wait on at exec
+# time. It is also not activatable on demand: unlike the manager daemon it must
+# not exit when idle, because it is holding a lock whose lifetime is the point.
+Type=simple
+ExecStart=/usr/bin/better-awake-service
+Restart=on-failure
+
+# The service releases every inhibitor it holds on SIGTERM before exiting, so
+# KillSignal is left at the default. Replacing it with SIGKILL would leave the
+# machine awake with nobody left to explain why.
+
+# Hardening chosen for an unprivileged user unit, not copied from
+# better-manager-daemon.service. That unit is a privileged system service whose
+# job is to mutate the host; this one runs as the logged-in user and writes only
+# its own state file. So the directives differ on purpose:
+#   NoNewPrivileges is set here, unlike the daemon, because nothing this service
+#   runs needs to exec a setuid helper.
+#   ProtectHome is deliberately absent: the state file lives under
+#   $XDG_STATE_HOME, which is inside the user's home.
+#   PrivateTmp and ProtectSystem are deliberately absent. Both are mount
+#   namespace options, and in a systemd --user manager they depend on
+#   unprivileged user namespaces being available on the host. A keep-awake
+#   service that refuses to start on a machine with user namespaces restricted
+#   would be worse than one without a private /tmp, and the service opens no
+#   temporary file and writes nothing outside its own state directory anyway.
+NoNewPrivileges=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# Session bus, system bus for logind. Nothing here speaks to the network.
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+# Unlike the manager daemon, this unit is enabled. A rule can only fire while
+# the service is running, so an installed-but-not-started Better Awake would
+# silently do nothing.
+WantedBy=graphical-session.target

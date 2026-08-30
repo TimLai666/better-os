@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Better Awake
+Name[zh_TW]=保持清醒
+GenericName=Keep-Awake Settings
+GenericName[zh_TW]=保持清醒設定
+Comment=Keep the machine awake on demand or by rule, and see every reason it is awake
+Comment[zh_TW]=依需求或規則讓電腦保持清醒，並看見目前保持清醒的每一個原因
+# The settings window only edits configuration and renders state. It never
+# holds an inhibitor itself, so launching or closing it changes nothing about
+# what is currently keeping the machine awake.
+Exec=awake-gui
+Icon=better-awake
+Terminal=false
+StartupNotify=true
+Categories=Utility;Settings;
+Keywords=awake;caffeine;insomnia;sleep;suspend;idle;inhibit;
+Keywords[zh_TW]=保持清醒;不睡眠;防休眠;待機;閒置;抑制;
