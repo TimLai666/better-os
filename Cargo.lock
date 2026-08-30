@@ -253,6 +253,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "app-catalog-core"
+version = "0.1.0"
+dependencies = [
+ "app-catalog-platform",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "app-catalog-platform"
+version = "0.1.0"
+dependencies = [
+ "app-catalog-core",
+ "notify",
+ "tempfile",
+ "thiserror 2.0.19",
+ "zbus",
+]
+
+[[package]]
 name = "ar_archive_writer"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

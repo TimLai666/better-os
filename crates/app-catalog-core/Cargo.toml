@@ -1,0 +1,19 @@
+[package]
+name = "app-catalog-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+# The benchmarks measure the real discovery path, not a copy of it. Cargo
+# permits this dev-only cycle back to the platform crate.
+app-catalog-platform.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "catalog"
+harness = false

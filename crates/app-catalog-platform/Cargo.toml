@@ -1,0 +1,21 @@
+[package]
+name = "app-catalog-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Real D-Bus activation for `DBusActivatable` entries. Off by default so a
+# consumer that only needs discovery does not link a D-Bus stack, matching how
+# `manager-platform` gates its privileged client.
+dbus-activation = ["dep:zbus"]
+
+[dependencies]
+app-catalog-core.workspace = true
+notify.workspace = true
+thiserror.workspace = true
+zbus = { version = "5", optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

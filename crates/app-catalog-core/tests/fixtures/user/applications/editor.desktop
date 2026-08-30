@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=User Editor
+Name[zh_TW]=使用者編輯器
+Comment=The user's own override
+Exec=user-editor %F
+Icon=accessories-text-editor
+Categories=Utility;TextEditor;
+MimeType=text/plain;

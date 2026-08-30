@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Hostile
+Exec=tool %z
