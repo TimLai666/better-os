@@ -631,6 +631,81 @@ dependencies = [
 ]
 
 [[package]]
+name = "awake-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "awake-gui"
+version = "0.1.0"
+dependencies = [
+ "awake-ipc",
+ "awake-tray",
+ "better-ui",
+ "gpui",
+ "gpui-component",
+ "gpui_platform",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
+name = "awake-ipc"
+version = "0.1.0"
+dependencies = [
+ "awake-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "awake-service"
+version = "0.1.0"
+dependencies = [
+ "awake-core",
+ "awake-ipc",
+ "awake-service",
+ "awake-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
+name = "awake-store"
+version = "0.1.0"
+dependencies = [
+ "awake-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "awake-tray"
+version = "0.1.0"
+dependencies = [
+ "awake-core",
+ "awake-ipc",
+ "awake-service",
+ "awake-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"

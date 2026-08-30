@@ -3,6 +3,12 @@ resolver = "2"
 members = [
     "crates/app-catalog-core",
     "crates/app-catalog-platform",
+    "crates/awake-core",
+    "crates/awake-gui",
+    "crates/awake-ipc",
+    "crates/awake-service",
+    "crates/awake-store",
+    "crates/awake-tray",
     "crates/better-core",
     "crates/better-ui",
     "crates/manager-core",
@@ -26,6 +32,12 @@ license = "GPL-3.0-or-later"
 [workspace.dependencies]
 app-catalog-core = { path = "crates/app-catalog-core" }
 app-catalog-platform = { path = "crates/app-catalog-platform" }
+awake-core = { path = "crates/awake-core" }
+awake-ipc = { path = "crates/awake-ipc" }
+awake-service = { path = "crates/awake-service" }
+awake-store = { path = "crates/awake-store" }
+awake-gui = { path = "crates/awake-gui" }
+awake-tray = { path = "crates/awake-tray" }
 better-core = { path = "crates/better-core" }
 better-ui = { path = "crates/better-ui" }
 manager-core = { path = "crates/manager-core" }

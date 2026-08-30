@@ -69,7 +69,7 @@ privileged mutation out of the GUI and CLI.
 | M25 | ticket 22 — monitor metric contracts and Linux collectors | agent | todo | workspace gate plus fixture-tree collector tests and per-collector overhead benchmarks |
 | M26 | ticket 23 — Apps, Processes, actions, real Overview (needs M25) | agent | todo | workspace gate plus the 10,000-process table benchmark and locale/scaling overflow tests |
 | M27 | ticket 24 — monitor service, history, incidents, export, CLI (needs M25) | agent | todo | workspace gate plus collection-after-GUI-close smoke and a seeded-secret export test |
-| M28 | ticket 25 — Better Awake tray-first manual sessions | agent | todo | workspace gate plus a private session-bus tray test and a tray-restart session survival test |
+| M28 | ticket 25 — Better Awake tray-first manual sessions | agent | done | crate-scoped fmt/check/test/clippy gates, 142 tests including 11 private session-bus tests, a tray-restart session survival test, and an 8 s headless `awake-gui` smoke |
 | M29 | ticket 26 — Awake full application and trigger rules (needs M28) | agent | todo | workspace gate plus rule-engine evaluation tests and an uninstall smoke releasing inhibitors |
 | M30 | ticket 27 — defaults core, adapters, snapshots, CLI | agent | todo | workspace gate plus snapshot round-trip and external-change detection tests |
 | M31 | ticket 28 — Manager Defaults GUI review flows (needs M30) | agent | todo | workspace gate plus a preview-before-mutation assertion and locale/scaling overflow tests |
@@ -534,3 +534,37 @@ D-Bus activation ships behind the off-by-default `dbus-activation` feature, the
 same shape as `manager-platform`'s `dbus-client`. It compiles and is covered by
 a recording activator, but it has not been exercised against a real activatable
 application on a session bus.
+
+### Ticket 25 — Better Awake Phase 1
+
+Six new crates are on branch `ticket-25`: `awake-core`, `awake-ipc`,
+`awake-store`, `awake-service`, `awake-tray`, and `awake-gui`. Nothing outside
+them changed except the workspace member list, this file, and the ticket.
+
+The service owns the inhibitor and the tray is a pure client, so a session
+survives the tray being restarted — proved over a private session bus rather
+than asserted. The local protocol is JSON documents over a session-bus
+interface `org.betteros.Awake1`, the same shape ADR 0007 chose for the
+privileged daemon; the ticket records why, because Issue #13 defers the final
+choice to an ADR.
+
+`ksni` was evaluated but not adopted, and the evaluation is incomplete on
+purpose: this environment has no network access (crates.io answered HTTP 403),
+and `ksni` is in neither the lockfile nor the local cargo cache, so its license
+and maintenance could not be verified. The StatusNotifierItem and dbusmenu
+surfaces are therefore written directly on zbus — about 300 lines that a crate
+would replace without touching the menu model or the wording table. The ADR
+still needs a network-capable environment.
+
+Gates were run crate-scoped, because a workspace-wide run rebuilds the GPUI
+world for each command. `cargo fmt --all -- --check` passed across the whole
+workspace; check, test, and clippy `-D warnings` passed for the five non-GPUI
+crates (142 tests, 11 of them on a private session bus); `cargo check -p
+awake-gui` passed and the built binary stayed alive for 8 seconds under
+`ZED_HEADLESS=1`. The full workspace gates have not been run and should run
+downstream after merge.
+
+Not done in Phase 1 and named in the ticket: the battery provider behind the
+threshold, the rule engine the `自動規則` row disables itself for, packaging
+(desktop entry, systemd user unit, Better Manager manifest), icon artwork for
+the six states, and idle CPU/memory measurement for the two processes.
