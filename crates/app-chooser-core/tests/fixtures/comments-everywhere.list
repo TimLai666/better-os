@@ -1,0 +1,13 @@
+# leading comment
+   # indented comment
+
+[Default Applications]
+# comment before the first key
+text/html=firefox.desktop
+# comment between keys
+image/png=eog.desktop
+# trailing comment inside the group
+
+# comment before the next group
+[Added Associations]
+text/plain=vim.desktop;

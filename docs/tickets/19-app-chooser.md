@@ -5,7 +5,7 @@
 declare support for it, and making that choice permanent changes exactly one
 MIME association and leaves a record that can undo it.
 **Blocked by:** 18-app-catalog
-**Status:** todo
+**Status:** done
 
 ## Goal
 
@@ -62,26 +62,26 @@ assumption that settles these.
 
 ## Acceptance criteria
 
-- [ ] The chooser shows MIME-compatible applications first, then other
+- [x] The chooser shows MIME-compatible applications first, then other
       compatible or previously used, then all applications behind an explicit
       expansion.
-- [ ] Open Once launches the selected file with the selected application and
+- [x] Open Once launches the selected file with the selected application and
       writes nothing persistent.
-- [ ] Always Use updates only the intended MIME association; a test asserts that
+- [x] Always Use updates only the intended MIME association; a test asserts that
       every unrelated association in the file is unchanged afterwards.
-- [ ] Every Always Use change produces a rollback record that restores the exact
+- [x] Every Always Use change produces a rollback record that restores the exact
       previous association.
-- [ ] Removing or clearing Better OS state does not destroy MIME associations it
+- [x] Removing or clearing Better OS state does not destroy MIME associations it
       did not create or change.
-- [ ] Choose Executable returns a real path only when one resolves safely, and
+- [x] Choose Executable returns a real path only when one resolves safely, and
       warns for Flatpak, Snap, D-Bus-activated, wrapper, and complex-argument
       applications instead of inventing one.
-- [ ] A desktop-application selection is never silently converted into an
+- [x] A desktop-application selection is never silently converted into an
       executable path.
-- [ ] The GUI uses GPUI, `gpui-component`, and shared `better-ui` primitives.
-- [ ] MIME compatibility filtering runs off the render thread and is benchmarked
+- [x] The GUI uses GPUI, `gpui-component`, and shared `better-ui` primitives.
+- [x] MIME compatibility filtering runs off the render thread and is benchmarked
       against the 5,000-record synthetic catalog.
-- [ ] The selection result model carries no virtual filesystem path.
+- [x] The selection result model carries no virtual filesystem path.
 
 ## Verification
 
@@ -94,3 +94,22 @@ assumption that settles these.
   a single-line change, then roll back and assert byte equality with the
   original
 - `ZED_HEADLESS=1` launch smoke of the chooser surface
+
+## Result
+
+All verification commands ran locally and passed: `cargo fmt --all -- --check`,
+`cargo check --workspace`, `cargo test --workspace`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo bench -p app-chooser-core`, and an
+8-second `ZED_HEADLESS=1` launch of `app-chooser-gui` in both Open With and
+Choose Executable mode.
+
+Two criteria are met by construction rather than by an automated assertion, and
+are recorded here rather than claimed as tested:
+
+- Ranking runs on a background thread because `AppChooser` reads the catalog
+  through `cx.background_spawn`. Nothing asserts that a frame never ranks; the
+  core crate has no GPUI dependency, which is what makes the claim checkable at
+  all.
+- Open Once launching is exercised by the headless smoke and by
+  `app-catalog-platform`'s own launch tests. The chooser's own tests assert that
+  an Open Once selection writes nothing, not that a process started.
