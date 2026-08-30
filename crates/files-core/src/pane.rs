@@ -45,6 +45,31 @@ impl Pane {
         pane
     }
 
+    /// Opens a pane on a history that already exists, and starts listing
+    /// wherever that history currently is.
+    ///
+    /// This is what reopening a closed tab needs. [`crate::TabSet::close`]
+    /// keeps the whole [`crate::History`], and restoring it into a pane built
+    /// with [`Pane::open`] would have thrown that history away and left the
+    /// user at the folder with Back greyed out — which is exactly the failure
+    /// the recently-closed stack exists to prevent.
+    pub fn resume(
+        history: crate::history::History,
+        preferences: ViewPreferences,
+        reader: &dyn DirectoryReader,
+    ) -> Self {
+        let location = history.current().clone();
+        let mut pane = Self {
+            history,
+            model: DirectoryModel::new(location, preferences.order, preferences.hidden),
+            session: None,
+            preferences,
+            batch_size: None,
+        };
+        pane.start_listing(reader);
+        pane
+    }
+
     /// Overrides the batch size for subsequent listings. Tests and benchmarks
     /// use this to control how finely a listing is chunked.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
@@ -345,6 +370,27 @@ mod tests {
             "revealing hidden entries must not restart the listing"
         );
         assert_eq!(pane.model().total_len(), 4);
+    }
+
+    #[test]
+    fn resuming_a_pane_keeps_the_history_it_was_handed() {
+        let reader = CountingReader::new(1);
+        let mut history = crate::history::History::new(at("/a"));
+        history.visit(at("/b"));
+        history.visit(at("/c"));
+
+        let mut pane = Pane::resume(history, ViewPreferences::default(), &reader);
+        assert_eq!(pane.location(), &at("/c"));
+        assert!(pane.history().can_go_back());
+        assert!(pane.go_back(&reader));
+        assert_eq!(pane.location(), &at("/b"));
+        assert!(pane.go_back(&reader));
+        assert_eq!(pane.location(), &at("/a"));
+        assert!(!pane.go_back(&reader));
+    }
+
+    fn at(path: &str) -> Location {
+        Location::local(path).unwrap()
     }
 
     #[test]

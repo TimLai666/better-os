@@ -1,0 +1,37 @@
+[package]
+name = "files-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "files_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "better-files"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+better-ui.workspace = true
+files-core.workspace = true
+files-platform.workspace = true
+files-operations.workspace = true
+storage-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
+gpui-platform.workspace = true
+smol = "2"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bench]]
+name = "view_model"
+harness = false
