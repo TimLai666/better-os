@@ -44,6 +44,8 @@ mod shell;
 mod views;
 
 #[cfg(test)]
+mod integration_tests;
+#[cfg(test)]
 mod tests;
 
 use std::path::PathBuf;

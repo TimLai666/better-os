@@ -1041,6 +1041,11 @@ impl FilesSession {
                 }
                 if let Some((_, pane)) = self.panes.iter_mut().find(|(id, _)| *id == tab) {
                     pane.navigate_to(home.clone(), reader.as_ref());
+                    // Navigating pushes where the pane *was* onto the back
+                    // stack, which is the very entry that was just forgotten.
+                    // Forgetting again is what makes the cleanup actually
+                    // leave nothing behind.
+                    pane.forget_locations(|location| !is_under(location, mount_point));
                 }
                 self.sync_history(tab);
             }
