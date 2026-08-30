@@ -178,6 +178,15 @@ Semantic differences and decisions:
   the file still parses; a value that is present but not a number is malformed.
 - **cgroup v2's `0::` line wins** over any v1 hierarchy, with the first v1 path
   as a fallback.
+- **Storage throughput comes from `read_bytes`/`write_bytes`, not
+  `rchar`/`wchar`.** Added in ticket 23 so the Apps view can attribute disk
+  activity. `rchar` and `wchar` count every read and write including cache hits
+  and pipes, so a process that only talked to a socket would look like it was
+  hammering the disk. `/proc/[pid]/io` is readable only for a process the
+  caller may ptrace, so for another user's process the counters and the derived
+  rates are `PermissionDenied`, never zero. The rate uses the same start-time
+  guard as the CPU delta, so a recycled PID does not report a whole previous
+  lifetime as one interval's throughput.
 - **Not collected in this ticket:** per-process GPU and network attribution.
   Issue #16 defers both, and inferring them would be a guess presented as data.
 
@@ -188,7 +197,10 @@ field`, `a_reused_pid_does_not_inherit_the_previous_process_cpu_time`,
 `a_kernel_thread_without_vmrss_is_unsupported_rather_than_zero_memory`,
 `a_cgroup_v2_line_wins_over_any_v1_hierarchy`,
 `start_time_and_runtime_come_from_boot_time_and_uptime`,
-`a_process_whose_cpu_time_did_not_move_reports_a_real_zero`, plus truncated and
+`a_process_whose_cpu_time_did_not_move_reports_a_real_zero`,
+`storage_byte_counters_come_from_the_block_layer_fields`,
+`process_throughput_needs_two_rounds_and_divides_by_the_real_interval`,
+`an_unreadable_io_file_is_not_reported_as_no_disk_activity`, plus truncated and
 malformed cases, and the whole-set test
 `no_command_line_reaches_a_report_under_the_default_privacy_setting` which runs
 against the live host.
@@ -307,3 +319,127 @@ measured. That case is on the issue's benchmark list and is not covered here.
 The same measurement runs as a test in `tests/overhead.rs`, which asserts only
 a loose 500 ms per-round ceiling so it does not become a hardware-specific
 tripwire, and prints the numbers under `--nocapture`.
+
+### Re-measured after ticket 23 added per-process I/O
+
+Adding the `/proc/[pid]/io` read made the process collector more expensive, and
+the honest thing is to publish the new number rather than leave the old one
+standing. Same command, same machine, 493 processes:
+
+| | Ticket 22 (1,359 tasks) | Ticket 23 (493 processes) |
+| --- | --- | --- |
+| Mean round | 10.198 ms | 15.052 ms |
+| Worst round | 12.209 ms | 29.602 ms |
+| `linux.process` mean | 9.178 ms | 13.637 ms |
+
+The two runs are not a like-for-like comparison of task counts, but the
+direction is clear and is explained by the interface rather than by the parser:
+`/proc/[pid]/io` is gated by a ptrace-mode permission check, so every read pays
+for that check and reads on another user's process pay for it and then fail.
+That is the price of a disk column that is attributable at all. It is also the
+strongest argument yet for the adaptive cadence the specification describes:
+the process collector is the one to slow down first, and it is now 90% of the
+round rather than 90% of a cheaper round.
+
+## Application grouping (`monitor-views`)
+
+| | |
+| --- | --- |
+| Feature ID | `views.grouping` |
+| Upstream spec | systemd `systemd.special(7)` slice layout; `systemd.scope(5)`; freedesktop Desktop Entry launch behaviour; Flatpak and snapd scope naming as observed in captured `/proc/[pid]/cgroup` values |
+| Version pinned | verified against Linux 7.0.0-30-generic with systemd user sessions; fixture `snapshot-a` carries a real `app-<AppID>-<random>.scope` path |
+| Adoption mode | original implementation; GNOME Resources and Mission Center used as behaviour references only |
+| Licence | none required; no third-party code used |
+
+Semantic differences and decisions:
+
+- **Grouping reads the cgroup string ticket 22 already collects.** Nothing
+  executes systemd, opens a D-Bus connection, or scans `.desktop` files. A
+  desktop-entry name resolver can be supplied later; the engine does not need
+  one to be correct.
+- **Executable identity never merges anything.** Issue #16 lists it last as
+  evidence, and also forbids merging processes solely because their executable
+  names match. Both hold here because the fallback key carries the PID: the
+  executable name labels a group of one, and two unrelated `python3` processes
+  stay two groups. Proven by
+  `unrelated_processes_with_the_same_executable_name_are_never_merged`.
+- **The owning user is part of every group key.** One unit run by two users is
+  two applications; a single CPU total across both would misattribute the
+  machine's load.
+- **Precedence is configuration, not a decision.** The default is Issue #16's
+  order, and ticket 23 records that the final precedence and confidence
+  thresholds still need an ADR. `GroupingPrecedence` is a list, and
+  `precedence_decides_which_identity_names_a_flatpak_scope` proves reordering
+  changes the recorded evidence.
+- **The label and the evidence are separate questions.** A Flatpak launched
+  into a systemd scope is grouped by unit membership under the default order
+  and still labelled GIMP, because the cgroup carries the application id. The
+  evidence is shown next to the name, so the label never overstates what is
+  known.
+- **Ancestry is bounded.** The walk up the parent chain refuses to revisit a
+  PID, so a malformed parent relationship cannot hang the view. Proven by
+  `a_cycle_in_the_parent_chain_does_not_hang_the_grouping`.
+
+## Process actions (`monitor-core`, `monitor-actions-linux`)
+
+| | |
+| --- | --- |
+| Feature ID | `actions.process` |
+| Upstream spec | `kill(2)`, `setpriority(2)`, `getpriority(2)`, `signal(7)` |
+| Version pinned | glibc on Linux 7.0.0-30-generic |
+| Adoption mode | direct syscall through the `libc` bindings crate |
+| Licence | `libc` is MIT/Apache-2.0; no code copied |
+
+Semantic differences and decisions:
+
+- **The GUI never names a signal number.** `ProcessAction` is an intent and
+  `SignalKind` is a closed set; the mapping to `SIGTERM`/`SIGKILL`/`SIGSTOP`/
+  `SIGCONT` exists in exactly one function in `monitor-actions-linux`.
+- **A delivered signal is not an exit.** The outcome is `SignalAccepted`, and
+  the interface says the process decides when it ends.
+- **Own-user processes only.** Cross-user and elevated actions are refused
+  before anything is attempted, with the owner named. The narrow
+  polkit-reviewed boundary for those is deliberately not built here, and
+  `manager-daemon` is untouched.
+- **Lowering a nice value needs `CAP_SYS_NICE`,** so it is refused rather than
+  attempted and failed. Raising one is allowed and read back.
+- **`init` and Better Monitor's own process are never signalled.**
+- **The policy is checked again inside `perform`,** so a view that forgot to
+  check cannot reach a syscall.
+
+Tests: 14 policy tests in `monitor-core`, 6 in `monitor-actions-linux`, and 4
+integration tests in `monitor-actions-linux/tests/real_process.rs` that spawn a
+real child and assert against `/proc` that `SIGSTOP` stopped it, `SIGCONT`
+resumed it, `SIGTERM` ended it, and a renice took effect.
+
+## Large-process benchmark
+
+Issue #16 requires 100, 1,000, and 10,000 process scenarios. The dataset is
+synthetic, generated fresh each run, so the numbers do not depend on what
+happens to be running. Run with `cargo bench -p monitor-views`. Mean of 20
+iterations on the reference machine:
+
+| Operation | 100 | 1,000 | 10,000 |
+| --- | --- | --- | --- |
+| Build model and sort | 0.034 ms | 0.118 ms | 2.057 ms |
+| Re-sort by another column | 0.001 ms | 0.003 ms | 0.071 ms |
+| Apply a filter | 0.016 ms | 0.041 ms | 0.482 ms |
+| Build the tree view | 0.017 ms | 0.041 ms | 0.538 ms |
+| Adopt a new round | 0.030 ms | 0.108 ms | 1.697 ms |
+| Group into applications | 0.173 ms | 0.678 ms | 12.359 ms |
+| Apps model with aggregates | 0.113 ms | 0.907 ms | 15.321 ms |
+
+What the numbers say. The Processes table is not the problem at any size:
+adopting a new round costs 1.7 ms at 10,000 processes, which is a tenth of a
+frame, and scrolling costs nothing at all because the table is virtualized and
+draws only the visible window. Application grouping is the expensive part, and
+at 10,000 processes rebuilding the Apps model costs 15.3 ms — about one frame.
+On a normal desktop that is 0.9 ms and irrelevant, but the 10,000-process case
+is a known limit rather than a solved one: the grouping runs on the interface
+thread when a round is adopted, and moving it to the sampling thread is the
+obvious next step if that scenario becomes real. It is recorded here rather
+than described as fine.
+
+Not measured here: rendered frame time and dropped frames under scroll. That
+needs a display server and a frame-timing harness, neither of which exists in
+this workspace yet, so no frame-time claim is made.

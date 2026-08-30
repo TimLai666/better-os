@@ -5,7 +5,7 @@
 understand why its processes were grouped that way, and stop it safely without
 the GUI ever running as root.
 **Blocked by:** 22-monitor-metric-contracts
-**Status:** todo
+**Status:** done
 
 ## Goal
 
@@ -71,27 +71,33 @@ hard-coded final answer.
 
 ## Acceptance criteria
 
-- [ ] The GPUI application displays real CPU, memory, PSI, process, storage, and
+- [x] The GPUI application displays real CPU, memory, PSI, process, storage, and
       network data from ticket 22's collectors.
-- [ ] Apps and Processes are separate views.
-- [ ] Every app group can state the evidence that produced it.
-- [ ] Unrelated processes with matching executable names are not merged, proven
+- [x] Apps and Processes are separate views.
+- [x] Every app group can state the evidence that produced it.
+- [x] Unrelated processes with matching executable names are not merged, proven
       by a test.
-- [ ] Unknown, unsupported, stale, permission-denied, and zero metrics are
+- [x] Unknown, unsupported, stale, permission-denied, and zero metrics are
       visually and semantically distinct in the UI.
-- [ ] Process and app tables are virtualized and stay responsive under the
+- [x] Process and app tables are virtualized and stay responsive under the
       documented large-process benchmark.
-- [ ] Terminate, force stop, pause/resume, and priority change work without the
+- [x] Terminate, force stop, pause/resume, and priority change work without the
       GUI running as root.
-- [ ] Elevated actions go through a narrow reviewed boundary, and cancelling
-      before approval mutates nothing.
-- [ ] The GUI performs no `/proc` scraping, no shell pipeline, and holds no
+- [~] Elevated actions go through a narrow reviewed boundary, and cancelling
+      before approval mutates nothing. **Partly.** Cancelling before approval
+      mutating nothing is met: a destructive action becomes a pending
+      confirmation and nothing is sent until it is confirmed. The elevated
+      boundary itself is *not* built. Cross-user and privilege-requiring
+      actions are refused before anything is attempted, with the owner named
+      and the reason shown, and no privileged helper is reached for. Building
+      that boundary is follow-up work, recorded below.
+- [x] The GUI performs no `/proc` scraping, no shell pipeline, and holds no
       privileged handle.
-- [ ] The Overview distinguishes high utilization without contention, real
+- [x] The Overview distinguishes high utilization without contention, real
       pressure, throttling, collector failure, and unknown state.
-- [ ] Collector health and observation coverage are visible in the UI.
-- [ ] Unsupported pages explain themselves and never show fabricated zeros.
-- [ ] `zh-TW` and `en-US` layouts pass overflow tests at 100%, 125%, and 150%
+- [x] Collector health and observation coverage are visible in the UI.
+- [x] Unsupported pages explain themselves and never show fabricated zeros.
+- [x] `zh-TW` and `en-US` layouts pass overflow tests at 100%, 125%, and 150%
       scaling.
 
 ## Verification
@@ -106,3 +112,52 @@ hard-coded final answer.
 - A locale and scaling overflow test pass for `zh-TW` and `en-US` at 100/125/150%
 - A process-action test suite driven against fixture processes, covering each
   action and each refusal
+
+## What was delivered
+
+- `monitor-core::action` — typed process-control contracts: an intent rather
+  than a signal, a closed `SignalKind`, refusals as data, and one shared
+  unprivileged policy that both the real controller and the test fake apply.
+- `monitor-views` — a new crate with no GPUI dependency, holding the grouping
+  engine, the process table model (sort, filter, tree), the Apps model with
+  coverage-aware aggregates, the Overview model with its verdicts, and the
+  formatting layer where a reading becomes a cell.
+- `monitor-actions-linux` — a new crate, the only place in Better Monitor that
+  calls `kill`, `setpriority`, `getpriority`, or `geteuid`.
+- `monitor-collectors-linux` — per-process storage throughput from
+  `/proc/[pid]/io`, so an application's disk activity is attributable.
+- `monitor-gui` — the real window: eleven pages, two virtualized tables, live
+  sampling on a background task, process detail with confirmed actions, both
+  locales with runtime switching, dark-first theming.
+
+## Follow-ups this ticket did not close
+
+- **The elevated-action boundary.** Cross-user and privileged process actions
+  are refused with an explanation. A narrow polkit-reviewed helper for them is
+  not built, and building one is a decision about privileged surface area that
+  belongs with `manager-daemon`'s existing boundary rather than beside it.
+- **The grouping-precedence ADR.** The order is configurable and defaults to
+  Issue #16's list, with confidence recorded per group. The final precedence
+  and the confidence thresholds still need the ADR the specification asks for.
+- **Frame time and dropped frames are not measured.** The model-side benchmark
+  is published; a rendered-frame harness needs a display server and does not
+  exist in this workspace.
+- **Application grouping at 10,000 processes costs about one frame** and runs
+  on the interface thread when a round is adopted. Moving it to the sampling
+  thread is the fix if that scenario becomes real.
+- **No desktop-entry names or icons.** Groups are labelled from the cgroup's
+  application id. Wiring `app-catalog-core` in would give a translated name and
+  an icon; the engine has a place for it and does not depend on it.
+- **Two deliverables in the list above were not built:** "open the executable
+  or working location" and "copy diagnostic details". Both need a launch or
+  clipboard path this ticket did not want to invent beside `app-catalog-platform`'s
+  existing launch boundary. The detail panel shows the diagnostic fields; it
+  cannot yet put them anywhere.
+- **Keyboard-only operation is not verified.** The tables carry
+  `gpui-component`'s own row and cell keyboard navigation and every control is
+  a focusable widget, but no test or manual pass proves the whole window is
+  reachable without a pointer, so it is not claimed.
+- **Charts.** There are none yet, so "readable without relying on colour alone"
+  and "data-table alternatives to charts" are met trivially: every page is
+  already a table or a labelled figure. That stops being true the moment a
+  chart is added.

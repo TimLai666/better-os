@@ -5,11 +5,16 @@
 //! does not exist is distinguished from a reading of zero. It knows nothing
 //! about Linux, GPUI, or storage, and it must not learn.
 
+pub mod action;
 pub mod collector;
 pub mod metric;
 pub mod observation;
 pub mod store;
 
+pub use action::{
+    ActionAvailability, ActionError, ActionOutcome, ActionRefusal, NICE_MAXIMUM, NICE_MINIMUM,
+    ProcessAction, ProcessController, ProcessTarget, SignalKind, unprivileged_availability,
+};
 pub use collector::{
     Collector, CollectorHealth, CollectorId, CollectorReport, Entity, EntityId, EntityKind,
     MAX_COLLECTOR_ID_LENGTH, Timestamp,
