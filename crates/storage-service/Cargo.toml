@@ -1,0 +1,29 @@
+[package]
+name = "storage-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "storage_service"
+path = "src/lib.rs"
+
+[[bin]]
+name = "better-storage-service"
+path = "src/main.rs"
+
+[dependencies]
+storage-core.workspace = true
+storage-platform.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zbus.workspace = true
+
+[dev-dependencies]
+better-core.workspace = true
+futures-util.workspace = true
+storage-platform = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
