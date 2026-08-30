@@ -1,0 +1,28 @@
+[package]
+name = "touchpad-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "touchpad_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "better-touchpad"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+better-ui.workspace = true
+touchpad-core.workspace = true
+touchpad-platform.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
+gpui-platform.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

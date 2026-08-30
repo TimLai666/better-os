@@ -1,0 +1,23 @@
+I: Bus=0018 Vendor=2808 Product=0233 Version=0000
+N: Name="ASCF1200:00 2808:0233 Touchpad"
+P: Phys=i2c-ASCF1200:00
+S: Sysfs=/devices/platform/AMDI0010:00/i2c-0/i2c-ASCF1200:00/0018:2808:0233.0001/input/input11
+U: Uniq=
+H: Handlers=mouse1 event5 
+B: PROP=5
+B: EV=1b
+B: KEY=e520 10000 0 0 0 0
+B: ABS=2e0800000000003
+B: MSC=20
+
+I: Bus=0005 Vendor=004c Product=0265 Version=0111
+N: Name="Magic Trackpad"
+P: Phys=a1:b2:c3:d4:e5:f6
+S: Sysfs=/devices/virtual/misc/uhid/0005:004C:0265.0002/input/input22
+U: Uniq=a0:b1:c2:d3:e4:f5
+H: Handlers=mouse2 event14 
+B: PROP=5
+B: EV=1b
+B: KEY=e520 10000 0 0 0 0
+B: ABS=2e0800000000003
+B: MSC=20

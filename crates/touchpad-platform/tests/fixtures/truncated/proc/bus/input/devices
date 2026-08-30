@@ -1,0 +1,15 @@
+I: Bus=0018 Vendor=2808 Product=0233 Version=0000
+N: Name="Half-written record"
+P: Phys=i2c-broken
+
+I: Bus=0018 Vendor=2808 Product=0233 Version=0000
+N: Name="ASCF1200:00 2808:0233 Touchpad"
+P: Phys=i2c-ASCF1200:00
+S: Sysfs=/devices/platform/AMDI0010:00/i2c-0/i2c-ASCF1200:00/0018:2808:0233.0001/input/input11
+U: Uniq=
+H: Handlers=mouse1 event5 
+B: PROP=5
+B: EV=1b
+B: KEY=e520 10000 0 0 0 0
+B: ABS=2e0800000000003
+B: MSC=20

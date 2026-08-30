@@ -73,7 +73,7 @@ privileged mutation out of the GUI and CLI.
 | M29 | ticket 26 — Awake full application and trigger rules (needs M28) | agent | todo | workspace gate plus rule-engine evaluation tests and an uninstall smoke releasing inhibitors |
 | M30 | ticket 27 — defaults core, adapters, snapshots, CLI | agent | done | crate-scoped fmt/check/test/clippy gates, 119 tests including snapshot round-trip, external-change matrix, all eight aggregate states, GVDB dconf read fixtures, and five CLI subcommands; full workspace gate ran after merge |
 | M31 | ticket 28 — Manager Defaults GUI review flows (needs M30) | agent | done | full workspace gate green (fmt, check, test, clippy `-D warnings`), 42 manager-gui tests including all eight aggregate states, review selection, per-entry result mapping, both locales at 100/125/150%, a source-level assertion that a plan is executed from exactly one place behind `ApprovedPlan`, an end-to-end plan/apply/restore run over the nine-kind fixture, and an 8 s `ZED_HEADLESS=1` manager-gui smoke |
-| M32 | ticket 29 — Better Touchpad pointer, scrolling, clicking, devices | agent | todo | workspace gate plus apply-and-read-back tests per control and input-latency benchmarks |
+| M32 | ticket 29 — Better Touchpad pointer, scrolling, clicking, devices | agent | done | full workspace gate green (fmt, check, test, clippy `-D warnings`), 170 tests in three new crates, a real `ca.desrt.dconf.Writer.Change` write path proven against the running session and put back, GVariant change-set bytes pinned against GLib's own, device parsing over five fixture kernel trees, both locales at 100/125/150%, and an 8 s `ZED_HEADLESS=1` `better-touchpad` smoke |
 | M33 | ticket 30 — Mac-style gestures, typed actions, backend ADR (needs M32) | agent | todo | workspace gate plus recognizer replay tests, conflict detection, and the gesture backend ADR |
 | M34 | ticket 31 — safe direct-removal external storage | agent | done | crate-scoped gates with 129 tests (13 event-sequence scenarios, 6 private-session-bus), live doctor probe on the host, synthetic state/latency benchmarks; hardware flush-completion benchmarks recorded as a follow-up; full workspace gate ran after merge |
 | M35 | ticket 32 — files-core typed locations and navigation (needs M21, M34) | agent | done | crate-scoped fmt/check/test/clippy gate, 145 tests, a `Cargo.lock` closure test proving no GPUI dependency, and 100,000-entry benchmarks (first batch 1.6 ms, full listing 125 ms, 38.3 MB, cancellation latency 0.021 ms); full workspace gate ran after merge |
@@ -138,14 +138,16 @@ requires.
 
 ## Next Ticket
 
-Tickets 18, 19, 20, 21, 22, 23, 25, 27, 28, 31, and 32 are done. Ready now
-(blockers met): 24 (needs 22, in progress), 26 (needs 25), 29, and 33 (needs
-32, in progress). Remaining dependency edges, in ticket order: 30 needs 29; 34
+Tickets 18, 19, 20, 21, 22, 23, 25, 27, 28, 29, 31, and 32 are done. Ready now
+(blockers met): 24 (needs 22, in progress), 26 (needs 25), 30 (needs 29), and
+33 (needs 32, in progress). Remaining dependency edges, in ticket order: 34
 needs 33; 35 needs 19 and 34.
 
-Ticket 30 now inherits a decision it must make rather than a blank page: ADR
-0008 compares the four gesture integration paths and adopts none, and the
-adapter boundary it would plug into already exists and is tested.
+Ticket 30 now inherits two decisions rather than a blank page: ADR 0008 compares
+the four gesture integration paths and adopts none, and ADR 0010 settles how a
+GNOME setting is actually written. The touchpad half of Issue #3 is finished, so
+30 starts from a control centre that already reads, applies, verifies, and
+restores.
 
 ## Decision Log
 
@@ -310,6 +312,25 @@ adapter boundary it would plug into already exists and is tested.
   clicking a launcher icon can never be the thing that closes the launcher
   timestamp: 2026-08-30
   impacted_ticket_ids: [21]
+- decision: write GNOME settings through `ca.desrt.dconf.Writer.Change` on the
+  session bus, with the change set encoded as `a{smv}` of absolute key paths
+  rationale: ADR 0009 left this as the eventual answer and chose manual action
+  for Better Defaults because the encoder, the D-Bus client, and a live session
+  bus to test against were a separately reviewable change; touchpad settings are
+  dconf keys, so this is the ticket where the path had to exist; dconf's own
+  `(sa{smv})` change-set type is accepted by the service and writes nothing, so
+  the shape was taken off the wire and the encoder is pinned byte-for-byte
+  against GLib's; see ADR 0010
+  timestamp: 2026-08-30
+  impacted_ticket_ids: [27, 29, 30]
+- decision: ship one global touchpad profile, with device identity, per-device
+  capability limits, and a recorded selected device
+  rationale: GNOME's touchpad schema is per-session, not per-device, so a
+  per-device configuration would be a Better OS structure the only shipped
+  backend cannot honour; everything a per-device profile would need later is in
+  place and nothing pretends it already works
+  timestamp: 2026-08-30
+  impacted_ticket_ids: [29]
 - decision: express the global keyboard shortcut as GNOME settings the launcher
   names but never writes
   rationale: an unprivileged application cannot register a system-wide shortcut
@@ -325,6 +346,8 @@ adapter boundary it would plug into already exists and is tested.
 - [Issue #1](https://github.com/TimLai666/better-os/issues/1)
 - [Issue #2: Better Launcher](https://github.com/TimLai666/better-os/issues/2)
 - [Issue #3: Better Touchpad](https://github.com/TimLai666/better-os/issues/3)
+- [Touchpad mapping and measurements](docs/touchpad-sensitivity-mapping.md)
+- [ADR 0010: touchpad ranges and dconf writes](docs/decisions/0010-touchpad-ranges-and-dconf-writes.md)
 - [Issue #4: Applications view and Better App Chooser](https://github.com/TimLai666/better-os/issues/4)
 - [Issue #5: Safe direct-removal external storage](https://github.com/TimLai666/better-os/issues/5)
 - [Issue #6: Better Files](https://github.com/TimLai666/better-os/issues/6)
@@ -965,3 +988,63 @@ ticket 31 records. `MountTable` builds only the volatile identity a mount table
 supports and says so; a consumer holding a real identity from `storage-service`
 should prefer it. A frame can still cost about 28 ms while a 100,000-entry
 directory loads, and precomputing a sort key per entry is the named follow-up.
+
+## Better Touchpad phase 1 (ticket 29)
+
+Better Touchpad is a working control centre: it reads the touchpad, changes it,
+proves the change took by reading it back, and can put everything back the way
+it was. `touchpad-core` holds the configuration, the four states per setting,
+and the apply and restore plans, with no GPUI and no key name in it.
+`touchpad-platform` owns session detection, device enumeration, and the GNOME
+backend. `touchpad-gui` renders and decides nothing.
+
+The largest thing in it is the one ADR 0009 deferred. Better OS can now write a
+dconf key. The path is `ca.desrt.dconf.Writer.Change` on the session bus,
+unprivileged, with the change set encoded by hand in GVariant. Two details are
+worth carrying forward:
+
+- dconf's own change-set type is `(sa{smv})` — a prefix plus relative key names
+  — and sending that shape is *accepted*: the call returns a change tag and no
+  key moves. The blob the service actually acts on is `a{smv}` with absolute key
+  paths. That was found by watching what `dconf write` sends, not by reading a
+  header, and it is why the encoder's bytes are pinned against values GLib
+  produced rather than against itself.
+- A reset is an absent value in the change set, which removes the key so the
+  session's own default applies again. That is what restoring a setting the user
+  had never touched has to do, and it is why "nothing was set here" is a
+  distinct, restorable reading rather than a kind of unknown.
+
+`defaults-platform` can adopt the same path and turn its two GNOME adapters from
+"manual action required" into real applies. That is a behaviour change to Better
+Defaults and its tests, so it is a follow-up rather than something done in
+passing.
+
+Ten of the thirteen controls are live on GNOME 46. The other three are not, and
+this is the ticket's own rule applied to its own headline control: GNOME 46 has
+no touchpad scroll-factor key and no smooth-scroll setting, so vertical scroll
+factor, horizontal scroll factor, and smooth scrolling are shown as unavailable
+with the reason attached instead of as sliders that do nothing. The model
+carries both scroll axes as independent, linkable values and the mock backend
+applies and verifies both, so the behaviour is proven and one table row away
+from being live when GNOME grows the key.
+
+Numbers on the development host: reading every setting back 6.8 µs, staging a
+slider move 1.2 µs, building an apply plan 1.5 µs, migrating a version 1
+configuration 1.5 µs. Against the real dconf service, an apply and its verifying
+read take 3.6–6.0 ms and a restore 3.6–4.7 ms, which is why the GUI does that
+work on the calling thread instead of behind a task. A debug-build window is
+ready 99–134 ms after process start, of which 0.33–0.54 ms is reading the
+desktop. Nothing polls while idle.
+
+Not measured, and not claimed: pointer-event overhead and scroll-event latency.
+Better Touchpad sits in no input path — it writes a setting and the compositor
+does the rest — so there is no Better OS code between a finger and a pointer to
+measure. A gesture adapter would have both, and those figures belong with
+ticket 30.
+
+The default test suite mutates nothing. One `#[ignore]`d test changes a real
+setting, and it also refuses to run without `BETTER_TOUCHPAD_LIVE=1`, so
+`cargo test -- --ignored` on a developer's desktop does not quietly move their
+touchpad either. It covers all three GVariant shapes the backend writes — a
+boolean, a double, and an enumerated string — captures each setting first, and
+asserts the machine ends where it started.

@@ -42,11 +42,18 @@ pub enum GvdbError {
 }
 
 /// One value read out of the database, still typed the way GVariant typed it.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// `Eq` is deliberately absent: one of the decodable types is a double, and a
+/// total equality for a value that can be NaN would be a lie the compiler would
+/// otherwise let this enum tell.
+#[derive(Clone, Debug, PartialEq)]
 pub enum GVariantValue {
     Text(String),
     TextList(Vec<String>),
     Boolean(bool),
+    /// A GVariant `d`. GNOME stores pointer and scroll speeds this way, so
+    /// `touchpad-platform` needs it; no defaults integration declares one.
+    Double(f64),
     /// A type this reader does not decode. The signature is carried so the
     /// refusal can name what it saw.
     Unsupported {
@@ -59,7 +66,7 @@ pub enum GVariantValue {
 }
 
 /// A parsed dconf database: full key paths to typed values.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct GvdbDatabase {
     values: BTreeMap<String, GVariantValue>,
 }
@@ -211,6 +218,10 @@ fn decode_variant(data: &[u8]) -> GVariantValue {
             [0] => GVariantValue::Boolean(false),
             [1] => GVariantValue::Boolean(true),
             _ => GVariantValue::Malformed { signature },
+        },
+        "d" => match child.try_into() {
+            Ok(bytes) => GVariantValue::Double(f64::from_le_bytes(bytes)),
+            Err(_) => GVariantValue::Malformed { signature },
         },
         _ => GVariantValue::Unsupported { signature },
     }
@@ -366,6 +377,23 @@ mod tests {
             decode_variant(&[42, 0, b'i']),
             GVariantValue::Unsupported {
                 signature: "i".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_double_is_decoded_rather_than_reported_as_an_unknown_type() {
+        let mut data = 0.35f64.to_le_bytes().to_vec();
+        data.extend_from_slice(&[0, b'd']);
+        assert_eq!(decode_variant(&data), GVariantValue::Double(0.35));
+    }
+
+    #[test]
+    fn a_double_of_the_wrong_length_is_malformed_rather_than_padded() {
+        assert_eq!(
+            decode_variant(&[1, 2, 3, 0, b'd']),
+            GVariantValue::Malformed {
+                signature: "d".to_string()
             }
         );
     }

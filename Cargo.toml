@@ -33,6 +33,9 @@ members = [
     "crates/monitor-views",
     "crates/monitor-actions-linux",
     "crates/monitor-gui",
+    "crates/touchpad-core",
+    "crates/touchpad-platform",
+    "crates/touchpad-gui",
     "crates/storage-core",
     "crates/storage-platform",
     "crates/storage-service",
@@ -74,6 +77,8 @@ monitor-core = { path = "crates/monitor-core" }
 monitor-collectors-linux = { path = "crates/monitor-collectors-linux" }
 monitor-views = { path = "crates/monitor-views" }
 monitor-actions-linux = { path = "crates/monitor-actions-linux" }
+touchpad-core = { path = "crates/touchpad-core" }
+touchpad-platform = { path = "crates/touchpad-platform" }
 storage-core = { path = "crates/storage-core" }
 storage-platform = { path = "crates/storage-platform" }
 libc = "0.2"
