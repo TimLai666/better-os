@@ -37,6 +37,7 @@ fn page_icon(page: Page) -> IconName {
         Page::Pointer => IconName::Frame,
         Page::Scrolling => IconName::ChevronsUpDown,
         Page::Clicking => IconName::CircleCheck,
+        Page::Gestures => IconName::Maximize,
         Page::Devices => IconName::HardDrive,
         Page::Diagnostics => IconName::Inspector,
     }
@@ -179,7 +180,7 @@ impl TouchpadApp {
             .into_any_element()
     }
 
-    fn heading(&self, title: &'static str, subtitle: &'static str) -> AnyElement {
+    pub(crate) fn heading(&self, title: &'static str, subtitle: &'static str) -> AnyElement {
         v_flex()
             .w_full()
             .min_w_0()
@@ -189,7 +190,7 @@ impl TouchpadApp {
             .into_any_element()
     }
 
-    fn card(&self, child: impl IntoElement, cx: &Context<Self>) -> AnyElement {
+    pub(crate) fn card(&self, child: impl IntoElement, cx: &Context<Self>) -> AnyElement {
         div()
             .w_full()
             .min_w_0()
@@ -727,6 +728,11 @@ impl TouchpadApp {
         let rows = self.model.all_rows();
         let restore_rows = self.model.restore_rows(RestoreScope::All);
         let has_capture = self.model.state().backup().is_some();
+        // Issue #3 wants recognized gesture events and conflict results here,
+        // and no raw input data. A recognized event is a gesture identity, a
+        // phase, and a percentage; the contact positions never leave the
+        // recognizer.
+        let gesture_lines = self.gestures.diagnostics_lines(c);
 
         v_flex()
             .w_full()
@@ -751,6 +757,34 @@ impl TouchpadApp {
                                     "{} · {:?} · {}",
                                     check.id, check.state, check.detail
                                 ))
+                        })),
+                    cx,
+                ),
+            )
+            .child(
+                self.card(
+                    v_flex()
+                        .gap_2()
+                        .child(div().text_sm().font_semibold().child(c.gestures_title))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!(
+                                    "{} · {}",
+                                    self.gestures.adapter().describe().name,
+                                    self.gestures.preset_card(c).status_label
+                                )),
+                        )
+                        .when(gesture_lines.is_empty(), |this| {
+                            this.child(div().text_xs().child(c.test_no_events))
+                        })
+                        .children(gesture_lines.iter().map(|line| {
+                            div()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(line.clone())
                         })),
                     cx,
                 ),
@@ -851,6 +885,7 @@ impl TouchpadApp {
                 None,
                 cx,
             ),
+            Page::Gestures => self.gestures_page(cx),
             Page::Devices => self.devices_page(cx),
             Page::Diagnostics => self.diagnostics_page(cx),
         }

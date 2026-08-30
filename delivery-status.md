@@ -74,7 +74,7 @@ privileged mutation out of the GUI and CLI.
 | M30 | ticket 27 — defaults core, adapters, snapshots, CLI | agent | done | crate-scoped fmt/check/test/clippy gates, 119 tests including snapshot round-trip, external-change matrix, all eight aggregate states, GVDB dconf read fixtures, and five CLI subcommands; full workspace gate ran after merge |
 | M31 | ticket 28 — Manager Defaults GUI review flows (needs M30) | agent | done | full workspace gate green (fmt, check, test, clippy `-D warnings`), 42 manager-gui tests including all eight aggregate states, review selection, per-entry result mapping, both locales at 100/125/150%, a source-level assertion that a plan is executed from exactly one place behind `ApprovedPlan`, an end-to-end plan/apply/restore run over the nine-kind fixture, and an 8 s `ZED_HEADLESS=1` manager-gui smoke |
 | M32 | ticket 29 — Better Touchpad pointer, scrolling, clicking, devices | agent | done | full workspace gate green (fmt, check, test, clippy `-D warnings`), 170 tests in three new crates, a real `ca.desrt.dconf.Writer.Change` write path proven against the running session and put back, GVariant change-set bytes pinned against GLib's own, device parsing over five fixture kernel trees, both locales at 100/125/150%, and an 8 s `ZED_HEADLESS=1` `better-touchpad` smoke |
-| M33 | ticket 30 — Mac-style gestures, typed actions, backend ADR (needs M32) | agent | todo | workspace gate plus recognizer replay tests, conflict detection, and the gesture backend ADR |
+| M33 | ticket 30 — Mac-style gestures, typed actions, backend ADR (needs M32) | agent | done | full workspace gate green (fmt, check, test, clippy `-D warnings`), 1,916 workspace tests including 74 in `touchpad-gestures`, 15 in `touchpad-session`, 14 in `better-actions` and 66 in `touchpad-gui`; recognizer replay suites for activation, reversal, cooldown, thumb detection and every preset gesture; a conflict matrix against a static GNOME 46 model; a type-enforced preview/confirm gate; recognizer benchmarks (104–126 ns per frame, 1.1–2.1 µs per gesture) with dropped and reordered frames counted; ADR 0012; and an 8 s `ZED_HEADLESS=1` smoke opening the Gestures screen by name |
 | M34 | ticket 31 — safe direct-removal external storage | agent | done | crate-scoped gates with 129 tests (13 event-sequence scenarios, 6 private-session-bus), live doctor probe on the host, synthetic state/latency benchmarks; hardware flush-completion benchmarks recorded as a follow-up; full workspace gate ran after merge |
 | M35 | ticket 32 — files-core typed locations and navigation (needs M21, M34) | agent | done | crate-scoped fmt/check/test/clippy gate, 145 tests, a `Cargo.lock` closure test proving no GPUI dependency, and 100,000-entry benchmarks (first batch 1.6 ms, full listing 125 ms, 38.3 MB, cancellation latency 0.021 ms); full workspace gate ran after merge |
 | M36 | ticket 33 — files-operations durable job engine (needs M35) | agent | done | crate-scoped fmt/check/test/clippy gate, 289 tests (134 new in `files-operations`, 11 new for the trash write side), a job that finishes after every handle to it is dropped, cancel-mid-copy leaving no partial destination, and benchmarks that caught a quadratic record write; full workspace gate ran after merge |
@@ -1049,6 +1049,74 @@ setting, and it also refuses to run without `BETTER_TOUCHPAD_LIVE=1`, so
 touchpad either. It covers all three GVariant shapes the backend writes — a
 boolean, a double, and an enumerated string — captures each setting first, and
 asserts the machine ends where it started.
+
+## Better Touchpad phase 2 (ticket 30)
+
+The gesture half exists and no gesture reaches the desktop. Both halves of that
+sentence are deliberate.
+
+What exists is everything above the backend. `better-actions` is a closed
+catalog of typed desktop actions with no variant that can carry a command, a
+path, or free text; the only user text in it is a keyboard shortcut whose key
+comes from a fixed table behind a private field, so "no configuration path can
+produce a shell string" is a property of the type rather than of a validator.
+`touchpad-gestures` holds the gesture model, the Mac-style preset exactly as
+Issue #3's table specifies it, conflict detection, the recognizer, and the
+apply plan. `touchpad-session` is the invocation boundary, and its trait takes
+`DesktopAction` values and a progress fraction — there is no method on it a
+configuration file could reach with a string.
+
+The recognizer is the part worth reading. It takes frames of labelled contact
+points in normalized pad coordinates and emits begin, progress,
+threshold-crossed, complete, and cancel, and it holds no clock: every frame
+carries its own timestamp, so the cooldown is replayed rather than slept
+through. Three rules in it are tested rather than argued: nothing is emitted
+until a gesture arms, so a hand resting on the pad cannot flap a surface; the
+value at release decides, so a gesture that went far and came back cancels; and
+a changed contact count cancels rather than degrading into a different gesture.
+A labelled thumb is what separates thumb-and-three from four fingers, which
+matters because the preset contains both at four contact points.
+
+**No adapter in this build reaches GNOME Shell.** ADR 0012 chooses the minimal
+GNOME Shell adapter as the direction, conditional on a language-policy
+exception that has not been granted, and records what would change the choice: a
+written security review would open the libinput path, an upstream Wayland
+gesture protocol would supersede both, and a refusal of the exception leaves
+Better Touchpad with gesture configuration and no gesture. The GUI renders that
+last state honestly rather than treating it as an error — the recording adapter
+says out loud that it performs no system action, the live-testing switch is
+disabled while that is true, and every unsupported action carries its reason.
+
+The one real route that exists is the launcher's.
+`LauncherActivationAdapter` sends the two launcher actions through
+`launcher-platform`'s own activation path, the same one a second launch and a
+dock use, and reports everything else unsupported.
+
+Applying the preset is a preview, then a decision per conflict, then a
+confirmation, and the gate is a type: `ApprovedGesturePlan` has private fields
+and one constructor, which refuses while any conflict is undecided and again
+without the confirmation flag. Against the GNOME 46 model the preset collides
+four times — both of the shell's swipe trackers accept three *and* four
+contacts — and choosing "use the Better OS gesture" reports the built-in half as
+something no backend in this build can change, rather than claiming it happened.
+
+The gesture configuration and its capture are two files of their own beside the
+pointer, scrolling, and clicking ones, written through `touchpad-core`'s
+existing atomic-write and write-once machinery. That is a safety property: a
+test applies a preset with a deliberately failing adapter and asserts the
+settings configuration and its backup are untouched. Three failed runs in a row
+turn the gesture integration off by itself and leave the bindings in place to be
+turned back on.
+
+Numbers, all over replayed synthetic frames because nothing produces real ones:
+104–126 ns to recognize one frame, and 1.1–2.1 µs for a four-finger swipe from
+begin to complete. Dropped and reordered frames are counted rather than assumed, and a
+reordered frame is dropped instead of dragging a gesture backwards.
+
+Not measured and not claimed: the thresholds. Activation 0.6, cancellation 0.25,
+cooldown 350 ms, and the travel distances in `RecognizerScale` are recorded
+starting values in one struct each, chosen to match `launcher-platform` where
+the two sides share a gesture. None of them has been tried against a hand.
 
 ### Ticket 24 — Better Monitor service, history, incidents, export, CLI
 

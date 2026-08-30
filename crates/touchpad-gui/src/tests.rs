@@ -58,6 +58,16 @@ fn sensitivity(value: f64) -> SettingValue {
 }
 
 #[test]
+fn every_screen_name_parses_back_to_itself_and_an_unknown_one_does_not() {
+    for page in Page::ALL {
+        assert_eq!(Page::parse(page.key()), Some(page));
+    }
+    assert_eq!(Page::parse("telepathy"), None);
+    // The headless launch smoke opens this one by name.
+    assert_eq!(Page::parse("gestures"), Some(Page::Gestures));
+}
+
+#[test]
 fn every_setting_appears_on_exactly_one_screen() {
     let model = model();
     let mut seen: Vec<SettingId> = Page::ALL

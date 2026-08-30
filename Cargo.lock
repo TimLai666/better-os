@@ -758,6 +758,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "better-actions"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "better-core"
 version = "0.1.0"
 dependencies = [
@@ -7464,9 +7473,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "touchpad-gestures"
+version = "0.1.0"
+dependencies = [
+ "better-actions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "touchpad-core",
+ "touchpad-session",
+]
+
+[[package]]
 name = "touchpad-gui"
 version = "0.1.0"
 dependencies = [
+ "better-actions",
  "better-ui",
  "gpui",
  "gpui-component",
@@ -7474,7 +7497,9 @@ dependencies = [
  "gpui_platform",
  "tempfile",
  "touchpad-core",
+ "touchpad-gestures",
  "touchpad-platform",
+ "touchpad-session",
 ]
 
 [[package]]
@@ -7487,6 +7512,16 @@ dependencies = [
  "tokio",
  "touchpad-core",
  "zbus",
+]
+
+[[package]]
+name = "touchpad-session"
+version = "0.1.0"
+dependencies = [
+ "better-actions",
+ "launcher-platform",
+ "serde",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

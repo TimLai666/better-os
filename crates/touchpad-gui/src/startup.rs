@@ -9,12 +9,15 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use touchpad_core::{StoreError, TouchpadConfig, TouchpadStore};
+use touchpad_gestures::{GestureConfig, GestureStore};
 use touchpad_platform::{
     DeviceInventory, GnomeBackend, MockBackend, Roots, Session, TouchpadBackend, devices,
 };
+use touchpad_session::MockSessionAdapter;
 
+use crate::gestures_model::GestureScreen;
 use crate::i18n::Locale;
-use crate::model::TouchpadModel;
+use crate::model::{Page, TouchpadModel};
 
 /// How to build the application.
 pub struct StartupOptions {
@@ -29,6 +32,10 @@ pub struct StartupOptions {
     /// Use a backend that changes nothing outside its own memory. Only tests
     /// set this.
     pub in_memory: bool,
+    /// The screen to open on. The headless launch smoke uses it to prove a
+    /// particular screen renders, rather than only the one the window happens
+    /// to start on.
+    pub page: Page,
 }
 
 impl Default for StartupOptions {
@@ -39,6 +46,7 @@ impl Default for StartupOptions {
             locale: Locale::System,
             offline: false,
             in_memory: false,
+            page: Page::Overview,
         }
     }
 }
@@ -47,6 +55,9 @@ pub struct Startup {
     pub model: TouchpadModel,
     pub backend: Box<dyn TouchpadBackend>,
     pub store: TouchpadStore,
+    pub gestures: GestureScreen,
+    pub gesture_store: GestureStore,
+    pub page: Page,
 }
 
 impl Startup {
@@ -82,10 +93,33 @@ impl Startup {
             model.adopt_backup(backup);
         }
 
+        // The gesture half keeps its own two files and its own adapter, so a
+        // gesture configuration that will not parse, or an adapter that
+        // fails, cannot reach pointer movement or two-finger scrolling.
+        let gesture_store = GestureStore::at(&options.store_directory);
+        let (gesture_config, gesture_problem) = match gesture_store.load_config() {
+            Ok(config) => (config, None),
+            Err(error) => (GestureConfig::default(), Some(error.to_string())),
+        };
+        let captured = gesture_store.load_capture().ok().flatten();
+        // The recording adapter is the only one this build has. It reports
+        // that it performs no system action, and the screen says so rather
+        // than implying a gesture reaches the desktop.
+        let mut gestures = GestureScreen::new(
+            gesture_config,
+            captured,
+            Box::new(MockSessionAdapter::new()),
+        );
+        gestures.verify_all();
+        gestures.set_problem(gesture_problem);
+
         Self {
             model,
             backend,
             store,
+            gestures,
+            gesture_store,
+            page: options.page,
         }
     }
 }

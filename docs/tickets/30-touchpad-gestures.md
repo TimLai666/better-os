@@ -5,7 +5,7 @@
 it would conflict with before anything changes, and can watch the recognizer
 work in a test mode that performs no system action.
 **Blocked by:** 29-touchpad-settings
-**Status:** todo
+**Status:** done
 
 ## Goal
 
@@ -80,31 +80,71 @@ adapter question; the thresholds ship as recorded starting values.
 
 ## Acceptance criteria
 
-- [ ] The built-in Mac-style preset maps thumb plus three fingers inward to
+- [x] The built-in Mac-style preset maps thumb plus three fingers inward to
       Better Launcher and outward to Show Desktop.
-- [ ] Four-finger up, down, left, and right map to the documented desktop
+- [x] Four-finger up, down, left, and right map to the documented desktop
       actions.
-- [ ] Gesture contact count, direction, action, thresholds, cooldown, and
+- [x] Gesture contact count, direction, action, thresholds, cooldown, and
       enabled state are all configurable per gesture.
-- [ ] Five-finger mappings are supported as custom gestures and are not the
+- [x] Five-finger mappings are supported as custom gestures and are not the
       default for Launcher or Show Desktop.
-- [ ] The typed action catalog contains every listed action and cannot express
+- [x] The typed action catalog contains every listed action and cannot express
       an arbitrary shell command.
-- [ ] Existing GNOME gesture conflicts are detected before a preset is applied,
+- [x] Existing GNOME gesture conflicts are detected before a preset is applied,
       and a conflicting gesture is only replaced after preview and explicit
       confirmation.
-- [ ] Test mode visualizes recognition without triggering system actions by
+- [x] Test mode visualizes recognition without triggering system actions by
       default.
-- [ ] Applying the preset captures the previous gesture configuration first and
+- [x] Applying the preset captures the previous gesture configuration first and
       can restore it.
-- [ ] Unsupported hardware or sessions show explicit explanations.
-- [ ] A failing gesture adapter is disabled automatically and does not break
+- [x] Unsupported hardware or sessions show explicit explanations.
+- [x] A failing gesture adapter is disabled automatically and does not break
       pointer movement or two-finger scrolling.
-- [ ] An ADR compares all four production gesture backend options and records
+- [x] An ADR compares all four production gesture backend options and records
       the choice with its rejected alternatives.
-- [ ] Keyboard alternatives remain available when gesture support is absent.
-- [ ] `zh-TW` and `en-US` layouts pass overflow tests at 100%, 125%, and 150%
+- [x] Keyboard alternatives remain available when gesture support is absent.
+- [x] `zh-TW` and `en-US` layouts pass overflow tests at 100%, 125%, and 150%
       scaling.
+
+## What actually shipped
+
+Three new crates: `better-actions` (14 tests), `touchpad-session` (15), and
+`touchpad-gestures` (74), plus the Gestures screen in `touchpad-gui` (66 tests
+in that crate) and [ADR 0012](../decisions/0012-touchpad-gesture-backend.md).
+
+Four things are worth carrying forward.
+
+**No gesture backend ships, and the screen says so.** The ADR chooses the
+minimal GNOME Shell adapter, conditional on a language-policy exception nobody
+has granted yet. Until then `MockSessionAdapter` is the only adapter, it reports
+`performs_system_actions: false`, the live-testing switch is disabled while that
+is true, and every unsupported action carries its reason on the row.
+
+**The launcher action has a real route already.**
+`touchpad_session::LauncherActivationAdapter` sends `Activate` and
+`ActivateAction("close")` through `launcher-platform`'s own `NameRegistry`,
+which is the path a second launch and a dock already use. It reinvents nothing,
+reports every other action unsupported, and is tested against a fake registry so
+no test needs a bus.
+
+**The two-finger rows have no support anywhere.** Application back, forward,
+zoom, and rotate are in the preset because Issue #3's table puts them there, and
+every adapter reports them unsupported, so they arrive in the plan preview as
+unsupported rather than as bindings that quietly do nothing. How deep that
+support goes is one of Issue #3's explicitly deferred decisions.
+
+**The GNOME conflict model is a static model, not a probe.** GNOME's swipe
+trackers are compiled into the shell and expose nothing to read, so
+`GNOME_46_GESTURES` is a dated claim this repository makes: both trackers accept
+three *and* four contacts, which is why the Mac-style preset collides with four
+of them. Re-checking it is part of supporting a newer GNOME.
+
+Measured on the development host: 104–126 ns to recognize one frame, and
+1.1–2.1 µs for a whole four-finger swipe from begin to complete. Dropped and reordered frames
+are counted rather than assumed — a reordered frame is dropped instead of
+dragging a gesture backwards — and both are asserted against streams the
+benchmark deliberately damages. All of it is over replayed synthetic frames,
+because no backend in this build produces real ones.
 
 ## Verification
 

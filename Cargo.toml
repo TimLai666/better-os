@@ -11,6 +11,7 @@ members = [
     "crates/awake-service",
     "crates/awake-store",
     "crates/awake-tray",
+    "crates/better-actions",
     "crates/better-core",
     "crates/better-ui",
     "crates/files-core",
@@ -41,6 +42,8 @@ members = [
     "crates/monitor-gui",
     "crates/touchpad-core",
     "crates/touchpad-platform",
+    "crates/touchpad-gestures",
+    "crates/touchpad-session",
     "crates/touchpad-gui",
     "crates/storage-core",
     "crates/storage-platform",
@@ -65,6 +68,7 @@ awake-service = { path = "crates/awake-service" }
 awake-store = { path = "crates/awake-store" }
 awake-gui = { path = "crates/awake-gui" }
 awake-tray = { path = "crates/awake-tray" }
+better-actions = { path = "crates/better-actions" }
 better-core = { path = "crates/better-core" }
 better-ui = { path = "crates/better-ui" }
 files-core = { path = "crates/files-core" }
@@ -89,7 +93,9 @@ monitor-export = { path = "crates/monitor-export" }
 monitor-service = { path = "crates/monitor-service" }
 monitor-actions-linux = { path = "crates/monitor-actions-linux" }
 touchpad-core = { path = "crates/touchpad-core" }
+touchpad-gestures = { path = "crates/touchpad-gestures" }
 touchpad-platform = { path = "crates/touchpad-platform" }
+touchpad-session = { path = "crates/touchpad-session" }
 storage-core = { path = "crates/storage-core" }
 storage-platform = { path = "crates/storage-platform" }
 libc = "0.2"

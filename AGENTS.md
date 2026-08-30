@@ -98,8 +98,37 @@ GUI or dependency compiles when the relevant command was not executed.
   whether the assets crate can be dropped, before a release claims otherwise.
 - Better Launcher ships no gesture adapter and Better Defaults does not yet
   apply its keyboard shortcut, so the only activation paths that work out of
-  the box are the desktop entry and running the binary. ADR 0008 and ticket 30
-  own the first gap; ticket 27 owns the second.
+  the box are the desktop entry and running the binary. ADR 0012 has now chosen
+  the direction for the first gap and deliberately implements none of it;
+  ticket 27 owns the second.
+- Decide whether Better OS takes a bounded GJS exception to the Rust-only
+  language policy. ADR 0012 chooses the minimal GNOME Shell adapter as the
+  production gesture backend *conditional on that exception*, and it is a
+  policy decision rather than an engineering one. Until it is taken, Better
+  Touchpad ships gesture configuration and no gesture backend, which the
+  Gestures screen states rather than hides. Refusing it is a survivable
+  outcome; leaving it undecided blocks Issue #3's phase 3.
+- Write the security review the libinput gesture path needs, or record that it
+  will not be written. ADR 0008 made it a precondition and ADR 0012 keeps it: a
+  user-session process that can read the touchpad can read the keyboard, and
+  that risk needs an owner and a document, not a paragraph in a pull request.
+- `touchpad_gestures::conflict::GNOME_46_GESTURES` is a static model of GNOME
+  46's own swipe trackers, not a probe — the shell compiles them in and exposes
+  nothing to read. Both trackers accept three *and* four contacts, which is why
+  the Mac-style preset collides with four of them. Re-check the model before
+  claiming support for a newer GNOME, and produce the hardware and release
+  matrix ADR 0008 asked for; nothing here has been tested against GNOME 47, 48,
+  or 49.
+- Better Touchpad's gesture thresholds are recorded starting values, not a
+  tuned curve. Activation 0.6, cancellation 0.25, cooldown 350 ms, and the
+  travel distances in `RecognizerScale` have never been tried against a hand,
+  and Issue #3 defers the curve. The recognizer's 104–126 ns per frame is over
+  replayed synthetic frames; no backend in this build produces real ones, so
+  there is still no end-to-end gesture latency to quote.
+- Decide how deep two-finger application support goes. The Mac-style preset
+  carries application back, forward, zoom, and rotate because Issue #3's table
+  does, and every adapter reports all four unsupported. A four-row preview that
+  says "no backend can do this yet" is honest but it is not a feature.
 - Let the GNOME defaults adapters adopt the dconf write path that now exists.
   Ticket 29 built it — `ca.desrt.dconf.Writer.Change` over the session bus, with
   the change set encoded in `touchpad-platform`'s `gvariant` module and pinned

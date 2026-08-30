@@ -28,16 +28,18 @@ pub enum Page {
     Pointer,
     Scrolling,
     Clicking,
+    Gestures,
     Devices,
     Diagnostics,
 }
 
 impl Page {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Overview,
         Self::Pointer,
         Self::Scrolling,
         Self::Clicking,
+        Self::Gestures,
         Self::Devices,
         Self::Diagnostics,
     ];
@@ -51,12 +53,40 @@ impl Page {
         }
     }
 
+    /// The screen a `--page` argument names. Anything else is the overview,
+    /// because an unrecognized screen name is not worth refusing to start over.
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "overview" => Self::Overview,
+            "pointer" => Self::Pointer,
+            "scrolling" => Self::Scrolling,
+            "clicking" => Self::Clicking,
+            "gestures" => Self::Gestures,
+            "devices" => Self::Devices,
+            "diagnostics" => Self::Diagnostics,
+            _ => return None,
+        })
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Overview => "overview",
+            Self::Pointer => "pointer",
+            Self::Scrolling => "scrolling",
+            Self::Clicking => "clicking",
+            Self::Gestures => "gestures",
+            Self::Devices => "devices",
+            Self::Diagnostics => "diagnostics",
+        }
+    }
+
     pub fn label(self, c: &'static Copy) -> &'static str {
         match self {
             Self::Overview => c.nav_overview,
             Self::Pointer => c.nav_pointer,
             Self::Scrolling => c.nav_scrolling,
             Self::Clicking => c.nav_clicking,
+            Self::Gestures => c.nav_gestures,
             Self::Devices => c.nav_devices,
             Self::Diagnostics => c.nav_diagnostics,
         }

@@ -11,9 +11,13 @@
 //! over this crate's own source rather than leaving it to review.
 
 pub mod app;
+pub mod gestures_model;
+#[cfg(test)]
+mod gestures_tests;
 pub mod i18n;
 pub mod model;
 pub mod pages;
+pub mod pages_gestures;
 pub mod startup;
 #[cfg(test)]
 mod tests;
