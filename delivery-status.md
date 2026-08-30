@@ -78,7 +78,7 @@ privileged mutation out of the GUI and CLI.
 | M34 | ticket 31 — safe direct-removal external storage | agent | done | crate-scoped gates with 129 tests (13 event-sequence scenarios, 6 private-session-bus), live doctor probe on the host, synthetic state/latency benchmarks; hardware flush-completion benchmarks recorded as a follow-up; full workspace gate ran after merge |
 | M35 | ticket 32 — files-core typed locations and navigation (needs M21, M34) | agent | done | crate-scoped fmt/check/test/clippy gate, 145 tests, a `Cargo.lock` closure test proving no GPUI dependency, and 100,000-entry benchmarks (first batch 1.6 ms, full listing 125 ms, 38.3 MB, cancellation latency 0.021 ms); full workspace gate ran after merge |
 | M36 | ticket 33 — files-operations durable job engine (needs M35) | agent | done | crate-scoped fmt/check/test/clippy gate, 289 tests (134 new in `files-operations`, 11 new for the trash write side), a job that finishes after every handle to it is dropped, cancel-mid-copy leaving no partial destination, and benchmarks that caught a quadratic record write |
-| M37 | ticket 34 — files-gui window, sidebar, views, operations (needs M36) | agent | todo | workspace gate plus the 100,000-entry progressive render benchmark and bookmark persistence tests |
+| M37 | ticket 34 — files-gui window, sidebar, views, operations (needs M36) | agent | in review on `ticket-34`, not merged | crate-scoped fmt/check/test/clippy gate over the four `files-*` crates, 66 new `files-gui` tests (356 across the four), a session dropped mid-copy whose 8 MB job still completed, a bookmark file round-tripped byte for byte with its foreign lines intact, both locales at 100/125/150%, an 8 s `ZED_HEADLESS=1` `better-files` smoke, and a 100,000-entry view-model benchmark (first visible batch 3.7 ms, full model 170 ms, one screenful 0.011 ms against 37.2 ms for every row); the workspace gate is still outstanding |
 | M38 | ticket 35 — Applications, devices, preview, search, benchmarks (needs M22, M37) | agent | todo | workspace gate plus the full Better Files benchmark harness and manifest validation |
 
 Every milestone from M21 onward shares the same base gate: `cargo fmt --all --
@@ -138,10 +138,10 @@ requires.
 
 ## Next Ticket
 
-Tickets 18, 19, 20, 21, 22, 23, 25, 27, 28, 31, 32, and 33 are done. Ready now
-(blockers met): 24 (needs 22, in progress), 26 (needs 25), 29, and 34 (needs
-33). Remaining dependency edges, in ticket order: 30 needs 29; 35 needs 19 and
-34.
+Tickets 18, 19, 20, 21, 22, 23, 25, 27, 28, 31, 32, and 33 are done; 34 is
+implemented and in review on its own branch. Ready now (blockers met): 24 (needs
+22, in progress), 26 (needs 25), 29, and 35 (needs 19 and 34, in review).
+Remaining dependency edge: 30 needs 29.
 
 Ticket 30 now inherits a decision it must make rather than a blank page: ADR
 0008 compares the four gesture integration paths and adopts none, and the
@@ -1025,3 +1025,75 @@ home-trash fallback is what a removable disk gets. Hard links are not preserved
 between separately copied files. And the large-file benchmark numbers are
 page-cache numbers: 5.3 GB/s is memory bandwidth, and no real spinning disk,
 USB device, or network share has been measured.
+
+### Ticket 34 — Better Files window, sidebar, views, operation center
+
+One new crate on branch `ticket-34`, which also carries the merge of
+`ticket-33`: `files-gui`, plus the `better-files` binary. One line changed in
+`files-core` — `Pane::resume` — and nothing else outside the new crate except
+the workspace member list, this file, the ticket, and a new
+`docs/files-gui-policy.md`.
+
+The crate is split so that almost none of it needs a display server. `session`,
+`content`, `sidebar`, `toolbar`, `bookmarks`, `opcenter`, `commands`, `keys`,
+`prefs`, `layout`, and `format` hold every decision the file manager makes and
+mention no GPUI; `app`, `render`, `shell`, `views`, and `panels` are the layer
+that draws them. All 66 tests run against the same types the renderer uses, so
+"is Back enabled", "did the bookmark survive a restart", and "does a paused job
+offer Resume" are answered without a window.
+
+Three properties are held by ownership rather than by discipline.
+
+One engine serves the process. `files_gui::shared_engine` is a `OnceLock`
+handing out one `Arc<JobEngine>`, and `FilesSession` takes it as a parameter
+rather than building one. Milestone M37's test drops a whole session while an
+8 MB copy is running, then finds the copy completed, the destination the right
+size, and the engine's own snapshot still consistent. Closing a window is not an
+event the engine can observe.
+
+Both view modes are one `uniform_list`, and a row is formatted inside its range
+callback from the entries `DirectoryModel` already holds. Nothing is precomputed
+and nothing is cached, so a batch arriving mid-scroll costs a merge in the model
+and nothing in the view. The benchmark measures the contrast rather than
+asserting it: 0.011 ms for a screenful against 37.2 ms to format all 100,000
+rows, which is what a view that built every row would pay per frame.
+
+Incremental insertion cannot move the selection, because the selection names
+entries and the keyboard cursor is re-derived from the selection's own cursor
+identity whenever entries arrive. Twenty entries dropped above the cursor leave
+the same entry focused at its new index.
+
+Two defects came from the tests rather than from review. A permanent delete was
+refused outright when the session had no trash directory, although deleting a
+file by path needs no trash at all; only emptying an item out of the trash does.
+And the English "no external devices" empty state does not fit the sidebar at
+125%, which is why the empty-state sentences are drawn as wrapping prose and are
+asserted separately from the truncating row labels.
+
+The benchmark found the one number worth watching: rediscovering the focused
+entry's index by walking the visible list costs 11.2 ms on 100,000 entries. It
+is paid only when the cursor moved by something other than the view itself — the
+cached path is free — and a position index in `DirectoryModel` would remove it.
+That is the named follow-up.
+
+Gates were crate-scoped to avoid rebuilding the workspace in the worktree:
+`cargo fmt --all -- --check`, then `cargo check --all-targets`, `cargo test`,
+and `cargo clippy --all-targets -- -D warnings` for `files-core`,
+`files-platform`, `files-operations`, and `files-gui`, all passing, 356 tests.
+An 8-second `ZED_HEADLESS=1` launch of `better-files` stayed alive with no
+output. The workspace gate belongs on the main checkout after merge.
+
+What this ticket did not do, and should not be assumed done: the Applications
+location lists as not-listable and opening a file reports that no application is
+wired up yet, because the shared catalog and Better App Chooser are ticket 35.
+Device rows are built from the mount table and every one of them reads as
+`Unknown` removal state, which is the honest answer without the storage service
+and never reads as safe to unplug; ticket 35 owns that wiring. Dragging a folder
+*into* Favorites is a real GPUI drag; dragging a favourite *within* the sidebar
+to reorder is modelled and reachable from buttons and from `Alt+Up`/`Alt+Down`,
+but the pointer gesture inside the sidebar is not wired. Restoring a recently
+closed tab is implemented although the ticket's out-of-scope list defers it.
+Modified times are shown in UTC, because there is no time-zone dependency in the
+workspace and inventing one from `TZ` would be wrong for half the year. Split
+view, column view, opening a terminal, per-folder preferences, preview, and
+search are absent as the ticket says.

@@ -16,6 +16,7 @@ members = [
     "crates/files-core",
     "crates/files-platform",
     "crates/files-operations",
+    "crates/files-gui",
     "crates/launcher-core",
     "crates/launcher-platform",
     "crates/launcher-gui",
@@ -62,6 +63,7 @@ better-ui = { path = "crates/better-ui" }
 files-core = { path = "crates/files-core" }
 files-platform = { path = "crates/files-platform" }
 files-operations = { path = "crates/files-operations" }
+files-gui = { path = "crates/files-gui" }
 launcher-core = { path = "crates/launcher-core" }
 launcher-platform = { path = "crates/launcher-platform" }
 launcher-gui = { path = "crates/launcher-gui" }
