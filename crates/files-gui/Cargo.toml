@@ -16,11 +16,20 @@ test = false
 bench = false
 
 [dependencies]
+app-catalog-core.workspace = true
+app-catalog-platform.workspace = true
+app-chooser-core.workspace = true
+app-chooser-gui.workspace = true
 better-ui.workspace = true
 files-core.workspace = true
 files-platform.workspace = true
 files-operations.workspace = true
+files-preview.workspace = true
+files-search.workspace = true
 storage-core.workspace = true
+storage-platform.workspace = true
+storage-service.workspace = true
+tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 gpui.workspace = true
@@ -30,8 +39,14 @@ gpui-platform.workspace = true
 smol = "2"
 
 [dev-dependencies]
+better-core.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile.workspace = true
 
 [[bench]]
 name = "view_model"
+harness = false
+
+[[bench]]
+name = "files_suite"
 harness = false

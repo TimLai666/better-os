@@ -17,16 +17,22 @@
 //! [`session::FilesSession`]; the engine, its worker threads, and its running
 //! jobs are untouched.
 
+pub mod apps;
 pub mod bookmarks;
 pub mod commands;
 pub mod content;
+pub mod devicelink;
+pub mod devices;
 pub mod format;
 pub mod i18n;
 pub mod keys;
 pub mod layout;
 pub mod opcenter;
+pub mod openwith;
 pub mod prefs;
+pub mod preview;
 pub mod reader;
+pub mod search;
 pub mod session;
 pub mod sidebar;
 pub mod toolbar;
@@ -37,6 +43,8 @@ mod render;
 mod shell;
 mod views;
 
+#[cfg(test)]
+mod integration_tests;
 #[cfg(test)]
 mod tests;
 

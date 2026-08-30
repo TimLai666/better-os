@@ -13,11 +13,13 @@
 //! places where privilege would buy a better answer, and issue #5 defers that
 //! boundary to an ADR rather than to this code.
 
+pub mod client;
 pub mod coordinator;
 pub mod protocol;
 pub mod service;
 pub mod store;
 
+pub use client::{ClientError, StorageClient};
 pub use coordinator::{Clock, ServiceError, StorageCoordinator};
 pub use protocol::{
     DeviceListDocument, DeviceReport, EjectReport, OperationNotice, PROTOCOL_VERSION,

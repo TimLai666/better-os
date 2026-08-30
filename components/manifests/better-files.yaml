@@ -1,0 +1,171 @@
+# Better Files. The checksums below are placeholders: `packaging/build-deb.sh`
+# builds no `better-files` package yet, so this manifest is validated on every
+# test run and is not installable. The same caveat `better-launcher.yaml` and
+# `better-storage.yaml` carry, for the same reason.
+schema_version: 2
+id: better-files
+display_name: Better Files
+component_type: replacement
+version: 0.1.0
+summary: A file manager whose operations are durable jobs and whose devices say when they are safe to unplug.
+icon: files
+restart: application
+targets:
+  distributions: [zorin, ubuntu]
+  releases: [22.04, 24.04]
+  architectures: [amd64, arm64]
+# Replacement, and only when the user chooses it. Installing the package does
+# not make Better Files the default file manager: that is the
+# `default-file-manager` integration below, applied through Better Defaults and
+# restorable to the value that was captured before the change.
+replaces:
+  - org.gnome.Nautilus
+artifacts:
+  - release: "22.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-files_0.1.0_ubuntu-22.04_amd64.deb
+    sha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+    release_asset: better-files_0.1.0_ubuntu-22.04_amd64.deb
+  - release: "22.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-files_0.1.0_ubuntu-22.04_arm64.deb
+    sha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+    release_asset: better-files_0.1.0_ubuntu-22.04_arm64.deb
+  - release: "24.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-files_0.1.0_ubuntu-24.04_amd64.deb
+    sha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+    release_asset: better-files_0.1.0_ubuntu-24.04_amd64.deb
+  - release: "24.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-files_0.1.0_ubuntu-24.04_arm64.deb
+    sha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+    release_asset: better-files_0.1.0_ubuntu-24.04_arm64.deb
+lifecycle:
+  install: plan-local-apt-install
+  enable: plan-enable
+  disable: plan-disable
+  remove: plan-remove
+  rollback: plan-rollback
+# Desktop integration and every MIME association path Better Files can touch.
+# Each declaration names the exact keys it writes, and the restore policy is
+# `captured-value` for every one of them: the value that was there before the
+# change is recorded before the first write and is what a restore returns to.
+default_integrations:
+  - id: default-file-manager
+    kind: application-handler
+    exclusivity: exclusive
+    target:
+      desired:
+        type: desktop_entry
+        value: io.betteros.Files.desktop
+      keys: [inode/directory]
+    platforms: [ubuntu, zorin]
+    sessions: [gnome]
+    apply_adapter: xdg-default-app
+    verify_adapter: xdg-effective-default
+    restore_policy: captured-value
+    privileges: user
+    session_effect: immediate
+    health_prerequisites: [installed, enabled, healthy]
+
+  - id: file-manager-tool-entry-point
+    kind: tool-entry-point
+    exclusivity: exclusive
+    target:
+      desired:
+        type: desktop_entry
+        value: io.betteros.Files.desktop
+      keys: ["/org/gnome/desktop/applications/file-manager"]
+    platforms: [ubuntu, zorin]
+    sessions: [gnome]
+    apply_adapter: tool-entry-point
+    verify_adapter: tool-entry-point
+    restore_policy: captured-value
+    privileges: user
+    session_effect: immediate
+    health_prerequisites: [installed, enabled]
+
+  - id: overview-entry
+    kind: desktop-launcher-entry
+    exclusivity: shared
+    target:
+      desired:
+        type: desktop_entry
+        value: io.betteros.Files.desktop
+      keys: ["/org/gnome/shell/favorite-apps"]
+    platforms: [zorin]
+    sessions: [gnome]
+    apply_adapter: desktop-launcher-entry
+    verify_adapter: desktop-launcher-entry
+    restore_policy: leave-in-place
+    privileges: user
+    session_effect: immediate
+    health_prerequisites: [installed, enabled]
+health_checks:
+  - files-desktop-entry-check
+  - files-application-catalog-check
+  - files-job-store-check
+  - files-storage-service-check
+benchmarks:
+  - name: large-directory-first-content
+    workload: directory-with-100000-small-entries
+    metric: milliseconds-to-first-visible-entries
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 5
+  - name: large-directory-full-model
+    workload: directory-with-100000-small-entries
+    metric: milliseconds-to-complete-model
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 5
+  - name: current-directory-search
+    workload: search-in-directory-with-100000-entries
+    metric: milliseconds-p95
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 5
+  - name: preview-generation
+    workload: preview-image-text-and-folder
+    metric: milliseconds-p95
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 10
+  - name: large-sequential-copy
+    workload: single-large-file-copy
+    metric: megabytes-per-second
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 5
+  - name: many-small-file-copy
+    workload: many-small-file-copy
+    metric: files-per-second
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 5
+  - name: device-connect-open-disconnect
+    workload: simulated-device-lifecycle
+    metric: milliseconds-per-cycle
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 10
+permissions:
+  - name: desktop-session
+    reason: needs a graphical session, Wayland or X11
+  - name: user-files-read-write
+    reason: reads and writes the user's own files; every change goes through the job engine as the session user and nothing here elevates
+  - name: application-metadata-read
+    reason: reads XDG desktop entries through the shared application catalog and watches those directories for changes
+  - name: mime-association-write
+    reason: writes one Default Applications line in the user's mimeapps.list when Always Use is chosen, after recording a rollback record
+  - name: session-bus-client
+    reason: client of org.betteros.Storage1 for device state, and of the session bus for D-Bus-activated application launches
+  - name: udisks2-client
+    reason: mounts and ejects external devices through UDisks2 when no storage service is running; UDisks2 holds the privilege, not Better Files
+paths:
+  - /usr/bin/better-files
+  - /usr/share/applications/io.betteros.Files.desktop
+  - ~/.config/better-os/files/view.json
+  - ~/.local/share/better-os/files/jobs
+  - ~/.config/gtk-3.0/bookmarks
+  - ~/.config/mimeapps.list
+  - ~/.local/share/better-os/app-chooser/rollback
+release_notes:
+  - Applications is a first-class virtual location backed by the shared application catalog. It is not a directory, a symlink farm, a copy of desktop entries, or a FUSE mount, and no internal .desktop file is presented as the application.
+  - External devices show five distinct removal states and never claim a device is ready to unplug while a write or flush is known pending.
+  - Rollback removes the package, and restores every default integration to the value captured before it was changed. MIME associations are edited one line at a time, so removal cannot erase an unrelated association a user or another application wrote.
+  - Removing Better Files does not delete the user's files, the shared GTK bookmarks file, or any mimeapps.list entry it did not write.

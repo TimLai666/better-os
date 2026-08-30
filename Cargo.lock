@@ -2063,19 +2063,30 @@ dependencies = [
 name = "files-gui"
 version = "0.1.0"
 dependencies = [
+ "app-catalog-core",
+ "app-catalog-platform",
+ "app-chooser-core",
+ "app-chooser-gui",
+ "better-core",
  "better-ui",
  "files-core",
  "files-operations",
  "files-platform",
+ "files-preview",
+ "files-search",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
+ "image",
  "serde",
  "serde_json",
  "smol",
  "storage-core",
+ "storage-platform",
+ "storage-service",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2102,6 +2113,24 @@ dependencies = [
  "storage-core",
  "tempfile",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "files-preview"
+version = "0.1.0"
+dependencies = [
+ "app-catalog-core",
+ "image",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "files-search"
+version = "0.1.0"
+dependencies = [
+ "files-core",
+ "tempfile",
 ]
 
 [[package]]

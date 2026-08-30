@@ -24,9 +24,7 @@ use files_platform::{MountTable, ReaderConfig, UserDirectories};
 
 use crate::bookmarks::{BookmarkFile, BookmarkStore, PinOutcome};
 use crate::commands::{self, Clipboard, CommandRefusal};
-use crate::content::{
-    ContentView, NoHandlerReason, OpenOutcome, SelectionInput, header_click, route_open,
-};
+use crate::content::{ContentView, SelectionInput, header_click};
 use crate::i18n::{EN_US, Locale, ZH_TW, copy};
 use crate::keys::{Command, Focus, Modifiers, command_for};
 use crate::layout::{
@@ -395,34 +393,28 @@ fn a_page_is_the_number_of_rows_the_viewport_shows() {
 // --- Open routing --------------------------------------------------------
 
 #[test]
-fn opening_a_directory_navigates_and_opening_a_file_reports_no_handler() {
+fn opening_an_entry_routes_by_what_it_is() {
+    // The routing itself lives in `files_core::open_intent`, which is a closed
+    // enum rather than a path, so the three cases are three different actions.
     let directory = Entry::file("notes", local("/d/notes"), EntryKind::Directory);
     assert_eq!(
-        route_open(&directory),
-        OpenOutcome::Navigate(Box::new(at("/d/notes")))
+        files_core::open_intent(&directory),
+        files_core::OpenIntent::Navigate(Box::new(at("/d/notes")))
     );
 
     let file = Entry::file("notes.txt", local("/d/notes.txt"), EntryKind::File);
     assert_eq!(
-        route_open(&file),
-        OpenOutcome::NoHandler(NoHandlerReason::File {
-            name: "notes.txt".to_string()
-        })
+        files_core::open_intent(&file),
+        files_core::OpenIntent::OpenFile {
+            path: local("/d/notes.txt"),
+            mime: None,
+        }
     );
-    // The message names the file and says what is missing, in both languages.
-    let OpenOutcome::NoHandler(reason) = route_open(&file) else {
-        panic!("expected a no-handler outcome");
-    };
-    assert!(reason.message(&EN_US).contains("notes.txt"));
-    assert!(reason.message(&ZH_TW).contains("notes.txt"));
-}
 
-#[test]
-fn a_special_file_is_refused_with_a_reason() {
-    let socket = Entry::file("sock", local("/d/sock"), EntryKind::Special);
+    let socket = Entry::file("socket", local("/d/socket"), EntryKind::Special);
     assert_eq!(
-        route_open(&socket),
-        OpenOutcome::Refused(files_core::OpenRefusal::NotOpenable)
+        files_core::open_intent(&socket),
+        files_core::OpenIntent::Refused(files_core::OpenRefusal::NotOpenable)
     );
 }
 
@@ -1027,6 +1019,11 @@ fn fixture() -> (Fixture, FilesSession) {
         store: None,
         ..EngineConfig::default()
     }));
+    let reader = Arc::new(FilesReader::new(
+        ReaderConfig::new(),
+        None,
+        crate::apps::CatalogHandle::empty(Default::default()),
+    ));
     let session = FilesSession::new(SessionSetup {
         start: Location::local(home.join("Documents")).unwrap(),
         preferences: FilesPreferences::default(),
@@ -1034,8 +1031,13 @@ fn fixture() -> (Fixture, FilesSession) {
         bookmark_store: BookmarkStore::at_path(root.path().join("bookmarks")),
         directories: UserDirectories::from_values(Some(&home), None),
         mounts: MountTable::new(Vec::new()),
-        reader: Arc::new(FilesReader::new(ReaderConfig::new(), None)),
+        reader: reader.clone(),
         engine: engine.clone(),
+        catalog: reader.catalog().clone(),
+        defaults: Box::new(crate::openwith::SessionDefaults::fixed([])),
+        spawner: Box::new(app_catalog_platform::RecordingSpawner::new()),
+        link: Box::new(crate::devices::NoDeviceLink),
+        preview: crate::preview::PreviewPanel::default(),
     });
     (
         Fixture {
@@ -1186,7 +1188,12 @@ fn opening_a_directory_navigates_and_opening_a_file_leaves_a_notice() {
     settle(&mut session);
     session.apply_selection(SelectionInput::Click(1), 1);
     session.dispatch(Command::Open, 1, 10);
-    assert!(matches!(session.notice, Some(Notice::NoHandler(_))));
+    // Ticket 35 replaced the "no handler is wired up" notice with real
+    // routing. The fixture reader detects no MIME type, so the honest answer
+    // is that there is nothing to choose from rather than a chooser opened
+    // for a type nobody knows.
+    assert_eq!(session.notice, Some(Notice::NoMimeType));
+    assert!(session.chooser.is_none());
     assert_eq!(
         session.location(),
         &Location::local(fixture.home.join("Documents")).unwrap(),
@@ -1348,7 +1355,8 @@ fn closing_a_window_leaves_its_jobs_running() {
 #[test]
 fn a_location_this_build_cannot_list_says_so_rather_than_looking_empty() {
     let (_fixture, mut session) = fixture();
-    session.navigate_to(Location::Applications);
+    // A network location is the one this build genuinely cannot list.
+    session.navigate_to(Location::parse_uri("smb://server/share"));
     settle(&mut session);
     assert!(matches!(
         session.pane().model().status(),
@@ -1356,9 +1364,29 @@ fn a_location_this_build_cannot_list_says_so_rather_than_looking_empty() {
     ));
     assert_eq!(
         crate::content::unlistable_reason(session.location(), &EN_US),
-        None,
-        "Applications is listable in principle; this build simply has no catalog wired in yet"
+        Some(EN_US.not_listable_here)
     );
+}
+
+#[test]
+fn the_applications_location_lists_from_the_catalog_and_is_not_a_directory() {
+    let (_fixture, mut session) = fixture();
+    session.navigate_to(Location::Applications);
+    settle(&mut session);
+    // The empty catalog the fixture carries lists as an empty location, not as
+    // a failure: "no applications" and "this cannot be listed" are different
+    // sentences.
+    assert!(matches!(
+        session.pane().model().status(),
+        files_core::ListingStatus::Complete
+    ));
+    assert_eq!(
+        crate::content::unlistable_reason(session.location(), &EN_US),
+        None
+    );
+    // The rule the whole location exists to keep.
+    assert_eq!(session.location().as_local_path(), None);
+    assert!(!session.location().is_filesystem_backed());
 }
 
 // --- Localization and overflow -------------------------------------------

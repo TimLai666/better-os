@@ -175,6 +175,13 @@ pub struct FilesPreferences {
     /// Whether dotfiles and the rest of the platform's hidden set are drawn.
     pub show_hidden: bool,
     pub folders_first: bool,
+    /// Whether the preview pane is open. `#[serde(default)]` on the struct
+    /// means a file written before this field existed loads with it closed,
+    /// which is the same behaviour as never having opened it.
+    pub preview_open: bool,
+    /// Whether search includes hidden files. Issue #6 requires this to be the
+    /// search's own explicit setting rather than the view's.
+    pub search_hidden: bool,
     sort_key: StoredSortKey,
     sort_direction: StoredSortDirection,
 }
@@ -189,6 +196,8 @@ impl Default for FilesPreferences {
             // Issue #6: hidden by default.
             show_hidden: false,
             folders_first: order.folders_first,
+            preview_open: false,
+            search_hidden: false,
             sort_key: StoredSortKey::from_key(order.key),
             sort_direction: StoredSortDirection::Ascending,
         }

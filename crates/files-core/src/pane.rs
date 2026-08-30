@@ -85,6 +85,17 @@ impl Pane {
         &self.history
     }
 
+    /// Drops remembered locations the predicate rejects and reports whether the
+    /// pane is standing on one of them.
+    ///
+    /// The caller decides where a stranded pane goes, because "somewhere safe"
+    /// is a session's idea of home rather than a pane's. Nothing is listed and
+    /// nothing is cancelled here; a pane that must move is moved with
+    /// [`Pane::navigate_to`] afterwards.
+    pub fn forget_locations(&mut self, keep: impl Fn(&Location) -> bool) -> bool {
+        self.history.forget(keep)
+    }
+
     pub fn model(&self) -> &DirectoryModel {
         &self.model
     }

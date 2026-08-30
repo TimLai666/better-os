@@ -50,6 +50,17 @@ pub enum Command {
 
     // Opening
     Open,
+    /// Space. Opens or closes the preview pane, the way macOS Quick Look does
+    /// and the way Issue #6's preview surface is reached.
+    TogglePreview,
+    /// The explicit Open With action, which asks even when a default exists.
+    OpenWith,
+    /// View Details, for an application row.
+    ViewDetails,
+
+    // Search
+    /// Puts the keyboard in the search field.
+    FocusSearch,
 
     // Operations
     NewFolder,
@@ -187,6 +198,7 @@ pub fn command_for(
         "v" if control => return Some(Command::Paste),
         "d" if control => return Some(Command::Duplicate),
         "n" if control && shift => return Some(Command::NewFolder),
+        "o" if control && shift => return Some(Command::OpenWith),
         "o" if control => return Some(Command::ToggleOperations),
         "z" if control => return Some(Command::RestoreFromTrash),
         "f2" => return Some(Command::Rename),
@@ -194,6 +206,12 @@ pub fn command_for(
         "delete" if modifiers.bare() => return Some(Command::MoveToTrash),
         "enter" if modifiers.bare() && !shift => return Some(Command::Open),
         "escape" => return Some(Command::ClearSelection),
+        "f" if control => return Some(Command::FocusSearch),
+        "i" if control => return Some(Command::ViewDetails),
+        // Space previews. It is checked before type-ahead claims it, which is
+        // why a name cannot be typed with a leading space — a trade Quick Look
+        // makes too, and the same one every file manager that binds Space makes.
+        "space" if modifiers.bare() && !shift => return Some(Command::TogglePreview),
         _ => {}
     }
 

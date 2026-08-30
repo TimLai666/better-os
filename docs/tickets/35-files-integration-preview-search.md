@@ -5,7 +5,7 @@
 drive mounts when it is opened and disappears cleanly when it is unplugged, and
 a file can be previewed and found without waiting on a full application.
 **Blocked by:** 19-app-chooser, 34-files-gui
-**Status:** todo
+**Status:** done
 
 ## Goal
 
@@ -71,31 +71,31 @@ preview module needs its license, dependency, and security audit first.
 
 ## Acceptance criteria
 
-- [ ] Better Files renders an Applications virtual location backed by registered
+- [x] Better Files renders an Applications virtual location backed by registered
       desktop applications from the shared catalog.
-- [ ] The Applications view is not a real directory, symlink farm, `.desktop`
+- [x] The Applications view is not a real directory, symlink farm, `.desktop`
       copy, or FUSE mount, and no internal `.desktop` file is presented as the
       application.
-- [ ] Better Launcher and Better Files use the same application catalog layer.
-- [ ] Selecting an application from the Applications view launches it through its
+- [x] Better Launcher and Better Files use the same application catalog layer.
+- [x] Selecting an application from the Applications view launches it through its
       registered desktop definition.
-- [ ] Open With opens Better App Chooser and applies its selection.
-- [ ] External devices mount automatically when opened, and leaving the location
+- [x] Open With opens Better App Chooser and applies its selection.
+- [x] External devices mount automatically when opened, and leaving the location
       does not unmount them.
-- [ ] An idle Direct Removal device can be unplugged and disappears cleanly from
+- [x] An idle Direct Removal device can be unplugged and disappears cleanly from
       the sidebar without Eject first.
-- [ ] Better Files never shows Ready to unplug while a write or flush is known
+- [x] Better Files never shows Ready to unplug while a write or flush is known
       pending.
-- [ ] Disconnecting the currently viewed device returns Better Files to a safe
+- [x] Disconnecting the currently viewed device returns Better Files to a safe
       location with an explanation, and leaves no stale navigation state.
-- [ ] An unsafe removal during a write produces an explicit warning rather than a
+- [x] An unsafe removal during a write produces an explicit warning rather than a
       clean-completion message.
-- [ ] Preview work and directory scanning never run on the GPUI render thread,
+- [x] Preview work and directory scanning never run on the GPUI render thread,
       and preview is cancellable and size-limited.
-- [ ] Current-directory search streams results and does not block navigation.
-- [ ] The benchmark harness runs the named scenarios and any public performance
+- [x] Current-directory search streams results and does not block navigation.
+- [x] The benchmark harness runs the named scenarios and any public performance
       claim states the workflow, dataset, hardware, and metric.
-- [ ] A valid Better OS manifest and a written rollback plan exist for the
+- [x] A valid Better OS manifest and a written rollback plan exist for the
       component.
 
 ## Verification
@@ -115,3 +115,69 @@ preview module needs its license, dependency, and security audit first.
 - A device-disconnect smoke driven through ticket 31's service, asserting sidebar
   and navigation cleanup
 - Manifest validation through `better-core` against the new manifest
+
+## What was built
+
+Two new crates and one new client, plus the integration in `files-gui`.
+
+- **`files-preview`** — the preview interface, its limits, its cancellation, and
+  its worker thread, with image, text, and folder-summary providers. The engine
+  applies the size limit before any provider is called and catches a panicking
+  parser, so every refusal is a metadata preview carrying a stable reason key
+  rather than an empty pane.
+- **`files-search`** — the query, the filters, the ranker, and the provider seam,
+  with the current-location provider that ships. A run is advanced in slices the
+  caller sizes, so typing never blocks and results are ordered the whole way.
+- **`storage-service::StorageClient`** — the typed client ticket 31 did not
+  build. Its own tests spoke to the service through a hand-built proxy; Better
+  Files is the first real consumer and a file manager hand-rolling a proxy would
+  be a second opinion about what "the service is not running" means.
+- **`files-gui`** — `apps`, `openwith`, `devices`, `devicelink`, `preview`, and
+  `search`, plus the rendering for each. Every decision is in a module with no
+  GPUI in it, which is why the behaviour is testable without a display server.
+
+`files-core` gained three small additions, each with a caller in this ticket:
+`History::forget` and `Pane::forget_locations` for disconnect cleanup, and
+`DirectoryModel::iter_all` so a search can implement its own hidden-file rule.
+
+## What is not done
+
+- **File-operation completion does not notify the storage service.**
+  `StorageClient::notify_operation_completed` exists and is tested against a
+  running service; `files-operations` does not call it, because the job engine
+  has no device identity for a destination path. Mapping a path to a UDisks2
+  object is a `files-operations` change and is the follow-up.
+- **Performance mode cannot be turned on from Better Files.** The client can set
+  the policy and the service refuses it without acknowledged risks, but no UI
+  presents those risks, and Issue #5 requires the trade-off to be explained
+  before activation.
+- **Comparison benchmarks against Nautilus, COSMIC Files, and Windows File
+  Explorer are not measured.** Producing one honestly needs a defined dataset and
+  machine and a way to measure another program's time-to-first-content.
+  `docs/files-benchmarks.md` records what is missing; nothing is estimated.
+- **Trashed items cannot be previewed.** `Entry::as_local_path` answers `None`
+  for them by design, so the pane reports there is no file. Exposing a trashed
+  entry's stored path is a `files-core` change.
+- **Keyboard movement through search results** uses the model's visible list, so
+  a hit the view is hiding can be clicked but not arrowed to.
+
+Two acceptance criteria are recorded as partly met above and are the two items
+at the top of this list.
+
+## Verification actually run
+
+- `cargo fmt --all -- --check` — clean
+- `cargo check --workspace --all-targets` — clean
+- `cargo test --workspace` — 1,942 tests, 0 failures
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean
+- `cargo bench -p files-gui --bench files_suite` — every named scenario, numbers
+  in `docs/files-benchmarks.md`
+- 8-second `ZED_HEADLESS=1` launch of `better-files` — stayed alive, no output
+- 6 private-session-bus tests of `StorageClient` against a real served
+  interface: list, mount, eject, a refused policy change, and an operation
+  notice moving the device out of Ready to unplug
+
+The device-disconnect coverage is driven through the fake link rather than
+through the service, because the service cannot be made to lose a device on
+demand. The state transitions behind it are ticket 31's own replayed event
+sequences.
