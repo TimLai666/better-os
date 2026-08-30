@@ -2,14 +2,15 @@
 
 ## Current Phase
 
-Better Manager applies real component transactions, including rollback after a
-real mutation failure
+Better Monitor reads the real machine through typed metric contracts
 
 ## Stage Objective
 
-Turn Better Manager from a planning-only tool into one that actually installs,
-updates, removes, and rolls back first-party components, without weakening the
-boundary that keeps privileged mutation out of the GUI and CLI.
+Replace Better Monitor's mock sample with contracts that say what every number
+means and where it came from, and with Linux collectors that read `/proc` and
+`/sys` directly — so that a metric the machine cannot produce is never shown as
+zero. Better Manager's real transaction path, including rollback after a real
+mutation failure, is complete and unchanged by this stage.
 
 ## Active Workstreams
 
@@ -17,7 +18,7 @@ boundary that keeps privileged mutation out of the GUI and CLI.
 - Manager dry-run planning and CLI
 - Better Manager GPUI shell, shared mock lifecycle, persistence, and acceptance coverage
 - Manifest-declared presentation, platform boundary, and dark-first appearance
-- Monitor observation contracts
+- Monitor metric contracts and Linux collectors
 - Release packaging contract, clean-install verification, and license notices
 - Privileged daemon IPC contract, real artifact download, and APT execution
 
@@ -45,6 +46,7 @@ boundary that keeps privileged mutation out of the GUI and CLI.
 | M18 | four-way packaging matrix on CI | agent | done | CI run 30688730458: build, verify, and container end-to-end passed on ubuntu 22.04/24.04 × amd64/arm64 |
 | M19 | authorized transaction verified end to end | agent | done | real apt install and removal through the service, confirmed against dpkg; a deadlock in the D-Bus client found and fixed |
 | M20 | rollback target correctness and mutation-failure coverage | agent | done | installed-artifact record replaces the guessed rollback target; container run proved a failed update reinstalls 0.0.9, not the version that just failed |
+| M21 | Better Monitor metric contracts and Linux collectors | agent | done | typed metric/capability contracts with five distinct observation states, six `/proc` and `/sys` collectors, 157 tests against captured fixture trees, measured overhead |
 
 ## Current Blockers
 
@@ -83,14 +85,14 @@ policy still needs alignment.
 
 ## Next Verifiable Output
 
-None outstanding. The next change should be scoped to a new ticket or to one of
-the recorded follow-ups: package signing, the public APT repository, a repair
-action for a transaction interrupted mid-flight, or aligning the declared Rust
-baseline with what the lockfile actually requires.
+Better Monitor's Overview, Apps, and Processes views rendering the real
+collector output, with the five observation states visible on screen rather
+than flattened into numbers.
 
 ## Next Ticket
 
-None — tickets 09 through 17 are complete.
+23 — Better Monitor real views. Ticket 22 is complete; tickets 09 through 17
+were complete before it.
 
 ## Decision Log
 
@@ -207,6 +209,29 @@ None — tickets 09 through 17 are complete.
   of its own
   timestamp: 2026-08-01
   impacted_ticket_ids: [09, 14]
+- decision: make "no value" a five-way distinction in the monitor contract —
+  unknown, unsupported, permission denied, stale, and a measured zero — instead
+  of `Option`
+  rationale: a monitor that collapses them tells the user a machine is idle when
+  it is actually unobserved; PSI on a kernel without `CONFIG_PSI` and a
+  descriptor count on another user's process are the cases that forced it
+  timestamp: 2026-08-30
+  impacted_ticket_ids: [22]
+- decision: read `/proc` and `/sys` directly rather than adopting `sysinfo` for
+  the metrics in ticket 22
+  rationale: the eight CPU time categories, PSI, vmstat paging counters,
+  diskstats queue and service time, and per-process cgroup paths are either
+  absent from a portable abstraction or flattened by it, and a portable API
+  reports zero where an interface is missing; revisiting it for battery,
+  component naming, and disk identity stays open
+  timestamp: 2026-08-30
+  impacted_ticket_ids: [22]
+- decision: give every collector a `Roots` parameter so no path is hardcoded
+  rationale: tests then drive the production read path against captured `/proc`
+  snapshots instead of a parser in isolation, which is what caught the
+  `/proc/net/dev` column-padding and AMD per-core temperature cases
+  timestamp: 2026-08-30
+  impacted_ticket_ids: [22]
 - decision: make the installed artifact record authoritative for rollback target selection
   rationale: a transaction rollback record describes one prior transaction, while
   only a version-matched component record can prove which cached artifact produced
@@ -219,6 +244,8 @@ None — tickets 09 through 17 are complete.
 
 - [Issue #1](https://github.com/TimLai666/better-os/issues/1)
 - [Issue #8](https://github.com/TimLai666/better-os/issues/8)
+- [Issue #16: Better Monitor](https://github.com/TimLai666/better-os/issues/16)
+- [Monitor collector source traceability](docs/monitor-collector-sources.md)
 - [ENG.md](ENG.md)
 - [Architecture](docs/architecture.md)
 - [Release packaging](docs/release-packaging.md)
@@ -423,3 +450,41 @@ combinations. Every one reached the new rollback scenarios: a real failed update
 ended with dpkg back at the previous version and the installed-artifact record
 pointing at the previous artifact, on ubuntu 22.04 and 24.04, amd64 and native
 arm64.
+
+Ticket 22 replaced Better Monitor's mock `Sample` with typed metric and
+capability contracts and added `monitor-collectors-linux`. A metric now carries
+its unit, semantic type, source, support state, and sampling behaviour, and an
+observation keeps unknown, unsupported, permission denied, stale, and a measured
+zero apart. Six collectors read `/proc` and `/sys` directly — CPU, memory, PSI,
+processes, storage throughput, and network interfaces — with no command
+execution and no CLI parsing anywhere.
+
+Every read goes through a `Roots` seam, so the tests drive the production path
+against 597 fixture files: two `/proc` and `/sys` snapshots captured from this
+machine three seconds apart, hand-authored synthetic pairs with exact expected
+deltas, plus truncated, malformed, and no-PSI trees. 157 tests pass — 26 in
+`monitor-core`, 117 collector unit tests, and 14 integration tests, two of which
+run against the live host.
+
+Four semantic traps the fixtures caught, all documented in
+`docs/monitor-collector-sources.md`: `/proc/net/dev` pads interface names into a
+fixed column so `tailscale0:` has no space before its first counter; `/proc/stat`
+already folds guest time into `user`, so summing the ten columns double counts;
+`/proc/vmstat`'s `pgpgin` counts kibibytes while `pswpin` in the same file counts
+pages; and the capture machine is AMD, where `k10temp` publishes only `Tctl`, so
+per-core temperature is genuinely unsupported rather than zero.
+
+Measured overhead on this machine with 1,359 tasks, 100 rounds in release: mean
+10.198 ms per full round, worst 12.209 ms, 99.0% CPU-bound. The process table is
+9.178 ms of that; everything else together is about 1 ms. The 10,000-process
+scenario from issue #16 has not been measured.
+
+Gates run for ticket 22 were crate-scoped to avoid rebuilding GPUI in the
+worktree: `cargo fmt --all -- --check`, `cargo check -p monitor-core -p
+monitor-collectors-linux`, `cargo test -p monitor-core -p
+monitor-collectors-linux`, `cargo clippy -p monitor-core -p
+monitor-collectors-linux --all-targets -- -D warnings`, and `cargo check -p
+monitor-gui`, all passing. `monitor-gui` was updated only far enough to speak
+the new contract and still renders a fixed demonstration round. The full
+workspace gate has not run on this branch and belongs on the main checkout after
+merge.

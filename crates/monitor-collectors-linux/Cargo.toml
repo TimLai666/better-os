@@ -1,0 +1,17 @@
+[package]
+name = "monitor-collectors-linux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+monitor-core.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[[example]]
+name = "overhead"
+path = "examples/overhead.rs"

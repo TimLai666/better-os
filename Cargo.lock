@@ -3995,6 +3995,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitor-collectors-linux"
+version = "0.1.0"
+dependencies = [
+ "monitor-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "monitor-core"
 version = "0.1.0"
 dependencies = [
