@@ -7,6 +7,7 @@ members = [
     "crates/app-chooser-gui",
     "crates/better-core",
     "crates/better-ui",
+    "crates/launcher-core",
     "crates/manager-core",
     "crates/manager-ipc",
     "crates/manager-platform",
@@ -35,6 +36,7 @@ app-chooser-core = { path = "crates/app-chooser-core" }
 app-chooser-gui = { path = "crates/app-chooser-gui" }
 better-core = { path = "crates/better-core" }
 better-ui = { path = "crates/better-ui" }
+launcher-core = { path = "crates/launcher-core" }
 manager-core = { path = "crates/manager-core" }
 manager-ipc = { path = "crates/manager-ipc" }
 manager-platform = { path = "crates/manager-platform" }

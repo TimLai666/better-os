@@ -3540,6 +3540,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "launcher-core"
+version = "0.1.0"
+dependencies = [
+ "app-catalog-core",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
