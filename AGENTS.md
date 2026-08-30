@@ -61,11 +61,19 @@ GUI or dependency compiles when the relevant command was not executed.
   `monitor-actions-linux` is the only crate that calls `kill(2)` or
   `setpriority(2)`. Process actions are own-user only; cross-user and elevated
   actions are refused with the reason shown, and the narrow polkit-reviewed
-  boundary that would allow them is not built. The persistent history store and
-  service are still outstanding.
-- Decide the Better Monitor time-series storage engine and retention policy in
-  an ADR before any collector output is persisted. Issue #16 lists SQLite as a
-  candidate, not a decision.
+  boundary that would allow them is not built.
+- `monitor-service` owns collection. `monitor-gui` has no sampler: it reaches
+  the service over `org.betteros.Monitor1`, and where there is no service it
+  runs the same engine in-process and says so. Do not add a collector call to
+  GUI or CLI code.
+- ADR 0011 records the Better Monitor history store as an **interim** append-log
+  engine with measured numbers, a six-hour retention window, and a 64 MiB
+  budget. The final engine decision is still owed and needs SQLite benchmarked
+  in a network-capable environment; crates.io is unreachable from this one.
+- Better Monitor's export is the only path data leaves the machine, and it has
+  no network code. Redaction drops command-line arguments whole and replaces
+  known personal values, addresses, identifiers, and credential-shaped text. A
+  seeded-secret test asserts the boundary; keep it passing.
 - Decide whether `sysinfo` becomes a dependency for battery, component naming,
   or disk identity. It was evaluated and not adopted for the `/proc`-backed
   metrics; the reasoning is in `docs/monitor-collector-sources.md`.

@@ -1,10 +1,11 @@
 mod app;
 mod i18n;
 mod layout;
+mod link;
 mod pages;
 mod render;
-mod sampling;
 mod shell;
+mod stored;
 mod tables;
 #[cfg(test)]
 mod tests;

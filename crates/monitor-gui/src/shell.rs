@@ -42,6 +42,9 @@ impl MonitorApp {
             self.nav_item(c.network, IconName::Network, Page::Network, cx),
             self.nav_item(c.gpu, IconName::ChartPie, Page::Gpu, cx),
             self.nav_item(c.energy, IconName::Battery, Page::Energy, cx),
+            self.nav_item(c.history, IconName::Calendar, Page::History, cx),
+            self.nav_item(c.incidents, IconName::TriangleAlert, Page::Incidents, cx),
+            self.nav_item(c.inventory, IconName::Info, Page::Inventory, cx),
             self.nav_item(c.diagnostics, IconName::CircleCheck, Page::Diagnostics, cx),
             self.nav_item(c.settings, IconName::Settings, Page::Settings, cx),
         ]);

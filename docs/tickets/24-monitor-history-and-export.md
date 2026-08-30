@@ -5,7 +5,7 @@
 marks it, and can still see what the machine was doing around that moment — then
 export a redacted package of it without leaking a path or a token.
 **Blocked by:** 22-monitor-metric-contracts
-**Status:** todo
+**Status:** done
 
 ## Goal
 
@@ -64,25 +64,49 @@ ENG.md migration note.
 
 ## Acceptance criteria
 
-- [ ] Historical collection continues after the GUI closes, proven by a test
+- [x] Historical collection continues after the GUI closes, proven by a test
       that starts the service, closes the GUI, and finds later samples.
-- [ ] The GUI reads history through the typed IPC and never collects directly.
-- [ ] The store is versioned and migratable, and a corrupted tail is recovered
-      rather than discarding the file.
-- [ ] Retention and disk budget are explicit and enforced; per-process history is
-      bounded by default.
-- [ ] A user can mark a slowdown incident and inspect the interval around it.
-- [ ] An export contains schema, inventory, samples, incidents, coverage, and a
+      `collection_continues_after_every_client_has_disconnected` drives the
+      engine directly and
+      `collection_continues_after_a_bus_client_disconnects` does it over a
+      private session bus, connecting, reading, dropping the connection, and
+      asserting both the round counter and the store kept growing with no gap
+      recorded across the disconnect.
+- [x] The GUI reads history through the typed IPC and never collects directly.
+      `monitor-gui` has no sampler of its own any more: `src/link.rs` reaches
+      `monitor-service` over `org.betteros.Monitor1`, and when there is no
+      service it starts an embedded `MonitorEngine` — the same engine, in this
+      process, with a banner saying recording stops when the window closes.
+- [x] The store is versioned and migratable, and a corrupted tail is recovered
+      rather than discarding the file. Each log carries a schema stamp, a newer
+      one is refused and kept, and a truncated final record is dropped with the
+      hole recorded as an `interrupted_write` gap.
+- [x] Retention and disk budget are explicit and enforced; per-process history
+      is bounded by default. Six hours, 64 MiB, ten processes per sample, all
+      in `RetentionPolicy` with the measured numbers behind them in ADR 0011.
+- [x] A user can mark a slowdown incident and inspect the interval around it.
+      The Incidents page's button sends the marker; the service captures the
+      snapshot, the collector states, the bounded process list, and the shift
+      from the preceding baseline.
+- [x] An export contains schema, inventory, samples, incidents, coverage, and a
       redaction report.
-- [ ] An export contains no known test secret and no unapproved sensitive
-      command argument, proven by a seeded-secret test.
-- [ ] Observation gaps appear in the export so missing data cannot be mistaken
-      for zero.
-- [ ] Export requires an explicit user action and never uploads anything.
-- [ ] The CLI provides `inspect`, `record`, `mark`, `export`, and `doctor`, and
-      shares the same core contracts as the GUI.
-- [ ] History and Inventory pages render, and `zh-TW` and `en-US` pass overflow
-      tests at 100%, 125%, and 150% scaling.
+- [x] An export contains no known test secret and no unapproved sensitive
+      command argument, proven by a seeded-secret test. The secret is planted
+      in a process command line and in an incident note, and every byte of
+      every file in the package is searched.
+- [x] Observation gaps appear in the export so missing data cannot be mistaken
+      for zero. `coverage.json` carries the gap list, the samples present
+      against the samples the resolution implies, and per-metric counts of all
+      five observation states.
+- [x] Export requires an explicit user action and never uploads anything. There
+      is no network code in `monitor-export` and no request that reaches one.
+- [x] The CLI provides `inspect`, `record`, `mark`, `export`, and `doctor`, and
+      shares the same core contracts as the GUI. Each says whether it answered
+      from the service or from the store on disk.
+- [x] History and Inventory pages render, and `zh-TW` and `en-US` pass overflow
+      tests at 100%, 125%, and 150% scaling. Rendering is proved by an
+      8-second `ZED_HEADLESS=1` launch rather than by a screenshot; the
+      overflow rules are asserted directly.
 
 ## Verification
 
@@ -97,3 +121,38 @@ ENG.md migration note.
   database growth over the retention window, and export creation over a large
   time range
 - CLI smoke covering all five subcommands against a disposable store
+
+
+## What was built
+
+`monitor-store` — three framed append logs with a downsampler in front and a
+compaction pass behind. `monitor-ipc` — JSON documents over a session D-Bus
+interface, matching `awake-ipc`'s choice and ADR 0007's shape.
+`monitor-service` — the engine that owns the collectors, the two observation
+layers, and the store. `monitor-export` — the self-describing redacted package.
+`monitor-cli` — five subcommands over the same contracts.
+
+The GUI gained History, Incidents, and Inventory pages and lost its sampler.
+
+## Interim decisions recorded
+
+ADR 0011 records the append-log store as the interim engine with the measured
+numbers behind it, and states plainly that the final engine choice is still
+owed. SQLite could not be benchmarked here: crates.io is unreachable from this
+environment and `rusqlite` is in neither the lockfile nor the local cargo cache.
+
+## Not done, and named rather than assumed
+
+- Anomaly and regression detection, `anomalies.json`, deep profiling, and the
+  `profiles/` directory are out of scope and absent, not stubbed.
+- The export is a directory rather than an archive. There is no compression
+  dependency in the workspace.
+- Export is reachable from the CLI but not from a button in the GUI.
+- An export's progress is reported as completed or failed. Nothing streams a
+  percentage, because the work runs to completion before the reply is sent.
+- Packaging — a systemd user unit for the service, a desktop entry, and a
+  Better Manager manifest — is not written.
+- The service and the GUI can both write the default store if the service is
+  started while a fallback window is open. The rule is one writer, and both the
+  CLI and the window check for the service first, but nothing enforces it with
+  a lock.

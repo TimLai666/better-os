@@ -1,0 +1,29 @@
+[package]
+name = "monitor-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "better-monitor"
+path = "src/main.rs"
+
+[lib]
+name = "monitor_cli"
+path = "src/lib.rs"
+
+[dependencies]
+clap.workspace = true
+monitor-collectors-linux.workspace = true
+monitor-core.workspace = true
+monitor-export.workspace = true
+monitor-ipc.workspace = true
+monitor-service.workspace = true
+monitor-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+[dev-dependencies]
+tempfile.workspace = true

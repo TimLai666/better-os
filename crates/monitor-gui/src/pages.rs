@@ -48,6 +48,9 @@ impl MonitorApp {
                 copy(self.locale).energy_unsupported,
                 cx,
             ),
+            Page::History => self.history_page(cx),
+            Page::Incidents => self.incidents_page(cx),
+            Page::Inventory => self.inventory_page(cx),
             Page::Diagnostics => self.diagnostics_page(cx),
             Page::Settings => self.settings_page(cx),
         }
