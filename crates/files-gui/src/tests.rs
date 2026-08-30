@@ -24,9 +24,7 @@ use files_platform::{MountTable, ReaderConfig, UserDirectories};
 
 use crate::bookmarks::{BookmarkFile, BookmarkStore, PinOutcome};
 use crate::commands::{self, Clipboard, CommandRefusal};
-use crate::content::{
-    ContentView, NoHandlerReason, OpenOutcome, SelectionInput, header_click, route_open,
-};
+use crate::content::{ContentView, SelectionInput, header_click};
 use crate::i18n::{EN_US, Locale, ZH_TW, copy};
 use crate::keys::{Command, Focus, Modifiers, command_for};
 use crate::layout::{
@@ -395,34 +393,28 @@ fn a_page_is_the_number_of_rows_the_viewport_shows() {
 // --- Open routing --------------------------------------------------------
 
 #[test]
-fn opening_a_directory_navigates_and_opening_a_file_reports_no_handler() {
+fn opening_an_entry_routes_by_what_it_is() {
+    // The routing itself lives in `files_core::open_intent`, which is a closed
+    // enum rather than a path, so the three cases are three different actions.
     let directory = Entry::file("notes", local("/d/notes"), EntryKind::Directory);
     assert_eq!(
-        route_open(&directory),
-        OpenOutcome::Navigate(Box::new(at("/d/notes")))
+        files_core::open_intent(&directory),
+        files_core::OpenIntent::Navigate(Box::new(at("/d/notes")))
     );
 
     let file = Entry::file("notes.txt", local("/d/notes.txt"), EntryKind::File);
     assert_eq!(
-        route_open(&file),
-        OpenOutcome::NoHandler(NoHandlerReason::File {
-            name: "notes.txt".to_string()
-        })
+        files_core::open_intent(&file),
+        files_core::OpenIntent::OpenFile {
+            path: local("/d/notes.txt"),
+            mime: None,
+        }
     );
-    // The message names the file and says what is missing, in both languages.
-    let OpenOutcome::NoHandler(reason) = route_open(&file) else {
-        panic!("expected a no-handler outcome");
-    };
-    assert!(reason.message(&EN_US).contains("notes.txt"));
-    assert!(reason.message(&ZH_TW).contains("notes.txt"));
-}
 
-#[test]
-fn a_special_file_is_refused_with_a_reason() {
-    let socket = Entry::file("sock", local("/d/sock"), EntryKind::Special);
+    let socket = Entry::file("socket", local("/d/socket"), EntryKind::Special);
     assert_eq!(
-        route_open(&socket),
-        OpenOutcome::Refused(files_core::OpenRefusal::NotOpenable)
+        files_core::open_intent(&socket),
+        files_core::OpenIntent::Refused(files_core::OpenRefusal::NotOpenable)
     );
 }
 

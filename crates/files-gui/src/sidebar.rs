@@ -11,12 +11,12 @@
 //! touched, because "the disk is not plugged in right now" and "the user wants
 //! this gone" are different sentences and only the second one is an edit.
 //!
-//! Devices here are what a mount table can honestly say: which filesystems are
-//! mounted, which of them look external, and how much their identity is worth.
-//! The Direct Removal states from `storage-core` are rendered when something
-//! supplies them through [`DeviceStates`], and reported as unknown when nothing
-//! does. Ticket 35 owns connecting that to the storage service; nothing here
-//! guesses a readiness state the service did not produce.
+//! Devices here are the fallback, for a session where neither the storage
+//! service nor an in-process engine can produce a state. It is what a mount
+//! table can honestly say: which filesystems are mounted, which of them look
+//! external, and how much their identity is worth. Every one of them reads as
+//! unknown, and nothing here guesses a readiness state. The real device rows
+//! come from [`crate::devices`], which is fed by the storage layer.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -96,9 +96,8 @@ impl SidebarRow {
 
 /// Where a device's Direct Removal state comes from.
 ///
-/// A trait rather than a concrete type so the window can be tested with a state
-/// the host does not have, and so ticket 35 can drop the storage service in
-/// without touching the sidebar.
+/// A trait rather than a concrete type so the fallback can be tested with a
+/// state the host does not have.
 pub trait DeviceStates {
     fn state_of(&self, key: &IdentityKey) -> Option<DeviceStateKind>;
 }

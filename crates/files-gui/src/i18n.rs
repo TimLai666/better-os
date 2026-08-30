@@ -164,8 +164,6 @@ pub struct Copy {
     pub skipped_entries: &'static str,
 
     // Opening
-    pub no_handler_wired: &'static str,
-    pub launching_not_wired: &'static str,
     pub refusal_broken_symlink: &'static str,
     pub refusal_symlink_loop: &'static str,
     pub refusal_in_trash: &'static str,
@@ -425,8 +423,6 @@ pub const EN_US: Copy = Copy {
     hidden_shown: "hidden entries shown",
     skipped_entries: "entries could not be read",
 
-    no_handler_wired: "No application is wired up yet",
-    launching_not_wired: "Launching applications arrives with the Applications location",
     refusal_broken_symlink: "This link points at something that is not there",
     refusal_symlink_loop: "This link points at itself",
     refusal_in_trash: "Restore this item before opening it",
@@ -677,8 +673,6 @@ pub const ZH_TW: Copy = Copy {
     hidden_shown: "個隱藏項目已顯示",
     skipped_entries: "個項目無法讀取",
 
-    no_handler_wired: "還沒有接上可以開啟的應用程式",
-    launching_not_wired: "啟動應用程式會隨應用程式位置一起提供",
     refusal_broken_symlink: "這個連結指向不存在的目標",
     refusal_symlink_loop: "這個連結指向自己",
     refusal_in_trash: "請先還原再開啟",

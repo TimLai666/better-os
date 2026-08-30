@@ -39,7 +39,7 @@ use app_catalog_platform::ProcessSpawner;
 use crate::apps::{ApplicationDetails, CatalogHandle, LaunchReport};
 use crate::bookmarks::{BookmarkFile, BookmarkStore, PinOutcome};
 use crate::commands::{self, Clipboard, CommandRefusal};
-use crate::content::{ContentView, NoHandlerReason, OpenOutcome, SelectionInput};
+use crate::content::{ContentView, SelectionInput};
 use crate::devices::{
     CollectionMode, DeviceInventory, DeviceLink, DeviceNotice, DeviceRow, NoDeviceLink, is_under,
 };
@@ -63,7 +63,6 @@ use crate::toolbar::{PathRejection, PathValidator, resolve_path_input};
 pub enum Notice {
     Path(PathRejection),
     Command(CommandRefusal),
-    NoHandler(NoHandlerReason),
     Refused(OpenRefusal),
     Navigation(NavigationError),
     AlreadyPinned,
@@ -127,7 +126,6 @@ impl Notice {
                 CommandRefusal::UnusableName => c.name_not_usable.to_string(),
                 CommandRefusal::NotInTrash => c.refusal_in_trash.to_string(),
             },
-            Notice::NoHandler(reason) => reason.message(c),
             Notice::Refused(refusal) => crate::i18n::refusal_label(*refusal, c).to_string(),
             Notice::Navigation(error) => match error {
                 NavigationError::LastTab => c.last_tab_stays_open.to_string(),
@@ -1132,7 +1130,9 @@ impl FilesSession {
         let Some(entry) = self.pane().model().get(entry_id) else {
             return;
         };
-        if let OpenOutcome::Navigate(location) = crate::content::route_open(entry) {
+        // Only a directory opens in a tab. An application launches and a file
+        // opens in something else; neither has a tab to be put in.
+        if let files_core::OpenIntent::Navigate(location) = files_core::open_intent(entry) {
             self.open_tab(*location, true);
         }
     }

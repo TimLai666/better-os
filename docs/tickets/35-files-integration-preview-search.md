@@ -168,7 +168,7 @@ at the top of this list.
 
 - `cargo fmt --all -- --check` — clean
 - `cargo check --workspace --all-targets` — clean
-- `cargo test --workspace` — 1,943 tests, 0 failures
+- `cargo test --workspace` — 1,942 tests, 0 failures
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean
 - `cargo bench -p files-gui --bench files_suite` — every named scenario, numbers
   in `docs/files-benchmarks.md`

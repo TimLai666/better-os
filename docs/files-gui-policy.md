@@ -75,16 +75,19 @@ pointer reorder gesture inside the sidebar is not wired yet.
 
 ## Devices without the storage service
 
-The Devices section is built from the mount table, which is what a session can
+Ticket 35 connected the Devices section to the storage layer, and
+`docs/files-integration-policy.md` records how. What remains true from this
+ticket is the fallback underneath it.
+
+When neither the session service nor an in-process engine can produce device
+states, the section is built from the mount table, which is what a session can
 honestly report on its own: which filesystems are mounted, which look external,
 and how much their identity is worth. A device whose identity is only a kernel
 name is drawn with "identity valid for this connection only", because that is
 what `storage_core::IdentityConfidence::Volatile` means.
 
-Every device reads as `DeviceStateKind::Unknown` until something supplies a real
-state through the `DeviceStates` trait. Unknown never reads as safe to unplug.
-Wiring the storage service in — and with it the mount-on-click, disconnect
-cleanup, and Ready to Unplug behaviour — is ticket 35.
+Every device in that fallback reads as `DeviceStateKind::Unknown`, which never
+reads as safe to unplug.
 
 ## Times are shown in UTC
 
@@ -96,12 +99,13 @@ dependency.
 
 ## Opening a file is a typed intent, not a launch
 
-`files_core::open_intent` already decides what opening an entry means. A
-directory navigates. An application row and a file come back as intents the
-window reports as "no application is wired up yet", because launching through
-the shared catalog and resolving a file's association through Better App Chooser
-are ticket 35's work. There is no second launcher and no second association
-lookup in this crate.
+`files_core::open_intent` decides what opening an entry means, as a closed enum
+rather than a path: a directory navigates, an application launches through its
+desktop id, a file opens with whatever its association resolves to. Ticket 35
+connected the second and third to `app-catalog-platform` and Better App Chooser;
+`docs/files-integration-policy.md` records how. There is still no second
+launcher and no second association lookup in this crate, which is the property
+the typed intent exists to keep.
 
 ## The GUI does not run as root
 

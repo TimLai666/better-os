@@ -19,8 +19,8 @@
 use std::time::{Duration, Instant};
 
 use files_core::{
-    DirectoryModel, Entry, EntryId, EntryKind, ListingStatus, Location, OpenIntent, OpenRefusal,
-    SortDirection, SortKey, SortOrder,
+    DirectoryModel, Entry, EntryId, EntryKind, ListingStatus, Location, SortDirection, SortKey,
+    SortOrder,
 };
 
 use crate::format;
@@ -45,8 +45,9 @@ pub struct RenderedRow {
     /// True for the entry the keyboard is on, which is drawn differently from
     /// a merely selected one.
     pub focused: bool,
-    /// A glyph rather than an icon theme lookup. Ticket 35 owns real icons; a
-    /// placeholder that is honest about being one beats an empty square.
+    /// A glyph rather than an icon theme lookup. Loading an icon theme is a
+    /// separate piece of work; a placeholder that is honest about being one
+    /// beats an empty square.
     pub glyph: &'static str,
 }
 
@@ -443,57 +444,6 @@ fn step(cursor: Option<usize>, length: usize, delta: isize) -> usize {
     };
     let next = cursor as isize + delta;
     next.clamp(0, length as isize - 1) as usize
-}
-
-/// What the window does when an entry is opened.
-///
-/// Directories navigate. Applications and files are handed back as intents the
-/// window reports, because launching an application and resolving a file's
-/// handler are ticket 35's work through the shared catalog and Better App
-/// Chooser, and inventing a second launcher here is exactly the duplication
-/// ENG.md forbids.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum OpenOutcome {
-    /// Go here.
-    Navigate(Box<Location>),
-    /// Nothing is wired up to open this yet, with the message to show.
-    NoHandler(NoHandlerReason),
-    /// The entry cannot be opened at all, and why.
-    Refused(OpenRefusal),
-}
-
-/// Why nothing happened, when the entry itself was fine.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum NoHandlerReason {
-    /// A file whose association would be resolved by Better App Chooser.
-    File { name: String },
-    /// An application row, which the shared catalog launches.
-    Application { name: String },
-}
-
-impl NoHandlerReason {
-    pub fn message(&self, c: &'static Copy) -> String {
-        match self {
-            NoHandlerReason::File { name } => format!("{name} — {}", c.no_handler_wired),
-            NoHandlerReason::Application { name } => {
-                format!("{name} — {}", c.launching_not_wired)
-            }
-        }
-    }
-}
-
-/// Routes one entry's open intent.
-pub fn route_open(entry: &Entry) -> OpenOutcome {
-    match files_core::open_intent(entry) {
-        OpenIntent::Navigate(location) => OpenOutcome::Navigate(location),
-        OpenIntent::Launch { .. } => OpenOutcome::NoHandler(NoHandlerReason::Application {
-            name: entry.name.clone(),
-        }),
-        OpenIntent::OpenFile { .. } => OpenOutcome::NoHandler(NoHandlerReason::File {
-            name: entry.name.clone(),
-        }),
-        OpenIntent::Refused(refusal) => OpenOutcome::Refused(refusal),
-    }
 }
 
 /// The one-line summary under the content area.
