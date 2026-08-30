@@ -17,8 +17,14 @@ monitor-core.workspace = true
 monitor-views.workspace = true
 monitor-collectors-linux.workspace = true
 monitor-actions-linux.workspace = true
+monitor-ipc.workspace = true
+monitor-service.workspace = true
+monitor-store.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
 gpui-platform.workspace = true
 smol = "2"
+# The service client and the embedded engine both run on tokio; the window
+# keeps them on one thread of their own rather than on the GPUI executor.
+tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }

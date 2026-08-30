@@ -4130,6 +4130,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitor-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "monitor-collectors-linux",
+ "monitor-core",
+ "monitor-export",
+ "monitor-ipc",
+ "monitor-service",
+ "monitor-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "monitor-collectors-linux"
 version = "0.1.0"
 dependencies = [
@@ -4148,6 +4165,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitor-export"
+version = "0.1.0"
+dependencies = [
+ "monitor-core",
+ "monitor-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "monitor-gui"
 version = "0.1.0"
 dependencies = [
@@ -4159,8 +4188,52 @@ dependencies = [
  "monitor-actions-linux",
  "monitor-collectors-linux",
  "monitor-core",
+ "monitor-ipc",
+ "monitor-service",
+ "monitor-store",
  "monitor-views",
  "smol",
+ "tokio",
+]
+
+[[package]]
+name = "monitor-ipc"
+version = "0.1.0"
+dependencies = [
+ "monitor-core",
+ "monitor-store",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "monitor-service"
+version = "0.1.0"
+dependencies = [
+ "manager-store",
+ "monitor-collectors-linux",
+ "monitor-core",
+ "monitor-export",
+ "monitor-ipc",
+ "monitor-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
+name = "monitor-store"
+version = "0.1.0"
+dependencies = [
+ "monitor-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

@@ -1,0 +1,33 @@
+[package]
+name = "monitor-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "better-monitor-service"
+path = "src/main.rs"
+
+[lib]
+name = "monitor_service"
+path = "src/lib.rs"
+
+[dependencies]
+manager-store.workspace = true
+monitor-collectors-linux.workspace = true
+monitor-core.workspace = true
+monitor-export.workspace = true
+monitor-ipc.workspace = true
+monitor-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+# Matches awake-service and manager-daemon: the service runs on tokio, so zbus
+# must use it rather than starting a second reactor beside it.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "test-util"] }

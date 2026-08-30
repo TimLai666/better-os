@@ -9,8 +9,10 @@ component manifests ──> better-core validation ──> manager-core
                        capability/download/package       └── manager-gui ──┼── manager-store JSON
                        privileged executor (refuses)                       └── versioned local state
 
-monitor-collectors-linux (/proc, /sys) ──> monitor-core metric contracts,
-                                           reports/incidents/export ──> monitor-gui
+monitor-collectors-linux (/proc, /sys) ──> monitor-core metric contracts
+                        └──> monitor-service (owns collection, store, audits)
+                             monitor-store / monitor-ipc / monitor-export
+                             └──> monitor-gui, monitor-cli (both clients)
 
 better-ui provides GPUI presentation primitives to both GUI crates.
 Privileged execution lives in `manager-daemon`, a separate root process reached
@@ -86,7 +88,18 @@ suite, not only the two that exist today.
   never leaves a job in an unknowable state.
 - **Collection outlives the GUI.** `monitor-service` owns historical collection,
   and `monitor-gui` reads through `monitor-ipc`. The GUI does not scrape `/proc`,
-  run a shell pipeline, or hold a privileged handle.
+  run a shell pipeline, or hold a privileged handle. With no service running the
+  window starts the same engine in its own process and says so on every stored-
+  data page, because history it is not recording will not be there later.
+- **A gap is a record, not an absence.** `monitor-store` writes a gap whenever
+  the service stopped, fell behind, recovered a torn write, or dropped history
+  to stay inside retention. Charts leave a space where a reading is missing and
+  draw a floor where one measured zero; the two are never the same pixel.
+- **Redaction is a boundary, not a filter.** `monitor-export` is the only path
+  data leaves the machine and has no network code. Command-line arguments are
+  dropped whole rather than scanned, because arguments are where credentials
+  live and a scanner that is right nine times in ten is worse than useless
+  there.
 - **A view decision is not a rendering decision.** `monitor-views` owns app
   grouping, sorting, filtering, tree building, aggregation, and the Overview
   verdicts, and has no GPUI dependency, so all of it is tested without a

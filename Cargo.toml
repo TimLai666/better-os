@@ -24,6 +24,11 @@ members = [
     "crates/monitor-core",
     "crates/monitor-collectors-linux",
     "crates/monitor-views",
+    "crates/monitor-store",
+    "crates/monitor-ipc",
+    "crates/monitor-export",
+    "crates/monitor-service",
+    "crates/monitor-cli",
     "crates/monitor-actions-linux",
     "crates/monitor-gui",
 ]
@@ -56,6 +61,10 @@ manager-store = { path = "crates/manager-store" }
 monitor-core = { path = "crates/monitor-core" }
 monitor-collectors-linux = { path = "crates/monitor-collectors-linux" }
 monitor-views = { path = "crates/monitor-views" }
+monitor-store = { path = "crates/monitor-store" }
+monitor-ipc = { path = "crates/monitor-ipc" }
+monitor-export = { path = "crates/monitor-export" }
+monitor-service = { path = "crates/monitor-service" }
 monitor-actions-linux = { path = "crates/monitor-actions-linux" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

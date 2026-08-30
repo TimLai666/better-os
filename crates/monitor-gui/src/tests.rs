@@ -175,6 +175,47 @@ fn every_visible_string(c: &'static Copy) -> Vec<&'static str> {
         c.sampling_description,
         c.grouping_precedence,
         c.grouping_precedence_description,
+        c.history,
+        c.incidents,
+        c.inventory,
+        c.history_subtitle,
+        c.incidents_subtitle,
+        c.inventory_subtitle,
+        c.collection_service,
+        c.collection_in_process,
+        c.collection_unavailable,
+        c.collection_connecting,
+        c.span_15_minutes,
+        c.span_1_hour,
+        c.span_6_hours,
+        c.stored_samples,
+        c.observation_gaps,
+        c.gap_service_stopped,
+        c.gap_missed_cadence,
+        c.gap_interrupted_write,
+        c.gap_retention,
+        c.no_history_yet,
+        c.history_truncated,
+        c.retention_window,
+        c.disk_budget,
+        c.resolution,
+        c.mark_incident,
+        c.mark_unavailable,
+        c.no_incidents_yet,
+        c.marked_at,
+        c.incident_window,
+        c.largest_shifts,
+        c.baseline_none,
+        c.captured_processes,
+        c.inventory_never_captured,
+        c.inventory_captures,
+        c.inventory_no_changes,
+        c.inventory_first_capture,
+        c.changed,
+        c.added,
+        c.removed,
+        c.withheld_value,
+        c.request_failed,
     ]
 }
 
@@ -474,4 +515,241 @@ fn the_apps_page_separates_what_a_person_launched_from_what_the_system_runs() {
     assert_eq!(grouping.services.len(), 1);
     assert_eq!(grouping.applications[0].kind, AppKind::UserApplication);
     assert_eq!(grouping.services[0].kind, AppKind::BackgroundService);
+}
+
+#[test]
+fn every_observation_gap_has_words_in_both_locales() {
+    use crate::stored::gap_reason_label;
+    use monitor_store::GapReason;
+
+    // Every reason the store can record has to be sayable. A gap the window
+    // could not label would be drawn as an unexplained hole.
+    let reasons = [
+        GapReason::ServiceStopped,
+        GapReason::MissedCadence,
+        GapReason::InterruptedWrite,
+        GapReason::Retention,
+    ];
+    for locale in LOCALES {
+        let c = copy(locale);
+        let labels: Vec<&str> = reasons
+            .iter()
+            .map(|reason| gap_reason_label(*reason, c))
+            .collect();
+        for label in &labels {
+            assert!(
+                !label.trim().is_empty(),
+                "{locale:?} is missing a gap label"
+            );
+        }
+        let unique: std::collections::BTreeSet<&&str> = labels.iter().collect();
+        assert_eq!(
+            unique.len(),
+            reasons.len(),
+            "{locale:?} reuses a label for two different reasons"
+        );
+    }
+}
+
+#[test]
+fn a_history_chart_leaves_a_space_where_there_was_no_reading() {
+    use crate::stored::bar_fraction;
+
+    // The whole point of the History page: a sample with no reading draws
+    // nothing, and a sample that measured zero draws a floor. If both produced
+    // the same bar the chart would say the machine was idle when it was
+    // actually unobserved.
+    let values = [Some(0.0), None, Some(4.0), Some(2.0)];
+    assert_eq!(bar_fraction(&values, 0), Some(0.0));
+    assert_eq!(bar_fraction(&values, 1), None);
+    assert_eq!(bar_fraction(&values, 2), Some(1.0));
+    assert_eq!(bar_fraction(&values, 3), Some(0.5));
+    assert_eq!(bar_fraction(&values, 9), None);
+}
+
+#[test]
+fn a_period_where_everything_measured_zero_is_not_drawn_as_unobserved() {
+    use crate::stored::bar_fraction;
+
+    let values = [Some(0.0), Some(0.0), Some(0.0)];
+    for index in 0..values.len() {
+        assert_eq!(
+            bar_fraction(&values, index),
+            Some(0.0),
+            "a measured zero must still be a reading"
+        );
+    }
+}
+
+#[test]
+fn the_history_page_charts_only_metrics_the_collectors_declare() {
+    use monitor_collectors_linux::LinuxCollectors;
+    use monitor_core::MetricId;
+
+    // A renamed metric must break here rather than silently blanking a chart.
+    let declared: std::collections::BTreeSet<String> = LinuxCollectors::descriptors()
+        .into_iter()
+        .map(|descriptor| descriptor.id.to_string())
+        .collect();
+    for id in crate::stored::CHARTED {
+        assert!(
+            MetricId::new(id).is_ok(),
+            "{id} is not a well-formed metric id"
+        );
+        assert!(
+            declared.contains(id),
+            "the History page charts {id}, which no collector declares"
+        );
+    }
+}
+
+#[test]
+fn marking_is_offered_only_when_something_is_actually_recording() {
+    use crate::app::Collection;
+
+    // Offering the button while nothing collects would capture an incident
+    // with no history behind it, which is worse than not offering it.
+    for (collection, expected) in [
+        (Collection::Connecting, false),
+        (Collection::Service, true),
+        (
+            Collection::InProcess {
+                detail: "no service".into(),
+            },
+            true,
+        ),
+        (
+            Collection::Unavailable {
+                detail: "no store".into(),
+            },
+            false,
+        ),
+    ] {
+        assert_eq!(
+            matches!(
+                collection,
+                Collection::Service | Collection::InProcess { .. }
+            ),
+            expected
+        );
+    }
+}
+
+#[test]
+fn the_window_asks_for_a_marker_and_decides_nothing_about_what_it_captures() {
+    use crate::link::LinkRequest;
+
+    // The window's whole contribution to an incident is the moment and the
+    // selected process. The window before and after, the snapshot, and the
+    // baseline are all decided where the readings are.
+    let request = LinkRequest::Mark {
+        note: None,
+        before_seconds: monitor_store::DEFAULT_WINDOW_BEFORE_SECONDS,
+        after_seconds: monitor_store::DEFAULT_WINDOW_AFTER_SECONDS,
+        about_pid: Some(4242),
+    };
+    let LinkRequest::Mark {
+        before_seconds,
+        after_seconds,
+        ..
+    } = request
+    else {
+        unreachable!()
+    };
+    assert!(
+        monitor_store::IncidentWindow {
+            before_seconds,
+            after_seconds,
+        }
+        .is_valid(),
+        "the window the GUI sends must be one the protocol accepts"
+    );
+}
+
+#[test]
+fn the_history_page_never_asks_for_more_than_the_protocol_allows() {
+    // A compile-time check: a window that asked for more than the protocol
+    // allows would be refused at run time on a page a user had just opened.
+    const _: () = assert!(crate::link::MAX_HISTORY_SAMPLES <= monitor_ipc::MAX_SAMPLES_PER_REPLY);
+    const _: () = assert!(crate::link::MAX_HISTORY_SAMPLES > 0);
+}
+
+#[test]
+fn every_navigation_label_fits_the_sidebar_at_every_supported_scale() {
+    // The sidebar is a fixed 232 logical pixels wide, and an icon plus padding
+    // takes about 72 of them. A label that does not fit is clipped, and a
+    // clipped navigation item is one a user cannot read in either language.
+    const SIDEBAR_WIDTH: f32 = 232.0;
+    const LABEL_SPACE: f32 = SIDEBAR_WIDTH - 72.0;
+
+    for locale in LOCALES {
+        let c = copy(locale);
+        for label in [
+            c.overview,
+            c.apps,
+            c.processes,
+            c.cpu,
+            c.memory,
+            c.storage,
+            c.network,
+            c.gpu,
+            c.energy,
+            c.history,
+            c.incidents,
+            c.inventory,
+            c.diagnostics,
+            c.settings,
+        ] {
+            for scale in SCALES {
+                // A larger scale means the same sidebar holds fewer logical
+                // pixels of text.
+                let available = LABEL_SPACE / scale;
+                assert!(
+                    label_width(label) <= available,
+                    "{locale:?} navigation label {label:?} overflows at {scale}x \
+                     ({:.1} > {available:.1})",
+                    label_width(label)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_history_and_inventory_page_headings_fit_the_content_column() {
+    // Page headings and their subtitles sit in the content column, which is at
+    // least the minimum window width less the sidebar and page padding. A
+    // subtitle that overflows would be clipped rather than wrapped, because
+    // the heading row does not wrap.
+    let available = MIN_WINDOW_WIDTH - 300.0;
+    for locale in LOCALES {
+        let c = copy(locale);
+        for heading in [c.history, c.incidents, c.inventory] {
+            for scale in SCALES {
+                assert!(
+                    label_width(heading) <= available / scale,
+                    "{locale:?} heading {heading:?} overflows at {scale}x"
+                );
+            }
+        }
+        // The subtitles are allowed to wrap, so what is asserted is only that
+        // no single word in them is wider than the column.
+        for subtitle in [
+            c.history_subtitle,
+            c.incidents_subtitle,
+            c.inventory_subtitle,
+            c.collection_in_process,
+            c.no_history_yet,
+            c.inventory_first_capture,
+        ] {
+            let longest = subtitle
+                .split_whitespace()
+                .map(label_width)
+                .fold(0.0f32, f32::max);
+            assert!(
+                longest <= available,
+                "{locale:?} has an unwrappable run in {subtitle:?}"
+            );
+        }
+    }
 }

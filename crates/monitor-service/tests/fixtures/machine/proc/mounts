@@ -1,0 +1,2 @@
+/dev/nvme0n1p2 / ext4 rw,relatime 0 0
+proc /proc proc rw 0 0

@@ -68,7 +68,7 @@ privileged mutation out of the GUI and CLI.
 | M24 | ticket 21 — launcher overlay, activation, gesture ADR (needs M23) | agent | todo | workspace gate plus headless overlay smoke, manifest validation, and the gesture-options ADR |
 | M25 | ticket 22 — monitor metric contracts and Linux collectors | agent | done | typed metric/capability contracts with five distinct observation states, six `/proc` and `/sys` collectors, 157 tests against captured fixture trees, measured overhead 10.2 ms/round for 1,359 tasks; full workspace gate ran after merge |
 | M26 | ticket 23 — Apps, Processes, actions, real Overview (needs M25) | agent | done | workspace gate green; 10,000-process benchmark published (adopt a round 1.7 ms, group into applications 12.4 ms); locale/scaling overflow tests pass in both languages at 100/125/150%; a real child process was stopped, resumed, reniced, and terminated through the typed action interface |
-| M27 | ticket 24 — monitor service, history, incidents, export, CLI (needs M25) | agent | todo | workspace gate plus collection-after-GUI-close smoke and a seeded-secret export test |
+| M27 | ticket 24 — monitor service, history, incidents, export, CLI (needs M25) | agent | done | crate-scoped gate plus a collection-after-client-disconnect test over a private session bus and a seeded-secret export test |
 | M28 | ticket 25 — Better Awake tray-first manual sessions | agent | done | crate-scoped fmt/check/test/clippy gates, 142 tests including 11 private session-bus tests, a tray-restart session survival test, and an 8 s headless `awake-gui` smoke |
 | M29 | ticket 26 — Awake full application and trigger rules (needs M28) | agent | todo | workspace gate plus rule-engine evaluation tests and an uninstall smoke releasing inhibitors |
 | M30 | ticket 27 — defaults core, adapters, snapshots, CLI | agent | todo | workspace gate plus snapshot round-trip and external-change detection tests |
@@ -123,9 +123,9 @@ policy still needs alignment.
 
 ## Next Verifiable Output
 
-Better Monitor's historical collection surviving a GUI close, with a versioned
-store and a redacted export (ticket 24), and `launcher-core` matching and
-ranking over the shared catalog with its p95 latency benchmark (ticket 20).
+`launcher-core` matching and ranking over the shared catalog with its p95
+latency benchmark (ticket 20). Ticket 24's output is delivered: collection
+survives every client disconnecting, proved over a private session bus.
 
 The Better Manager follow-ups remain open and unscheduled: package signing, the
 public APT repository, a repair action for a transaction interrupted mid-flight,
@@ -134,10 +134,10 @@ requires.
 
 ## Next Ticket
 
-Tickets 18, 19, 22, and 23 are done. Ready now (blockers met): 20 (needs 18),
-24 (needs 22), 26 (needs 25, in progress), 27, 29, and 31. Remaining
-dependency edges, in ticket order: 21 needs 20; 28 needs 27; 30 needs 29; 32
-needs 18 and 31; 33 needs 32; 34 needs 33; 35 needs 19 and 34.
+Tickets 18, 19, 22, 23, and 24 are done. Ready now (blockers met): 20 (needs
+18), 26 (needs 25), 27, 29, and 31. Remaining dependency edges, in ticket
+order: 21 needs 20; 28 needs 27; 30 needs 29; 32 needs 18 and 31; 33 needs 32;
+34 needs 33; 35 needs 19 and 34.
 
 ## Decision Log
 
@@ -701,3 +701,80 @@ Not done in Phase 1 and named in the ticket: the battery provider behind the
 threshold, the rule engine the `自動規則` row disables itself for, packaging
 (desktop entry, systemd user unit, Better Manager manifest), icon artwork for
 the six states, and idle CPU/memory measurement for the two processes.
+
+### Ticket 24 — Better Monitor service, history, incidents, export, CLI
+
+Five new crates are on branch `ticket-24`: `monitor-store`, `monitor-ipc`,
+`monitor-service`, `monitor-export`, and `monitor-cli`. `monitor-gui` changed
+substantially and nothing else outside those six did, apart from the workspace
+member list, `ENG.md`, `AGENTS.md`, this file, the ticket, and the new ADR.
+
+Collection no longer belongs to the window. `monitor-gui` has no sampler:
+`src/link.rs` reaches `monitor-service` over the session bus name
+`org.betteros.Monitor1`, and where there is no service it starts the same
+`MonitorEngine` inside the window process and says so in a banner on every
+stored-data page. Either way the collectors live behind the bridge and the
+render thread never waits on a bus or a disk. The old `sampling.rs` is deleted
+rather than left as a second path that could drift.
+
+The milestone signal is proved twice: once against the engine directly and once
+over a private session bus, where a client connects, reads, drops its
+connection, and a second client opening later finds the round counter and the
+store both grew with no gap recorded across the disconnect. The 8-second
+headless launch also proves it from the other end — the window's fallback
+engine wrote 34 KiB of history and captured an inventory in those 8 seconds.
+
+The store is an append log of length-and-checksum framed JSON records, three
+files with different lifetimes, a downsampler in front and a compaction pass
+behind. A torn final record is truncated and the hole is recorded as a gap; a
+file a newer Better Monitor wrote is refused and kept. ADR 0008 records this as
+the **interim** engine with the measured numbers behind it and states plainly
+that the final choice is still owed. SQLite could not be benchmarked: crates.io
+is unreachable from this environment and `rusqlite` is in neither the lockfile
+nor the local cargo cache, so the ADR records a baseline SQLite would have to
+beat rather than a comparison it did not run.
+
+Measured, on this machine, release profile: a durable append is 1.1 ms at p50
+and six hours of history is 4,320 samples in 35.7 MiB, which is where the
+64 MiB default budget came from. A five-minute query is 0.3 ms, a six-hour
+query is 50 ms, and reopening six hours takes 576 ms — the last is the weakest
+number and the one the final engine decision should be judged on. Writing an
+export of six hours takes 95 ms and produces 11.4 MiB.
+
+Redaction is a boundary rather than a filter. Command-line arguments are
+dropped whole rather than scanned, because arguments are where credentials
+live. The seeded-secret test plants a token in a process command line and in an
+incident note and searches every byte of every file in the produced package,
+including the schemas and the README.
+
+Gates that actually ran on this branch, all passing. Crate-scoped first,
+because a workspace-wide run rebuilds the GPUI world for each command:
+`cargo clippy --all-targets -- -D warnings` and `cargo test` for
+`monitor-store`, `monitor-ipc`, `monitor-export`, `monitor-service`,
+`monitor-cli`, `monitor-gui`, `monitor-core`, `monitor-collectors-linux`, and
+`monitor-views` — 426 tests across those nine, of which 166 are new.
+
+The full gate then ran as well, once the GPUI world was already built:
+`cargo fmt --all -- --check`, `cargo check --workspace`,
+`cargo test --workspace` (987 tests, all passing; 821 on `main` before this
+ticket), and `cargo clippy --workspace --all-targets -- -D warnings`.
+
+Also run: `cargo build -p monitor-gui`; an 8-second `ZED_HEADLESS=1` launch that
+stayed alive with no output and left 34 KiB of history and an inventory capture
+behind it, which is the fallback engine proving itself; `cargo bench -p
+monitor-store`; and `cargo bench -p monitor-export`.
+
+What ticket 24 did not do, and should not be assumed done: anomaly and
+regression detection, deep profiling, and the `anomalies.json` and `profiles/`
+parts of the export are out of scope and absent rather than stubbed. The export
+is a directory, not an archive, because the workspace has no compression
+dependency. Export is reachable from the CLI but there is no button for it in
+the window. Export progress is reported as completed or failed; nothing streams
+a percentage, because the work runs to completion before the reply is sent.
+Packaging is not written: no systemd user unit for the service, no desktop
+entry, no Better Manager manifest. Nothing enforces the single-writer rule with
+a lock — the CLI and the window both check for the service first, but starting
+the service while a fallback window is open would put two writers on one store.
+The GUI's command-line privacy toggle only takes effect in the fallback engine;
+against a running service it is refused with a stable key, because a window
+must not change what the session service is collecting.

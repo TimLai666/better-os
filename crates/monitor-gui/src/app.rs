@@ -18,13 +18,13 @@ use monitor_collectors_linux::ProcessPrivacy;
 use monitor_core::{
     ActionError, ActionOutcome, ActionRefusal, CollectorReport, ProcessAction, ProcessController,
 };
+use monitor_ipc::{HistoryDocument, StatusDocument};
+use monitor_store::{Incident, Inventory, InventoryDiff};
 use monitor_views::grouping::GroupingPrecedence;
 use monitor_views::{AppsModel, OverviewModel, ProcessFacts};
-use smol::Timer;
-use std::time::Duration;
 
 use crate::i18n::Locale;
-use crate::sampling::{Round, SAMPLE_INTERVAL_MILLIS, Sampler};
+use crate::link::{self, DEFAULT_HISTORY_SECONDS, LinkRequest, LinkUpdate};
 use crate::tables::{AppsTableDelegate, ProcessTableDelegate};
 
 /// The pages the navigation offers.
@@ -39,6 +39,9 @@ pub(crate) enum Page {
     Network,
     Gpu,
     Energy,
+    History,
+    Incidents,
+    Inventory,
     Diagnostics,
     Settings,
 }
@@ -71,6 +74,20 @@ pub(crate) struct MonitorApp {
     pub(crate) overview: OverviewModel,
     pub(crate) rounds: u64,
 
+    /// Where the numbers are coming from, and why, when it is not the service.
+    pub(crate) collection: Collection,
+    pub(crate) status: Option<StatusDocument>,
+    pub(crate) history: Option<HistoryDocument>,
+    pub(crate) history_seconds: u64,
+    pub(crate) incidents: Vec<Incident>,
+    pub(crate) inventory: Option<Inventory>,
+    pub(crate) inventory_captures: u32,
+    pub(crate) inventory_diff: Option<InventoryDiff>,
+    /// The incident the user marked most recently, kept so the Incidents page
+    /// can confirm what was captured rather than only that something was.
+    pub(crate) last_marked: Option<u64>,
+    pub(crate) last_failure: Option<String>,
+
     pub(crate) processes: Entity<TableState<ProcessTableDelegate>>,
     pub(crate) apps: Entity<TableState<AppsTableDelegate>>,
     pub(crate) filter: Entity<InputState>,
@@ -80,8 +97,23 @@ pub(crate) struct MonitorApp {
     pub(crate) last_action: Option<ActionReport>,
 
     controller: LinuxProcessController,
-    privacy_changes: Option<smol::channel::Sender<ProcessPrivacy>>,
-    _sampling: Option<Task<()>>,
+    link: Option<smol::channel::Sender<LinkRequest>>,
+    _pump: Option<Task<()>>,
+}
+
+/// How the window is being fed.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Collection {
+    /// Nothing has answered yet. Not the same as "there is nothing".
+    Connecting,
+    /// The session service is recording. Closing this window changes nothing.
+    Service,
+    /// No service, so this window is collecting for itself. Recording stops
+    /// when the window closes, and the note says so.
+    InProcess { detail: String },
+    /// Neither could be started. There is nothing to show and the window says
+    /// exactly that rather than drawing empty charts.
+    Unavailable { detail: String },
 }
 
 impl MonitorApp {
@@ -124,6 +156,16 @@ impl MonitorApp {
             reports: Vec::new(),
             overview: OverviewModel::from_reports(&[]),
             rounds: 0,
+            collection: Collection::Connecting,
+            status: None,
+            history: None,
+            history_seconds: DEFAULT_HISTORY_SECONDS,
+            incidents: Vec::new(),
+            inventory: None,
+            inventory_captures: 0,
+            inventory_diff: None,
+            last_marked: None,
+            last_failure: None,
             processes,
             apps,
             filter,
@@ -131,71 +173,96 @@ impl MonitorApp {
             pending: None,
             last_action: None,
             controller: LinuxProcessController::for_current_process(),
-            privacy_changes: None,
-            _sampling: None,
+            link: None,
+            _pump: None,
         };
-        app.start_sampling(cx);
+        app.start_link(cx);
         app.observe_filter(cx);
         app.observe_tables(cx);
         app
     }
 
-    /// Start the background sampler.
+    /// Start the bridge to collection.
     ///
-    /// The collectors live on the background task for the window's lifetime,
-    /// which is what lets a counter delta exist at all: the previous round has
-    /// to be remembered somewhere that survives a render.
-    fn start_sampling(&mut self, cx: &mut Context<Self>) {
-        let (round_sender, round_receiver) = smol::channel::unbounded::<Round>();
-        let (privacy_sender, privacy_receiver) = smol::channel::unbounded::<ProcessPrivacy>();
-        self.privacy_changes = Some(privacy_sender);
+    /// The window asks for the service first. Whichever side answers, the
+    /// collectors live behind the bridge and never on the render thread, and
+    /// the window never reads `/proc` itself.
+    fn start_link(&mut self, cx: &mut Context<Self>) {
+        let (request_sender, request_receiver) = smol::channel::unbounded::<LinkRequest>();
+        let (update_sender, update_receiver) = smol::channel::unbounded::<LinkUpdate>();
+        self.link = Some(request_sender);
+        link::spawn(request_receiver, update_sender);
 
-        let worker = cx.background_spawn(async move {
-            let mut sampler = Sampler::new(ProcessPrivacy::default());
-            loop {
-                while let Ok(privacy) = privacy_receiver.try_recv() {
-                    sampler.set_privacy(privacy);
-                }
-                if round_sender.send(sampler.sample()).await.is_err() {
-                    // The window is gone.
-                    break;
-                }
-                // A steady interval, not a busy loop: the task is parked here
-                // for the whole gap between rounds.
-                Timer::after(Duration::from_millis(SAMPLE_INTERVAL_MILLIS)).await;
-            }
-        });
-
-        let pump = cx.spawn(async move |this, cx| {
-            while let Ok(round) = round_receiver.recv().await {
+        self._pump = Some(cx.spawn(async move |this, cx| {
+            while let Ok(update) = update_receiver.recv().await {
                 if this
-                    .update(cx, |app, cx| app.adopt_round(round, cx))
+                    .update(cx, |app, cx| app.adopt_update(update, cx))
                     .is_err()
                 {
                     break;
                 }
             }
-        });
-        self._sampling = Some(cx.background_spawn(async move {
-            worker.await;
-            pump.await;
         }));
     }
 
-    /// Adopt one finished round.
-    ///
-    /// While the display is paused the round is still counted and still
-    /// arrives, so collection is provably running; it just does not replace
-    /// what is on screen.
-    fn adopt_round(&mut self, round: Round, cx: &mut Context<Self>) {
-        self.rounds += 1;
-        if self.paused {
-            cx.notify();
-            return;
+    /// Ask the bridge for something. Silently does nothing before the bridge
+    /// exists, which is only true during construction.
+    pub(crate) fn ask(&self, request: LinkRequest) {
+        if let Some(link) = &self.link {
+            let _ = link.send_blocking(request);
         }
-        self.reports = round.reports;
-        self.overview = OverviewModel::from_reports(&self.reports);
-        self.apply_processes(round.processes, cx);
+    }
+
+    /// Adopt one update from the bridge.
+    ///
+    /// While the display is paused a status still arrives and is still
+    /// counted, so collection is provably running; it just does not replace
+    /// what is on screen.
+    fn adopt_update(&mut self, update: LinkUpdate, cx: &mut Context<Self>) {
+        match update {
+            LinkUpdate::Status(status) => {
+                self.rounds = status.rounds_collected;
+                if self.collection == Collection::Connecting {
+                    self.collection = Collection::Service;
+                }
+                if !self.paused
+                    && let Some(round) = &status.latest_round
+                {
+                    self.reports = round.clone();
+                    self.overview = OverviewModel::from_reports(&self.reports);
+                    let processes = self
+                        .reports
+                        .iter()
+                        .find(|report| report.collector.as_str() == "linux.process")
+                        .map(ProcessFacts::from_report)
+                        .unwrap_or_default();
+                    self.apply_processes(processes, cx);
+                }
+                self.status = Some(*status);
+            }
+            LinkUpdate::Embedded(detail) => {
+                self.collection = Collection::InProcess { detail };
+            }
+            LinkUpdate::Unavailable(detail) => {
+                self.collection = Collection::Unavailable { detail };
+            }
+            LinkUpdate::History(history) => self.history = Some(*history),
+            LinkUpdate::Incidents(incidents) => self.incidents = incidents.incidents,
+            LinkUpdate::Inventory(inventory, diff) => {
+                self.inventory_captures = inventory.captures;
+                self.inventory = inventory.inventory;
+                self.inventory_diff = diff.diff;
+            }
+            LinkUpdate::Marked(document) => {
+                self.last_marked = Some(document.incident.id);
+                self.last_failure = None;
+                // The list the page draws has to include what was just
+                // marked, so it is refreshed rather than appended to blindly.
+                self.ask(LinkRequest::Incidents);
+            }
+            LinkUpdate::Export(_) => {}
+            LinkUpdate::Failed(detail) => self.last_failure = Some(detail),
+        }
         cx.notify();
     }
 
@@ -295,7 +362,47 @@ impl MonitorApp {
 
     pub(crate) fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
         self.page = page;
+        // The three stored-data pages are pulled on arrival rather than
+        // polled, because none of them changes between one frame and the next
+        // and a query for fifteen minutes of history is not free.
+        match page {
+            Page::History => self.ask(LinkRequest::History {
+                seconds: self.history_seconds,
+            }),
+            Page::Incidents => self.ask(LinkRequest::Incidents),
+            Page::Inventory => self.ask(LinkRequest::Inventory),
+            _ => {}
+        }
         cx.notify();
+    }
+
+    /// Change how much history the History page shows.
+    pub(crate) fn set_history_span(&mut self, seconds: u64, cx: &mut Context<Self>) {
+        self.history_seconds = seconds;
+        self.ask(LinkRequest::History { seconds });
+        cx.notify();
+    }
+
+    /// "The system was just slow."
+    ///
+    /// The window sends the marker and nothing else. What is captured around
+    /// it is decided where the readings are, not here.
+    pub(crate) fn mark_incident(&mut self, cx: &mut Context<Self>) {
+        self.ask(LinkRequest::Mark {
+            note: None,
+            before_seconds: monitor_store::DEFAULT_WINDOW_BEFORE_SECONDS,
+            after_seconds: monitor_store::DEFAULT_WINDOW_AFTER_SECONDS,
+            about_pid: self.selected_pid,
+        });
+        cx.notify();
+    }
+
+    /// Whether marking is possible at all right now.
+    pub(crate) fn can_mark(&self) -> bool {
+        matches!(
+            self.collection,
+            Collection::Service | Collection::InProcess { .. }
+        )
     }
 
     pub(crate) fn set_locale(&mut self, locale: Locale, cx: &mut Context<Self>) {
@@ -349,11 +456,9 @@ impl MonitorApp {
     /// goes to the sampler as well as to the table.
     pub(crate) fn set_command_lines(&mut self, include: bool, cx: &mut Context<Self>) {
         self.include_command_lines = include;
-        if let Some(sender) = &self.privacy_changes {
-            let _ = sender.send_blocking(ProcessPrivacy {
-                include_command_line: include,
-            });
-        }
+        self.ask(LinkRequest::SetPrivacy(ProcessPrivacy {
+            include_command_line: include,
+        }));
         self.processes.update(cx, |table, cx| {
             table.delegate_mut().model.set_show_command_line(include);
             table.delegate_mut().rebuild_columns();
