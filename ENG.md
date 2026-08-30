@@ -226,6 +226,21 @@ suite, not only the two that exist today.
   verify, lost-inhibitor, and release, plus a private session-bus test of the
   StatusNotifierItem registration — the same shape as the `manager-daemon`
   D-Bus tests.
+- `touchpad-platform` writes and reads what it claims. Its GVariant change-set
+  encoder is pinned byte-for-byte against values GLib produced, including the
+  boundary where framing offsets widen, because a hand-rolled encoder that
+  drifts from the specification is accepted by the dconf service and writes
+  nothing. Device parsing runs over recorded `/proc` and `/sys` trees through a
+  `Roots` seam. Every apply outcome — applied, awaiting sign-out, partially
+  supported, failed, unsupported — is reached through the production
+  write-then-read-back code with only the write and the read replaced. Exactly
+  one test changes a real setting; it is `#[ignore]`d, needs an environment
+  variable as well, and puts the setting back.
+- `touchpad-gui` keeps every decision in `model.rs`, which has no GPUI
+  dependency, so the control set, the unavailable explanations, the four apply
+  states, the restore review, and both locales at 100/125/150% are all asserted
+  without a window. A source-level test asserts the crate names no backend
+  command.
 - `defaults-platform` ships a mock adapter for every declared integration kind,
   so aggregate status, partial failure, and external-change detection are all
   provable before a real adapter exists for that kind. Its two real adapters are

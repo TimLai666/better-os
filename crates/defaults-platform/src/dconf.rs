@@ -98,6 +98,12 @@ fn observe(value: Option<&GVariantValue>) -> ObservedValue {
         Some(GVariantValue::Boolean(value)) => ObservedValue::Set {
             value: DefaultsValue::Boolean(*value),
         },
+        // A double is decodable but has no `DefaultsValue` to become. Better
+        // Touchpad reads those keys through `GvdbDatabase` directly rather than
+        // widening this schema for a value no integration declares.
+        Some(GVariantValue::Double(_)) => ObservedValue::Unsupported {
+            reason: "dconf.unsupported_value_type:d".to_string(),
+        },
         Some(GVariantValue::Unsupported { signature }) => ObservedValue::Unsupported {
             reason: format!("dconf.unsupported_value_type:{signature}"),
         },

@@ -1,0 +1,30 @@
+[package]
+name = "touchpad-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["dconf-write"]
+# The write half of the GNOME backend: a `ca.desrt.dconf.Writer.Change` call
+# over the session bus. On by default because a touchpad control centre that
+# cannot change a setting is not the component; a consumer that only wants
+# device enumeration, session detection, and reading can turn it off and link
+# no D-Bus stack.
+dconf-write = ["dep:zbus", "dep:tokio"]
+
+[dependencies]
+defaults-platform.workspace = true
+touchpad-core.workspace = true
+thiserror.workspace = true
+# Matches `awake-service`, `awake-gui`, and `launcher-platform`: the workspace
+# has one zbus flavor, and it is the tokio one.
+tokio = { version = "1", features = ["rt-multi-thread", "sync"], optional = true }
+zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+# The integration tests speak the core vocabulary, which a dependency of the
+# library is not automatically lent to them.
+touchpad-core.workspace = true

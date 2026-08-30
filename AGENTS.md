@@ -92,10 +92,17 @@ GUI or dependency compiles when the relevant command was not executed.
   apply its keyboard shortcut, so the only activation paths that work out of
   the box are the desktop entry and running the binary. ADR 0008 and ticket 30
   own the first gap; ticket 27 owns the second.
-- Give the GNOME defaults adapters a real write path through the
-  `ca.desrt.dconf` D-Bus service. They read and verify real values today and
-  report Manual action required for a change; ADR 0009 records why and what the
-  write path needs.
+- Let the GNOME defaults adapters adopt the dconf write path that now exists.
+  Ticket 29 built it — `ca.desrt.dconf.Writer.Change` over the session bus, with
+  the change set encoded in `touchpad-platform`'s `gvariant` module and pinned
+  against GLib's own bytes — and ADR 0010 records the decision. Better Defaults
+  still reports Manual action required for a change, because adopting the path
+  changes its behaviour and its tests.
+- Better Touchpad shows vertical scroll factor, horizontal scroll factor, and
+  smooth scrolling as unavailable, because GNOME 46 has no key for any of them.
+  The model and the mock backend carry all three; making them live is one table
+  row in `touchpad-platform`'s GNOME backend when a GNOME that has the key is a
+  supported target.
 - Decide what restore should do when the previously selected application has
   been uninstalled. Restore writes the captured desktop entry either way and
   reports what the verifying read then saw, so the Defaults review screen has no

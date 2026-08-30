@@ -5,6 +5,12 @@
 Accepted for the Better Defaults core (ticket 27). The GUI (ticket 28) consumes
 these decisions and does not revisit them.
 
+Decision 4's second option — writing through the `ca.desrt.dconf` D-Bus service
+— was built by ticket 29 and is recorded in
+[ADR 0010](0010-touchpad-ranges-and-dconf-writes.md). Better Defaults has not
+adopted it; its two GNOME adapters still report manual action required, because
+adopting the path changes this component's behaviour and its tests.
+
 ## Context
 
 Issue #10 lists seven decisions that must not be made silently, and ticket 27
