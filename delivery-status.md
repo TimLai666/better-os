@@ -75,7 +75,7 @@ privileged mutation out of the GUI and CLI.
 | M31 | ticket 28 — Manager Defaults GUI review flows (needs M30) | agent | todo | workspace gate plus a preview-before-mutation assertion and locale/scaling overflow tests |
 | M32 | ticket 29 — Better Touchpad pointer, scrolling, clicking, devices | agent | todo | workspace gate plus apply-and-read-back tests per control and input-latency benchmarks |
 | M33 | ticket 30 — Mac-style gestures, typed actions, backend ADR (needs M32) | agent | todo | workspace gate plus recognizer replay tests, conflict detection, and the gesture backend ADR |
-| M34 | ticket 31 — safe direct-removal external storage | agent | todo | workspace gate plus event-sequence state-machine tests and flush-completion benchmarks |
+| M34 | ticket 31 — safe direct-removal external storage | agent | done | crate-scoped gates with 129 tests (13 event-sequence scenarios, 6 private-session-bus), live doctor probe on the host, synthetic state/latency benchmarks; hardware flush-completion benchmarks recorded as a follow-up; full workspace gate ran after merge |
 | M35 | ticket 32 — files-core typed locations and navigation (needs M21, M34) | agent | todo | workspace gate plus 100,000-entry listing benchmarks and a navigation cancellation test |
 | M36 | ticket 33 — files-operations durable job engine (needs M35) | agent | todo | workspace gate plus a job-survives-window-drop test and copy/move benchmarks |
 | M37 | ticket 34 — files-gui window, sidebar, views, operations (needs M36) | agent | todo | workspace gate plus the 100,000-entry progressive render benchmark and bookmark persistence tests |
@@ -138,10 +138,10 @@ requires.
 
 ## Next Ticket
 
-Tickets 18, 19, 20, 21, 22, 23, and 25 are done. Ready now (blockers met): 24
-(needs 22), 26 (needs 25), 27, 29, and 31. Remaining dependency edges, in
-ticket order: 28 needs 27; 30 needs 29; 32 needs 18 and 31; 33 needs 32; 34
-needs 33; 35 needs 19 and 34.
+Tickets 18, 19, 20, 21, 22, 23, 25, 27, and 31 are done. Ready now (blockers
+met): 24 (needs 22, in progress), 26 (needs 25), 28 (needs 27), 29, and 32
+(needs 18 and 31, in progress). Remaining dependency edges, in ticket order:
+30 needs 29; 33 needs 32; 34 needs 33; 35 needs 19 and 34.
 
 Ticket 30 now inherits a decision it must make rather than a blank page: ADR
 0008 compares the four gesture integration paths and adopts none, and the
@@ -862,3 +862,45 @@ Gates for ticket 27 were crate-scoped to avoid rebuilding GPUI in the worktree:
 passing. The full workspace gate has not run on this branch and belongs on the
 main checkout after merge. `manager-gui` is untouched; the Defaults screens are
 ticket 28, which consumes `defaults-core` unchanged.
+
+Ticket 31 added the three storage crates on branch `ticket-31`, not merged.
+`storage-core` is the whole decision: normalized device identity, the Direct
+Removal and Performance policies, six distinct states, the evidence model, the
+per-device preference model, and restore-default plans, with no D-Bus, UDisks2,
+`/proc`, or GPUI anywhere in it. The invariant everything else leans on is that
+`ReadyToUnplug` cannot be built without a `ReadinessProof`, a proof cannot be
+built without positive evidence, and the proof type has no `Deserialize`, so no
+client can hand the service a green light it never earned.
+
+Identity combines every stable identifier the platform reported — WWN, serial,
+partition UUID, filesystem UUID — and falls back to vendor, model, and the
+`by-path` port chain, which is honestly labelled weak. A device known only by
+`/dev/sdb1` is volatile and can never hold a preference. Two connected devices
+that report the same identity are both marked ambiguous and neither inherits the
+stored preference.
+
+`storage-platform` holds UDisks2 over zbus with real interface definitions,
+`syncfs` on a mount for the flush, `BLKFLSBUF` reported honestly as unsupported
+without privilege, per-backing-device writeback where debugfs allows it and the
+machine-wide `/proc/meminfo` figure as a heuristic fallback, and a
+`/proc/<pid>/fd` writer scan that counts what it could not inspect rather than
+implying it saw everything. Every one of those is a trait with a fake behind the
+`test-support` feature.
+
+`storage-service` owns the session-long state and publishes it over
+`org.betteros.Storage1` on the **session** bus — unprivileged, no polkit action,
+because everything it does is something the logged-in user could do directly.
+`docs/storage-safety-signals.md` records which signals are authoritative, which
+are heuristic, which are unavailable, and exactly what would need privilege;
+issue #5 defers that boundary to an ADR and nothing here pre-empts it.
+
+129 tests pass across the three crates, plus three `#[ignore]`d live checks. The
+probe binary run against this machine found 15 block devices, no external
+hot-pluggable device connected, writeback available only as the machine-wide
+figure, and 365 processes the writer scan could not inspect on `/` — which is
+the unprivileged picture the safety document describes rather than a limitation
+discovered later. Gates were crate-scoped to avoid rebuilding GPUI in the
+worktree; the workspace gate belongs on the main checkout after merge. Real
+device throughput across exFAT, NTFS, and ext4 on flash, SSD, and spinning
+external disks needs hardware and is recorded as a follow-up in the ticket, not
+approximated by the synthetic benchmarks.
