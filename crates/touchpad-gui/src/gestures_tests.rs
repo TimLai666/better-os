@@ -644,3 +644,32 @@ fn a_run_that_succeeds_clears_the_failure_count() {
     assert_eq!(screen.consecutive_failures(), 0);
     assert!(screen.config().enabled);
 }
+
+#[test]
+fn every_threshold_and_cooldown_the_editor_offers_is_a_legal_value() {
+    // The edit view offers fixed steps rather than free text, so the values it
+    // offers have to be values a definition would accept — including the
+    // combination of the lowest activation with the highest cancellation.
+    let mut screen = screen();
+    confirmed_preview(&mut screen, ConflictResolution::DisableBuiltIn);
+    screen.apply_preset(None).unwrap();
+
+    for activation in [0.4f32, 0.5, 0.6, 0.7, 0.8] {
+        for cancellation in [0.0f32, 0.15, 0.25, 0.35, 0.5] {
+            for cooldown in [0u64, 150, 350, 600, 1_000] {
+                screen.edit(&id("launcher"));
+                let editor = screen.editor_mut().unwrap();
+                editor.activation = activation;
+                editor.cancellation = cancellation;
+                editor.cooldown_ms = cooldown;
+                let legal = cancellation < activation;
+                assert_eq!(
+                    screen.commit_edit(None).is_ok(),
+                    legal,
+                    "activation {activation} with cancellation {cancellation}"
+                );
+                screen.cancel_edit();
+            }
+        }
+    }
+}

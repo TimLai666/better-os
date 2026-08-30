@@ -109,7 +109,7 @@ adapter question; the thresholds ship as recorded starting values.
 ## What actually shipped
 
 Three new crates: `better-actions` (14 tests), `touchpad-session` (15), and
-`touchpad-gestures` (74), plus the Gestures screen in `touchpad-gui` (66 tests
+`touchpad-gestures` (74), plus the Gestures screen in `touchpad-gui` (67 tests
 in that crate) and [ADR 0012](../decisions/0012-touchpad-gesture-backend.md).
 
 Four things are worth carrying forward.

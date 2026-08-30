@@ -612,21 +612,82 @@ impl TouchpadApp {
                             },
                         ),
                     )
-                    .child(self.number_row(
-                        c.activation_label,
-                        format!("{:.0}%", editor.activation * 100.0),
-                        cx,
-                    ))
-                    .child(self.number_row(
-                        c.cancellation_label,
-                        format!("{:.0}%", editor.cancellation * 100.0),
-                        cx,
-                    ))
-                    .child(self.number_row(
-                        c.cooldown_label,
-                        format!("{} ms", editor.cooldown_ms),
-                        cx,
-                    ))
+                    .child(
+                        self.choice_row(
+                            c.activation_label,
+                            [0.4f32, 0.5, 0.6, 0.7, 0.8]
+                                .into_iter()
+                                .map(|value| {
+                                    (
+                                        format!("{:.0}%", value * 100.0),
+                                        (value - editor.activation).abs() < 0.001,
+                                        value,
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                            "activation",
+                            cx,
+                            |this, value: f32, cx| {
+                                if let Some(editor) = this.gestures.editor_mut() {
+                                    editor.activation = value;
+                                }
+                                cx.notify();
+                            },
+                        ),
+                    )
+                    .child(
+                        self.choice_row(
+                            c.cancellation_label,
+                            [0.0f32, 0.15, 0.25, 0.35, 0.5]
+                                .into_iter()
+                                .map(|value| {
+                                    (
+                                        format!("{:.0}%", value * 100.0),
+                                        (value - editor.cancellation).abs() < 0.001,
+                                        value,
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                            "cancellation",
+                            cx,
+                            |this, value: f32, cx| {
+                                if let Some(editor) = this.gestures.editor_mut() {
+                                    editor.cancellation = value;
+                                }
+                                cx.notify();
+                            },
+                        ),
+                    )
+                    .child(
+                        self.choice_row(
+                            c.cooldown_label,
+                            [0u64, 150, 350, 600, 1_000]
+                                .into_iter()
+                                .map(|value| {
+                                    (format!("{value} ms"), value == editor.cooldown_ms, value)
+                                })
+                                .collect::<Vec<_>>(),
+                            "cooldown",
+                            cx,
+                            |this, value: u64, cx| {
+                                if let Some(editor) = this.gestures.editor_mut() {
+                                    editor.cooldown_ms = value;
+                                }
+                                cx.notify();
+                            },
+                        ),
+                    )
+                    .child(
+                        Switch::new("editor-thumb")
+                            .checked(editor.thumb_required)
+                            .label(c.thumb_label)
+                            .on_click(cx.listener(|this, value: &bool, _window, cx| {
+                                if let Some(editor) = this.gestures.editor_mut() {
+                                    editor.thumb_required = *value;
+                                }
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         Switch::new("editor-enabled")
                             .checked(editor.enabled)
@@ -715,19 +776,6 @@ impl TouchpadApp {
                         }),
                 ),
             )
-            .into_any_element()
-    }
-
-    fn number_row(&self, label: &'static str, value: String, cx: &Context<Self>) -> AnyElement {
-        h_flex()
-            .w_full()
-            .min_w_0()
-            .gap_3()
-            .justify_between()
-            .flex_wrap()
-            .text_xs()
-            .child(div().text_color(cx.theme().muted_foreground).child(label))
-            .child(div().child(value))
             .into_any_element()
     }
 
