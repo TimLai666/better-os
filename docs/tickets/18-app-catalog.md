@@ -5,7 +5,7 @@
 read one validated list of installed applications, and launch them through their
 registered desktop definition instead of a guessed executable path.
 **Blocked by:** none
-**Status:** todo
+**Status:** done
 
 ## Goal
 
@@ -64,24 +64,24 @@ shared with Better Launcher. Do not encode any of these in the record model.
 
 ## Acceptance criteria
 
-- [ ] Applications are discovered from standard XDG user and system application
+- [x] Applications are discovered from standard XDG user and system application
       directories.
-- [ ] Hidden, `NoDisplay`, and desktop-incompatible entries are excluded, and a
+- [x] Hidden, `NoDisplay`, and desktop-incompatible entries are excluded, and a
       test proves each exclusion rule separately.
-- [ ] A record carries desktop id, localized names, generic name, comment, icon,
+- [x] A record carries desktop id, localized names, generic name, comment, icon,
       categories, keywords, MIME types, `Exec`, `TryExec`, D-Bus activation
       metadata, actions, terminal requirement, source path, and source kind.
-- [ ] Launching goes through the registered desktop definition with no shell
+- [x] Launching goes through the registered desktop definition with no shell
       string concatenation anywhere in the path.
-- [ ] Flatpak, Snap, D-Bus-activated, and wrapper-based entries never receive a
+- [x] Flatpak, Snap, D-Bus-activated, and wrapper-based entries never receive a
       fabricated executable path; their executable status says so.
-- [ ] Malformed, truncated, and hostile desktop entries are rejected with stable
+- [x] Malformed, truncated, and hostile desktop entries are rejected with stable
       machine keys rather than panicking or being partially accepted.
-- [ ] Desktop-entry additions, changes, and removals are observed through
+- [x] Desktop-entry additions, changes, and removals are observed through
       filesystem notification, with no continuous polling while idle.
-- [ ] Discovery and normalization contain no GPUI dependency and do not run on a
+- [x] Discovery and normalization contain no GPUI dependency and do not run on a
       render thread.
-- [ ] Benchmarks over 5,000 synthetic records report cold discovery, warm load,
+- [x] Benchmarks over 5,000 synthetic records report cold discovery, warm load,
       refresh, and memory, with the tested hardware and dataset recorded.
 
 ## Verification
@@ -91,6 +91,7 @@ shared with Better Launcher. Do not encode any of these in the record model.
 - `cargo test --workspace`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo bench -p app-catalog-core` over the 5,000-record synthetic catalog,
-  with results written into the ticket's benchmark note
+  with results written into the benchmark note in
+  `docs/app-catalog-identity.md`
 - A launch smoke against a fixture desktop entry that records the argument
   vector it received, proving no shell interpretation happened

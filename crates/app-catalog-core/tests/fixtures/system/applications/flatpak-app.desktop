@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Sandboxed Drawing
+Exec=/usr/bin/flatpak run --branch=stable --arch=x86_64 org.gimp.GIMP %F
+Icon=org.gimp.GIMP
+Categories=Graphics;
+MimeType=image/png;image/jpeg;
+X-Flatpak=org.gimp.GIMP

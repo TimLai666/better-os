@@ -501,3 +501,36 @@ a blocker, and both should land before their consumers start.
 No implementation code was written in this round. The workspace still contains
 the eleven Manager and Monitor crates; every crate named in tickets 18 through
 35 is planned, not present.
+
+Ticket 18 landed the shared application catalog: `app-catalog-core` (the record
+model, desktop-entry parsing, `Exec` tokenization and field codes, precedence
+and visibility rules) and `app-catalog-platform` (XDG directory discovery,
+inotify-based change watching, launching). Both are in the workspace and
+neither depends on GPUI.
+
+The two invariants the whole suite now inherits: an application's identity is
+its desktop ID and never a path, and a launch produces argument vectors or a
+D-Bus activation with no code path that can build a command string. Executable
+resolution is a reported status, so a Flatpak, Snap, AppImage, wrapper, or
+D-Bus-activated entry says it has no canonical executable instead of offering
+one. `docs/app-catalog-identity.md` records the model, the boundary each
+consumer may cross, and the benchmark results.
+
+99 tests were added: 68 core unit tests, 10 core fixture-tree tests, 12
+platform unit tests, 8 discovery and watching tests against real directories,
+and 2 launch smoke tests that read back the `argv` a real spawned process
+received. Local `cargo fmt --all -- --check`, `cargo check --workspace`,
+`cargo test --workspace` (23 suites, no failures), `cargo clippy --workspace
+--all-targets -- -D warnings`, the same clippy run with the `dbus-activation`
+feature, and `cargo bench -p app-catalog-core` all passed.
+
+Benchmarks over 5,000 synthetic records on an AMD Ryzen AI 9 HX 370: 44.6 ms
+cold discovery, 40.4 ms warm load, 40.5 ms refresh after an entry is added,
+20.1 MB resident. Resolving executables against the real `PATH` adds 113 ms,
+which is the largest single cost in a full load and is worth knowing before a
+consumer asks for it.
+
+D-Bus activation ships behind the off-by-default `dbus-activation` feature, the
+same shape as `manager-platform`'s `dbus-client`. It compiles and is covered by
+a recording activator, but it has not been exercised against a real activatable
+application on a session bus.

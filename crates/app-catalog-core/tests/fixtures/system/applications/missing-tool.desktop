@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Absent Tool
+Exec=absent-tool
+TryExec=absent-tool
