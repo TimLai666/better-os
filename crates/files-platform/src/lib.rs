@@ -26,7 +26,10 @@ pub use hidden::read_hidden_rules;
 pub use local::{LocalDirectoryReader, ReaderConfig, list_directory_blocking};
 pub use mime::{GlobMimeDetector, MimeDetector, SharedMimeDetector, detector_from_env};
 pub use mounts::{MountPoint, MountTable, external_devices, read_mount_table};
-pub use trash::{TrashDirectory, read_trash};
+pub use trash::{
+    TrashDirectory, TrashError, TrashedItem, ensure_trash, move_to_trash, original_path_of, purge,
+    read_trash, restore, restore_to,
+};
 pub use watch::{DirectoryWatcher, WatchBackend, WatchEvent, refresh_for};
 pub use xdg::{ResolvedDirectory, UserDirectories, UserDirectory};
 
