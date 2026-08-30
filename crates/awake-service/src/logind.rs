@@ -22,6 +22,9 @@ pub struct LogindLease {
     what: String,
 }
 
+/// what, who, why, mode, uid, pid.
+type InhibitorEntry = (String, String, String, String, u32, u32);
+
 #[zbus::proxy(
     interface = "org.freedesktop.login1.Manager",
     default_service = "org.freedesktop.login1",
@@ -30,9 +33,8 @@ pub struct LogindLease {
 trait LogindManager {
     fn inhibit(&self, what: &str, who: &str, why: &str, mode: &str) -> zbus::Result<OwnedFd>;
 
-    /// what, who, why, mode, uid, pid.
     #[zbus(name = "ListInhibitors")]
-    fn list_inhibitors(&self) -> zbus::Result<Vec<(String, String, String, String, u32, u32)>>;
+    fn list_inhibitors(&self) -> zbus::Result<Vec<InhibitorEntry>>;
 }
 
 pub struct LogindBackend {
