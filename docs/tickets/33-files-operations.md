@@ -5,7 +5,7 @@
 items failed and why, and asks about a name conflict once instead of a thousand
 times.
 **Blocked by:** 32-files-core-navigation
-**Status:** todo
+**Status:** implemented on `ticket-33`, in review
 
 ## Goal
 
@@ -54,22 +54,22 @@ restart; anything beyond that stays open.
 
 ## Acceptance criteria
 
-- [ ] All eight job states are representable and each has a test.
-- [ ] A job exposes per-item and aggregate progress, throughput, and a
+- [x] All eight job states are representable and each has a test.
+- [x] A job exposes per-item and aggregate progress, throughput, and a
       remaining-time estimate with its confidence.
-- [ ] Create, rename, copy, move, duplicate, trash, restore, and permanent
+- [x] Create, rename, copy, move, duplicate, trash, restore, and permanent
       delete all run as jobs.
-- [ ] Permanent delete requires explicit confirmation.
-- [ ] A conflict decision can be applied to all remaining conflicts in the job.
-- [ ] Failed items can be retried and skipped individually.
-- [ ] Jobs are not tied to a window's lifetime, proven by a test that drops the
+- [x] Permanent delete requires explicit confirmation.
+- [x] A conflict decision can be applied to all remaining conflicts in the job.
+- [x] Failed items can be retried and skipped individually.
+- [x] Jobs are not tied to a window's lifetime, proven by a test that drops the
       owning UI handle mid-job and finds the job completed.
-- [ ] A crashed or closed window leaves no job in an unknowable state.
-- [ ] Every job verifies its final state, and partial copy or move behavior is
+- [x] A crashed or closed window leaves no job in an unknowable state.
+- [x] Every job verifies its final state, and partial copy or move behavior is
       documented and tested.
-- [ ] The metadata preservation policy is documented and enforced by tests.
-- [ ] A failed operation retains its error detail and affected paths.
-- [ ] No file operation constructs a shell string.
+- [x] The metadata preservation policy is documented and enforced by tests.
+- [x] A failed operation retains its error detail and affected paths.
+- [x] No file operation constructs a shell string.
 
 ## Verification
 
@@ -84,3 +84,102 @@ restart; anything beyond that stays open.
 - `cargo bench -p files-operations`: one large sequential copy, a 100,000
   small-file copy, a same-filesystem move, and a cross-filesystem move, recording
   completion and persistence time
+
+## What was built
+
+One new crate, `files-operations`, and the trash write side added to
+`files-platform` beside the read side ticket 32 left there. The whole policy —
+metadata, partial transfers, conflicts, concurrency, recovery, and the measured
+cost — is written down in `docs/files-operations-policy.md`.
+
+The load-bearing decisions:
+
+- **A handle owns nothing.** `JobHandle` is an identifier and an event stream
+  with no `Drop`. The engine owns its jobs; dropping every handle to a running
+  copy does nothing to it. Dropping the engine waits for running jobs and
+  cancels only the ones parked on a pause or a conflict, because a parked job
+  has nobody left to answer it.
+- **A destination appears whole or not at all.** Every file is written to a
+  temporary name in the destination directory and renamed into place after its
+  bytes, metadata, and verification are complete. Cancelling mid-copy therefore
+  leaves nothing, not a truncated file.
+- **A permanent delete's confirmation cannot be forged.** `DeleteConfirmation`
+  has no public field, no `Default`, and no `Deserialize`, the same shape as
+  `storage_core`'s readiness proof. A recovered job cannot resurrect one, which
+  is why recovery reports remaining work instead of resuming.
+- **Nothing is a `String`.** Names travel as `OsString` and paths as `PathBuf`
+  through the spec, the plan, the executor, the log, the error taxonomy, and
+  the persisted record, which serializes paths as bytes. Only `Display` is
+  lossy.
+- **A conflict answer carries its own scope.** One decision answers this item or
+  every remaining conflict of the same kind. Standing answers are keyed by kind,
+  so "overwrite every existing file" says nothing about a full disk.
+
+Scope notes against the ticket text:
+
+- Bulk rename and checksum are listed under Out of scope here and under
+  operations in Issue #6. Both are implemented, because the pattern engine and
+  the digest are each about a hundred lines once single rename and chunked
+  reading exist, and leaving them out would have meant shipping an untested
+  pattern engine into ticket 35. Archive and extract are **not** implemented:
+  they are the two that need a real format decision, and the engine does not
+  prevent them — an archive job is another `Operation` variant and another arm
+  in `execute_item`.
+- Job persistence covers a UI restart, as scoped. Surviving a logout or a reboot
+  stays deferred.
+
+## Verification actually run
+
+Crate-scoped, to avoid rebuilding GPUI in the worktree; the workspace gate
+belongs on the main checkout after merge.
+
+- `cargo fmt --all -- --check` — passed
+- `cargo check -p files-operations -p files-platform -p files-core --all-targets`
+  — passed
+- `cargo clippy -p files-operations -p files-platform -p files-core
+  --all-targets -- -D warnings` — passed
+- `cargo test -p files-operations -p files-platform -p files-core` — 289 tests
+  passed, and the whole suite was run ten more times to shake out timing
+  flakes. Three were found and fixed by making the paused-mid-copy tests
+  deterministic instead of hoping the copy was slow enough.
+- `cargo bench -p files-operations` — numbers recorded in
+  `docs/files-operations-policy.md`, and the benchmark earned its keep: it
+  caught the record being rewritten after every item, which was quadratic and
+  cost ten times the copy itself on a 201-item job. Records are now written at
+  most every 250 ms while a job runs, plus on every state change and at the end.
+
+New tests: 134 in `files-operations` (61 unit, 73 integration across seven
+files) and 11 added to `files-platform` for the trash write side.
+
+## What is not proven, and why
+
+- **A full disk, an exhausted quota, and a disappearing device** are covered at
+  the classification level only. Producing them needs a filesystem the suite may
+  not create or hardware the host does not have. All the errno values the kernel
+  produces for each are covered.
+- **A cross-filesystem move and the cross-filesystem trash fallback** are forced
+  by a policy flag rather than by a second mount, because mounting one needs
+  privilege the suite must not ask for. The code path is identical; what is
+  simulated is the `EXDEV` that selects it.
+- **A case conflict** is modelled and classified, and needs a case-insensitive
+  mount to exercise end to end.
+- **The large-file benchmark numbers are page-cache numbers.** 4.3 GB/s is
+  memory bandwidth. A real spinning disk, a real USB device with `fsync` per
+  file, and a network share are all unmeasured.
+- **Per-device `.Trash` and `.Trash-$uid`** are not implemented. The home-trash
+  fallback is, and the gap is documented rather than papered over.
+- **Hard links are not preserved** between separately copied files. It needs a
+  job-wide inode map.
+
+## Follow-ups this ticket creates
+
+- Decide whether a job should survive a logout or a reboot (Issue #6 defers it).
+- Decide whether Better Copy becomes a front end on this engine or something
+  else; the ticket names the boundary as still open.
+- Give the trash a per-device `.Trash-$uid` path so a removable disk's deletions
+  stay on the disk.
+- Preserve hard links within a job.
+- Measure a real device before Better Files claims copy performance.
+- Replace the full-record rewrite with an append-only item journal before a job
+  of a million items is offered. The record for 10,001 items is 17.5 MB, and it
+  grows linearly.

@@ -77,7 +77,7 @@ privileged mutation out of the GUI and CLI.
 | M33 | ticket 30 — Mac-style gestures, typed actions, backend ADR (needs M32) | agent | todo | workspace gate plus recognizer replay tests, conflict detection, and the gesture backend ADR |
 | M34 | ticket 31 — safe direct-removal external storage | agent | done | crate-scoped gates with 129 tests (13 event-sequence scenarios, 6 private-session-bus), live doctor probe on the host, synthetic state/latency benchmarks; hardware flush-completion benchmarks recorded as a follow-up; full workspace gate ran after merge |
 | M35 | ticket 32 — files-core typed locations and navigation (needs M21, M34) | agent | done | crate-scoped fmt/check/test/clippy gate, 145 tests, a `Cargo.lock` closure test proving no GPUI dependency, and 100,000-entry benchmarks (first batch 1.6 ms, full listing 125 ms, 38.3 MB, cancellation latency 0.021 ms) |
-| M36 | ticket 33 — files-operations durable job engine (needs M35) | agent | todo | workspace gate plus a job-survives-window-drop test and copy/move benchmarks |
+| M36 | ticket 33 — files-operations durable job engine (needs M35) | agent | in review on `ticket-33`, not merged | crate-scoped fmt/check/test/clippy gate, 289 tests (134 new in `files-operations`, 11 new for the trash write side), a job that finishes after every handle to it is dropped, cancel-mid-copy leaving no partial destination, and benchmarks that caught a quadratic record write; the workspace gate is still outstanding |
 | M37 | ticket 34 — files-gui window, sidebar, views, operations (needs M36) | agent | todo | workspace gate plus the 100,000-entry progressive render benchmark and bookmark persistence tests |
 | M38 | ticket 35 — Applications, devices, preview, search, benchmarks (needs M22, M37) | agent | todo | workspace gate plus the full Better Files benchmark harness and manifest validation |
 
@@ -138,10 +138,10 @@ requires.
 
 ## Next Ticket
 
-Tickets 18, 19, 20, 21, 22, 23, 25, 27, 31, and 32 are done. Ready now
-(blockers met): 24 (needs 22, in progress), 26 (needs 25), 28 (needs 27), 29,
-and 33 (needs 32). Remaining dependency edges, in ticket order: 30 needs 29; 34
-needs 33; 35 needs 19 and 34.
+Tickets 18, 19, 20, 21, 22, 23, 25, 27, 31, and 32 are done; 33 is implemented
+and in review on its own branch. Ready now (blockers met): 24 (needs 22, in
+progress), 26 (needs 25), 28 (needs 27), 29, and 34 (needs 33, in review).
+Remaining dependency edges, in ticket order: 30 needs 29; 35 needs 19 and 34.
 
 Ticket 30 now inherits a decision it must make rather than a blank page: ADR
 0008 compares the four gesture integration paths and adopts none, and the
@@ -965,3 +965,63 @@ ticket 31 records. `MountTable` builds only the volatile identity a mount table
 supports and says so; a consumer holding a real identity from `storage-service`
 should prefer it. A frame can still cost about 28 ms while a 100,000-entry
 directory loads, and precomputing a sort key per entry is the named follow-up.
+
+### Ticket 33 — Better Files durable job engine
+
+One new crate on branch `ticket-33`, which also carries the merge of
+`ticket-32`: `files-operations`. The trash write side went into
+`files-platform` beside the read side rather than into a second implementation
+of the freedesktop layout. Nothing else changed except the workspace member
+list, this file, the ticket, and a new `docs/files-operations-policy.md`.
+
+The rule Issue #6 states in one sentence — do not tie file operations to one
+window's lifetime — is enforced by the type rather than by discipline.
+`JobHandle` is an identifier and an event stream with no `Drop`, and nothing in
+the engine watches whether one still exists. The milestone test drops every
+handle to a running 8 MB copy and finds the job completed, the bytes correct,
+and the engine still able to report it.
+
+Three more properties are load-bearing. A destination appears whole or not at
+all: every file is written to a temporary name in the destination directory and
+renamed into place after its bytes, metadata, and verification are done, so
+cancelling mid-copy leaves nothing rather than a truncated file, and the test
+checks the destination directory is empty of temporaries too. A permanent
+delete's confirmation cannot be forged: `DeleteConfirmation` has no public
+field, no `Default`, and no `Deserialize`, the same shape as `storage_core`'s
+readiness proof, which is why recovery reports remaining work instead of
+resuming a delete whose user is gone. And nothing in the operation path is a
+`String`: names travel as `OsString` and paths as `PathBuf` through the spec,
+the plan, the executor, the log, the error taxonomy, and the persisted record,
+which serializes paths as bytes. A file called `caf\xe9 \xff report.txt` is
+copied, moved, trashed, restored, deleted, and named in its own failure report.
+
+Two bugs the tests found rather than review: verification compared a followed
+symlink against itself and failed a legitimate copy, and the source re-check
+ran after verification instead of before it, so a file rewritten mid-move was
+reported as a bad copy rather than as an external modification. The benchmark
+found a third and larger one — the job record was rewritten after every item,
+which is quadratic and cost ten times the copy itself on a 201-item job. Records
+are now written at most every 250 ms while a job runs, plus immediately on every
+state change and at the end, and the cost in recovery precision is documented
+rather than hidden.
+
+Gates were crate-scoped to avoid rebuilding GPUI in the worktree: `cargo fmt
+--all -- --check`, then `cargo check`, `cargo test`, and `cargo clippy
+--all-targets -- -D warnings` for `files-core`, `files-platform`, and
+`files-operations`, all passing, 289 tests. The suite was then run ten more
+times; three timing-dependent tests were found and made deterministic by
+pausing the job instead of hoping the copy was slow enough. The workspace gate
+belongs on the main checkout after merge.
+
+What this ticket did not do, and should not be assumed done: archive and extract
+are not implemented, which the ticket puts out of scope and the engine does not
+prevent. A full disk, an exhausted quota, a disappearing device, and a case
+conflict are proven at the classification level only, because producing them
+needs a filesystem the suite may not create or hardware the host does not have.
+The cross-filesystem move and the cross-filesystem trash fallback are forced by
+a policy flag rather than by a second mount, the same honest limit tickets 31
+and 32 record. Per-device `.Trash-$uid` directories are not created; the
+home-trash fallback is what a removable disk gets. Hard links are not preserved
+between separately copied files. And the large-file benchmark numbers are
+page-cache numbers: 5.3 GB/s is memory bandwidth, and no real spinning disk,
+USB device, or network share has been measured.
