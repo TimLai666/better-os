@@ -2060,6 +2060,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "files-gui"
+version = "0.1.0"
+dependencies = [
+ "better-ui",
+ "files-core",
+ "files-operations",
+ "files-platform",
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "gpui_platform",
+ "serde",
+ "serde_json",
+ "smol",
+ "storage-core",
+ "tempfile",
+]
+
+[[package]]
 name = "files-operations"
 version = "0.1.0"
 dependencies = [
