@@ -12,7 +12,7 @@
 //! the caller, because a preview of the previous selection is not a preview.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -137,11 +137,10 @@ impl PreviewService {
     pub fn poll(&self) -> Vec<PreviewOutcome> {
         let results = self.results.lock().expect("preview result lock");
         let mut outcomes = Vec::new();
-        loop {
-            match results.try_recv() {
-                Ok(outcome) => outcomes.push(outcome),
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-            }
+        // `try_recv` answers `Disconnected` when the worker has gone, which is
+        // the same "nothing more is coming" as `Empty` from a caller's side.
+        while let Ok(outcome) = results.try_recv() {
+            outcomes.push(outcome);
         }
         outcomes
     }

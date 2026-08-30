@@ -46,17 +46,15 @@ impl PreviewProvider for FolderProvider {
             truncated: false,
         };
         let limit = request.limits.max_folder_entries;
-        let mut seen = 0usize;
 
-        for entry in entries {
+        for (seen, entry) in entries.enumerate() {
             if seen >= limit {
                 summary.truncated = true;
                 break;
             }
-            if seen.is_multiple_of(CANCEL_CHECK_INTERVAL) {
+            if seen % CANCEL_CHECK_INTERVAL == 0 {
                 cancel.check()?;
             }
-            seen += 1;
             let Ok(entry) = entry else {
                 // One unreadable entry does not invalidate the count of the
                 // rest. It is skipped, and the totals stay honest about being

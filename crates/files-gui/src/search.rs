@@ -33,6 +33,7 @@ use crate::i18n::Copy;
 pub const SLICE: usize = 4_096;
 
 /// One search in the window.
+#[derive(Default)]
 pub struct SearchState {
     provider: CurrentDirectoryProvider,
     /// What is in the field. Kept separately from the run's query so an empty
@@ -46,20 +47,6 @@ pub struct SearchState {
     scope: Option<SearchScope>,
     /// How far through the model's entries the run has been fed.
     cursor: usize,
-}
-
-impl Default for SearchState {
-    fn default() -> Self {
-        Self {
-            provider: CurrentDirectoryProvider::default(),
-            text: String::new(),
-            include_hidden: false,
-            filters: Filters::default(),
-            run: None,
-            scope: None,
-            cursor: 0,
-        }
-    }
 }
 
 impl SearchState {

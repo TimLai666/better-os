@@ -39,6 +39,8 @@ gpui-platform.workspace = true
 smol = "2"
 
 [dev-dependencies]
+better-core.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile.workspace = true
 
 [[bench]]

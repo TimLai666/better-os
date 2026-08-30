@@ -123,11 +123,10 @@ impl DeviceLink for StorageLink {
     fn poll(&self) -> Vec<DeviceNotice> {
         let notices = self.notices.lock().expect("notice lock");
         let mut collected = Vec::new();
-        loop {
-            match notices.try_recv() {
-                Ok(notice) => collected.push(notice),
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-            }
+        // A disconnected channel means the link thread has ended, which from a
+        // caller's side is the same "nothing more is coming" as an empty one.
+        while let Ok(notice) = notices.try_recv() {
+            collected.push(notice);
         }
         collected
     }
@@ -149,12 +148,19 @@ fn set_mode(
 }
 
 /// Which side is answering.
+///
+/// The embedded arm is boxed because it carries a whole coordinator and its
+/// event receiver, and this enum lives for the life of the thread either way —
+/// paying for the larger variant in the service case would be paying for
+/// something that is never used.
 enum Backend {
     Service(StorageClient),
-    Embedded {
-        coordinator: StorageCoordinator<UDisks2>,
-        events: tokio::sync::mpsc::UnboundedReceiver<PlatformEvent>,
-    },
+    Embedded(Box<Embedded>),
+}
+
+struct Embedded {
+    coordinator: StorageCoordinator<UDisks2>,
+    events: tokio::sync::mpsc::UnboundedReceiver<PlatformEvent>,
 }
 
 async fn serve(
@@ -217,13 +223,9 @@ async fn serve(
             }
         }
 
-        if let Backend::Embedded {
-            coordinator,
-            events,
-        } = &mut backend
-        {
-            while let Ok(event) = events.try_recv() {
-                coordinator.handle_event(event).await;
+        if let Backend::Embedded(embedded) = &mut backend {
+            while let Ok(event) = embedded.events.try_recv() {
+                embedded.coordinator.handle_event(event).await;
             }
         }
 
@@ -245,7 +247,7 @@ async fn serve(
                     return;
                 }
             },
-            Backend::Embedded { coordinator, .. } => coordinator.reports(),
+            Backend::Embedded(embedded) => embedded.coordinator.reports(),
         };
 
         for notice in differences(&previous, &reports) {
@@ -292,10 +294,10 @@ async fn start_embedded() -> Result<Backend, String> {
         .refresh_inventory()
         .await
         .map_err(|e| e.to_string())?;
-    Ok(Backend::Embedded {
+    Ok(Backend::Embedded(Box::new(Embedded {
         coordinator,
         events,
-    })
+    })))
 }
 
 async fn handle(backend: &mut Backend, request: Request, notices: &Sender<DeviceNotice>) {
@@ -307,7 +309,8 @@ async fn handle(backend: &mut Backend, request: Request, notices: &Sender<Device
                     .await
                     .map(PathBuf::from)
                     .map_err(|e| e.to_string()),
-                Backend::Embedded { coordinator, .. } => coordinator
+                Backend::Embedded(embedded) => embedded
+                    .coordinator
                     .mount(&storage_core::DeviceHandle::new(object_path.clone()))
                     .await
                     .map_err(|e| e.to_string()),
@@ -337,7 +340,8 @@ async fn handle(backend: &mut Backend, request: Request, notices: &Sender<Device
                         detail: error.to_string(),
                     },
                 },
-                Backend::Embedded { coordinator, .. } => match coordinator
+                Backend::Embedded(embedded) => match embedded
+                    .coordinator
                     .eject(&storage_core::DeviceHandle::new(object_path.clone()))
                     .await
                 {
@@ -358,8 +362,8 @@ async fn handle(backend: &mut Backend, request: Request, notices: &Sender<Device
             Backend::Service(client) => {
                 let _ = client.refresh().await;
             }
-            Backend::Embedded { coordinator, .. } => {
-                let _ = coordinator.refresh_inventory().await;
+            Backend::Embedded(embedded) => {
+                let _ = embedded.coordinator.refresh_inventory().await;
             }
         },
     }
