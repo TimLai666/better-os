@@ -45,6 +45,9 @@ files-core ──> files-platform ──> files-operations ──> files-gui
 
 monitor-core ──> monitor-collectors-linux ──> monitor-service ──> monitor-gui
    typed metric/capability contracts     monitor-ipc / monitor-store / monitor-cli
+   typed process actions ──> monitor-actions-linux   the only caller of kill(2)
+        └──> monitor-views ──────────────────────────> monitor-gui
+             grouping evidence, table/apps/overview models, no GPUI
 
 awake-core ──> awake-platform ──> awake-service ──> awake-ipc ──┬── awake-tray
    sessions, policies, trigger rules   owns inhibitors          └── awake-gui
@@ -84,6 +87,21 @@ suite, not only the two that exist today.
 - **Collection outlives the GUI.** `monitor-service` owns historical collection,
   and `monitor-gui` reads through `monitor-ipc`. The GUI does not scrape `/proc`,
   run a shell pipeline, or hold a privileged handle.
+- **A view decision is not a rendering decision.** `monitor-views` owns app
+  grouping, sorting, filtering, tree building, aggregation, and the Overview
+  verdicts, and has no GPUI dependency, so all of it is tested without a
+  display server. `monitor-gui` draws models; it never decides what a number
+  means.
+- **A group is a claim that carries its evidence.** Processes are only merged
+  when the system recorded a relationship — unit membership, Flatpak or Snap
+  identity, a desktop launch, or a parent link. Matching executable names never
+  merge anything; the fallback key carries the PID. The precedence is
+  configuration with a recorded default, not a decided answer.
+- **An intent, not a signal.** `monitor-core::action` carries what the user
+  asked for and a closed set of signal kinds; `monitor-actions-linux` is the
+  only crate that maps one to a number and calls `kill(2)`. Refusals are data
+  the button is rendered from, decided before anything is attempted, by one
+  policy function both the real controller and the test fake apply.
 - **Five states, not one number.** Monitor metric contracts distinguish unknown,
   unsupported, permission denied, stale, and zero. Storage distinguishes Ready to
   unplug, Writing, Busy, Performance, and Unknown. Defaults distinguishes eight
@@ -160,7 +178,20 @@ suite, not only the two that exist today.
   each rollback outcome — is tested without privileges, plus a private
   session-bus test of the D-Bus surface itself.
 - Monitor contract behavior uses in-memory history and asserts that the five
-  observation states stay distinct. Collector behavior is tested against
+  observation states stay distinct. Process-action policy is tested through a
+  recording controller that shares the production availability rule, so a test
+  that proves a refusal proves the rule production applies.
+- `monitor-views` is tested twice over: by hand-built facts for every ordering,
+  filtering, aggregation, and verdict rule, and by running the production
+  collectors over ticket 22's captured `/proc` trees, so a renamed metric fails
+  a test instead of blanking a column.
+- `monitor-actions-linux` is tested against a real child process it spawns —
+  stopped, resumed, reniced, terminated, and checked against `/proc` after each
+  step — because a policy test cannot prove a syscall works.
+- `monitor-gui` asserts what can be asserted without a window: both locales
+  complete and actually different, every column header fitting its column in
+  both languages, the action row's reflow at 100/125/150%, and the rule that no
+  column renders a missing reading as a number. Collector behavior is tested against
   captured `/proc` and `/sys` fixture trees through the `Roots` seam, including
   truncated and malformed input, two-sample deltas, a kernel without
   `CONFIG_PSI`, and an unreadable descriptor directory. Collection cost is

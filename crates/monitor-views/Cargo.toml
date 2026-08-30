@@ -1,0 +1,20 @@
+[package]
+name = "monitor-views"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+monitor-core.workspace = true
+
+[dev-dependencies]
+# The view models are proved against the production collectors reading ticket
+# 22's captured `/proc` trees, so a renamed metric fails a test rather than
+# blanking a column. This is a test-only edge; nothing in the library knows
+# Linux exists.
+monitor-collectors-linux.workspace = true
+
+[[bench]]
+name = "process_table"
+harness = false

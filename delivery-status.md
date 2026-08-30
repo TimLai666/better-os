@@ -67,7 +67,7 @@ privileged mutation out of the GUI and CLI.
 | M23 | ticket 20 — launcher-core index and ranking (needs M21) | agent | todo | workspace gate plus query latency p95 under 50 ms on 5,000 synthetic records |
 | M24 | ticket 21 — launcher overlay, activation, gesture ADR (needs M23) | agent | todo | workspace gate plus headless overlay smoke, manifest validation, and the gesture-options ADR |
 | M25 | ticket 22 — monitor metric contracts and Linux collectors | agent | done | typed metric/capability contracts with five distinct observation states, six `/proc` and `/sys` collectors, 157 tests against captured fixture trees, measured overhead 10.2 ms/round for 1,359 tasks; full workspace gate ran after merge |
-| M26 | ticket 23 — Apps, Processes, actions, real Overview (needs M25) | agent | todo | workspace gate plus the 10,000-process table benchmark and locale/scaling overflow tests |
+| M26 | ticket 23 — Apps, Processes, actions, real Overview (needs M25) | agent | done | workspace gate green; 10,000-process benchmark published (adopt a round 1.7 ms, group into applications 12.4 ms); locale/scaling overflow tests pass in both languages at 100/125/150%; a real child process was stopped, resumed, reniced, and terminated through the typed action interface |
 | M27 | ticket 24 — monitor service, history, incidents, export, CLI (needs M25) | agent | todo | workspace gate plus collection-after-GUI-close smoke and a seeded-secret export test |
 | M28 | ticket 25 — Better Awake tray-first manual sessions | agent | todo | workspace gate plus a private session-bus tray test and a tray-restart session survival test |
 | M29 | ticket 26 — Awake full application and trigger rules (needs M28) | agent | todo | workspace gate plus rule-engine evaluation tests and an uninstall smoke releasing inhibitors |
@@ -123,9 +123,9 @@ policy still needs alignment.
 
 ## Next Verifiable Output
 
-Better Monitor's Overview, Apps, and Processes views rendering the real
-collector output (ticket 23), and `launcher-core` matching and ranking over the
-shared catalog with its p95 latency benchmark (ticket 20).
+Better Monitor's historical collection surviving a GUI close, with a versioned
+store and a redacted export (ticket 24), and `launcher-core` matching and
+ranking over the shared catalog with its p95 latency benchmark (ticket 20).
 
 The Better Manager follow-ups remain open and unscheduled: package signing, the
 public APT repository, a repair action for a transaction interrupted mid-flight,
@@ -134,8 +134,8 @@ requires.
 
 ## Next Ticket
 
-Tickets 18, 19, and 22 are done. Ready now (blockers met): 20 (needs 18),
-23 and 24 (need 22), 26 (needs 25, in progress), 27, 29, and 31. Remaining
+Tickets 18, 19, 22, and 23 are done. Ready now (blockers met): 20 (needs 18),
+24 (needs 22), 26 (needs 25, in progress), 27, 29, and 31. Remaining
 dependency edges, in ticket order: 21 needs 20; 28 needs 27; 30 needs 29; 32
 needs 18 and 31; 33 needs 32; 34 needs 33; 35 needs 19 and 34.
 
@@ -634,3 +634,36 @@ monitor-gui`, all passing. `monitor-gui` was updated only far enough to speak
 the new contract and still renders a fixed demonstration round. The full
 workspace gate has not run on this branch and belongs on the main checkout after
 merge. That full workspace gate ran on `main` immediately after this merge.
+
+Ticket 23 is done. Better Monitor is no longer observation-only: the window
+samples the real collectors on a background task once a second, and the
+Overview, Apps, and Processes pages render what they produce. Two new crates
+carry the work that must not live in GPUI — `monitor-views` for grouping and
+the table, apps, and overview models, and `monitor-actions-linux` as the only
+caller of `kill(2)` and `setpriority(2)` in the project. `monitor-core` gained
+a typed action contract whose refusals are data a button renders from rather
+than errors reported after the fact.
+
+The grouping engine merges processes only where the system recorded a
+relationship, and never because two executables share a name; that rule has its
+own test. Each group carries the evidence that produced it and the confidence
+of that evidence, and the precedence is configuration with Issue #16's order as
+the default, because the final order still needs an ADR.
+
+Gates that actually ran on this branch: `cargo fmt --all -- --check`,
+`cargo check --workspace`, `cargo test --workspace` (626 tests, all passing; 513 on `main` before this ticket),
+`cargo clippy --workspace --all-targets -- -D warnings`, an 8-second
+`ZED_HEADLESS=1` launch of `monitor-gui` that stayed alive with no output, and
+`cargo bench -p monitor-views` at 100, 1,000, and 10,000 processes. The
+collector overhead measurement was re-run because adding the per-process
+`/proc/[pid]/io` read made a round more expensive; the new number is published
+in `docs/monitor-collector-sources.md` rather than left at the old one.
+
+What ticket 23 did not close, and should not be assumed done: the narrow
+polkit-reviewed boundary for cross-user and elevated process actions is not
+built — those actions are refused with the owner named and no privileged helper
+is reached for. Rendered frame time and dropped frames are not measured; only
+the model-side cost is. Application grouping at 10,000 processes costs about
+one frame on the interface thread. Keyboard-only operation is not verified.
+"Open location" and "copy diagnostic details" from the ticket's deliverables
+are not implemented.

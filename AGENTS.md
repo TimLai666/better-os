@@ -56,10 +56,13 @@ GUI or dependency compiles when the relevant command was not executed.
 - Update GitHub Actions dependencies after the Node.js 20 deprecation warning
   on `actions/checkout` and `actions/upload-artifact` is addressed.
 - Review the license implications of every copyleft dependency before release.
-- Better Monitor is still observation-only. Real Linux collectors now exist in
-  `monitor-collectors-linux`, reading `/proc` and `/sys` directly; the views
-  that present them, process control actions, the persistent history store, and
-  the large-process benchmark scenarios are still outstanding.
+- Better Monitor now presents its collectors: `monitor-views` owns grouping and
+  the table, apps, and overview models with no GPUI dependency, and
+  `monitor-actions-linux` is the only crate that calls `kill(2)` or
+  `setpriority(2)`. Process actions are own-user only; cross-user and elevated
+  actions are refused with the reason shown, and the narrow polkit-reviewed
+  boundary that would allow them is not built. The persistent history store and
+  service are still outstanding.
 - Decide the Better Monitor time-series storage engine and retention policy in
   an ADR before any collector output is persisted. Issue #16 lists SQLite as a
   candidate, not a decision.

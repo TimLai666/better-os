@@ -4040,6 +4040,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitor-actions-linux"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "monitor-core",
+]
+
+[[package]]
 name = "monitor-collectors-linux"
 version = "0.1.0"
 dependencies = [
@@ -4064,7 +4072,20 @@ dependencies = [
  "better-ui",
  "gpui",
  "gpui-component",
+ "gpui-component-assets",
  "gpui_platform",
+ "monitor-actions-linux",
+ "monitor-collectors-linux",
+ "monitor-core",
+ "monitor-views",
+ "smol",
+]
+
+[[package]]
+name = "monitor-views"
+version = "0.1.0"
+dependencies = [
+ "monitor-collectors-linux",
  "monitor-core",
 ]
 

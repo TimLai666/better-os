@@ -26,8 +26,8 @@
 //! kernel that stayed silent.
 
 use crate::catalog::{
-    MINIMUM_DELTA_INTERVAL, collector_id, derived_source, gauge, identity, metric_id, proc_source,
-    utilization,
+    MINIMUM_DELTA_INTERVAL, collector_id, counter, derived_source, gauge, identity, metric_id,
+    proc_source, rate, utilization,
 };
 use crate::cpu::{USER_HZ, parse_proc_stat};
 use crate::fsread::{MalformedInput, ReadError, count_dir_entries, list_dir, read_text};
@@ -246,6 +246,51 @@ pub fn parse_passwd(input: &str) -> HashMap<u32, String> {
     users
 }
 
+/// The storage byte counters of `/proc/[pid]/io`.
+///
+/// `read_bytes` and `write_bytes` are the ones that reached the block layer,
+/// which is what a disk-activity column should show. `rchar` and `wchar` count
+/// every read and write including cache hits and pipes, so they would make a
+/// process that only talked to a socket look like it was hammering the disk.
+///
+/// The file is readable only for a process the caller may ptrace, so for
+/// another user's process this is `PermissionDenied` rather than zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ProcessIo {
+    pub read_bytes: Option<u64>,
+    pub write_bytes: Option<u64>,
+}
+
+const PID_IO: &str = "/proc/[pid]/io";
+
+pub fn parse_pid_io(input: &str) -> Result<ProcessIo, MalformedInput> {
+    let mut io = ProcessIo::default();
+    let mut saw_any = false;
+    for line in input.lines() {
+        let Some((key, rest)) = line.split_once(':') else {
+            continue;
+        };
+        saw_any = true;
+        let rest = rest.trim();
+        let field = match key {
+            "read_bytes" => &mut io.read_bytes,
+            "write_bytes" => &mut io.write_bytes,
+            _ => continue,
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        *field = Some(
+            rest.parse::<u64>()
+                .map_err(|_| MalformedInput::new(PID_IO, format!("bad byte count {rest:?}")))?,
+        );
+    }
+    if !saw_any {
+        return Err(MalformedInput::new(PID_IO, "no key: value lines"));
+    }
+    Ok(io)
+}
+
 /// The single-letter process states of `Documentation/filesystems/proc.rst`.
 pub fn state_name(state: char) -> &'static str {
     match state {
@@ -270,6 +315,8 @@ const PROCESS_COLLECTOR: &str = "linux.process";
 struct ProcessDelta {
     start_ticks: u64,
     cpu_ticks: u64,
+    read_bytes: Option<u64>,
+    write_bytes: Option<u64>,
 }
 
 struct ProcessSnapshot {
@@ -412,6 +459,30 @@ impl ProcessCollector {
                 "process.command_line",
                 proc_source("[pid]/cmdline"),
                 "full command line, withheld unless collection is configured to include it",
+            ),
+            counter(
+                "process.io.read.bytes.total",
+                Unit::Bytes,
+                proc_source("[pid]/io"),
+                "read_bytes: bytes fetched from the block layer since the process started",
+            ),
+            counter(
+                "process.io.write.bytes.total",
+                Unit::Bytes,
+                proc_source("[pid]/io"),
+                "write_bytes: bytes sent to the block layer since the process started",
+            ),
+            rate(
+                "process.io.read.bytes.rate",
+                Unit::BytesPerSecond,
+                derived_source("/proc/[pid]/io read_bytes delta over elapsed time"),
+                "storage read throughput",
+            ),
+            rate(
+                "process.io.write.bytes.rate",
+                Unit::BytesPerSecond,
+                derived_source("/proc/[pid]/io write_bytes delta over elapsed time"),
+                "storage write throughput",
             ),
         ]
     }
@@ -576,14 +647,85 @@ impl ProcessCollector {
         self.read_descriptor_count(roots, pid, &mut metrics);
         self.read_cgroup(roots, pid, &mut metrics);
         self.read_command_line(roots, pid, &mut metrics);
+        let io = self.read_io(roots, pid, &stat, seconds, &mut metrics);
 
         Some((
             metrics,
             ProcessDelta {
                 start_ticks: stat.start_ticks,
                 cpu_ticks,
+                read_bytes: io.read_bytes,
+                write_bytes: io.write_bytes,
             },
         ))
+    }
+
+    /// Storage byte counters and the throughput derived from them.
+    ///
+    /// The rate uses the same PID-reuse guard the CPU delta does: a start time
+    /// that changed means the counters belong to a different process, so the
+    /// rate resets to `NotYetSampled` rather than reporting the whole of the
+    /// old process's lifetime as one interval's throughput.
+    fn read_io(
+        &self,
+        roots: &Roots,
+        pid: u32,
+        stat: &ProcessStat,
+        seconds: Option<f64>,
+        metrics: &mut MetricSet,
+    ) -> ProcessIo {
+        let path = roots.proc(&format!("{pid}/io"));
+        let (io, failure) = match read_text(&path) {
+            Ok(raw) => match parse_pid_io(&raw) {
+                Ok(io) => (io, None),
+                Err(error) => (ProcessIo::default(), Some(error.into_observation())),
+            },
+            Err(error) => (ProcessIo::default(), Some(error.into_entity_observation())),
+        };
+
+        let earlier = self
+            .previous
+            .as_ref()
+            .and_then(|previous| previous.processes.get(&pid))
+            .filter(|earlier| earlier.start_ticks == stat.start_ticks);
+
+        for (total_id, rate_id, current, previous) in [
+            (
+                "process.io.read.bytes.total",
+                "process.io.read.bytes.rate",
+                io.read_bytes,
+                earlier.and_then(|earlier| earlier.read_bytes),
+            ),
+            (
+                "process.io.write.bytes.total",
+                "process.io.write.bytes.rate",
+                io.write_bytes,
+                earlier.and_then(|earlier| earlier.write_bytes),
+            ),
+        ] {
+            let (total, rate) = match (&failure, current) {
+                (Some(failure), _) => (failure.clone(), failure.clone()),
+                (None, None) => {
+                    let absent = Observation::Unsupported(UnsupportedReason::NotReported {
+                        detail: "no byte counters in /proc/[pid]/io".into(),
+                    });
+                    (absent.clone(), absent)
+                }
+                (None, Some(bytes)) => {
+                    let rate = match (previous, seconds) {
+                        (Some(previous), Some(seconds)) => {
+                            Observation::float(bytes.saturating_sub(previous) as f64 / seconds)
+                        }
+                        (None, _) => Observation::Unknown(UnknownReason::NotYetSampled),
+                        (_, None) => Observation::Unknown(UnknownReason::IntervalTooShort),
+                    };
+                    (Observation::unsigned(bytes), rate)
+                }
+            };
+            metrics.insert(metric_id(total_id), total);
+            metrics.insert(metric_id(rate_id), rate);
+        }
+        io
     }
 
     fn read_status(
@@ -1184,6 +1326,85 @@ mod tests {
         let mut collector = ProcessCollector::new(roots.clone(), ProcessPrivacy::default());
         let report = collector.sample(&roots, at(0));
         assert!(matches!(report.health, CollectorHealth::Unsupported(_)));
+    }
+
+    #[test]
+    fn storage_byte_counters_come_from_the_block_layer_fields() {
+        let io = parse_pid_io(
+            "rchar: 4096\nwchar: 2048\nsyscr: 100\nsyscw: 50\nread_bytes: 40960\nwrite_bytes: 20480\ncancelled_write_bytes: 0\n",
+        )
+        .unwrap();
+        // rchar and wchar count cache hits and pipes; they must not be what a
+        // disk-activity column shows.
+        assert_eq!(io.read_bytes, Some(40960));
+        assert_eq!(io.write_bytes, Some(20480));
+        assert!(parse_pid_io("").is_err());
+        assert!(parse_pid_io("read_bytes: not-a-number\n").is_err());
+    }
+
+    #[test]
+    fn process_throughput_needs_two_rounds_and_divides_by_the_real_interval() {
+        let a = Roots::at(fixture("synthetic-a"));
+        let b = Roots::at(fixture("synthetic-b"));
+        let mut collector = ProcessCollector::new(a.clone(), ProcessPrivacy::default());
+
+        let first = collector.sample(&a, at(0));
+        let entity = process(&first, "7");
+        assert_eq!(
+            entity
+                .metrics
+                .get(&metric_id("process.io.read.bytes.total"))
+                .unwrap()
+                .as_f64(),
+            Some(40960.0)
+        );
+        assert_eq!(
+            entity
+                .metrics
+                .state_of(&metric_id("process.io.read.bytes.rate")),
+            monitor_core::ObservationState::Unknown
+        );
+
+        let second = collector.sample(&b, at(1_000));
+        let entity = process(&second, "7");
+        assert_eq!(
+            entity
+                .metrics
+                .get(&metric_id("process.io.read.bytes.rate"))
+                .unwrap()
+                .as_f64(),
+            Some(102_400.0)
+        );
+        assert_eq!(
+            entity
+                .metrics
+                .get(&metric_id("process.io.write.bytes.rate"))
+                .unwrap()
+                .as_f64(),
+            Some(51_200.0)
+        );
+    }
+
+    #[test]
+    fn an_unreadable_io_file_is_not_reported_as_no_disk_activity() {
+        let temporary = TempTree::copy_of("synthetic-a");
+        std::fs::remove_file(temporary.path().join("proc/7/io")).unwrap();
+        let mut collector = ProcessCollector::new(temporary.roots(), ProcessPrivacy::default());
+        let report = collector.sample(&temporary.roots(), at(0));
+        let entity = process(&report, "7");
+        for id in ["process.io.read.bytes.total", "process.io.write.bytes.rate"] {
+            let observation = entity.metrics.get(&metric_id(id)).unwrap();
+            assert_ne!(
+                observation.as_f64(),
+                Some(0.0),
+                "{id} must not read as zero"
+            );
+            assert_eq!(
+                observation.state(),
+                monitor_core::ObservationState::Unknown,
+                "{id}"
+            );
+        }
     }
 
     #[test]

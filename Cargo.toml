@@ -16,6 +16,8 @@ members = [
     "crates/manager-gui",
     "crates/monitor-core",
     "crates/monitor-collectors-linux",
+    "crates/monitor-views",
+    "crates/monitor-actions-linux",
     "crates/monitor-gui",
 ]
 
@@ -39,6 +41,8 @@ manager-platform = { path = "crates/manager-platform" }
 manager-store = { path = "crates/manager-store" }
 monitor-core = { path = "crates/monitor-core" }
 monitor-collectors-linux = { path = "crates/monitor-collectors-linux" }
+monitor-views = { path = "crates/monitor-views" }
+monitor-actions-linux = { path = "crates/monitor-actions-linux" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
