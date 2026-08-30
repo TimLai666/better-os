@@ -244,6 +244,8 @@ suite, not only the two that exist today.
 | App catalog | XDG discovery, each exclusion rule separately, malformed entry rejection, change watching, launch argument vector, 5,000-record benchmarks |
 | App chooser | MIME section ranking, Open Once side-effect freedom, single-association `mimeapps.list` diff, rollback byte equality, executable-mode refusals |
 | Launcher | matching per input field, exact/prefix over fuzzy, ranking determinism, query-driven browse/search switch, p95 query latency, no-GPUI dependency assertion |
+| Launcher overlay | query-to-library round trip with no window change, grid keyboard order, launch-failure surfacing, live catalog swap keeping query and selection, locale and 100/125/150% hint overflow, headless launch smoke |
+| Launcher activation | single-instance role over a fake registry and over a private session bus, toggle-versus-open verbs, unreachable owner reported rather than opening a second overlay, gesture threshold/reversal/cooldown replay, capability degradation to two paths |
 | Monitor collectors | fixture-tree semantics per collector, five distinct metric states, irregular sampling intervals, per-collector overhead, source traceability records |
 | Monitor views | grouping evidence and its refusals, virtualized tables at 10,000 processes, each process action and each refusal, unsupported-page honesty |
 | Monitor history | collection after GUI close, store migration and corrupted-tail recovery, retention bounds, seeded-secret export redaction, CLI subcommands |

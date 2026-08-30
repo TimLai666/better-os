@@ -65,7 +65,7 @@ privileged mutation out of the GUI and CLI.
 | M21 | ticket 18 — shared app catalog core and platform | agent | done | workspace gate passed; 5,000-record benchmarks (cold 44.6 ms, warm 40.4 ms, 20.1 MB) and a launch smoke proving the argument vector was never shell-interpreted |
 | M22 | ticket 19 — Better App Chooser (needs M21) | agent | done | workspace gate passed; `mimeapps.list` single-association diff and rollback byte equality proven over six fixture shapes; headless chooser smoke in both modes |
 | M23 | ticket 20 — launcher-core index and ranking (needs M21) | agent | done | crate-scoped fmt/check/test/clippy gate, 53 tests, and 5,000-record benchmarks: query latency p95 1.005 ms against the 50 ms target, cold index build 17.8 ms; full workspace gate runs after merge |
-| M24 | ticket 21 — launcher overlay, activation, gesture ADR (needs M23) | agent | todo | workspace gate plus headless overlay smoke, manifest validation, and the gesture-options ADR |
+| M24 | ticket 21 — launcher overlay, activation, gesture ADR (needs M23) | agent | done | full workspace gate green (fmt, check, test, clippy `-D warnings`), 894 workspace tests, 73 of them new, 8 s `ZED_HEADLESS=1` overlay smoke, 8 manifest-validation tests through `better-core`, ADR 0008 comparing the four gesture paths and adopting none, and an end-to-end single-instance check where a second launch forwarded its toggle and quit the first |
 | M25 | ticket 22 — monitor metric contracts and Linux collectors | agent | done | typed metric/capability contracts with five distinct observation states, six `/proc` and `/sys` collectors, 157 tests against captured fixture trees, measured overhead 10.2 ms/round for 1,359 tasks; full workspace gate ran after merge |
 | M26 | ticket 23 — Apps, Processes, actions, real Overview (needs M25) | agent | done | workspace gate green; 10,000-process benchmark published (adopt a round 1.7 ms, group into applications 12.4 ms); locale/scaling overflow tests pass in both languages at 100/125/150%; a real child process was stopped, resumed, reniced, and terminated through the typed action interface |
 | M27 | ticket 24 — monitor service, history, incidents, export, CLI (needs M25) | agent | todo | workspace gate plus collection-after-GUI-close smoke and a seeded-secret export test |
@@ -124,8 +124,12 @@ policy still needs alignment.
 ## Next Verifiable Output
 
 Better Monitor's historical collection surviving a GUI close, with a versioned
-store and a redacted export (ticket 24), and `launcher-core` matching and
-ranking over the shared catalog with its p95 latency benchmark (ticket 20).
+store and a redacted export (ticket 24).
+
+Better Launcher is now openable and usable: the overlay, its activation paths,
+and the gesture adapter boundary landed with ticket 21. What it still has no
+number for is speed — the manifest defines warm search update, warm overlay
+open, list update, and idle overhead, and no harness runs any of them yet.
 
 The Better Manager follow-ups remain open and unscheduled: package signing, the
 public APT repository, a repair action for a transaction interrupted mid-flight,
@@ -134,10 +138,14 @@ requires.
 
 ## Next Ticket
 
-Tickets 18, 19, 22, and 23 are done. Ready now (blockers met): 20 (needs 18),
-24 (needs 22), 26 (needs 25, in progress), 27, 29, and 31. Remaining
-dependency edges, in ticket order: 21 needs 20; 28 needs 27; 30 needs 29; 32
-needs 18 and 31; 33 needs 32; 34 needs 33; 35 needs 19 and 34.
+Tickets 18, 19, 20, 21, 22, 23, and 25 are done. Ready now (blockers met): 24
+(needs 22), 26 (needs 25), 27, 29, and 31. Remaining dependency edges, in
+ticket order: 28 needs 27; 30 needs 29; 32 needs 18 and 31; 33 needs 32; 34
+needs 33; 35 needs 19 and 34.
+
+Ticket 30 now inherits a decision it must make rather than a blank page: ADR
+0008 compares the four gesture integration paths and adopts none, and the
+adapter boundary it would plug into already exists and is tested.
 
 ## Decision Log
 
@@ -284,6 +292,33 @@ needs 18 and 31; 33 needs 32; 34 needs 33; 35 needs 19 and 34.
   for an old version
   timestamp: 2026-08-02
   impacted_ticket_ids: [17]
+- decision: ship the launcher's gesture adapter boundary and no gesture adapter
+  rationale: all four integration paths produce the same three facts —
+  direction, progress, and whether the gesture completed — so the event shape
+  can be settled before the mechanism is; the one path that works on GNOME
+  Wayland today costs a language-policy exception, and the one that is clean in
+  Rust needs a security review, and neither should be taken by accident inside
+  an implementation ticket; see ADR 0008
+  timestamp: 2026-08-30
+  impacted_ticket_ids: [21, 30]
+- decision: make Better Launcher a single-instance transient application that
+  owns `org.betteros.Launcher1` and serves `org.freedesktop.Application`
+  rationale: every activation path has to reach one overlay, and using the
+  interface a `DBusActivatable` desktop entry is already activated through
+  means a dock, a panel, `gio launch`, and a second `better-launcher` all reach
+  it the same way; `Activate` opens and `ActivateAction("toggle")` toggles, so
+  clicking a launcher icon can never be the thing that closes the launcher
+  timestamp: 2026-08-30
+  impacted_ticket_ids: [21]
+- decision: express the global keyboard shortcut as GNOME settings the launcher
+  names but never writes
+  rationale: an unprivileged application cannot register a system-wide shortcut
+  on GNOME and Better OS will not grab the keyboard to fake one; naming the four
+  settings keeps the integration reviewable and leaves applying them to Better
+  Defaults, which already owns that boundary; the binding itself stays unset
+  because the key combination is a deferred decision
+  timestamp: 2026-08-30
+  impacted_ticket_ids: [21, 27]
 
 ## Source Links
 
@@ -701,3 +736,82 @@ Not done in Phase 1 and named in the ticket: the battery provider behind the
 threshold, the rule engine the `自動規則` row disables itself for, packaging
 (desktop entry, systemd user unit, Better Manager manifest), icon artwork for
 the six states, and idle CPU/memory measurement for the two processes.
+
+### Ticket 21 — Better Launcher overlay, activation, and the gesture seam
+
+Two new crates are on branch `ticket-21`: `launcher-platform` and
+`launcher-gui`. Nothing outside them changed except the workspace member list,
+the new manifest, ADR 0008, `docs/launcher-activation.md`, the packaging desktop
+entry, `docs/component-manifest.md`, `ENG.md`, the ticket, and this file.
+
+The overlay is one window with two query-driven states, and that is a property
+of the model rather than something the screen remembers. `launcher-core` already
+made an empty query mean the application library; `OverlayModel` adds a
+selection and a load state on top and nothing else, so clearing the search row
+returns to the library by borrowing the browse model the index built once. It
+never rebuilds or re-clones it. The selection follows the application rather
+than the position, so a live catalog swap or a narrowing query keeps the
+selected application selected when it survived and falls back to the first row
+when it did not.
+
+Reading the application directories and watching them both run off the render
+thread. The watcher blocks on the kernel's notifications with a one-hour re-arm
+rather than re-reading on a timer, and it reports which backend `notify`
+actually selected instead of claiming to be event-driven. An index rebuild
+after an install shows a refreshing state and leaves the current rows on
+screen; blanking a list someone is using is worse than a slightly stale one.
+
+Activation is single-instance over the session bus. The first process owns
+`org.betteros.Launcher1` and serves `org.freedesktop.Application`; every later
+launch is refused the name, hands its request over, and exits. `Activate` opens
+and `ActivateAction("toggle")` toggles, which is what keeps a launcher icon
+from closing the launcher. That was checked twice: against a fake registry with
+no bus at all, and over a private `dbus-daemon` the test starts and kills. It
+was also checked end to end by hand — a second `better-launcher` returned in
+14 ms and the first process quit on the forwarded toggle.
+
+The gesture work is a boundary and a mock, deliberately. ADR 0008 compares the
+minimal GNOME Shell adapter, compositor integration, a Rust/libinput service,
+and the portal path, and adopts none: the GNOME path costs a GJS
+language-policy exception and the libinput path needs a security review, and
+neither belongs inside an implementation ticket. The recognizer takes the
+current time as an argument instead of reading a clock, so the cooldown that
+stops an accidental partial gesture from flapping the overlay is replayed in a
+test rather than slept through.
+
+Gates that actually ran on this branch: `cargo fmt --all -- --check`,
+`cargo check --workspace`, `cargo test --workspace` (894 tests, all passing;
+73 of them new), `cargo clippy --workspace --all-targets -- -D warnings`, and an
+8-second `ZED_HEADLESS=1` launch of `better-launcher` that stayed alive with no
+output. The manifest is validated through `better-core` on every test run, and
+one of those tests compares the settings it declares against the strings
+`launcher-platform::shortcut` names, so the declaration cannot drift from the
+code.
+
+Two acceptance criteria are honestly partial rather than met.
+
+The desktop entry exists as packaging data and works when installed by hand,
+but `packaging/build-deb.sh` builds no `better-launcher` package, so the
+manifest's artifact checksums are placeholders and the component is not
+release-eligible. `docs/component-manifest.md` says so. The global shortcut is
+described down to the exact four GNOME settings and deliberately not applied:
+the key combination is a deferred decision and writing the setting belongs to
+Better Defaults.
+
+"The launcher performs no network request" is true of every launcher crate and
+there is a test that proves it. It is not true of the binary's dependency
+surface: `gpui-component-assets` depends on `zed-reqwest`, so hyper and rustls
+are linked into every Better OS desktop binary, not only this one. That is a
+finding, not something this ticket introduced, and it is asserted in
+`crates/launcher-gui/tests/dependencies.rs` as an exception with one named
+cause so it cannot quietly become two.
+
+What ticket 21 did not do, and should not be assumed done: none of the four
+benchmarks the manifest defines has been run, so warm overlay-open latency and
+idle CPU and memory are unmeasured. Keyboard-only operation is asserted at the
+model level and wired through a capture-phase key handler, but was not verified
+by hand in a live desktop session. The overlay is transient rather than
+resident, which was a choice made here and is recorded rather than settled.
+There is no animation, no category grouping, and no usage-weighted ranking; all
+three are deferred decisions with the data already in place for whoever takes
+them.

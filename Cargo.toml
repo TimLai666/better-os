@@ -14,6 +14,8 @@ members = [
     "crates/better-core",
     "crates/better-ui",
     "crates/launcher-core",
+    "crates/launcher-platform",
+    "crates/launcher-gui",
     "crates/manager-core",
     "crates/manager-ipc",
     "crates/manager-platform",
@@ -49,6 +51,8 @@ awake-tray = { path = "crates/awake-tray" }
 better-core = { path = "crates/better-core" }
 better-ui = { path = "crates/better-ui" }
 launcher-core = { path = "crates/launcher-core" }
+launcher-platform = { path = "crates/launcher-platform" }
+launcher-gui = { path = "crates/launcher-gui" }
 manager-core = { path = "crates/manager-core" }
 manager-ipc = { path = "crates/manager-ipc" }
 manager-platform = { path = "crates/manager-platform" }

@@ -1,0 +1,92 @@
+schema_version: 2
+id: better-launcher
+display_name: Better Launcher
+component_type: enhancement
+version: 0.1.0
+summary: One overlay with the search row on top and the whole application library below it.
+icon: launcher
+restart: application
+targets:
+  distributions: [zorin, ubuntu]
+  releases: [22.04, 24.04]
+  architectures: [amd64, arm64]
+# Enhancement, not replacement, and deliberately so. Installing Better Launcher
+# leaves the GNOME application overview exactly where it was; the overview stays
+# the recoverable entry path until the health checks pass and the user chooses
+# the replacement themselves.
+enhances:
+  - org.gnome.Shell
+artifacts:
+  - release: "22.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-launcher_0.1.0_ubuntu-22.04_amd64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-launcher_0.1.0_ubuntu-22.04_amd64.deb
+  - release: "22.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-launcher_0.1.0_ubuntu-22.04_arm64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-launcher_0.1.0_ubuntu-22.04_arm64.deb
+  - release: "24.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-launcher_0.1.0_ubuntu-24.04_amd64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-launcher_0.1.0_ubuntu-24.04_amd64.deb
+  - release: "24.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-launcher_0.1.0_ubuntu-24.04_arm64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-launcher_0.1.0_ubuntu-24.04_arm64.deb
+lifecycle:
+  install: plan-local-apt-install
+  enable: plan-enable
+  disable: plan-disable
+  remove: plan-remove
+  rollback: plan-rollback
+health_checks:
+  - launcher-desktop-entry-check
+  - launcher-index-build-check
+  - launcher-activation-name-check
+benchmarks:
+  - name: warm-search-update
+    workload: synthetic-5000-application-index
+    metric: milliseconds-p95
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 0
+  - name: warm-overlay-open
+    workload: open-overlay-with-warm-index
+    metric: milliseconds-to-first-frame
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 5
+  - name: application-list-update
+    workload: install-then-remove-one-application
+    metric: milliseconds-to-list-update
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 5
+  - name: idle-overhead
+    workload: overlay-idle
+    metric: cpu-percent
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 1
+permissions:
+  - name: desktop-session
+    reason: needs a graphical session, Wayland or X11; no compositor extension is installed
+  - name: application-metadata-read
+    reason: reads XDG desktop entries and watches those directories for changes
+  - name: session-bus-name
+    reason: owns org.betteros.Launcher1 so a second launch toggles the running overlay
+  - name: gnome-keyboard-shortcut
+    reason: optional global shortcut carried by GNOME custom-keybinding settings, applied by Better Defaults
+  - name: gesture-adapter
+    reason: optional five-finger adapter; none ships in this version, see ADR 0008
+paths:
+  - /usr/bin/better-launcher
+  - /usr/share/applications/better-launcher.desktop
+  - /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/better-launcher/name
+  - /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/better-launcher/command
+  - /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/better-launcher/binding
+  - org.gnome.settings-daemon.plugins.media-keys custom-keybindings
+release_notes:
+  - One overlay with two query-driven states, keyboard-operable end to end.
+  - Rollback removes the package and the desktop entry, and drops this component's own custom-keybinding path from the GNOME shortcut list. The GNOME application overview is never removed, so the previous entry path is always available.
+  - No production five-finger gesture adapter ships in this version. See ADR 0008.

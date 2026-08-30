@@ -3622,6 +3622,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "launcher-gui"
+version = "0.1.0"
+dependencies = [
+ "app-catalog-core",
+ "app-catalog-platform",
+ "better-ui",
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "gpui_platform",
+ "launcher-core",
+ "launcher-platform",
+]
+
+[[package]]
+name = "launcher-platform"
+version = "0.1.0"
+dependencies = [
+ "app-catalog-core",
+ "app-catalog-platform",
+ "better-core",
+ "launcher-core",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
