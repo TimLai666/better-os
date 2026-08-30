@@ -20,10 +20,12 @@
 //! - The previous value is captured before the first change, and restore writes
 //!   that captured value — never a built-in application this crate guessed at.
 
+pub mod adapters;
 pub mod engine;
 pub mod plan;
 pub mod status;
 
+pub use adapters::{AdapterMode, AdapterSession, AdapterSessionError};
 pub use engine::DefaultsEngine;
 pub use plan::{
     Confirmations, DefaultsOutcome, DefaultsPlan, EntryOutcome, EntryResult, PLAN_SCHEMA_VERSION,

@@ -16,6 +16,7 @@ use manager_platform::privileged::DbusPrivilegedExecutor;
 use manager_store::{JsonStore, StateStore};
 
 use crate::{
+    defaults_app::DefaultsState,
     i18n::{Locale, copy},
     model::{ActivityFilter, ComponentInfo, DetailTab, Page},
 };
@@ -47,6 +48,9 @@ pub(crate) struct ManagerApp {
     pub(crate) planning_error: Option<AppError>,
     /// Whether this window simulates transactions or actually performs them.
     pub(crate) execution: ExecutionMode,
+    /// The Defaults section's own state, read and changed through
+    /// `defaults-core` and nothing else.
+    pub(crate) defaults: DefaultsState,
     /// Live progress from a running real transaction.
     pub(crate) transfer: Option<Transfer>,
     /// Set while a real transaction is running. Dropping it stops the work.
@@ -109,6 +113,7 @@ impl ManagerApp {
             pending_plan,
             planning_error,
             execution: default_execution_mode(),
+            defaults: DefaultsState::default(),
             transfer: None,
             running: None,
             cancel: None,
@@ -668,6 +673,13 @@ impl ManagerApp {
     pub(crate) fn page_is_active(&self, page: &Page) -> bool {
         match page {
             Page::Components => matches!(self.page, Page::Components | Page::ComponentDetail(_)),
+            Page::Defaults => matches!(
+                self.page,
+                Page::Defaults
+                    | Page::DefaultsComponent(_)
+                    | Page::DefaultsReview
+                    | Page::DefaultsResults
+            ),
             Page::Updates => matches!(
                 self.page,
                 Page::Updates

@@ -202,7 +202,13 @@ suite, not only the two that exist today.
   path produces the same dry-run plan as `manager-core`, that every catalog
   component is presentable from its manifest with no hardcoded component IDs,
   that a pre-theme state file loads dark, and both locales plus 100/125/150%
-  long-label layout policy.
+  long-label layout policy. Its Defaults screens keep every decision in
+  `defaults_model`, which has no GPUI dependency, so the eight aggregate states,
+  the review selection, the bottom summary, and the per-entry results are all
+  asserted without a window. Two structural rules are asserted rather than
+  reviewed: a plan is executed from exactly one place, behind a type only a
+  review screen can produce, and the crate's shipped dependency list does not
+  name `defaults-platform`.
 - GUI crates depend on the shared core crates; launch smoke coverage runs in an
   environment with a display backend.
 - `app-catalog-core` is tested through recorded desktop-entry fixture trees, so

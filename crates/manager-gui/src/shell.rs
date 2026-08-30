@@ -48,6 +48,7 @@ impl ManagerApp {
                 cx,
             ),
             self.nav_item(c.components, IconName::Inbox, Page::Components, None, cx),
+            self.defaults_nav_item(cx),
             self.nav_item(
                 c.updates,
                 IconName::ArrowDown,

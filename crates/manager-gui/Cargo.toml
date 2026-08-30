@@ -17,6 +17,8 @@ manager-core.workspace = true
 manager-platform = { workspace = true, features = ["dbus-client"] }
 manager-store.workspace = true
 better-core.workspace = true
+defaults-core.workspace = true
+defaults-store.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
@@ -26,3 +28,4 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 serde_json.workspace = true
+tempfile.workspace = true

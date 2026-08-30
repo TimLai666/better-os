@@ -10,11 +10,10 @@ use std::path::PathBuf;
 use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
 use clap::{Args, Subcommand};
 use defaults_core::{
-    AggregateState, ComponentReadiness, Confirmations, DefaultsEngine, DefaultsOutcome,
-    DefaultsPlan, DefaultsReport, EntryOutcome, IntegrationState, PlanAction, PlanKind, Selection,
-    SystemContext,
+    AdapterMode, AdapterSession, AggregateState, ComponentReadiness, Confirmations, DefaultsEngine,
+    DefaultsOutcome, DefaultsPlan, DefaultsReport, EntryOutcome, IntegrationState, PlanAction,
+    PlanKind, Selection, SystemContext,
 };
-use defaults_platform::{AdapterSet, DconfAdapter, MockDesktop, XdgDefaultAppAdapter};
 use defaults_store::SnapshotStore;
 use manager_core::{ExecutionMode, HealthState, ManagerState};
 
@@ -81,7 +80,7 @@ pub fn run(
 
     let mut engine = DefaultsEngine::new(
         &catalog,
-        SystemContext::new(distribution, desktop_session()),
+        SystemContext::new(distribution, defaults_core::adapters::desktop_session()),
     );
     for manifest in catalog.manifests() {
         engine = engine.with_readiness(manifest.id.clone(), readiness(state, &manifest.id));
@@ -105,18 +104,23 @@ pub fn run(
             .clone()
             .unwrap_or_else(|| SnapshotStore::from_default_path().directory().to_path_buf()),
     );
-    let (mut adapters, desktop) = adapter_set(mode, options.mock_desktop.as_deref())?;
-
+    let mut session = AdapterSession::open(&adapter_mode(mode, options.mock_desktop.clone()))?;
+    if session.is_ephemeral() {
+        println!(
+            "mock execution: the simulated desktop is not kept between runs; \
+             pass --mock-desktop PATH to keep it"
+        );
+    }
     match command {
         DefaultsCommand::Inspect => {
-            print_report(&engine.inspect(&selection, &adapters, &store.history()?));
+            print_report(&engine.inspect(&selection, session.adapters(), &store.history()?));
         }
         DefaultsCommand::Plan { restore } => {
             let history = store.history()?;
             let plan = if restore {
-                engine.plan_restore(&selection, &adapters, &history, &confirmations)
+                engine.plan_restore(&selection, session.adapters(), &history, &confirmations)
             } else {
-                engine.plan_apply(&selection, &adapters, &history, &confirmations)
+                engine.plan_apply(&selection, session.adapters(), &history, &confirmations)
             };
             print_plan(&plan);
         }
@@ -124,64 +128,31 @@ pub fn run(
             let history = store.history()?;
             let plan = match command {
                 DefaultsCommand::Apply => {
-                    engine.plan_apply(&selection, &adapters, &history, &confirmations)
+                    engine.plan_apply(&selection, session.adapters(), &history, &confirmations)
                 }
-                _ => engine.plan_restore(&selection, &adapters, &history, &confirmations),
+                _ => engine.plan_restore(&selection, session.adapters(), &history, &confirmations),
             };
             print_plan(&plan);
-            let outcome = engine.execute(&plan, &mut adapters, &store)?;
+            let outcome = engine.execute(&plan, session.adapters_mut(), &store)?;
             print_outcome(&outcome);
         }
         DefaultsCommand::Verify => {
-            print_report(&engine.verify(&selection, &adapters, &store)?);
+            print_report(&engine.verify(&selection, session.adapters(), &store)?);
         }
     }
 
-    if let (Some(desktop), Some(path)) = (desktop, options.mock_desktop.as_ref()) {
-        desktop.save(path)?;
-    }
+    session.persist()?;
     Ok(())
 }
 
-/// The adapters for this run.
-///
-/// Mock execution simulates a desktop and says so. Real execution gets the two
-/// production adapters that exist; every other integration kind has no adapter
-/// at all, which is how it comes back as needing manual action instead of a
-/// guessed command.
-fn adapter_set(
-    mode: ExecutionMode,
-    mock_desktop: Option<&std::path::Path>,
-) -> Result<(AdapterSet, Option<MockDesktop>), Box<dyn Error>> {
+/// What this run works against. Mock execution simulates a desktop and says so;
+/// real execution gets the production adapters ADR 0009 decided.
+fn adapter_mode(mode: ExecutionMode, mock_desktop: Option<PathBuf>) -> AdapterMode {
     match mode {
-        ExecutionMode::Mock => {
-            let desktop = match mock_desktop {
-                Some(path) => MockDesktop::load(path)?,
-                None => {
-                    println!(
-                        "mock execution: the simulated desktop is not kept between runs; \
-                         pass --mock-desktop PATH to keep it"
-                    );
-                    MockDesktop::new()
-                }
-            };
-            let set = desktop.adapter_set();
-            Ok((set, Some(desktop)))
-        }
-        ExecutionMode::Real => {
-            let set = AdapterSet::new()
-                .with(Box::new(XdgDefaultAppAdapter::for_user()?))
-                .with(Box::new(XdgDefaultAppAdapter::read_only(
-                    app_chooser_core::AssociationStore::for_user()?,
-                )))
-                .with(Box::new(DconfAdapter::for_user(
-                    better_core::AdapterId::GnomeKeybinding,
-                )))
-                .with(Box::new(DconfAdapter::for_user(
-                    better_core::AdapterId::GnomeDesktopSetting,
-                )));
-            Ok((set, None))
-        }
+        ExecutionMode::Mock => AdapterMode::Simulated {
+            desktop_path: mock_desktop,
+        },
+        ExecutionMode::Real => AdapterMode::Production,
     }
 }
 
@@ -194,21 +165,6 @@ fn readiness(state: &ManagerState, component: &ComponentId) -> ComponentReadines
             healthy: record.health == HealthState::Healthy,
         },
     }
-}
-
-/// The session this is running in. An undetectable session stays undetectable
-/// rather than being assumed to be GNOME.
-fn desktop_session() -> String {
-    for key in ["XDG_CURRENT_DESKTOP", "DESKTOP_SESSION"] {
-        if let Ok(value) = std::env::var(key) {
-            if let Some(first) = value.split(':').next() {
-                if !first.trim().is_empty() {
-                    return first.trim().to_lowercase();
-                }
-            }
-        }
-    }
-    "unknown".to_string()
 }
 
 fn parse_confirmations(values: &[String]) -> Result<Confirmations, Box<dyn Error>> {
