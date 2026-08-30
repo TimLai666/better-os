@@ -192,8 +192,11 @@ fn another_users_process_is_refused_without_a_syscall_being_attempted() {
         .perform(&mislabelled, ProcessAction::ForceStop)
         .expect_err("another user's process is out of scope");
     assert!(matches!(error, ActionError::PermissionDenied { .. }));
+    // A freshly spawned child can sit in D or T for a moment under load; the
+    // claim being tested is only that no signal reached it, so any live,
+    // non-zombie state qualifies.
     assert!(
-        matches!(state_of(mine), Some('S') | Some('R')),
+        matches!(state_of(mine), Some(state) if state != 'Z'),
         "the refusal must not have signalled anything"
     );
 }
