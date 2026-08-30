@@ -1,0 +1,26 @@
+[package]
+name = "files-preview"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+app-catalog-core.workspace = true
+thiserror.workspace = true
+# Only the four formats a file manager actually meets first. Every one of them
+# is already in the workspace lockfile, so this adds no package to the build;
+# it narrows which decoders are compiled in, which is the point.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "bmp",
+] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bench]]
+name = "preview"
+harness = false

@@ -16,6 +16,8 @@ members = [
     "crates/files-core",
     "crates/files-platform",
     "crates/files-operations",
+    "crates/files-preview",
+    "crates/files-search",
     "crates/files-gui",
     "crates/launcher-core",
     "crates/launcher-platform",
@@ -71,6 +73,8 @@ better-ui = { path = "crates/better-ui" }
 files-core = { path = "crates/files-core" }
 files-platform = { path = "crates/files-platform" }
 files-operations = { path = "crates/files-operations" }
+files-preview = { path = "crates/files-preview" }
+files-search = { path = "crates/files-search" }
 files-gui = { path = "crates/files-gui" }
 launcher-core = { path = "crates/launcher-core" }
 launcher-platform = { path = "crates/launcher-platform" }
@@ -94,6 +98,7 @@ touchpad-core = { path = "crates/touchpad-core" }
 touchpad-platform = { path = "crates/touchpad-platform" }
 storage-core = { path = "crates/storage-core" }
 storage-platform = { path = "crates/storage-platform" }
+storage-service = { path = "crates/storage-service" }
 libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
