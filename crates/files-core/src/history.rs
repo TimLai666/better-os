@@ -104,6 +104,21 @@ impl History {
         self.current = location;
     }
 
+    /// Drops every remembered location the predicate rejects, and reports
+    /// whether the current one was among them.
+    ///
+    /// This exists for one thing: a device that has been unplugged. Issue #6
+    /// requires the sidebar row and the navigation state to be cleaned up with
+    /// no user action, and leaving Back pointing at a folder on a disk that is
+    /// no longer connected is exactly the stale state it names. The current
+    /// location is deliberately *not* replaced here — this type does not know
+    /// what a safe location is — so the caller is told and decides.
+    pub fn forget(&mut self, keep: impl Fn(&Location) -> bool) -> bool {
+        self.back.retain(&keep);
+        self.forward.retain(&keep);
+        !keep(&self.current)
+    }
+
     fn trim(&mut self) {
         // The oldest end is dropped, so Back keeps working for the recent past
         // rather than failing at the point the limit was reached.

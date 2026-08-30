@@ -2036,10 +2036,16 @@ dependencies = [
 name = "files-gui"
 version = "0.1.0"
 dependencies = [
+ "app-catalog-core",
+ "app-catalog-platform",
+ "app-chooser-core",
+ "app-chooser-gui",
  "better-ui",
  "files-core",
  "files-operations",
  "files-platform",
+ "files-preview",
+ "files-search",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
@@ -2048,7 +2054,10 @@ dependencies = [
  "serde_json",
  "smol",
  "storage-core",
+ "storage-platform",
+ "storage-service",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

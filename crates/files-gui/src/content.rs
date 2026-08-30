@@ -225,6 +225,23 @@ pub enum SelectionInput {
     Clear,
 }
 
+impl SelectionInput {
+    /// The same gesture, aimed at a different index.
+    ///
+    /// A running search draws its own rows, so the row number a click carries
+    /// has to be translated before the selection sees it. Doing that here
+    /// rather than at the three click sites is what keeps the three from
+    /// drifting apart.
+    pub fn at(self, index: usize) -> Self {
+        match self {
+            SelectionInput::Click(_) => SelectionInput::Click(index),
+            SelectionInput::ToggleClick(_) => SelectionInput::ToggleClick(index),
+            SelectionInput::RangeClick(_) => SelectionInput::RangeClick(index),
+            other => other,
+        }
+    }
+}
+
 /// Where the content area's keyboard focus is.
 #[derive(Clone, Debug, Default)]
 pub struct ContentView {

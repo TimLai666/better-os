@@ -33,14 +33,24 @@ use files_operations::{
 };
 use files_platform::{MountTable, UserDirectories};
 
+use app_catalog_core::{DesktopId, MimeType};
+use app_catalog_platform::ProcessSpawner;
+
+use crate::apps::{ApplicationDetails, CatalogHandle, LaunchReport};
 use crate::bookmarks::{BookmarkFile, BookmarkStore, PinOutcome};
 use crate::commands::{self, Clipboard, CommandRefusal};
 use crate::content::{ContentView, NoHandlerReason, OpenOutcome, SelectionInput};
+use crate::devices::{
+    CollectionMode, DeviceInventory, DeviceLink, DeviceNotice, DeviceRow, NoDeviceLink, is_under,
+};
 use crate::i18n::{Copy, Locale};
 use crate::keys::{Command, Focus};
 use crate::opcenter::{self, JobRow, SessionHistory};
+use crate::openwith::{ChooserRequest, DefaultHandlers, DefaultSource, OpenRoute, SessionDefaults};
 use crate::prefs::{FilesPreferences, ItemScale, PreferenceStore, ViewMode};
+use crate::preview::PreviewPanel;
 use crate::reader::FilesReader;
+use crate::search::SearchState;
 use crate::toolbar::{PathRejection, PathValidator, resolve_path_input};
 
 /// Something the window says once, and stops saying when the next thing
@@ -63,6 +73,48 @@ pub enum Notice {
     /// Something that is already a machine key, such as an unreadable
     /// preferences file.
     Key(String),
+    /// The result of starting an application.
+    Launch(LaunchReport),
+    /// Something a device did.
+    Device(Box<DeviceEvent>),
+    /// A file whose type could not be resolved, so no chooser can be opened
+    /// for it.
+    NoMimeType,
+    /// The application set for this type is not installed any more, so the
+    /// chooser was opened instead of a launch happening.
+    DefaultApplicationMissing,
+}
+
+/// A device event worth telling the user about.
+///
+/// Only the ones that need words. A device appearing, being mounted, and being
+/// navigated into produce no notice at all, because the sidebar row and the
+/// content area already say what happened.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DeviceEvent {
+    MountFailed {
+        label: String,
+        detail: String,
+    },
+    EjectFailed {
+        label: String,
+        detail: String,
+    },
+    Ejected {
+        label: String,
+    },
+    EjectedNotPoweredOff {
+        label: String,
+    },
+    /// The device being viewed went away and the tab was moved somewhere safe.
+    DisconnectedWhileViewing {
+        label: String,
+    },
+    /// It went away while data was still being written.
+    UnsafeRemoval {
+        label: String,
+        recommend_filesystem_check: bool,
+    },
 }
 
 impl Notice {
@@ -86,6 +138,43 @@ impl Notice {
             Notice::NotPinnable => c.not_writable_here.to_string(),
             Notice::Rejected(error) => error.to_string(),
             Notice::Key(key) => key.clone(),
+            Notice::Launch(report) => match report {
+                LaunchReport::Started { name, .. } => format!("{} {}", c.app_launched, name),
+                LaunchReport::Activated { name } => format!("{} {}", c.app_activated, name),
+                LaunchReport::FellBackToProcess { name, .. } => {
+                    format!("{} {}", c.app_activation_fell_back, name)
+                }
+                LaunchReport::NoSuchApplication { .. } => c.app_no_such_application.to_string(),
+                LaunchReport::Failed { name, .. } => format!("{}: {name}", c.app_launch_failed),
+            },
+            Notice::Device(event) => match event.as_ref() {
+                DeviceEvent::MountFailed { label, .. } => {
+                    format!("{}: {label}", c.device_mount_failed)
+                }
+                DeviceEvent::EjectFailed { label, .. } => {
+                    format!("{}: {label}", c.device_eject_failed)
+                }
+                DeviceEvent::Ejected { label } => format!("{label}: {}", c.device_ejected),
+                DeviceEvent::EjectedNotPoweredOff { label } => {
+                    format!("{label}: {}", c.device_ejected_not_powered_off)
+                }
+                DeviceEvent::DisconnectedWhileViewing { .. } => {
+                    c.device_disconnected_returned_home.to_string()
+                }
+                DeviceEvent::UnsafeRemoval {
+                    label,
+                    recommend_filesystem_check,
+                } => {
+                    let mut message = format!("{label}: {}", c.device_unsafe_removal);
+                    if *recommend_filesystem_check {
+                        message.push(' ');
+                        message.push_str(c.device_check_filesystem);
+                    }
+                    message
+                }
+            },
+            Notice::NoMimeType => c.open_with_no_mime_type.to_string(),
+            Notice::DefaultApplicationMissing => c.open_with_default_missing.to_string(),
         }
     }
 }
@@ -132,6 +221,29 @@ pub struct FilesSession {
     pub operations_open: bool,
     pub jobs: Vec<JobSnapshot>,
     pub finished: SessionHistory,
+
+    // --- ticket 35 --------------------------------------------------------
+    /// The shared application catalog. The same handle the reader lists the
+    /// Applications location from, so a reload is visible to both at once.
+    catalog: CatalogHandle,
+    /// The effective default handler per MIME type, read from the session's
+    /// `mimeapps.list`.
+    defaults: Box<dyn DefaultHandlers>,
+    /// Where a launch actually happens. The platform crate's own trait, so a
+    /// test that records launches exercises the production path.
+    spawner: Box<dyn ProcessSpawner>,
+    link: Box<dyn DeviceLink>,
+    pub devices: DeviceInventory,
+    pub collection: CollectionMode,
+    /// The device whose mount is being waited on so the window can navigate
+    /// into it. Set by a click on an unmounted row and cleared by the mount.
+    pending_open: Option<String>,
+    pub preview: PreviewPanel,
+    pub search: SearchState,
+    /// The file the embedded chooser is open for, when it is open.
+    pub chooser: Option<ChooserRequest>,
+    /// The application whose details panel is open.
+    pub details: Option<ApplicationDetails>,
 }
 
 /// Everything a session is built from.
@@ -150,6 +262,46 @@ pub struct SessionSetup {
     /// The process's one job engine. Handed in rather than built, which is
     /// what makes closing a window harmless to a running copy.
     pub engine: Arc<JobEngine>,
+    /// The shared application catalog.
+    pub catalog: CatalogHandle,
+    pub defaults: Box<dyn DefaultHandlers>,
+    pub spawner: Box<dyn ProcessSpawner>,
+    pub link: Box<dyn DeviceLink>,
+    pub preview: PreviewPanel,
+}
+
+impl SessionSetup {
+    /// The parts of a session that have a sensible offline default, so a test
+    /// names only what it is actually testing.
+    ///
+    /// The device link is [`NoDeviceLink`] and the launcher is a recording
+    /// spawner, which is the honest default for a session with no host behind
+    /// it: no device claims a state, and nothing is executed.
+    pub fn offline(
+        start: Location,
+        reader: Arc<FilesReader>,
+        engine: Arc<JobEngine>,
+        preferences: FilesPreferences,
+        preference_store: PreferenceStore,
+        bookmark_store: BookmarkStore,
+    ) -> Self {
+        let catalog = reader.catalog().clone();
+        Self {
+            start,
+            preferences,
+            preference_store,
+            bookmark_store,
+            directories: UserDirectories::default(),
+            mounts: MountTable::default(),
+            reader,
+            engine,
+            catalog,
+            defaults: Box::new(SessionDefaults::fixed([])),
+            spawner: Box::new(app_catalog_platform::RecordingSpawner::new()),
+            link: Box::new(NoDeviceLink),
+            preview: PreviewPanel::default(),
+        }
+    }
 }
 
 impl FilesSession {
@@ -164,6 +316,11 @@ impl FilesSession {
             mounts,
             reader,
             engine,
+            catalog,
+            defaults,
+            spawner,
+            link,
+            preview,
         } = setup;
         let view = preferences.view_preferences();
         let bookmarks = bookmark_store.load();
@@ -191,6 +348,17 @@ impl FilesSession {
             operations_open: false,
             jobs: Vec::new(),
             finished: SessionHistory::default(),
+            catalog,
+            defaults,
+            spawner,
+            collection: link.mode(),
+            link,
+            devices: DeviceInventory::default(),
+            pending_open: None,
+            preview,
+            search: SearchState::default(),
+            chooser: None,
+            details: None,
         }
     }
 
@@ -351,6 +519,11 @@ impl FilesSession {
         self.sync_history(id);
         self.content.clear_type_ahead();
         self.resync_content();
+        // A search belongs to the location it was started in. Carrying it into
+        // the next folder would show results from a place the user has left.
+        self.search.clear();
+        self.details = None;
+        self.refresh_preview();
     }
 
     /// Takes what the user typed in the path field.
@@ -376,6 +549,9 @@ impl FilesSession {
     pub fn toggle_hidden(&mut self) {
         let shown = self.pane_mut().toggle_hidden();
         self.preferences.show_hidden = shown;
+        // The Applications location has its own hidden rule — an excluded or
+        // `NoDisplay` entry — and it follows the same key.
+        self.reader.set_include_hidden_applications(shown);
         self.apply_preferences_to_all_tabs();
         self.persist_preferences();
         self.resync_content();
@@ -485,6 +661,58 @@ impl FilesSession {
         self.pane().model().get(id)
     }
 
+    // --- The content area's rows ------------------------------------------
+    //
+    // A row on screen is not always an index into the model's visible list: a
+    // running search draws its hits instead. These three are the only place
+    // that translation happens, so a click, a double-click, and the row the
+    // renderer formats can never disagree about which entry row 7 is.
+
+    /// How many rows the content area draws.
+    pub fn row_count(&self) -> usize {
+        if self.search.is_active() {
+            self.search.hits().len()
+        } else {
+            self.pane().model().visible_len()
+        }
+    }
+
+    /// The entry a content-area row shows.
+    pub fn entry_at(&self, index: usize) -> Option<&Entry> {
+        if self.search.is_active() {
+            let hit = self.search.hits().get(index)?;
+            self.pane().model().get(&hit.id)
+        } else {
+            self.pane().model().visible(index)
+        }
+    }
+
+    /// The model index the selection machinery works in, for a content-area
+    /// row.
+    ///
+    /// `None` for a search hit the view is currently hiding — a dotfile found
+    /// by a search that includes hidden files while the view does not. It can
+    /// be opened; it has no place in the visible selection, and pretending it
+    /// did would move the cursor to a different entry.
+    pub fn model_row(&self, index: usize) -> Option<usize> {
+        if !self.search.is_active() {
+            return (index < self.pane().model().visible_len()).then_some(index);
+        }
+        let id = self.entry_at(index)?.id();
+        self.pane()
+            .model()
+            .iter_visible()
+            .position(|entry| entry.id() == id)
+    }
+
+    /// Opens the entry a content-area row shows.
+    pub fn open_row(&mut self, index: usize) {
+        let Some(entry) = self.entry_at(index).cloned() else {
+            return;
+        };
+        self.open_entry(&entry);
+    }
+
     /// Opens whatever the keyboard is on, or the entry at an index.
     pub fn open_index(&mut self, index: usize) {
         let Some(entry) = self.pane().model().visible(index).cloned() else {
@@ -501,14 +729,397 @@ impl FilesSession {
     }
 
     fn open_entry(&mut self, entry: &Entry) {
-        match crate::content::route_open(entry) {
-            OpenOutcome::Navigate(location) => {
+        // The three intents are three different actions, which is why
+        // `files-core` makes them a closed enum rather than a path.
+        match files_core::open_intent(entry) {
+            files_core::OpenIntent::Navigate(location) => {
                 self.notice = None;
                 self.navigate_to(*location);
             }
-            OpenOutcome::NoHandler(reason) => self.notice = Some(Notice::NoHandler(reason)),
-            OpenOutcome::Refused(refusal) => self.notice = Some(Notice::Refused(refusal)),
+            files_core::OpenIntent::Launch { desktop_id, action } => {
+                self.launch_application(&desktop_id, action.as_deref(), &[]);
+            }
+            files_core::OpenIntent::OpenFile { path, mime } => {
+                self.open_file(&path, mime.as_ref());
+            }
+            files_core::OpenIntent::Refused(refusal) => {
+                self.notice = Some(Notice::Refused(refusal))
+            }
         }
+    }
+
+    // --- Applications -----------------------------------------------------
+
+    pub fn catalog(&self) -> &CatalogHandle {
+        &self.catalog
+    }
+
+    /// Starts an application through its registered desktop definition.
+    ///
+    /// Nothing builds a command line here or anywhere below: `apps::launch`
+    /// hands the record to the shared platform launcher, which produces an
+    /// argument vector from the entry itself.
+    pub fn launch_application(
+        &mut self,
+        desktop_id: &DesktopId,
+        action: Option<&str>,
+        targets: &[app_catalog_core::LaunchTarget],
+    ) {
+        let report = crate::apps::launch(
+            &self.catalog,
+            desktop_id,
+            action,
+            targets,
+            self.spawner.as_ref(),
+        );
+        // A successful launch is not silent: the window has not changed, so
+        // without a line the user cannot tell a slow application from a click
+        // that did nothing.
+        self.notice = Some(Notice::Launch(report));
+    }
+
+    /// Opens the details panel for an application row.
+    pub fn show_details(&mut self, desktop_id: &DesktopId) {
+        self.details = crate::apps::details(&self.catalog, desktop_id);
+        if self.details.is_none() {
+            self.notice = Some(Notice::Launch(LaunchReport::NoSuchApplication {
+                desktop_id: desktop_id.as_str().to_string(),
+            }));
+        }
+    }
+
+    pub fn close_details(&mut self) {
+        self.details = None;
+    }
+
+    /// The desktop id of whatever is focused, when it is an application.
+    pub fn focused_application(&self) -> Option<DesktopId> {
+        let entry = self.focused_entry()?;
+        match &entry.body {
+            files_core::EntryBody::Application(facts) => Some(facts.desktop_id.clone()),
+            _ => None,
+        }
+    }
+
+    /// Opens a second window of an application, when its entry declares a way.
+    pub fn open_new_window(&mut self, desktop_id: &DesktopId) {
+        let snapshot = self.catalog.snapshot();
+        let action = snapshot
+            .get(desktop_id)
+            .and_then(crate::apps::new_window_action);
+        self.launch_application(desktop_id, action.as_deref(), &[]);
+    }
+
+    /// Re-reads the catalog. Called from the watcher thread's change signal.
+    pub fn reload_catalog(&mut self) {
+        self.catalog.reload_from_env();
+        if matches!(self.location(), Location::Applications) {
+            self.reload();
+        }
+    }
+
+    /// The catalog generation the window last drew, so a change can be noticed
+    /// without comparing two catalogs.
+    pub fn catalog_generation(&self) -> u64 {
+        self.catalog.generation()
+    }
+
+    // --- Open With --------------------------------------------------------
+
+    /// Opens a file with the effective default handler, or asks.
+    pub fn open_file(&mut self, path: &LocalPath, mime: Option<&MimeType>) {
+        let (route, source) =
+            crate::openwith::route_open_file(mime, self.defaults.as_ref(), &self.catalog);
+        match route {
+            OpenRoute::LaunchWith { desktop_id, .. } => {
+                let Some(target) = crate::apps::target_for(path) else {
+                    self.notice = Some(Notice::Command(CommandRefusal::UnusableName));
+                    return;
+                };
+                self.launch_application(&desktop_id, None, &[target]);
+            }
+            OpenRoute::AskChooser { mime } => {
+                self.chooser = ChooserRequest::new(path, mime);
+                if self.chooser.is_none() {
+                    self.notice = Some(Notice::Command(CommandRefusal::UnusableName));
+                } else if source == DefaultSource::AssociationMissingApplication {
+                    // The two empty-looking cases are not the same, and the
+                    // one where something *was* set is worth saying.
+                    self.notice = Some(Notice::DefaultApplicationMissing);
+                } else {
+                    self.notice = None;
+                }
+            }
+            OpenRoute::NoMimeType => self.notice = Some(Notice::NoMimeType),
+        }
+    }
+
+    /// The explicit Open With action, which always asks even when a default
+    /// exists.
+    pub fn open_with_selected(&mut self) {
+        let Some(entry) = self.focused_entry().cloned() else {
+            self.notice = Some(Notice::Command(CommandRefusal::NothingToActOn));
+            return;
+        };
+        let Some(path) = entry.as_local_path().cloned() else {
+            self.notice = Some(Notice::Command(CommandRefusal::NotAFilesystemLocation));
+            return;
+        };
+        let Some(mime) = entry.mime.clone() else {
+            self.notice = Some(Notice::NoMimeType);
+            return;
+        };
+        self.chooser = ChooserRequest::new(&path, mime);
+        if self.chooser.is_none() {
+            self.notice = Some(Notice::Command(CommandRefusal::UnusableName));
+        } else {
+            self.notice = None;
+        }
+    }
+
+    /// Closes the chooser. The chooser itself performs the launch and the
+    /// association write, so there is nothing to apply here — which is the
+    /// point: one association write path, in `app-chooser-core`.
+    pub fn close_chooser(&mut self, cancelled: bool) {
+        self.chooser = None;
+        if cancelled {
+            self.notice = None;
+        }
+    }
+
+    // --- Devices ----------------------------------------------------------
+
+    pub fn device_rows(&self) -> &[DeviceRow] {
+        self.devices.rows()
+    }
+
+    /// Clicking a device row. A mounted device is opened; an unmounted one is
+    /// mounted and then opened, which is Issue #6's "clicking mounts and opens
+    /// automatically".
+    pub fn open_device(&mut self, object_path: &str) {
+        let Some(row) = self.devices.get(object_path) else {
+            return;
+        };
+        match row.location() {
+            Some(location) => {
+                self.notice = None;
+                self.navigate_to(location);
+            }
+            None => {
+                // Remembered so the mount's answer knows where it was going.
+                // Leaving the location does *not* unmount, so nothing here
+                // pairs with a later unmount.
+                self.pending_open = Some(object_path.to_string());
+                self.link.request_mount(object_path);
+            }
+        }
+    }
+
+    /// The Eject action. Available in every state, because a user who wants to
+    /// stop using a device should never have to argue with the file manager
+    /// about it.
+    pub fn eject_device(&mut self, object_path: &str) {
+        self.link.request_eject(object_path);
+    }
+
+    pub fn refresh_devices(&mut self) {
+        self.link.request_refresh();
+    }
+
+    /// Drains the device link. Returns whether the window has to redraw.
+    pub fn pump_devices(&mut self) -> bool {
+        let notices = self.link.poll();
+        if notices.is_empty() {
+            return false;
+        }
+        for notice in notices {
+            self.apply_device_notice(notice);
+        }
+        true
+    }
+
+    fn apply_device_notice(&mut self, notice: DeviceNotice) {
+        match notice {
+            DeviceNotice::Mode(mode) => self.collection = mode,
+            DeviceNotice::Inventory(reports) => self.devices.apply_inventory(reports),
+            DeviceNotice::Mounted {
+                object_path,
+                mount_point,
+            } => {
+                self.devices
+                    .set_mount_point(&object_path, mount_point.clone());
+                if self.pending_open.as_deref() == Some(object_path.as_str())
+                    && let Ok(path) = LocalPath::new(mount_point)
+                {
+                    self.pending_open = None;
+                    self.notice = None;
+                    self.navigate_to(Location::Local(path));
+                }
+            }
+            DeviceNotice::MountFailed {
+                object_path,
+                detail,
+            } => {
+                if self.pending_open.as_deref() == Some(object_path.as_str()) {
+                    self.pending_open = None;
+                }
+                self.notice = Some(Notice::Device(Box::new(DeviceEvent::MountFailed {
+                    label: self.device_label(&object_path),
+                    detail,
+                })));
+            }
+            DeviceNotice::Ejected {
+                object_path,
+                unmounted,
+                powered_off,
+            } => {
+                self.devices.clear_mount_point(&object_path);
+                let label = self.device_label(&object_path);
+                self.notice = Some(Notice::Device(Box::new(if unmounted && !powered_off {
+                    // An unmount that worked and a power-off that did not
+                    // is not a clean eject and is not reported as one.
+                    DeviceEvent::EjectedNotPoweredOff { label }
+                } else {
+                    DeviceEvent::Ejected { label }
+                })));
+            }
+            DeviceNotice::EjectFailed {
+                object_path,
+                detail,
+            } => {
+                self.notice = Some(Notice::Device(Box::new(DeviceEvent::EjectFailed {
+                    label: self.device_label(&object_path),
+                    detail,
+                })));
+            }
+            DeviceNotice::Disconnected {
+                object_path,
+                unsafe_removal,
+            } => self.handle_disconnect(&object_path, unsafe_removal),
+        }
+    }
+
+    fn device_label(&self, object_path: &str) -> String {
+        self.devices
+            .get(object_path)
+            .map(|row| row.label.clone())
+            .unwrap_or_else(|| object_path.to_string())
+    }
+
+    /// A device left. Removes the row, clears every navigation state that
+    /// pointed at it, and moves any tab standing on it somewhere safe.
+    ///
+    /// All of it without the user doing anything, which is the acceptance
+    /// criterion. The one thing that is *not* silent is an unsafe removal:
+    /// data may not have been written, and that is not a fact to clean up
+    /// quietly.
+    fn handle_disconnect(
+        &mut self,
+        object_path: &str,
+        unsafe_removal: Option<crate::devices::UnsafeRemoval>,
+    ) {
+        let label = self.device_label(object_path);
+        let mount_point = self.devices.remove(object_path, unsafe_removal.clone());
+        if self.pending_open.as_deref() == Some(object_path) {
+            self.pending_open = None;
+        }
+
+        let mut stranded_active = false;
+        if let Some(mount_point) = mount_point.as_ref() {
+            let home = self.home_location();
+            let reader = self.reader.clone();
+            let active = self.active_tab();
+            let mut stranded: Vec<TabId> = Vec::new();
+            for (tab, pane) in &mut self.panes {
+                if pane.forget_locations(|location| !is_under(location, mount_point)) {
+                    stranded.push(*tab);
+                }
+            }
+            for tab in stranded {
+                if tab == active {
+                    stranded_active = true;
+                }
+                if let Some((_, pane)) = self.panes.iter_mut().find(|(id, _)| *id == tab) {
+                    pane.navigate_to(home.clone(), reader.as_ref());
+                }
+                self.sync_history(tab);
+            }
+            // A tab's own stored history is pruned too, so reopening a closed
+            // tab does not bring the stale entries back.
+            for index in 0..self.tabs.len() {
+                let id = self.tabs.tabs()[index].id();
+                if let Some(tab) = self.tabs.get_mut(id) {
+                    tab.history_mut()
+                        .forget(|location| !is_under(location, mount_point));
+                }
+            }
+            self.resync_content();
+        }
+
+        if let Some(record) = unsafe_removal {
+            self.notice = Some(Notice::Device(Box::new(DeviceEvent::UnsafeRemoval {
+                label,
+                recommend_filesystem_check: record.recommend_filesystem_check,
+            })));
+        } else if stranded_active {
+            self.notice = Some(Notice::Device(Box::new(
+                DeviceEvent::DisconnectedWhileViewing { label },
+            )));
+        }
+    }
+
+    // --- Preview ----------------------------------------------------------
+
+    /// Space. Opens or closes the preview pane.
+    pub fn toggle_preview(&mut self) {
+        if self.preview.toggle() {
+            let entry = self.focused_entry().cloned();
+            let location = self.location().clone();
+            self.preview.request_for(entry.as_ref(), &location);
+        }
+        self.preferences.preview_open = self.preview.open;
+        self.persist_preferences();
+    }
+
+    fn refresh_preview(&mut self) {
+        if !self.preview.open {
+            return;
+        }
+        let entry = self.focused_entry().cloned();
+        let location = self.location().clone();
+        self.preview.request_for(entry.as_ref(), &location);
+    }
+
+    // --- Search -----------------------------------------------------------
+
+    /// Types in the search field.
+    pub fn set_search_text(&mut self, text: impl Into<String>) {
+        let location = self.location().clone();
+        self.search.set_text(text, &location);
+    }
+
+    pub fn close_search(&mut self) {
+        self.search.close();
+    }
+
+    pub fn toggle_search_hidden(&mut self) {
+        let location = self.location().clone();
+        let include = !self.search.include_hidden;
+        self.search.set_include_hidden(include, &location);
+    }
+
+    /// The entries the content area draws: the search results when a search is
+    /// running, and the directory otherwise.
+    pub fn visible_entries(&self) -> Vec<Entry> {
+        if !self.search.is_active() {
+            return self.pane().model().iter_visible().cloned().collect();
+        }
+        let model = self.pane().model();
+        self.search
+            .hits()
+            .iter()
+            .filter_map(|hit| model.get(&hit.id).cloned())
+            .collect()
     }
 
     /// Opens an entry in a new tab, which only makes sense for a directory.
@@ -787,6 +1398,16 @@ impl FilesSession {
             self.resync_content();
         }
         changed |= self.refresh_jobs();
+        changed |= self.pump_devices();
+        // Search is fed after the pane, so entries that arrived this frame are
+        // considered this frame rather than next.
+        let mut search = std::mem::take(&mut self.search);
+        changed |= search.pump(self.pane().model());
+        self.search = search;
+        changed |= self.preview.pump();
+        if changed {
+            self.refresh_preview();
+        }
         changed
     }
 
@@ -896,6 +1517,18 @@ impl FilesSession {
             Command::TypeAhead(character) => {
                 self.type_ahead(character, std::time::Instant::now());
             }
+            Command::TogglePreview => self.toggle_preview(),
+            Command::OpenWith => self.open_with_selected(),
+            Command::ViewDetails => match self.focused_application() {
+                Some(desktop_id) => self.show_details(&desktop_id),
+                // Details for a file is the properties panel, which is not in
+                // this ticket. Saying nothing is better than opening an empty
+                // application panel for a file.
+                None => self.notice = Some(Notice::Command(CommandRefusal::NothingToActOn)),
+            },
+            // The window owns the search field, so focusing it is handled
+            // there, exactly as `FocusPathField` is.
+            Command::FocusSearch => {}
         }
     }
 

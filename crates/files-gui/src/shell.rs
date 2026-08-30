@@ -12,6 +12,7 @@ use gpui_component::{
 
 use crate::app::FilesApp;
 use crate::content::{SORT_KEYS, sort_key_label};
+use crate::devices::DeviceRow;
 use crate::i18n::{copy, scale_label, view_mode_label};
 use crate::keys::Focus;
 use crate::layout::SIDEBAR_WIDTH;
@@ -139,6 +140,71 @@ impl FilesApp {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(format!("{} {}", c.sort_by, sort_key_label(order.key, c))),
+            )
+            .into_any_element()
+    }
+
+    /// The current-location search field, and the line that says what it
+    /// covered.
+    pub(crate) fn search_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale());
+        let scope = self.session.search.scope_label(self.session.location(), c);
+        let status = self.session.search.status_line(c);
+        let include_hidden = self.session.search.include_hidden;
+
+        h_flex()
+            .w_full()
+            .px_4()
+            .py_1()
+            .gap_2()
+            .items_center()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(Input::new(&self.search_input)),
+            )
+            // The scope is beside the field, never implied: an empty result
+            // means nothing unless you know what was searched.
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(scope),
+            )
+            .child(
+                Button::new("search-hidden")
+                    .ghost()
+                    .xsmall()
+                    .selected(include_hidden)
+                    .tooltip(c.search_include_hidden)
+                    .icon(IconName::Eye)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.session.toggle_search_hidden();
+                        this.session.preferences.search_hidden = this.session.search.include_hidden;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(status),
+            )
+            .child(
+                Button::new("search-close")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Close)
+                    .tooltip(c.search_close)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.editing_search = false;
+                        this.session.close_search();
+                        this.sync_search_field(window, cx);
+                        cx.notify();
+                    })),
             )
             .into_any_element()
     }
@@ -375,6 +441,46 @@ impl FilesApp {
                     .text_color(cx.theme().muted_foreground)
                     .child(section.title(c)),
             );
+            if section == SidebarSection::Devices {
+                // The link's note comes first, so a state is never read
+                // without the caveat that produced it.
+                if let Some((note, warn)) = self.session.collection.note(c) {
+                    column = column.child(
+                        div()
+                            .mx_1()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_xs()
+                            .when(warn, |el| {
+                                el.bg(cx.theme().warning)
+                                    .text_color(cx.theme().warning_foreground)
+                            })
+                            .when(!warn, |el| el.text_color(cx.theme().muted_foreground))
+                            .child(note),
+                    );
+                }
+                if self.session.collection.has_states() {
+                    let devices: Vec<DeviceRow> = self.session.device_rows().to_vec();
+                    if devices.is_empty() {
+                        column = column.child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .text_xs()
+                                .italic()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(c.no_devices),
+                        );
+                    }
+                    for device in devices {
+                        column = column.child(self.device_row(&device, cx));
+                    }
+                    continue;
+                }
+                // No link. The mount table is what a session can honestly
+                // report on its own, and every row reads as unverifiable.
+            }
             let section_rows: Vec<&SidebarRow> =
                 rows.iter().filter(|row| row.section == section).collect();
             if section_rows.is_empty() {
@@ -540,6 +646,86 @@ impl FilesApp {
     /// Dropping a folder here pins it. The same action is on the content
     /// area's context menu, because a pointer drag is not a keyboard-reachable
     /// gesture and Issue #6 asks for both.
+    /// One device, with its state and its Eject action.
+    ///
+    /// The state line is always present and only two of the five states are
+    /// styled as a warning, which is Issue #5's rule that an idle device stays
+    /// visually quiet.
+    fn device_row(&self, row: &DeviceRow, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale());
+        let object_path = row.object_path.clone();
+        let eject_path = row.object_path.clone();
+        let state = row.state_label(c);
+        let warning = row.is_warning();
+        let volatile = row.identity_volatile;
+        let unsafe_removal = row.unsafe_removal.is_some();
+
+        h_flex()
+            .w_full()
+            .items_start()
+            .gap_1()
+            .child(
+                Button::new(SharedString::from(format!("device-{object_path}")))
+                    .ghost()
+                    .w_full()
+                    .justify_start()
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .gap_0p5()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(Icon::new(IconName::Inbox))
+                                    .child(row.label.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .when(warning, |el| el.text_color(cx.theme().warning))
+                                    .when(!warning, |el| el.text_color(cx.theme().muted_foreground))
+                                    .child(state),
+                            )
+                            .when(volatile, |el| {
+                                el.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(c.identity_volatile),
+                                )
+                            })
+                            .when(unsafe_removal, |el| {
+                                el.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().danger)
+                                        .child(c.device_unsafe_removal),
+                                )
+                            }),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        // Mounted: navigate in. Unmounted: mount, then
+                        // navigate in when the mount answers.
+                        this.session.open_device(&object_path);
+                        this.sync_path_field(window, cx);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new(SharedString::from(format!("eject-{eject_path}")))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::ArrowUp)
+                    .tooltip(c.device_eject)
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.session.eject_device(&eject_path);
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+
     fn favorites_drop_zone(&self, count: usize, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale());
         div()

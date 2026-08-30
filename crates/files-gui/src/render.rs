@@ -27,6 +27,15 @@ impl Render for FilesApp {
             .operations_open
             .then(|| self.operation_center(cx));
         let dialog = self.dialog(cx);
+        let searching = self.session.search.is_active() || self.editing_search;
+        let search_bar = searching.then(|| self.search_bar(cx));
+        // The preview pane and the details panel are the same slot: both are a
+        // column about the selected item, and showing two of them would leave
+        // the content area a sliver on a laptop screen.
+        let details = self.application_details(cx);
+        let preview = (details.is_none() && self.session.preview.open && !compact)
+            .then(|| self.preview_pane(cx));
+        let chooser = self.chooser_overlay(cx);
 
         let shell = h_flex()
             .size_full()
@@ -40,6 +49,7 @@ impl Render for FilesApp {
                     .min_w_0()
                     .child(toolbar)
                     .child(tab_strip)
+                    .children(search_bar)
                     .when_some(notice, |column, message| {
                         column.child(
                             div()
@@ -54,6 +64,8 @@ impl Render for FilesApp {
                     })
                     .child(content),
             )
+            .children(preview)
+            .children(details)
             .children(operations);
 
         div()
@@ -68,5 +80,6 @@ impl Render for FilesApp {
             )
             .child(shell)
             .children(dialog)
+            .children(chooser)
     }
 }

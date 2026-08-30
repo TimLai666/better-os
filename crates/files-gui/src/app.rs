@@ -16,10 +16,14 @@ use gpui::*;
 use gpui_component::{Theme, ThemeMode, input::InputState};
 use smol::Timer;
 
+use crate::apps::CatalogHandle;
+use crate::devicelink::StorageLink;
 use crate::i18n::Locale;
 use crate::keys::{Modifiers, command_for};
 use crate::layout::{COMPACT_VIEWPORT_WIDTH, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, visible_rows};
+use crate::openwith::SessionDefaults;
 use crate::prefs::PreferenceStore;
+use crate::preview::PreviewPanel;
 use crate::reader::FilesReader;
 use crate::session::{FilesSession, Notice, PendingDialog, SessionSetup};
 use crate::toolbar::{FilesystemValidator, display_path};
@@ -47,6 +51,18 @@ pub struct FilesApp {
     /// The last viewport, so a keyboard page is the size of the page that is
     /// actually on screen.
     pub(crate) viewport: Size<Pixels>,
+    /// The search field. A second text input beside the path field, focused by
+    /// `Ctrl+F` the way the path field is focused by `Ctrl+L`.
+    pub(crate) search_input: Entity<InputState>,
+    pub(crate) editing_search: bool,
+    /// The chooser entity, while Open With is showing one. Held so the window
+    /// can keep it alive and hear its event; the chooser performs the launch
+    /// and any association write itself.
+    pub(crate) chooser: Option<Entity<app_chooser_gui::AppChooser>>,
+    _chooser_subscription: Option<Subscription>,
+    /// The catalog generation the last frame drew, so a background reload is
+    /// noticed without comparing two catalogs.
+    pub(crate) catalog_generation: u64,
     _pump: Option<Task<()>>,
 }
 
@@ -57,6 +73,14 @@ impl FilesApp {
         let preferences = loaded.preferences;
         let directories = files_platform::UserDirectories::from_env();
         let reader = Arc::new(FilesReader::from_env());
+        reader.set_include_hidden_applications(preferences.show_hidden);
+        let catalog = reader.catalog().clone();
+        // Reading every XDG application directory is blocking I/O, so it
+        // happens on its own thread and the Applications location fills in when
+        // it lands. The watcher then keeps it current: `notify` delivers the
+        // change, and the answer to any change is a whole reload, because
+        // precedence means one new file can reveal a different application.
+        start_catalog_thread(catalog.clone());
         let start = directories
             .home()
             .cloned()
@@ -71,7 +95,16 @@ impl FilesApp {
             mounts: files_platform::MountTable::from_env(),
             reader,
             engine: crate::shared_engine(),
+            catalog,
+            defaults: Box::new(SessionDefaults::from_env()),
+            // The real thing: the platform crate spawns from an argument
+            // vector built out of the desktop entry.
+            spawner: Box::new(app_catalog_platform::SystemSpawner),
+            link: Box::new(StorageLink::start()),
+            preview: PreviewPanel::default(),
         });
+        session.preview.open = session.preferences.preview_open;
+        session.search.include_hidden = session.preferences.search_hidden;
         if let Some(problem) = loaded.problem {
             session.notice = Some(Notice::Key(problem));
         }
@@ -81,6 +114,9 @@ impl FilesApp {
             InputState::new(window, cx).placeholder(crate::i18n::copy(locale).path_placeholder)
         });
         let dialog_input = cx.new(|cx| InputState::new(window, cx));
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(crate::i18n::copy(locale).search_placeholder)
+        });
 
         // Better OS is dark-first. `gpui_component::init` installs the light
         // theme, so the choice is applied once the window exists.
@@ -95,6 +131,11 @@ impl FilesApp {
             editing_path: false,
             apply_to_remaining: false,
             viewport: size(px(1_200.0), px(800.0)),
+            search_input,
+            editing_search: false,
+            chooser: None,
+            _chooser_subscription: None,
+            catalog_generation: 0,
             _pump: None,
         };
         app.sync_path_field(window, cx);
@@ -115,6 +156,16 @@ impl FilesApp {
                 // that: they belong to the process, not to this window.
                 let Ok(interval) = this.update(cx, |app, cx| {
                     if app.session.pump() {
+                        cx.notify();
+                    }
+                    // A background catalog reload is a redraw for the
+                    // Applications location and nothing else.
+                    let generation = app.session.catalog_generation();
+                    if generation != app.catalog_generation {
+                        app.catalog_generation = generation;
+                        if matches!(app.session.location(), files_core::Location::Applications) {
+                            app.session.reload();
+                        }
                         cx.notify();
                     }
                     if app.session.is_listing() || !app.session.jobs.is_empty() {
@@ -202,11 +253,26 @@ impl FilesApp {
         cx: &mut Context<Self>,
     ) {
         // The text fields own their own keys while one is focused.
-        if self.editing_path || self.session.dialog.is_some() {
+        if self.editing_path || self.editing_search || self.session.dialog.is_some() {
             if event.keystroke.key == "escape" {
                 self.editing_path = false;
+                if self.editing_search {
+                    self.editing_search = false;
+                    self.session.close_search();
+                    self.sync_search_field(window, cx);
+                }
                 self.session.dialog = None;
                 cx.notify();
+            } else if self.editing_search {
+                // Every other keystroke goes to the field, and the query is
+                // taken from it afterwards. Restarting the run is cheap: it
+                // allocates a run and nothing else, and the scan is spread
+                // over the frames that follow.
+                let text = self.search_input.read(cx).value().to_string();
+                if text != self.session.search.text {
+                    self.session.set_search_text(text);
+                    cx.notify();
+                }
             }
             return;
         }
@@ -231,12 +297,82 @@ impl FilesApp {
             cx.notify();
             return;
         }
+        if command == crate::keys::Command::FocusSearch {
+            self.editing_search = true;
+            self.search_input.update(cx, |state, cx| {
+                state.focus(window, cx);
+            });
+            cx.notify();
+            return;
+        }
         let columns = self.columns();
         let rows = self.page_rows();
         self.session.dispatch(command, columns, rows);
         self.prepare_dialog(window, cx);
         self.sync_path_field(window, cx);
+        self.sync_chooser(window, cx);
         cx.notify();
+    }
+
+    /// Puts the session's query back in the field, for the paths that change it
+    /// without typing.
+    pub(crate) fn sync_search_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.session.search.text.clone();
+        let current = self.search_input.read(cx).value().to_string();
+        if current != text {
+            self.search_input.update(cx, |state, cx| {
+                state.set_value(text, window, cx);
+            });
+        }
+    }
+
+    /// Opens or closes the embedded Better App Chooser.
+    ///
+    /// The chooser is Better App Chooser's own component, fed the file's
+    /// resolved MIME type. It launches the selection and, for Always Use,
+    /// writes the association through `app-chooser-core` with its rollback
+    /// record. The window neither launches nor writes: it opens the chooser and
+    /// closes it when it reports back.
+    pub(crate) fn sync_chooser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.session.chooser.clone() {
+            Some(request) if self.chooser.is_none() => {
+                let target = app_chooser_gui::ChooserTarget::new(
+                    request.display_name.clone(),
+                    request.target(),
+                    request.mime.clone(),
+                );
+                let locale = match self.session.locale {
+                    Locale::ZhTw => app_chooser_gui::Locale::ZhTw,
+                    Locale::EnUs => app_chooser_gui::Locale::EnUs,
+                    Locale::System => app_chooser_gui::Locale::System,
+                };
+                let entity = cx.new(|cx| {
+                    app_chooser_gui::AppChooser::new(
+                        target,
+                        app_chooser_gui::ChooserMode::OpenWith,
+                        locale,
+                        window,
+                        cx,
+                    )
+                });
+                self._chooser_subscription = Some(cx.subscribe(
+                    &entity,
+                    |app, _entity, event: &app_chooser_gui::ChooserEvent, cx| {
+                        let cancelled = matches!(event, app_chooser_gui::ChooserEvent::Cancelled);
+                        app.session.close_chooser(cancelled);
+                        app.chooser = None;
+                        app._chooser_subscription = None;
+                        cx.notify();
+                    },
+                ));
+                self.chooser = Some(entity);
+            }
+            None => {
+                self.chooser = None;
+                self._chooser_subscription = None;
+            }
+            _ => {}
+        }
     }
 
     /// Fills the dialog's text field with a sensible starting value.
@@ -283,6 +419,39 @@ impl FilesApp {
     pub(crate) fn dismiss_dialog(&mut self, cx: &mut Context<Self>) {
         self.session.dialog = None;
         cx.notify();
+    }
+}
+
+/// Loads the catalog once, then keeps it current.
+///
+/// One thread for both, because the reload a change triggers is the same
+/// blocking read as the first load. `next_change` collapses everything that
+/// arrives inside its settle window into one reload, so installing a package
+/// that writes forty files reloads once.
+fn start_catalog_thread(catalog: CatalogHandle) {
+    let started = std::thread::Builder::new()
+        .name("files-catalog".to_string())
+        .spawn(move || {
+            catalog.reload_from_env();
+            let directories = app_catalog_platform::ApplicationDirectories::from_env();
+            let Ok(watcher) = app_catalog_platform::CatalogWatcher::new(&directories) else {
+                // No watcher: the catalog is still correct, it just will not
+                // notice an install until the window is reopened. That is a
+                // degraded feature, not a broken one, so the thread ends here
+                // rather than polling.
+                return;
+            };
+            loop {
+                if watcher
+                    .next_change(Duration::from_secs(3_600), Duration::from_millis(250))
+                    .is_some()
+                {
+                    catalog.reload_from_env();
+                }
+            }
+        });
+    if let Err(error) = started {
+        eprintln!("better-files: the application catalog could not be loaded: {error}");
     }
 }
 

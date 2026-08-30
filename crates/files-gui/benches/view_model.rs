@@ -104,7 +104,11 @@ fn main() {
     );
 
     let location = Location::local(&flat).expect("location");
-    let reader = FilesReader::new(ReaderConfig::new(), None);
+    let reader = FilesReader::new(
+        ReaderConfig::new(),
+        None,
+        files_gui::apps::CatalogHandle::empty(Default::default()),
+    );
     let preferences = ViewPreferences::default();
 
     // --- Progressive arrival. --------------------------------------------

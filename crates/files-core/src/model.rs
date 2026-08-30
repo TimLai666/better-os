@@ -155,6 +155,26 @@ impl DirectoryModel {
             .filter_map(|slot| self.storage[*slot as usize].as_ref())
     }
 
+    /// Every entry in sort order, hidden ones included.
+    ///
+    /// A view never wants this — [`DirectoryModel::iter_visible`] is the one
+    /// that respects the hidden preference. Search does: Issue #6 requires
+    /// hidden files to follow an explicit *search* setting rather than
+    /// inheriting the view's, and a search that could only see the visible
+    /// projection could not implement that setting at all.
+    pub fn iter_all(&self) -> impl Iterator<Item = &Entry> {
+        self.ordered
+            .iter()
+            .filter_map(|slot| self.storage[*slot as usize].as_ref())
+    }
+
+    /// The entry at `index` in the full order, hidden ones included.
+    pub fn at(&self, index: usize) -> Option<&Entry> {
+        self.ordered
+            .get(index)
+            .and_then(|slot| self.storage[*slot as usize].as_ref())
+    }
+
     /// The visible identities in order, which is what a range selection is
     /// resolved against.
     pub fn visible_ids(&self) -> Vec<EntryId> {

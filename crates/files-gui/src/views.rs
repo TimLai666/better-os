@@ -62,9 +62,18 @@ impl FilesApp {
         let mode = self.session.preferences.view_mode;
         let columns = self.columns();
         let model = self.session.pane().model();
-        let total = model.visible_len();
-        let status = status_line(model, c);
-        let empty = empty_state(model, c).map(str::to_string);
+        let searching = self.session.search.is_active();
+        let total = self.session.row_count();
+        let status = if searching {
+            self.session.search.status_line(c)
+        } else {
+            status_line(model, c)
+        };
+        let empty = if searching {
+            self.session.search.empty_state(c).map(str::to_string)
+        } else {
+            empty_state(model, c).map(str::to_string)
+        };
         let unlistable = unlistable_reason(self.session.location(), c).map(str::to_string);
 
         let rows = match mode {
@@ -186,7 +195,7 @@ impl FilesApp {
                 for row in range {
                     match mode {
                         ViewMode::List => {
-                            let Some(entry) = model.visible(row) else {
+                            let Some(entry) = app.session.entry_at(row) else {
                                 out.push(div().into_any_element());
                                 continue;
                             };
@@ -207,7 +216,7 @@ impl FilesApp {
                             let mut tiles = Vec::new();
                             for offset in 0..columns {
                                 let index = start + offset;
-                                let Some(entry) = model.visible(index) else {
+                                let Some(entry) = app.session.entry_at(index) else {
                                     break;
                                 };
                                 let rendered = rendered_row(
@@ -354,13 +363,17 @@ fn attach_row_handlers(
             clicked.update(cx, |app, cx| {
                 app.session.focus = Focus::Content;
                 let columns = app.columns();
-                app.session.apply_selection(input, columns);
+                // A running search draws its hits, so the row number on screen
+                // is translated to the index the selection works in.
+                if let Some(model_row) = app.session.model_row(index) {
+                    app.session.apply_selection(input.at(model_row), columns);
+                }
                 cx.notify();
             });
         })
         .on_double_click(move |_event, _window, cx| {
             opened.update(cx, |app, cx| {
-                app.session.open_index(index);
+                app.session.open_row(index);
                 cx.notify();
             });
         })
