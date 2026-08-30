@@ -11,7 +11,9 @@
 //! for this run and says on screen that it will not survive being closed.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 use awake_core::SessionPolicy;
 use serde::{Deserialize, Serialize};
@@ -33,7 +35,9 @@ pub(crate) const MAX_PRESETS: usize = 8;
 pub(crate) enum PresetLength {
     /// Runs until someone ends it.
     Indefinite,
-    Minutes { minutes: u64 },
+    Minutes {
+        minutes: u64,
+    },
 }
 
 impl PresetLength {
@@ -192,6 +196,9 @@ impl PreferencesStore {
         Self { path: path.into() }
     }
 
+    /// Test-only: the store reads and writes through its own path, and this
+    /// exists so a test can assert the file lands where it is documented to.
+    #[cfg(test)]
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
@@ -222,8 +229,7 @@ impl PreferencesStore {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        let document =
-            serde_json::to_vec_pretty(preferences).map_err(|error| error.to_string())?;
+        let document = serde_json::to_vec_pretty(preferences).map_err(|error| error.to_string())?;
         // Write and rename, so an interrupted save leaves the previous file
         // rather than a truncated one.
         let temporary = self.path.with_extension("json.tmp");

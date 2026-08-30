@@ -14,6 +14,11 @@ pub(crate) const MIN_WINDOW_HEIGHT: f32 = 560.0;
 /// Below this the sidebar collapses to icons.
 pub(crate) const COMPACT_VIEWPORT_WIDTH: f32 = 1040.0;
 
+/// Test-only, like `manager-gui`'s equivalent: the rendered rows get their
+/// behaviour from `min_w_0` and `flex_wrap`, and this is the written-down
+/// statement of where the breakpoint is, so "does this wrap at 150% in Chinese"
+/// has an answer a test can check without a display server.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ActionLayout {
     Inline,
@@ -24,6 +29,7 @@ pub(crate) enum ActionLayout {
 ///
 /// `scale` is the desktop text scaling factor, so 1.25 means every label is a
 /// quarter wider in physical pixels while the window is not.
+#[cfg(test)]
 pub(crate) fn action_layout(
     viewport_width: f32,
     scale: f32,

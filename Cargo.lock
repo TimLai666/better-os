@@ -668,12 +668,17 @@ dependencies = [
 name = "awake-gui"
 version = "0.1.0"
 dependencies = [
+ "awake-core",
  "awake-ipc",
- "awake-tray",
  "better-ui",
  "gpui",
  "gpui-component",
+ "gpui-component-assets",
  "gpui_platform",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
  "tokio",
  "zbus",
 ]

@@ -8,15 +8,22 @@ license.workspace = true
 [[bin]]
 name = "awake-gui"
 path = "src/main.rs"
-test = false
+test = true
 bench = false
 
 [dependencies]
+awake-core.workspace = true
 awake-ipc.workspace = true
-awake-tray.workspace = true
 better-ui.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
+gpui-component-assets.workspace = true
 gpui-platform.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[dev-dependencies]
+tempfile.workspace = true

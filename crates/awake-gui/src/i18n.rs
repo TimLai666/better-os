@@ -69,7 +69,6 @@ pub(crate) struct Copy {
     pub(crate) refresh: &'static str,
     pub(crate) cancel: &'static str,
     pub(crate) save: &'static str,
-    pub(crate) add: &'static str,
     pub(crate) edit: &'static str,
     pub(crate) delete: &'static str,
     pub(crate) duplicate: &'static str,
@@ -167,10 +166,7 @@ pub(crate) struct Copy {
     pub(crate) default_preset: &'static str,
     pub(crate) set_as_default: &'static str,
     pub(crate) default_session_policy: &'static str,
-    pub(crate) allow_display_off: &'static str,
-    pub(crate) stop_below_battery: &'static str,
     pub(crate) presets_help: &'static str,
-    pub(crate) presets_restored: &'static str,
 
     // ---- Automatic rules -----------------------------------------------
     pub(crate) new_rule: &'static str,
@@ -207,6 +203,22 @@ pub(crate) struct Copy {
     pub(crate) refused_rules: &'static str,
     pub(crate) condition_unavailable: &'static str,
     pub(crate) condition_unavailable_detail: &'static str,
+    pub(crate) rule_editor_new: &'static str,
+    pub(crate) rule_editor_edit: &'static str,
+    pub(crate) rule_invalid_input: &'static str,
+    pub(crate) matcher_executable: &'static str,
+    pub(crate) matcher_desktop_id: &'static str,
+    pub(crate) watch_window: &'static str,
+    pub(crate) schedule_days: &'static str,
+    pub(crate) schedule_from: &'static str,
+    pub(crate) schedule_to: &'static str,
+    pub(crate) weekday_monday: &'static str,
+    pub(crate) weekday_tuesday: &'static str,
+    pub(crate) weekday_wednesday: &'static str,
+    pub(crate) weekday_thursday: &'static str,
+    pub(crate) weekday_friday: &'static str,
+    pub(crate) weekday_saturday: &'static str,
+    pub(crate) weekday_sunday: &'static str,
 
     // ---- Condition and provider wording --------------------------------
     pub(crate) provider_process_running: &'static str,
@@ -320,7 +332,6 @@ static EN_US: Copy = Copy {
     refresh: "Refresh",
     cancel: "Cancel",
     save: "Save",
-    add: "Add",
     edit: "Edit",
     delete: "Delete",
     duplicate: "Duplicate",
@@ -361,8 +372,7 @@ static EN_US: Copy = Copy {
     settings_subtitle: "Language and appearance",
 
     service_unreachable: "Better Awake service is not running",
-    service_unreachable_detail:
-        "Nothing on this screen can be read or changed until the service answers. No session was started or ended.",
+    service_unreachable_detail: "Nothing on this screen can be read or changed until the service answers. No session was started or ended.",
     active_summary: "This machine is being kept awake",
     inactive_summary: "Nothing is keeping this machine awake",
     attention_summary: "A session needs attention",
@@ -377,8 +387,7 @@ static EN_US: Copy = Copy {
     not_delivered: "Asked for, not delivered by the backend",
     active_reasons: "Active reasons",
     no_active_reasons: "No session is running",
-    no_active_reasons_detail:
-        "The machine follows its own power settings. Start a session from the tray menu or from Quick Sessions.",
+    no_active_reasons_detail: "The machine follows its own power settings. Start a session from the tray menu or from Quick Sessions.",
     manual_origin: "Started by you",
     rule_origin: "Started by a rule",
     session_started: "Started",
@@ -417,16 +426,11 @@ static EN_US: Copy = Copy {
     default_preset: "Default",
     set_as_default: "Make default",
     default_session_policy: "Policy a preset starts with",
-    allow_display_off: "Let the display turn off",
-    stop_below_battery: "Stop when the battery gets low",
-    presets_help:
-        "These are the lengths the tray menu offers. Reordering them reorders the menu.",
-    presets_restored: "Presets restored to the shipped defaults.",
+    presets_help: "These are the lengths the tray menu offers. Reordering them reorders the menu.",
 
     new_rule: "New rule",
     no_rules: "No automatic rules yet",
-    no_rules_detail:
-        "A rule watches for a condition and starts a session while it holds. Nothing runs until you add one.",
+    no_rules_detail: "A rule watches for a condition and starts a session while it holds. Nothing runs until you add one.",
     rule_name: "Name",
     rule_priority: "Priority",
     rule_conditions: "Conditions",
@@ -457,8 +461,23 @@ static EN_US: Copy = Copy {
     rules_summary: "{enabled} of {total} rules switched on",
     refused_rules: "{count} rule(s) match but could not be given a session",
     condition_unavailable: "This condition cannot be used on this machine",
-    condition_unavailable_detail:
-        "The reading it needs is not available here, so it is shown as an explanation rather than a control that looks like it works. Reported reason",
+    condition_unavailable_detail: "The reading it needs is not available here, so it is shown as an explanation rather than a control that looks like it works. Reported reason",
+    rule_editor_new: "New rule",
+    rule_editor_edit: "Edit rule",
+    rule_invalid_input: "This rule cannot be saved as written",
+    matcher_executable: "Executable name",
+    matcher_desktop_id: "Desktop identifier",
+    watch_window: "Counts as active within",
+    schedule_days: "Days",
+    schedule_from: "From",
+    schedule_to: "Until",
+    weekday_monday: "Mon",
+    weekday_tuesday: "Tue",
+    weekday_wednesday: "Wed",
+    weekday_thursday: "Thu",
+    weekday_friday: "Fri",
+    weekday_saturday: "Sat",
+    weekday_sunday: "Sun",
 
     provider_process_running: "Running process",
     provider_ac_power: "AC power",
@@ -491,28 +510,23 @@ static EN_US: Copy = Copy {
     default_battery_threshold: "Default battery stop",
     battery_stops_at: "Stops below {percent}%",
     battery_stop_off: "Never stops for battery level",
-    session_defaults_help:
-        "A session started from the tray or from Quick Sessions begins with these. A rule carries its own.",
+    session_defaults_help: "A session started from the tray or from Quick Sessions begins with these. A rule carries its own.",
     prevent_system_suspend_label: "Hold off system sleep",
     prevent_idle_label: "Hold off idle handling",
     prevent_display_sleep_label: "Hold off display sleep",
     prevent_automatic_lock_label: "Hold off automatic lock",
-    reduced_security_warning:
-        "Keeping the display on or stopping automatic locking leaves the screen readable to anyone nearby.",
+    reduced_security_warning: "Keeping the display on or stopping automatic locking leaves the screen readable to anyone nearby.",
 
     battery_stop_threshold: "Stop a session below",
     no_battery: "This machine has no battery",
-    no_battery_detail:
-        "A battery stop threshold could never fire here, so none is offered. Sessions end on their own condition instead.",
+    no_battery_detail: "A battery stop threshold could never fire here, so none is offered. Sessions end on their own condition instead.",
     current_charge: "Current charge",
     on_ac_power: "On AC power",
     on_battery_power: "On battery",
     on_battery_rule: "Stop sessions on battery by default",
-    on_battery_rule_detail:
-        "A new session takes the default battery stop unless the preset or rule that started it says otherwise.",
+    on_battery_rule_detail: "A new session takes the default battery stop unless the preset or rule that started it says otherwise.",
     quit_warning: "Quitting the service ends every running session",
-    quit_warning_detail:
-        "The service holds the inhibitor. If it stops while a session is running, the machine goes back to its own power settings immediately.",
+    quit_warning_detail: "The service holds the inhibitor. If it stops while a session is running, the machine goes back to its own power settings immediately.",
 
     no_history: "No sessions recorded yet",
     no_history_detail: "A session appears here once it has ended.",
@@ -545,14 +559,11 @@ static EN_US: Copy = Copy {
     poll_every_seconds: "Every {seconds} s",
     no_polling: "Not polled",
     verification_heading: "Verification",
-    verified_holds_no_inhibitor:
-        "This window holds no inhibitor. Every session belongs to the service and survives closing this window.",
-    verified_no_shell_command:
-        "This window runs no shell command. It reads and changes state only through the service protocol.",
+    verified_holds_no_inhibitor: "This window holds no inhibitor. Every session belongs to the service and survives closing this window.",
+    verified_no_shell_command: "This window runs no shell command. It reads and changes state only through the service protocol.",
     protocol_version: "Protocol version",
     tray_host_unavailable: "No tray host is available on this desktop",
-    tray_host_unavailable_detail:
-        "Without a StatusNotifier host there is no tray icon, so this window is the only way in. Everything here works without it.",
+    tray_host_unavailable_detail: "Without a StatusNotifier host there is no tray icon, so this window is the only way in. Everything here works without it.",
 
     language: "Language",
     language_description: "Takes effect immediately. Nothing is restarted.",
@@ -563,8 +574,7 @@ static EN_US: Copy = Copy {
     appearance_description: "Better OS opens dark unless you choose otherwise.",
     dark_theme: "Dark",
     light_theme: "Light",
-    settings_storage_failed:
-        "This preference could not be saved, so it applies to this window only and will be lost when it closes.",
+    settings_storage_failed: "This preference could not be saved, so it applies to this window only and will be lost when it closes.",
 };
 
 static ZH_TW: Copy = Copy {
@@ -575,7 +585,6 @@ static ZH_TW: Copy = Copy {
     refresh: "重新讀取",
     cancel: "取消",
     save: "儲存",
-    add: "新增",
     edit: "編輯",
     delete: "刪除",
     duplicate: "複製",
@@ -670,10 +679,7 @@ static ZH_TW: Copy = Copy {
     default_preset: "預設",
     set_as_default: "設為預設",
     default_session_policy: "預設項目採用的原則",
-    allow_display_off: "允許螢幕關閉",
-    stop_below_battery: "電量過低時停止",
     presets_help: "這些是系統匣選單提供的長度，調整順序就會調整選單順序。",
-    presets_restored: "預設項目已回復成出廠設定。",
 
     new_rule: "新增規則",
     no_rules: "還沒有自動規則",
@@ -709,6 +715,22 @@ static ZH_TW: Copy = Copy {
     refused_rules: "有 {count} 條規則符合條件，但無法取得工作階段",
     condition_unavailable: "這個條件在這台機器上無法使用",
     condition_unavailable_detail: "它需要的讀值在這裡取不到，所以顯示成說明，而不是一個看起來能用的控制項。回報的原因",
+    rule_editor_new: "新增規則",
+    rule_editor_edit: "編輯規則",
+    rule_invalid_input: "這條規則目前的內容無法儲存",
+    matcher_executable: "執行檔名稱",
+    matcher_desktop_id: "桌面項目識別碼",
+    watch_window: "多久內算有活動",
+    schedule_days: "星期",
+    schedule_from: "從",
+    schedule_to: "到",
+    weekday_monday: "一",
+    weekday_tuesday: "二",
+    weekday_wednesday: "三",
+    weekday_thursday: "四",
+    weekday_friday: "五",
+    weekday_saturday: "六",
+    weekday_sunday: "日",
 
     provider_process_running: "執行中的程式",
     provider_ac_power: "外接電源",

@@ -8,8 +8,8 @@
 //! is a property of `ConditionView`, not of a pixel.
 
 use awake_core::{
-    Combine, Condition, ProviderKind, Rule, SessionOrigin, SessionPolicy, Weekday,
-    RESOLUTION_EARLIEST_BATTERY_STOP, RESOLUTION_STRONGEST_WINS,
+    Combine, Condition, ProviderKind, RESOLUTION_EARLIEST_BATTERY_STOP, RESOLUTION_STRONGEST_WINS,
+    Rule, SessionOrigin, SessionPolicy,
 };
 use awake_ipc::{
     RuleTestDocument, StatusDocument, WireBatteryProtection, WireConflict, WireHistoryEntry,
@@ -47,6 +47,11 @@ impl Section {
     ];
 
     /// A stable key, used for element ids and for the shortcut binding names.
+    ///
+    /// Test-only: the rendering names its elements from `Section` directly, and
+    /// this exists so a test can assert the eight keys are distinct and stable
+    /// without reaching into the view.
+    #[cfg(test)]
     pub(crate) fn as_key(self) -> &'static str {
         match self {
             Section::Status => "status",
@@ -102,6 +107,11 @@ impl Section {
     }
 
     /// Which section a shortcut index reaches. One-based, matching the label.
+    ///
+    /// Test-only: it is the written-down statement that all eight sections are
+    /// reachable by number, which is what "reachable by keyboard alone" means
+    /// for the sidebar.
+    #[cfg(test)]
     pub(crate) fn at_index(index: usize) -> Option<Section> {
         Section::ALL.get(index).copied()
     }
@@ -271,6 +281,10 @@ impl BatteryView {
         matches!(self, BatteryView::Present { .. })
     }
 
+    /// Test-only: the Battery section renders through [`BatteryView::summary`],
+    /// and this exists so a test can assert the threshold a machine with no
+    /// battery reports is absent rather than zero.
+    #[cfg(test)]
     pub(crate) fn threshold_percent(&self) -> Option<u8> {
         match self {
             BatteryView::NotApplicable => None,
@@ -302,6 +316,16 @@ pub(crate) struct BackendView {
     pub(crate) can_hold_idle: bool,
     pub(crate) can_hold_display_sleep: bool,
     pub(crate) can_hold_automatic_lock: bool,
+}
+
+impl BackendView {
+    pub(crate) fn availability_label(&self, c: &'static Copy) -> &'static str {
+        if self.available {
+            c.available
+        } else {
+            c.unavailable
+        }
+    }
 }
 
 /// Everything the Status section shows, decided once.
@@ -385,7 +409,11 @@ impl StatusView {
                 can_hold_automatic_lock: capabilities.automatic_lock,
             },
             battery: BatteryView::from_wire(&status.battery_protection),
-            conflicts: status.conflicts.iter().map(ConflictView::from_wire).collect(),
+            conflicts: status
+                .conflicts
+                .iter()
+                .map(ConflictView::from_wire)
+                .collect(),
             attention: status.attention.clone(),
             interrupted_previous_session: status
                 .interrupted_previous_session
@@ -414,6 +442,11 @@ impl StatusView {
     }
 
     /// The manual session's id, which is the only one End session may aim at.
+    ///
+    /// Test-only. The End session action sends `EndManualSession`, which names
+    /// no id at all precisely so it cannot aim at the wrong one; this is here so
+    /// a test can assert the view still knows which session is the manual one.
+    #[cfg(test)]
     pub(crate) fn manual_session_id(&self) -> Option<u64> {
         self.reasons
             .iter()
@@ -478,7 +511,7 @@ impl ConditionView {
     /// condition because a report was silent would be a guess.
     pub(crate) fn present(
         condition: &Condition,
-        providers: &[WireProvider],
+        providers: &[ProviderRow],
         c: &'static Copy,
     ) -> Self {
         let provider = condition.provider();
@@ -552,7 +585,7 @@ impl RuleView {
     pub(crate) fn present(
         rule: &Rule,
         matching_rule_ids: &[u64],
-        providers: &[WireProvider],
+        providers: &[ProviderRow],
         c: &'static Copy,
     ) -> Self {
         let groups: Vec<GroupView> = rule
@@ -752,10 +785,6 @@ impl HistoryRow {
 // Shared wording helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn policy_label(field: PolicyRowField, c: &'static Copy) -> &'static str {
-    field.label(c)
-}
-
 pub(crate) fn provider_label(provider: ProviderKind, c: &'static Copy) -> &'static str {
     match provider {
         ProviderKind::ProcessRunning => c.provider_process_running,
@@ -821,12 +850,6 @@ pub(crate) fn condition_summary(condition: &Condition, c: &'static Copy) -> Stri
         Condition::Fullscreen { active: true } => c.condition_fullscreen_active.to_string(),
         Condition::Fullscreen { active: false } => c.condition_fullscreen_inactive.to_string(),
     }
-}
-
-/// A schedule's days, in the locale's own week order. Used by the rules editor
-/// beside the schedule sentence.
-pub(crate) fn weekday_index_label(day: Weekday) -> String {
-    day.index().to_string()
 }
 
 pub(crate) fn duration_label(seconds: u64, c: &'static Copy) -> String {
