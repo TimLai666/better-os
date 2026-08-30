@@ -10,7 +10,7 @@ use awake_ipc::{
 };
 use thiserror::Error;
 
-use crate::menu::QuickOptions;
+use crate::menu::{MenuAction, QuickOptions};
 
 #[zbus::proxy(
     interface = "org.betteros.Awake1",
@@ -101,6 +101,13 @@ impl ServiceClient {
         match AwakeResponse::from_json(&reply)?.body {
             ResponseBody::Status(status) => Ok(*status),
             ResponseBody::Rejected { error_key } => Err(ClientError::Rejected(error_key)),
+            // The tray asks for none of these. A reply shaped for the rule
+            // editor or the history view arriving here means the service
+            // answered a different question, so it is an error rather than a
+            // status the menu could be redrawn from.
+            ResponseBody::Rules(_) | ResponseBody::RuleTest(_) | ResponseBody::History(_) => Err(
+                ClientError::Protocol("awake.tray.error.unexpected_reply".to_string()),
+            ),
         }
     }
 
@@ -141,6 +148,27 @@ pub fn start_request(
         end,
         security_confirmed,
     })
+}
+
+/// The request a menu action becomes, for every action that needs nothing from
+/// the current status.
+///
+/// `None` means the action is not one of these: it either needs the running
+/// session (start, extend), never reaches the service (a local toggle, opening
+/// the window, quitting), or — in the case of
+/// [`MenuAction::ArmOverrideAllRules`] — deliberately sends nothing, because
+/// arming the override is not overriding it.
+pub fn menu_request(action: MenuAction) -> Option<AwakeRequest> {
+    let body = match action {
+        // Never `EndSession { session_id }`: the tray must not be able to end a
+        // rule's session by naming an id it guessed from the status.
+        MenuAction::EndSession => RequestBody::EndManualSession,
+        MenuAction::PauseRules(seconds) => RequestBody::PauseRules { seconds },
+        MenuAction::ResumeRules => RequestBody::ResumeRules,
+        MenuAction::ConfirmOverrideAllRules => RequestBody::OverrideAllRules { confirmed: true },
+        _ => return None,
+    };
+    Some(AwakeRequest::new(body))
 }
 
 #[cfg(test)]
@@ -193,6 +221,12 @@ mod tests {
             attention: None,
             interrupted_previous_session: None,
             reduced_security_confirmed: false,
+            active_rules: Vec::new(),
+            rule_summary: awake_ipc::WireRuleSummary::default(),
+            rules_suppression: None,
+            conflicts: Vec::new(),
+            providers: Vec::new(),
+            battery_protection: awake_ipc::WireBatteryProtection::default(),
             now_unix_seconds: 1,
         };
         let document =
@@ -216,5 +250,57 @@ mod tests {
     #[test]
     fn a_malformed_signal_body_is_an_error_not_a_silently_ignored_update() {
         assert!(status_from_event("not json").is_err());
+    }
+
+    #[test]
+    fn ending_a_session_from_the_menu_ends_the_manual_one_and_never_a_rules_session() {
+        let request = menu_request(MenuAction::EndSession).expect("End session sends a request");
+        assert_eq!(request.body, RequestBody::EndManualSession);
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn the_pause_and_resume_items_become_the_requests_the_service_accepts() {
+        for (action, expected) in [
+            (
+                MenuAction::PauseRules(Some(awake_core::PAUSE_SHORT_SECONDS)),
+                RequestBody::PauseRules {
+                    seconds: Some(awake_core::PAUSE_SHORT_SECONDS),
+                },
+            ),
+            (
+                MenuAction::PauseRules(Some(awake_core::PAUSE_LONG_SECONDS)),
+                RequestBody::PauseRules {
+                    seconds: Some(awake_core::PAUSE_LONG_SECONDS),
+                },
+            ),
+            (
+                MenuAction::PauseRules(None),
+                RequestBody::PauseRules { seconds: None },
+            ),
+            (MenuAction::ResumeRules, RequestBody::ResumeRules),
+        ] {
+            let request = menu_request(action).expect("a rule control sends a request");
+            assert_eq!(request.body, expected);
+            assert!(
+                request.validate().is_ok(),
+                "the menu must not offer a length the protocol refuses"
+            );
+        }
+    }
+
+    #[test]
+    fn arming_the_override_sends_nothing_and_only_the_confirmation_carries_the_flag() {
+        assert_eq!(
+            menu_request(MenuAction::ArmOverrideAllRules),
+            None,
+            "arming must not reach the service"
+        );
+        assert_eq!(
+            menu_request(MenuAction::ConfirmOverrideAllRules)
+                .expect("the confirmation sends a request")
+                .body,
+            RequestBody::OverrideAllRules { confirmed: true }
+        );
     }
 }

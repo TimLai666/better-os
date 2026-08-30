@@ -6,14 +6,15 @@
 //! changes by asking the service.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use awake_ipc::{AwakeRequest, RequestBody, StatusDocument, WireEnd, WireIndicator};
 use tokio::sync::{Mutex, Notify};
 
-use crate::client::{ClientError, ServiceClient, start_request};
+use crate::client::{ClientError, ServiceClient, menu_request, start_request};
 use crate::labels::Locale;
 use crate::localtime::UtcOffset;
-use crate::menu::{Menu, MenuAction, QuickOptions, build};
+use crate::menu::{Menu, MenuAction, OverrideConfirmation, QuickOptions, build};
 use crate::sni::{ITEM_PATH, MENU_PATH, icon_name, item_status};
 
 /// The binary the tray opens for anything that needs a window: the time picker,
@@ -32,6 +33,10 @@ pub enum Activation {
     Applied,
     /// A local toggle that only shapes the next session.
     OptionToggled,
+    /// The override was armed. Nothing was asked of the service; the menu now
+    /// shows the confirming label, and a second activation of *that* is what
+    /// switches every rule off.
+    OverrideArmed,
     /// The action needs the full window, which was asked to open.
     OpenedApplication,
     Quitting,
@@ -47,6 +52,8 @@ struct State {
     menu: Menu,
     revision: u32,
     offset: UtcOffset,
+    /// The tray-local half of the two-step override.
+    override_confirmation: OverrideConfirmation,
 }
 
 pub struct TrayController {
@@ -55,13 +62,16 @@ pub struct TrayController {
     state: Mutex<State>,
     connection: Mutex<Option<zbus::Connection>>,
     quit: Notify,
+    /// The tray's own monotonic origin. The override arming is measured against
+    /// this rather than against the service's wall clock, which can step.
+    started: Instant,
 }
 
 impl TrayController {
     pub fn new(client: ServiceClient, locale: Locale, status: StatusDocument) -> Self {
         let options = QuickOptions::default();
         let offset = UtcOffset::for_system(status.now_unix_seconds);
-        let menu = build(&status, options, locale, offset);
+        let menu = build(&status, options, locale, offset, false);
         Self {
             client,
             locale,
@@ -71,10 +81,17 @@ impl TrayController {
                 menu,
                 revision: 1,
                 offset,
+                override_confirmation: OverrideConfirmation::default(),
             }),
             connection: Mutex::new(None),
             quit: Notify::new(),
+            started: Instant::now(),
         }
+    }
+
+    /// Monotonic seconds since the tray started.
+    fn monotonic_seconds(&self) -> u64 {
+        self.started.elapsed().as_secs()
     }
 
     /// Handed the connection once the objects are served, so property changes
@@ -117,10 +134,12 @@ impl TrayController {
 
     /// Replaces the status and rebuilds everything that is drawn from it.
     pub async fn set_status(&self, status: StatusDocument) {
+        let now = self.monotonic_seconds();
         let (revision, indicator) = {
             let mut state = self.state.lock().await;
+            let armed = state.override_confirmation.is_armed(now);
             state.offset = UtcOffset::for_system(status.now_unix_seconds);
-            state.menu = build(&status, state.options, self.locale, state.offset);
+            state.menu = build(&status, state.options, self.locale, state.offset, armed);
             state.revision = state.revision.wrapping_add(1).max(1);
             state.status = status;
             (state.revision, state.status.indicator)
@@ -155,7 +174,8 @@ impl TrayController {
     }
 
     pub async fn perform(&self, action: MenuAction) -> Activation {
-        let (options, session_id) = {
+        let now = self.monotonic_seconds();
+        let (options, session_id, armed) = {
             let state = self.state.lock().await;
             (
                 state.options,
@@ -163,11 +183,42 @@ impl TrayController {
                     .status
                     .manual_session()
                     .map(|session| session.session_id),
+                state.override_confirmation.is_armed(now),
             )
         };
         let reason = self.locale.labels().tray_session_reason;
 
+        // Choosing anything else drops an armed override, so a confirmation
+        // someone walked away from cannot be completed by a later click on a
+        // menu that has since been used for something else.
+        if armed && !matches!(action, MenuAction::ConfirmOverrideAllRules) {
+            self.rearm_override(None).await;
+        }
+
         let request = match action {
+            MenuAction::ArmOverrideAllRules => {
+                self.rearm_override(Some(now)).await;
+                return Activation::OverrideArmed;
+            }
+            MenuAction::ConfirmOverrideAllRules => {
+                if !armed {
+                    // A stale layout, a replayed event, or a host that kept the
+                    // confirming id from a previous open. The arming is what
+                    // authorizes this, and it is not live.
+                    return Activation::Ignored;
+                }
+                self.rearm_override(None).await;
+                match menu_request(action) {
+                    Some(request) => request,
+                    None => return Activation::Ignored,
+                }
+            }
+            MenuAction::EndSession | MenuAction::PauseRules(_) | MenuAction::ResumeRules => {
+                match menu_request(action) {
+                    Some(request) => request,
+                    None => return Activation::Ignored,
+                }
+            }
             MenuAction::StartIndefinite => {
                 start_request(reason, WireEnd::Indefinite, options, false)
             }
@@ -187,12 +238,6 @@ impl TrayController {
                     session_id,
                     by_seconds: minutes * 60,
                 })
-            }
-            MenuAction::EndSession => {
-                let Some(session_id) = session_id else {
-                    return Activation::Ignored;
-                };
-                AwakeRequest::new(RequestBody::EndSession { session_id })
             }
             MenuAction::ToggleAllowDisplayOff => {
                 self.toggle(|options| options.allow_display_off = !options.allow_display_off)
@@ -241,10 +286,41 @@ impl TrayController {
     }
 
     async fn toggle(&self, change: impl FnOnce(&mut QuickOptions)) {
+        let now = self.monotonic_seconds();
         let (revision, indicator) = {
             let mut state = self.state.lock().await;
             change(&mut state.options);
-            state.menu = build(&state.status, state.options, self.locale, state.offset);
+            let armed = state.override_confirmation.is_armed(now);
+            state.menu = build(
+                &state.status,
+                state.options,
+                self.locale,
+                state.offset,
+                armed,
+            );
+            state.revision = state.revision.wrapping_add(1).max(1);
+            (state.revision, state.status.indicator)
+        };
+        self.announce(revision, indicator).await;
+    }
+
+    /// Arms or drops the override, and redraws the menu so the label matches.
+    /// `Some(now)` arms; `None` drops.
+    async fn rearm_override(&self, armed_at: Option<u64>) {
+        let (revision, indicator) = {
+            let mut state = self.state.lock().await;
+            match armed_at {
+                Some(now) => state.override_confirmation.arm(now),
+                None => state.override_confirmation.clear(),
+            }
+            let armed = armed_at.is_some();
+            state.menu = build(
+                &state.status,
+                state.options,
+                self.locale,
+                state.offset,
+                armed,
+            );
             state.revision = state.revision.wrapping_add(1).max(1);
             (state.revision, state.status.indicator)
         };
@@ -253,6 +329,12 @@ impl TrayController {
 
     pub async fn options(&self) -> QuickOptions {
         self.state.lock().await.options
+    }
+
+    /// Whether the override control is currently showing its confirming label.
+    pub async fn override_armed(&self) -> bool {
+        let now = self.monotonic_seconds();
+        self.state.lock().await.override_confirmation.is_armed(now)
     }
 
     fn open_application(&self) {

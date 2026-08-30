@@ -126,7 +126,28 @@ impl ProviderSet {
     /// Samples every provider whose cadence has elapsed and that some enabled
     /// rule needs, and returns the complete picture.
     pub fn sample(&mut self, rules: &RuleSet, now_unix_seconds: u64) -> Observations {
-        let required = rules.required_providers();
+        self.sample_with(rules, &[], now_unix_seconds)
+    }
+
+    /// Samples what the rules need, plus a set the caller always wants.
+    ///
+    /// The `always` list exists for battery protection. That is a safety
+    /// guarantee the user gets whether or not any rule mentions the battery, so
+    /// deciding to read the battery from "does a rule ask for it" would make the
+    /// protection depend on the rules a user happens to have written. Cadence is
+    /// still honoured: always-sampled does not mean sampled every tick.
+    pub fn sample_with(
+        &mut self,
+        rules: &RuleSet,
+        always: &[ProviderKind],
+        now_unix_seconds: u64,
+    ) -> Observations {
+        let mut required = rules.required_providers();
+        for kind in always {
+            if !required.contains(kind) {
+                required.push(*kind);
+            }
+        }
         let mut observations = self.previous.clone();
         observations.sampled_at_unix_seconds = now_unix_seconds;
 

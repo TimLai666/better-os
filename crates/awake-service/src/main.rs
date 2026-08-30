@@ -50,9 +50,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ticking = engine.clone();
     let ticker = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(TICK_INTERVAL_SECONDS));
+        let mut announced: Vec<u64> = Vec::new();
         loop {
             interval.tick().await;
-            ticking.tick().await;
+
+            // A low-battery stop must be told to the user, not just recorded.
+            // The history entry is written by the engine; this is the other half
+            // Issue #13 asks for. Announced ids are remembered so one stop is
+            // reported once even though the reading stays low.
+            for stop in ticking.tick().await {
+                if !announced.contains(&stop.session.0) {
+                    announced.push(stop.session.0);
+                    // stderr, because the service has no notification backend of
+                    // its own and the tray is the thing that owns the desktop
+                    // notification. Saying it here means a stop is never silent
+                    // even when no tray is running, which is exactly when a user
+                    // would otherwise have no idea why their session ended.
+                    eprintln!(
+                        "better-awake-service: session {} ended because the battery reached {}%",
+                        stop.session, stop.percent
+                    );
+                }
+            }
         }
     });
 

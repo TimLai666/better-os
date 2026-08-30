@@ -704,6 +704,7 @@ version = "0.1.0"
 dependencies = [
  "awake-core",
  "awake-ipc",
+ "awake-platform",
  "awake-service",
  "awake-store",
  "better-core",

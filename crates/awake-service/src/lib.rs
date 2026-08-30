@@ -7,13 +7,15 @@
 pub mod backend;
 pub mod engine;
 pub mod logind;
+pub mod rules;
 pub mod service;
 
 pub use backend::{
     BackendError, Clock, InhibitWhat, InhibitorBackend, LeaseHealth, LeaseRequest, SystemClock,
 };
-pub use engine::{AwakeEngine, INHIBITOR_WHO};
+pub use engine::{AwakeEngine, BatteryStop, INHIBITOR_WHO};
 pub use logind::LogindBackend;
+pub use rules::{RuleDriver, RuleEdit};
 pub use service::{AwakeDbusService, BUS_NAME, INTERFACE_NAME, OBJECT_PATH};
 
 /// How often the service reaps expired sessions and re-checks that the
