@@ -5,7 +5,7 @@
 are the system default, and can change or restore them — one at a time or
 together — always after seeing what will change.
 **Blocked by:** 27-defaults-core-and-adapters
-**Status:** todo
+**Status:** done
 
 ## Goal
 
@@ -70,27 +70,27 @@ recorded.
 
 ## Acceptance criteria
 
-- [ ] Better Manager contains a dedicated Defaults section in its navigation.
-- [ ] Each component row shows Default, Not default, Partially default, Changed
+- [x] Better Manager contains a dedicated Defaults section in its navigation.
+- [x] Each component row shows Default, Not default, Partially default, Changed
       externally, Unavailable, Conflict, Unknown, or Needs sign-out as
       appropriate.
-- [ ] Opening a component shows every declared integration with its effective
+- [x] Opening a component shows every declared integration with its effective
       owner or value.
-- [ ] A user can review and make one component default without changing
+- [x] A user can review and make one component default without changing
       unrelated components.
-- [ ] A user can review and restore the previous default for one component.
-- [ ] The global apply action always shows a selectable preview before any
+- [x] A user can review and restore the previous default for one component.
+- [x] The global apply action always shows a selectable preview before any
       mutation, and no UI path applies every default without one.
-- [ ] The global restore action shows the exact captured values before mutation.
-- [ ] A Changed externally entry requires explicit confirmation and is never
+- [x] The global restore action shows the exact captured values before mutation.
+- [x] A Changed externally entry requires explicit confirmation and is never
       overwritten by restore-all.
-- [ ] Partial failures show exact per-integration outcomes.
-- [ ] The preview states when elevated access will be requested, and cancelling
+- [x] Partial failures show exact per-integration outcomes.
+- [x] The preview states when elevated access will be requested, and cancelling
       before approval mutates nothing.
-- [ ] The GUI executes no `gsettings`, `xdg-mime`, shell command, or privileged
+- [x] The GUI executes no `gsettings`, `xdg-mime`, shell command, or privileged
       operation directly.
-- [ ] GUI, CLI, and diagnostics share the same `defaults-core` logic.
-- [ ] `zh-TW` and `en-US` layouts pass overflow tests at 100%, 125%, and 150%
+- [x] GUI, CLI, and diagnostics share the same `defaults-core` logic.
+- [x] `zh-TW` and `en-US` layouts pass overflow tests at 100%, 125%, and 150%
       scaling.
 
 ## Verification
@@ -105,3 +105,32 @@ recorded.
 - A locale and scaling overflow test pass for `zh-TW` and `en-US` at 100/125/150%
 - A test asserting `manager-gui`'s dependency surface reaches the platform
   adapters only through `defaults-core`
+
+## What landed
+
+- `crates/manager-gui/src/defaults_model.rs` decides everything the screens
+  show — the eight aggregate states, the per-integration rows, the review
+  selection, the bottom summary, the elevation notice, and the per-entry result
+  mapping — with no GPUI dependency, so all of it is tested without a display.
+- `crates/manager-gui/src/defaults_app.rs` runs every read, plan, and change on
+  a background task through `defaults-core`, and `crates/manager-gui/src/
+  pages_defaults.rs` draws the four screens.
+- `defaults-core` gained `AdapterSession`, which owns the production and
+  simulated adapter sets. It is why `manager-gui` names no adapter crate at all,
+  and the CLI now opens the same session rather than assembling its own list.
+- `ApprovedPlan` is the only value the execution path accepts and
+  `ReviewModel::approve` is its only constructor, so no button can apply
+  defaults without the review screen that produced the plan.
+
+## Known gaps
+
+- No shipped manifest declares a default integration yet (ADR 0009 defers that
+  decision), so against the built-in catalog the screen shows its empty state.
+  Behaviour is proven against
+  `crates/better-core/tests/fixtures/every-integration-kind.yaml`.
+- "Previous target no longer exists" is not a distinct restore class. Nothing in
+  the engine checks whether the captured application is still installed; ADR
+  0009 lists that as deferred, so an entry with a saved value reads as safe to
+  restore and the verifying read reports what the system then says.
+- Last verified time is the moment of the newest snapshot that recorded a
+  verified value for that integration. Snapshots carry no per-entry timestamp.

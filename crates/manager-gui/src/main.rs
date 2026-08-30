@@ -1,8 +1,13 @@
 mod app;
 mod components;
+mod defaults_app;
+mod defaults_model;
+#[cfg(test)]
+mod defaults_tests;
 mod i18n;
 mod layout;
 mod model;
+mod pages_defaults;
 mod pages_flow;
 mod pages_main;
 mod pages_settings;

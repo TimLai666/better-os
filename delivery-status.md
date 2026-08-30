@@ -72,7 +72,7 @@ privileged mutation out of the GUI and CLI.
 | M28 | ticket 25 — Better Awake tray-first manual sessions | agent | done | crate-scoped fmt/check/test/clippy gates, 142 tests including 11 private session-bus tests, a tray-restart session survival test, and an 8 s headless `awake-gui` smoke |
 | M29 | ticket 26 — Awake full application and trigger rules (needs M28) | agent | todo | workspace gate plus rule-engine evaluation tests and an uninstall smoke releasing inhibitors |
 | M30 | ticket 27 — defaults core, adapters, snapshots, CLI | agent | done | crate-scoped fmt/check/test/clippy gates, 119 tests including snapshot round-trip, external-change matrix, all eight aggregate states, GVDB dconf read fixtures, and five CLI subcommands; full workspace gate ran after merge |
-| M31 | ticket 28 — Manager Defaults GUI review flows (needs M30) | agent | todo | workspace gate plus a preview-before-mutation assertion and locale/scaling overflow tests |
+| M31 | ticket 28 — Manager Defaults GUI review flows (needs M30) | agent | done | full workspace gate green (fmt, check, test, clippy `-D warnings`), 42 manager-gui tests including all eight aggregate states, review selection, per-entry result mapping, both locales at 100/125/150%, a source-level assertion that a plan is executed from exactly one place behind `ApprovedPlan`, an end-to-end plan/apply/restore run over the nine-kind fixture, and an 8 s `ZED_HEADLESS=1` manager-gui smoke |
 | M32 | ticket 29 — Better Touchpad pointer, scrolling, clicking, devices | agent | todo | workspace gate plus apply-and-read-back tests per control and input-latency benchmarks |
 | M33 | ticket 30 — Mac-style gestures, typed actions, backend ADR (needs M32) | agent | todo | workspace gate plus recognizer replay tests, conflict detection, and the gesture backend ADR |
 | M34 | ticket 31 — safe direct-removal external storage | agent | done | crate-scoped gates with 129 tests (13 event-sequence scenarios, 6 private-session-bus), live doctor probe on the host, synthetic state/latency benchmarks; hardware flush-completion benchmarks recorded as a follow-up; full workspace gate ran after merge |
@@ -138,8 +138,8 @@ requires.
 
 ## Next Ticket
 
-Tickets 18, 19, 20, 21, 22, 23, 25, 27, and 31 are done. Ready now (blockers
-met): 24 (needs 22, in progress), 26 (needs 25), 28 (needs 27), 29, and 32
+Tickets 18, 19, 20, 21, 22, 23, 25, 27, 28, and 31 are done. Ready now
+(blockers met): 24 (needs 22, in progress), 26 (needs 25), 29, and 32
 (needs 18 and 31, in progress). Remaining dependency edges, in ticket order:
 30 needs 29; 33 needs 32; 34 needs 33; 35 needs 19 and 34.
 

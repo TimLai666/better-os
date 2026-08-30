@@ -96,6 +96,11 @@ GUI or dependency compiles when the relevant command was not executed.
   `ca.desrt.dconf` D-Bus service. They read and verify real values today and
   report Manual action required for a change; ADR 0009 records why and what the
   write path needs.
+- Decide what restore should do when the previously selected application has
+  been uninstalled. Restore writes the captured desktop entry either way and
+  reports what the verifying read then saw, so the Defaults review screen has no
+  "previous target no longer exists" class to show. Deciding needs the shared
+  application catalog consulted at restore time.
 - Decide whether `app-chooser-core` should offer a typed "remove this
   association" operation. Without one, restoring an XDG default that previously
   had no owner reports Manual action required rather than clearing the line, and
@@ -106,4 +111,5 @@ GUI or dependency compiles when the relevant command was not executed.
 - Decide which default integrations the shipped component manifests declare.
   Issue #10 defers it; the schema is proven against a fixture instead, so
   `better-manager defaults inspect` reports nothing against the built-in
-  catalog.
+  catalog and Better Manager's Defaults screen shows its empty state. Both
+  surfaces work; there is simply nothing declared for them to show.

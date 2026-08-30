@@ -45,6 +45,11 @@ impl XdgDefaultAppAdapter {
         Self::new(AdapterId::XdgEffectiveDefault, store)
     }
 
+    /// The reading adapter over the user's own association file.
+    pub fn effective_for_user() -> Result<Self, app_chooser_core::AssociationError> {
+        Ok(Self::read_only(AssociationStore::for_user()?))
+    }
+
     pub fn store(&self) -> &AssociationStore {
         &self.store
     }

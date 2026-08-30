@@ -3994,6 +3994,8 @@ version = "0.1.0"
 dependencies = [
  "better-core",
  "better-ui",
+ "defaults-core",
+ "defaults-store",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
@@ -4003,6 +4005,7 @@ dependencies = [
  "manager-store",
  "serde_json",
  "smol",
+ "tempfile",
  "uuid",
 ]
 
