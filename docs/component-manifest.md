@@ -32,6 +32,18 @@ different reason: the component exists and its binary builds, but
 its artifact checksums are placeholders. It is validated on every test run and
 must not be offered for installation until the package matrix includes it.
 
+`components/manifests/better-files.yaml` and
+`components/manifests/better-storage.yaml` carry the same caveat for the same
+reason: both components exist and build, neither is in the package matrix, and
+both are validated on every test run without being installable.
+
+`better-files.yaml` is the first shipped manifest to declare
+`default_integrations`, so it is also the worked example of what the group is
+for: three declarations, each naming the exact keys it writes, and `restore_policy`
+`captured-value` on the two that take something over. Installing the package
+makes none of them true — a default is applied through Better Defaults and
+restored to the value captured before the change.
+
 Optional groups describe replacements, enhancements, dependencies, conflicts,
 health checks, benchmarks, permissions, touched paths, and release notes.
 

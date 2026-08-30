@@ -116,6 +116,40 @@ GUI or dependency compiles when the relevant command was not executed.
   reports what the verifying read then saw, so the Defaults review screen has no
   "previous target no longer exists" class to show. Deciding needs the shared
   application catalog consulted at restore time.
+- Better Files reads device state from `org.betteros.Storage1` through
+  `storage_service::StorageClient`, and runs the same `storage-core` state
+  machine in its own process when that service is absent. The window says which
+  it got, and the in-process case is drawn as a warning rather than a note,
+  because an in-process engine never sees the tracked-operation notices another
+  application would have sent to a service. Do not add a third fallback that
+  invents a state.
+- `files-operations` does not yet tell the storage service when a job finishes.
+  `StorageClient::notify_operation_completed` exists and is tested against a
+  running service; the job engine has no device identity for a destination path,
+  so nothing calls it. Until a path is mapped to a UDisks2 object, a Better Files
+  copy to an external device reaches the service only through the platform
+  signals, not as a tracked operation — which means readiness can be claimed
+  earlier than it should be for our own writes. Close this before claiming Issue
+  #5's readiness rule is fully implemented.
+- Better Files cannot turn Performance mode on. The client can set the policy and
+  the service refuses it without the acknowledged risks, but no UI presents those
+  risks, and Issue #5 requires the trade-off explained before activation.
+- Preview treats a parser as a boundary, not a sandbox. The size limit, the
+  decoder's own allocation limits, and a `catch_unwind` are what exist;
+  `docs/files-preview-policy.md` states what each one does and does not buy. A
+  real sandbox means a separate process with a seccomp profile, and it is the
+  right shape before preview grows beyond image and text.
+- No Better Files performance claim may name Nautilus, COSMIC Files, or Windows
+  File Explorer. `cargo bench -p files-gui --bench files_suite` measures Better
+  Files against itself on one machine with a warm page cache, and the copy
+  figures are page-cache figures. The comparison hardware and datasets are Issue
+  #6's own deferred decision and need one before any such claim.
+- Nothing enforces the benchmark budgets `components/manifests/better-files.yaml`
+  declares. There is no CI job that runs the harness and compares.
+- `packaging/build-deb.sh` builds no `better-files` package, so that manifest's
+  artifact checksums are placeholders and the component is not release-eligible.
+  It is validated on every test run; it is not installable. The same caveat
+  `better-launcher.yaml` and `better-storage.yaml` already carry.
 - Decide whether `app-chooser-core` should offer a typed "remove this
   association" operation. Without one, restoring an XDG default that previously
   had no owner reports Manual action required rather than clearing the line, and

@@ -44,6 +44,8 @@ storage-core ──> storage-platform ──> storage-service ──> files-gui
 
 files-core ──> files-platform ──> files-operations ──> files-gui
    typed locations   fs/XDG/MIME/trash   durable job engine   window, views
+files-preview ──┬──> files-gui          bounded, cancellable, parser as boundary
+files-search  ──┘                        provider / ranking / UI, kept apart
 
 monitor-core ──> monitor-collectors-linux ──> monitor-service ──> monitor-gui
    typed metric/capability contracts     monitor-ipc / monitor-store / monitor-cli
@@ -115,6 +117,19 @@ suite, not only the two that exist today.
   only crate that maps one to a number and calls `kill(2)`. Refusals are data
   the button is rendered from, decided before anything is attempted, by one
   policy function both the real controller and the test fake apply.
+- **A preview is a refusal that carries its reason.** `files-preview` applies
+  the size limit before a provider is called, hands the decoder its own
+  allocation limits, and catches a panicking parser. Every refusal produces a
+  metadata preview with a stable reason key; there is no path that returns
+  nothing and no path that draws an empty pane. This is a boundary, not a
+  sandbox, and `docs/files-preview-policy.md` says which is which.
+- **Search separates provider, ranking, and UI before it needs to.**
+  `files-search` ships one provider — the current location, fed the entries the
+  pane already holds, so searching where you are costs no I/O. `RunDemand` exists
+  so an indexed provider can produce its own candidates instead, which is the
+  seam Issue #6 asks for while the indexed engine is still an open decision.
+  Ordering is decided rather than emergent: match kind dominates, ties break on
+  length and then natural order, and there is no tunable weight anywhere.
 - **Five states, not one number.** Monitor metric contracts distinguish unknown,
   unsupported, permission denied, stale, and zero. Storage distinguishes Ready to
   unplug, Writing, Busy, Performance, and Unknown. Defaults distinguishes eight
@@ -264,6 +279,14 @@ suite, not only the two that exist today.
 - `files-operations` is tested by dropping the owning UI handle mid-job and by
   injecting full disks, permission errors, and a device that disappears
   mid-copy.
+- `files-gui`'s ticket 35 surfaces are tested through three seams and no host:
+  a catalog built from desktop-entry fixture text, `app-catalog-platform`'s own
+  `RecordingSpawner` — so a test that proves a launch proves the production path
+  with only the `fork` replaced — and a fake `DeviceLink` the test drives, which
+  is how a failed mount, a disconnect while viewing, and an unsafe removal are
+  all reachable without a disk. `storage-service`'s client is tested against a
+  real served interface over a private session bus instead, because a proxy in a
+  test says nothing about the one in production.
 - Localized layout coverage extends to every new GUI crate: `zh-TW` and `en-US`
   at 100%, 125%, and 150% scaling, the policy the manager GUI already follows.
 
@@ -296,7 +319,7 @@ suite, not only the two that exist today.
 | Files core | typed location coverage, progressive listing off the render thread, navigation cancellation, symlink loops, encoding, long paths, case conflicts |
 | Files operations | all eight job states, conflict apply-to-remaining, retry and skip, job survives window drop, final-state verification, metadata policy |
 | Files GUI | 100,000-entry progressive render, virtualized scroll frame time, bookmark persistence and reorder, missing-bookmark state, hidden toggle persistence |
-| Files integration | Applications location is not a directory or symlink farm, Open With routes to the chooser, disconnect cleanup, preview cancellation and size limits |
+| Files integration | Applications location is not a directory or symlink farm, launch through the registered desktop definition, Open With routes to the chooser, all five device states in both locales, mount-on-open, disconnect cleanup leaving no history entry, unsafe-removal warning, preview cancellation and size limits and a caught parser panic, search streaming and its own hidden-file rule, manifest validation |
 
 ## Migration plan
 
