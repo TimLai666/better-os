@@ -130,9 +130,20 @@ fn a_single_file_entry_really_starts_one_process_per_file() {
         .launch(&record, None, &targets, None)
         .expect("launch");
     assert_eq!(outcome, LaunchOutcome::Started { processes: 2 });
-    // Each process truncates the file and writes its single argument, so the
-    // recorded file always ends up with exactly one line.
+    // Each process truncates the file and appends its single argument. The
+    // two truncate/append pairs interleave freely, so the surviving file holds
+    // one or two lines — what must hold is that every recorded invocation got
+    // exactly one file argument, never both.
     let recorded = wait_for(&output, 1);
-    assert_eq!(recorded.len(), 1);
-    assert!(recorded[0].ends_with(".txt"));
+    assert!(
+        (1..=2).contains(&recorded.len()),
+        "unexpected: {recorded:?}"
+    );
+    for line in &recorded {
+        assert!(line.ends_with(".txt"), "unexpected argument: {line}");
+        assert!(
+            !line.contains(' '),
+            "two targets reached one process: {line}"
+        );
+    }
 }
