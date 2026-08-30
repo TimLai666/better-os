@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Better Launcher
+Name[zh_TW]=Better Launcher
+GenericName=Application Launcher
+GenericName[zh_TW]=應用程式啟動器
+Comment=Search and browse every installed application in one overlay
+Comment[zh_TW]=在同一個畫面搜尋並瀏覽所有已安裝的應用程式
+# --open, not a bare invocation: clicking a launcher icon opens the launcher
+# and must never be the thing that closes it. The bare command is what the
+# configurable global keyboard shortcut runs, because that one toggles.
+Exec=better-launcher --open
+Icon=better-launcher
+Terminal=false
+StartupNotify=true
+Categories=Utility;System;
+Keywords=launcher;search;applications;
+Keywords[zh_TW]=啟動器;搜尋;應用程式;

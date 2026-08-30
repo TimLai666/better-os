@@ -26,6 +26,12 @@ is a schema fixture for a future component. It is not a v0.1.0 release asset and
 must not be treated as an installable package until that component is
 implemented and included in the package matrix.
 
+`components/manifests/better-launcher.yaml` is in the same position for a
+different reason: the component exists and its binary builds, but
+`packaging/build-deb.sh` does not yet produce a `better-launcher` package, so
+its artifact checksums are placeholders. It is validated on every test run and
+must not be offered for installation until the package matrix includes it.
+
 Optional groups describe replacements, enhancements, dependencies, conflicts,
 health checks, benchmarks, permissions, touched paths, and release notes.
 

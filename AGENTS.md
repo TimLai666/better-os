@@ -75,3 +75,20 @@ GUI or dependency compiles when the relevant command was not executed.
   for a transaction interrupted by a crash or power loss.
 - Align the declared Rust 1.85 baseline with the lockfile dependency MSRV
   before treating Rust 1.85 as a supported build target.
+- Better Launcher is openable and usable but unmeasured. Its manifest defines
+  warm search update, warm overlay open, application-list update, and idle
+  overhead, and no harness runs any of them. Do not claim launcher performance
+  until one does.
+- `packaging/build-deb.sh` builds no `better-launcher` package, so that
+  manifest's artifact checksums are placeholders and the component is not
+  release-eligible. It is validated on every test run; it is not installable.
+- Every Better OS desktop binary links an HTTP client. `gpui-component-assets`
+  depends on `zed-reqwest`, which brings hyper and rustls, so "performs no
+  network request" is provable for Better OS crates and not for the shipped
+  binaries. `crates/launcher-gui/tests/dependencies.rs` states the exception
+  with its one cause. Decide whether the toolkit dependency is acceptable, or
+  whether the assets crate can be dropped, before a release claims otherwise.
+- Better Launcher ships no gesture adapter and Better Defaults does not yet
+  apply its keyboard shortcut, so the only activation paths that work out of
+  the box are the desktop entry and running the binary. ADR 0008 and ticket 30
+  own the first gap; ticket 27 owns the second.

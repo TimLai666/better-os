@@ -1,0 +1,30 @@
+[package]
+name = "launcher-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["session-bus"]
+# The session-bus half of activation: the well-known name a second launch hands
+# its request to, so pressing the shortcut twice toggles one overlay instead of
+# opening a second window. On by default because activation is not optional for
+# this component; a consumer that only wants the capability, launch, and
+# gesture types can still turn it off and link no D-Bus stack.
+session-bus = ["dep:zbus", "dep:tokio"]
+
+[dependencies]
+app-catalog-core.workspace = true
+app-catalog-platform.workspace = true
+launcher-core.workspace = true
+thiserror.workspace = true
+# Matches `awake-service` and `awake-gui`: the workspace has one zbus flavor,
+# and it is the tokio one.
+tokio = { version = "1", features = ["rt-multi-thread", "sync"], optional = true }
+zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }
+
+[dev-dependencies]
+better-core.workspace = true
+tempfile.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
