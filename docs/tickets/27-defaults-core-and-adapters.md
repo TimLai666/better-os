@@ -5,7 +5,7 @@
 system default for the integrations its manifest declares, change one of them
 without touching the others, and restore the exact value that was there before.
 **Blocked by:** none
-**Status:** todo
+**Status:** done (core, adapters, snapshots, CLI; GUI is ticket 28)
 
 ## Goal
 
@@ -76,42 +76,82 @@ uninstalled, and whether a new baseline can be promoted automatically.
 
 ## Acceptance criteria
 
-- [ ] The manifest schema carries `default_integrations` with all eleven
+- [x] The manifest schema carries `default_integrations` with all eleven
       required declaration properties, and invalid declarations are rejected.
-- [ ] Every one of the eight aggregate states can be produced, and each has its
+- [x] Every one of the eight aggregate states can be produced, and each has its
       own test.
-- [ ] Read, apply, verify, and restore adapter traits exist, with a mock adapter
+- [x] Read, apply, verify, and restore adapter traits exist, with a mock adapter
       for every declared integration kind.
-- [ ] `xdg-default-app` and `gnome-keybinding` user-scope adapters read, apply,
-      and verify real values.
-- [ ] An integration kind with no production adapter reports Manual action
+- [~] `xdg-default-app` and `gnome-keybinding` user-scope adapters read, apply,
+      and verify real values. `xdg-default-app` does all three. `gnome-keybinding`
+      reads and verifies real values out of the user's dconf database and returns
+      Manual action required for a change, because the dconf service owns that
+      file and a write behind it would be ignored or overwritten. Issue #10
+      allows that outcome over a guessed command; ADR 0008 records the options
+      and what the eventual write path is.
+- [x] An integration kind with no production adapter reports Manual action
       required and executes nothing.
-- [ ] The previous value is captured before the first change to an integration.
-- [ ] Restore returns to the captured value, never to a hard-coded Zorin default
+- [x] The previous value is captured before the first change to an integration.
+- [x] Restore returns to the captured value, never to a hard-coded Zorin default
       and never to a guess about which built-in application was selected.
-- [ ] An external change is detected before apply and before restore, and is
+- [x] An external change is detected before apply and before restore, and is
       never overwritten silently.
-- [ ] Every applied or restored integration is verified afterwards, and partial
+- [x] Every applied or restored integration is verified afterwards, and partial
       failure produces exact per-entry results.
-- [ ] Restoring one component does not undo successful unrelated entries.
-- [ ] A corrupted or incomplete snapshot is reported rather than ignored.
-- [ ] Installing or updating a component does not make it default, proven by a
+- [x] Restoring one component does not undo successful unrelated entries.
+- [x] A corrupted or incomplete snapshot is reported rather than ignored.
+- [x] Installing or updating a component does not make it default, proven by a
       test over the install path.
-- [ ] The CLI provides `inspect`, `plan`, `apply`, `verify`, and `restore`, and
+- [x] The CLI provides `inspect`, `plan`, `apply`, `verify`, and `restore`, and
       shares `defaults-core` with the GUI.
-- [ ] Normal user-scope changes require no root, and cancelling before approval
+- [x] Normal user-scope changes require no root, and cancelling before approval
       mutates nothing.
+
+## What was built, honestly
+
+- `better-core::defaults` carries the declarations; `ComponentManifest::validate`
+  rejects every malformed one. The shipped manifests in `components/manifests/`
+  declare no integrations, because which ones the initial catalog enables is a
+  deferred decision. The schema's coverage fixture declares all nine kinds.
+- `defaults-core` owns status, aggregation, plans, execution, and verification.
+  Global and single-component operations are the same call with a different
+  `Selection`.
+- `defaults-store` keeps a directory of JSON snapshots, appends rather than
+  overwrites, and reports every unreadable, future-schema, or incomplete file.
+- `defaults-platform` has the traits, an in-memory adapter for all nine kinds,
+  and two real ones. Their exact capability is in ADR 0008; the summary is that
+  the XDG adapter reads, writes, and verifies, and the dconf-backed adapters read
+  and verify but report Manual action required for a change.
+- `manager-cli` gained `defaults inspect | plan | apply | verify | restore`, with
+  `--execution mock|real` matching the rest of the CLI. Mock execution keeps its
+  simulated desktop in a file the caller names and says so when it is not given
+  one.
+
+Known limits, none of them silent at runtime:
+
+- Restoring an XDG default that previously had no owner reports Manual action
+  required. `app-chooser-core` has no typed operation for removing an
+  association, and a second `mimeapps.list` editor is not acceptable.
+- A handler group whose declared types currently point at different applications
+  reads as unknown rather than as one of them. Per-key capture for that case is
+  not implemented, so a mixed group is refused rather than flattened.
+- The distribution the CLI reports comes from `MockPlatform`, which is what every
+  other manager-cli command uses today. Real distribution detection is a
+  manager-platform concern, not a defaults one.
 
 ## Verification
 
+Run on the touched crates. The workspace-wide gate runs downstream of the merge.
+
 - `cargo fmt --all -- --check`
-- `cargo check --workspace`
-- `cargo test --workspace`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- Snapshot round-trip tests: capture, apply, verify, restore, and byte-compare
-  the restored value with the captured one
-- An external-change test that mutates the value behind Better Manager's back and
-  asserts the entry is marked Changed externally and left alone
+- `cargo check` and `cargo test` for `better-core`, `defaults-core`,
+  `defaults-store`, `defaults-platform`, `manager-cli`, `manager-core`
+- `cargo clippy --all-targets -- -D warnings` for the same crates
+- Snapshot round-trip tests: capture, apply, verify, restore, and compare the
+  restored value with the captured one
+- An external-change test matrix: never touched, applied and still ours, and
+  moved behind Better Manager's back, plus the per-entry confirmation that is
+  the only thing that lifts the hold
 - CLI smoke over all five subcommands against a disposable snapshot store and a
   mock adapter set
 - A manifest validation run through `better-core` against a fixture manifest

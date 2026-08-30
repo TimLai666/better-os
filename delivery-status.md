@@ -634,3 +634,50 @@ monitor-gui`, all passing. `monitor-gui` was updated only far enough to speak
 the new contract and still renders a fixed demonstration round. The full
 workspace gate has not run on this branch and belongs on the main checkout after
 merge. That full workspace gate ran on `main` immediately after this merge.
+
+Ticket 27 built the Better Defaults engine below the UI: manifest declarations,
+typed snapshots, adapter traits, the first real adapters, aggregate status, and
+CLI equivalents. Three crates are new — `defaults-core` (status, aggregation,
+plans, execution, verification), `defaults-store` (snapshot history), and
+`defaults-platform` (adapter traits and adapters) — and `better-core` gained a
+`default_integrations` manifest group with full rejection coverage.
+
+All eight aggregate states are produced and tested separately, and the per
+integration detail stays available underneath each one. Global and single
+component operations are the same planning call with a different selection, so
+there is no second path that could skip the read-before-write. An entry whose
+value moved after Better Manager last wrote or verified it is held back until
+that exact entry is confirmed, and confirming one confirms nothing else.
+
+Two production adapters ship, and they are not equally capable. `xdg-default-app`
+reads, writes, and verifies the user's `mimeapps.list` through
+`app-chooser-core`, so there is still exactly one editor for that file. The
+GNOME adapters read and verify real typed values out of the user's dconf
+database through a GVDB parser written for this ticket, and return Manual action
+required for a change: the dconf service owns that file and a write behind it is
+ignored or overwritten. Issue #10 allows that outcome over a guessed command.
+ADR 0008 records the three options weighed and names the D-Bus write path as the
+eventual answer. Two smaller limits are equally explicit at runtime: restoring an
+XDG default that previously had no owner reports Manual action required, and a
+handler group whose types currently disagree reads as unknown rather than being
+flattened into one owner.
+
+The shipped manifests in `components/manifests/` still declare no integrations,
+because which ones the initial catalog enables is a deferred decision in
+Issue #10. The schema is proven instead against a fixture declaring one
+integration of all nine kinds, and the CLI takes `--manifest` so a catalog can be
+supplied.
+
+119 tests pass across the touched crates: 35 in `better-core`, 39 in
+`defaults-core`, 11 in `defaults-store`, 29 in `defaults-platform`, and 5 CLI
+tests that run the shipped binary end to end. The dconf parser is tested against
+a fixture database `dconf compile` produced rather than one this repository
+invented.
+
+Gates for ticket 27 were crate-scoped to avoid rebuilding GPUI in the worktree:
+`cargo fmt --all -- --check`, then `cargo check`, `cargo test`, and
+`cargo clippy --all-targets -- -D warnings` for `better-core`, `defaults-core`,
+`defaults-store`, `defaults-platform`, `manager-cli`, and `manager-core`, all
+passing. The full workspace gate has not run on this branch and belongs on the
+main checkout after merge. `manager-gui` is untouched; the Defaults screens are
+ticket 28, which consumes `defaults-core` unchanged.

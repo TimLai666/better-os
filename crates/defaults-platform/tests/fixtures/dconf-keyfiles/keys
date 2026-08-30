@@ -1,0 +1,19 @@
+# Source keyfile for tests/fixtures/dconf/user.
+#
+# The binary fixture beside it was produced by `dconf compile`, so the parser is
+# tested against a database GNOME's own tooling wrote rather than one this
+# repository invented. Regenerate with:
+#
+#   dconf compile tests/fixtures/dconf/user tests/fixtures/dconf-keyfiles
+[org/gnome/settings-daemon/plugins/media-keys]
+home=['<Super>e']
+www=['<Super>b', '<Super>w']
+
+[org/gnome/desktop/wm/keybindings]
+close=@as []
+
+[org/gnome/nautilus/preferences]
+show-image-thumbnails='always'
+
+[org/gnome/desktop/interface]
+enable-animations=false

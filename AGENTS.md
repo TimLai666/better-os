@@ -72,3 +72,18 @@ GUI or dependency compiles when the relevant command was not executed.
   for a transaction interrupted by a crash or power loss.
 - Align the declared Rust 1.85 baseline with the lockfile dependency MSRV
   before treating Rust 1.85 as a supported build target.
+- Give the GNOME defaults adapters a real write path through the
+  `ca.desrt.dconf` D-Bus service. They read and verify real values today and
+  report Manual action required for a change; ADR 0008 records why and what the
+  write path needs.
+- Decide whether `app-chooser-core` should offer a typed "remove this
+  association" operation. Without one, restoring an XDG default that previously
+  had no owner reports Manual action required rather than clearing the line, and
+  no second `mimeapps.list` editor may be written.
+- Capture a handler group's previous value per declared type. A group whose
+  types currently point at different applications reads as unknown and is
+  refused rather than flattened into one owner, which is safe but coarse.
+- Decide which default integrations the shipped component manifests declare.
+  Issue #10 defers it; the schema is proven against a fixture instead, so
+  `better-manager defaults inspect` reports nothing against the built-in
+  catalog.

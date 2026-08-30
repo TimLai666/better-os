@@ -7,6 +7,9 @@ members = [
     "crates/app-chooser-gui",
     "crates/better-core",
     "crates/better-ui",
+    "crates/defaults-core",
+    "crates/defaults-platform",
+    "crates/defaults-store",
     "crates/manager-core",
     "crates/manager-ipc",
     "crates/manager-platform",
@@ -33,6 +36,9 @@ app-chooser-core = { path = "crates/app-chooser-core" }
 app-chooser-gui = { path = "crates/app-chooser-gui" }
 better-core = { path = "crates/better-core" }
 better-ui = { path = "crates/better-ui" }
+defaults-core = { path = "crates/defaults-core" }
+defaults-platform = { path = "crates/defaults-platform" }
+defaults-store = { path = "crates/defaults-store" }
 manager-core = { path = "crates/manager-core" }
 manager-ipc = { path = "crates/manager-ipc" }
 manager-platform = { path = "crates/manager-platform" }

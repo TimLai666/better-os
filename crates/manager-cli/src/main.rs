@@ -1,3 +1,5 @@
+mod defaults;
+
 use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
 use clap::{Parser, Subcommand, ValueEnum};
 use manager_core::exec::{
@@ -78,6 +80,13 @@ enum Command {
     Activity {
         #[arg(long)]
         clear: bool,
+    },
+    /// Inspect and change which component owns each declared system default.
+    Defaults {
+        #[command(flatten)]
+        options: defaults::DefaultsOptions,
+        #[command(subcommand)]
+        command: defaults::DefaultsCommand,
     },
 }
 
@@ -532,6 +541,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for check in manager.doctor(&state)? {
                 println!("{:?} {:?} {:?}", check.kind, check.status, check.component);
             }
+        }
+        Command::Defaults { options, command } => {
+            let mode = execution_mode(cli.execution, false, false)?;
+            defaults::run(
+                command,
+                options,
+                mode,
+                &manager.profile().distribution.clone(),
+                &state,
+                load_catalog()?,
+            )?;
         }
         Command::Activity { clear } => {
             if clear {
