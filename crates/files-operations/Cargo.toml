@@ -1,0 +1,27 @@
+[package]
+name = "files-operations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+files-core.workspace = true
+# The trash write side lives with the trash read side rather than beside it, so
+# the workspace holds one implementation of the freedesktop layout.
+files-platform.workspace = true
+# Sparse-file probing (`SEEK_HOLE`/`SEEK_DATA`), extended attributes, and
+# nanosecond timestamp preservation have no `std` equivalent. `libc` is the
+# smallest binding that exposes them, the same reason `storage-platform` and
+# `monitor-actions-linux` depend on it.
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bench]]
+name = "operations"
+harness = false

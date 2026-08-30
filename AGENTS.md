@@ -108,6 +108,22 @@ GUI or dependency compiles when the relevant command was not executed.
 - Capture a handler group's previous value per declared type. A group whose
   types currently point at different applications reads as unknown and is
   refused rather than flattened into one owner, which is safe but coarse.
+- Better Files runs its operations as durable jobs now: `files-operations` owns
+  copy, move, duplicate, rename, bulk rename, trash, restore, permanent delete,
+  and checksum, and a job survives every handle to it being dropped. Four gaps
+  are open and should not be assumed closed. Archive and extract are not built.
+  The trash has no per-device `.Trash-$uid`, so a deletion on a removable disk
+  copies into the home trash. Hard links are not preserved between separately
+  copied files. And a job record is a full rewrite rather than a journal, which
+  is 17.5 MB at 10,001 items and grows linearly, so a job of a million items
+  needs an append-only item journal first.
+- Decide whether a Better Files job should survive a logout or a reboot, and
+  where the Better Copy boundary sits. Issue #6 defers both; persistence today
+  covers a UI restart only.
+- Measure Better Files copy performance against real hardware before claiming
+  it. Every published number is a page-cache number from an ext4 temporary
+  directory: no spinning disk, no USB device with `fsync` per file, and no
+  network share has been measured.
 - Decide which default integrations the shipped component manifests declare.
   Issue #10 defers it; the schema is proven against a fixture instead, so
   `better-manager defaults inspect` reports nothing against the built-in

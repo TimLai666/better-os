@@ -2033,6 +2033,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "files-operations"
+version = "0.1.0"
+dependencies = [
+ "files-core",
+ "files-platform",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "files-platform"
 version = "0.1.0"
 dependencies = [
