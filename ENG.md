@@ -21,6 +21,92 @@ packages stay in the build environment and are never a user installation
 prerequisite.
 ```
 
+## Component suite architecture
+
+Tickets 18 through 35 expand the workspace from Better Manager alone to the
+full component suite. Two crates are shared infrastructure that several
+components read, and neither may be reimplemented by a consumer.
+
+```text
+app-catalog-core ──> app-catalog-platform      one desktop-entry scanner, shared
+   ApplicationRecord   XDG discovery, watching, launching
+        │
+        ├──> app-chooser-core ──> app-chooser-gui      MIME ranking, AppSelection
+        ├──> launcher-core ──────> launcher-platform ──> launcher-gui
+        │       index, matching, deterministic ranking
+        └──> files-core ─────────> files-gui           Applications location
+
+storage-core ──> storage-platform ──> storage-service ──> files-gui
+   device identity, Direct Removal policy, state machine, typed device states
+
+files-core ──> files-platform ──> files-operations ──> files-gui
+   typed locations   fs/XDG/MIME/trash   durable job engine   window, views
+
+monitor-core ──> monitor-collectors-linux ──> monitor-service ──> monitor-gui
+   typed metric/capability contracts     monitor-ipc / monitor-store / monitor-cli
+
+awake-core ──> awake-platform ──> awake-service ──> awake-ipc ──┬── awake-tray
+   sessions, policies, trigger rules   owns inhibitors          └── awake-gui
+                                       awake-store
+
+touchpad-core ──> touchpad-platform ──> touchpad-gui
+   versioned config     device/session adapters
+touchpad-gestures ──> touchpad-session ──> better-actions ──> launcher-gui
+   gesture model, preset, conflicts    typed desktop actions
+
+defaults-core ──> defaults-platform ──> defaults-store ──> manager-gui / CLI
+   declarations, aggregate status, plans   typed adapters   snapshots + history
+```
+
+`better-ui` provides GPUI presentation primitives to every GUI crate in the
+suite, not only the two that exist today.
+
+## Component seams
+
+- **One catalog, no second scanner.** `app-catalog-core` and
+  `app-catalog-platform` are the only place a `.desktop` file is parsed. The
+  chooser, the launcher index, and the Applications location consume records.
+  Desktop entries are untrusted input and are validated before any consumer sees
+  them, the same way `better-core` treats a component manifest.
+- **Launching never builds a shell string.** Every component that starts an
+  application goes through the shared platform launch path, which uses the
+  registered desktop definition, honors D-Bus activation, and validates targets.
+  Executable resolution is a reported status; a Flatpak, Snap, wrapper, or
+  D-Bus-activated entry has no fabricated executable path.
+- **A location is a type, not a path.** `files-core` carries a typed location and
+  URI abstraction. Trash, Recent, Applications, external devices, and future
+  network locations are representable without any of them being a special-cased
+  `PathBuf`.
+- **Jobs outlive windows.** `files-operations` owns copy, move, trash, restore,
+  and delete as durable jobs with persisted state. A closed or crashed window
+  never leaves a job in an unknowable state.
+- **Collection outlives the GUI.** `monitor-service` owns historical collection,
+  and `monitor-gui` reads through `monitor-ipc`. The GUI does not scrape `/proc`,
+  run a shell pipeline, or hold a privileged handle.
+- **Five states, not one number.** Monitor metric contracts distinguish unknown,
+  unsupported, permission denied, stale, and zero. Storage distinguishes Ready to
+  unplug, Writing, Busy, Performance, and Unknown. Defaults distinguishes eight
+  aggregate states. In all three, an unverifiable condition is reported, never
+  rendered as a reassuring value.
+- **The service owns the token.** `awake-service` holds the inhibitor;
+  `awake-tray` and `awake-gui` are clients that can restart without ending a
+  session. The tray executes no shell command.
+- **The desktop is changed through typed adapters.** `defaults-platform` and
+  `touchpad-platform` expose read, apply, and verify as traits returning typed
+  values. GPUI code never invokes `gsettings`, `xdg-mime`, or a shell command,
+  and an integration kind with no production adapter reports manual action
+  required rather than guessing.
+- **Capture before the first mutation.** Defaults snapshots, touchpad backups,
+  and MIME association rollback records are all written before the first change
+  to a setting, and restore returns to the captured value rather than a guessed
+  factory default. Reading the effective state again before applying is how an
+  external change is detected instead of overwritten.
+- **Gesture logic stays in Rust core crates.** `touchpad-gestures` owns the
+  model, preset, and conflict detection; `touchpad-session` is a narrow adapter
+  that invokes typed `better-actions` and never accepts an arbitrary shell
+  string from configuration. The launcher's gesture seam is the same boundary
+  seen from the other side.
+
 ## Data flow
 
 1. The CLI or GUI loads manifests from the catalog.
@@ -75,6 +161,29 @@ prerequisite.
   long-label layout policy.
 - GUI crates depend on the shared core crates; launch smoke coverage runs in an
   environment with a display backend.
+- `app-catalog-core` is tested through recorded desktop-entry fixture trees, so
+  every visibility, normalization, and rejection rule is asserted without the
+  host's installed applications. Its benchmarks use a 5,000-record synthetic
+  catalog rather than whatever happens to be installed.
+- `launcher-core` is the ranking seam. Its determinism and latency tests run
+  with no display backend at all, which is the point of keeping GPUI out of it.
+- Monitor collectors are tested against recorded `/proc` and `/sys` fixture
+  trees. A live host proves nothing repeatable about a parser.
+- `storage-core` is tested by replaying recorded UDisks2 and kernel event
+  sequences through the state machine, including every failure case, because
+  unplugging a real disk mid-write is not a test that can run in CI.
+- `awake-service` is tested through a fake inhibitor backend for acquire,
+  verify, lost-inhibitor, and release, plus a private session-bus test of the
+  StatusNotifierItem registration — the same shape as the `manager-daemon`
+  D-Bus tests.
+- `defaults-platform` ships a mock adapter for every declared integration kind,
+  so aggregate status, partial failure, and external-change detection are all
+  provable before a real adapter exists for that kind.
+- `files-operations` is tested by dropping the owning UI handle mid-job and by
+  injecting full disks, permission errors, and a device that disappears
+  mid-copy.
+- Localized layout coverage extends to every new GUI crate: `zh-TW` and `en-US`
+  at 100%, 125%, and 150% scaling, the policy the manager GUI already follows.
 
 ## Test matrix
 
@@ -89,6 +198,20 @@ prerequisite.
 | Monitor | sample storage, incident creation, export redaction boundary |
 | GUI | workspace build and launch smoke test on a Linux desktop, manifest-driven presentation, appearance default and migration |
 | Release package | no `*-dev` in `Depends`, clean APT install, dynamic-library check, manager and monitor launch |
+| App catalog | XDG discovery, each exclusion rule separately, malformed entry rejection, change watching, launch argument vector, 5,000-record benchmarks |
+| App chooser | MIME section ranking, Open Once side-effect freedom, single-association `mimeapps.list` diff, rollback byte equality, executable-mode refusals |
+| Launcher | matching per input field, exact/prefix over fuzzy, ranking determinism, query-driven browse/search switch, p95 query latency, no-GPUI dependency assertion |
+| Monitor collectors | fixture-tree semantics per collector, five distinct metric states, irregular sampling intervals, per-collector overhead, source traceability records |
+| Monitor views | grouping evidence and its refusals, virtualized tables at 10,000 processes, each process action and each refusal, unsupported-page honesty |
+| Monitor history | collection after GUI close, store migration and corrupted-tail recovery, retention bounds, seeded-secret export redaction, CLI subcommands |
+| Awake | session survives tray restart, default policy, inhibitor acquire/verify/lost/release, rule AND/OR evaluation and reason merging, battery stop, tray label fit |
+| Defaults | all eight aggregate states, snapshot round-trip byte equality, external-change detection, per-entry partial failure, install does not make default |
+| Touchpad | apply and read-back per control, unsupported-control presentation, config migration, gesture recognizer replay, GNOME conflict detection, no shell string reachable |
+| Storage | Direct Removal default for unseen devices, readiness never claimed with pending writes, identity survives reconnect, duplicate identifiers, event-driven observation |
+| Files core | typed location coverage, progressive listing off the render thread, navigation cancellation, symlink loops, encoding, long paths, case conflicts |
+| Files operations | all eight job states, conflict apply-to-remaining, retry and skip, job survives window drop, final-state verification, metadata policy |
+| Files GUI | 100,000-entry progressive render, virtualized scroll frame time, bookmark persistence and reorder, missing-bookmark state, hidden toggle persistence |
+| Files integration | Applications location is not a directory or symlink farm, Open With routes to the chooser, disconnect cleanup, preview cancellation and size limits |
 
 ## Migration plan
 

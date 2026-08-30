@@ -2,14 +2,23 @@
 
 ## Current Phase
 
-Better Manager applies real component transactions, including rollback after a
-real mutation failure
+Expanding Better OS from Manager to the full component suite
+
+The previous phase — Better Manager applying real component transactions,
+including rollback after a real mutation failure — is complete through
+milestone M20.
 
 ## Stage Objective
 
-Turn Better Manager from a planning-only tool into one that actually installs,
-updates, removes, and rolls back first-party components, without weakening the
-boundary that keeps privileged mutation out of the GUI and CLI.
+Build the components Better Manager exists to install: the shared application
+catalog, Better Launcher, Better Monitor's real collectors, Better Awake,
+Better Defaults, Better Touchpad, safe direct-removal external storage, and
+Better Files — each independently versioned, each honest about what it cannot
+observe or change, and none of them reimplementing what another already owns.
+
+The previous objective is met: Better Manager installs, updates, removes, and
+rolls back first-party components without weakening the boundary that keeps
+privileged mutation out of the GUI and CLI.
 
 ## Active Workstreams
 
@@ -20,6 +29,14 @@ boundary that keeps privileged mutation out of the GUI and CLI.
 - Monitor observation contracts
 - Release packaging contract, clean-install verification, and license notices
 - Privileged daemon IPC contract, real artifact download, and APT execution
+- Shared application catalog and Better App Chooser (Issue #4)
+- Better Launcher unified overlay (Issue #2)
+- Better Monitor real collectors, task manager, and history (Issue #16)
+- Better Awake tray sessions and trigger rules (Issue #13)
+- Better Defaults preview, apply, and restore (Issue #10)
+- Better Touchpad control center and Mac-style gestures (Issue #3)
+- Safe direct-removal external storage (Issue #5)
+- Better Files file manager (Issue #6)
 
 ## Milestones
 
@@ -45,6 +62,29 @@ boundary that keeps privileged mutation out of the GUI and CLI.
 | M18 | four-way packaging matrix on CI | agent | done | CI run 30688730458: build, verify, and container end-to-end passed on ubuntu 22.04/24.04 × amd64/arm64 |
 | M19 | authorized transaction verified end to end | agent | done | real apt install and removal through the service, confirmed against dpkg; a deadlock in the D-Bus client found and fixed |
 | M20 | rollback target correctness and mutation-failure coverage | agent | done | installed-artifact record replaces the guessed rollback target; container run proved a failed update reinstalls 0.0.9, not the version that just failed |
+| M21 | ticket 18 — shared app catalog core and platform | agent | todo | workspace gate plus 5,000-record catalog benchmarks and a launch argument-vector smoke |
+| M22 | ticket 19 — Better App Chooser (needs M21) | agent | todo | workspace gate plus a `mimeapps.list` single-association diff and rollback byte equality |
+| M23 | ticket 20 — launcher-core index and ranking (needs M21) | agent | todo | workspace gate plus query latency p95 under 50 ms on 5,000 synthetic records |
+| M24 | ticket 21 — launcher overlay, activation, gesture ADR (needs M23) | agent | todo | workspace gate plus headless overlay smoke, manifest validation, and the gesture-options ADR |
+| M25 | ticket 22 — monitor metric contracts and Linux collectors | agent | todo | workspace gate plus fixture-tree collector tests and per-collector overhead benchmarks |
+| M26 | ticket 23 — Apps, Processes, actions, real Overview (needs M25) | agent | todo | workspace gate plus the 10,000-process table benchmark and locale/scaling overflow tests |
+| M27 | ticket 24 — monitor service, history, incidents, export, CLI (needs M25) | agent | todo | workspace gate plus collection-after-GUI-close smoke and a seeded-secret export test |
+| M28 | ticket 25 — Better Awake tray-first manual sessions | agent | todo | workspace gate plus a private session-bus tray test and a tray-restart session survival test |
+| M29 | ticket 26 — Awake full application and trigger rules (needs M28) | agent | todo | workspace gate plus rule-engine evaluation tests and an uninstall smoke releasing inhibitors |
+| M30 | ticket 27 — defaults core, adapters, snapshots, CLI | agent | todo | workspace gate plus snapshot round-trip and external-change detection tests |
+| M31 | ticket 28 — Manager Defaults GUI review flows (needs M30) | agent | todo | workspace gate plus a preview-before-mutation assertion and locale/scaling overflow tests |
+| M32 | ticket 29 — Better Touchpad pointer, scrolling, clicking, devices | agent | todo | workspace gate plus apply-and-read-back tests per control and input-latency benchmarks |
+| M33 | ticket 30 — Mac-style gestures, typed actions, backend ADR (needs M32) | agent | todo | workspace gate plus recognizer replay tests, conflict detection, and the gesture backend ADR |
+| M34 | ticket 31 — safe direct-removal external storage | agent | todo | workspace gate plus event-sequence state-machine tests and flush-completion benchmarks |
+| M35 | ticket 32 — files-core typed locations and navigation (needs M21, M34) | agent | todo | workspace gate plus 100,000-entry listing benchmarks and a navigation cancellation test |
+| M36 | ticket 33 — files-operations durable job engine (needs M35) | agent | todo | workspace gate plus a job-survives-window-drop test and copy/move benchmarks |
+| M37 | ticket 34 — files-gui window, sidebar, views, operations (needs M36) | agent | todo | workspace gate plus the 100,000-entry progressive render benchmark and bookmark persistence tests |
+| M38 | ticket 35 — Applications, devices, preview, search, benchmarks (needs M22, M37) | agent | todo | workspace gate plus the full Better Files benchmark harness and manifest validation |
+
+Every milestone from M21 onward shares the same base gate: `cargo fmt --all --
+--check`, `cargo check --workspace`, `cargo test --workspace`, and `cargo clippy
+--workspace --all-targets -- -D warnings`. The signal column names only what
+each ticket adds on top.
 
 ## Current Blockers
 
@@ -83,14 +123,28 @@ policy still needs alignment.
 
 ## Next Verifiable Output
 
-None outstanding. The next change should be scoped to a new ticket or to one of
-the recorded follow-ups: package signing, the public APT repository, a repair
-action for a transaction interrupted mid-flight, or aligning the declared Rust
-baseline with what the lockfile actually requires.
+`app-catalog-core` and `app-catalog-platform` discovering real XDG desktop
+applications, with the 5,000-record synthetic benchmarks reported and a launch
+smoke proving the argument vector was never shell-interpreted.
+
+The Better Manager follow-ups remain open and unscheduled: package signing, the
+public APT repository, a repair action for a transaction interrupted mid-flight,
+and aligning the declared Rust baseline with what the lockfile actually
+requires.
 
 ## Next Ticket
 
-None — tickets 09 through 17 are complete.
+18-app-catalog. It has no blockers, and four later tickets depend on it: the
+chooser (19), the launcher index (20), and the Better Files core and
+integration tickets (32 and 35). Nothing in the suite should parse a `.desktop`
+file before it lands.
+
+Tickets 01 through 17 are complete. Tickets 18 through 35 are cut from issues
+#2, #3, #4, #5, #6, #10, #13, and #16 and are all `todo`. Their dependency
+edges, in ticket order: 19 needs 18; 20 needs 18; 21 needs 20; 23 and 24 both
+need 22; 26 needs 25; 28 needs 27; 30 needs 29; 32 needs 18 and 31; 33 needs
+32; 34 needs 33; 35 needs 19 and 34. Tickets 18, 22, 25, 27, 29, and 31 have no
+blockers and can start in parallel.
 
 ## Decision Log
 
@@ -218,7 +272,15 @@ None — tickets 09 through 17 are complete.
 ## Source Links
 
 - [Issue #1](https://github.com/TimLai666/better-os/issues/1)
+- [Issue #2: Better Launcher](https://github.com/TimLai666/better-os/issues/2)
+- [Issue #3: Better Touchpad](https://github.com/TimLai666/better-os/issues/3)
+- [Issue #4: Applications view and Better App Chooser](https://github.com/TimLai666/better-os/issues/4)
+- [Issue #5: Safe direct-removal external storage](https://github.com/TimLai666/better-os/issues/5)
+- [Issue #6: Better Files](https://github.com/TimLai666/better-os/issues/6)
 - [Issue #8](https://github.com/TimLai666/better-os/issues/8)
+- [Issue #10: Better Defaults](https://github.com/TimLai666/better-os/issues/10)
+- [Issue #13: Better Awake](https://github.com/TimLai666/better-os/issues/13)
+- [Issue #16: Better Monitor](https://github.com/TimLai666/better-os/issues/16)
 - [ENG.md](ENG.md)
 - [Architecture](docs/architecture.md)
 - [Release packaging](docs/release-packaging.md)
@@ -423,3 +485,19 @@ combinations. Every one reached the new rollback scenarios: a real failed update
 ended with dpkg back at the previous version and the installed-artifact record
 pointing at the previous artifact, on ubuntu 22.04 and 24.04, amd64 and native
 arm64.
+
+Tickets 18 through 35 were cut from the eight open component issues. The cut is
+by deliverable, not by crate layer: each ticket is something a user or a
+consuming component can actually use, and the crate boundaries follow from that
+rather than the other way around. Every first-implementation-scope item in each
+issue is placed in exactly one ticket, and each ticket carries a deferred-
+decisions note naming the ADRs its issue demands instead of a silent choice.
+
+Two tickets are shared infrastructure that everything else waits on: ticket 18
+is the single desktop-entry scanner for the whole suite, and ticket 31 is the
+external-storage layer Better Files reads rather than reimplements. Neither has
+a blocker, and both should land before their consumers start.
+
+No implementation code was written in this round. The workspace still contains
+the eleven Manager and Monitor crates; every crate named in tickets 18 through
+35 is planned, not present.
