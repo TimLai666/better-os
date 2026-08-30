@@ -79,9 +79,17 @@ GUI or dependency compiles when the relevant command was not executed.
   warm search update, warm overlay open, application-list update, and idle
   overhead, and no harness runs any of them. Do not claim launcher performance
   until one does.
-- `packaging/build-deb.sh` builds no `better-launcher` package, so that
-  manifest's artifact checksums are placeholders and the component is not
-  release-eligible. It is validated on every test run; it is not installable.
+- `packaging/build-deb.sh` builds no `better-launcher` or `better-awake`
+  package, so those manifests' artifact checksums are placeholders and neither
+  component is release-eligible. Both are validated on every test run; neither is
+  installable, so no uninstall smoke has ever run for either.
+- Better Awake detects nine of Issue #13's eleven trigger kinds. Fullscreen
+  needs a compositor adapter and reports itself unavailable; audio reads ALSA and
+  cannot see Bluetooth or network sinks. Both limits are recorded in ADR 0010 and
+  in the provider modules. Do not claim full trigger coverage.
+- A Better Awake low-battery stop writes a history entry and prints to stderr.
+  The desktop notification belongs to the tray and is not wired, so a stop is
+  visible in the log and in History but does not raise a notification.
 - Every Better OS desktop binary links an HTTP client. `gpui-component-assets`
   depends on `zed-reqwest`, which brings hyper and rustls, so "performs no
   network request" is provable for Better OS crates and not for the shipped

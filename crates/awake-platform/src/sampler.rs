@@ -166,17 +166,6 @@ impl ProviderSet {
         observations
     }
 
-    /// Samples one provider whatever its cadence says, used when a rule was just
-    /// edited and its answer is wanted now rather than at the next interval.
-    pub fn sample_now(&mut self, kind: ProviderKind, now_unix_seconds: u64) -> Observations {
-        let mut observations = self.previous.clone();
-        observations.sampled_at_unix_seconds = now_unix_seconds;
-        self.sample_one(kind, now_unix_seconds, &mut observations);
-        self.last_sampled.insert(kind, now_unix_seconds);
-        self.previous = observations.clone();
-        observations
-    }
-
     /// Samples every provider regardless of cadence. Used by the rule editor's
     /// test mode, which must give an answer now, and by Diagnostics.
     pub fn sample_all(&mut self, now_unix_seconds: u64) -> Observations {

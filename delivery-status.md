@@ -70,7 +70,7 @@ privileged mutation out of the GUI and CLI.
 | M26 | ticket 23 — Apps, Processes, actions, real Overview (needs M25) | agent | done | workspace gate green; 10,000-process benchmark published (adopt a round 1.7 ms, group into applications 12.4 ms); locale/scaling overflow tests pass in both languages at 100/125/150%; a real child process was stopped, resumed, reniced, and terminated through the typed action interface |
 | M27 | ticket 24 — monitor service, history, incidents, export, CLI (needs M25) | agent | todo | workspace gate plus collection-after-GUI-close smoke and a seeded-secret export test |
 | M28 | ticket 25 — Better Awake tray-first manual sessions | agent | done | crate-scoped fmt/check/test/clippy gates, 142 tests including 11 private session-bus tests, a tray-restart session survival test, and an 8 s headless `awake-gui` smoke |
-| M29 | ticket 26 — Awake full application and trigger rules (needs M28) | agent | todo | workspace gate plus rule-engine evaluation tests and an uninstall smoke releasing inhibitors |
+| M29 | ticket 26 — Awake full application and trigger rules (needs M28) | agent | done, except the uninstall smoke | crate-scoped fmt/check/test/clippy gates across all seven awake crates, 401 tests, an 8 s headless `awake-gui` smoke, and a battery stop driven from a `/sys` fixture through the real providers. The uninstall smoke did not run: no `better-awake` package is built |
 | M30 | ticket 27 — defaults core, adapters, snapshots, CLI | agent | done | crate-scoped fmt/check/test/clippy gates, 119 tests including snapshot round-trip, external-change matrix, all eight aggregate states, GVDB dconf read fixtures, and five CLI subcommands; full workspace gate ran after merge |
 | M31 | ticket 28 — Manager Defaults GUI review flows (needs M30) | agent | todo | workspace gate plus a preview-before-mutation assertion and locale/scaling overflow tests |
 | M32 | ticket 29 — Better Touchpad pointer, scrolling, clicking, devices | agent | todo | workspace gate plus apply-and-read-back tests per control and input-latency benchmarks |
@@ -736,6 +736,55 @@ Not done in Phase 1 and named in the ticket: the battery provider behind the
 threshold, the rule engine the `自動規則` row disables itself for, packaging
 (desktop entry, systemd user unit, Better Manager manifest), icon artwork for
 the six states, and idle CPU/memory measurement for the two processes.
+
+### Ticket 26 — Better Awake full application and trigger rules
+
+One new crate is on branch `ticket-26`: `awake-platform`, the seam ENG.md
+already named. `awake-core`, `awake-ipc`, `awake-store`, `awake-service`,
+`awake-tray`, and `awake-gui` were extended rather than rewritten. Outside them,
+only the workspace member list, the new manifest and packaging files, ADR 0010,
+the ticket, and this file changed.
+
+Rules are data with a closed condition set, so there is no shape a shell command
+could take even if something tried to build one — that is the enforcement of
+Issue #13's rule, not a convention on top of a general type. Evaluation is
+three-valued: a provider that cannot be read produces unknown, which never
+becomes true and never becomes a silent false, so the rule editor can say which
+provider stopped a rule instead of showing it as simply not matching.
+
+Priority orders presentation and names the winner of a disagreement. It never
+weakens a protection: the battery threshold that stops first wins whatever the
+priorities say, and there is a test that a rule with priority 99 asking to stop
+at 5% loses to a rule with priority 1 asking for 40%.
+
+Nine of Issue #13's eleven providers work. Fullscreen reports itself unavailable
+naming the compositor adapter it would need; ADR 0010 records why an X11-only
+implementation was rejected on a Wayland default and why a GNOME Shell extension
+is not something this component can ship or verify. Audio works through ALSA and
+does not see Bluetooth sinks, which is written down rather than glossed.
+
+Two things were found by tests rather than by review, and both were real. The
+battery provider was only read when some rule mentioned the battery, which made
+a safety guarantee depend on what the user happened to write; power is now read
+on every pass regardless of the rules. And the history redaction had an
+exemption for a reason consisting of a single token, which let a bare path
+through — the commonest shape a leaked path takes. Both are fixed with a test
+naming the failure.
+
+Gates were run crate-scoped, because a workspace-wide run rebuilds the GPUI
+world for each command. `cargo fmt --all -- --check` passed across the whole
+workspace; check, test, and clippy `-D warnings` passed for all seven awake
+crates (401 tests, 11 of them on a private session bus); the built `awake-gui`
+binary stayed alive for 8 seconds under `ZED_HEADLESS=1`. The full workspace
+gates have not been run and should run downstream after merge.
+
+Not done and named in the ticket: the Better Manager uninstall smoke, because
+`packaging/build-deb.sh` builds no `better-awake` package — the manifest is
+validated on every test run but the component is not installable, the same
+position Better Launcher is in. A low-battery stop produces a history entry and
+a reported stop the service prints to stderr; the desktop notification belongs
+to the tray and is not wired. Idle CPU and memory for the two processes are
+still unmeasured, and the six indicator icons are still unpainted.
 
 ### Ticket 21 — Better Launcher overlay, activation, and the gesture seam
 

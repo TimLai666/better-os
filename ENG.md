@@ -110,6 +110,14 @@ suite, not only the two that exist today.
 - **The service owns the token.** `awake-service` holds the inhibitor;
   `awake-tray` and `awake-gui` are clients that can restart without ending a
   session. The tray executes no shell command.
+- **A rule is data, and unknown is not false.** An awake `Condition` is a closed
+  enum with validated operands, so no shell command has a shape it could take.
+  Evaluation is three-valued: a provider that cannot be read yields unknown,
+  which never becomes true — so an unreadable provider never keeps a machine
+  awake — and never becomes false, so the editor explains the control instead of
+  rendering an inert one. Priority names the winner of a disagreement; it never
+  weakens a protection, and the battery threshold that stops first wins whatever
+  the priorities say. See [ADR 0010](docs/decisions/0010-awake-trigger-providers-and-retention.md).
 - **The desktop is changed through typed adapters.** `defaults-platform` and
   `touchpad-platform` expose read, apply, and verify as traits returning typed
   values. GPUI code never invokes `gsettings`, `xdg-mime`, or a shell command,
@@ -219,7 +227,14 @@ suite, not only the two that exist today.
 - `awake-service` is tested through a fake inhibitor backend for acquire,
   verify, lost-inhibitor, and release, plus a private session-bus test of the
   StatusNotifierItem registration — the same shape as the `manager-daemon`
-  D-Bus tests.
+  D-Bus tests. Its rule and battery paths run the production providers against a
+  captured `/proc` and `/sys` tree, so a low-battery stop is driven by writing a
+  file rather than by pushing a percentage in.
+- `awake-platform` reads every kernel interface through a `Roots` seam, the same
+  one `monitor-collectors-linux` uses. It deliberately does not import that
+  crate: its read helpers return `monitor_core::Observation`, so reusing them
+  would put the whole Better Monitor metric-contract stack in every Better Awake
+  binary to answer whether the charger is plugged in.
 - `defaults-platform` ships a mock adapter for every declared integration kind,
   so aggregate status, partial failure, and external-change detection are all
   provable before a real adapter exists for that kind. Its two real adapters are
