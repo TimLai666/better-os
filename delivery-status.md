@@ -534,3 +534,48 @@ D-Bus activation ships behind the off-by-default `dbus-activation` feature, the
 same shape as `manager-platform`'s `dbus-client`. It compiles and is covered by
 a recording activator, but it has not been exercised against a real activatable
 application on a session bus.
+
+Ticket 19 landed the Better App Chooser: `app-chooser-core` (MIME section
+ranking, the `AppSelection` result model, the `mimeapps.list` editor and its
+rollback records, and executable-mode refusals) and `app-chooser-gui` (the
+reusable GPUI surface plus a standalone window for testing it). Neither crate
+parses a `.desktop` file; both read ticket 18's records.
+
+The three invariants this ticket adds. First, an Always Use changes exactly one
+line of the user's `mimeapps.list`. The file is parsed into lines that are kept
+verbatim — comments, unknown groups, repeated keys, CRLF endings, a missing
+final newline — so everything except the one association is written back byte
+for byte. Second, the rollback record is written and flushed before the file is
+opened for writing, so a crash between the two leaves a record of a change that
+never happened rather than a change with no record. Third, the executable mode
+refuses by default: a Flatpak, Snap, AppImage, wrapper, D-Bus-activated, or
+own-arguments entry is told why no path is offered instead of being handed the
+program its `Exec` line happens to name.
+
+MIME type relationships come from the installed `shared-mime-info` data files —
+`aliases`, `subclasses`, and `globs2` — read only. There is no Better OS MIME
+database, and an absent `shared-mime-info` degrades to "no known relationships"
+rather than to a guessed hierarchy.
+
+95 tests were added: 64 core unit tests, 8 fixture-file tests over six real
+`mimeapps.list` shapes (hand edited with comments, groups in an unexpected order
+with `[Default Applications]` opened twice, CRLF, no final newline, empty, and
+comment-bearing), 13 GUI locale and layout-policy tests, plus the ranking,
+selection, and executable-refusal coverage inside the core suites. The fixture
+tests assert a single-line diff, that every unrelated association survives, and
+byte equality after a rollback for every fixture.
+
+Local `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo test
+--workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo bench -p app-chooser-core` all passed. Ranking 5,000 synthetic records
+takes 1.46 ms per pass, and it runs through `cx.background_spawn` rather than on
+the render thread. An 8-second `ZED_HEADLESS=1` launch of `app-chooser-gui`
+stayed alive in both Open With and Choose Executable mode.
+
+Three things are known and not done. A `[Removed Associations]` line covering
+the same type and application is reported as a warning rather than edited, so a
+pre-existing removal can still override a new default; fixing it silently would
+mean touching a second line the user wrote. Usage history is currently inferred
+from the associations file, because no shared favorites or history model exists
+yet — Issue #4 defers how that is shared with Better Launcher. And the chooser
+handles one selected file; multi-file selection is out of scope for this ticket.

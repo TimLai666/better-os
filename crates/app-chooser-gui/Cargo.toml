@@ -1,0 +1,26 @@
+[package]
+name = "app-chooser-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "app_chooser_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "app-chooser-gui"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+app-catalog-core.workspace = true
+app-catalog-platform.workspace = true
+app-chooser-core.workspace = true
+better-ui.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
+gpui-platform.workspace = true

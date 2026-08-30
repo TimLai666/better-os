@@ -273,6 +273,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "app-chooser-core"
+version = "0.1.0"
+dependencies = [
+ "app-catalog-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "app-chooser-gui"
+version = "0.1.0"
+dependencies = [
+ "app-catalog-core",
+ "app-catalog-platform",
+ "app-chooser-core",
+ "better-ui",
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "gpui_platform",
+]
+
+[[package]]
 name = "ar_archive_writer"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

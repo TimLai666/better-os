@@ -1,0 +1,10 @@
+[Added Associations]
+application/pdf=org.gnome.Evince.desktop;
+[Removed Associations]
+image/png=gimp.desktop;
+[Default Applications]
+application/pdf=org.gnome.Evince.desktop
+[Some Other Desktop Group]
+NotAnAssociation=true
+[Default Applications]
+text/csv=libreoffice-calc.desktop
