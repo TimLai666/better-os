@@ -1,0 +1,21 @@
+[package]
+name = "files-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+app-catalog-core.workspace = true
+storage-core.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The benchmarks measure the real listing path rather than a copy of it, the
+# same dev-only cycle `app-catalog-core` already uses to benchmark discovery.
+files-platform.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "listing"
+harness = false
