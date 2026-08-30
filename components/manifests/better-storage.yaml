@@ -1,0 +1,88 @@
+schema_version: 2
+id: better-storage
+display_name: Better Storage
+component_type: enhancement
+version: 0.1.0
+summary: Direct removal for external drives, with an honest ready-to-unplug state.
+icon: generic
+# The session service starts with the session, so a new install is only fully
+# active after the user logs back in.
+restart: logout
+targets:
+  distributions: [zorin, ubuntu]
+  releases: [22.04, 24.04]
+  architectures: [amd64, arm64]
+enhances:
+  - udisks2
+artifacts:
+  - release: "22.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-storage_0.1.0_ubuntu-22.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-storage_0.1.0_ubuntu-22.04_amd64.deb
+  - release: "22.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-storage_0.1.0_ubuntu-22.04_arm64.deb
+    sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    release_asset: better-storage_0.1.0_ubuntu-22.04_arm64.deb
+  - release: "24.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-storage_0.1.0_ubuntu-24.04_amd64.deb
+    sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    release_asset: better-storage_0.1.0_ubuntu-24.04_amd64.deb
+  - release: "24.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-storage_0.1.0_ubuntu-24.04_arm64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-storage_0.1.0_ubuntu-24.04_arm64.deb
+lifecycle:
+  install: plan-local-apt-install
+  enable: plan-enable
+  disable: plan-disable
+  remove: plan-remove
+  # Removing the component restores the default: every device returns to Direct
+  # Removal, the preference file is the only state it wrote, and no system mount
+  # or cache setting was ever changed to undo.
+  rollback: plan-rollback
+health_checks:
+  - storage-service-session-bus-name
+  - storage-udisks2-reachable
+  - storage-preferences-schema
+benchmarks:
+  - name: state-machine-throughput
+    workload: synthetic-device-events
+    metric: events-per-second
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 20
+  - name: event-to-state-update-latency
+    workload: synthetic-device-events
+    metric: p99-microseconds
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 20
+  - name: service-idle-overhead
+    workload: desktop-idle
+    metric: cpu-percent
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 1
+permissions:
+  # No privileged operation is installed. Each entry below is an unprivileged
+  # session capability; the boundary that would need privilege is recorded in
+  # docs/storage-safety-signals.md.
+  - name: session-dbus-own-name
+    reason: owns org.betteros.Storage1 on the session bus for its clients
+  - name: system-dbus-udisks2-client
+    reason: enumerates, watches, mounts, unmounts, and powers off drives through org.freedesktop.UDisks2
+  - name: procfs-read
+    reason: reads /proc/meminfo and /proc/<pid>/fd to observe pending writes and open writers
+  - name: filesystem-syncfs
+    reason: flushes one mounted filesystem after a file operation, never a machine-wide sync
+paths:
+  - /usr/bin/better-storage-service
+  - /usr/bin/better-storage-doctor
+  - /usr/lib/systemd/user/better-storage.service
+  - /usr/share/dbus-1/services/org.betteros.Storage1.service
+  - ~/.config/better-os/storage/storage-preferences.json
+release_notes:
+  - Every supported hot-pluggable external volume defaults to Direct Removal.
+  - Ready to unplug is only shown when no pending write, open writer, or unverified flush is known.
+  - Performance mode is an explicit per-device opt-in that still requires Eject.

@@ -17,6 +17,9 @@ members = [
     "crates/monitor-core",
     "crates/monitor-collectors-linux",
     "crates/monitor-gui",
+    "crates/storage-core",
+    "crates/storage-platform",
+    "crates/storage-service",
 ]
 
 [workspace.package]
@@ -39,6 +42,12 @@ manager-platform = { path = "crates/manager-platform" }
 manager-store = { path = "crates/manager-store" }
 monitor-core = { path = "crates/monitor-core" }
 monitor-collectors-linux = { path = "crates/monitor-collectors-linux" }
+storage-core = { path = "crates/storage-core" }
+storage-platform = { path = "crates/storage-platform" }
+libc = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"

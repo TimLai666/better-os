@@ -1,0 +1,31 @@
+[package]
+name = "storage-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "storage_platform"
+path = "src/lib.rs"
+
+[[bin]]
+name = "better-storage-doctor"
+path = "src/bin/doctor.rs"
+
+[dependencies]
+storage-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+libc.workspace = true
+futures-util.workspace = true
+tokio.workspace = true
+zbus.workspace = true
+
+[features]
+# Fakes for every trait in this crate, so the whole decision path can be driven
+# without a disk. Never enabled for the shipped binary.
+test-support = []
+
+[dev-dependencies]
+storage-platform = { path = ".", features = ["test-support"] }

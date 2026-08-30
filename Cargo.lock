@@ -6473,6 +6473,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "storage-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "storage-platform"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "libc",
+ "serde",
+ "storage-core",
+ "storage-platform",
+ "thiserror 2.0.19",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
+name = "storage-service"
+version = "0.1.0"
+dependencies = [
+ "better-core",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "storage-core",
+ "storage-platform",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "str_indices"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
