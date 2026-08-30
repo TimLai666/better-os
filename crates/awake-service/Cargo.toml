@@ -1,0 +1,35 @@
+[package]
+name = "awake-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "better-awake-service"
+path = "src/main.rs"
+
+[lib]
+name = "awake_service"
+path = "src/lib.rs"
+
+[dependencies]
+awake-core.workspace = true
+awake-ipc.workspace = true
+awake-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+# Matches manager-daemon: the service runs on tokio, so zbus must use it too
+# rather than starting its own reactor alongside it.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[features]
+# A fake inhibitor backend and a fixed clock. Never enabled for the shipped
+# binary: nothing in `main.rs` can construct them.
+test-support = []
+
+[dev-dependencies]
+awake-service = { path = ".", features = ["test-support"] }
+tempfile.workspace = true

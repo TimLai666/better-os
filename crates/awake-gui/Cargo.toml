@@ -1,0 +1,22 @@
+[package]
+name = "awake-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "awake-gui"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+awake-ipc.workspace = true
+awake-tray.workspace = true
+better-ui.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-platform.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }

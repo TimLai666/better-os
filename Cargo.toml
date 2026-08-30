@@ -5,6 +5,12 @@ members = [
     "crates/app-catalog-platform",
     "crates/app-chooser-core",
     "crates/app-chooser-gui",
+    "crates/awake-core",
+    "crates/awake-gui",
+    "crates/awake-ipc",
+    "crates/awake-service",
+    "crates/awake-store",
+    "crates/awake-tray",
     "crates/better-core",
     "crates/better-ui",
     "crates/launcher-core",
@@ -34,6 +40,12 @@ app-catalog-core = { path = "crates/app-catalog-core" }
 app-catalog-platform = { path = "crates/app-catalog-platform" }
 app-chooser-core = { path = "crates/app-chooser-core" }
 app-chooser-gui = { path = "crates/app-chooser-gui" }
+awake-core = { path = "crates/awake-core" }
+awake-ipc = { path = "crates/awake-ipc" }
+awake-service = { path = "crates/awake-service" }
+awake-store = { path = "crates/awake-store" }
+awake-gui = { path = "crates/awake-gui" }
+awake-tray = { path = "crates/awake-tray" }
 better-core = { path = "crates/better-core" }
 better-ui = { path = "crates/better-ui" }
 launcher-core = { path = "crates/launcher-core" }
