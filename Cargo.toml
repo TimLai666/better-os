@@ -16,6 +16,9 @@ members = [
     "crates/launcher-core",
     "crates/launcher-platform",
     "crates/launcher-gui",
+    "crates/defaults-core",
+    "crates/defaults-platform",
+    "crates/defaults-store",
     "crates/manager-core",
     "crates/manager-ipc",
     "crates/manager-platform",
@@ -53,6 +56,9 @@ better-ui = { path = "crates/better-ui" }
 launcher-core = { path = "crates/launcher-core" }
 launcher-platform = { path = "crates/launcher-platform" }
 launcher-gui = { path = "crates/launcher-gui" }
+defaults-core = { path = "crates/defaults-core" }
+defaults-platform = { path = "crates/defaults-platform" }
+defaults-store = { path = "crates/defaults-store" }
 manager-core = { path = "crates/manager-core" }
 manager-ipc = { path = "crates/manager-ipc" }
 manager-platform = { path = "crates/manager-platform" }

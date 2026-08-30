@@ -119,7 +119,9 @@ suite, not only the two that exist today.
   and MIME association rollback records are all written before the first change
   to a setting, and restore returns to the captured value rather than a guessed
   factory default. Reading the effective state again before applying is how an
-  external change is detected instead of overwritten.
+  external change is detected instead of overwritten. A changed-externally entry
+  is held back until that exact entry is confirmed; confirming one confirms
+  nothing else. See [ADR 0009](docs/decisions/0009-defaults-declarations-and-adapters.md).
 - **Gesture logic stays in Rust core crates.** `touchpad-gestures` owns the
   model, preset, and conflict detection; `touchpad-session` is a narrow adapter
   that invokes typed `better-actions` and never accepts an arbitrary shell
@@ -220,7 +222,11 @@ suite, not only the two that exist today.
   D-Bus tests.
 - `defaults-platform` ships a mock adapter for every declared integration kind,
   so aggregate status, partial failure, and external-change detection are all
-  provable before a real adapter exists for that kind.
+  provable before a real adapter exists for that kind. Its two real adapters are
+  tested against recorded input rather than the running desktop: `mimeapps.list`
+  content for the XDG adapter, and a `dconf compile` fixture database for the
+  GNOME one. `defaults-store` is the snapshot seam, tested for round-trip,
+  history, and every way a snapshot on disk can be unusable.
 - `files-operations` is tested by dropping the owning UI handle mid-job and by
   injecting full disks, permission errors, and a device that disappears
   mid-copy.

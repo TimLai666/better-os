@@ -1,3 +1,4 @@
+use crate::defaults::{AdapterId, DefaultIntegration, IntegrationId, IntegrationKind};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -114,6 +115,11 @@ pub struct ComponentManifest {
     pub paths: Vec<String>,
     #[serde(default)]
     pub release_notes: Vec<String>,
+    /// The system integrations this component asks to own. Empty means the
+    /// component takes part in no defaults at all, which is the only safe
+    /// reading of a manifest that says nothing.
+    #[serde(default)]
+    pub default_integrations: Vec<DefaultIntegration>,
 }
 
 impl ComponentManifest {
@@ -218,6 +224,7 @@ impl ComponentManifest {
         if self.release_notes.iter().any(|note| note.trim().is_empty()) {
             return Err(ManifestError::EmptyReleaseNote);
         }
+        crate::defaults::validate_declarations(&self.default_integrations)?;
         Ok(())
     }
 }
@@ -320,6 +327,30 @@ pub enum ManifestError {
     },
     #[error("dependency cycle detected: {0:?}")]
     DependencyCycle(Vec<ComponentId>),
+    #[error("default integration id is invalid: {0}")]
+    InvalidIntegrationId(String),
+    #[error("default integration {0} is declared more than once")]
+    DuplicateIntegration(IntegrationId),
+    #[error("default integration is missing a required field: {0}")]
+    MissingIntegrationField(&'static str),
+    #[error("default integration {integration} declares an invalid target key: {key}")]
+    InvalidIntegrationTargetKey { integration: String, key: String },
+    #[error("default integration {integration} declares a value that a {kind:?} cannot carry")]
+    IntegrationValueMismatch {
+        integration: String,
+        kind: IntegrationKind,
+    },
+    #[error("default integration {integration} names {adapter:?}, which cannot serve a {kind:?}")]
+    IntegrationAdapterMismatch {
+        integration: String,
+        adapter: AdapterId,
+        kind: IntegrationKind,
+    },
+    #[error("default integration {integration} names read-only {adapter:?} as its apply adapter")]
+    ReadOnlyApplyAdapter {
+        integration: String,
+        adapter: AdapterId,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

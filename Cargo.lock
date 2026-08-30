@@ -1590,6 +1590,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
+name = "defaults-core"
+version = "0.1.0"
+dependencies = [
+ "better-core",
+ "defaults-platform",
+ "defaults-store",
+ "manager-core",
+ "manager-platform",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "defaults-platform"
+version = "0.1.0"
+dependencies = [
+ "app-catalog-core",
+ "app-chooser-core",
+ "better-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "defaults-store"
+version = "0.1.0"
+dependencies = [
+ "better-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3907,11 +3946,16 @@ dependencies = [
 name = "manager-cli"
 version = "0.1.0"
 dependencies = [
+ "app-chooser-core",
  "better-core",
  "clap",
+ "defaults-core",
+ "defaults-platform",
+ "defaults-store",
  "manager-core",
  "manager-platform",
  "manager-store",
+ "tempfile",
  "uuid",
 ]
 

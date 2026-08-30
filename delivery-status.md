@@ -71,7 +71,7 @@ privileged mutation out of the GUI and CLI.
 | M27 | ticket 24 — monitor service, history, incidents, export, CLI (needs M25) | agent | todo | workspace gate plus collection-after-GUI-close smoke and a seeded-secret export test |
 | M28 | ticket 25 — Better Awake tray-first manual sessions | agent | done | crate-scoped fmt/check/test/clippy gates, 142 tests including 11 private session-bus tests, a tray-restart session survival test, and an 8 s headless `awake-gui` smoke |
 | M29 | ticket 26 — Awake full application and trigger rules (needs M28) | agent | todo | workspace gate plus rule-engine evaluation tests and an uninstall smoke releasing inhibitors |
-| M30 | ticket 27 — defaults core, adapters, snapshots, CLI | agent | todo | workspace gate plus snapshot round-trip and external-change detection tests |
+| M30 | ticket 27 — defaults core, adapters, snapshots, CLI | agent | done | crate-scoped fmt/check/test/clippy gates, 119 tests including snapshot round-trip, external-change matrix, all eight aggregate states, GVDB dconf read fixtures, and five CLI subcommands; full workspace gate ran after merge |
 | M31 | ticket 28 — Manager Defaults GUI review flows (needs M30) | agent | todo | workspace gate plus a preview-before-mutation assertion and locale/scaling overflow tests |
 | M32 | ticket 29 — Better Touchpad pointer, scrolling, clicking, devices | agent | todo | workspace gate plus apply-and-read-back tests per control and input-latency benchmarks |
 | M33 | ticket 30 — Mac-style gestures, typed actions, backend ADR (needs M32) | agent | todo | workspace gate plus recognizer replay tests, conflict detection, and the gesture backend ADR |
@@ -815,3 +815,50 @@ resident, which was a choice made here and is recorded rather than settled.
 There is no animation, no category grouping, and no usage-weighted ranking; all
 three are deferred decisions with the data already in place for whoever takes
 them.
+
+Ticket 27 built the Better Defaults engine below the UI: manifest declarations,
+typed snapshots, adapter traits, the first real adapters, aggregate status, and
+CLI equivalents. Three crates are new — `defaults-core` (status, aggregation,
+plans, execution, verification), `defaults-store` (snapshot history), and
+`defaults-platform` (adapter traits and adapters) — and `better-core` gained a
+`default_integrations` manifest group with full rejection coverage.
+
+All eight aggregate states are produced and tested separately, and the per
+integration detail stays available underneath each one. Global and single
+component operations are the same planning call with a different selection, so
+there is no second path that could skip the read-before-write. An entry whose
+value moved after Better Manager last wrote or verified it is held back until
+that exact entry is confirmed, and confirming one confirms nothing else.
+
+Two production adapters ship, and they are not equally capable. `xdg-default-app`
+reads, writes, and verifies the user's `mimeapps.list` through
+`app-chooser-core`, so there is still exactly one editor for that file. The
+GNOME adapters read and verify real typed values out of the user's dconf
+database through a GVDB parser written for this ticket, and return Manual action
+required for a change: the dconf service owns that file and a write behind it is
+ignored or overwritten. Issue #10 allows that outcome over a guessed command.
+ADR 0009 records the three options weighed and names the D-Bus write path as the
+eventual answer. Two smaller limits are equally explicit at runtime: restoring an
+XDG default that previously had no owner reports Manual action required, and a
+handler group whose types currently disagree reads as unknown rather than being
+flattened into one owner.
+
+The shipped manifests in `components/manifests/` still declare no integrations,
+because which ones the initial catalog enables is a deferred decision in
+Issue #10. The schema is proven instead against a fixture declaring one
+integration of all nine kinds, and the CLI takes `--manifest` so a catalog can be
+supplied.
+
+119 tests pass across the touched crates: 35 in `better-core`, 39 in
+`defaults-core`, 11 in `defaults-store`, 29 in `defaults-platform`, and 5 CLI
+tests that run the shipped binary end to end. The dconf parser is tested against
+a fixture database `dconf compile` produced rather than one this repository
+invented.
+
+Gates for ticket 27 were crate-scoped to avoid rebuilding GPUI in the worktree:
+`cargo fmt --all -- --check`, then `cargo check`, `cargo test`, and
+`cargo clippy --all-targets -- -D warnings` for `better-core`, `defaults-core`,
+`defaults-store`, `defaults-platform`, `manager-cli`, and `manager-core`, all
+passing. The full workspace gate has not run on this branch and belongs on the
+main checkout after merge. `manager-gui` is untouched; the Defaults screens are
+ticket 28, which consumes `defaults-core` unchanged.

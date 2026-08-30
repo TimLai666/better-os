@@ -6,9 +6,16 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+app-chooser-core.workspace = true
 better-core.workspace = true
 clap.workspace = true
+defaults-core.workspace = true
+defaults-platform.workspace = true
+defaults-store.workspace = true
 manager-core.workspace = true
 manager-platform = { workspace = true, features = ["dbus-client"] }
 uuid = { version = "1", features = ["v4"] }
 manager-store.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

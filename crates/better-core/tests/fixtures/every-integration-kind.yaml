@@ -1,0 +1,180 @@
+# A manifest declaring one integration of every representable kind. It exists so
+# schema changes are proven against the whole closed set rather than against the
+# two kinds that happen to have production adapters.
+schema_version: 2
+id: better-files
+display_name: Better Files
+component_type: replacement
+version: 1.0.0
+summary: Every declared default integration kind, for schema coverage
+icon: files
+restart: none
+targets:
+  distributions: [ubuntu, zorin]
+  releases: ["24.04"]
+  architectures: [amd64]
+artifacts:
+  - release: "24.04"
+    architecture: amd64
+    url: https://example.com/better-files_1.0.0_ubuntu-24.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-files_1.0.0_ubuntu-24.04_amd64.deb
+lifecycle:
+  install: plan-install
+  enable: plan-enable
+  disable: plan-disable
+  remove: plan-remove
+  rollback: plan-rollback
+default_integrations:
+  - id: default-file-manager
+    kind: application-handler
+    exclusivity: exclusive
+    target:
+      desired:
+        type: desktop_entry
+        value: io.betteros.Files.desktop
+      keys: [inode/directory]
+    platforms: [ubuntu, zorin]
+    sessions: [gnome]
+    apply_adapter: xdg-default-app
+    verify_adapter: xdg-effective-default
+    restore_policy: captured-value
+    privileges: user
+    session_effect: immediate
+    health_prerequisites: [installed, enabled, healthy]
+
+  - id: archive-handler-group
+    kind: mime-uri-handler-group
+    exclusivity: shared
+    target:
+      desired:
+        type: desktop_entry
+        value: io.betteros.Files.desktop
+      keys: [application/zip, application/x-tar]
+    platforms: [ubuntu, zorin]
+    sessions: [gnome]
+    apply_adapter: xdg-default-app
+    verify_adapter: xdg-default-app
+    restore_policy: captured-value
+    privileges: user
+    session_effect: immediate
+    health_prerequisites: [installed]
+
+  - id: overview-entry
+    kind: desktop-launcher-entry
+    exclusivity: shared
+    target:
+      desired:
+        type: desktop_entry
+        value: io.betteros.Files.desktop
+      keys: ["/org/gnome/shell/favorite-apps"]
+    platforms: [zorin]
+    sessions: [gnome]
+    apply_adapter: desktop-launcher-entry
+    verify_adapter: desktop-launcher-entry
+    restore_policy: leave-in-place
+    privileges: user
+    session_effect: immediate
+    health_prerequisites: [installed, enabled]
+
+  - id: open-file-manager-shortcut
+    kind: global-shortcut
+    exclusivity: exclusive
+    target:
+      desired:
+        type: text_list
+        value: ["<Super>e"]
+      keys: ["/org/gnome/settings-daemon/plugins/media-keys/home"]
+    platforms: [ubuntu, zorin]
+    sessions: [gnome]
+    apply_adapter: gnome-keybinding
+    verify_adapter: gnome-keybinding
+    restore_policy: captured-value
+    privileges: user
+    session_effect: immediate
+    health_prerequisites: [installed, enabled]
+
+  - id: selected-input-method
+    kind: input-method
+    exclusivity: exclusive
+    target:
+      desired:
+        type: desktop_entry
+        value: io.betteros.Input.desktop
+      keys: ["/desktop/ibus/general/preload-engines"]
+    platforms: [ubuntu]
+    sessions: [gnome]
+    apply_adapter: input-method
+    verify_adapter: input-method
+    restore_policy: captured-value
+    privileges: user
+    session_effect: sign-out
+    health_prerequisites: [installed, enabled, healthy]
+
+  - id: session-autostart
+    kind: autostart
+    exclusivity: shared
+    target:
+      desired:
+        type: boolean
+        value: true
+      keys: [io.betteros.Files.desktop]
+    platforms: [ubuntu, zorin]
+    sessions: [gnome]
+    apply_adapter: session-autostart
+    verify_adapter: session-autostart
+    restore_policy: captured-value
+    privileges: user
+    session_effect: sign-out
+    health_prerequisites: [installed, enabled]
+
+  - id: indexer-user-service
+    kind: user-service
+    exclusivity: shared
+    target:
+      desired:
+        type: boolean
+        value: true
+      keys: [better-files-indexer.service]
+    platforms: [ubuntu, zorin]
+    sessions: [gnome]
+    apply_adapter: user-service
+    verify_adapter: user-service
+    restore_policy: captured-value
+    privileges: user
+    session_effect: immediate
+    health_prerequisites: [installed, enabled, healthy]
+
+  - id: system-tool-entry-point
+    kind: tool-entry-point
+    exclusivity: exclusive
+    target:
+      desired:
+        type: desktop_entry
+        value: io.betteros.Files.desktop
+      keys: ["/org/gnome/desktop/applications/file-manager"]
+    platforms: [zorin]
+    sessions: [gnome]
+    apply_adapter: tool-entry-point
+    verify_adapter: tool-entry-point
+    restore_policy: captured-value
+    privileges: user
+    session_effect: immediate
+    health_prerequisites: [installed]
+
+  - id: thumbnail-cache-setting
+    kind: component-desktop-setting
+    exclusivity: shared
+    target:
+      desired:
+        type: text
+        value: always
+      keys: ["/org/gnome/nautilus/preferences/show-image-thumbnails"]
+    platforms: [ubuntu, zorin]
+    sessions: [gnome]
+    apply_adapter: gnome-desktop-setting
+    verify_adapter: gnome-desktop-setting
+    restore_policy: captured-value
+    privileges: user
+    session_effect: restart
+    health_prerequisites: [installed]
