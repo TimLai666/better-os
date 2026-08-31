@@ -3778,6 +3778,7 @@ version = "0.1.0"
 dependencies = [
  "app-catalog-core",
  "app-catalog-platform",
+ "better-core",
  "better-ui",
  "gpui",
  "gpui-component",
@@ -3785,6 +3786,7 @@ dependencies = [
  "gpui_platform",
  "launcher-core",
  "launcher-platform",
+ "tempfile",
 ]
 
 [[package]]

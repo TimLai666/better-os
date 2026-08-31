@@ -83,10 +83,14 @@ GUI or dependency compiles when the relevant command was not executed.
   for a transaction interrupted by a crash or power loss.
 - Align the declared Rust 1.85 baseline with the lockfile dependency MSRV
   before treating Rust 1.85 as a supported build target.
-- Better Launcher is openable and usable but unmeasured. Its manifest defines
-  warm search update, warm overlay open, application-list update, and idle
-  overhead, and no harness runs any of them. Do not claim launcher performance
-  until one does.
+- Better Launcher is measured now: `cargo bench -p launcher-gui --bench
+  launcher_suite` runs all five manifest benchmarks and
+  `docs/launcher-performance.md` records the numbers and the hardware. Two
+  limits travel with them. `warm-overlay-open` ends at the first renderable
+  model, because `ZED_HEADLESS=1` has no compositor and therefore no frame — no
+  Better OS component has a time-to-photon figure. And the idle CPU figure is a
+  headless one: nothing asks the window to repaint, so it is the launcher's own
+  idle cost and not a claim about a launcher on a running desktop.
 - `packaging/build-deb.sh` now builds all eight packages and
   `packaging/verify-deb.sh` checks each one, but no release publishes the six
   added in ticket 36, so `better-launcher`, `better-awake`, `better-files`,
@@ -208,6 +212,11 @@ GUI or dependency compiles when the relevant command was not executed.
   publishes it, so its manifest checksums are still placeholders and it is not
   release-eligible. The same caveat `better-launcher.yaml`,
   `better-awake.yaml`, and `better-storage.yaml` carry.
+- Nothing enforces the benchmark budgets the shipped manifests declare. Better
+  Files and Better Launcher both now have harnesses that produce every number
+  their manifests name, and neither has a stored baseline or a CI job that runs
+  the harness and compares against the declared maximum regression. A budget
+  nobody checks is documentation, not a gate.
 - Decide whether `app-chooser-core` should offer a typed "remove this
   association" operation. Without one, restoring an XDG default that previously
   had no owner reports Manual action required rather than clearing the line, and

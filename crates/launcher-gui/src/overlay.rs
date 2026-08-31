@@ -127,6 +127,10 @@ impl LauncherOverlay {
             self.locale.entry_locale(),
         ));
         self.model.apply_snapshot(snapshot);
+        crate::startup::mark(
+            crate::startup::STAGE_LIBRARY_READY,
+            &format!("applications={}", self.model.rows().len()),
+        );
         cx.notify();
     }
 

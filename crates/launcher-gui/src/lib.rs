@@ -28,12 +28,48 @@
 pub mod i18n;
 pub mod model;
 pub mod overlay;
+pub mod startup;
 #[cfg(test)]
 mod tests;
 
 pub use i18n::Locale;
 pub use model::{Activation, LoadState, Move, Notice, OverlayModel};
 pub use overlay::{LauncherOverlay, OverlayEvent};
+
+/// The launcher-level benchmarks, as `(name, workload, metric)`.
+///
+/// This is the single definition of what the harness measures. The benchmark
+/// suite labels its rows from here and `tests/manifest.rs` asserts that
+/// `components/manifests/better-launcher.yaml` declares exactly these, so a
+/// manifest that promises a measurement nobody takes fails a test rather than
+/// sitting there looking plausible.
+pub const BENCHMARKS: [(&str, &str, &str); 5] = [
+    (
+        "warm-search-update",
+        "synthetic-5000-entry-xdg-directory-keystroke-script",
+        "milliseconds-p95-keystroke-to-updated-result-model",
+    ),
+    (
+        "warm-overlay-open",
+        "headless-process-start-with-warm-5000-entry-index",
+        "milliseconds-process-start-to-first-renderable-model",
+    ),
+    (
+        "application-list-update",
+        "write-then-remove-one-desktop-entry-under-watch",
+        "milliseconds-p95-filesystem-event-to-refreshed-model",
+    ),
+    (
+        "idle-overhead",
+        "headless-overlay-idle-for-a-measured-window",
+        "cpu-percent-over-the-idle-window",
+    ),
+    (
+        "idle-memory",
+        "headless-overlay-idle-for-a-measured-window",
+        "resident-kilobytes-at-the-end-of-the-idle-window",
+    ),
+];
 
 /// The smallest the overlay is allowed to get. Below this the search row and
 /// one row of tiles stop fitting together, which is the point at which the
