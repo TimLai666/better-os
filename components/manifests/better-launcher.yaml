@@ -2,7 +2,7 @@ schema_version: 2
 id: better-launcher
 display_name: Better Launcher
 component_type: enhancement
-version: 0.1.0
+version: 0.2.0
 summary: One overlay with the search row on top and the whole application library below it.
 icon: launcher
 restart: application
@@ -19,24 +19,24 @@ enhances:
 artifacts:
   - release: "22.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-launcher_0.1.0_ubuntu-22.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-launcher_0.2.0_ubuntu-22.04_amd64.deb
     sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-    release_asset: better-launcher_0.1.0_ubuntu-22.04_amd64.deb
+    release_asset: better-launcher_0.2.0_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-launcher_0.1.0_ubuntu-22.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-launcher_0.2.0_ubuntu-22.04_arm64.deb
     sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-    release_asset: better-launcher_0.1.0_ubuntu-22.04_arm64.deb
+    release_asset: better-launcher_0.2.0_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-launcher_0.1.0_ubuntu-24.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-launcher_0.2.0_ubuntu-24.04_amd64.deb
     sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-    release_asset: better-launcher_0.1.0_ubuntu-24.04_amd64.deb
+    release_asset: better-launcher_0.2.0_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-launcher_0.1.0_ubuntu-24.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-launcher_0.2.0_ubuntu-24.04_arm64.deb
     sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-    release_asset: better-launcher_0.1.0_ubuntu-24.04_arm64.deb
+    release_asset: better-launcher_0.2.0_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable

@@ -80,10 +80,10 @@ symlink.
 
 ## Decisions and gaps recorded rather than papered over
 
-- **`better-monitor` now has two payloads under one version.** The manifest's
-  checksums are real and belong to the published v0.1.0 asset, which is the
-  window alone. This package is wider. Publishing it needs a version bump,
-  which is a release decision and was not taken here.
+- ~~**`better-monitor` now has two payloads under one version**~~ — **closed.**
+  The v0.1.0 asset was the window alone; the wider package now ships as 0.2.0,
+  so the two payloads no longer share a version number. The workspace version
+  bump and the v0.2.0 release took the decision this ticket deferred.
 - **The command line is installed as `better-monitor-cli`.** Its clap command
   name and its own error text say `better-monitor`, and the window already owns
   `/usr/bin/better-monitor` in a published package. Renaming either one is a

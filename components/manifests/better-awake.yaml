@@ -2,7 +2,7 @@ schema_version: 2
 id: better-awake
 display_name: Better Awake
 component_type: enhancement
-version: 0.1.0
+version: 0.2.0
 summary: Keep-awake sessions and automatic rules, with every reason the machine is awake shown.
 icon: generic
 restart: application
@@ -19,24 +19,24 @@ targets:
 artifacts:
   - release: "22.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-awake_0.1.0_ubuntu-22.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-awake_0.2.0_ubuntu-22.04_amd64.deb
     sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-    release_asset: better-awake_0.1.0_ubuntu-22.04_amd64.deb
+    release_asset: better-awake_0.2.0_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-awake_0.1.0_ubuntu-22.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-awake_0.2.0_ubuntu-22.04_arm64.deb
     sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-    release_asset: better-awake_0.1.0_ubuntu-22.04_arm64.deb
+    release_asset: better-awake_0.2.0_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-awake_0.1.0_ubuntu-24.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-awake_0.2.0_ubuntu-24.04_amd64.deb
     sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-    release_asset: better-awake_0.1.0_ubuntu-24.04_amd64.deb
+    release_asset: better-awake_0.2.0_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-awake_0.1.0_ubuntu-24.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-awake_0.2.0_ubuntu-24.04_arm64.deb
     sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-    release_asset: better-awake_0.1.0_ubuntu-24.04_arm64.deb
+    release_asset: better-awake_0.2.0_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable

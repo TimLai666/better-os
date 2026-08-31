@@ -8,7 +8,7 @@ schema_version: 2
 id: better-files
 display_name: Better Files
 component_type: replacement
-version: 0.1.0
+version: 0.2.0
 summary: A file manager whose operations are durable jobs and whose devices say when they are safe to unplug.
 icon: files
 restart: application
@@ -25,24 +25,24 @@ replaces:
 artifacts:
   - release: "22.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-files_0.1.0_ubuntu-22.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-files_0.2.0_ubuntu-22.04_amd64.deb
     sha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
-    release_asset: better-files_0.1.0_ubuntu-22.04_amd64.deb
+    release_asset: better-files_0.2.0_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-files_0.1.0_ubuntu-22.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-files_0.2.0_ubuntu-22.04_arm64.deb
     sha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
-    release_asset: better-files_0.1.0_ubuntu-22.04_arm64.deb
+    release_asset: better-files_0.2.0_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-files_0.1.0_ubuntu-24.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-files_0.2.0_ubuntu-24.04_amd64.deb
     sha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
-    release_asset: better-files_0.1.0_ubuntu-24.04_amd64.deb
+    release_asset: better-files_0.2.0_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-files_0.1.0_ubuntu-24.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-files_0.2.0_ubuntu-24.04_arm64.deb
     sha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
-    release_asset: better-files_0.1.0_ubuntu-24.04_arm64.deb
+    release_asset: better-files_0.2.0_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable
