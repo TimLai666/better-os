@@ -65,12 +65,38 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
       - name: Build Debian packages
         run: bash packaging/build-deb.sh --output-dir "dist/${{ matrix.target }}" --target "${{ matrix.asset_target }}"
+      # The matrix is per release and architecture; this is the per-component
+      # half of it. build-deb.sh and verify-deb.sh each know their own package
+      # list, so a component dropped from both would still pass them — this step
+      # is what makes the release surface a checked list rather than a habit.
+      - name: Confirm every component produced a target-specific package
+        run: |
+          set -eu
+          version="$(awk '
+            $0 == "[workspace.package]" { in_section = 1; next }
+            /^\[/ { in_section = 0 }
+            in_section && $1 == "version" { gsub(/"/, "", $3); print $3; exit }
+          ' Cargo.toml)"
+          for package in \
+            better-manager \
+            better-manager-daemon \
+            better-monitor \
+            better-launcher \
+            better-files \
+            better-touchpad \
+            better-awake \
+            better-storage; do
+            asset="dist/${{ matrix.target }}/${package}_${version}_${{ matrix.asset_target }}_${{ matrix.architecture }}.deb"
+            test -s "$asset" || { echo "Missing package asset: $asset" >&2; exit 1; }
+            test -s "$asset.sha256" || { echo "Missing checksum sidecar: $asset.sha256" >&2; exit 1; }
+          done
       - name: Verify Debian packages
         run: bash packaging/verify-deb.sh "dist/${{ matrix.target }}" "${{ matrix.asset_target }}"
       # The privileged service is the only thing here that changes a machine, so
       # it is exercised against a real dpkg, system bus, and polkitd rather than
       # only against fakes. It runs in a throwaway container for the same reason
-      # the local script refuses to run on a host.
+      # the local script refuses to run on a host. The same container carries
+      # the apt install/remove smoke for one of the packages ticket 36 added.
       - name: Run the privileged service end-to-end
         run: |
           # ubuntu-24.04 -> 24.04 for the base image; the script still wants the

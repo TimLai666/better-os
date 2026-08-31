@@ -126,6 +126,50 @@ dpkg-query -W -f='${db:Status-Status}' better-monitor | grep -q '^installed$' ||
     exit 1
 }
 
+# One of the packages added in ticket 36, installed and removed the ordinary
+# way. better-launcher is the cheap one to carry: its runtime dependencies are
+# the same set the image already installs for better-monitor, so this needs no
+# new base image, no network at test time, and no new infrastructure. The other
+# new packages are covered by verify-deb.sh assertions rather than here.
+printf '== a package added in ticket 36 installs and removes through apt ==\n'
+LAUNCHER_DEB="$(find_package better-launcher)"
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$LAUNCHER_DEB"
+dpkg-query -W -f='${db:Status-Status}' better-launcher | grep -q '^installed$' || {
+    printf 'better-launcher did not install\n' >&2
+    exit 1
+}
+for required_file in \
+    /usr/bin/better-launcher \
+    /usr/share/applications/better-launcher.desktop \
+    /usr/share/doc/better-launcher/copyright \
+    /usr/share/doc/better-launcher/THIRD-PARTY-LICENSES.md; do
+    [[ -s "$required_file" ]] || {
+        printf 'Missing %s after installing better-launcher\n' "$required_file" >&2
+        exit 1
+    }
+done
+# The dependency metadata has to be enough on its own. If the binary cannot
+# resolve its libraries here, in an image with no *-dev packages, then the
+# declared Depends is wrong no matter what the control file says.
+if ldd /usr/bin/better-launcher | grep -q 'not found'; then
+    printf 'better-launcher has an unresolved library after a clean apt install\n' >&2
+    exit 1
+fi
+DEBIAN_FRONTEND=noninteractive apt-get remove -y better-launcher
+if dpkg-query -W -f='${db:Status-Status}' better-launcher 2>/dev/null | grep -q '^installed$'; then
+    printf 'better-launcher survived removal\n' >&2
+    exit 1
+fi
+[[ ! -e /usr/bin/better-launcher ]] || {
+    printf 'better-launcher left its binary behind after removal\n' >&2
+    exit 1
+}
+[[ ! -e /usr/share/applications/better-launcher.desktop ]] || {
+    printf 'better-launcher left its desktop entry behind after removal\n' >&2
+    exit 1
+}
+printf 'better-launcher installed and removed cleanly\n'
+
 printf '== the service on a real system bus ==\n'
 # Everything above this point exercises packaging. What follows is the part
 # that has no fake anywhere: a real system bus, a real polkitd, and the real

@@ -12,6 +12,13 @@ targets:
   architectures: [amd64, arm64]
 enhances:
   - gnome-system-monitor
+# The checksums below are the published v0.1.0 assets, which contain the window
+# and nothing else. Ticket 36 put the session service, the command line, and the
+# systemd user unit into the same package, so what this repository now builds is
+# a different better-monitor at the same version number. The checksums are not
+# re-recorded here from a local build: ADR 0002 records published assets, and a
+# local `.deb` is not one. Publishing the wider package needs a version bump
+# first, which is a release decision and not this ticket's.
 artifacts:
   - release: "22.04"
     architecture: amd64
@@ -51,5 +58,12 @@ permissions:
   - name: procfs-read
     reason: future low-cost observation collector
 paths:
+  # /usr/bin/better-monitor is the window, because that is what the published
+  # v0.1.0 package installed. The command line is installed beside it as
+  # better-monitor-cli even though its own --help says `better-monitor`; the
+  # collision and what resolving it would cost are in ticket 36.
   - /usr/bin/better-monitor
+  - /usr/bin/better-monitor-service
+  - /usr/bin/better-monitor-cli
+  - /usr/lib/systemd/user/better-monitor.service
   - /var/lib/better-os/monitor

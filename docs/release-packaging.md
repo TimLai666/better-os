@@ -67,8 +67,14 @@ Release package 必須符合以下條件：
 ## 與目前專案狀態的關係
 
 repository 現在提供 `packaging/build-deb.sh` 與 `packaging/verify-deb.sh`，可以在
-目前 host architecture 產生並檢查帶有 target-specific filename 的 manager、
-monitor `.deb`。CI 以 `ubuntu-22.04-arm64`、`ubuntu-24.04-arm64` 作為 arm64
+目前 host architecture 產生並檢查帶有 target-specific filename 的八個 `.deb`：
+`better-manager`、`better-manager-daemon`、`better-monitor`（視窗、session
+service、command line 與 systemd user unit）、`better-launcher`、`better-files`、
+`better-touchpad`（含 safe-mode desktop entry）、`better-awake`（service、tray、
+settings 視窗、user unit 與兩個 desktop entries）、`better-storage`（service、
+doctor、user unit 與 session D-Bus activation file）。套件只安裝 systemd user
+unit，不啟用它；啟用是 Better Manager 的 enable 步驟，與 `better-manager-daemon`
+的做法一致。CI 以 `ubuntu-22.04-arm64`、`ubuntu-24.04-arm64` 作為 arm64
 job 的隔離目錄，但 asset target 仍是 `ubuntu-22.04` 或 `ubuntu-24.04`，因此
 兩種架構的檔名都符合同一套 release 命名規則。正式 GitHub Release 已產生，
 `better-files-example` 只作為 schema fixture，不列入 v0.1.0 的正式 release
@@ -76,7 +82,11 @@ matrix。正式 release 已發布於
 [`v0.1.0`](https://github.com/TimLai666/better-os/releases/tag/v0.1.0)，由
 merge commit `3a6d98b73b838c5a2c0d94404ae9313844009e56` 的 post-merge CI run
 [`30650287246`](https://github.com/TimLai666/better-os/actions/runs/30650287246)
-產生。Debian metadata 使用核准的 `TimLai666 <tim930102@icloud.com>`
+產生。該 release 只包含 `better-manager`、`better-monitor` 與
+`better-manager-daemon`；ticket 36 新增的六個套件尚未發佈，對應 manifest 的
+checksum 仍是 placeholder。`better-monitor` 的 payload 已在 ticket 36 變寬，
+發佈前必須先升版，否則同一個版號會對應到兩種內容。Debian metadata 使用核准的
+`TimLai666 <tim930102@icloud.com>`
 maintainer，root project license 為 GPL-3.0-or-later。第三方授權清單由
 `packaging/generate-third-party-notices.sh` 從 locked Cargo dependency graph
 產生，並由 package verifier 檢查套件內的 notice files。

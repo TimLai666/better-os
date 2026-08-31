@@ -87,10 +87,30 @@ GUI or dependency compiles when the relevant command was not executed.
   warm search update, warm overlay open, application-list update, and idle
   overhead, and no harness runs any of them. Do not claim launcher performance
   until one does.
-- `packaging/build-deb.sh` builds no `better-launcher` or `better-awake`
-  package, so those manifests' artifact checksums are placeholders and neither
-  component is release-eligible. Both are validated on every test run; neither is
-  installable, so no uninstall smoke has ever run for either.
+- `packaging/build-deb.sh` now builds all eight packages and
+  `packaging/verify-deb.sh` checks each one, but no release publishes the six
+  added in ticket 36, so `better-launcher`, `better-awake`, `better-files`, and
+  `better-storage` still carry placeholder checksums and are not
+  release-eligible. Publish a release and record the published checksums before
+  calling any of them installable.
+- `better-monitor` now ships the window, the session service, the command line,
+  and a systemd user unit in one package. The manifest's checksums are real and
+  belong to the published v0.1.0 asset, which is the window alone, so the same
+  version number now names two different payloads. Bump the version before
+  publishing the wider package.
+- The command line's own `--help` says `better-monitor`, and the window already
+  owns `/usr/bin/better-monitor` in a published package, so the CLI is installed
+  as `better-monitor-cli`. Decide which of the two is renamed; a packaging
+  change cannot fix a name a crate hard-codes.
+- `better-touchpad` has a package and no manifest, so Better Manager cannot
+  install, verify, or remove it. Writing one needs health checks that actually
+  exist and a benchmark budget somebody stands behind, which ticket 36 did not
+  invent.
+- A package installs its systemd user unit and does not enable it, matching
+  `better-manager-daemon`. Nothing in dpkg stops a running Better Awake, Better
+  Monitor, or Better Storage user service at removal either; the manifests'
+  remove and rollback plans are where that belongs, and `better-awake.yaml`'s
+  release notes describe behaviour the manager owns rather than the package.
 - Better Awake detects nine of Issue #13's eleven trigger kinds. Fullscreen
   needs a compositor adapter and reports itself unavailable; audio reads ALSA and
   cannot see Bluetooth or network sinks. Both limits are recorded in ADR 0010 and
@@ -183,10 +203,10 @@ GUI or dependency compiles when the relevant command was not executed.
   #6's own deferred decision and need one before any such claim.
 - Nothing enforces the benchmark budgets `components/manifests/better-files.yaml`
   declares. There is no CI job that runs the harness and compares.
-- `packaging/build-deb.sh` builds no `better-files` package, so that manifest's
-  artifact checksums are placeholders and the component is not release-eligible.
-  It is validated on every test run; it is not installable. The same caveat
-  `better-launcher.yaml` and `better-storage.yaml` already carry.
+- `packaging/build-deb.sh` builds a `better-files` package now, but no release
+  publishes it, so its manifest checksums are still placeholders and it is not
+  release-eligible. The same caveat `better-launcher.yaml`,
+  `better-awake.yaml`, and `better-storage.yaml` carry.
 - Decide whether `app-chooser-core` should offer a typed "remove this
   association" operation. Without one, restoring an XDG default that previously
   had no owner reports Manual action required rather than clearing the line, and

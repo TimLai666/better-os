@@ -15,7 +15,96 @@ fi
 
 shopt -s nullglob
 
-for package_name in better-manager better-monitor; do
+# What each desktop package must actually contain. The list is here rather than
+# inferred from the package name because most of these packages install more
+# than one binary, and a package that quietly stopped shipping its service or
+# its recovery entry point would otherwise still pass.
+required_executables() {
+    case "$1" in
+        better-manager)
+            printf '%s\n' usr/bin/better-manager
+            ;;
+        better-monitor)
+            printf '%s\n' \
+                usr/bin/better-monitor \
+                usr/bin/better-monitor-service \
+                usr/bin/better-monitor-cli
+            ;;
+        better-launcher)
+            printf '%s\n' usr/bin/better-launcher
+            ;;
+        better-files)
+            printf '%s\n' usr/bin/better-files
+            ;;
+        better-touchpad)
+            printf '%s\n' usr/bin/better-touchpad
+            ;;
+        better-awake)
+            printf '%s\n' \
+                usr/bin/better-awake-service \
+                usr/bin/awake-tray \
+                usr/bin/awake-gui
+            ;;
+        *)
+            printf 'No executable list for %s\n' "$1" >&2
+            exit 1
+            ;;
+    esac
+}
+
+required_data_files() {
+    case "$1" in
+        better-manager)
+            ;;
+        better-monitor)
+            printf '%s\n' usr/lib/systemd/user/better-monitor.service
+            ;;
+        better-launcher)
+            printf '%s\n' usr/share/applications/better-launcher.desktop
+            ;;
+        better-files)
+            printf '%s\n' usr/share/applications/io.betteros.Files.desktop
+            ;;
+        better-touchpad)
+            printf '%s\n' \
+                usr/share/applications/better-touchpad.desktop \
+                usr/share/applications/better-touchpad-safe-mode.desktop
+            ;;
+        better-awake)
+            printf '%s\n' \
+                usr/share/applications/better-awake.desktop \
+                etc/xdg/autostart/better-awake-tray.desktop \
+                usr/lib/systemd/user/better-awake.service
+            ;;
+        *)
+            printf 'No data file list for %s\n' "$1" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# A package may ship a systemd user unit. It may not ship the symlink that
+# enables one. Installing a component and turning it on are separate steps in
+# every lifecycle this project has, and a .wants symlink in the payload would
+# quietly collapse them into one.
+assert_nothing_is_enabled_at_install() {
+    local package_name="$1"
+    local extract_dir="$2"
+    local enablement_links=("$extract_dir"/usr/lib/systemd/user/*.wants/* "$extract_dir"/etc/systemd/user/*.wants/*)
+    if ((${#enablement_links[@]} > 0)); then
+        printf '%s enables a systemd user unit at install time: %s\n' \
+            "$package_name" "${enablement_links[0]}" >&2
+        exit 1
+    fi
+}
+
+for package_name in \
+    better-manager \
+    better-monitor \
+    better-launcher \
+    better-files \
+    better-touchpad \
+    better-awake; do
     if [[ -n "$RELEASE_TARGET" ]]; then
         package_paths=("$DIST_DIR/${package_name}_"*"_${RELEASE_TARGET}_${EXPECTED_ARCH}.deb")
     else
@@ -72,11 +161,27 @@ for package_name in better-manager better-monitor; do
     done
 
     dpkg-deb --extract "$deb_path" "$extract_dir"
-    binary_path="$extract_dir/usr/bin/$package_name"
-    [[ -x "$binary_path" ]] || {
-        printf 'Missing executable in %s\n' "$package_name" >&2
-        exit 1
-    }
+
+    executables=()
+    while IFS= read -r relative_path; do
+        executables+=("$relative_path")
+    done < <(required_executables "$package_name")
+
+    for relative_path in "${executables[@]}"; do
+        [[ -x "$extract_dir/$relative_path" ]] || {
+            printf 'Missing executable %s in %s\n' "$relative_path" "$package_name" >&2
+            exit 1
+        }
+    done
+
+    while IFS= read -r relative_path; do
+        [[ -s "$extract_dir/$relative_path" ]] || {
+            printf 'Missing %s in %s\n' "$relative_path" "$package_name" >&2
+            exit 1
+        }
+    done < <(required_data_files "$package_name")
+
+    assert_nothing_is_enabled_at_install "$package_name" "$extract_dir"
 
     notice_dir="$extract_dir/usr/share/doc/$package_name"
     [[ -s "$notice_dir/copyright" ]] || {
@@ -96,13 +201,158 @@ for package_name in better-manager better-monitor; do
         exit 1
     }
 
-    if ldd "$binary_path" | grep -q 'not found'; then
-        printf 'Unresolved dynamic library in %s\n' "$package_name" >&2
-        exit 1
-    fi
+    for relative_path in "${executables[@]}"; do
+        if ldd "$extract_dir/$relative_path" | grep -q 'not found'; then
+            printf 'Unresolved dynamic library in %s: %s\n' "$package_name" "$relative_path" >&2
+            exit 1
+        fi
+    done
+
+    # The claims each package's own payload has to keep. These are the lines a
+    # user or another component relies on, not a restatement of the file list.
+    case "$package_name" in
+        better-launcher)
+            # Clicking a launcher icon opens the launcher. It must never be the
+            # thing that closes it, which is what a bare Exec would do.
+            grep -q '^Exec=better-launcher --open$' \
+                "$extract_dir/usr/share/applications/better-launcher.desktop" || {
+                printf 'The launcher desktop entry does not open the overlay\n' >&2
+                exit 1
+            }
+            ;;
+        better-files)
+            grep -q '^Exec=better-files' \
+                "$extract_dir/usr/share/applications/io.betteros.Files.desktop" || {
+                printf 'The Better Files desktop entry does not run the packaged binary\n' >&2
+                exit 1
+            }
+            ;;
+        better-touchpad)
+            # The recovery entry point has to work when the configuration is
+            # what broke the desktop, so it ships beside the window rather than
+            # in a package the user would have to install after the fact.
+            grep -q '^Exec=better-touchpad --safe-mode$' \
+                "$extract_dir/usr/share/applications/better-touchpad-safe-mode.desktop" || {
+                printf 'The safe-mode desktop entry does not enter safe mode\n' >&2
+                exit 1
+            }
+            ;;
+        better-awake)
+            # The tray is an indicator for the service, not an application a
+            # user launches out of the menu.
+            grep -q '^NoDisplay=true$' \
+                "$extract_dir/etc/xdg/autostart/better-awake-tray.desktop" || {
+                printf 'The Better Awake tray autostart entry is not hidden from the menu\n' >&2
+                exit 1
+            }
+            grep -q '^ExecStart=/usr/bin/better-awake-service$' \
+                "$extract_dir/usr/lib/systemd/user/better-awake.service" || {
+                printf 'The Better Awake user unit does not start the packaged service\n' >&2
+                exit 1
+            }
+            ;;
+        better-monitor)
+            grep -q '^ExecStart=/usr/bin/better-monitor-service$' \
+                "$extract_dir/usr/lib/systemd/user/better-monitor.service" || {
+                printf 'The Better Monitor user unit does not start the packaged service\n' >&2
+                exit 1
+            }
+            ;;
+    esac
 
     printf 'Verified %s (%s)\n' "$deb_path" "$actual_arch"
 done
+
+# Better Storage has no window, so it is verified the way the privileged
+# service is rather than with the desktop packages: no graphics dependencies,
+# a session unit, and the D-Bus activation file its clients reach it through.
+storage_name="better-storage"
+if [[ -n "$RELEASE_TARGET" ]]; then
+    storage_paths=("$DIST_DIR/${storage_name}_"*"_${RELEASE_TARGET}_${EXPECTED_ARCH}.deb")
+else
+    storage_paths=("$DIST_DIR/${storage_name}_"*.deb)
+fi
+if [[ ${#storage_paths[@]} -ne 1 ]]; then
+    printf 'Expected exactly one target-specific package for %s\n' "$storage_name" >&2
+    exit 1
+fi
+storage_path="${storage_paths[0]}"
+storage_extract="$WORK_DIR/$storage_name"
+
+if [[ ! -f "$storage_path" || ! -f "$storage_path.sha256" ]]; then
+    printf 'Missing package or checksum: %s\n' "$storage_name" >&2
+    exit 1
+fi
+(
+    cd "$DIST_DIR"
+    sha256sum --check "$(basename "$storage_path.sha256")"
+)
+
+storage_depends="$(dpkg-deb -f "$storage_path" Depends)"
+if [[ "$storage_depends" =~ (^|,)[[:space:]]*[^,]*-dev([[:space:]]|,|$) ]]; then
+    printf 'Build-time development package leaked into %s: %s\n' "$storage_name" "$storage_depends" >&2
+    exit 1
+fi
+# UDisks2 is a hard dependency, not a recommendation: the service connects to
+# it before it owns its bus name, so without it there is no service at all.
+for required_dependency in dbus udisks2; do
+    if ! printf '%s\n' "$storage_depends" | grep -Eq "(^|,)[[:space:]]*${required_dependency}([[:space:]]|,|$)"; then
+        printf 'Missing runtime dependency for %s: %s\n' "$storage_name" "$required_dependency" >&2
+        exit 1
+    fi
+done
+if printf '%s\n' "$storage_depends" | grep -Eq 'libwayland|libfontconfig|libxkbcommon'; then
+    printf 'Graphics dependency leaked into a package with no window: %s\n' "$storage_depends" >&2
+    exit 1
+fi
+
+dpkg-deb --extract "$storage_path" "$storage_extract"
+for required_file in \
+    usr/bin/better-storage-service \
+    usr/bin/better-storage-doctor \
+    usr/lib/systemd/user/better-storage.service \
+    usr/share/dbus-1/services/org.betteros.Storage1.service \
+    usr/share/doc/better-storage/copyright \
+    usr/share/doc/better-storage/THIRD-PARTY-LICENSES.md; do
+    if [[ ! -s "$storage_extract/$required_file" ]]; then
+        printf 'Missing %s in %s\n' "$required_file" "$storage_name" >&2
+        exit 1
+    fi
+done
+cmp "$ROOT_DIR/LICENSE" "$storage_extract/usr/share/doc/better-storage/copyright" >/dev/null || {
+    printf 'Project license notice does not match repository LICENSE in %s\n' "$storage_name" >&2
+    exit 1
+}
+grep -q '^# Third-Party License Notices$' \
+    "$storage_extract/usr/share/doc/better-storage/THIRD-PARTY-LICENSES.md" || {
+    printf 'Invalid third-party license notice inventory in %s\n' "$storage_name" >&2
+    exit 1
+}
+for required_executable in \
+    usr/bin/better-storage-service \
+    usr/bin/better-storage-doctor; do
+    [[ -x "$storage_extract/$required_executable" ]] || {
+        printf '%s is not executable in %s\n' "$required_executable" "$storage_name" >&2
+        exit 1
+    }
+    if ldd "$storage_extract/$required_executable" | grep -q 'not found'; then
+        printf 'Unresolved dynamic library in %s: %s\n' "$storage_name" "$required_executable" >&2
+        exit 1
+    fi
+done
+grep -q '^Name=org.betteros.Storage1$' \
+    "$storage_extract/usr/share/dbus-1/services/org.betteros.Storage1.service" || {
+    printf 'The storage D-Bus activation file does not claim the expected bus name\n' >&2
+    exit 1
+}
+grep -q '^ExecStart=/usr/bin/better-storage-service$' \
+    "$storage_extract/usr/lib/systemd/user/better-storage.service" || {
+    printf 'The Better Storage user unit does not start the packaged service\n' >&2
+    exit 1
+}
+assert_nothing_is_enabled_at_install "$storage_name" "$storage_extract"
+
+printf 'Verified %s (%s)\n' "$storage_path" "$EXPECTED_ARCH"
 
 # The privileged service is packaged differently from the desktop applications:
 # it has no graphics dependencies, its binary lives in /usr/libexec because a

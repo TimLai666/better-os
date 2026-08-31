@@ -1,0 +1,44 @@
+[Unit]
+Description=Better Monitor session observation service
+Documentation=https://github.com/TimLai666/better-os/blob/main/docs/tickets/24-monitor-history-and-export.md
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# Type=simple, for the same reason better-awake.service is: the service builds
+# its session bus connection and only then requests org.betteros.Monitor1, so
+# there is no bus name for systemd to wait on at exec time. It is also not
+# activatable on demand — recording what the machine was doing before a
+# slowdown only works if something was already watching.
+Type=simple
+ExecStart=/usr/bin/better-monitor-service
+Restart=on-failure
+
+# SIGTERM is the clean shutdown path: the service flushes the sample bucket in
+# flight before exiting, so KillSignal stays at the default. The flush is
+# bounded to five seconds in the binary, and this gives it ten before systemd
+# escalates.
+TimeoutStopSec=10
+
+# Hardening for an unprivileged user unit. The same reasoning as
+# better-awake.service: ProtectHome is absent because the history store lives
+# under the user's own data directory, and PrivateTmp and ProtectSystem are
+# absent because both need unprivileged user namespaces that a hardened host
+# may not offer to a --user manager.
+NoNewPrivileges=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# Session bus only. Better Monitor's export is the only path data leaves the
+# machine and it has no network code, so no network address family is allowed
+# here either.
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+# The unit is installed, not enabled: the package ships the unit and Better
+# Manager's enable step turns it on, the same split better-awake uses. See
+# packaging/build-deb.sh.
+WantedBy=graphical-session.target

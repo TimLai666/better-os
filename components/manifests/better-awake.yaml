@@ -10,9 +10,12 @@ targets:
   distributions: [zorin, ubuntu]
   releases: [22.04, 24.04]
   architectures: [amd64, arm64]
-# Placeholder checksums, the same repeated-d convention Better Launcher uses:
-# packaging/build-deb.sh builds no better-awake package yet, so there is nothing
-# to hash. The manifest is validated on every test run; it is not installable.
+# Placeholder checksums, the same repeated-d convention Better Launcher uses.
+# packaging/build-deb.sh now builds a better-awake package, so there is
+# something to hash — but ADR 0002 records the checksum of a *published*
+# release asset, and no release carries this component yet. A checksum taken
+# from a local build would name an artifact nobody can download. The manifest is
+# validated on every test run; it becomes installable when the release exists.
 artifacts:
   - release: "22.04"
     architecture: amd64

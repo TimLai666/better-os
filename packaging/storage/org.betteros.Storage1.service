@@ -1,0 +1,9 @@
+[D-BUS Service]
+Name=org.betteros.Storage1
+Exec=/usr/bin/better-storage-service
+# Session bus, not system bus. The service runs as the logged-in user and holds
+# no privilege of its own; UDisks2 holds it and this is one of its clients.
+# The unit is what runs it for a whole session. This file is the fallback: a
+# client that reaches for org.betteros.Storage1 where the unit is not enabled
+# gets the service started rather than the in-process engine.
+SystemdService=better-storage.service

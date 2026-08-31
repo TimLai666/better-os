@@ -1,7 +1,9 @@
-# Better Files. The checksums below are placeholders: `packaging/build-deb.sh`
-# builds no `better-files` package yet, so this manifest is validated on every
-# test run and is not installable. The same caveat `better-launcher.yaml` and
-# `better-storage.yaml` carry, for the same reason.
+# Better Files. The checksums below are placeholders. `packaging/build-deb.sh`
+# now builds a `better-files` package, but ADR 0002 records the checksum of a
+# published release asset and no release carries this component yet, so this
+# manifest is validated on every test run and is not yet installable. The same
+# caveat `better-launcher.yaml`, `better-awake.yaml`, and `better-storage.yaml`
+# carry, for the same reason.
 schema_version: 2
 id: better-files
 display_name: Better Files
