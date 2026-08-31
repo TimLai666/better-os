@@ -30,6 +30,17 @@ pub enum ConfigError {
     NewerSchema { found: u32, known: u32 },
     #[error("gestures.config.unknown_schema:{0}")]
     UnknownSchema(u32),
+    /// A profile document naming more devices than a machine has.
+    #[error("gestures.config.too_many_devices:{0}")]
+    TooManyDevices(usize),
+    #[error("gestures.config.too_many_gestures:{0}")]
+    TooManyGestures(usize),
+    #[error("gestures.config.malformed_device_identity:{0}")]
+    MalformedDeviceIdentity(String),
+    /// The document selects a device profile it does not carry, so the
+    /// configuration it describes is not the one it would produce.
+    #[error("gestures.config.unknown_active_device:{0}")]
+    UnknownActiveDevice(String),
     #[error(transparent)]
     Gesture(#[from] GestureError),
 }

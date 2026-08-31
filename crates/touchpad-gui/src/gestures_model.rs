@@ -16,14 +16,15 @@
 //! changes nothing whatever it is asked; live testing additionally hands each
 //! recognized event to the adapter. Both halves are asserted.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use better_actions::{ActionSupport, DesktopAction};
+use better_actions::{ActionSupport, DesktopAction, Key, KeyboardShortcut, Modifier};
 use touchpad_gestures::{
     ApplyReport, BindingOutcome, ChangeKind, ConflictResolution, ContactCount, Cooldown, Direction,
-    GestureConfig, GestureDefinition, GestureError, GestureEvent, GestureId, GestureShape,
-    GestureStore, PlanError, PresetId, PresetPlan, Recognizer, RecognizerScale, RestorePlan,
-    RunState, Threshold, VerificationRecord, mac_style, plan::bind_all, synthetic,
+    GestureConfig, GestureDefinition, GestureError, GestureEvent, GestureId, GestureProfiles,
+    GestureShape, GestureStore, KnownShortcuts, PlanError, PresetId, PresetPlan, Recognizer,
+    RecognizerScale, RestorePlan, RunState, ShortcutCheck, Threshold, VerificationRecord,
+    mac_style, plan::bind_all, synthetic,
 };
 use touchpad_session::SessionAdapter;
 
@@ -150,6 +151,128 @@ pub struct TestRun {
     pub performed: usize,
 }
 
+/// Which part of the fixed key table a picker is showing.
+///
+/// The table has seventy-three keys, and seventy-three buttons is not a picker.
+/// Splitting it is a presentation decision, so it is made here and asserted
+/// without a window — including that the parts cover the table exactly once,
+/// which is what stops a key becoming unreachable when the table grows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KeyGroup {
+    Letters,
+    Digits,
+    Function,
+    Navigation,
+    Editing,
+    Punctuation,
+}
+
+impl KeyGroup {
+    pub const ALL: [Self; 6] = [
+        Self::Letters,
+        Self::Digits,
+        Self::Function,
+        Self::Navigation,
+        Self::Editing,
+        Self::Punctuation,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Letters => "letters",
+            Self::Digits => "digits",
+            Self::Function => "function",
+            Self::Navigation => "navigation",
+            Self::Editing => "editing",
+            Self::Punctuation => "punctuation",
+        }
+    }
+
+    /// The group a key belongs to. Every key belongs to exactly one.
+    pub fn of(key: Key) -> Self {
+        let name = key.name();
+        let single = name.chars().count() == 1;
+        if single
+            && name
+                .chars()
+                .all(|character| character.is_ascii_alphabetic())
+        {
+            Self::Letters
+        } else if single && name.chars().all(|character| character.is_ascii_digit()) {
+            Self::Digits
+        } else if name.starts_with('F') && name[1..].chars().all(|c| c.is_ascii_digit()) {
+            Self::Function
+        } else if matches!(
+            name,
+            "Left" | "Right" | "Up" | "Down" | "Home" | "End" | "Page_Up" | "Page_Down" | "Tab"
+        ) {
+            Self::Navigation
+        } else if matches!(
+            name,
+            "Return" | "Escape" | "BackSpace" | "Delete" | "Insert" | "space"
+        ) {
+            Self::Editing
+        } else {
+            Self::Punctuation
+        }
+    }
+
+    pub fn keys(self) -> Vec<Key> {
+        Key::all().filter(|key| Self::of(*key) == self).collect()
+    }
+}
+
+/// The keys chosen for a custom shortcut, while they are being chosen.
+///
+/// This is a modifier set and one key from the fixed table, and it is the only
+/// shape the editor can hold — there is no text field anywhere in the path, so
+/// nothing the user types can reach an action. An empty modifier set is a state
+/// the draft can be in and a shortcut cannot, which is why building one returns
+/// a result rather than a value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShortcutDraft {
+    pub modifiers: BTreeSet<Modifier>,
+    pub key: Key,
+}
+
+impl ShortcutDraft {
+    pub fn of(shortcut: &KeyboardShortcut) -> Self {
+        Self {
+            modifiers: shortcut.modifiers().collect(),
+            key: shortcut.key(),
+        }
+    }
+
+    /// The draft a gesture with no shortcut yet starts from.
+    pub fn placeholder() -> Self {
+        Self::of(&DesktopAction::placeholder_shortcut())
+    }
+
+    pub fn toggle(&mut self, modifier: Modifier) {
+        if !self.modifiers.remove(&modifier) {
+            self.modifiers.insert(modifier);
+        }
+    }
+
+    pub fn holds(&self, modifier: Modifier) -> bool {
+        self.modifiers.contains(&modifier)
+    }
+
+    pub fn group(&self) -> KeyGroup {
+        KeyGroup::of(self.key)
+    }
+
+    pub fn build(&self) -> Result<KeyboardShortcut, GestureError> {
+        KeyboardShortcut::new(self.modifiers.iter().copied(), self.key)
+            .map_err(|error| GestureError::ShortcutNotUsable(error.to_string()))
+    }
+
+    /// The spelling to show, or the reason there is nothing to show yet.
+    pub fn spelling(&self) -> Result<String, GestureError> {
+        self.build().map(|shortcut| shortcut.to_gnome())
+    }
+}
+
 /// The edit view for one gesture.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GestureEditor {
@@ -159,6 +282,11 @@ pub struct GestureEditor {
     pub thumb_required: bool,
     pub direction: Option<Direction>,
     pub action: DesktopAction,
+    /// The keys a custom shortcut would use. Kept whatever the chosen action
+    /// is, so switching away from the shortcut and back does not lose them.
+    pub shortcut: ShortcutDraft,
+    /// Which part of the key table the picker is showing.
+    pub key_group: KeyGroup,
     pub activation: f32,
     pub cancellation: f32,
     pub cooldown_ms: u64,
@@ -168,6 +296,10 @@ pub struct GestureEditor {
 
 impl GestureEditor {
     pub fn of(gesture: &GestureDefinition) -> Self {
+        let shortcut = match &gesture.action {
+            DesktopAction::KeyboardShortcut { shortcut } => ShortcutDraft::of(shortcut),
+            _ => ShortcutDraft::placeholder(),
+        };
         Self {
             id: gesture.id.clone(),
             shape: gesture.shape,
@@ -175,12 +307,41 @@ impl GestureEditor {
             thumb_required: gesture.thumb_required,
             direction: gesture.direction,
             action: gesture.action.clone(),
+            key_group: shortcut.group(),
+            shortcut,
             activation: gesture.activation_threshold.get(),
             cancellation: gesture.cancellation_threshold.get(),
             cooldown_ms: gesture.cooldown.as_millis(),
             enabled: gesture.enabled,
             error: None,
         }
+    }
+
+    /// Whether the chosen action is the custom shortcut, which is the one that
+    /// needs the key picker on screen.
+    pub fn action_is_shortcut(&self) -> bool {
+        matches!(self.action, DesktopAction::KeyboardShortcut { .. })
+    }
+
+    /// Chooses an action. Picking the custom shortcut adopts the draft rather
+    /// than the catalog row's placeholder binding, so the keys already chosen
+    /// survive a trip through the action list.
+    pub fn set_action(&mut self, action: DesktopAction) {
+        self.action = match action {
+            DesktopAction::KeyboardShortcut { .. } => DesktopAction::KeyboardShortcut {
+                shortcut: self
+                    .shortcut
+                    .build()
+                    .ok()
+                    .unwrap_or_else(DesktopAction::placeholder_shortcut),
+            },
+            other => other,
+        };
+    }
+
+    pub fn set_key(&mut self, key: Key) {
+        self.shortcut.key = key;
+        self.key_group = KeyGroup::of(key);
     }
 
     /// Changing the shape can invalidate the direction, so the editor keeps
@@ -204,7 +365,16 @@ impl GestureEditor {
         gesture.contacts = ContactCount::new(self.contacts)?;
         gesture.thumb_required = self.thumb_required;
         gesture.direction = self.direction;
-        gesture.action = self.action.clone();
+        // The shortcut the gesture gets is always rebuilt from the draft, so
+        // the keys on screen and the keys stored cannot disagree, and a draft
+        // that is not a shortcut yet is refused here rather than saved.
+        gesture.action = if self.action_is_shortcut() {
+            DesktopAction::KeyboardShortcut {
+                shortcut: self.shortcut.build()?,
+            }
+        } else {
+            self.action.clone()
+        };
         gesture.activation_threshold = Threshold::new(self.activation)?;
         gesture.cancellation_threshold = Threshold::new(self.cancellation)?;
         gesture.cooldown = Cooldown::from_millis(self.cooldown_ms)?;
@@ -216,9 +386,30 @@ impl GestureEditor {
     }
 }
 
+/// What an import would bring in, worked out before anything is applied.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImportSummary {
+    /// Where it came from, as the user named it.
+    pub source: String,
+    /// The device identities the file carries a profile for.
+    pub device_profiles: Vec<String>,
+    /// Whether the file has a profile for the device selected here. When it
+    /// does not, the profile being previewed is the file's global one.
+    pub matches_selected_device: bool,
+}
+
 /// The Gestures screen's whole state.
 pub struct GestureScreen {
-    config: GestureConfig,
+    profiles: GestureProfiles,
+    /// The device whose profile is being edited, or `None` for the global one.
+    device: Option<String>,
+    /// The keyboard shortcuts that could be read from the session, for the
+    /// collision note the shortcut picker shows.
+    known_shortcuts: KnownShortcuts,
+    /// A validated imported document waiting for the plan gate. Nothing here
+    /// is stored or bound until an approved plan says so.
+    pending_import: Option<GestureProfiles>,
+    import: Option<ImportSummary>,
     captured: Option<GestureConfig>,
     adapter: Box<dyn SessionAdapter>,
     plan: Option<PresetPlan>,
@@ -236,13 +427,32 @@ pub struct GestureScreen {
 }
 
 impl GestureScreen {
+    /// A screen with one global profile and no device selected.
     pub fn new(
         config: GestureConfig,
         captured: Option<GestureConfig>,
         adapter: Box<dyn SessionAdapter>,
     ) -> Self {
+        Self::with_profiles(
+            GestureProfiles::global_only(config),
+            None,
+            captured,
+            adapter,
+        )
+    }
+
+    pub fn with_profiles(
+        profiles: GestureProfiles,
+        device: Option<String>,
+        captured: Option<GestureConfig>,
+        adapter: Box<dyn SessionAdapter>,
+    ) -> Self {
         Self {
-            config,
+            profiles,
+            device,
+            known_shortcuts: KnownShortcuts::default(),
+            pending_import: None,
+            import: None,
             captured,
             adapter,
             plan: None,
@@ -283,8 +493,8 @@ impl GestureScreen {
             self.consecutive_failures = 0;
             return;
         }
-        if self.consecutive_failures >= Self::FAILURES_BEFORE_DISABLE && self.config.enabled {
-            self.config.enabled = false;
+        if self.consecutive_failures >= Self::FAILURES_BEFORE_DISABLE && self.config().enabled {
+            self.active_mut().enabled = false;
             self.problem = Some(format!(
                 "gestures.adapter_disabled_after_failures:{}",
                 self.consecutive_failures
@@ -293,8 +503,107 @@ impl GestureScreen {
         }
     }
 
+    /// The profile in force: this device's own, or the global one.
     pub fn config(&self) -> &GestureConfig {
-        &self.config
+        self.profiles.resolve(self.device.as_deref())
+    }
+
+    /// The profile in force, to be changed. A device that is following the
+    /// shared profile is edited *through* it: opening the window, verifying a
+    /// binding, or changing a gesture on such a pad must not silently give it a
+    /// profile of its own.
+    fn active_mut(&mut self) -> &mut GestureConfig {
+        let device = self.device.clone();
+        self.profiles.resolve_mut(device.as_deref())
+    }
+
+    /// Gives the selected device a gesture profile of its own, copied from the
+    /// shared one. Nothing else diverges a device.
+    pub fn detach_device_profile(&mut self, store: Option<&GestureStore>) {
+        let Some(identity) = self.device.clone() else {
+            return;
+        };
+        if self.profiles.has_profile(&identity) {
+            return;
+        }
+        self.profiles.detach(&identity);
+        self.cancel_preview();
+        self.editor = None;
+        self.save(store);
+    }
+
+    pub fn profiles(&self) -> &GestureProfiles {
+        &self.profiles
+    }
+
+    pub fn active_device(&self) -> Option<&str> {
+        self.device.as_deref()
+    }
+
+    /// Whether the selected device has diverged from the global profile.
+    pub fn device_has_own_profile(&self) -> bool {
+        self.device
+            .as_deref()
+            .is_some_and(|identity| self.profiles.has_profile(identity))
+    }
+
+    /// Switches which profile is being edited.
+    ///
+    /// Any preview, import, or open edit belongs to the profile it was built
+    /// against, so switching drops all three rather than letting a plan made
+    /// for one device be applied to another.
+    pub fn select_device(&mut self, device: Option<String>) {
+        if self.device == device {
+            return;
+        }
+        self.device = device;
+        self.cancel_preview();
+        self.editor = None;
+        self.report = None;
+    }
+
+    /// Puts the selected device back on the global profile.
+    pub fn forget_device_profile(&mut self, store: Option<&GestureStore>) {
+        let Some(identity) = self.device.clone() else {
+            return;
+        };
+        if self.profiles.forget(&identity) {
+            self.cancel_preview();
+            self.editor = None;
+            self.save(store);
+        }
+    }
+
+    /// The document export writes and import replaces.
+    pub fn document(&self) -> GestureProfiles {
+        let mut document = self.profiles.clone();
+        document.active_device = self
+            .device
+            .clone()
+            .filter(|identity| document.has_profile(identity));
+        document
+    }
+
+    pub fn set_known_shortcuts(&mut self, known: KnownShortcuts) {
+        self.known_shortcuts = known;
+    }
+
+    pub fn known_shortcuts(&self) -> &KnownShortcuts {
+        &self.known_shortcuts
+    }
+
+    /// What the recorded keybindings say about the shortcut being edited.
+    pub fn shortcut_check(&self) -> Option<ShortcutCheck> {
+        let editor = self.editor.as_ref()?;
+        if !editor.action_is_shortcut() {
+            return None;
+        }
+        let shortcut = editor.shortcut.build().ok()?;
+        Some(self.known_shortcuts.check(&shortcut))
+    }
+
+    pub fn import(&self) -> Option<&ImportSummary> {
+        self.import.as_ref()
     }
 
     pub fn captured(&self) -> Option<&GestureConfig> {
@@ -342,7 +651,7 @@ impl GestureScreen {
     }
 
     pub fn rows(&self, c: &'static Copy) -> Vec<GestureRow> {
-        self.config
+        self.config()
             .gestures
             .iter()
             .map(|gesture| self.row(gesture, c))
@@ -391,13 +700,18 @@ impl GestureScreen {
     /// never apply a different one.
     pub fn preview_preset(&mut self) {
         let plan = PresetPlan::build(
-            &self.config,
+            self.config(),
             &mac_style(),
             touchpad_gestures::GNOME_46_GESTURES,
             self.adapter.as_ref(),
         );
         self.resolutions.clear();
         self.confirmed = false;
+        // A preset preview replaces an import preview entirely. Leaving the
+        // pending document behind would let confirming the preset install a
+        // file the preview never mentioned.
+        self.pending_import = None;
+        self.import = None;
         self.plan = Some(plan);
     }
 
@@ -405,6 +719,37 @@ impl GestureScreen {
         self.plan = None;
         self.resolutions.clear();
         self.confirmed = false;
+        self.pending_import = None;
+        self.import = None;
+    }
+
+    /// Previews an imported document. Nothing is stored or bound by doing this.
+    ///
+    /// What is previewed is the profile the document holds for the device
+    /// selected here, falling back to the document's global profile — the same
+    /// fallback rule a local profile follows, so an import from a machine with
+    /// different hardware brings that machine's global profile rather than
+    /// nothing.
+    pub fn preview_import(&mut self, source: impl Into<String>, document: GestureProfiles) {
+        let incoming = document.resolve(self.device.as_deref()).clone();
+        let plan = PresetPlan::build(
+            self.config(),
+            &incoming,
+            touchpad_gestures::GNOME_46_GESTURES,
+            self.adapter.as_ref(),
+        );
+        self.resolutions.clear();
+        self.confirmed = false;
+        self.import = Some(ImportSummary {
+            source: source.into(),
+            device_profiles: document.identities().map(str::to_string).collect(),
+            matches_selected_device: self
+                .device
+                .as_deref()
+                .is_some_and(|identity| document.has_profile(identity)),
+        });
+        self.pending_import = Some(document);
+        self.plan = Some(plan);
     }
 
     pub fn confirm(&mut self, confirmed: bool) {
@@ -416,11 +761,11 @@ impl GestureScreen {
     }
 
     pub fn preset_status(&self) -> PresetStatus {
-        if self.config.preset != PresetId::MacStyle {
+        if self.config().preset != PresetId::MacStyle {
             return PresetStatus::NotApplied;
         }
         let preset = mac_style();
-        if touchpad_gestures::plan::differences(&self.config, &preset).is_empty() {
+        if touchpad_gestures::plan::differences(self.config(), &preset).is_empty() {
             PresetStatus::Applied
         } else {
             PresetStatus::Differs
@@ -506,12 +851,18 @@ impl GestureScreen {
         }
     }
 
-    /// Applies the previewed preset: capture first, bind, verify, then store.
+    /// Applies whatever was previewed — the shipped preset or an imported
+    /// document — through the one gate: capture first, bind, verify, then store.
+    ///
+    /// There is deliberately no second apply path for an import. An imported
+    /// document reaches a binding the same way the preset does, so "nothing is
+    /// applied without preview and confirmation" holds for a file from another
+    /// machine exactly as it holds for the preset.
     ///
     /// The capture is written before the first binding and is never replaced,
     /// which is what makes restore mean something here for the same reason it
     /// does for pointer and scrolling settings.
-    pub fn apply_preset(&mut self, store: Option<&GestureStore>) -> Result<RunState, PlanError> {
+    pub fn apply_plan(&mut self, store: Option<&GestureStore>) -> Result<RunState, PlanError> {
         let plan = self.plan.take().ok_or(PlanError::NothingToDo)?;
         let approved = match plan.approve(&self.resolutions, self.confirmed) {
             Ok(approved) => approved,
@@ -532,12 +883,20 @@ impl GestureScreen {
         }
 
         let (config, report) = approved.apply(self.adapter.as_mut());
-        self.config = config;
+        // An approved import brings the whole document with it: the profile
+        // that was previewed is the one just bound, and the rest of the file's
+        // profiles land beside it. The file's own device selection is not
+        // adopted — it names a machine that is not this one.
+        if let Some(document) = self.pending_import.take() {
+            self.profiles = document;
+        }
+        *self.active_mut() = config;
         self.save(store);
         let state = report.state();
         self.report = Some(report);
         self.confirmed = false;
         self.resolutions.clear();
+        self.import = None;
         self.record_run(state, store);
         Ok(state)
     }
@@ -545,9 +904,9 @@ impl GestureScreen {
     /// Puts the captured gesture configuration back.
     pub fn restore(&mut self, store: Option<&GestureStore>) -> Option<RunState> {
         let captured = self.captured.clone()?;
-        let plan = RestorePlan::from_capture(&self.config, &captured);
+        let plan = RestorePlan::from_capture(self.config(), &captured);
         let (config, report) = plan.apply(self.adapter.as_mut());
-        self.config = config;
+        *self.active_mut() = config;
         self.save(store);
         let state = report.state();
         self.report = Some(report);
@@ -561,10 +920,13 @@ impl GestureScreen {
     /// configuration is kept and only the master switch moves — which is still
     /// the honest thing: nothing was ever changed, so nothing is put back.
     pub fn disable(&mut self, store: Option<&GestureStore>) -> RunState {
-        let captured = self.captured.clone().unwrap_or_else(|| self.config.clone());
-        let plan = RestorePlan::disable(&self.config, &captured);
+        let captured = self
+            .captured
+            .clone()
+            .unwrap_or_else(|| self.config().clone());
+        let plan = RestorePlan::disable(self.config(), &captured);
         let (config, report) = plan.apply(self.adapter.as_mut());
-        self.config = config;
+        *self.active_mut() = config;
         self.save(store);
         let state = report.state();
         self.report = Some(report);
@@ -575,8 +937,8 @@ impl GestureScreen {
     /// what the screen does on the way in, so a row's verification result is
     /// this session's rather than the last one's.
     pub fn verify_all(&mut self) -> RunState {
-        let (config, report) = bind_all(&self.config, self.adapter.as_mut());
-        self.config = config;
+        let (config, report) = bind_all(&self.config().clone(), self.adapter.as_mut());
+        *self.active_mut() = config;
         let state = report.state();
         self.report = Some(report);
         self.record_run(state, None);
@@ -585,14 +947,14 @@ impl GestureScreen {
 
     fn save(&mut self, store: Option<&GestureStore>) {
         if let Some(store) = store {
-            if let Err(error) = store.save_config(&self.config) {
+            if let Err(error) = store.save_profiles(&self.document()) {
                 self.problem = Some(error.to_string());
             }
         }
     }
 
     pub fn edit(&mut self, id: &GestureId) {
-        self.editor = self.config.get(id).map(GestureEditor::of);
+        self.editor = self.config().get(id).map(GestureEditor::of);
     }
 
     pub fn cancel_edit(&mut self) {
@@ -606,20 +968,20 @@ impl GestureScreen {
             return Ok(());
         };
         let original = self
-            .config
+            .config()
             .get(&editor.id)
             .cloned()
             .ok_or_else(|| GestureError::UnknownId(editor.id.to_string()))?;
         let result = editor
             .build(&original)
-            .and_then(|gesture| self.config.replace(gesture));
+            .and_then(|gesture| self.active_mut().replace(gesture));
         match result {
             Ok(()) => {
                 // An edited configuration is no longer the shipped preset, and
                 // saying otherwise would make the preset card claim something
                 // false.
-                if self.config.preset == PresetId::MacStyle
-                    && !touchpad_gestures::plan::differences(&self.config, &mac_style()).is_empty()
+                if self.config().preset == PresetId::MacStyle
+                    && !touchpad_gestures::plan::differences(self.config(), &mac_style()).is_empty()
                 {
                     // The status is derived, not stored, so nothing to do here
                     // beyond saving; `preset_status` will report `Differs`.
@@ -638,7 +1000,7 @@ impl GestureScreen {
     }
 
     pub fn set_enabled(&mut self, id: &GestureId, enabled: bool, store: Option<&GestureStore>) {
-        if let Some(gesture) = self.config.get_mut(id) {
+        if let Some(gesture) = self.active_mut().get_mut(id) {
             gesture.enabled = enabled;
         }
         self.save(store);
@@ -661,7 +1023,7 @@ impl GestureScreen {
         completion: f32,
         c: &'static Copy,
     ) -> TestRun {
-        let Some(gesture) = self.config.get(id).cloned() else {
+        let Some(gesture) = self.config().get(id).cloned() else {
             self.last_test = TestRun::default();
             return self.last_test.clone();
         };
@@ -669,14 +1031,14 @@ impl GestureScreen {
         let frames = synthetic::lift(synthetic::perform(&gesture, completion, scale));
         // A recognizer built for this run only: testing one gesture must not
         // leave a cooldown behind that changes the next test.
-        let mut recognizer = Recognizer::with_scale(self.config.active(), scale);
+        let mut recognizer = Recognizer::with_scale(self.config().active(), scale);
         let events = recognizer.replay(&frames);
 
         let mut performed = 0;
         if self.live_testing {
             for event in &events {
                 let action = self
-                    .config
+                    .config()
                     .get(&event.gesture)
                     .map(|gesture| gesture.action.clone())
                     .unwrap_or(DesktopAction::Disabled);

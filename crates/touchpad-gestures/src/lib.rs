@@ -30,7 +30,9 @@ pub mod conflict;
 pub mod definition;
 pub mod plan;
 pub mod preset;
+pub mod profiles;
 pub mod recognizer;
+pub mod shortcut;
 pub mod store;
 
 pub use config::{ConfigError, GESTURE_SCHEMA_VERSION, GestureConfig, PresetId};
@@ -46,8 +48,12 @@ pub use plan::{
     PlannedChange, PresetPlan, RestorePlan, RunState,
 };
 pub use preset::mac_style;
+pub use profiles::{
+    GestureProfiles, MAX_DEVICE_PROFILES, MAX_GESTURES_PER_PROFILE, PROFILE_SCHEMA_VERSION,
+};
 pub use recognizer::{
     ContactPoint, ContactRole, FrameHealth, GestureEvent, GestureEventKind, Recognizer,
     RecognizerScale, TouchFrame, synthetic,
 };
+pub use shortcut::{KnownShortcuts, ShortcutCheck};
 pub use store::{GestureStore, GestureStoreError};

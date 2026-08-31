@@ -22,6 +22,7 @@
 pub mod devices;
 pub mod gnome;
 pub mod gvariant;
+pub mod keybindings;
 pub mod mock;
 pub mod roots;
 pub mod session;
@@ -38,6 +39,7 @@ use touchpad_core::{
 pub use devices::{DeviceCapabilities, DeviceInventory, DeviceState, TouchpadDevice};
 pub use gnome::{GnomeBackend, TOUCHPAD_PREFIX};
 pub use gvariant::{ChangeValue, Changeset, ChangesetError};
+pub use keybindings::{KeybindingReading, KnownBinding};
 pub use mock::MockBackend;
 pub use roots::Roots;
 pub use session::{Session, SessionKind};

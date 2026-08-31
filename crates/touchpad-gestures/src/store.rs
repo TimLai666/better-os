@@ -16,6 +16,7 @@ use thiserror::Error;
 use touchpad_core::{StoreError, TouchpadStore};
 
 use crate::config::{ConfigError, GestureConfig};
+use crate::profiles::GestureProfiles;
 
 #[derive(Debug, Error)]
 pub enum GestureStoreError {
@@ -27,6 +28,10 @@ pub enum GestureStoreError {
         #[source]
         source: ConfigError,
     },
+    /// An import naming a file that is not there. Distinct from a damaged one:
+    /// there is nothing to say about the contents of a file nobody wrote.
+    #[error("gestures.import.no_such_file:{0}")]
+    NoSuchFile(String),
 }
 
 /// The gesture half of Better Touchpad's stored state.
@@ -55,27 +60,76 @@ impl GestureStore {
         self.store.directory().join("gestures-backup.json")
     }
 
-    /// The saved gesture configuration, or the shipped one when there is no
+    /// Every saved gesture profile, or the shipped document when there is no
     /// file. A file that exists and will not parse is an error, not a first
     /// run — the same rule the settings configuration follows, and for the same
     /// reason: starting from defaults would overwrite the only copy.
-    pub fn load_config(&self) -> Result<GestureConfig, GestureStoreError> {
+    ///
+    /// A version 1 file — one global profile, which is all there was — is
+    /// migrated on the way in.
+    pub fn load_profiles(&self) -> Result<GestureProfiles, GestureStoreError> {
         let path = self.config_path();
         match self.store.read_text(&path)? {
             Some(text) => {
-                GestureConfig::from_json(&text).map_err(|source| GestureStoreError::Damaged {
+                GestureProfiles::from_json(&text).map_err(|source| GestureStoreError::Damaged {
                     path: path.display().to_string(),
                     source,
                 })
             }
-            None => Ok(GestureConfig::default()),
+            None => Ok(GestureProfiles::default()),
         }
     }
 
-    pub fn save_config(&self, config: &GestureConfig) -> Result<(), GestureStoreError> {
+    pub fn save_profiles(&self, profiles: &GestureProfiles) -> Result<(), GestureStoreError> {
         self.store
-            .write_text(&self.config_path(), &config.to_json())?;
+            .write_text(&self.config_path(), &profiles.to_json())?;
         Ok(())
+    }
+
+    /// The global profile, which is what a caller with no device in hand means.
+    pub fn load_config(&self) -> Result<GestureConfig, GestureStoreError> {
+        Ok(self.load_profiles()?.global)
+    }
+
+    /// Replaces the global profile, leaving every device profile alone.
+    pub fn save_config(&self, config: &GestureConfig) -> Result<(), GestureStoreError> {
+        let mut profiles = self.load_profiles().unwrap_or_default();
+        profiles.global = config.clone();
+        self.save_profiles(&profiles)
+    }
+
+    /// Writes the profile document to a path the user chose.
+    ///
+    /// The document written is the configuration schema, not an export format:
+    /// the file that comes out is one this build would read back as its own
+    /// configuration, which is why import needs no second parser.
+    pub fn export_to(
+        &self,
+        path: &std::path::Path,
+        profiles: &GestureProfiles,
+    ) -> Result<(), GestureStoreError> {
+        self.store.write_text(path, &profiles.to_json())?;
+        Ok(())
+    }
+
+    /// Reads a profile document from a path the user chose, as untrusted input.
+    ///
+    /// Nothing is applied by reading it. What comes back is a validated
+    /// document the caller still has to put through the preview-and-confirm
+    /// gate, which is the only thing that can change a binding.
+    pub fn import_from(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<GestureProfiles, GestureStoreError> {
+        match self.store.read_text(path)? {
+            Some(text) => {
+                GestureProfiles::from_json(&text).map_err(|source| GestureStoreError::Damaged {
+                    path: path.display().to_string(),
+                    source,
+                })
+            }
+            None => Err(GestureStoreError::NoSuchFile(path.display().to_string())),
+        }
     }
 
     pub fn load_capture(&self) -> Result<Option<GestureConfig>, GestureStoreError> {
@@ -126,6 +180,7 @@ mod tests {
     use crate::conflict::{ConflictResolution, GNOME_46_GESTURES};
     use crate::plan::PresetPlan;
     use crate::preset::mac_style;
+    use crate::profiles::PROFILE_SCHEMA_VERSION;
     use better_actions::DesktopAction;
     use touchpad_session::MockSessionAdapter;
 
@@ -159,6 +214,74 @@ mod tests {
         // A second apply captures again, and must not overwrite.
         store.capture_once(&mac_style()).unwrap();
         assert_eq!(store.load_capture().unwrap(), Some(before));
+    }
+
+    #[test]
+    fn a_version_one_file_on_disk_is_migrated_rather_than_refused() {
+        let (_guard, store) = store();
+        // What a build before per-device profiles wrote: a bare configuration.
+        std::fs::create_dir_all(store.settings().directory()).unwrap();
+        std::fs::write(store.config_path(), mac_style().to_json()).unwrap();
+
+        let profiles = store.load_profiles().unwrap();
+        assert_eq!(profiles.schema_version, PROFILE_SCHEMA_VERSION);
+        assert_eq!(profiles.global, mac_style());
+        assert!(profiles.devices.is_empty());
+        // Reading does not rewrite the file; saving is what moves it forward.
+        store.save_profiles(&profiles).unwrap();
+        assert_eq!(store.load_profiles().unwrap(), profiles);
+    }
+
+    #[test]
+    fn saving_the_global_profile_leaves_every_device_profile_alone() {
+        let (_guard, store) = store();
+        let mut profiles = GestureProfiles::default();
+        profiles
+            .devices
+            .insert("uniq:LEN-0001".to_string(), mac_style());
+        store.save_profiles(&profiles).unwrap();
+
+        store.save_config(&GestureConfig::default()).unwrap();
+        let reopened = store.load_profiles().unwrap();
+        assert_eq!(reopened.devices.get("uniq:LEN-0001"), Some(&mac_style()));
+        assert_eq!(reopened.global, GestureConfig::default());
+    }
+
+    #[test]
+    fn an_exported_document_is_read_back_as_the_same_bytes_and_the_same_profiles() {
+        let (guard, store) = store();
+        let mut profiles = GestureProfiles::default();
+        profiles
+            .devices
+            .insert("uniq:LEN-0001".to_string(), mac_style());
+        profiles.active_device = Some("uniq:LEN-0001".to_string());
+
+        let path = guard.path().join("gestures-export.json");
+        store.export_to(&path, &profiles).unwrap();
+        let imported = store.import_from(&path).unwrap();
+        assert_eq!(imported, profiles);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            imported.to_json(),
+            "a re-export of an imported document is not the same bytes"
+        );
+    }
+
+    #[test]
+    fn an_import_of_a_file_that_is_not_there_or_will_not_parse_says_which() {
+        let (guard, store) = store();
+        let missing = guard.path().join("nothing.json");
+        assert!(matches!(
+            store.import_from(&missing),
+            Err(GestureStoreError::NoSuchFile(_))
+        ));
+
+        let hostile = guard.path().join("hostile.json");
+        std::fs::write(&hostile, r#"{"schema_version":2,"global":{"schema_version":1,"enabled":true,"preset":"custom","gestures":[]},"devices":{"../etc":{"schema_version":1,"enabled":true,"preset":"custom","gestures":[]}}}"#).unwrap();
+        assert!(matches!(
+            store.import_from(&hostile),
+            Err(GestureStoreError::Damaged { .. })
+        ));
     }
 
     #[test]

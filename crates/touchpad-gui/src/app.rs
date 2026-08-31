@@ -11,9 +11,11 @@
 //! through the typed backend.
 
 use std::cell::Cell;
+use std::path::Path;
 use std::rc::Rc;
 
 use gpui::{AppContext as _, Bounds, Context, Entity, Pixels, Window};
+use gpui_component::input::InputState;
 use gpui_component::slider::{SliderEvent, SliderState, SliderValue};
 use touchpad_core::{
     RestoreScope, RunState, ScrollFactor, Section, Sensitivity, SettingId, SettingValue,
@@ -40,6 +42,12 @@ pub struct TouchpadApp {
     pub(crate) busy: bool,
     pub(crate) gestures: GestureScreen,
     pub(crate) gesture_store: GestureStore,
+    /// Where a profile document is written to and read from. A path is the one
+    /// piece of free text on the screen, and it never reaches an action: it is
+    /// a filename, and what comes back out of the file is validated before it
+    /// is previewed.
+    pub(crate) export_path: Entity<InputState>,
+    pub(crate) import_path: Entity<InputState>,
 }
 
 impl TouchpadApp {
@@ -86,6 +94,16 @@ impl TouchpadApp {
             sliders.push((setting, slider));
         }
 
+        let default_path = gesture_store
+            .settings()
+            .directory()
+            .join("gestures-export.json")
+            .display()
+            .to_string();
+        let export_path =
+            cx.new(|cx| InputState::new(window, cx).default_value(default_path.clone()));
+        let import_path = cx.new(|cx| InputState::new(window, cx).default_value(default_path));
+
         Self {
             model,
             backend,
@@ -97,6 +115,8 @@ impl TouchpadApp {
             busy: false,
             gestures,
             gesture_store,
+            export_path,
+            import_path,
         }
     }
 
@@ -134,8 +154,8 @@ impl TouchpadApp {
     /// Applies the confirmed preset. The gesture store is a different pair of
     /// files from the settings store, so nothing here can touch pointer or
     /// scrolling state.
-    pub fn apply_preset(&mut self, cx: &mut Context<Self>) -> Option<GestureRunState> {
-        let outcome = self.gestures.apply_preset(Some(&self.gesture_store)).ok();
+    pub fn apply_plan(&mut self, cx: &mut Context<Self>) -> Option<GestureRunState> {
+        let outcome = self.gestures.apply_plan(Some(&self.gesture_store)).ok();
         cx.notify();
         outcome
     }
@@ -155,6 +175,56 @@ impl TouchpadApp {
     pub fn toggle_gesture(&mut self, gesture: &GestureId, enabled: bool, cx: &mut Context<Self>) {
         self.gestures
             .set_enabled(gesture, enabled, Some(&self.gesture_store));
+        cx.notify();
+    }
+
+    /// Switches which touchpad's gesture profile the screen is editing. Any
+    /// preview built against the previous profile is dropped rather than
+    /// carried across.
+    pub fn select_gesture_device(&mut self, device: Option<String>, cx: &mut Context<Self>) {
+        self.gestures.select_device(device);
+        cx.notify();
+    }
+
+    /// Gives the selected device a gesture profile of its own.
+    pub fn detach_gesture_profile(&mut self, cx: &mut Context<Self>) {
+        self.gestures
+            .detach_device_profile(Some(&self.gesture_store));
+        cx.notify();
+    }
+
+    /// Puts the selected device back on the global profile.
+    pub fn forget_gesture_profile(&mut self, cx: &mut Context<Self>) {
+        self.gestures
+            .forget_device_profile(Some(&self.gesture_store));
+        cx.notify();
+    }
+
+    /// Writes every gesture profile to the path the user named.
+    pub fn export_profiles(&mut self, path: &str, cx: &mut Context<Self>) {
+        let problem = if path.trim().is_empty() {
+            Some("gestures.export.no_path".to_string())
+        } else {
+            self.gesture_store
+                .export_to(Path::new(path.trim()), &self.gestures.document())
+                .err()
+                .map(|error| error.to_string())
+        };
+        self.gestures.set_problem(problem);
+        cx.notify();
+    }
+
+    /// Reads a profile document and previews it. Nothing is applied here: the
+    /// preview still has to go through the same confirmation the preset does.
+    pub fn preview_import(&mut self, path: &str, cx: &mut Context<Self>) {
+        let path = path.trim();
+        match self.gesture_store.import_from(Path::new(path)) {
+            Ok(document) => {
+                self.gestures.set_problem(None);
+                self.gestures.preview_import(path, document);
+            }
+            Err(error) => self.gestures.set_problem(Some(error.to_string())),
+        }
         cx.notify();
     }
 

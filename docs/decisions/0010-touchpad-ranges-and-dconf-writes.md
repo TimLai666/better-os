@@ -108,6 +108,31 @@ nothing that pretends it already works:
 
 The Devices screen says which scope is in force rather than implying one.
 
+**Amended by ticket 39: this decision is about pointer, scrolling, and clicking
+settings, and gestures are now out of its scope.**
+
+The reasoning above rests on one fact — GNOME's touchpad schema has a single
+`speed` key for every pad attached — and that fact is about *settings*. It does
+not carry over to gestures. A gesture is recognized from contact frames Better
+Touchpad reads itself, so the pad that produced them is knowable without asking
+the desktop anything, and a gesture profile per pad is a structure Better OS can
+honour on its own rather than a promise about a key it cannot write. Phase 4
+therefore ships:
+
+- **Pointer, scrolling, and clicking: still one session-global profile.**
+  Unchanged, for the reason above. `config.json` keeps `selected_device` as a
+  record of which pad the screen is about, not as a scope.
+- **Gestures: a profile per device, with a global fallback.** `gestures.json`
+  is schema version 2 from this ticket on: one global profile, zero or more
+  profiles keyed by the same stable identity, and the identity selected. A pad
+  with no profile of its own *follows* the global one — editing such a pad edits
+  the global profile, and giving it one of its own is a separate, explicit act,
+  so opening the window can never make a pad diverge by itself.
+
+The same document is what export writes and import reads, so a file from another
+machine is validated and version-migrated exactly the way a local file is, and
+it reaches a binding only through the existing preview-and-confirm plan gate.
+
 ### 4. X11 implementation depth
 
 **None.** The session type is detected and reported, and on X11 the GNOME
@@ -135,7 +160,13 @@ test against; Better OS targets Zorin's Wayland session.
 
 - **The acceleration curve.** Bounded and rejected-not-clamped is decided; the
   shape of the scale is not.
-- **Whether a per-device profile is worth building** if a backend that honours
-  one ever exists. The model can carry it; nothing has needed it.
+- **Whether a per-device profile is worth building for pointer and scrolling
+  settings** if a backend that honours one ever exists. Gestures now have one;
+  the settings half still does not, because GNOME's key is still session-wide.
+- **Which pad a recognized gesture came from.** The per-device profile is keyed
+  by the pad the window has selected, which is the pad the user is configuring.
+  No backend in this build produces real gesture events at all, so nothing yet
+  routes an event to the profile of the pad that produced it. That wiring
+  belongs with whichever backend ADR 0012 eventually lands.
 - **Whether Better Defaults adopts this write path**, and what its adapters then
   report for a key the user has never set.

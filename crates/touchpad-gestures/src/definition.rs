@@ -40,6 +40,11 @@ pub enum GestureError {
     UnknownId(String),
     #[error("gestures.id_not_well_formed:{0}")]
     MalformedId(String),
+    /// The keys chosen for a custom shortcut are not a shortcut. Carried here
+    /// rather than as a second error type so that one refusal reaches the
+    /// editor whether the gesture or its action is what was wrong.
+    #[error("gestures.shortcut_not_usable:{0}")]
+    ShortcutNotUsable(String),
 }
 
 /// The primitives a gesture can be built from.
