@@ -75,10 +75,18 @@ fn a_child_process_can_be_paused_resumed_and_then_terminated() {
     let pid = sleeper.pid();
     let mut controller = LinuxProcessController::for_current_process();
 
-    // It starts schedulable.
+    // It becomes schedulable. A cold, loaded CI runner can hold a fresh
+    // process in uninterruptible page-in well past the usual window, so wait
+    // for either schedulable state rather than sampling for one of them.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut state = state_of(pid).unwrap_or('?');
+    while !matches!(state, 'S' | 'R') && Instant::now() < deadline {
+        sleep(Duration::from_millis(20));
+        state = state_of(pid).unwrap_or('?');
+    }
     assert!(
-        matches!(wait_for_state(pid, 'S'), 'S' | 'R'),
-        "a freshly spawned sleep should be sleeping or running"
+        matches!(state, 'S' | 'R'),
+        "a freshly spawned sleep should become sleeping or running, was {state:?}"
     );
 
     let paused = controller
