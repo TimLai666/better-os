@@ -91,6 +91,14 @@ Every milestone from M21 onward shares the same base gate: `cargo fmt --all --
 --workspace --all-targets -- -D warnings`. The signal column names only what
 each ticket adds on top.
 
+CI run 33386172374 on `main` passed the rust gate and all four package jobs —
+ubuntu 22.04 and 24.04, amd64 and native arm64 — each building and verifying
+all eight component packages and running the container end-to-end check,
+including the new `better-launcher` apt install/removal smoke. Two flaky
+process-state tests and the dpkg doc-exclusion assumption in the container
+check were fixed along the way; the license inventory pins the `Cargo.lock`
+hash and must be regenerated whenever the lockfile changes.
+
 ## Current Blockers
 
 Better Manager now records the installed artifact that belongs to each
@@ -385,6 +393,7 @@ restores.
 - [Main CI run 30631266909](https://github.com/TimLai666/better-os/actions/runs/30631266909)
 - [Main CI run 30638535908](https://github.com/TimLai666/better-os/actions/runs/30638535908)
 - [Main CI run 30650287246](https://github.com/TimLai666/better-os/actions/runs/30650287246)
+- [Main CI run 33386172374](https://github.com/TimLai666/better-os/actions/runs/33386172374)
 - [Tickets](docs/tickets/)
 - [Decisions](docs/decisions/)
 
