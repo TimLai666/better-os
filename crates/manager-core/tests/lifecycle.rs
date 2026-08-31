@@ -22,6 +22,17 @@ fn id(value: &str) -> ComponentId {
     ComponentId::new(value).unwrap()
 }
 
+/// The version the shipped manifest declares. A test that means "installed at
+/// the version the catalog offers" reads it from the catalog, so a release
+/// version bump does not have to edit a literal in every such test.
+fn catalog_version(component: &str) -> String {
+    catalog()
+        .get(&id(component))
+        .expect("the shipped catalog declares this component")
+        .version
+        .to_string()
+}
+
 fn custom_manifest(
     component: &str,
     version: &str,
@@ -479,7 +490,7 @@ fn install_disable_enable_verify_remove_and_restore_share_one_lifecycle() {
             .component(&component)
             .and_then(|record| record.restore_snapshot.as_ref())
             .and_then(|snapshot| snapshot.installed_version.as_deref()),
-        Some("0.1.0")
+        Some(catalog_version("better-monitor").as_str())
     );
 
     let restore = manager
@@ -496,7 +507,11 @@ fn install_disable_enable_verify_remove_and_restore_share_one_lifecycle() {
 fn update_all_is_stable_and_excludes_components_that_are_already_current() {
     let manager = Manager::new(catalog(), SystemProfile::default());
     let mut state = ManagerState::default();
-    state.set_installed(id("better-manager"), "0.1.0", true);
+    state.set_installed(
+        id("better-manager"),
+        catalog_version("better-manager"),
+        true,
+    );
     state.set_installed(id("better-monitor"), "0.0.1", true);
 
     let first = manager.plan_all(&state).unwrap();
@@ -514,7 +529,7 @@ fn disable_enable_and_verify_use_one_persistable_lifecycle() {
     let manager = Manager::new(catalog(), SystemProfile::default());
     let component = id("better-monitor");
     let mut state = ManagerState::default();
-    state.set_installed(component.clone(), "0.1.0", true);
+    state.set_installed(component.clone(), catalog_version("better-monitor"), true);
 
     let disable = manager
         .plan(&state, &component, DesiredOperation::Disable)
@@ -564,7 +579,7 @@ fn disable_enable_and_verify_use_one_persistable_lifecycle() {
             .restore_snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.installed_version.as_deref()),
-        Some("0.1.0")
+        Some(catalog_version("better-monitor").as_str())
     );
     assert!(!record.restore_snapshot.as_ref().unwrap().enabled);
 }

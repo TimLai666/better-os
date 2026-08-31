@@ -863,11 +863,17 @@ fn catalog_manager() -> Manager {
 pub(crate) fn demo_manager() -> (Manager, ManagerState) {
     let manager = catalog_manager();
     let mut state = ManagerState::default();
-    state.set_installed(
-        ComponentId::new("better-manager").expect("example id must be valid"),
-        "0.1.0",
-        true,
-    );
+    // Installed at the version the catalog offers, so this component is the
+    // "already current" half of the demo state. Reading it from the manifest
+    // keeps that true across a release version bump.
+    let manager_id = ComponentId::new("better-manager").expect("example id must be valid");
+    let manager_version = manager
+        .manifests()
+        .find(|manifest| manifest.id == manager_id)
+        .expect("the built-in catalog declares better-manager")
+        .version
+        .to_string();
+    state.set_installed(manager_id, manager_version, true);
     state.set_installed(
         ComponentId::new("better-monitor").expect("example id must be valid"),
         "0.0.1",

@@ -97,11 +97,10 @@ GUI or dependency compiles when the relevant command was not executed.
   `better-storage`, and `better-touchpad` still carry placeholder checksums and are not
   release-eligible. Publish a release and record the published checksums before
   calling any of them installable.
-- `better-monitor` now ships the window, the session service, the command line,
-  and a systemd user unit in one package. The manifest's checksums are real and
-  belong to the published v0.1.0 asset, which is the window alone, so the same
-  version number now names two different payloads. Bump the version before
-  publishing the wider package.
+- `better-monitor` ships the window, the session service, the command line, and
+  a systemd user unit in one package. v0.1.0 published the window alone, so the
+  wider package carries its own version: the workspace is 0.2.0 and the manifest
+  declares 0.2.0. One version number no longer names two payloads.
 - The command line's own `--help` says `better-monitor`, and the window already
   owns `/usr/bin/better-monitor` in a published package, so the CLI is installed
   as `better-monitor-cli`. Decide which of the two is renamed; a packaging
