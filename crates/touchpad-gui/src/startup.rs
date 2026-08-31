@@ -9,9 +9,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use touchpad_core::{StoreError, TouchpadConfig, TouchpadStore};
-use touchpad_gestures::{GestureConfig, GestureStore};
+use touchpad_gestures::{GestureProfiles, GestureStore, KnownShortcuts};
 use touchpad_platform::{
-    DeviceInventory, GnomeBackend, MockBackend, Roots, Session, TouchpadBackend, devices,
+    DeviceInventory, GnomeBackend, KeybindingReading, MockBackend, Roots, Session, TouchpadBackend,
+    devices, keybindings,
 };
 use touchpad_session::{
     GnomeShellAdapter, LauncherActivationAdapter, MockSessionAdapter, RoutingAdapter,
@@ -100,16 +101,24 @@ impl Startup {
         // gesture configuration that will not parse, or an adapter that
         // fails, cannot reach pointer movement or two-finger scrolling.
         let gesture_store = GestureStore::at(&options.store_directory);
-        let (gesture_config, gesture_problem) = match gesture_store.load_config() {
-            Ok(config) => (config, None),
-            Err(error) => (GestureConfig::default(), Some(error.to_string())),
+        let (gesture_profiles, gesture_problem) = match gesture_store.load_profiles() {
+            Ok(profiles) => (profiles, None),
+            Err(error) => (GestureProfiles::default(), Some(error.to_string())),
         };
         let captured = gesture_store.load_capture().ok().flatten();
         let (adapter, bridge) = build_session_adapter(&options);
         if let Some((reachable, detail)) = bridge {
             model.set_gesture_bridge(reachable, detail);
         }
-        let mut gestures = GestureScreen::new(gesture_config, captured, adapter);
+        // The gesture profile follows the device the rest of the window is
+        // about, so switching the selected touchpad switches the gestures with
+        // it rather than leaving the two screens describing different pads.
+        let device = model
+            .selected_device()
+            .map(|device| device.identity.clone());
+        let mut gestures =
+            GestureScreen::with_profiles(gesture_profiles, device, captured, adapter);
+        gestures.set_known_shortcuts(known_shortcuts(&options));
         gestures.verify_all();
         gestures.set_problem(gesture_problem);
         // Safe mode gives the desktop its own gestures back before the window
@@ -189,6 +198,28 @@ fn build_session_adapter(
 
 fn describe(error: StoreError) -> String {
     error.to_string()
+}
+
+/// The keyboard shortcuts the session has recorded, for the collision note the
+/// shortcut picker shows.
+///
+/// A test build reads no database at all, because there is no fixture for one
+/// and reading the developer's own would make the result depend on the machine
+/// the tests run on. That is [`KnownShortcuts::unavailable`] with the reason,
+/// not an empty list, so the screen says it could not check rather than saying
+/// there is no conflict.
+fn known_shortcuts(options: &StartupOptions) -> KnownShortcuts {
+    if options.in_memory {
+        return KnownShortcuts::unavailable("gestures.shortcuts_not_read_in_test_mode");
+    }
+    match keybindings::read(&GnomeBackend::user_database_path()) {
+        KeybindingReading::Recorded(bindings) => KnownShortcuts::from_bindings(
+            bindings
+                .into_iter()
+                .map(|binding| (binding.key, binding.binding)),
+        ),
+        KeybindingReading::Unknown { reason, .. } => KnownShortcuts::unavailable(reason),
+    }
 }
 
 fn build_backend(

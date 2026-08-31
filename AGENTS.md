@@ -193,8 +193,29 @@ GUI or dependency compiles when the relevant command was not executed.
   tuned curve. Activation 0.6, cancellation 0.25, cooldown 350 ms, and the
   travel distances in `RecognizerScale` have never been tried against a hand,
   and Issue #3 defers the curve. The recognizer's 104–126 ns per frame is over
-  replayed synthetic frames; no backend in this build produces real ones, so
-  there is still no end-to-end gesture latency to quote.
+  replayed synthetic frames; the live pipeline's frames come from the adapter
+  and have never been produced by a hand, so there is still no end-to-end
+  gesture latency to quote.
+- Better Touchpad's gesture profiles are per device now, and its pointer,
+  scrolling, and clicking settings are still session-global. ADR 0010 records
+  which half is which and why. `gestures.json` is schema version 2 and migrates
+  version 1 on read; the capture beside it is still one file for the machine
+  rather than one per profile, so a restore puts the capture back into whichever
+  profile is in force. And nothing routes a recognized gesture to the profile of
+  the pad that produced it. `better-touchpad-gestured` recognizes against the
+  profile in force — the selected pad's own, or the global one — rather than
+  always the global one, but `org.betteros.TouchpadAdapter1` reports no device
+  identity, so on a machine with two touchpads both pads perform the selected
+  pad's profile. Routing per pad needs the adapter interface to name the device
+  first, which is an ADR 0012 change rather than a GUI one.
+- The custom-shortcut collision check reads only what a dconf database holds,
+  which is what the user has changed. GNOME's compiled-in defaults are in no
+  database and the shell exposes nothing to ask, so the screen says "nothing you
+  have changed uses this" rather than "no conflict". A recorded binding spelled
+  outside `better-actions`' fixed key table — a media key, a keypad key — cannot
+  be compared and is counted rather than guessed at, so the check can miss a
+  collision with one of those. Decide whether a wider key table is worth the
+  execution surface before treating the note as complete.
 - Decide how deep two-finger application support goes. The Mac-style preset
   carries application back, forward, zoom, and rotate because Issue #3's table
   does, and every adapter reports all four unsupported. A four-row preview that

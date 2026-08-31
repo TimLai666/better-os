@@ -39,7 +39,7 @@ fn main() -> ExitCode {
         }
     }
 
-    let config = match gestures.load_config() {
+    let config = match gestures.load_active_config() {
         Ok(config) => config,
         // A configuration that will not parse is not a first run, and starting
         // from defaults would recognize gestures the user never configured.

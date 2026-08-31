@@ -34,7 +34,9 @@ pub mod definition;
 pub mod ingest;
 pub mod plan;
 pub mod preset;
+pub mod profiles;
 pub mod recognizer;
+pub mod shortcut;
 pub mod store;
 pub mod suppression;
 
@@ -54,9 +56,13 @@ pub use plan::{
     PlanError, PlannedChange, PresetPlan, RestorePlan, RunState,
 };
 pub use preset::mac_style;
+pub use profiles::{
+    GestureProfiles, MAX_DEVICE_PROFILES, MAX_GESTURES_PER_PROFILE, PROFILE_SCHEMA_VERSION,
+};
 pub use recognizer::{
     ContactPoint, ContactRole, FrameHealth, GestureEvent, GestureEventKind, Recognizer,
     RecognizerScale, TouchFrame, synthetic,
 };
+pub use shortcut::{KnownShortcuts, ShortcutCheck};
 pub use store::{GestureStore, GestureStoreError};
 pub use suppression::{SuppressionEvent, SuppressionState};

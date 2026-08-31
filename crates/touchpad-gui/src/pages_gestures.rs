@@ -7,20 +7,22 @@
 //! which means it needs no icon font, scales with the theme, and reads the same
 //! in both locales.
 
+use better_actions::{Key, Modifier};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme,
     button::{Button, ButtonVariants},
+    input::Input,
     switch::Switch,
     *,
 };
-use touchpad_gestures::{ConflictResolution, Direction, GestureId, GestureShape};
+use touchpad_gestures::{ConflictResolution, Direction, GestureId, GestureShape, ShortcutCheck};
 
 use crate::app::TouchpadApp;
 use crate::gestures_model::{
-    Arrow, GestureGlyph, GestureRow, PresetStatus, action_label, direction_label, gesture_label,
-    resolution_choices, resolution_label, shape_label,
+    Arrow, GestureGlyph, GestureRow, KeyGroup, PresetStatus, action_label, direction_label,
+    gesture_label, resolution_choices, resolution_label, shape_label,
 };
 use crate::i18n::copy;
 
@@ -351,7 +353,7 @@ impl TouchpadApp {
                             this.child(
                                 Button::new("preview-preset")
                                     .primary()
-                                    .tab_index(20)
+                                    .tab_index(TAB_PREVIEW_PRESET)
                                     .label(c.preview_changes)
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.preview_preset(cx);
@@ -362,17 +364,17 @@ impl TouchpadApp {
                             this.child(
                                 Button::new("apply-preset")
                                     .primary()
-                                    .tab_index(21)
+                                    .tab_index(TAB_APPLY_PLAN)
                                     .disabled(!card.can_apply)
                                     .label(c.apply_preset)
                                     .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.apply_preset(cx);
+                                        this.apply_plan(cx);
                                     })),
                             )
                             .child(
                                 Button::new("cancel-preview")
                                     .outline()
-                                    .tab_index(22)
+                                    .tab_index(TAB_CANCEL_PREVIEW)
                                     .label(c.cancel_preview)
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.cancel_preview(cx);
@@ -431,6 +433,275 @@ impl TouchpadApp {
                     ),
                 ),
             )
+            .into_any_element()
+    }
+
+    /// Which touchpad's gestures are being edited, and whether that pad has a
+    /// profile of its own yet.
+    fn profile_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.model.locale());
+        let selected = self.gestures.active_device().map(str::to_string);
+        let own = self.gestures.device_has_own_profile();
+
+        let mut options: Vec<(String, bool, Option<String>)> =
+            vec![(c.profile_global.to_string(), selected.is_none(), None)];
+        options.extend(self.model.devices().iter().map(|device| {
+            (
+                device.name.clone(),
+                selected.as_deref() == Some(device.identity.as_str()),
+                Some(device.identity.clone()),
+            )
+        }));
+
+        self.card(
+            v_flex()
+                .w_full()
+                .min_w_0()
+                .gap_2()
+                .child(div().text_sm().font_semibold().child(c.profile_heading))
+                .child(self.choice_row(
+                    c.device_scope,
+                    options,
+                    "gesture-profile",
+                    cx,
+                    |this, identity: Option<String>, cx| {
+                        this.select_gesture_device(identity, cx);
+                    },
+                ))
+                .when(selected.is_some(), |this| {
+                    this.child(
+                        div()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if own {
+                                c.profile_own
+                            } else {
+                                c.profile_follows_global
+                            }),
+                    )
+                })
+                .when(selected.is_some(), |this| {
+                    this.child(if own {
+                        Button::new("forget-profile")
+                            .outline()
+                            .small()
+                            .tab_index(TAB_FORGET_PROFILE)
+                            .label(c.profile_forget)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.forget_gesture_profile(cx);
+                            }))
+                    } else {
+                        Button::new("detach-profile")
+                            .outline()
+                            .small()
+                            .tab_index(TAB_DETACH_PROFILE)
+                            .label(c.profile_detach)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.detach_gesture_profile(cx);
+                            }))
+                    })
+                })
+                .into_any_element(),
+            cx,
+        )
+    }
+
+    /// Export and import, and what an import would bring in.
+    fn profiles_file_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.model.locale());
+        let export_path = self.export_path.clone();
+        let import_path = self.import_path.clone();
+
+        self.card(
+            v_flex()
+                .w_full()
+                .min_w_0()
+                .gap_3()
+                .child(div().text_sm().font_semibold().child(c.profiles_file))
+                .child(
+                    v_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(c.export_label),
+                        )
+                        .child(Input::new(&self.export_path))
+                        .child(
+                            Button::new("export-profiles")
+                                .outline()
+                                .tab_index(TAB_EXPORT)
+                                .label(c.export_profiles)
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    let path = export_path.read(cx).value().to_string();
+                                    this.export_profiles(&path, cx);
+                                })),
+                        ),
+                )
+                .child(
+                    v_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(c.import_label),
+                        )
+                        .child(Input::new(&self.import_path))
+                        .child(
+                            Button::new("import-profiles")
+                                .outline()
+                                .tab_index(TAB_IMPORT)
+                                .label(c.import_profiles)
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    let path = import_path.read(cx).value().to_string();
+                                    this.preview_import(&path, cx);
+                                })),
+                        ),
+                )
+                .when_some(self.gestures.import().cloned(), |this, summary| {
+                    this.child(
+                        v_flex()
+                            .w_full()
+                            .min_w_0()
+                            .gap_1()
+                            .child(div().min_w_0().text_xs().child(format!(
+                                "{}: {}",
+                                c.import_summary,
+                                summary.device_profiles.len()
+                            )))
+                            .children(summary.device_profiles.iter().map(|identity| {
+                                div()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(identity.clone())
+                            }))
+                            .when(!summary.matches_selected_device, |this| {
+                                this.child(
+                                    div()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(c.import_uses_global),
+                                )
+                            }),
+                    )
+                })
+                .into_any_element(),
+            cx,
+        )
+    }
+
+    /// The modifier set, the key, and what the recorded keybindings say about
+    /// the combination.
+    fn shortcut_picker(
+        &self,
+        editor: &crate::gestures_model::GestureEditor,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = copy(self.model.locale());
+        let check = self.gestures.shortcut_check();
+        let spelling = editor.shortcut.spelling();
+
+        v_flex()
+            .w_full()
+            .min_w_0()
+            .gap_2()
+            .child(div().text_xs().font_semibold().child(c.shortcut_heading))
+            .child(
+                self.choice_row(
+                    c.shortcut_modifiers,
+                    Modifier::ALL
+                        .into_iter()
+                        .map(|modifier| {
+                            (modifier.name(), editor.shortcut.holds(modifier), modifier)
+                        })
+                        .collect::<Vec<_>>(),
+                    "shortcut-modifier",
+                    cx,
+                    |this, modifier: Modifier, cx| {
+                        if let Some(editor) = this.gestures.editor_mut() {
+                            editor.shortcut.toggle(modifier);
+                        }
+                        cx.notify();
+                    },
+                ),
+            )
+            .child(
+                self.choice_row(
+                    c.shortcut_key,
+                    KeyGroup::ALL
+                        .into_iter()
+                        .map(|group| (key_group_label(group, c), group == editor.key_group, group))
+                        .collect::<Vec<_>>(),
+                    "shortcut-group",
+                    cx,
+                    |this, group: KeyGroup, cx| {
+                        if let Some(editor) = this.gestures.editor_mut() {
+                            editor.key_group = group;
+                        }
+                        cx.notify();
+                    },
+                ),
+            )
+            .child(
+                self.choice_row(
+                    "",
+                    editor
+                        .key_group
+                        .keys()
+                        .into_iter()
+                        .map(|key| (key.name(), key == editor.shortcut.key, key))
+                        .collect::<Vec<_>>(),
+                    "shortcut-key",
+                    cx,
+                    |this, key: Key, cx| {
+                        if let Some(editor) = this.gestures.editor_mut() {
+                            editor.set_key(key);
+                        }
+                        cx.notify();
+                    },
+                ),
+            )
+            .child(match &spelling {
+                Ok(text) => div()
+                    .min_w_0()
+                    .text_xs()
+                    .font_semibold()
+                    .child(text.clone()),
+                Err(_) => div()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child(c.shortcut_needs_modifier),
+            })
+            .when_some(check, |this, check| {
+                this.child(
+                    div()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(match check {
+                            ShortcutCheck::Conflicts { .. } => cx.theme().warning,
+                            _ => cx.theme().muted_foreground,
+                        })
+                        .child(match check {
+                            ShortcutCheck::Conflicts { key } => {
+                                format!("{} {key}", c.shortcut_conflict)
+                            }
+                            ShortcutCheck::NoneRecorded => c.shortcut_none_recorded.to_string(),
+                            ShortcutCheck::Unknown { reason } => {
+                                format!("{} · {reason}", c.shortcut_unknown)
+                            }
+                        }),
+                )
+            })
             .into_any_element()
     }
 
@@ -628,12 +899,15 @@ impl TouchpadApp {
                             cx,
                             |this, action, cx| {
                                 if let Some(editor) = this.gestures.editor_mut() {
-                                    editor.action = action;
+                                    editor.set_action(action);
                                 }
                                 cx.notify();
                             },
                         ),
                     )
+                    .when(editor.action_is_shortcut(), |this| {
+                        this.child(self.shortcut_picker(&editor, cx))
+                    })
                     .child(
                         self.choice_row(
                             c.activation_label,
@@ -812,6 +1086,7 @@ impl TouchpadApp {
             .min_w_0()
             .gap_4()
             .child(self.heading(c.gestures_title, c.gestures_subtitle))
+            .child(self.profile_card(cx))
             .child(self.preset_card(cx))
             .when_some(
                 self.gestures.problem().map(str::to_string),
@@ -823,6 +1098,7 @@ impl TouchpadApp {
             .children(rows.iter().map(|row| self.gesture_row(row, cx)))
             .when_some(editor, |this, editor| this.child(editor))
             .child(self.test_panel(cx))
+            .child(self.profiles_file_card(cx))
             .child(
                 h_flex()
                     .gap_2()
@@ -830,7 +1106,7 @@ impl TouchpadApp {
                     .child(
                         Button::new("restore-gestures")
                             .outline()
-                            .tab_index(50)
+                            .tab_index(TAB_RESTORE)
                             .disabled(!has_capture)
                             .label(c.restore_gestures)
                             .on_click(cx.listener(|this, _, _window, cx| {
@@ -840,7 +1116,7 @@ impl TouchpadApp {
                     .child(
                         Button::new("disable-gestures")
                             .outline()
-                            .tab_index(51)
+                            .tab_index(TAB_DISABLE)
                             .label(c.disable_gestures)
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.disable_gestures(cx);
@@ -881,4 +1157,46 @@ pub fn control_key(prefix: &str, gesture: &GestureId) -> String {
 /// without a window.
 pub fn offered_resolutions(direction: Option<Direction>) -> Vec<ConflictResolution> {
     resolution_choices(direction)
+}
+
+/// The Gestures screen's explicit tab stops, in the order they are reached.
+///
+/// The controls inside a card are their own tab stops in document order; these
+/// are the ones whose order is stated rather than inherited, so a card moving
+/// on the page cannot silently reorder them. A test asserts they are distinct
+/// and increasing, which is what "reachable in a sensible order by keyboard"
+/// means when there is no window to tab through.
+pub const TAB_DETACH_PROFILE: isize = 10;
+pub const TAB_FORGET_PROFILE: isize = 11;
+pub const TAB_PREVIEW_PRESET: isize = 20;
+pub const TAB_APPLY_PLAN: isize = 21;
+pub const TAB_CANCEL_PREVIEW: isize = 22;
+pub const TAB_RESTORE: isize = 50;
+pub const TAB_DISABLE: isize = 51;
+pub const TAB_EXPORT: isize = 60;
+pub const TAB_IMPORT: isize = 61;
+
+/// Every explicit tab stop on the screen, in the order they appear.
+pub const GESTURE_TAB_ORDER: [isize; 9] = [
+    TAB_DETACH_PROFILE,
+    TAB_FORGET_PROFILE,
+    TAB_PREVIEW_PRESET,
+    TAB_APPLY_PLAN,
+    TAB_CANCEL_PREVIEW,
+    TAB_RESTORE,
+    TAB_DISABLE,
+    TAB_EXPORT,
+    TAB_IMPORT,
+];
+
+/// The wording for one part of the key table.
+pub fn key_group_label(group: KeyGroup, c: &'static crate::i18n::Copy) -> &'static str {
+    match group {
+        KeyGroup::Letters => c.group_letters,
+        KeyGroup::Digits => c.group_digits,
+        KeyGroup::Function => c.group_function,
+        KeyGroup::Navigation => c.group_navigation,
+        KeyGroup::Editing => c.group_editing,
+        KeyGroup::Punctuation => c.group_punctuation,
+    }
 }

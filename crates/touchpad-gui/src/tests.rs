@@ -392,6 +392,67 @@ fn a_machine_with_no_touchpad_says_so_rather_than_showing_an_empty_screen() {
 }
 
 #[test]
+fn the_gesture_profile_follows_the_touchpad_the_window_is_about() {
+    let directory = tempfile::tempdir().unwrap();
+    let startup = crate::Startup::run(crate::StartupOptions {
+        roots: fixture("one-touchpad"),
+        store_directory: directory.path().join("touchpad"),
+        locale: Locale::EnUs,
+        offline: true,
+        in_memory: true,
+        page: Page::Gestures,
+    });
+
+    let selected = startup.model.selected_device().unwrap().identity.clone();
+    assert_eq!(startup.gestures.active_device(), Some(selected.as_str()));
+    assert!(selected.starts_with("input:0018:2808:0233"), "{selected}");
+    // Nothing has diverged yet, so the pad is on the shared profile.
+    assert!(!startup.gestures.device_has_own_profile());
+    assert_eq!(
+        startup.gestures.config(),
+        &startup.gestures.profiles().global
+    );
+}
+
+#[test]
+fn a_machine_with_no_touchpad_edits_the_shared_gesture_profile() {
+    let directory = tempfile::tempdir().unwrap();
+    let startup = crate::Startup::run(crate::StartupOptions {
+        roots: Roots::at("/nonexistent"),
+        store_directory: directory.path().join("touchpad"),
+        locale: Locale::EnUs,
+        offline: true,
+        in_memory: true,
+        page: Page::Gestures,
+    });
+    assert_eq!(startup.gestures.active_device(), None);
+    assert!(!startup.gestures.device_has_own_profile());
+}
+
+#[test]
+fn a_test_build_says_it_did_not_check_the_recorded_shortcuts_rather_than_reading_the_developers() {
+    let directory = tempfile::tempdir().unwrap();
+    let startup = crate::Startup::run(crate::StartupOptions {
+        roots: fixture("one-touchpad"),
+        store_directory: directory.path().join("touchpad"),
+        locale: Locale::EnUs,
+        offline: true,
+        in_memory: true,
+        page: Page::Gestures,
+    });
+    assert!(startup.gestures.known_shortcuts().is_empty());
+    assert_eq!(
+        startup
+            .gestures
+            .known_shortcuts()
+            .check(&better_actions::DesktopAction::placeholder_shortcut()),
+        touchpad_gestures::ShortcutCheck::Unknown {
+            reason: "gestures.shortcuts_not_read_in_test_mode".to_string()
+        }
+    );
+}
+
+#[test]
 fn a_setting_never_read_is_shown_as_not_read_rather_than_as_a_value() {
     let model = model();
     let row = model
