@@ -7541,6 +7541,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "touchpad-gesture-service"
+version = "0.2.0"
+dependencies = [
+ "better-actions",
+ "launcher-platform",
+ "tempfile",
+ "tokio",
+ "touchpad-core",
+ "touchpad-gestures",
+ "touchpad-session",
+ "zbus",
+]
+
+[[package]]
 name = "touchpad-gestures"
 version = "0.2.0"
 dependencies = [
@@ -7563,6 +7577,7 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
+ "launcher-platform",
  "tempfile",
  "touchpad-core",
  "touchpad-gestures",
@@ -7588,9 +7603,13 @@ name = "touchpad-session"
 version = "0.2.0"
 dependencies = [
  "better-actions",
+ "futures-util",
  "launcher-platform",
  "serde",
+ "serde_json",
  "thiserror 2.0.19",
+ "tokio",
+ "zbus",
 ]
 
 [[package]]

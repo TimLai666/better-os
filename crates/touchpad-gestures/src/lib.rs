@@ -9,6 +9,9 @@
 //!   ([`config`], [`store`])
 //! - What does the shipped Mac-style preset map? ([`preset`])
 //! - Given a stream of contact-point frames, what happened? ([`recognizer`])
+//! - Given a compositor's gesture events instead of frames, what happened?
+//!   ([`ingest`], which feeds the same recognizer rather than being a second
+//!   one)
 //! - What would applying a preset change, what does it collide with, and what
 //!   did applying it actually do? ([`conflict`], [`plan`])
 //!
@@ -28,10 +31,12 @@
 pub mod config;
 pub mod conflict;
 pub mod definition;
+pub mod ingest;
 pub mod plan;
 pub mod preset;
 pub mod recognizer;
 pub mod store;
+pub mod suppression;
 
 pub use config::{ConfigError, GESTURE_SCHEMA_VERSION, GestureConfig, PresetId};
 pub use conflict::{
@@ -41,9 +46,12 @@ pub use definition::{
     AnimationProgress, ConflictState, ContactCount, Cooldown, Direction, GestureBackend,
     GestureDefinition, GestureError, GestureId, GestureShape, Threshold, VerificationRecord,
 };
+pub use ingest::{
+    CompositorGesture, CompositorGestureKind, CompositorPhase, EventRecognizer, EventScale,
+};
 pub use plan::{
-    ApplyReport, ApprovedGesturePlan, BindingOutcome, BuiltInOutcome, ChangeKind, PlanError,
-    PlannedChange, PresetPlan, RestorePlan, RunState,
+    AdapterFailures, ApplyReport, ApprovedGesturePlan, BindingOutcome, BuiltInOutcome, ChangeKind,
+    PlanError, PlannedChange, PresetPlan, RestorePlan, RunState,
 };
 pub use preset::mac_style;
 pub use recognizer::{
@@ -51,3 +59,4 @@ pub use recognizer::{
     RecognizerScale, TouchFrame, synthetic,
 };
 pub use store::{GestureStore, GestureStoreError};
+pub use suppression::{SuppressionEvent, SuppressionState};

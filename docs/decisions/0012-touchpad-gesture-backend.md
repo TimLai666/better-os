@@ -2,8 +2,12 @@
 
 ## Status
 
-Accepted for ticket 30. This ADR records the choice and its conditions; ticket
-30 deliberately implements none of it. Phase 3 builds what is chosen here.
+Accepted for ticket 30, and **amended on 2026-08-31**: the project owner granted
+the GJS language-policy exception this decision was conditional on, and ticket 38
+built the adapter. The amendment is at the end of this document, under
+[The exception, as granted](#the-exception-as-granted). Everything above it is
+the decision as it stood when it was taken, kept unedited so that a later reader
+can see what was decided before the grant and what changed because of it.
 
 ## Context
 
@@ -154,3 +158,100 @@ has been tested against GNOME 47, 48, or 49, and the GNOME 46 gesture model in
 the shell's own swipe trackers rather than a probe, because those trackers are
 compiled in and expose nothing to read. Its accuracy is a claim dated to that
 release, and re-checking it is part of supporting a newer GNOME.
+
+## The exception, as granted
+
+Amendment, 2026-08-31. The project owner granted the bounded GJS exception.
+Ticket 38 built the adapter, and this section records what was granted, what was
+built inside it, and what is still open — including the one bound that had to be
+widened to make the decision work, which is the part a later reader should read
+first.
+
+### What the exception permits
+
+JavaScript is permitted in Better OS in exactly one place: the GNOME Shell
+adapter extension under `adapters/gnome-shell-touchpad/`. Inside it, JavaScript
+may do two things — report what the compositor saw, and perform an action GNOME
+Shell already exposes. It may not hold a threshold, a cooldown, a cancellation
+rule, a conflict decision, a configuration value, or any gesture decision, and it
+may not execute anything. `AGENTS.md` carries the same sentence as a rule, and
+`crates/touchpad-session/tests/extension.rs` asserts the file against it, so
+widening the exception fails a test rather than passing a review.
+
+### The bound that was widened, and why
+
+The ADR above says the adapter "publishes exactly one D-Bus interface, which
+**emits signals and accepts no method that changes anything**". That bound was
+wrong, and ticket 38 changed it deliberately rather than quietly.
+
+A signal-only adapter can report a gesture and cannot open the overview, because
+opening the overview is `Main.overview.show()` inside the shell's own process and
+there is no other route to it. Keeping the bound would have delivered a gesture
+pipeline that recognizes every gesture in the preset and performs none of them.
+So the interface now has four methods, and the bound that replaces it is a
+sharper one: **every method is an action GNOME Shell already performs, named as
+itself, with no free-text argument.** `ShowOverview`, `ShowDesktop`,
+`SwitchWorkspace(direction)`, and `SuppressBuiltInGestures(suppress)` are the
+whole list, and `Capabilities` reads and changes nothing. There is no method that
+takes a command, a path, a key, or a gesture, which is the property the original
+bound was reaching for.
+
+### What GNOME 46 could and could not do
+
+Recorded because these are the facts the design rests on, and a later GNOME may
+change any of them:
+
+- **A thumb is invisible.** Clutter's touchpad gesture events carry a contact
+  count and nothing about which contact is which. The capability report says
+  `thumb_detection: false`, and `touchpad_gestures::ingest::assumes_thumb`
+  assumes a thumb only where every gesture of that kind and count wants one — so
+  the preset's thumb-and-three pinch works, and it would stop working the moment
+  a four-finger pinch was configured beside it, which is the honest behaviour
+  rather than a coin toss between the two.
+- **The current application's windows have no facility.** GNOME 46's window
+  picker is the overview itself and cannot be filtered to one application. The
+  action is reported unsupported with that reason. This is the fourth row of the
+  Mac-style preset, and it does not work on GNOME 46.
+- **Progress is continuous, and actions are discrete.** The event stream carries
+  begin, update, end, and cancel with cumulative deltas, so the recognizer sees
+  every frame and a gesture reversed before its threshold never reaches the
+  desktop. But GNOME 46 exposes no supported way to drive the overview's own
+  transition from outside the shell, so the action fires at the end. Issue #3
+  allows discrete activation as the first fallback; the architecture does not
+  prevent the other, because the progress already reaches the adapter.
+- **The shell's own trackers can be turned off by their own property.**
+  `Main.overview._swipeTracker` and `Main.wm._workspaceAnimation._swipeTracker`
+  both have an `enabled` property. Suppression saves what each was and puts it
+  back, and the extension restores on `disable()` whatever it was last asked, so
+  an uninstall cannot leave the desktop without its gestures. The capability
+  report carries how many trackers were found, so a shell that renamed them
+  reports zero rather than reporting a suppression that did nothing.
+
+### What was verified, and how
+
+One nested `gnome-shell --nested --wayland` under `dbus-run-session`, with
+`XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME` all
+pointed at a temporary directory, so the extension was never installed into the
+host session and no host dconf key was written. On GNOME Shell 46.0 the extension
+enabled, owned its bus name, reported two built-in swipe trackers, flipped
+`built_in_gestures_suppressed` to true and back, and answered all four action
+methods without error.
+
+What that run did **not** cover is the gesture signals: a nested shell with no
+touchpad input produces none, so the swipe and pinch event path has been driven
+end to end only against a Rust fake of the same interface over a private session
+bus. The recognition, the thresholds, the cooldown, and the actions are therefore
+tested; the compositor's own event shape is taken from the Clutter API and has
+not been observed against a hand.
+
+### What is still open
+
+1. The libinput security review is still owed, and path C is still the better
+   long-term answer for X11 and non-GNOME sessions.
+2. The hardware and release matrix ADR 0008 asked for still does not exist.
+   Nothing here has been tested against GNOME 47, 48, or 49, and
+   `conflict::GNOME_46_GESTURES` remains a static model.
+3. `ingest::EventScale::swipe_pad_pixels` is a recorded starting value of 1000,
+   in the same sense as the thresholds above it: a compositor reports swipe
+   motion in pixels and never says how big the pad is, and nothing has measured
+   this against a hand.

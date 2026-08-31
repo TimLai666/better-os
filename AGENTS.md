@@ -30,7 +30,17 @@ updated, verified, and rolled back through shared manager operations.
 - Keep manager CLI and GUI on the same `manager-core` planning API.
 - Use Rust for first-party production code. Use Go only after recording a
   concrete reason in an ADR. Do not add C, C++, Python, JavaScript, Electron,
-  Tauri, or GTK application code.
+  Tauri, or GTK application code. **One bounded exception exists**, granted by
+  the project owner on 2026-08-31 and recorded in ADR 0012: GJS is permitted
+  inside the Better Touchpad GNOME Shell adapter extension
+  (`adapters/gnome-shell-touchpad/`) and nowhere else. Inside it, JavaScript may
+  only bridge typed events and typed actions — reporting what the compositor
+  saw, and invoking something GNOME Shell already exposes. It may hold no
+  threshold, no cooldown, no cancellation rule, no conflict decision, no
+  configuration, and no gesture decision, it may execute nothing, and no method
+  it serves may take free text. `crates/touchpad-session/tests/extension.rs`
+  asserts those bounds against the file. Widening them needs a new ADR, not a
+  commit.
 - Use GPUI with `gpui-component` for first-party desktop GUIs. `better-ui` owns
   shared presentation primitives.
 - Treat manifests as untrusted input: validate schema, targets, artifacts,
@@ -136,18 +146,38 @@ GUI or dependency compiles when the relevant command was not executed.
   binaries. `crates/launcher-gui/tests/dependencies.rs` states the exception
   with its one cause. Decide whether the toolkit dependency is acceptable, or
   whether the assets crate can be dropped, before a release claims otherwise.
-- Better Launcher ships no gesture adapter and Better Defaults does not yet
-  apply its keyboard shortcut, so the only activation paths that work out of
-  the box are the desktop entry and running the binary. ADR 0012 has now chosen
-  the direction for the first gap and deliberately implements none of it;
-  ticket 27 owns the second.
-- Decide whether Better OS takes a bounded GJS exception to the Rust-only
-  language policy. ADR 0012 chooses the minimal GNOME Shell adapter as the
-  production gesture backend *conditional on that exception*, and it is a
-  policy decision rather than an engineering one. Until it is taken, Better
-  Touchpad ships gesture configuration and no gesture backend, which the
-  Gestures screen states rather than hides. Refusing it is a survivable
-  outcome; leaving it undecided blocks Issue #3's phase 3.
+- Better Launcher's gesture activation now has a route: the Better Touchpad
+  gesture pipeline opens it over `org.betteros.Launcher1` when the thumb-and-
+  three pinch is recognized. Better Defaults still does not apply its keyboard
+  shortcut; ticket 27 owns that.
+- The GJS exception was granted on 2026-08-31 and ticket 38 spent it. The
+  adapter extension is three files, the language rule above states its bounds,
+  and ADR 0012's amendment records what was granted, which bound had to be
+  widened, and why. The one widening: the interface serves four methods rather
+  than only signals, because a signal-only extension can report a gesture and
+  cannot open the overview.
+- The gesture path is two processes, and neither is enabled by installing.
+  `touchpad-adapter@betteros.org` is a GNOME Shell extension the user enables,
+  and `better-touchpad-gestures.service` is a user unit that is installed and
+  not enabled. Without both, Better Touchpad configures gestures and performs
+  none, and the Gestures screen and the `touchpad.gesture_bridge` health check
+  both say which is missing.
+- Three rows of the Mac-style preset do not work on GNOME 46 and must not be
+  described as if they do. Four fingers down maps to the current application's
+  windows and there is no shell facility for it. The two-finger application
+  gestures reach no adapter. And nothing animates: the recognizer sees
+  continuous progress and the actions fire at the end of the gesture, because
+  GNOME 46 exposes no way to drive its own overview transition from outside.
+- The GNOME Shell adapter has been run against a real shell exactly once, on a
+  nested GNOME Shell 46.0 in an isolated session: it enabled, owned its name,
+  found both of the shell's swipe trackers, suppressed and restored them, and
+  performed every action method. Its *event* path has not been seen on a live
+  shell, because a nested shell with no touchpad produces no gesture events, so
+  the swipe and pinch stream is tested only against a Rust fake of the same
+  interface. Do not claim the event shape has been observed against a hand.
+- `ingest::EventScale::swipe_pad_pixels` is 1000, and it is a recorded starting
+  value in the same sense as the thresholds: a compositor reports swipe motion
+  in pixels and never says how big the pad is. Nobody has tuned it.
 - Write the security review the libinput gesture path needs, or record that it
   will not be written. ADR 0008 made it a precondition and ADR 0012 keeps it: a
   user-session process that can read the touchpad can read the keyboard, and

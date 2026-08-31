@@ -587,6 +587,23 @@ impl Recognizer {
         Vec::new()
     }
 
+    /// Cancels whatever is under way because the source said the gesture was
+    /// cancelled.
+    ///
+    /// This is not a second cancellation rule. The threshold rules stay exactly
+    /// where they are; this is the case where the *source* is authoritative — a
+    /// compositor that reports a cancelled gesture has already decided the
+    /// fingers did not do it — and there is no frame that could express it.
+    /// Nothing is recognized again until the next gesture begins, which is the
+    /// same suppression a mid-gesture contact-count change produces.
+    pub fn cancel(&mut self, at_ms: u64) -> Vec<GestureEvent> {
+        let events = self.cancel_active(at_ms);
+        self.origin = None;
+        self.candidates.clear();
+        self.suppressed = false;
+        events
+    }
+
     fn cancel_active(&mut self, at_ms: u64) -> Vec<GestureEvent> {
         match self.active.take() {
             Some(active) => vec![GestureEvent {
@@ -834,6 +851,30 @@ pub mod synthetic {
                 .map(|(id, role, x, y)| ContactPoint { id, role, x, y })
                 .collect(),
         }
+    }
+
+    /// The contacts a gesture of this shape starts from, before it has moved.
+    ///
+    /// A frame source that reports a whole gesture rather than contact points —
+    /// a compositor — has no contacts to give, and this is the arrangement it
+    /// borrows. It is shipped rather than private for that reason:
+    /// [`crate::ingest`] places its synthetic contacts here and then moves them
+    /// by what the compositor said, so an event stream and a replayed stream
+    /// are measured against the same starting shape.
+    pub fn base_contacts(count: usize, thumb: bool) -> Vec<ContactPoint> {
+        starting_points(count, thumb)
+            .into_iter()
+            .map(|(id, role, x, y)| ContactPoint { id, role, x, y })
+            .collect()
+    }
+
+    /// The centre of these contacts.
+    pub fn centre(contacts: &[ContactPoint]) -> (f32, f32) {
+        let points: Vec<(u32, ContactRole, f32, f32)> = contacts
+            .iter()
+            .map(|contact| (contact.id, contact.role, contact.x, contact.y))
+            .collect();
+        centre_of(&points)
     }
 
     /// Contacts spread evenly along the pad, with the thumb below the others

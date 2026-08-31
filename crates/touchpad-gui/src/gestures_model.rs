@@ -20,10 +20,11 @@ use std::collections::BTreeMap;
 
 use better_actions::{ActionSupport, DesktopAction};
 use touchpad_gestures::{
-    ApplyReport, BindingOutcome, ChangeKind, ConflictResolution, ContactCount, Cooldown, Direction,
-    GestureConfig, GestureDefinition, GestureError, GestureEvent, GestureId, GestureShape,
-    GestureStore, PlanError, PresetId, PresetPlan, Recognizer, RecognizerScale, RestorePlan,
-    RunState, Threshold, VerificationRecord, mac_style, plan::bind_all, synthetic,
+    AdapterFailures, ApplyReport, BindingOutcome, ChangeKind, ConflictResolution, ContactCount,
+    Cooldown, Direction, GestureConfig, GestureDefinition, GestureError, GestureEvent, GestureId,
+    GestureShape, GestureStore, PlanError, PresetId, PresetPlan, Recognizer, RecognizerScale,
+    RestorePlan, RunState, SuppressionEvent, SuppressionState, Threshold, VerificationRecord,
+    mac_style, plan::bind_all, synthetic,
 };
 use touchpad_session::SessionAdapter;
 
@@ -229,10 +230,13 @@ pub struct GestureScreen {
     live_testing: bool,
     last_test: TestRun,
     problem: Option<String>,
-    /// Consecutive runs the adapter failed. Issue #3 requires a repeatedly
-    /// failing gesture adapter to be disabled automatically, and "repeatedly"
-    /// has to be a number somebody chose rather than a feeling.
-    consecutive_failures: u32,
+    /// Consecutive runs the adapter failed. The rule and the number live in
+    /// `touchpad-gestures` because the resident gesture service applies the
+    /// same one, and a rule with two copies is a rule they can disagree about.
+    failures: AdapterFailures,
+    /// Whether GNOME has been asked to give up the gestures this configuration
+    /// took from it, and whether it did.
+    suppression: SuppressionState,
 }
 
 impl GestureScreen {
@@ -254,19 +258,30 @@ impl GestureScreen {
             live_testing: false,
             last_test: TestRun::default(),
             problem: None,
-            consecutive_failures: 0,
+            failures: AdapterFailures::default(),
+            suppression: SuppressionState::new(),
         }
     }
 
     /// How many failed runs in a row disable the integration.
-    ///
-    /// Three rather than one: a single failure can be a session that was still
-    /// starting, and turning every gesture off for that would be worse than the
-    /// failure. Three in a row is a broken adapter.
-    pub const FAILURES_BEFORE_DISABLE: u32 = 3;
+    pub const FAILURES_BEFORE_DISABLE: u32 = AdapterFailures::BEFORE_DISABLE;
 
     pub fn consecutive_failures(&self) -> u32 {
-        self.consecutive_failures
+        self.failures.consecutive()
+    }
+
+    /// Whether GNOME's own gestures are currently suppressed.
+    pub fn suppression(&self) -> &SuppressionState {
+        &self.suppression
+    }
+
+    /// Gives the desktop its own gestures back and leaves them that way.
+    ///
+    /// Safe mode is the path a user reaches when the machine has become hard to
+    /// use, so it undoes rather than asks.
+    pub fn enter_safe_mode(&mut self) {
+        self.suppression
+            .transition(SuppressionEvent::SafeMode, self.adapter.as_mut());
     }
 
     /// Counts a run and turns the integration off once the adapter has failed
@@ -277,19 +292,20 @@ impl GestureScreen {
     /// unaffected by a gesture adapter giving up — which is the whole point of
     /// the two halves keeping separate state.
     fn record_run(&mut self, state: RunState, store: Option<&GestureStore>) {
-        if state == RunState::Failed {
-            self.consecutive_failures += 1;
-        } else {
-            self.consecutive_failures = 0;
+        if !self.failures.record(state) {
             return;
         }
-        if self.consecutive_failures >= Self::FAILURES_BEFORE_DISABLE && self.config.enabled {
+        if self.config.enabled {
             self.config.enabled = false;
             self.problem = Some(format!(
                 "gestures.adapter_disabled_after_failures:{}",
-                self.consecutive_failures
+                self.failures.consecutive()
             ));
             self.save(store);
+            // An integration that is off must not still be holding GNOME's
+            // gestures.
+            self.suppression
+                .transition(SuppressionEvent::Disabled, self.adapter.as_mut());
         }
     }
 
@@ -531,7 +547,7 @@ impl GestureScreen {
             }
         }
 
-        let (config, report) = approved.apply(self.adapter.as_mut());
+        let (config, report) = approved.apply_with(self.adapter.as_mut(), &mut self.suppression);
         self.config = config;
         self.save(store);
         let state = report.state();
@@ -546,7 +562,7 @@ impl GestureScreen {
     pub fn restore(&mut self, store: Option<&GestureStore>) -> Option<RunState> {
         let captured = self.captured.clone()?;
         let plan = RestorePlan::from_capture(&self.config, &captured);
-        let (config, report) = plan.apply(self.adapter.as_mut());
+        let (config, report) = plan.apply_with(self.adapter.as_mut(), &mut self.suppression);
         self.config = config;
         self.save(store);
         let state = report.state();
@@ -563,7 +579,7 @@ impl GestureScreen {
     pub fn disable(&mut self, store: Option<&GestureStore>) -> RunState {
         let captured = self.captured.clone().unwrap_or_else(|| self.config.clone());
         let plan = RestorePlan::disable(&self.config, &captured);
-        let (config, report) = plan.apply(self.adapter.as_mut());
+        let (config, report) = plan.apply_with(self.adapter.as_mut(), &mut self.suppression);
         self.config = config;
         self.save(store);
         let state = report.state();

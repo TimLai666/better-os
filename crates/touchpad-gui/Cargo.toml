@@ -20,7 +20,12 @@ better-actions.workspace = true
 better-ui.workspace = true
 touchpad-core.workspace = true
 touchpad-gestures.workspace = true
-touchpad-session.workspace = true
+# The window reaches the gesture adapter over the session bus so that applying
+# the preset can ask GNOME to give up the gestures the user chose to take, and
+# so the Gestures screen reports what a real adapter says rather than what a
+# recording one would.
+touchpad-session = { workspace = true, features = ["gnome-shell", "launcher-activation"] }
+launcher-platform = { workspace = true, features = ["session-bus"] }
 touchpad-platform.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true

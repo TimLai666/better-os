@@ -1,0 +1,42 @@
+[Unit]
+Description=Better Touchpad gesture pipeline
+Documentation=https://github.com/TimLai666/better-os/blob/main/docs/tickets/38-gnome-gesture-adapter.md
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# Type=simple. The service owns no bus name: it is a client of the GNOME Shell
+# adapter extension's name and of Better Launcher's, so there is nothing for
+# systemd to wait on at exec time.
+Type=simple
+ExecStart=/usr/bin/better-touchpad-gestured
+# on-failure, not always. The service exits successfully and on purpose in
+# three cases — safe mode is on, no gesture is configured, and the adapter
+# extension is not enabled — and restarting it for those would be a loop that
+# hides the reason instead of showing it in the journal.
+Restart=on-failure
+
+# Hardening for an unprivileged user unit, chosen the same way
+# better-awake.service's was rather than copied from the privileged daemon.
+# This process reads two configuration files, speaks to the session bus, and
+# holds no privilege at all. PrivateTmp and ProtectSystem are deliberately
+# absent for the same reason they are there: in a systemd --user manager they
+# need unprivileged user namespaces, and a gesture service that refuses to
+# start on a host that restricts them would be worse than one without a private
+# /tmp, which it has no use for.
+NoNewPrivileges=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# The session bus and nothing else. There is no network code in this binary.
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+# Installed, not enabled. Enabling it is the user's own step or Better
+# Manager's enable step, and it is only useful once the GNOME Shell adapter
+# extension has been enabled too — which is also the user's own act, because
+# enabling a shell extension always is.
+WantedBy=graphical-session.target

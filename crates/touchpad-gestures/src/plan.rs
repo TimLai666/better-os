@@ -20,13 +20,14 @@ use std::collections::BTreeMap;
 
 use better_actions::{ActionSupport, DesktopAction};
 use thiserror::Error;
-use touchpad_session::{BindOutcome, SessionAdapter, VerificationResult};
+use touchpad_session::{BindOutcome, SessionAdapter, SuppressionOutcome, VerificationResult};
 
 use crate::config::{GestureConfig, PresetId};
 use crate::conflict::{BuiltInGesture, Conflict, ConflictResolution, annotate, detect};
 use crate::definition::{
     ContactCount, GestureDefinition, GestureError, GestureId, VerificationRecord,
 };
+use crate::suppression::{SuppressionEvent, SuppressionState};
 
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
 pub enum PlanError {
@@ -278,31 +279,114 @@ impl ApprovedGesturePlan {
         &self.changes
     }
 
+    /// Whether any conflict in this plan was settled by taking the gesture away
+    /// from the desktop.
+    pub fn suppression_wanted(&self) -> bool {
+        self.built_ins
+            .iter()
+            .any(|(_, resolution)| *resolution == ConflictResolution::DisableBuiltIn)
+    }
+
     /// Applies the plan through the session adapter and verifies each binding.
     ///
     /// Returns the configuration as it now stands — carrying what verification
     /// actually said, per gesture — and the report. The caller stores the
     /// configuration; nothing here writes a file, because a plan that could
     /// write would be a plan that could write without being approved.
+    ///
+    /// This form starts from a fresh suppression state, which is right for a
+    /// one-shot apply and for a test. A resident process that has to give the
+    /// desktop its gestures back later keeps its own state and calls
+    /// [`Self::apply_with`].
     pub fn apply(&self, adapter: &mut dyn SessionAdapter) -> (GestureConfig, ApplyReport) {
+        self.apply_with(adapter, &mut SuppressionState::new())
+    }
+
+    /// The same, against a suppression state that outlives this apply.
+    pub fn apply_with(
+        &self,
+        adapter: &mut dyn SessionAdapter,
+        suppression: &mut SuppressionState,
+    ) -> (GestureConfig, ApplyReport) {
         let (config, mut report) = bind_all(&self.config, adapter);
+        // Every built-in gesture the user chose to take gets one call, because
+        // the desktop's own trackers go off together or not at all. What that
+        // call said is then reported against each of them, so a preview that
+        // promised something and a desktop that still does the old thing can
+        // never be the same screen.
+        let outcome = if self.suppression_wanted() {
+            Some(suppression.transition(SuppressionEvent::PlanApplied { wanted: true }, adapter))
+        } else {
+            None
+        };
         for (built_in, resolution) in &self.built_ins {
-            // No adapter in this build can turn a GNOME gesture off. Saying so
-            // is the whole point: the alternative is a preview that promised
-            // something and a desktop that still does the old thing.
-            report.built_ins.push((
-                built_in.clone(),
-                BuiltInOutcome::Unsupported {
-                    reason: "gestures.built_in_not_changeable".to_string(),
+            let reported = match &outcome {
+                Some(SuppressionOutcome::Suppressed) => BuiltInOutcome::Suppressed,
+                Some(SuppressionOutcome::Restored) | None => BuiltInOutcome::Unsupported {
+                    reason: "gestures.built_in_not_changed".to_string(),
                     detail: format!(
-                        "no gesture backend in this build can change {built_in}; \
+                        "nothing asked the desktop to give up {built_in}; \
                          the resolution recorded was {}",
                         resolution.key()
                     ),
                 },
-            ));
+                Some(SuppressionOutcome::Unsupported { reason, detail }) => {
+                    BuiltInOutcome::Unsupported {
+                        reason: reason.clone(),
+                        detail: format!(
+                            "{detail}, so {built_in} still belongs to the desktop; \
+                             the resolution recorded was {}",
+                            resolution.key()
+                        ),
+                    }
+                }
+                Some(SuppressionOutcome::Failed { reason, detail }) => BuiltInOutcome::Failed {
+                    reason: reason.clone(),
+                    detail: format!("{built_in} could not be given up: {detail}"),
+                },
+            };
+            report.built_ins.push((built_in.clone(), reported));
         }
         (config, report)
+    }
+}
+
+/// How many runs in a row an adapter has failed, and when that is enough to
+/// turn the integration off by itself.
+///
+/// Issue #3 requires a repeatedly failing gesture adapter to be disabled
+/// automatically, and "repeatedly" has to be a number somebody chose. It lives
+/// here rather than in one screen because two things now run gestures — the
+/// window and the resident pipeline — and a rule they could each have their own
+/// copy of is a rule they can disagree about.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AdapterFailures {
+    consecutive: u32,
+}
+
+impl AdapterFailures {
+    /// Three rather than one: a single failure can be a session that was still
+    /// starting, and turning every gesture off for that would be worse than the
+    /// failure. Three in a row is a broken adapter.
+    pub const BEFORE_DISABLE: u32 = 3;
+
+    pub fn consecutive(&self) -> u32 {
+        self.consecutive
+    }
+
+    /// Counts a run. Returns whether the integration should now be turned off.
+    pub fn record(&mut self, state: RunState) -> bool {
+        if state == RunState::Failed {
+            self.consecutive += 1;
+        } else {
+            self.consecutive = 0;
+            return false;
+        }
+        self.consecutive >= Self::BEFORE_DISABLE
+    }
+
+    pub fn reset(&mut self) {
+        self.consecutive = 0;
     }
 }
 
@@ -362,7 +446,16 @@ impl BindingOutcome {
 /// What happened to a built-in gesture a resolution asked to change.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BuiltInOutcome {
-    Unsupported { reason: String, detail: String },
+    /// The desktop gave it up. Only the GNOME Shell adapter can produce this.
+    Suppressed,
+    Unsupported {
+        reason: String,
+        detail: String,
+    },
+    Failed {
+        reason: String,
+        detail: String,
+    },
 }
 
 /// The single word for a whole run.
@@ -405,13 +498,20 @@ impl ApplyReport {
                 outcome,
                 BindingOutcome::Failed { .. } | BindingOutcome::Unverified { .. }
             )
-        }) {
+        }) || self
+            .built_ins
+            .iter()
+            .any(|(_, outcome)| matches!(outcome, BuiltInOutcome::Failed { .. }))
+        {
             return RunState::Failed;
         }
         if attempted
             .iter()
             .any(|outcome| matches!(outcome, BindingOutcome::Unsupported { .. }))
-            || !self.built_ins.is_empty()
+            || self
+                .built_ins
+                .iter()
+                .any(|(_, outcome)| matches!(outcome, BuiltInOutcome::Unsupported { .. }))
         {
             return RunState::PartiallySupported;
         }
@@ -509,6 +609,25 @@ impl RestorePlan {
     }
 
     pub fn apply(&self, adapter: &mut dyn SessionAdapter) -> (GestureConfig, ApplyReport) {
+        self.apply_with(adapter, &mut SuppressionState::new())
+    }
+
+    /// The same, against a suppression state that outlives this restore.
+    ///
+    /// Putting the captured configuration back is also the moment the desktop
+    /// gets its own gestures back, because a capture is what the machine looked
+    /// like before Better Touchpad touched it.
+    pub fn apply_with(
+        &self,
+        adapter: &mut dyn SessionAdapter,
+        suppression: &mut SuppressionState,
+    ) -> (GestureConfig, ApplyReport) {
+        let event = if self.captured.enabled {
+            SuppressionEvent::Restored
+        } else {
+            SuppressionEvent::Disabled
+        };
+        suppression.transition(event, adapter);
         bind_all(&self.captured, adapter)
     }
 }
@@ -800,6 +919,97 @@ mod tests {
         // Nothing is bound while the integration is off.
         assert_eq!(report.state(), RunState::NothingToDo);
         assert!(back.active().is_empty());
+    }
+
+    #[test]
+    fn a_confirmed_plan_that_takes_a_gesture_asks_the_desktop_to_give_it_up() {
+        use std::sync::Arc;
+        use touchpad_session::gnome::{
+            FakeShellBridge, GnomeShellAdapter, SharedShellBridge, ShellRequest,
+        };
+
+        let recorded = Arc::new(FakeShellBridge::new());
+        let mut adapter =
+            GnomeShellAdapter::connect(Box::new(SharedShellBridge(recorded.clone()))).unwrap();
+        let plan = plan_for(&adapter);
+        let approved = plan.approve(&keep_everything(&plan), true).unwrap();
+        assert!(approved.suppression_wanted());
+
+        let mut suppression = SuppressionState::new();
+        let (_, report) = approved.apply_with(&mut adapter, &mut suppression);
+        assert_eq!(report.built_ins.len(), 4);
+        assert!(
+            report
+                .built_ins
+                .iter()
+                .all(|(_, outcome)| *outcome == BuiltInOutcome::Suppressed)
+        );
+        // One call, not one per conflict: the desktop's trackers go together.
+        assert_eq!(
+            recorded.calls(),
+            vec![ShellRequest::SuppressBuiltInGestures(true)]
+        );
+        assert!(suppression.is_suppressed());
+
+        // And restoring the capture gives them back.
+        let restore = RestorePlan::from_capture(approved.config(), approved.previous());
+        restore.apply_with(&mut adapter, &mut suppression);
+        assert!(!suppression.is_suppressed());
+        assert_eq!(
+            recorded.calls().last(),
+            Some(&ShellRequest::SuppressBuiltInGestures(false))
+        );
+    }
+
+    #[test]
+    fn a_plan_where_the_desktop_keeps_everything_asks_for_no_suppression() {
+        let adapter = MockSessionAdapter::new();
+        let plan = plan_for(&adapter);
+        let resolutions: BTreeMap<GestureId, ConflictResolution> = plan
+            .conflicts
+            .iter()
+            .map(|conflict| (conflict.gesture.clone(), ConflictResolution::KeepBuiltIn))
+            .collect();
+        let approved = plan.approve(&resolutions, true).unwrap();
+        assert!(!approved.suppression_wanted());
+    }
+
+    #[test]
+    fn a_suppression_that_failed_makes_the_whole_run_a_failure() {
+        use touchpad_session::gnome::{FakeShellBridge, GnomeShellAdapter, ShellError};
+
+        let mut adapter = GnomeShellAdapter::with_reported(
+            Box::new(FakeShellBridge::failing(ShellError::CallFailed(
+                "the shell did not answer".to_string(),
+            ))),
+            FakeShellBridge::gnome_46_capabilities(),
+        );
+        let plan = plan_for(&adapter);
+        let approved = plan.approve(&keep_everything(&plan), true).unwrap();
+        let (_, report) = approved.apply(&mut adapter);
+        assert_eq!(report.state(), RunState::Failed);
+        assert!(matches!(
+            report.built_ins[0].1,
+            BuiltInOutcome::Failed { .. }
+        ));
+    }
+
+    #[test]
+    fn three_failed_runs_in_a_row_are_what_turns_the_integration_off() {
+        let mut failures = AdapterFailures::default();
+        assert!(!failures.record(RunState::Failed));
+        assert!(!failures.record(RunState::Failed));
+        assert_eq!(failures.consecutive(), 2);
+        assert!(failures.record(RunState::Failed));
+        assert_eq!(failures.consecutive(), AdapterFailures::BEFORE_DISABLE);
+
+        // And one good run clears the count rather than decrementing it.
+        let mut failures = AdapterFailures::default();
+        failures.record(RunState::Failed);
+        failures.record(RunState::Failed);
+        assert!(!failures.record(RunState::Applied));
+        assert_eq!(failures.consecutive(), 0);
+        assert!(!failures.record(RunState::Failed));
     }
 
     #[test]

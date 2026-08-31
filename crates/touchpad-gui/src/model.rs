@@ -209,6 +209,11 @@ pub struct TouchpadModel {
     last_run: Option<(RunKind, RunReport)>,
     configuration_problem: Option<String>,
     safe_mode: bool,
+    /// Whether the gesture adapter bridge answered, and what to say about it.
+    /// `None` until something has looked, which is the state an offline window
+    /// stays in.
+    gesture_bridge: Option<bool>,
+    gesture_bridge_detail: String,
 }
 
 impl TouchpadModel {
@@ -238,6 +243,8 @@ impl TouchpadModel {
             last_run: None,
             configuration_problem: None,
             safe_mode: false,
+            gesture_bridge: None,
+            gesture_bridge_detail: String::new(),
         }
     }
 
@@ -279,6 +286,17 @@ impl TouchpadModel {
 
     pub fn safe_mode(&self) -> bool {
         self.safe_mode
+    }
+
+    pub fn gesture_bridge(&self) -> Option<bool> {
+        self.gesture_bridge
+    }
+
+    /// Records what looking for the gesture adapter found. A window that never
+    /// looked leaves this alone rather than reporting the adapter as missing.
+    pub fn set_gesture_bridge(&mut self, reachable: bool, detail: impl Into<String>) {
+        self.gesture_bridge = Some(reachable);
+        self.gesture_bridge_detail = detail.into();
     }
 
     pub fn set_safe_mode(&mut self, on: bool) {
@@ -512,6 +530,8 @@ impl TouchpadModel {
             capture_present: self.state.backup().is_some(),
             safe_mode: self.safe_mode,
             integration_enabled: self.state.config().enabled,
+            gesture_bridge: self.gesture_bridge,
+            gesture_bridge_detail: self.gesture_bridge_detail.clone(),
         })
     }
 

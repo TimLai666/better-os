@@ -19,20 +19,42 @@
 //!   unsupported, and is behind the `launcher-activation` feature so nothing
 //!   here needs a session bus to build or to test.
 //!
-//! No adapter in this build reaches GNOME Shell. Which one eventually does is
-//! [ADR 0012](../../../docs/decisions/0012-touchpad-gesture-backend.md); this
-//! ticket records the decision and does not implement it.
+//! - [`gnome::GnomeShellAdapter`] performs the actions GNOME Shell owns —
+//!   overview, show desktop, and switching workspaces — through the adapter
+//!   extension in `adapters/gnome-shell-touchpad/`, and is the one route that
+//!   can also ask the desktop to stop claiming the same fingers. It is written
+//!   against the [`gnome::ShellBridge`] seam rather than against a bus, so all
+//!   of its behaviour is tested with no shell anywhere near it; the session-bus
+//!   transport under it is behind the `gnome-shell` feature.
+//! - [`routing::RoutingAdapter`] puts the two together, sending each action to
+//!   the first route that declares it.
+//!
+//! Which backend reaches the desktop is [ADR
+//! 0012](../../../docs/decisions/0012-touchpad-gesture-backend.md); the GNOME
+//! Shell adapter it chose is what this crate now implements.
 
 pub mod adapter;
+#[cfg(feature = "gnome-shell")]
+pub mod bus;
+pub mod gnome;
 #[cfg(feature = "launcher-activation")]
 pub mod launcher;
 pub mod mock;
+pub mod routing;
 
 pub use adapter::{
     AdapterDescription, BindOutcome, GesturePhase, GestureProgress, InvocationOutcome,
-    SessionAdapter, VerificationResult,
+    SessionAdapter, SuppressionOutcome, VerificationResult,
+};
+pub use gnome::{
+    FakeShellBridge, GnomeShellAdapter, RecordedShellEvents, ShellBridge, ShellCapabilities,
+    ShellError, ShellEvents, ShellGestureEvent, ShellRequest, WorkspaceDirection,
 };
 pub use mock::{Invocation, MockSessionAdapter};
+pub use routing::RoutingAdapter;
+
+#[cfg(feature = "gnome-shell")]
+pub use bus::{SessionBusShell, SessionBusShellEvents};
 
 #[cfg(feature = "launcher-activation")]
 pub use launcher::{LauncherActivationAdapter, launcher_sample};

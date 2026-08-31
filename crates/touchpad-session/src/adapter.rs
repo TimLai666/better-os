@@ -142,12 +142,54 @@ impl VerificationResult {
     }
 }
 
+/// What happened when the desktop's own gestures were asked to step aside.
+///
+/// Separate from [`InvocationOutcome`] because it is a separate promise. An
+/// adapter that performs every Better OS action may still be unable to touch
+/// what GNOME does with the same fingers, and a preview that said "the desktop
+/// gesture will be turned off" has to be able to report that it was not.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SuppressionOutcome {
+    /// The desktop's own gestures are off.
+    Suppressed,
+    /// They are back exactly as they were.
+    Restored,
+    Unsupported {
+        reason: String,
+        detail: String,
+    },
+    Failed {
+        reason: String,
+        detail: String,
+    },
+}
+
+impl SuppressionOutcome {
+    /// The answer for an adapter that cannot reach the desktop's own gestures
+    /// at all, which is every adapter that is not the GNOME Shell one.
+    pub fn unsupported() -> Self {
+        Self::Unsupported {
+            reason: "session.built_in_gestures_not_changeable".to_string(),
+            detail: "this adapter cannot change what the desktop does with the same fingers"
+                .to_string(),
+        }
+    }
+
+    pub fn failed(reason: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self::Failed {
+            reason: reason.into(),
+            detail: detail.into(),
+        }
+    }
+}
+
 /// The session boundary.
 ///
-/// Only three methods have to be written by an implementation. Binding and
-/// verifying have defaults derived from the capability report, because an
-/// adapter that cannot do an action cannot have bound it either, and writing
-/// that rule once means no adapter can disagree with it.
+/// Only three methods have to be written by an implementation. Binding,
+/// verifying, and suppressing have defaults, because an adapter that cannot do
+/// an action cannot have bound it either, and an adapter that says nothing
+/// about the desktop's own gestures has not changed them. Writing those rules
+/// once means no adapter can disagree with them.
 pub trait SessionAdapter {
     fn describe(&self) -> AdapterDescription;
 
@@ -172,6 +214,17 @@ pub trait SessionAdapter {
                 BindOutcome::Unsupported { reason, detail }
             }
         }
+    }
+
+    /// Turns the desktop's own gestures off, or puts them back.
+    ///
+    /// The default refuses. That is deliberate: suppressing a built-in gesture
+    /// is a real change to somebody else's software, and an adapter that has
+    /// not implemented it must not appear to have done it. A confirmed plan
+    /// that asked for it then reports what actually happened.
+    fn suppress_built_in_gestures(&mut self, suppress: bool) -> SuppressionOutcome {
+        let _ = suppress;
+        SuppressionOutcome::unsupported()
     }
 
     /// Looks again. The default answers from the capability report, which is

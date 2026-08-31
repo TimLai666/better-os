@@ -15,6 +15,12 @@ fi
 
 shopt -s nullglob
 
+# The uuid GNOME finds the adapter extension by. It has to match the directory
+# the package installs it into and the uuid inside its own metadata; both are
+# checked below, because a mismatch produces an extension the shell never sees
+# rather than an error anybody would notice.
+EXTENSION_UUID="touchpad-adapter@betteros.org"
+
 # What each desktop package must actually contain. The list is here rather than
 # inferred from the package name because most of these packages install more
 # than one binary, and a package that quietly stopped shipping its service or
@@ -37,7 +43,9 @@ required_executables() {
             printf '%s\n' usr/bin/better-files
             ;;
         better-touchpad)
-            printf '%s\n' usr/bin/better-touchpad
+            printf '%s\n' \
+                usr/bin/better-touchpad \
+                usr/bin/better-touchpad-gestured
             ;;
         better-awake)
             printf '%s\n' \
@@ -68,7 +76,11 @@ required_data_files() {
         better-touchpad)
             printf '%s\n' \
                 usr/share/applications/better-touchpad.desktop \
-                usr/share/applications/better-touchpad-safe-mode.desktop
+                usr/share/applications/better-touchpad-safe-mode.desktop \
+                usr/lib/systemd/user/better-touchpad-gestures.service \
+                "usr/share/gnome-shell/extensions/$EXTENSION_UUID/metadata.json" \
+                "usr/share/gnome-shell/extensions/$EXTENSION_UUID/extension.js" \
+                "usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml"
             ;;
         better-awake)
             printf '%s\n' \
@@ -234,6 +246,31 @@ for package_name in \
             grep -q '^Exec=better-touchpad --safe-mode$' \
                 "$extract_dir/usr/share/applications/better-touchpad-safe-mode.desktop" || {
                 printf 'The safe-mode desktop entry does not enter safe mode\n' >&2
+                exit 1
+            }
+            grep -q '^ExecStart=/usr/bin/better-touchpad-gestured$' \
+                "$extract_dir/usr/lib/systemd/user/better-touchpad-gestures.service" || {
+                printf 'The gesture user unit does not start the packaged service\n' >&2
+                exit 1
+            }
+            # GNOME finds an extension by the uuid in its metadata matching the
+            # directory it is installed in. A mismatch installs a directory the
+            # shell will never look at, and nothing else would catch it.
+            grep -q "\"uuid\": \"$EXTENSION_UUID\"" \
+                "$extract_dir/usr/share/gnome-shell/extensions/$EXTENSION_UUID/metadata.json" || {
+                printf 'The shell extension uuid does not match its install directory\n' >&2
+                exit 1
+            }
+            # The extension reads its D-Bus contract from the file beside it, so
+            # a package that shipped one without the other would export nothing.
+            grep -q 'org.betteros.TouchpadAdapter1.xml' \
+                "$extract_dir/usr/share/gnome-shell/extensions/$EXTENSION_UUID/extension.js" || {
+                printf 'The packaged extension does not load its interface file\n' >&2
+                exit 1
+            }
+            grep -q '<interface name="org.betteros.TouchpadAdapter1">' \
+                "$extract_dir/usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml" || {
+                printf 'The packaged interface file does not declare the adapter interface\n' >&2
                 exit 1
             }
             ;;

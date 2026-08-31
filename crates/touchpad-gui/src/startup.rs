@@ -13,7 +13,10 @@ use touchpad_gestures::{GestureConfig, GestureStore};
 use touchpad_platform::{
     DeviceInventory, GnomeBackend, MockBackend, Roots, Session, TouchpadBackend, devices,
 };
-use touchpad_session::MockSessionAdapter;
+use touchpad_session::{
+    GnomeShellAdapter, LauncherActivationAdapter, MockSessionAdapter, RoutingAdapter,
+    SessionAdapter, SessionBusShell,
+};
 
 use crate::gestures_model::GestureScreen;
 use crate::i18n::Locale;
@@ -102,16 +105,19 @@ impl Startup {
             Err(error) => (GestureConfig::default(), Some(error.to_string())),
         };
         let captured = gesture_store.load_capture().ok().flatten();
-        // The recording adapter is the only one this build has. It reports
-        // that it performs no system action, and the screen says so rather
-        // than implying a gesture reaches the desktop.
-        let mut gestures = GestureScreen::new(
-            gesture_config,
-            captured,
-            Box::new(MockSessionAdapter::new()),
-        );
+        let (adapter, bridge) = build_session_adapter(&options);
+        if let Some((reachable, detail)) = bridge {
+            model.set_gesture_bridge(reachable, detail);
+        }
+        let mut gestures = GestureScreen::new(gesture_config, captured, adapter);
         gestures.verify_all();
         gestures.set_problem(gesture_problem);
+        // Safe mode gives the desktop its own gestures back before the window
+        // has drawn anything. It is the path a user reaches when the machine
+        // has become hard to use, so it undoes rather than waits to be asked.
+        if store.safe_mode_enabled() {
+            gestures.enter_safe_mode();
+        }
 
         Self {
             model,
@@ -122,6 +128,63 @@ impl Startup {
             page: options.page,
         }
     }
+}
+
+/// The route the Gestures screen speaks to the desktop through, and what to
+/// say about the adapter bridge.
+///
+/// Three outcomes, and the difference between them is what the Diagnostics
+/// screen shows. Offline never looks, so it reports nothing rather than
+/// reporting the adapter as missing. A session with the extension gets the real
+/// route — the launcher through the interface Better Launcher already serves,
+/// and the desktop through the GNOME Shell adapter. A session without it falls
+/// back to the recording adapter, which changes nothing and says so.
+fn build_session_adapter(
+    options: &StartupOptions,
+) -> (Box<dyn SessionAdapter>, Option<(bool, String)>) {
+    if options.offline || options.in_memory {
+        return (Box::new(MockSessionAdapter::new()), None);
+    }
+    let shell = match SessionBusShell::connect() {
+        Ok(shell) if shell.is_reachable() => shell,
+        Ok(_) => {
+            return (
+                Box::new(MockSessionAdapter::new()),
+                Some((
+                    false,
+                    "the GNOME Shell adapter extension is not enabled on this session".to_string(),
+                )),
+            );
+        }
+        Err(error) => {
+            return (
+                Box::new(MockSessionAdapter::new()),
+                Some((false, error.to_string())),
+            );
+        }
+    };
+    let adapter = match GnomeShellAdapter::connect(Box::new(shell)) {
+        Ok(adapter) => adapter,
+        Err(error) => {
+            return (
+                Box::new(MockSessionAdapter::new()),
+                Some((false, error.to_string())),
+            );
+        }
+    };
+    let detail = format!(
+        "the GNOME Shell adapter answered, on shell {}",
+        adapter.reported().shell_version
+    );
+    let mut routes: Vec<Box<dyn SessionAdapter>> = Vec::new();
+    // The launcher route is separate and may be absent on its own: a session
+    // with the extension and no Better Launcher still has working desktop
+    // gestures, and the launcher row then says what is missing.
+    if let Ok(registry) = launcher_platform::bus::SessionBusRegistry::connect() {
+        routes.push(Box::new(LauncherActivationAdapter::new(Box::new(registry))));
+    }
+    routes.push(Box::new(adapter));
+    (Box::new(RoutingAdapter::new(routes)), Some((true, detail)))
 }
 
 fn describe(error: StoreError) -> String {
