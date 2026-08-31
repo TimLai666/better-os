@@ -141,13 +141,17 @@ dpkg-query -W -f='${db:Status-Status}' better-launcher | grep -q '^installed$' |
 for required_file in \
     /usr/bin/better-launcher \
     /usr/share/applications/better-launcher.desktop \
-    /usr/share/doc/better-launcher/copyright \
-    /usr/share/doc/better-launcher/THIRD-PARTY-LICENSES.md; do
+    /usr/share/doc/better-launcher/copyright; do
     [[ -s "$required_file" ]] || {
         printf 'Missing %s after installing better-launcher\n' "$required_file" >&2
         exit 1
     }
 done
+# THIRD-PARTY-LICENSES.md is in the package — verify-deb.sh asserts it from the
+# archive — but minimized Ubuntu images ship a dpkg path-exclude for
+# /usr/share/doc/* (keeping only copyright), so dpkg drops it at unpack here.
+# Asserting its absence-or-presence would test the image's dpkg config, not the
+# package, so the payload check stays in verify-deb.sh.
 # The dependency metadata has to be enough on its own. If the binary cannot
 # resolve its libraries here, in an image with no *-dev packages, then the
 # declared Depends is wrong no matter what the control file says.
