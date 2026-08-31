@@ -26,16 +26,27 @@ is a schema fixture for a future component. It is not a v0.1.0 release asset and
 must not be treated as an installable package until that component is
 implemented and included in the package matrix.
 
-`components/manifests/better-launcher.yaml` is in the same position for a
-different reason: the component exists and its binary builds, but
-`packaging/build-deb.sh` does not yet produce a `better-launcher` package, so
-its artifact checksums are placeholders. It is validated on every test run and
-must not be offered for installation until the package matrix includes it.
+`components/manifests/better-launcher.yaml`, `better-awake.yaml`,
+`better-files.yaml`, and `better-storage.yaml` are in a different position, and
+one that changed with ticket 36. `packaging/build-deb.sh` now produces a package
+for every one of them and `packaging/verify-deb.sh` checks each one, so the
+reason their artifact checksums are still placeholders is no longer that nothing
+is built. It is that ADR 0002 records the checksum of a *published* release
+asset, and no release carries these components yet. A checksum copied from a
+local build would name an artifact nobody can download. All four are validated
+on every test run and must not be offered for installation until a release
+publishes them.
 
-`components/manifests/better-files.yaml` and
-`components/manifests/better-storage.yaml` carry the same caveat for the same
-reason: both components exist and build, neither is in the package matrix, and
-both are validated on every test run without being installable.
+`better-monitor.yaml` carries a narrower version of the same problem. Its
+checksums are real, and they belong to the published v0.1.0 asset, which
+contains the window alone. Ticket 36 added the session service, the command
+line, and a systemd user unit to that package, so the repository now builds
+different content under the same version number. Publishing the wider package
+needs a version bump first.
+
+The package matrix builds `better-touchpad` but no `better-touchpad.yaml`
+exists, so Better Manager cannot install, verify, or remove that component. The
+package is real; the declaration it would be managed through is not written yet.
 
 `better-files.yaml` is the first shipped manifest to declare
 `default_integrations`, so it is also the worked example of what the group is

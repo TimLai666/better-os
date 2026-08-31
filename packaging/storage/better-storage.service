@@ -1,0 +1,40 @@
+[Unit]
+Description=Better Storage external device service
+Documentation=https://github.com/TimLai666/better-os/blob/main/docs/tickets/31-direct-removal-storage.md
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# Type=simple rather than Type=dbus: the service connects to UDisks2 on the
+# system bus and refreshes its device inventory before it requests
+# org.betteros.Storage1, so there is no bus name to wait on at exec time. The
+# session D-Bus activation file beside this unit is what lets a client start it
+# on demand where the unit is not running.
+Type=simple
+ExecStart=/usr/bin/better-storage-service
+Restart=on-failure
+
+# Hardening for an unprivileged user unit, chosen the same way
+# better-awake.service was. The service holds no privilege of its own: UDisks2
+# does, and this is one of its clients.
+#   ProtectHome is absent: the preference file lives under the user's own
+#   config directory.
+#   PrivateTmp and ProtectSystem are absent: both are mount namespace options
+#   that depend on unprivileged user namespaces being available to a --user
+#   manager, and a storage service that refuses to start on a host with those
+#   restricted would be worse than one without a private /tmp.
+NoNewPrivileges=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# Session bus for its own clients, system bus for UDisks2. Nothing here speaks
+# to the network.
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+# Installed, not enabled by the package. Better Manager's enable step turns it
+# on, the same split better-awake and better-monitor use.
+WantedBy=graphical-session.target

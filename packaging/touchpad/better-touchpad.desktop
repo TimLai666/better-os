@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Better Touchpad
+Name[zh_TW]=Better Touchpad
+GenericName=Touchpad Settings
+GenericName[zh_TW]=觸控板設定
+Comment=Scrolling, tapping, pointer speed, and gestures in one place, with every unavailable setting saying why
+Comment[zh_TW]=在同一個地方調整捲動、輕點、指標速度與手勢，無法調整的項目會說明原因
+Exec=better-touchpad
+Icon=better-touchpad
+Terminal=false
+StartupNotify=true
+Categories=Settings;HardwareSettings;
+Keywords=touchpad;trackpad;scroll;tap;gesture;pointer;
+Keywords[zh_TW]=觸控板;捲動;輕點;手勢;指標;

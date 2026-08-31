@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Better Touchpad Safe Mode
+Name[zh_TW]=Better Touchpad 安全模式
+Comment=Turn Better Touchpad integration off without opening the settings window
+Comment[zh_TW]=不開啟設定視窗，直接關閉 Better Touchpad 的整合
+# --safe-mode writes one marker file and exits. It never opens a window and
+# never touches a setting, which is the point: it has to work when the
+# configuration itself is what made the desktop hard to use.
+Exec=better-touchpad --safe-mode
+Icon=better-touchpad
+Terminal=true
+StartupNotify=false
+Categories=Settings;HardwareSettings;
+Keywords=touchpad;safe;recovery;disable;
+Keywords[zh_TW]=觸控板;安全模式;還原;關閉;

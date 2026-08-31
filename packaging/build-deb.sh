@@ -99,7 +99,20 @@ fi
 cd "$ROOT_DIR"
 export RUST_FONTCONFIG_DLOPEN="${RUST_FONTCONFIG_DLOPEN:-1}"
 "$ROOT_DIR/packaging/generate-third-party-notices.sh" --check
-cargo build --release -p manager-gui -p monitor-gui -p manager-daemon
+cargo build --release \
+    -p manager-gui \
+    -p manager-daemon \
+    -p monitor-gui \
+    -p monitor-service \
+    -p monitor-cli \
+    -p launcher-gui \
+    -p files-gui \
+    -p touchpad-gui \
+    -p awake-service \
+    -p awake-tray \
+    -p awake-gui \
+    -p storage-service \
+    -p storage-platform
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 BUILD_DIR="$TARGET_DIR/release"
@@ -107,26 +120,75 @@ mkdir -p "$OUTPUT_DIR"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
+# Every desktop package is the same shape — binaries, payload data, license
+# notices, derived dependencies, checksum sidecar — and differs only in what
+# goes into it. The caller fills these four arrays and calls make_package; each
+# call resets them, so nothing leaks from one package into the next.
+#
+#   PACKAGE_BINARIES  built binary name -> installed path under the package root
+#   PACKAGE_DATA      repository-relative source file -> installed path
+#   PACKAGE_DEPENDS   extra runtime dependencies, added to the derived ones
+#   PACKAGE_RECOMMENDS  a single Recommends field value, or empty
+PACKAGE_BINARIES=()
+PACKAGE_DATA=()
+PACKAGE_DEPENDS=()
+PACKAGE_RECOMMENDS=""
+
+reset_package_inputs() {
+    PACKAGE_BINARIES=()
+    PACKAGE_DATA=()
+    PACKAGE_DEPENDS=()
+    PACKAGE_RECOMMENDS=""
+}
+
+# The GPUI toolkit dlopens fontconfig and the Wayland client libraries, so they
+# are not in the derived shared-library list and have to be named. A package
+# with no window ships none of them; see make_daemon_package and better-storage.
+GRAPHICS_DEPENDS='libfontconfig1, libwayland-client0, libwayland-egl1, libwayland-cursor0'
+
 make_package() {
     local package_name="$1"
-    local binary_name="$2"
-    local description="$3"
-    local recommends="${4:-}"
+    local description="$2"
+    local description_body="$3"
     local staging_dir="$WORK_DIR/$package_name"
     local dependency_control_dir="$WORK_DIR/$package_name-deps"
-    local binary_path="$BUILD_DIR/$binary_name"
     local deb_filename="${package_name}_${VERSION}_${RELEASE_TARGET}_${ARCH}.deb"
     local deb_path="$OUTPUT_DIR/$deb_filename"
     local shlib_dependencies
     local runtime_dependencies
+    local entry binary_name installed_path source_path
+    local scanned_binaries=()
 
-    if [[ ! -x "$binary_path" ]]; then
-        printf 'Missing release binary: %s\n' "$binary_path" >&2
+    if ((${#PACKAGE_BINARIES[@]} == 0)); then
+        printf 'No binaries declared for %s\n' "$package_name" >&2
         exit 1
     fi
 
-    mkdir -p "$staging_dir/DEBIAN" "$staging_dir/usr/bin" "$staging_dir/usr/share/doc/$package_name"
-    install -m 0755 "$binary_path" "$staging_dir/usr/bin/$package_name"
+    mkdir -p "$staging_dir/DEBIAN" "$staging_dir/usr/share/doc/$package_name"
+
+    for entry in "${PACKAGE_BINARIES[@]}"; do
+        binary_name="${entry%%:*}"
+        installed_path="${entry#*:}"
+        if [[ ! -x "$BUILD_DIR/$binary_name" ]]; then
+            printf 'Missing release binary: %s\n' "$BUILD_DIR/$binary_name" >&2
+            exit 1
+        fi
+        mkdir -p "$staging_dir/$(dirname "$installed_path")"
+        install -m 0755 "$BUILD_DIR/$binary_name" "$staging_dir/$installed_path"
+        scanned_binaries+=("$staging_dir/$installed_path")
+    done
+
+    for entry in ${PACKAGE_DATA[@]+"${PACKAGE_DATA[@]}"}; do
+        source_path="${entry%%:*}"
+        installed_path="${entry#*:}"
+        if [[ ! -f "$ROOT_DIR/$source_path" ]]; then
+            printf 'Missing packaging data file: %s\n' "$ROOT_DIR/$source_path" >&2
+            exit 1
+        fi
+        mkdir -p "$staging_dir/$(dirname "$installed_path")"
+        install -m 0644 "$ROOT_DIR/$source_path" "$staging_dir/$installed_path"
+    done
+
     install -m 0644 "$ROOT_DIR/LICENSE" "$staging_dir/usr/share/doc/$package_name/copyright"
     install -m 0644 "$ROOT_DIR/docs/third-party-licenses.md" \
         "$staging_dir/usr/share/doc/$package_name/THIRD-PARTY-LICENSES.md"
@@ -144,9 +206,12 @@ make_package() {
         ' Internal control file used to derive shared-library dependencies.' \
         > "$dependency_control_dir/debian/control"
 
+    # Every binary in the package is scanned, not just the first one: a package
+    # whose service links something its window does not would otherwise ship a
+    # dependency nobody declared.
     shlib_dependencies="$(
         cd "$dependency_control_dir"
-        dpkg-shlibdeps -O "$staging_dir/usr/bin/$package_name" |
+        dpkg-shlibdeps -O "${scanned_binaries[@]}" |
             sed -n 's/^shlibs:Depends=//p'
     )"
     if [[ -z "$shlib_dependencies" ]]; then
@@ -154,8 +219,13 @@ make_package() {
         exit 1
     fi
 
+    local declared_dependencies="$shlib_dependencies"
+    for entry in ${PACKAGE_DEPENDS[@]+"${PACKAGE_DEPENDS[@]}"}; do
+        declared_dependencies="$declared_dependencies, $entry"
+    done
+
     runtime_dependencies="$(
-        printf '%s\n' "$shlib_dependencies, libfontconfig1, libwayland-client0, libwayland-egl1, libwayland-cursor0" |
+        printf '%s\n' "$declared_dependencies" |
             tr ',' '\n' |
             sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
             awk 'NF && !seen[$0]++ { if (out) out = out ", "; out = out $0 } END { print out }'
@@ -173,12 +243,12 @@ make_package() {
     # Recommends, not Depends: the manager still runs without the privileged
     # service, it just reports that it cannot apply changes instead of
     # pretending to.
-    if [[ -n "$recommends" ]]; then
-        printf 'Recommends: %s\n' "$recommends" >> "$staging_dir/DEBIAN/control"
+    if [[ -n "$PACKAGE_RECOMMENDS" ]]; then
+        printf 'Recommends: %s\n' "$PACKAGE_RECOMMENDS" >> "$staging_dir/DEBIAN/control"
     fi
     printf '%s\n' \
         "Description: $description" \
-        ' Better OS desktop application built with the shared manager and monitor contracts.' \
+        " $description_body" \
         >> "$staging_dir/DEBIAN/control"
 
     dpkg-deb --build --root-owner-group "$staging_dir" "$deb_path" >/dev/null
@@ -188,6 +258,7 @@ make_package() {
     ) > "$deb_path.sha256"
     printf 'Built %s (%s, %s)\n' "$deb_path" "$VERSION" "$ARCH"
     printf 'Depends: %s\n' "$runtime_dependencies"
+    reset_package_inputs
 }
 
 # The privileged service ships separately from the desktop applications. It is
@@ -342,7 +413,98 @@ POSTRM
     printf 'Depends: %s\n' "$runtime_dependencies"
 }
 
-make_package better-manager manager-gui 'Better OS manager desktop application' \
-    "better-manager-daemon (= $VERSION)"
-make_package better-monitor monitor-gui 'Better OS monitor desktop application'
+PACKAGE_BINARIES=("manager-gui:usr/bin/better-manager")
+PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
+PACKAGE_RECOMMENDS="better-manager-daemon (= $VERSION)"
+make_package better-manager \
+    'Better OS manager desktop application' \
+    'Better OS desktop application built with the shared manager and monitor contracts.'
+
+# The window, the session service, and the command line are one component and
+# one version: the CLI speaks the service's own IPC contract, so shipping them
+# apart would let a user hold two halves that disagree.
+#
+# /usr/bin/better-monitor stays the window, because that is what the published
+# v0.1.0 package installed and what the manifest declares. The command line is
+# installed as better-monitor-cli, which its own --help does not yet say. That
+# collision is recorded in docs/tickets/36-component-packaging.md; resolving it
+# means renaming one of the two, which is not a packaging change.
+PACKAGE_BINARIES=(
+    "monitor-gui:usr/bin/better-monitor"
+    "better-monitor-service:usr/bin/better-monitor-service"
+    "better-monitor:usr/bin/better-monitor-cli"
+)
+PACKAGE_DATA=("packaging/monitor/better-monitor.service:usr/lib/systemd/user/better-monitor.service")
+PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
+make_package better-monitor \
+    'Better OS monitor desktop application' \
+    'Better OS desktop application built with the shared manager and monitor contracts.'
+
+PACKAGE_BINARIES=("better-launcher:usr/bin/better-launcher")
+PACKAGE_DATA=("packaging/launcher/better-launcher.desktop:usr/share/applications/better-launcher.desktop")
+PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
+make_package better-launcher \
+    'Better OS application launcher overlay' \
+    'One overlay with the search row on top and the whole application library below it.'
+
+PACKAGE_BINARIES=("better-files:usr/bin/better-files")
+PACKAGE_DATA=("packaging/files/io.betteros.Files.desktop:usr/share/applications/io.betteros.Files.desktop")
+# udisks2 is a Recommends rather than a Depends: without it Better Files still
+# browses files, it just cannot mount or eject a device, and it says so instead
+# of hiding the devices.
+PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
+PACKAGE_RECOMMENDS="udisks2"
+make_package better-files \
+    'Better OS file manager' \
+    'A file manager whose operations are durable jobs and whose devices say when they are safe to unplug.'
+
+# The safe-mode entry point ships in the same package as the window it recovers
+# from. A recovery path in a package a user has to install separately, after
+# the desktop has already become hard to use, would not be a recovery path.
+PACKAGE_BINARIES=("better-touchpad:usr/bin/better-touchpad")
+PACKAGE_DATA=(
+    "packaging/touchpad/better-touchpad.desktop:usr/share/applications/better-touchpad.desktop"
+    "packaging/touchpad/better-touchpad-safe-mode.desktop:usr/share/applications/better-touchpad-safe-mode.desktop"
+)
+PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
+make_package better-touchpad \
+    'Better OS touchpad settings' \
+    'Scrolling, tapping, pointer speed, and gestures in one window, with every unavailable setting saying why.'
+
+# The tray and the settings window are installed under the names the desktop
+# entries and the component manifest already name, which are not the Cargo
+# binary names. The unit is installed, not enabled: enabling is Better
+# Manager's enable step, the same split better-manager-daemon uses.
+PACKAGE_BINARIES=(
+    "better-awake-service:usr/bin/better-awake-service"
+    "better-awake-tray:usr/bin/awake-tray"
+    "awake-gui:usr/bin/awake-gui"
+)
+PACKAGE_DATA=(
+    "packaging/awake/better-awake.desktop:usr/share/applications/better-awake.desktop"
+    "packaging/awake/better-awake-tray.desktop:etc/xdg/autostart/better-awake-tray.desktop"
+    "packaging/awake/better-awake.service:usr/lib/systemd/user/better-awake.service"
+)
+PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
+make_package better-awake \
+    'Better OS keep-awake sessions and rules' \
+    'Keep-awake sessions and automatic rules, with every reason the machine is awake shown.'
+
+# No window, so no graphics libraries — the same reasoning the privileged
+# service is packaged with. udisks2 is a Depends and not a Recommends here:
+# the service connects to UDisks2 before it owns its bus name, so without it
+# there is no service at all.
+PACKAGE_BINARIES=(
+    "better-storage-service:usr/bin/better-storage-service"
+    "better-storage-doctor:usr/bin/better-storage-doctor"
+)
+PACKAGE_DATA=(
+    "packaging/storage/better-storage.service:usr/lib/systemd/user/better-storage.service"
+    "packaging/storage/org.betteros.Storage1.service:usr/share/dbus-1/services/org.betteros.Storage1.service"
+)
+PACKAGE_DEPENDS=("dbus" "udisks2")
+make_package better-storage \
+    'Better OS external device removal service' \
+    'Direct removal for external drives, with an honest ready-to-unplug state.'
+
 make_daemon_package

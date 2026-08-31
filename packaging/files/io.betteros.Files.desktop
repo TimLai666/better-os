@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Better Files
+Name[zh_TW]=Better Files
+GenericName=File Manager
+GenericName[zh_TW]=檔案管理員
+Comment=Browse files and applications, with copies that survive a restart and devices that say when they are safe to unplug
+Comment[zh_TW]=瀏覽檔案與應用程式，複製工作可跨重啟續行，裝置也會說明何時可以安全拔除
+Exec=better-files %U
+Icon=better-files
+Terminal=false
+StartupNotify=true
+Categories=System;FileTools;FileManager;
+MimeType=inode/directory;
+Keywords=files;folder;manager;browser;copy;
+Keywords[zh_TW]=檔案;資料夾;管理員;瀏覽;複製;
+# Installing the package does not make Better Files the default file manager.
+# That is the `default-file-manager` integration in the component manifest,
+# applied through Better Defaults and restorable to the captured value.
