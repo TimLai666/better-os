@@ -834,7 +834,7 @@ pub(crate) fn translated_component(
             summary: c.monitor_purpose,
             detail: c.monitor_detail,
         }),
-        "better-files-example" => Some(ComponentTranslation {
+        "better-files" => Some(ComponentTranslation {
             name: c.files_name,
             summary: c.files_purpose,
             detail: c.files_detail,
@@ -852,7 +852,6 @@ fn catalog_manager() -> Manager {
         include_str!("../../../components/manifests/better-touchpad.yaml"),
         include_str!("../../../components/manifests/better-awake.yaml"),
         include_str!("../../../components/manifests/better-storage.yaml"),
-        include_str!("../../../components/manifests/better-files-example.yaml"),
     ]
     .into_iter()
     .map(|input| ComponentManifest::parse_yaml(input).expect("example manifest must be valid"))

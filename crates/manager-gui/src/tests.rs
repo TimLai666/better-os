@@ -140,7 +140,20 @@ fn every_restart_requirement_has_copy_in_both_locales() {
 
 #[test]
 fn a_transaction_reports_the_widest_interruption_it_requires() {
-    let (manager, state) = demo_manager();
+    // The example manifest is a schema fixture, not a shipped component, so
+    // this test builds its own catalog around it instead of finding it in the
+    // built-in one.
+    let manifest = better_core::manifest::ComponentManifest::parse_yaml(include_str!(
+        "../../../components/manifests/better-files-example.yaml"
+    ))
+    .expect("the example manifest must stay valid");
+    let manager = manager_core::Manager::probe(
+        better_core::manifest::ComponentCatalog::from_manifests(vec![manifest])
+            .expect("a one-entry catalog must build"),
+        &manager_platform::MockPlatform::default(),
+    )
+    .expect("the mock platform always reports a profile");
+    let state = ManagerState::default();
     let plan = manager
         .plan(
             &state,

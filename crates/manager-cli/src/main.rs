@@ -168,7 +168,6 @@ fn load_catalog() -> Result<ComponentCatalog, Box<dyn std::error::Error>> {
         include_str!("../../../components/manifests/better-touchpad.yaml"),
         include_str!("../../../components/manifests/better-awake.yaml"),
         include_str!("../../../components/manifests/better-storage.yaml"),
-        include_str!("../../../components/manifests/better-files-example.yaml"),
     ]
     .into_iter()
     .map(|manifest| Ok(ComponentManifest::parse_yaml(manifest)?))
