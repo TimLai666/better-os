@@ -20,22 +20,22 @@ artifacts:
   - release: "22.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-awake_0.2.0_ubuntu-22.04_amd64.deb
-    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    sha256: f9a404a0d1409a1ac259926f5971c1dbd8a68a5b3c771199b2de15b68379f96e
     release_asset: better-awake_0.2.0_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-awake_0.2.0_ubuntu-22.04_arm64.deb
-    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    sha256: d6b985316674a7b7f659b632a8e98e2925ec4e3369383ff144385aee3d4657fd
     release_asset: better-awake_0.2.0_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-awake_0.2.0_ubuntu-24.04_amd64.deb
-    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    sha256: 9a7bb7e21d6f6318925fa85f197944a5f4221ee19d03b4f9cda71b0ad8f5878c
     release_asset: better-awake_0.2.0_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-awake_0.2.0_ubuntu-24.04_arm64.deb
-    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    sha256: 85cae1758eb54300fe5bd6f4c7e40da413efa9cce0ebbea0b1b0a7e65e07a0df
     release_asset: better-awake_0.2.0_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install

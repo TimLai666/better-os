@@ -18,22 +18,22 @@ artifacts:
   - release: "22.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-storage_0.2.0_ubuntu-22.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: b103315b95287aaf6cda3eec19451e1d532d6d56f1c8a5bebbe641e58250e990
     release_asset: better-storage_0.2.0_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-storage_0.2.0_ubuntu-22.04_arm64.deb
-    sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    sha256: caaa7151b645369576d326605105f53bbad1f44013dd30abc31e88f5e70d47a0
     release_asset: better-storage_0.2.0_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-storage_0.2.0_ubuntu-24.04_amd64.deb
-    sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    sha256: 177b7bf9c05ed2fe4ec0ab45b70ad6ada5d1e24e8a36691eb3cbe52906fe7798
     release_asset: better-storage_0.2.0_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-storage_0.2.0_ubuntu-24.04_arm64.deb
-    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    sha256: e60372ae147622223d659b32b44776b0fca1925aa51915f421730d1af87b8522
     release_asset: better-storage_0.2.0_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install

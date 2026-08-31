@@ -32,22 +32,22 @@ artifacts:
   - release: "22.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-touchpad_0.2.0_ubuntu-22.04_amd64.deb
-    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    sha256: 77bb9d5170748c9c933d830edfd18181015dd6f96f5dd3a63c084bdb36c64a57
     release_asset: better-touchpad_0.2.0_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-touchpad_0.2.0_ubuntu-22.04_arm64.deb
-    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    sha256: e4b3502c1dfe954b339245eca0edebae584dae5580ef6cf523fb1b34d4d202b2
     release_asset: better-touchpad_0.2.0_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-touchpad_0.2.0_ubuntu-24.04_amd64.deb
-    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    sha256: 53c02d53d765a26e8babca92959c30cf05743c18250f49d5c6d566a3dd21b802
     release_asset: better-touchpad_0.2.0_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-touchpad_0.2.0_ubuntu-24.04_arm64.deb
-    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    sha256: 53e3ec2c5418910471f6f584ea8ad2bbd8ae6d55e20e45e58e31ada81f6fdd45
     release_asset: better-touchpad_0.2.0_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install

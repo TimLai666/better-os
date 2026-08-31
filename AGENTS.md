@@ -91,12 +91,20 @@ GUI or dependency compiles when the relevant command was not executed.
   Better OS component has a time-to-photon figure. And the idle CPU figure is a
   headless one: nothing asks the window to repaint, so it is the launcher's own
   idle cost and not a claim about a launcher on a running desktop.
-- `packaging/build-deb.sh` now builds all eight packages and
-  `packaging/verify-deb.sh` checks each one, but no release publishes the six
-  added in ticket 36, so `better-launcher`, `better-awake`, `better-files`,
-  `better-storage`, and `better-touchpad` still carry placeholder checksums and are not
-  release-eligible. Publish a release and record the published checksums before
-  calling any of them installable.
+- All eight packages are published. `v0.2.0` carries every component
+  `packaging/build-deb.sh` builds, for Ubuntu 22.04 and 24.04 on amd64 and
+  arm64, and every shipped manifest now records the checksum of its own
+  published asset, verified after re-downloading the public release. No first
+  party manifest carries a placeholder checksum any more;
+  `components/manifests/better-files-example.yaml` is the one exception and is a
+  schema fixture, not a released component.
+- A published binary embeds the manifests as they stood when it was built, and a
+  manifest can only record a real checksum after its own release is public. So
+  the `better-manager` shipped in a release always carries the pre-release
+  placeholder checksums for that release, and only the *next* release ships a
+  built-in catalog that can verify the previous one. Decide whether the catalog
+  should be fetched rather than compiled in before treating the built-in catalog
+  as an install path for the release it belongs to.
 - `better-monitor` ships the window, the session service, the command line, and
   a systemd user unit in one package. v0.1.0 published the window alone, so the
   wider package carries its own version: the workspace is 0.2.0 and the manifest
@@ -109,7 +117,7 @@ GUI or dependency compiles when the relevant command was not executed.
   `touchpad-core` emits and its benchmark baselines are the figures in
   `docs/touchpad-sensitivity-mapping.md`, but nothing runs those benchmarks —
   the same unenforced-budget gap `better-files.yaml` carries. Its checksums are
-  placeholders until a release publishes the package.
+  the published v0.2.0 ones.
 - A package installs its systemd user unit and does not enable it, matching
   `better-manager-daemon`. Nothing in dpkg stops a running Better Awake, Better
   Monitor, or Better Storage user service at removal either; the manifests'
@@ -207,10 +215,6 @@ GUI or dependency compiles when the relevant command was not executed.
   #6's own deferred decision and need one before any such claim.
 - Nothing enforces the benchmark budgets `components/manifests/better-files.yaml`
   declares. There is no CI job that runs the harness and compares.
-- `packaging/build-deb.sh` builds a `better-files` package now, but no release
-  publishes it, so its manifest checksums are still placeholders and it is not
-  release-eligible. The same caveat `better-launcher.yaml`,
-  `better-awake.yaml`, and `better-storage.yaml` carry.
 - Nothing enforces the benchmark budgets the shipped manifests declare. Better
   Files and Better Launcher both now have harnesses that produce every number
   their manifests name, and neither has a stored baseline or a CI job that runs
@@ -239,8 +243,13 @@ GUI or dependency compiles when the relevant command was not executed.
   it. Every published number is a page-cache number from an ext4 temporary
   directory: no spinning disk, no USB device with `fsync` per file, and no
   network share has been measured.
-- Decide which default integrations the shipped component manifests declare.
-  Issue #10 defers it; the schema is proven against a fixture instead, so
-  `better-manager defaults inspect` reports nothing against the built-in
-  catalog and Better Manager's Defaults screen shows its empty state. Both
-  surfaces work; there is simply nothing declared for them to show.
+- The built-in catalog now carries all seven released component manifests, so
+  `better-manager list` offers the whole suite and `better-manager defaults
+  inspect` reports Better Files' declared file-manager integration rather than
+  an empty state. Two gaps stay open. `better-files-example.yaml` is still in
+  the shipped catalog beside the real `better-files`, which shows a user a
+  fixture; removing it means moving the `better-files-example` entry in
+  `manager-gui`'s `translated_component` and its GUI test, which is a code
+  change rather than a list change. And Better Files is the only component that
+  declares a default integration; the other six declare none, which is a
+  deferred Issue #10 decision and not an omission this catalog change made.

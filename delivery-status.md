@@ -85,6 +85,7 @@ privileged mutation out of the GUI and CLI.
 
 | M40 | ticket 36 follow-up — the `better-touchpad` component manifest (needs M39) | agent | done | `components/manifests/better-touchpad.yaml` written, so all nine first-party manifests now exist and Better Manager can plan an install, verify, and removal for every package `build-deb.sh` produces; the manifest declares the seven health check IDs `touchpad_core::HealthReport` actually emits rather than a second vocabulary invented for the catalog, the ten GNOME peripherals keys the backend can write (the three GNOME 46 has no key for are excluded, as the code reports them unavailable), the config, capture, and safe-mode marker paths the store uses, the safe-mode desktop entry, and five benchmark budgets whose baselines are the measured figures in `docs/touchpad-sensitivity-mapping.md`; 11 new tests in `crates/touchpad-platform/tests/manifest.rs` validate it the way the manager does and fail if the declaration drifts from `GnomeBackend`'s key table, `TouchpadStore`'s paths, or the emitted check IDs; checksums stay placeholders for the same ADR 0002 reason the other four unpublished components carry |
 | M41 | ticket 37 — launcher performance harness (needs M24) | agent | done | crate-scoped fmt/clippy `-D warnings`/test gate over `launcher-core`, `launcher-platform`, and `launcher-gui` (130 tests, 2 of them new and asserting the manifest and the harness name the same five benchmarks), and `cargo bench -p launcher-gui --bench launcher_suite` producing all five for the first time: warm search update p95 0.989 ms against the 50 ms target, application-list update p95 151.8 ms of which 150 ms is the deliberate settle window and 1.8 ms is work, warm overlay open p95 206.2 ms to a first renderable model with 37.9 ms to a focused search row, and idle 0.0000 % CPU with 52,992 kB resident over a 20-second window; `warm-overlay-open` stops at a model because `ZED_HEADLESS=1` has no compositor and no frame, and nothing yet enforces the manifest's regression budgets |
+| M42 | v0.2.0 public release of the eight-package suite (needs M39–M41) | agent | done | workspace version 0.1.0 → 0.2.0 and every shipped manifest bumped with it; post-merge CI run [33389237001](https://github.com/TimLai666/better-os/actions/runs/33389237001) on merge commit `96b46f1` green across the rust gate and all four package jobs; [`v0.2.0`](https://github.com/TimLai666/better-os/releases/tag/v0.2.0) published with 66 assets — 32 `.deb`, 32 `.deb.sha256`, `LICENSE`, and `third-party-licenses.md` — covering all eight packages on ubuntu 22.04/24.04 × amd64/arm64 with no filename collisions; every asset re-downloaded from the public release and all 32 sidecars verified, and the re-downloaded bytes are identical to the CI artifacts; the 28 artifact variants across the seven shipped manifests now carry the published checksums, each re-hashed from the downloaded `.deb` rather than copied from a sidecar; `better-monitor`'s two-payloads-one-version follow-up closed by the bump, and `better-manager`'s and `better-monitor`'s stale v0.1.0 checksums replaced rather than carried forward; the built-in catalog the CLI and GUI ship grew from three manifests to eight, so `better-manager list` offers the whole released suite and `defaults inspect` reports a real declaration instead of its empty state |
 
 Every milestone from M21 onward shares the same base gate: `cargo fmt --all --
 --check`, `cargo check --workspace`, `cargo test --workspace`, and `cargo clippy
@@ -98,6 +99,17 @@ including the new `better-launcher` apt install/removal smoke. Two flaky
 process-state tests and the dpkg doc-exclusion assumption in the container
 check were fixed along the way; the license inventory pins the `Cargo.lock`
 hash and must be regenerated whenever the lockfile changes.
+
+The `v0.2.0` release is public. CI run 33389237001 on merge commit `96b46f1`
+produced the assets; the release carries 32 `.deb` files and 32 `.deb.sha256`
+sidecars, eight packages across ubuntu 22.04 and 24.04 on amd64 and arm64, plus
+`LICENSE` and `third-party-licenses.md`. Every asset was downloaded again from
+the public release URL, all 32 sidecars verified, and the seven shipped
+manifests now record checksums re-hashed from those downloaded packages. A
+released binary still embeds the manifests as they stood before its own release,
+so the built-in catalog inside `better-manager` 0.2.0 carries that release's
+pre-publication placeholders; only 0.3.0 will ship a catalog able to verify
+0.2.0.
 
 ## Current Blockers
 

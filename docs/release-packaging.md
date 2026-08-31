@@ -76,16 +76,25 @@ doctor、user unit 與 session D-Bus activation file）。套件只安裝 system
 unit，不啟用它；啟用是 Better Manager 的 enable 步驟，與 `better-manager-daemon`
 的做法一致。CI 以 `ubuntu-22.04-arm64`、`ubuntu-24.04-arm64` 作為 arm64
 job 的隔離目錄，但 asset target 仍是 `ubuntu-22.04` 或 `ubuntu-24.04`，因此
-兩種架構的檔名都符合同一套 release 命名規則。正式 GitHub Release 已產生，
-`better-files-example` 只作為 schema fixture，不列入 v0.1.0 的正式 release
-matrix。正式 release 已發布於
+兩種架構的檔名都符合同一套 release 命名規則。`better-files-example` 只作為
+schema fixture，不列入正式 release matrix。
+
+第一個 release 發布於
 [`v0.1.0`](https://github.com/TimLai666/better-os/releases/tag/v0.1.0)，由
 merge commit `3a6d98b73b838c5a2c0d94404ae9313844009e56` 的 post-merge CI run
 [`30650287246`](https://github.com/TimLai666/better-os/actions/runs/30650287246)
-產生。該 release 只包含 `better-manager`、`better-monitor` 與
-`better-manager-daemon`；ticket 36 新增的六個套件尚未發佈，對應 manifest 的
-checksum 仍是 placeholder。`better-monitor` 的 payload 已在 ticket 36 變寬，
-發佈前必須先升版，否則同一個版號會對應到兩種內容。Debian metadata 使用核准的
+產生，只包含 `better-manager` 與 `better-monitor`。
+
+目前的 release 是
+[`v0.2.0`](https://github.com/TimLai666/better-os/releases/tag/v0.2.0)，由 merge
+commit `96b46f11e814bd4088f630c9c19727e45af9132f` 的 post-merge CI run
+[`33389237001`](https://github.com/TimLai666/better-os/actions/runs/33389237001)
+產生，包含全部八個套件，共 32 個 `.deb` 與 32 個 `.deb.sha256`，涵蓋 ubuntu
+22.04 與 24.04 的 amd64 與 arm64。所有 asset 都從公開 release 重新下載並逐一
+驗證 checksum 之後，才把數值寫回七份 component manifest。`better-monitor` 因為
+payload 在 ticket 36 變寬，已隨這次一起升版，同一個版號不再對應兩種內容。
+
+Debian metadata 使用核准的
 `TimLai666 <tim930102@icloud.com>`
 maintainer，root project license 為 GPL-3.0-or-later。第三方授權清單由
 `packaging/generate-third-party-notices.sh` 從 locked Cargo dependency graph

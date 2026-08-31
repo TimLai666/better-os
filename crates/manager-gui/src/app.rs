@@ -847,6 +847,11 @@ fn catalog_manager() -> Manager {
     let manifests = [
         include_str!("../../../components/manifests/better-manager.yaml"),
         include_str!("../../../components/manifests/better-monitor.yaml"),
+        include_str!("../../../components/manifests/better-launcher.yaml"),
+        include_str!("../../../components/manifests/better-files.yaml"),
+        include_str!("../../../components/manifests/better-touchpad.yaml"),
+        include_str!("../../../components/manifests/better-awake.yaml"),
+        include_str!("../../../components/manifests/better-storage.yaml"),
         include_str!("../../../components/manifests/better-files-example.yaml"),
     ]
     .into_iter()

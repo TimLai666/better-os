@@ -26,22 +26,22 @@ artifacts:
   - release: "22.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-files_0.2.0_ubuntu-22.04_amd64.deb
-    sha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+    sha256: 7f1e5503b5c6df867f5959902ca052964ac11014aeece3cbeb2854cee6f4e82c
     release_asset: better-files_0.2.0_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-files_0.2.0_ubuntu-22.04_arm64.deb
-    sha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+    sha256: 2eae93621693c85685dbc982f397d9462ccd7457a2049c6c3636f6d134fa580f
     release_asset: better-files_0.2.0_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-files_0.2.0_ubuntu-24.04_amd64.deb
-    sha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+    sha256: c43a05655df45d6fdec92c348a5cfdaeaa71ae6e6f040a1e2fcd4d12435732b6
     release_asset: better-files_0.2.0_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-files_0.2.0_ubuntu-24.04_arm64.deb
-    sha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+    sha256: 9045b982516591afa234a98b0cec5960c99675d468356e4e9a7da65cdd7f60e8
     release_asset: better-files_0.2.0_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install

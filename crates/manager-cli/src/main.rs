@@ -163,6 +163,11 @@ fn load_catalog() -> Result<ComponentCatalog, Box<dyn std::error::Error>> {
     let manifests = [
         include_str!("../../../components/manifests/better-manager.yaml"),
         include_str!("../../../components/manifests/better-monitor.yaml"),
+        include_str!("../../../components/manifests/better-launcher.yaml"),
+        include_str!("../../../components/manifests/better-files.yaml"),
+        include_str!("../../../components/manifests/better-touchpad.yaml"),
+        include_str!("../../../components/manifests/better-awake.yaml"),
+        include_str!("../../../components/manifests/better-storage.yaml"),
         include_str!("../../../components/manifests/better-files-example.yaml"),
     ]
     .into_iter()
@@ -574,4 +579,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every component the release publishes must be in the catalog the CLI
+    /// ships, or Better Manager cannot offer a package that exists.
+    /// `better-manager-daemon` is deliberately absent: it is a dependency of
+    /// `better-manager`, not a component a user installs on its own.
+    #[test]
+    fn the_built_in_catalog_offers_every_released_component() {
+        let catalog = load_catalog().expect("the built-in catalog must be valid");
+        for component in [
+            "better-manager",
+            "better-monitor",
+            "better-launcher",
+            "better-files",
+            "better-touchpad",
+            "better-awake",
+            "better-storage",
+        ] {
+            let id = ComponentId::new(component).expect("id must be valid");
+            let manifest = catalog
+                .get(&id)
+                .unwrap_or_else(|| panic!("{component} is missing from the built-in catalog"));
+            assert_eq!(
+                manifest.artifacts.len(),
+                4,
+                "{component} must declare all four release/architecture variants"
+            );
+        }
+    }
 }

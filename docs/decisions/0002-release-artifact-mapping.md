@@ -54,6 +54,25 @@ checks and all four target/architecture package jobs. The public release was
 downloaded again and all eight `.deb.sha256` sidecars verified their matching
 `.deb` assets before the manifest checksums were committed.
 
+## v0.2.0 verification
+
+The second release is published at
+<https://github.com/TimLai666/better-os/releases/tag/v0.2.0> from merge commit
+`96b46f11e814bd4088f630c9c19727e45af9132f`. Post-merge CI run
+<https://github.com/TimLai666/better-os/actions/runs/33389237001> passed the Rust
+checks and all four target/architecture package jobs. The release carries all
+eight packages — the two from v0.1.0 plus `better-manager-daemon`,
+`better-launcher`, `better-files`, `better-touchpad`, `better-awake`, and
+`better-storage` — as 32 `.deb` assets and 32 `.deb.sha256` sidecars. The naming
+contract above kept every filename distinct across the four jobs. The public
+release was downloaded again and all 32 sidecars verified their matching `.deb`
+assets before the manifest checksums were committed.
+
+`better-monitor` moved to 0.2.0 because its payload changed: v0.1.0 shipped the
+window alone and the package now also carries the session service, the command
+line, and a systemd user unit. A manifest checksum maps to one release asset, so
+one version number may not name two payloads.
+
 ## Deferred
 
 Release automation, package signing, public APT repositories, and release

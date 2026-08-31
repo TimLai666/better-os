@@ -180,8 +180,12 @@ fn a_change_made_outside_better_manager_is_reported_and_needs_confirming() {
     assert!(cli.desktop().contains("io.betteros.Files.desktop"));
 }
 
+/// The built-in catalog used to declare nothing, so `defaults inspect` had only
+/// its empty state to show. Shipping `better-files.yaml` gave it a real
+/// declaration, and this asserts the shipped catalog reaches the same engine the
+/// fixture above proves out.
 #[test]
-fn the_built_in_catalog_declares_no_defaults_and_says_so() {
+fn the_built_in_catalog_declares_the_shipped_default_integrations() {
     let directory = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_manager-cli"))
         .env("XDG_CURRENT_DESKTOP", "GNOME")
@@ -201,7 +205,19 @@ fn the_built_in_catalog_declares_no_defaults_and_says_so() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("no component in this catalog declares a default integration"));
+    assert!(
+        stdout.contains("better-files"),
+        "the shipped catalog must offer Better Files: {stdout}"
+    );
+    assert!(
+        stdout.contains("default-file-manager"),
+        "Better Files' declared file-manager integration must be reported: {stdout}"
+    );
+    assert!(
+        !stdout.contains("no component in this catalog declares a default integration"),
+        "the catalog is no longer empty: {stdout}"
+    );
+    // Inspecting reads; it must not create a snapshot store.
     assert!(!Path::new(&directory.path().join("snapshots")).exists());
 }
 
