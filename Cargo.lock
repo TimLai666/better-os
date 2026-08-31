@@ -7572,6 +7572,7 @@ dependencies = [
 name = "touchpad-platform"
 version = "0.1.0"
 dependencies = [
+ "better-core",
  "defaults-platform",
  "tempfile",
  "thiserror 2.0.19",

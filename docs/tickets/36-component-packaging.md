@@ -89,11 +89,17 @@ symlink.
   `/usr/bin/better-monitor` in a published package. Renaming either one is a
   crate change with user-visible consequences, so packaging chose the name that
   does not break what shipped and left the collision recorded.
-- **No `better-touchpad` manifest exists**, so the package is real and Better
-  Manager still cannot install, verify, or remove that component. Writing one
-  means choosing health checks that actually exist and a benchmark budget
-  somebody stands behind; inventing them here would have been worse than
-  leaving the gap visible.
+- ~~**No `better-touchpad` manifest exists**~~ — **closed.**
+  `components/manifests/better-touchpad.yaml` is written. It was left out of
+  ticket 36 because it needed health checks that actually exist and a benchmark
+  budget somebody stands behind, and both now come from the code and the
+  measurements rather than from invention: the health check IDs are the ones
+  `touchpad_core::HealthReport::evaluate` emits, and every benchmark baseline is
+  a figure recorded in `docs/touchpad-sensitivity-mapping.md`. Its checksums are
+  placeholders for the same reason as the four below.
+  `crates/touchpad-platform/tests/manifest.rs` validates it the way the manager
+  validates a manifest and fails if the declaration drifts from `GnomeBackend`'s
+  key table or `TouchpadStore`'s paths.
 - **Checksums stay placeholders** for `better-launcher`, `better-awake`,
   `better-files`, and `better-storage`. ADR 0002 records the checksum of a
   published release asset, and no release carries these components. A hash

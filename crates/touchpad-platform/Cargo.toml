@@ -24,6 +24,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync"], optional = true
 zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }
 
 [dev-dependencies]
+# `tests/manifest.rs` validates the shipped Better Touchpad manifest the way
+# the manager validates one, and checks it against this crate's own key table.
+better-core.workspace = true
 tempfile.workspace = true
 # The integration tests speak the core vocabulary, which a dependency of the
 # library is not automatically lent to them.
