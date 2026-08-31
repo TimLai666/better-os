@@ -81,6 +81,8 @@ privileged mutation out of the GUI and CLI.
 | M37 | ticket 34 — files-gui window, sidebar, views, operations (needs M36) | agent | done | crate-scoped fmt/check/test/clippy gate over the four `files-*` crates, 66 new `files-gui` tests (356 across the four), a session dropped mid-copy whose 8 MB job still completed, a bookmark file round-tripped byte for byte with its foreign lines intact, both locales at 100/125/150%, an 8 s `ZED_HEADLESS=1` `better-files` smoke, and a 100,000-entry view-model benchmark (first visible batch 3.7 ms, full model 170 ms, one screenful 0.011 ms against 37.2 ms for every row); full workspace gate ran after merge |
 | M38 | ticket 35 — Applications, devices, preview, search, benchmarks (needs M22, M37) | agent | done | full workspace gate green (fmt, check, test, clippy `-D warnings`), 1,942 workspace tests with 493 across the seven `files-*`/`storage-service` crates, 46 new `files-gui` view-model tests including all five device states in both locales and a disconnect-while-viewing that left no stale history entry, 19 preview tests including a panicking parser caught at the boundary, 16 search tests, 6 private-session-bus tests of the new `StorageClient` against a real served interface, 9 manifest tests, an 8 s `ZED_HEADLESS=1` `better-files` smoke, and the full benchmark suite (first content 3.7 ms and full model 155 ms on 100,000 entries, search keystroke p95 0.002 ms, PNG preview p95 16.7 ms, 24,335 small files/s); comparison against Nautilus and Explorer recorded as methodology-needed, not measured |
 
+| M40 | ticket 37 — launcher performance harness (needs M24) | agent | done | crate-scoped fmt/clippy `-D warnings`/test gate over `launcher-core`, `launcher-platform`, and `launcher-gui` (130 tests, 2 of them new and asserting the manifest and the harness name the same five benchmarks), and `cargo bench -p launcher-gui --bench launcher_suite` producing all five for the first time: warm search update p95 0.989 ms against the 50 ms target, application-list update p95 151.8 ms of which 150 ms is the deliberate settle window and 1.8 ms is work, warm overlay open p95 206.2 ms to a first renderable model with 37.9 ms to a focused search row, and idle 0.0000 % CPU with 52,992 kB resident over a 20-second window; `warm-overlay-open` stops at a model because `ZED_HEADLESS=1` has no compositor and no frame, and nothing yet enforces the manifest's regression budgets |
+
 Every milestone from M21 onward shares the same base gate: `cargo fmt --all --
 --check`, `cargo check --workspace`, `cargo test --workspace`, and `cargo clippy
 --workspace --all-targets -- -D warnings`. The signal column names only what
@@ -127,10 +129,12 @@ Ticket 24's output is delivered: collection survives every client
 disconnecting, proved over a private session bus, with a versioned store and a
 redacted export.
 
-Better Launcher is now openable and usable: the overlay, its activation paths,
-and the gesture adapter boundary landed with ticket 21. What it still has no
-number for is speed — the manifest defines warm search update, warm overlay
-open, list update, and idle overhead, and no harness runs any of them yet.
+Better Launcher is openable, usable, and now measured: the overlay, its
+activation paths, and the gesture adapter boundary landed with ticket 21, and
+ticket 37 built the harness that produces every benchmark the manifest declares.
+Warm search update is 0.989 ms at p95 against a 50 ms target. What no launcher
+number covers is a frame: `warm-overlay-open` stops at the first renderable
+model, because a headless run has no compositor to present one.
 
 The Better Manager follow-ups remain open and unscheduled: package signing, the
 public APT repository, a repair action for a transaction interrupted mid-flight,
@@ -139,10 +143,11 @@ requires.
 
 ## Next Ticket
 
-Tickets 18 through 35 are all done. No ticket remains from the set cut for
-issues #2, #3, #4, #5, #6, #10, #13, and #16. The next change should be scoped
-to a new ticket or to a recorded follow-up in `AGENTS.md` — packaging the new
-components into `.deb`s tops that list.
+Tickets 18 through 35 are done, and so is ticket 37, which closed Issue #2's
+last acceptance gap by measuring the four launcher benchmarks the manifest had
+only declared. Ticket 36 — packaging the new components into `.deb`s — is the
+remaining closure ticket; after it, the next change should be scoped to a new
+ticket or to a recorded follow-up in `AGENTS.md`.
 
 Ticket 30 now inherits two decisions rather than a blank page: ADR 0008 compares
 the four gesture integration paths and adopts none, and ADR 0010 settles how a
@@ -1456,3 +1461,55 @@ no UI does that; trashed items cannot be previewed, because `files-core`
 deliberately does not expose a trashed entry's stored path; and keyboard
 movement through search results uses the model's visible list, so a hit the view
 is hiding can be clicked but not arrowed to.
+
+### Ticket 37 — Better Launcher performance harness
+
+Branch `ticket-37`. `components/manifests/better-launcher.yaml` had declared four
+launcher-level benchmarks since ticket 21 and nothing ran any of them.
+`cargo bench -p launcher-gui --bench launcher_suite` now runs all of them, plus a
+fifth the harness needed, and `docs/launcher-performance.md` carries the
+methodology, the hardware, and the limits.
+
+**The binary times its own startup.** Three of the five measurements need a
+running process, and reimplementing the startup path inside a benchmark would
+have measured something adjacent to what ships. With
+`BETTER_LAUNCHER_TRACE_STARTUP=1` the binary prints two parseable stderr lines —
+`shell-ready` when the window callback returns and `library-ready` when the
+background read lands in the model — and prints nothing otherwise, so the
+headless launch smoke still expects silence. `better-touchpad` already published
+its startup figure this way; this follows it rather than inventing a second
+shape.
+
+**The manifest can no longer promise a measurement nobody takes.**
+`launcher_gui::BENCHMARKS` is one list of `(name, workload, metric)`, the harness
+labels its rows from it, and a new `launcher-gui/tests/manifest.rs` fails if the
+YAML disagrees. Every workload and metric string was rewritten to say what is
+actually built and printed. `idle-memory` was added as a fifth definition,
+because the idle window produces both a CPU figure and a resident-set figure and
+one metric string cannot carry two numbers.
+
+Measured on an AMD Ryzen AI 9 HX 370, 31 GiB, ext4 on NVMe, Zorin OS 18.1, warm
+cache, against a synthetic XDG directory of 5,000 generated entries written by
+the harness itself: warm search update p95 **0.989 ms** against Issue #2's 50 ms
+target; application-list update p95 **151.8 ms**, of which 150 ms is the
+watcher's deliberate burst-coalescing wait and **1.8 ms** is the notice, re-read,
+rebuild, and swap; warm overlay open p95 **206.2 ms** with **37.9 ms** to a
+focused search row; idle **0.0000 %** CPU and **52,992 kB** resident over a
+20-second window.
+
+Three of those need reading rather than quoting, and the harness prints each
+caveat beside the number rather than only in the document. The settle window is
+policy, not cost, so it has its own row. `warm-overlay-open` ends at the first
+renderable model, because `ZED_HEADLESS=1` means no compositor, no surface, and
+no frame — compositor handoff, GPU warm-up, and present-to-photon are outside it
+and are not estimated. And the idle zero is corroborated: both
+`/proc/[pid]/schedstat` and `/proc/[pid]/stat` read zero over the window, and the
+harness reports the 76.5 ms the same schedstat counter accumulated during startup
+so the zero is evidence about the process and not about a counter the kernel
+never populated.
+
+Not done, and stated in the ticket rather than implied: nothing enforces the
+manifest's regression budgets, because that needs a stored baseline and a CI job
+and this run is only the first candidate baseline; the headless idle figure is
+not a session idle figure, since nothing asks the window to repaint; and every
+number is one machine, warm cache, amd64.

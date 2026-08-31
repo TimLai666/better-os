@@ -32,6 +32,11 @@ use launcher_platform::activation::{
 use launcher_platform::bus::SessionBusRegistry;
 
 fn main() {
+    // First statement in the process: open time is a published figure, so the
+    // binary measures it rather than a benchmark reimplementing the startup
+    // path. It prints nothing unless asked.
+    launcher_gui::startup::begin();
+
     let request = if std::env::args()
         .skip(1)
         .any(|argument| argument == "--open")
@@ -95,7 +100,15 @@ fn main() {
                     OverlayEvent::Closed => cx.quit(),
                 })
                 .detach();
-                cx.new(|cx| Root::new(overlay, window, cx))
+                let root = cx.new(|cx| Root::new(overlay, window, cx));
+                // The window exists, the search row has focus, and the model a
+                // first frame would draw is complete. The library is still
+                // being read; `library-ready` is the stage that says it arrived.
+                launcher_gui::startup::mark(
+                    launcher_gui::startup::STAGE_SHELL_READY,
+                    "search row focused, library still loading",
+                );
+                root
             })
             .expect("failed to open the Better Launcher overlay");
 

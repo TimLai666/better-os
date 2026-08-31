@@ -83,10 +83,14 @@ GUI or dependency compiles when the relevant command was not executed.
   for a transaction interrupted by a crash or power loss.
 - Align the declared Rust 1.85 baseline with the lockfile dependency MSRV
   before treating Rust 1.85 as a supported build target.
-- Better Launcher is openable and usable but unmeasured. Its manifest defines
-  warm search update, warm overlay open, application-list update, and idle
-  overhead, and no harness runs any of them. Do not claim launcher performance
-  until one does.
+- Better Launcher is measured now: `cargo bench -p launcher-gui --bench
+  launcher_suite` runs all five manifest benchmarks and
+  `docs/launcher-performance.md` records the numbers and the hardware. Two
+  limits travel with them. `warm-overlay-open` ends at the first renderable
+  model, because `ZED_HEADLESS=1` has no compositor and therefore no frame — no
+  Better OS component has a time-to-photon figure. And the idle CPU figure is a
+  headless one: nothing asks the window to repaint, so it is the launcher's own
+  idle cost and not a claim about a launcher on a running desktop.
 - `packaging/build-deb.sh` builds no `better-launcher` or `better-awake`
   package, so those manifests' artifact checksums are placeholders and neither
   component is release-eligible. Both are validated on every test run; neither is
@@ -181,8 +185,11 @@ GUI or dependency compiles when the relevant command was not executed.
   Files against itself on one machine with a warm page cache, and the copy
   figures are page-cache figures. The comparison hardware and datasets are Issue
   #6's own deferred decision and need one before any such claim.
-- Nothing enforces the benchmark budgets `components/manifests/better-files.yaml`
-  declares. There is no CI job that runs the harness and compares.
+- Nothing enforces the benchmark budgets the shipped manifests declare. Better
+  Files and Better Launcher both now have harnesses that produce every number
+  their manifests name, and neither has a stored baseline or a CI job that runs
+  the harness and compares against the declared maximum regression. A budget
+  nobody checks is documentation, not a gate.
 - `packaging/build-deb.sh` builds no `better-files` package, so that manifest's
   artifact checksums are placeholders and the component is not release-eligible.
   It is validated on every test run; it is not installable. The same caveat

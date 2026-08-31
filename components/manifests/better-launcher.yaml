@@ -47,27 +47,38 @@ health_checks:
   - launcher-desktop-entry-check
   - launcher-index-build-check
   - launcher-activation-name-check
+# Every definition below names the workload the harness actually builds and the
+# number it actually prints. `cargo bench -p launcher-gui --bench launcher_suite`
+# is the harness; `docs/launcher-performance.md` records the measurements and the
+# hardware. `launcher_gui::BENCHMARKS` holds the same five rows and a test fails
+# if this list drifts from it, so a promised measurement cannot outlive the code
+# that takes it.
 benchmarks:
   - name: warm-search-update
-    workload: synthetic-5000-application-index
-    metric: milliseconds-p95
+    workload: synthetic-5000-entry-xdg-directory-keystroke-script
+    metric: milliseconds-p95-keystroke-to-updated-result-model
     minimum_improvement_percent: 0
     maximum_regression_percent: 0
   - name: warm-overlay-open
-    workload: open-overlay-with-warm-index
-    metric: milliseconds-to-first-frame
+    workload: headless-process-start-with-warm-5000-entry-index
+    metric: milliseconds-process-start-to-first-renderable-model
     minimum_improvement_percent: 0
     maximum_regression_percent: 5
   - name: application-list-update
-    workload: install-then-remove-one-application
-    metric: milliseconds-to-list-update
+    workload: write-then-remove-one-desktop-entry-under-watch
+    metric: milliseconds-p95-filesystem-event-to-refreshed-model
     minimum_improvement_percent: 0
     maximum_regression_percent: 5
   - name: idle-overhead
-    workload: overlay-idle
-    metric: cpu-percent
+    workload: headless-overlay-idle-for-a-measured-window
+    metric: cpu-percent-over-the-idle-window
     minimum_improvement_percent: 0
     maximum_regression_percent: 1
+  - name: idle-memory
+    workload: headless-overlay-idle-for-a-measured-window
+    metric: resident-kilobytes-at-the-end-of-the-idle-window
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 5
 permissions:
   - name: desktop-session
     reason: needs a graphical session, Wayland or X11; no compositor extension is installed
