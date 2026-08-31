@@ -1,0 +1,169 @@
+schema_version: 2
+id: better-touchpad
+display_name: Better Touchpad
+component_type: enhancement
+version: 0.1.0
+summary: Pointer speed, scrolling, tapping, and gestures in one window, with every unavailable setting saying why.
+icon: touchpad
+# Every setting Better Touchpad writes is a GNOME peripherals key, and the
+# compositor picks those up while the session runs. The window itself has to be
+# reopened after an update, which is the scope this declares.
+restart: application
+targets:
+  distributions: [zorin, ubuntu]
+  releases: [22.04, 24.04]
+  architectures: [amd64, arm64]
+# Enhancement, not replacement. The GNOME Settings Mouse & Touchpad panel keeps
+# working and keeps writing the same keys; Better Touchpad reads the same
+# database and reports what it finds there. Issue #3's session support is GNOME
+# on Wayland first — the schema's target matrix carries no session axis, so the
+# session is stated here and in the desktop-session permission below rather
+# than invented as a field the parser would ignore.
+enhances:
+  - org.gnome.desktop.peripherals
+# Placeholder checksums, the same repeated-character convention Better
+# Launcher, Better Awake, and Better Storage use. packaging/build-deb.sh builds
+# a better-touchpad package, so there is something to hash — but ADR 0002
+# records the checksum of a *published* release asset, and no release carries
+# this component yet. A checksum taken from a local build would name an
+# artifact nobody can download. The manifest is validated on every test run; it
+# becomes installable when the release exists.
+artifacts:
+  - release: "22.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-touchpad_0.1.0_ubuntu-22.04_amd64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-touchpad_0.1.0_ubuntu-22.04_amd64.deb
+  - release: "22.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-touchpad_0.1.0_ubuntu-22.04_arm64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-touchpad_0.1.0_ubuntu-22.04_arm64.deb
+  - release: "24.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-touchpad_0.1.0_ubuntu-24.04_amd64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-touchpad_0.1.0_ubuntu-24.04_amd64.deb
+  - release: "24.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.1.0/better-touchpad_0.1.0_ubuntu-24.04_arm64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-touchpad_0.1.0_ubuntu-24.04_arm64.deb
+lifecycle:
+  install: plan-local-apt-install
+  enable: plan-enable
+  disable: plan-disable
+  remove: plan-remove
+  # Removal and rollback both go back to the capture taken before the first
+  # mutation, never to a guessed factory configuration. `touchpad-core`'s
+  # backup is written once, before the first write, and is never overwritten by
+  # a later apply, so restoring it returns the keys below to what the desktop
+  # said before Better Touchpad existed. A captured reading that was "nothing
+  # was set here" restores by removing the key again rather than by writing a
+  # value nobody chose.
+  rollback: plan-rollback
+# These are the IDs `touchpad_core::HealthReport::evaluate` actually emits, not
+# a second set of names invented for the manifest. The first five are always
+# reported; `touchpad.safe_mode` replaces `touchpad.integration` when the
+# safe-mode marker is present, so at most one of the last two appears in a run.
+# crates/touchpad-platform/tests/manifest.rs asserts this list against the
+# checks the code produces.
+health_checks:
+  - touchpad.configuration
+  - touchpad.backend
+  - touchpad.device
+  - touchpad.capabilities
+  - touchpad.capture
+  - touchpad.safe_mode
+  - touchpad.integration
+# Budgets, not measurements. Every baseline below is a figure recorded in
+# docs/touchpad-sensitivity-mapping.md ("Measurements"), taken on Zorin OS 18.1
+# with GNOME Shell 46 on Wayland, and each budget is set above the worst number
+# in that band so a normally noisy run does not fail. No CI job runs these yet,
+# which is the same gap better-files.yaml's budgets have.
+benchmarks:
+  # Measured 3.6 – 6.0 ms, and that band is itself 67% wide, so a budget under
+  # it would fail on run-to-run noise rather than on a regression.
+  - name: setting-apply-and-verify
+    workload: apply-one-setting-and-read-it-back-through-the-dconf-service
+    metric: milliseconds
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 100
+  # Measured 3.6 – 4.7 ms against the same service; the same budget keeps
+  # restore and apply comparable.
+  - name: setting-restore-and-verify
+    workload: restore-one-captured-setting-and-read-it-back-through-the-dconf-service
+    metric: milliseconds
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 100
+  # Measured 6.8 µs for all thirteen controls, release build, from the user's
+  # own dconf database. A microsecond-scale figure moves with cache state, so
+  # the budget is deliberately loose.
+  - name: settings-read-back
+    workload: read-every-setting-from-the-user-dconf-database
+    metric: microseconds
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 100
+  # Measured 99 – 134 ms from process start, debug build, with --offline so no
+  # session bus is looked for. The recorded figure is the pessimistic one; a
+  # release build has never been measured, so the budget stays above the debug
+  # band rather than pretending to a tighter one.
+  - name: window-ready
+    workload: cold-start-with-no-session-bus
+    metric: milliseconds-to-window-ready
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 50
+  # Better Touchpad runs no background task and no polling loop: values are
+  # read when the window opens, when the user asks, and after a change. This
+  # budget is what makes that claim falsifiable.
+  - name: idle-overhead
+    workload: window-open-and-idle
+    metric: cpu-percent
+    minimum_improvement_percent: 0
+    maximum_regression_percent: 1
+permissions:
+  - name: desktop-session
+    reason: needs a graphical GNOME session, Wayland or X11; no compositor extension and no shell patch is installed
+  - name: dconf-read
+    reason: parses the user's own ~/.config/dconf/user to read the GNOME touchpad keys; a key the database does not hold is reported as the session default, never as unknown
+  - name: dconf-write
+    reason: writes through ca.desrt.dconf.Writer.Change on the session bus; nothing edits the database file, see ADR 0010
+  - name: procfs-read
+    reason: reads /proc/bus/input/devices to recognise touchpads and their contact counts
+  - name: sysfs-read
+    reason: reads /sys/class/input to tell a device that is still present from one that vanished between reads
+  - name: gesture-adapter
+    reason: optional session adapter for multi-finger gestures; none ships in this version, so gestures are configurable and not activated, see ADR 0012
+paths:
+  - /usr/bin/better-touchpad
+  - /usr/share/applications/better-touchpad.desktop
+  # The safe-mode entry point ships in the same package as the window it
+  # recovers from. `better-touchpad --safe-mode` writes one marker file and
+  # exits without opening a window or touching a setting, so it works from a
+  # text console and works when the configuration itself is what broke.
+  # `--normal-mode` removes the marker again.
+  - /usr/share/applications/better-touchpad-safe-mode.desktop
+  - ~/.config/better-os/touchpad/config.json
+  - ~/.config/better-os/touchpad/backup.json
+  - ~/.config/better-os/touchpad/safe-mode
+  # Every GNOME key the backend can write. The three controls GNOME 46 has no
+  # key for — vertical scroll factor, horizontal scroll factor, and smooth
+  # scrolling — are shown as unavailable and are never written, so they are not
+  # listed here.
+  - /org/gnome/desktop/peripherals/touchpad/speed
+  - /org/gnome/desktop/peripherals/touchpad/accel-profile
+  - /org/gnome/desktop/peripherals/touchpad/disable-while-typing
+  - /org/gnome/desktop/peripherals/touchpad/natural-scroll
+  - /org/gnome/desktop/peripherals/touchpad/two-finger-scrolling-enabled
+  - /org/gnome/desktop/peripherals/touchpad/tap-to-click
+  - /org/gnome/desktop/peripherals/touchpad/tap-and-drag
+  - /org/gnome/desktop/peripherals/touchpad/tap-and-drag-lock
+  - /org/gnome/desktop/peripherals/touchpad/click-method
+  - /org/gnome/desktop/peripherals/touchpad/middle-click-emulation
+release_notes:
+  - Pointer speed, scrolling, tapping, click method, and device selection in one window, with every setting the active backend cannot read, apply, and verify shown as unavailable with the reason instead of as a switch that does nothing.
+  - The settings from before the first change are captured once and never overwritten, so restore returns to what the desktop actually said rather than to a guessed factory configuration. Restore works section by section or in full.
+  - Installing Better Touchpad changes no setting and replaces no GNOME gesture. The Mac-style preset is offered, previewed, and confirmed by the user, never applied by the install.
+  - Safe mode is a desktop entry and a command, `better-touchpad --safe-mode`. It turns the integration off without opening a window or writing a setting, which is what makes it usable from a text console when the touchpad has become hard to use. `better-touchpad --normal-mode` turns it back on.
+  - Rollback reinstalls the previously installed version and leaves the captured settings, the configuration, and the safe-mode marker untouched, so a failed update never costs the capture that restore depends on. Removal restores the captured settings before the package goes.
+  - No gesture backend ships in this version. Gestures are configurable and every adapter reports itself unavailable, which the Gestures screen states rather than hides. See ADR 0012.

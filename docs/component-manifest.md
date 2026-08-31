@@ -44,9 +44,16 @@ line, and a systemd user unit to that package, so the repository now builds
 different content under the same version number. Publishing the wider package
 needs a version bump first.
 
-The package matrix builds `better-touchpad` but no `better-touchpad.yaml`
-exists, so Better Manager cannot install, verify, or remove that component. The
-package is real; the declaration it would be managed through is not written yet.
+`better-touchpad.yaml` is in the same position as the four above, and now
+exists: the package matrix builds it, no release publishes it, so its checksums
+are placeholders and it is validated on every test run rather than offered for
+installation. It is also the manifest whose `health_checks` are the IDs the
+component's own code emits — `touchpad.configuration`, `touchpad.backend`,
+`touchpad.device`, `touchpad.capabilities`, `touchpad.capture`, and the
+`touchpad.safe_mode` / `touchpad.integration` pair — instead of names chosen for
+the catalog alone. Nothing in the schema requires that; a check name is a
+declaration either way. It is worth copying because
+`crates/touchpad-platform/tests/manifest.rs` can then fail when the two drift.
 
 `better-files.yaml` is the first shipped manifest to declare
 `default_integrations`, so it is also the worked example of what the group is

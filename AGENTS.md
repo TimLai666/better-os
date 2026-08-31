@@ -89,8 +89,8 @@ GUI or dependency compiles when the relevant command was not executed.
   until one does.
 - `packaging/build-deb.sh` now builds all eight packages and
   `packaging/verify-deb.sh` checks each one, but no release publishes the six
-  added in ticket 36, so `better-launcher`, `better-awake`, `better-files`, and
-  `better-storage` still carry placeholder checksums and are not
+  added in ticket 36, so `better-launcher`, `better-awake`, `better-files`,
+  `better-storage`, and `better-touchpad` still carry placeholder checksums and are not
   release-eligible. Publish a release and record the published checksums before
   calling any of them installable.
 - `better-monitor` now ships the window, the session service, the command line,
@@ -102,10 +102,11 @@ GUI or dependency compiles when the relevant command was not executed.
   owns `/usr/bin/better-monitor` in a published package, so the CLI is installed
   as `better-monitor-cli`. Decide which of the two is renamed; a packaging
   change cannot fix a name a crate hard-codes.
-- `better-touchpad` has a package and no manifest, so Better Manager cannot
-  install, verify, or remove it. Writing one needs health checks that actually
-  exist and a benchmark budget somebody stands behind, which ticket 36 did not
-  invent.
+- `better-touchpad` now has a manifest. Its health checks are the IDs
+  `touchpad-core` emits and its benchmark baselines are the figures in
+  `docs/touchpad-sensitivity-mapping.md`, but nothing runs those benchmarks —
+  the same unenforced-budget gap `better-files.yaml` carries. Its checksums are
+  placeholders until a release publishes the package.
 - A package installs its systemd user unit and does not enable it, matching
   `better-manager-daemon`. Nothing in dpkg stops a running Better Awake, Better
   Monitor, or Better Storage user service at removal either; the manifests'
