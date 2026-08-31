@@ -55,6 +55,12 @@ pub struct HealthFacts<'a> {
     pub capture_present: bool,
     pub safe_mode: bool,
     pub integration_enabled: bool,
+    /// Whether the gesture adapter bridge answered, or `None` where nothing
+    /// looked. Three states rather than two: a bridge nobody asked about is a
+    /// different thing from one that is not there, and a window that never
+    /// connects to a bus must not report the adapter as missing.
+    pub gesture_bridge: Option<bool>,
+    pub gesture_bridge_detail: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -159,6 +165,23 @@ impl HealthReport {
             )
         });
 
+        // Gestures are an optional half of Better Touchpad: an adapter that is
+        // not there costs the gestures and nothing else, so it is degraded
+        // rather than failed. A GNOME major upgrade disabling third-party
+        // extensions is exactly this case, and ADR 0012 asked for it to be
+        // visible instead of silent.
+        if let Some(reachable) = facts.gesture_bridge {
+            checks.push(HealthCheck::new(
+                "touchpad.gesture_bridge",
+                if reachable {
+                    HealthState::Ok
+                } else {
+                    HealthState::Degraded
+                },
+                facts.gesture_bridge_detail.clone(),
+            ));
+        }
+
         if facts.safe_mode {
             checks.push(HealthCheck::new(
                 "touchpad.safe_mode",
@@ -195,6 +218,8 @@ mod tests {
             capture_present: false,
             safe_mode: false,
             integration_enabled: true,
+            gesture_bridge: None,
+            gesture_bridge_detail: String::new(),
         }
     }
 
@@ -258,6 +283,41 @@ mod tests {
         assert_eq!(
             HealthReport::evaluate(&facts(&capabilities)).state(),
             HealthState::Failed
+        );
+    }
+
+    #[test]
+    fn a_gesture_bridge_nobody_looked_for_is_not_reported_as_missing() {
+        let capabilities = Capabilities::everything_immediate();
+        let report = HealthReport::evaluate(&facts(&capabilities));
+        assert!(report.check("touchpad.gesture_bridge").is_none());
+        assert_eq!(report.state(), HealthState::Ok);
+    }
+
+    #[test]
+    fn a_gesture_bridge_that_is_not_there_degrades_rather_than_failing() {
+        let capabilities = Capabilities::everything_immediate();
+        let mut facts = facts(&capabilities);
+        facts.gesture_bridge = Some(false);
+        facts.gesture_bridge_detail =
+            "the GNOME Shell adapter extension is not on the session bus".to_string();
+        let report = HealthReport::evaluate(&facts);
+        assert_eq!(
+            report.check("touchpad.gesture_bridge").unwrap().state,
+            HealthState::Degraded
+        );
+        // Pointer movement and scrolling are unaffected, so the report is not a
+        // failure.
+        assert_eq!(report.state(), HealthState::Degraded);
+
+        facts.gesture_bridge = Some(true);
+        facts.gesture_bridge_detail = "the adapter answered".to_string();
+        assert_eq!(
+            HealthReport::evaluate(&facts)
+                .check("touchpad.gesture_bridge")
+                .unwrap()
+                .state,
+            HealthState::Ok
         );
     }
 

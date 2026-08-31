@@ -108,6 +108,7 @@ cargo build --release \
     -p launcher-gui \
     -p files-gui \
     -p touchpad-gui \
+    -p touchpad-gesture-service \
     -p awake-service \
     -p awake-tray \
     -p awake-gui \
@@ -461,14 +462,28 @@ make_package better-files \
 # The safe-mode entry point ships in the same package as the window it recovers
 # from. A recovery path in a package a user has to install separately, after
 # the desktop has already become hard to use, would not be a recovery path.
-PACKAGE_BINARIES=("better-touchpad:usr/bin/better-touchpad")
+#
+# The gesture half ships in the same package as the window that configures it:
+# the resident pipeline, and the GNOME Shell adapter extension it reads gestures
+# from. Neither is enabled by installing. The extension is the one piece of
+# Better OS that is not Rust, under the bounded exception ADR 0012 records; it
+# is three files under the uuid GNOME looks for it by.
+EXTENSION_UUID="touchpad-adapter@betteros.org"
+PACKAGE_BINARIES=(
+    "better-touchpad:usr/bin/better-touchpad"
+    "better-touchpad-gestured:usr/bin/better-touchpad-gestured"
+)
 PACKAGE_DATA=(
     "packaging/touchpad/better-touchpad.desktop:usr/share/applications/better-touchpad.desktop"
     "packaging/touchpad/better-touchpad-safe-mode.desktop:usr/share/applications/better-touchpad-safe-mode.desktop"
+    "packaging/touchpad/better-touchpad-gestures.service:usr/lib/systemd/user/better-touchpad-gestures.service"
+    "adapters/gnome-shell-touchpad/metadata.json:usr/share/gnome-shell/extensions/$EXTENSION_UUID/metadata.json"
+    "adapters/gnome-shell-touchpad/extension.js:usr/share/gnome-shell/extensions/$EXTENSION_UUID/extension.js"
+    "adapters/gnome-shell-touchpad/org.betteros.TouchpadAdapter1.xml:usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml"
 )
 PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
 make_package better-touchpad \
-    'Better OS touchpad settings' \
+    'Better OS touchpad settings and gestures' \
     'Scrolling, tapping, pointer speed, and gestures in one window, with every unavailable setting saying why.'
 
 # The tray and the settings window are installed under the names the desktop

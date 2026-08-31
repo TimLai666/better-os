@@ -483,6 +483,28 @@ impl TouchpadApp {
                             .child(c.gesture_backend_none),
                     )
                 })
+                // The preset's launcher and Show Desktop gestures want a thumb
+                // and no desktop in this build can see one. The gestures still
+                // work, and saying how is better than a row that reads as a
+                // detection nothing performs.
+                .when(
+                    can_perform
+                        && self
+                            .gestures
+                            .config()
+                            .gestures
+                            .iter()
+                            .any(|gesture| gesture.enabled && gesture.thumb_required),
+                    |this| {
+                        this.child(
+                            div()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(c.gesture_thumb_best_effort),
+                        )
+                    },
+                )
                 .child(div().text_xs().font_semibold().child(c.recognized_events))
                 .when(run.lines.is_empty(), |this| {
                     this.child(div().text_xs().child(c.test_no_events))

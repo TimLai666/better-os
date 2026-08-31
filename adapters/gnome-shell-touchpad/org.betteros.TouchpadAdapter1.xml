@@ -1,0 +1,59 @@
+<!--
+  The whole contract between the GNOME Shell adapter extension and Better
+  Touchpad. This file is the single source of truth: `extension.js` loads it at
+  enable time rather than embedding a second copy, and
+  `crates/touchpad-session/tests/interface.rs` asserts that the Rust client
+  names exactly these members.
+
+  Two shapes are deliberate. The signals carry the compositor's own gesture
+  vocabulary — a phase, a contact count, and the raw deltas — and no verdict,
+  because every threshold lives in `touchpad-gestures`. The methods are the
+  shell-owned actions and nothing else: there is no method that takes a
+  command, a path, or any free text.
+-->
+<node>
+  <interface name="org.betteros.TouchpadAdapter1">
+    <!-- Opens the Activities overview. -->
+    <method name="ShowOverview"/>
+    <!-- Minimises every window on the active workspace. -->
+    <method name="ShowDesktop"/>
+    <!-- -1 for the workspace on the left, 1 for the one on the right. -->
+    <method name="SwitchWorkspace">
+      <arg type="i" name="direction" direction="in"/>
+    </method>
+    <!--
+      Disables GNOME Shell's own three- and four-finger swipe trackers, or puts
+      them back. The extension restores them on disable whatever was last
+      asked, so an uninstall can never leave the desktop without its gestures.
+    -->
+    <method name="SuppressBuiltInGestures">
+      <arg type="b" name="suppress" direction="in"/>
+    </method>
+    <!-- A JSON document describing what the event stream can distinguish. -->
+    <method name="Capabilities">
+      <arg type="s" name="capabilities" direction="out"/>
+    </method>
+    <!--
+      phase: 0 begin, 1 update, 2 end, 3 cancel.
+      dx and dy are the compositor's motion since the previous event, in
+      pixels. scale is the pinch scale measured from the start of the gesture,
+      so it is 1.0 at the beginning; angle_delta is the turn since the previous
+      event, in radians. Accumulating the two relative figures is the client's
+      job, because the client is the side that knows what a whole gesture is.
+    -->
+    <signal name="SwipeGesture">
+      <arg type="u" name="phase"/>
+      <arg type="u" name="fingers"/>
+      <arg type="d" name="dx"/>
+      <arg type="d" name="dy"/>
+      <arg type="t" name="at_ms"/>
+    </signal>
+    <signal name="PinchGesture">
+      <arg type="u" name="phase"/>
+      <arg type="u" name="fingers"/>
+      <arg type="d" name="scale"/>
+      <arg type="d" name="angle_delta"/>
+      <arg type="t" name="at_ms"/>
+    </signal>
+  </interface>
+</node>

@@ -673,3 +673,103 @@ fn every_threshold_and_cooldown_the_editor_offers_is_a_legal_value() {
         }
     }
 }
+
+/// The GNOME Shell route, driven from the screen the user actually presses
+/// Apply on. No bus is involved: the adapter sits on the `ShellBridge` seam and
+/// the fake records what a real extension would have been asked.
+fn shell_screen(bridge: std::sync::Arc<touchpad_session::FakeShellBridge>) -> GestureScreen {
+    let adapter = touchpad_session::GnomeShellAdapter::connect(Box::new(
+        touchpad_session::gnome::SharedShellBridge(bridge),
+    ))
+    .expect("a shell adapter");
+    GestureScreen::new(GestureConfig::default(), None, Box::new(adapter))
+}
+
+#[test]
+fn choosing_the_better_os_gesture_asks_gnome_to_give_its_own_one_up() {
+    use touchpad_session::ShellRequest;
+
+    let recorded = std::sync::Arc::new(touchpad_session::FakeShellBridge::new());
+    let mut screen = shell_screen(recorded.clone());
+    confirmed_preview(&mut screen, ConflictResolution::DisableBuiltIn);
+    screen.apply_preset(None).unwrap();
+
+    assert!(screen.suppression().is_suppressed());
+    assert_eq!(
+        recorded.calls(),
+        vec![ShellRequest::SuppressBuiltInGestures(true)]
+    );
+}
+
+#[test]
+fn keeping_the_desktops_gestures_never_asks_gnome_for_anything() {
+    let recorded = std::sync::Arc::new(touchpad_session::FakeShellBridge::new());
+    let mut screen = shell_screen(recorded.clone());
+    confirmed_preview(&mut screen, ConflictResolution::KeepBuiltIn);
+    screen.apply_preset(None).unwrap();
+
+    assert!(!screen.suppression().is_suppressed());
+    assert!(recorded.calls().is_empty());
+}
+
+#[test]
+fn turning_gestures_off_and_safe_mode_both_give_the_desktop_its_gestures_back() {
+    use touchpad_session::ShellRequest;
+
+    for entering_safe_mode in [false, true] {
+        let recorded = std::sync::Arc::new(touchpad_session::FakeShellBridge::new());
+        let mut screen = shell_screen(recorded.clone());
+        confirmed_preview(&mut screen, ConflictResolution::DisableBuiltIn);
+        screen.apply_preset(None).unwrap();
+        assert!(screen.suppression().is_suppressed());
+
+        if entering_safe_mode {
+            screen.enter_safe_mode();
+        } else {
+            screen.disable(None);
+        }
+        assert!(!screen.suppression().is_suppressed());
+        assert_eq!(
+            recorded.calls(),
+            vec![
+                ShellRequest::SuppressBuiltInGestures(true),
+                ShellRequest::SuppressBuiltInGestures(false),
+            ],
+            "entering_safe_mode = {entering_safe_mode}"
+        );
+    }
+}
+
+#[test]
+fn a_shell_adapter_performs_the_desktop_actions_and_says_which_one_it_cannot() {
+    let recorded = std::sync::Arc::new(touchpad_session::FakeShellBridge::new());
+    let screen = shell_screen(recorded);
+    let c = copy(Locale::EnUs);
+    let mut screen = screen;
+    confirmed_preview(&mut screen, ConflictResolution::DisableBuiltIn);
+    screen.apply_preset(None).unwrap();
+
+    let rows = screen.rows(c);
+    let overview = rows
+        .iter()
+        .find(|row| row.id.as_str() == "overview")
+        .unwrap();
+    assert!(overview.supported);
+    // Nothing on GNOME 46 shows one application's windows, and the row carries
+    // that reason rather than looking like a binding that works.
+    let windows = rows
+        .iter()
+        .find(|row| row.id.as_str() == "current-app-windows")
+        .unwrap();
+    assert!(!windows.supported);
+    assert!(
+        windows
+            .support_detail
+            .as_ref()
+            .unwrap()
+            .contains("window picker")
+    );
+    // And nothing animates, because the shell exposes no way to drive its own
+    // transition from outside.
+    assert!(!overview.can_animate);
+}

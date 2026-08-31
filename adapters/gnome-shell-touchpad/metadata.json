@@ -1,0 +1,9 @@
+{
+  "uuid": "touchpad-adapter@betteros.org",
+  "name": "Better Touchpad adapter",
+  "description": "Bridges GNOME Shell touchpad gesture events and a small set of shell-owned actions to Better Touchpad over the session bus. It makes no gesture decision: no thresholds, no configuration, no actions beyond what GNOME Shell already exposes.",
+  "shell-version": ["46"],
+  "session-modes": ["user"],
+  "url": "https://github.com/TimLai666/better-os",
+  "version": 1
+}

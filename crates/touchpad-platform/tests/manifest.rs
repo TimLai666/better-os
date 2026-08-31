@@ -67,30 +67,43 @@ fn installing_the_touchpad_replaces_no_gnome_setting() {
 }
 
 /// The manifest names the checks the binary reports, not a second vocabulary
-/// invented for the catalog. Five are always present; the last two are the
-/// alternatives for a run in safe mode and a run with the integration switched
-/// off, so a single evaluation can never produce both.
+/// invented for the catalog. Five are always present. `touchpad.safe_mode` and
+/// `touchpad.integration` are the alternatives for a run in safe mode and a run
+/// with the integration switched off, so a single evaluation can never produce
+/// both, and `touchpad.gesture_bridge` appears only where something actually
+/// looked for the gesture adapter.
 #[test]
 fn the_declared_health_checks_are_the_ones_the_code_emits() {
     let manifest = manifest();
     let capabilities = Capabilities::everything_immediate();
-    let facts = |safe_mode: bool, integration_enabled: bool| HealthFacts {
-        configuration_readable: true,
-        configuration_detail: "read".to_string(),
-        backend_name: "gnome",
-        backend_reachable: true,
-        backend_detail: "the dconf service answered".to_string(),
-        devices_found: 1,
-        selected_device: Some("usb:06cb:ce67"),
-        capabilities: &capabilities,
-        capture_present: true,
-        safe_mode,
-        integration_enabled,
-    };
+    let facts =
+        |safe_mode: bool, integration_enabled: bool, gesture_bridge: Option<bool>| HealthFacts {
+            configuration_readable: true,
+            configuration_detail: "read".to_string(),
+            backend_name: "gnome",
+            backend_reachable: true,
+            backend_detail: "the dconf service answered".to_string(),
+            devices_found: 1,
+            selected_device: Some("usb:06cb:ce67"),
+            capabilities: &capabilities,
+            capture_present: true,
+            safe_mode,
+            integration_enabled,
+            gesture_bridge,
+            gesture_bridge_detail: "the adapter answered".to_string(),
+        };
 
     let mut emitted: Vec<String> = Vec::new();
-    for (safe_mode, integration_enabled) in [(false, true), (false, false), (true, true)] {
-        for check in HealthReport::evaluate(&facts(safe_mode, integration_enabled)).checks {
+    for (safe_mode, integration_enabled, gesture_bridge) in [
+        (false, true, None),
+        (false, false, None),
+        (true, true, None),
+        (false, true, Some(true)),
+        (false, true, Some(false)),
+    ] {
+        for check in
+            HealthReport::evaluate(&facts(safe_mode, integration_enabled, gesture_bridge)).checks
+        {
             if !emitted.contains(&check.id) {
                 emitted.push(check.id);
             }
@@ -155,6 +168,53 @@ fn the_binary_the_configuration_and_the_safe_mode_entry_are_all_declared() {
         assert!(
             manifest.paths.iter().any(|path| path == required),
             "{required} is not declared"
+        );
+    }
+}
+
+/// The gesture backend is three files and a binary, and a manifest that named
+/// any of them differently from the packaging would tell Better Manager to
+/// verify, remove, and roll back something that is not there.
+#[test]
+fn the_gesture_adapter_the_package_installs_is_the_one_the_manifest_declares() {
+    let manifest = manifest();
+    let metadata = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../adapters/gnome-shell-touchpad/metadata.json"),
+    )
+    .expect("the adapter metadata ships in this repository");
+    let uuid = "touchpad-adapter@betteros.org";
+    assert!(
+        metadata.contains(uuid),
+        "the extension does not carry the uuid the manifest declares"
+    );
+
+    for required in [
+        "/usr/bin/better-touchpad-gestured",
+        "/usr/lib/systemd/user/better-touchpad-gestures.service",
+        &format!("/usr/share/gnome-shell/extensions/{uuid}/metadata.json"),
+        &format!("/usr/share/gnome-shell/extensions/{uuid}/extension.js"),
+        &format!("/usr/share/gnome-shell/extensions/{uuid}/org.betteros.TouchpadAdapter1.xml"),
+    ] {
+        assert!(
+            manifest.paths.iter().any(|path| path == required),
+            "{required} is not declared"
+        );
+    }
+
+    // Every file the extension directory holds is declared. A file that ships
+    // and is not named is one nothing verifies and nothing removes.
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../adapters/gnome-shell-touchpad");
+    for entry in std::fs::read_dir(&directory).expect("the adapter directory") {
+        let name = entry.expect("an entry").file_name();
+        let declared = format!(
+            "/usr/share/gnome-shell/extensions/{uuid}/{}",
+            name.to_string_lossy()
+        );
+        assert!(
+            manifest.paths.contains(&declared),
+            "{declared} ships and is not declared"
         );
     }
 }

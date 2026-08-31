@@ -12,9 +12,19 @@ default = ["launcher-activation"]
 # It is a feature so the crate — and every test in it — builds and runs with no
 # session bus anywhere near it.
 launcher-activation = ["dep:launcher-platform"]
+# The session-bus transport under the GNOME Shell adapter. The adapter itself
+# needs no bus — it sits on the `ShellBridge` seam — so this feature carries the
+# zbus dependency and nothing else, and every test in the crate runs without it.
+gnome-shell = ["dep:zbus", "dep:tokio", "dep:futures-util"]
 
 [dependencies]
 better-actions.workspace = true
 launcher-platform = { workspace = true, optional = true }
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+futures-util = { workspace = true, optional = true }
+# Matches `awake-service` and `launcher-platform`: the workspace has one zbus
+# flavor, and it is the tokio one.
+tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
+zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }

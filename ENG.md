@@ -61,6 +61,9 @@ touchpad-core ──> touchpad-platform ──> touchpad-gui
    versioned config     device/session adapters
 touchpad-gestures ──> touchpad-session ──> better-actions ──> launcher-gui
    gesture model, preset, conflicts    typed desktop actions
+        └──> touchpad-gesture-service ──> better-touchpad-gestured
+             resident pipeline: compositor events in, typed actions out
+adapters/gnome-shell-touchpad/   the one GJS file, ADR 0012's bounded exception
 
 defaults-core ──> defaults-platform ──> defaults-store ──> manager-gui / CLI
    declarations, aggregate status, plans   typed adapters   snapshots + history
@@ -176,6 +179,25 @@ suite, not only the two that exist today.
   cooldown, thumb detection, and every preset gesture are therefore tested by
   replaying a stream, and whichever backend ADR 0012 delivers plugs in front of
   it without moving a decision into it.
+- **A compositor's events become frames, not a second recognizer.**
+  `touchpad-gestures::ingest` turns a GNOME Shell gesture event into the contact
+  frame it would have been and feeds the same recognizer. There is one
+  activation threshold, one cancellation rule, and one cooldown in this project,
+  and a backend that reports gestures rather than contacts does not get its own
+  copy of them.
+- **The pipeline outlives the window.** `touchpad-gesture-service` is the
+  resident half — `better-touchpad-gestured` — because a gesture that only
+  worked while a settings window was open would be a gesture nobody could rely
+  on. It sits above `touchpad-gestures` and `touchpad-session` because it needs
+  both, links no toolkit, and holds no privilege. The window and the service
+  share one file, one auto-disable rule, and one suppression state machine
+  rather than a copy each.
+- **The GJS adapter is a bridge with a test around its bounds.**
+  `adapters/gnome-shell-touchpad/` reports what the compositor saw and performs
+  what GNOME Shell already exposes. `touchpad-session::gnome` is the Rust half,
+  written against a `ShellBridge` seam so the whole adapter is testable with no
+  bus, and `crates/touchpad-session/tests/extension.rs` asserts the JavaScript
+  against the bounds ADR 0012 set rather than trusting a review to notice.
 - **The gesture half keeps its own state.** `gestures.json` and
   `gestures-backup.json` sit beside the pointer, scrolling, and clicking files
   and are written through `touchpad-core`'s own atomic-write and write-once

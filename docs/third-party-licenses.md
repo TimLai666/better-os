@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 916.
-- Packages with an SPDX license expression: 914.
+- Resolved Cargo packages: 917.
+- Packages with an SPDX license expression: 915.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `57376ab606231e34bf69f1d97bd493b2bf21094285856b0fff6065d2183b1116`.
+- `Cargo.lock` SHA-256: `be4ab2f3c1d4730af3cf6f379f85b03172646b0a80d2df5dc254ff0de23bf22e`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 401 |
 | `MIT` | 186 |
 | `Apache-2.0 OR MIT` | 76 |
-| `GPL-3.0-or-later` | 54 |
+| `GPL-3.0-or-later` | 55 |
 | `MIT/Apache-2.0` | 35 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -129,6 +129,7 @@ Better OS does not relicense or silently select a different expression.
 | `storage-platform` | `0.2.0` | `GPL-3.0-or-later` | workspace |
 | `storage-service` | `0.2.0` | `GPL-3.0-or-later` | workspace |
 | `touchpad-core` | `0.2.0` | `GPL-3.0-or-later` | workspace |
+| `touchpad-gesture-service` | `0.2.0` | `GPL-3.0-or-later` | workspace |
 | `touchpad-gestures` | `0.2.0` | `GPL-3.0-or-later` | workspace |
 | `touchpad-gui` | `0.2.0` | `GPL-3.0-or-later` | workspace |
 | `touchpad-platform` | `0.2.0` | `GPL-3.0-or-later` | workspace |
@@ -851,6 +852,7 @@ Better OS does not relicense or silently select a different expression.
 | `toml_write` | `0.1.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/toml_write/0.1.2) |
 | `toml_writer` | `1.1.2+spec-1.1.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/toml_writer/1.1.2+spec-1.1.0) |
 | `touchpad-core` | `0.2.0` | `GPL-3.0-or-later` | workspace |
+| `touchpad-gesture-service` | `0.2.0` | `GPL-3.0-or-later` | workspace |
 | `touchpad-gestures` | `0.2.0` | `GPL-3.0-or-later` | workspace |
 | `touchpad-gui` | `0.2.0` | `GPL-3.0-or-later` | workspace |
 | `touchpad-platform` | `0.2.0` | `GPL-3.0-or-later` | workspace |

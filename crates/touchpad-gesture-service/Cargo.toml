@@ -1,0 +1,27 @@
+[package]
+name = "touchpad-gesture-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "better-touchpad-gestured"
+path = "src/main.rs"
+
+[lib]
+name = "touchpad_gesture_service"
+path = "src/lib.rs"
+
+[dependencies]
+better-actions.workspace = true
+touchpad-core.workspace = true
+touchpad-gestures.workspace = true
+# The session-bus transport, and the launcher route the launcher action needs.
+touchpad-session = { workspace = true, features = ["gnome-shell", "launcher-activation"] }
+launcher-platform = { workspace = true, features = ["session-bus"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }

@@ -205,6 +205,10 @@ pub struct Copy {
     pub disable_gestures: &'static str,
     pub no_gestures: &'static str,
     pub gesture_backend_none: &'static str,
+    /// What the compositor cannot see. Shown wherever a thumb-and-three gesture
+    /// is, because the gesture works and the reason it works is not what the
+    /// row appears to say.
+    pub gesture_thumb_best_effort: &'static str,
     pub gesture_launcher: &'static str,
     pub gesture_show_desktop: &'static str,
     pub gesture_overview: &'static str,
@@ -406,7 +410,8 @@ pub const EN_US: Copy = Copy {
     restore_gestures: "Restore the captured gestures",
     disable_gestures: "Turn gestures off",
     no_gestures: "No gesture is configured yet.",
-    gesture_backend_none: "No gesture backend is available in this build, so no gesture reaches the desktop yet.",
+    gesture_backend_none: "The GNOME Shell adapter is not enabled on this session, so no gesture reaches the desktop yet.",
+    gesture_thumb_best_effort: "The desktop reports how many fingers a gesture has and not which one is the thumb, so a thumb and three fingers is matched as four contacts.",
     gesture_launcher: "Open the launcher",
     gesture_show_desktop: "Show the desktop",
     gesture_overview: "Workspace overview",
@@ -608,7 +613,8 @@ pub const ZH_TW: Copy = Copy {
     restore_gestures: "還原記錄下來的手勢",
     disable_gestures: "關閉手勢",
     no_gestures: "還沒有設定任何手勢。",
-    gesture_backend_none: "這個版本還沒有手勢後端，所以手勢還無法真的影響桌面。",
+    gesture_backend_none: "這個工作階段沒有啟用 GNOME Shell 轉接器，所以手勢還無法真的影響桌面。",
+    gesture_thumb_best_effort: "桌面只會回報手勢用了幾根手指，不會說哪一根是拇指，所以拇指加三指會以四點接觸來判斷。",
     gesture_launcher: "開啟啟動器",
     gesture_show_desktop: "顯示桌面",
     gesture_overview: "工作區總覽",
@@ -873,6 +879,7 @@ mod tests {
             copy.disable_gestures,
             copy.no_gestures,
             copy.gesture_backend_none,
+            copy.gesture_thumb_best_effort,
             copy.gesture_launcher,
             copy.gesture_show_desktop,
             copy.gesture_overview,

@@ -65,15 +65,18 @@ lifecycle:
 # These are the IDs `touchpad_core::HealthReport::evaluate` actually emits, not
 # a second set of names invented for the manifest. The first five are always
 # reported; `touchpad.safe_mode` replaces `touchpad.integration` when the
-# safe-mode marker is present, so at most one of the last two appears in a run.
-# crates/touchpad-platform/tests/manifest.rs asserts this list against the
-# checks the code produces.
+# safe-mode marker is present, so at most one of those two appears in a run;
+# and `touchpad.gesture_bridge` appears only where something looked for the
+# GNOME Shell adapter extension on the session bus, which an offline window
+# does not. crates/touchpad-platform/tests/manifest.rs asserts this list
+# against the checks the code produces.
 health_checks:
   - touchpad.configuration
   - touchpad.backend
   - touchpad.device
   - touchpad.capabilities
   - touchpad.capture
+  - touchpad.gesture_bridge
   - touchpad.safe_mode
   - touchpad.integration
 # Budgets, not measurements. Every baseline below is a figure recorded in
@@ -133,9 +136,25 @@ permissions:
   - name: sysfs-read
     reason: reads /sys/class/input to tell a device that is still present from one that vanished between reads
   - name: gesture-adapter
-    reason: optional session adapter for multi-finger gestures; none ships in this version, so gestures are configurable and not activated, see ADR 0012
+    reason: ships a GNOME Shell extension under /usr/share/gnome-shell/extensions that reports touchpad gesture events and performs overview, show-desktop, and workspace switching; installing does not enable it, and it restores GNOME's own swipe gestures when disabled, see ADR 0012
+  - name: session-dbus-own-name
+    reason: the extension owns org.betteros.TouchpadAdapter1 on the session bus to publish gesture events and accept the four typed actions above
+  - name: session-bus-client
+    reason: better-touchpad-gestured calls that interface and org.betteros.Launcher1; no gesture decision, threshold, or configuration crosses the bus, only typed events and typed actions
+  - name: systemd-user-unit
+    reason: installs better-touchpad-gestures.service and does not enable it; the resident gesture pipeline is started by the user or by Better Manager's enable step
 paths:
   - /usr/bin/better-touchpad
+  # The resident gesture pipeline. It has no window, links no toolkit, and is
+  # installed rather than enabled, the same split better-manager-daemon uses.
+  - /usr/bin/better-touchpad-gestured
+  - /usr/lib/systemd/user/better-touchpad-gestures.service
+  # The GNOME Shell adapter extension. Installed, never enabled: enabling a
+  # shell extension is the user's own act, and ADR 0012's exception is bounded
+  # to these three files.
+  - /usr/share/gnome-shell/extensions/touchpad-adapter@betteros.org/metadata.json
+  - /usr/share/gnome-shell/extensions/touchpad-adapter@betteros.org/extension.js
+  - /usr/share/gnome-shell/extensions/touchpad-adapter@betteros.org/org.betteros.TouchpadAdapter1.xml
   - /usr/share/applications/better-touchpad.desktop
   # The safe-mode entry point ships in the same package as the window it
   # recovers from. `better-touchpad --safe-mode` writes one marker file and
@@ -166,4 +185,8 @@ release_notes:
   - Installing Better Touchpad changes no setting and replaces no GNOME gesture. The Mac-style preset is offered, previewed, and confirmed by the user, never applied by the install.
   - Safe mode is a desktop entry and a command, `better-touchpad --safe-mode`. It turns the integration off without opening a window or writing a setting, which is what makes it usable from a text console when the touchpad has become hard to use. `better-touchpad --normal-mode` turns it back on.
   - Rollback reinstalls the previously installed version and leaves the captured settings, the configuration, and the safe-mode marker untouched, so a failed update never costs the capture that restore depends on. Removal restores the captured settings before the package goes.
-  - No gesture backend ships in this version. Gestures are configurable and every adapter reports itself unavailable, which the Gestures screen states rather than hides. See ADR 0012.
+  - Gestures now reach the desktop. A GNOME Shell adapter extension reports what the compositor saw, and better-touchpad-gestured recognizes it and invokes the typed action, so the Mac-style preset opens the launcher, shows the desktop, opens the overview, and switches workspaces on GNOME 46 Wayland. Neither the extension nor the service is enabled by installing the package.
+  - The compositor cannot tell a thumb from a finger, so thumb-and-three is matched as four contacts and the thumb is assumed only where assuming it cannot shadow another gesture. The capability report says so rather than claiming a detection that does not exist.
+  - The windows of the current application have no GNOME 46 facility behind them, because the window picker is the overview itself and cannot be filtered to one application. That row reports itself unsupported with the reason instead of quietly opening the overview.
+  - Gesture actions are discrete rather than animated. The event stream is continuous and a gesture reversed before its threshold never reaches the desktop, but GNOME 46 exposes no way to drive its own overview transition from outside the shell.
+  - Turning gestures off, entering safe mode, and removing the package all give GNOME back the swipe gestures the preset took, and so does disabling the extension. Three failed gestures in a row turn the integration off by itself and write that to the configuration.
