@@ -2,7 +2,7 @@ schema_version: 2
 id: better-touchpad
 display_name: Better Touchpad
 component_type: enhancement
-version: 0.2.0
+version: 0.2.1
 summary: Pointer speed, scrolling, tapping, and gestures in one window, with every unavailable setting saying why.
 icon: touchpad
 # Every setting Better Touchpad writes is a GNOME peripherals key, and the
@@ -21,34 +21,32 @@ targets:
 # than invented as a field the parser would ignore.
 enhances:
   - org.gnome.desktop.peripherals
-# Placeholder checksums, the same repeated-character convention Better
-# Launcher, Better Awake, and Better Storage use. packaging/build-deb.sh builds
-# a better-touchpad package, so there is something to hash — but ADR 0002
-# records the checksum of a *published* release asset, and no release carries
-# this component yet. A checksum taken from a local build would name an
-# artifact nobody can download. The manifest is validated on every test run; it
-# becomes installable when the release exists.
+# Placeholder checksums until v0.2.1 is published. ADR 0002 records the
+# checksum of a *published* release asset; the v0.2.0 values these variants
+# carried describe 0.2.0's packages, not 0.2.1's. The real values are written
+# back once the release is public and every asset has been re-downloaded and
+# verified.
 artifacts:
   - release: "22.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-touchpad_0.2.0_ubuntu-22.04_amd64.deb
-    sha256: 77bb9d5170748c9c933d830edfd18181015dd6f96f5dd3a63c084bdb36c64a57
-    release_asset: better-touchpad_0.2.0_ubuntu-22.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.1/better-touchpad_0.2.1_ubuntu-22.04_amd64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-touchpad_0.2.1_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-touchpad_0.2.0_ubuntu-22.04_arm64.deb
-    sha256: e4b3502c1dfe954b339245eca0edebae584dae5580ef6cf523fb1b34d4d202b2
-    release_asset: better-touchpad_0.2.0_ubuntu-22.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.1/better-touchpad_0.2.1_ubuntu-22.04_arm64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-touchpad_0.2.1_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-touchpad_0.2.0_ubuntu-24.04_amd64.deb
-    sha256: 53c02d53d765a26e8babca92959c30cf05743c18250f49d5c6d566a3dd21b802
-    release_asset: better-touchpad_0.2.0_ubuntu-24.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.1/better-touchpad_0.2.1_ubuntu-24.04_amd64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-touchpad_0.2.1_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.0/better-touchpad_0.2.0_ubuntu-24.04_arm64.deb
-    sha256: 53e3ec2c5418910471f6f584ea8ad2bbd8ae6d55e20e45e58e31ada81f6fdd45
-    release_asset: better-touchpad_0.2.0_ubuntu-24.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.1/better-touchpad_0.2.1_ubuntu-24.04_arm64.deb
+    sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    release_asset: better-touchpad_0.2.1_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable
