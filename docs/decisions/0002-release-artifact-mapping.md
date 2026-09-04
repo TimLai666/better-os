@@ -73,6 +73,25 @@ window alone and the package now also carries the session service, the command
 line, and a systemd user unit. A manifest checksum maps to one release asset, so
 one version number may not name two payloads.
 
+## v0.2.1 verification
+
+The third release is published at
+<https://github.com/TimLai666/better-os/releases/tag/v0.2.1> from merge commit
+`8dc9c7eede37917d5af527a0d8df17e84213b48b`. Post-merge CI run
+<https://github.com/TimLai666/better-os/actions/runs/33871736272> passed the Rust
+checks and all four target/architecture package jobs. It is a patch release over
+v0.2.0 and carries the same eight packages as 32 `.deb` assets and 32
+`.deb.sha256` sidecars; the payload change is `better-touchpad`, which now ships
+the `touchpad-adapter@betteros.org` GNOME Shell extension and the
+`better-touchpad-gestured` service. The public release was downloaded again, all
+32 sidecars verified their matching `.deb` assets, and each recorded checksum was
+re-hashed from the downloaded package before the manifests were committed.
+
+The bump also settled what a manifest checksum means across a release branch: the
+values a manifest carries describe the *previous* release's assets, so the seven
+shipped manifests went back to placeholders when the version moved and took real
+values again only after v0.2.1 was public.
+
 ## Deferred
 
 Release automation, package signing, public APT repositories, and release

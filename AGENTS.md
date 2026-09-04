@@ -101,13 +101,18 @@ GUI or dependency compiles when the relevant command was not executed.
   Better OS component has a time-to-photon figure. And the idle CPU figure is a
   headless one: nothing asks the window to repaint, so it is the launcher's own
   idle cost and not a claim about a launcher on a running desktop.
-- All eight packages are published. `v0.2.0` carries every component
+- All eight packages are published. `v0.2.1` carries every component
   `packaging/build-deb.sh` builds, for Ubuntu 22.04 and 24.04 on amd64 and
   arm64, and every shipped manifest now records the checksum of its own
-  published asset, verified after re-downloading the public release. No first
-  party manifest carries a placeholder checksum any more;
+  published 0.2.1 asset, verified after re-downloading the public release. No
+  first party manifest carries a placeholder checksum any more;
   `components/manifests/better-files-example.yaml` is the one exception and is a
-  schema fixture, not a released component.
+  schema fixture, not a released component. A version bump puts the placeholders
+  back for the length of the release branch, because the checksums a manifest
+  carries describe the previous release's packages and not the ones about to be
+  built — write the real values back only after the new release is public and
+  its assets have been downloaded again, and correct the comment above each
+  block at the same time rather than leaving it describing the release before.
 - A published binary embeds the manifests as they stood when it was built, and a
   manifest can only record a real checksum after its own release is public. So
   the `better-manager` shipped in a release always carries the pre-release
@@ -117,8 +122,8 @@ GUI or dependency compiles when the relevant command was not executed.
   as an install path for the release it belongs to.
 - `better-monitor` ships the window, the session service, the command line, and
   a systemd user unit in one package. v0.1.0 published the window alone, so the
-  wider package carries its own version: the workspace is 0.2.0 and the manifest
-  declares 0.2.0. One version number no longer names two payloads.
+  wider package carries its own version: it moved to 0.2.0 and travels with the
+  workspace since. One version number no longer names two payloads.
 - The command line's own `--help` says `better-monitor`, and the window already
   owns `/usr/bin/better-monitor` in a published package, so the CLI is installed
   as `better-monitor-cli`. Decide which of the two is renamed; a packaging
@@ -127,7 +132,7 @@ GUI or dependency compiles when the relevant command was not executed.
   `touchpad-core` emits and its benchmark baselines are the figures in
   `docs/touchpad-sensitivity-mapping.md`, but nothing runs those benchmarks —
   the same unenforced-budget gap `better-files.yaml` carries. Its checksums are
-  the published v0.2.0 ones.
+  the published v0.2.1 ones.
 - A package installs its systemd user unit and does not enable it, matching
   `better-manager-daemon`. Nothing in dpkg stops a running Better Awake, Better
   Monitor, or Better Storage user service at removal either; the manifests'

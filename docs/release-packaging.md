@@ -85,14 +85,25 @@ merge commit `3a6d98b73b838c5a2c0d94404ae9313844009e56` 的 post-merge CI run
 [`30650287246`](https://github.com/TimLai666/better-os/actions/runs/30650287246)
 產生，只包含 `better-manager` 與 `better-monitor`。
 
-目前的 release 是
+第二個 release 是
 [`v0.2.0`](https://github.com/TimLai666/better-os/releases/tag/v0.2.0)，由 merge
 commit `96b46f11e814bd4088f630c9c19727e45af9132f` 的 post-merge CI run
 [`33389237001`](https://github.com/TimLai666/better-os/actions/runs/33389237001)
 產生，包含全部八個套件，共 32 個 `.deb` 與 32 個 `.deb.sha256`，涵蓋 ubuntu
-22.04 與 24.04 的 amd64 與 arm64。所有 asset 都從公開 release 重新下載並逐一
-驗證 checksum 之後，才把數值寫回七份 component manifest。`better-monitor` 因為
-payload 在 ticket 36 變寬，已隨這次一起升版，同一個版號不再對應兩種內容。
+22.04 與 24.04 的 amd64 與 arm64。`better-monitor` 因為 payload 在 ticket 36
+變寬，已隨那次一起升版，同一個版號不再對應兩種內容。
+
+目前的 release 是
+[`v0.2.1`](https://github.com/TimLai666/better-os/releases/tag/v0.2.1)，由 merge
+commit `8dc9c7eede37917d5af527a0d8df17e84213b48b` 的 post-merge CI run
+[`33871736272`](https://github.com/TimLai666/better-os/actions/runs/33871736272)
+產生，同樣是八個套件、32 個 `.deb` 與 32 個 `.deb.sha256`。這是 patch release，
+唯一變動的 payload 是 `better-touchpad`：它現在會安裝 GNOME Shell adapter
+extension `touchpad-adapter@betteros.org` 與 `better-touchpad-gestured` 服務。
+兩次 release 都是所有 asset 從公開 release 重新下載、逐一驗證 checksum 之後，
+才把數值寫回七份 component manifest。升版當下 manifest 內的 checksum 描述的是
+上一個 release 的檔案，因此 release branch 上會先換回 placeholder，等新 release
+公開後再寫入真值。
 
 Debian metadata 使用核准的
 `TimLai666 <tim930102@icloud.com>`
