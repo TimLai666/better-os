@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Better Monitor
+Name[zh_TW]=Better Monitor
+GenericName=System Monitor
+GenericName[zh_TW]=系統監視器
+Comment=Watch processes, resources, and incidents, and export a redacted report
+Comment[zh_TW]=觀察程序、資源與事件，並匯出經過遮蔽的報告
+# The package installs three executables. This entry launches the window at
+# /usr/bin/better-monitor — not better-monitor-service, which the systemd user
+# unit starts, and not better-monitor-cli, which has no window to show. The
+# window reaches the service over org.betteros.Monitor1 and runs the same
+# engine in its own process when there is no service, so it opens either way.
+Exec=better-monitor
+Icon=better-monitor
+Terminal=false
+StartupNotify=true
+Categories=System;Monitor;
+Keywords=monitor;processes;cpu;memory;resources;performance;incidents;
+Keywords[zh_TW]=監控;程序;處理器;記憶體;資源;效能;事件;

@@ -74,6 +74,7 @@ impl TouchpadApp {
                     .when(!compact, |header| {
                         header.child(
                             v_flex()
+                                .flex_1()
                                 .min_w_0()
                                 .child(div().font_semibold().child(c.brand))
                                 .child(
@@ -96,6 +97,7 @@ impl TouchpadApp {
                         .when(!compact, |row| {
                             row.child(
                                 v_flex()
+                                    .flex_1()
                                     .min_w_0()
                                     .child(
                                         div()
@@ -899,58 +901,69 @@ impl Render for TouchpadApp {
         let banner = self.model.result_banner();
         let page = self.render_page(cx);
 
-        div().relative().size_full().child(
-            h_flex()
-                .size_full()
-                .min_w_0()
-                .bg(cx.theme().secondary)
-                .child(self.sidebar(compact, cx))
-                .child(
-                    v_flex()
-                        .h_full()
-                        .flex_1()
+        // Mutter gives an `xdg-toplevel` client no decorations, so this window
+        // draws its own or it cannot be closed, minimized, maximized or moved.
+        v_flex()
+            .relative()
+            .size_full()
+            .child(better_ui::window_chrome::title_bar(
+                Icon::new(IconName::Frame).small(),
+                format!("{} {}", c.brand, c.application),
+                cx.theme().foreground,
+            ))
+            .child(
+                div().relative().flex_1().min_h_0().child(
+                    h_flex()
+                        .size_full()
                         .min_w_0()
-                        .child(self.top_bar(cx))
-                        .when(self.model.safe_mode(), |this| {
-                            this.child(
-                                div()
-                                    .w_full()
-                                    .px_5()
-                                    .py_2()
-                                    .bg(cx.theme().warning)
-                                    .text_sm()
-                                    .text_color(cx.theme().warning_foreground)
-                                    .child(c.safe_mode_banner),
-                            )
-                        })
-                        .when_some(banner, |this, (state, text)| {
-                            let background = match state {
-                                RunState::Failed => cx.theme().danger,
-                                RunState::PartiallySupported | RunState::AwaitingSignOut => {
-                                    cx.theme().warning
-                                }
-                                _ => cx.theme().success,
-                            };
-                            this.child(
-                                div()
-                                    .w_full()
-                                    .px_5()
-                                    .py_2()
-                                    .bg(background)
-                                    .text_sm()
-                                    .child(text),
-                            )
-                        })
+                        .bg(cx.theme().secondary)
+                        .child(self.sidebar(compact, cx))
                         .child(
-                            div().flex_1().min_h_0().overflow_y_scrollbar().p_5().child(
-                                div()
-                                    .w_full()
-                                    .flex()
-                                    .justify_center()
-                                    .child(div().w_full().max_w(px(1160.0)).child(page)),
-                            ),
+                            v_flex()
+                                .h_full()
+                                .flex_1()
+                                .min_w_0()
+                                .child(self.top_bar(cx))
+                                .when(self.model.safe_mode(), |this| {
+                                    this.child(
+                                        div()
+                                            .w_full()
+                                            .px_5()
+                                            .py_2()
+                                            .bg(cx.theme().warning)
+                                            .text_sm()
+                                            .text_color(cx.theme().warning_foreground)
+                                            .child(c.safe_mode_banner),
+                                    )
+                                })
+                                .when_some(banner, |this, (state, text)| {
+                                    let background = match state {
+                                        RunState::Failed => cx.theme().danger,
+                                        RunState::PartiallySupported
+                                        | RunState::AwaitingSignOut => cx.theme().warning,
+                                        _ => cx.theme().success,
+                                    };
+                                    this.child(
+                                        div()
+                                            .w_full()
+                                            .px_5()
+                                            .py_2()
+                                            .bg(background)
+                                            .text_sm()
+                                            .child(text),
+                                    )
+                                })
+                                .child(
+                                    div().flex_1().min_h_0().overflow_y_scrollbar().p_5().child(
+                                        div()
+                                            .w_full()
+                                            .flex()
+                                            .justify_center()
+                                            .child(div().w_full().max_w(px(1160.0)).child(page)),
+                                    ),
+                                ),
                         ),
                 ),
-        )
+            )
     }
 }

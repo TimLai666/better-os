@@ -256,6 +256,7 @@ impl ManagerApp {
                                 )
                                 .child(
                                     v_flex()
+                                        .flex_1()
                                         .min_w_0()
                                         .gap_1()
                                         .child(div().font_semibold().child(row.name.clone()))

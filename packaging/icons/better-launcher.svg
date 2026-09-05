@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Better OS application icon. Original geometric mark, drawn for this
+     project; no third-party artwork. The family is one rounded square in the
+     Better OS primary, one accent element in the Better OS tertiary, and one
+     glyph that has to stay legible at 16 pixels. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Better Launcher">
+  <title>Better Launcher</title>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1f2937"/>
+  <!-- A grid of applications with the search that finds one of them. -->
+  <rect x="14" y="14" width="15" height="15" rx="4" fill="#f4f7fb"/>
+  <rect x="35" y="14" width="15" height="15" rx="4" fill="#f4f7fb"/>
+  <rect x="14" y="35" width="15" height="15" rx="4" fill="#f4f7fb"/>
+  <circle cx="42" cy="42" r="9" fill="none" stroke="#4f6df5" stroke-width="5"/>
+  <path d="M48.5 48.5 55 55" fill="none" stroke="#4f6df5" stroke-width="5" stroke-linecap="round"/>
+</svg>

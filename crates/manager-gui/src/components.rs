@@ -159,12 +159,22 @@ impl ManagerApp {
                     .child(Icon::new(icon).small()),
             )
             .child(
+                // `flex_1` is what makes this a column of text rather than a
+                // column of single characters. Without it the wrapper's flex
+                // basis stays `auto`, a nested flex column reports its
+                // min-content width for that basis — one character wide in a
+                // language that breaks between every character — and nothing
+                // ever asks it to grow, so the row leaves the rest of its width
+                // empty. `min_w` keeps the guarantee when the row really is too
+                // narrow: the enclosing row wraps instead of squeezing.
                 v_flex()
-                    .min_w_0()
+                    .flex_1()
+                    .min_w(px(crate::layout::STEP_LABEL_MIN_WIDTH))
                     .gap_1()
-                    .child(div().text_sm().font_semibold().child(title))
+                    .child(div().min_w_0().text_sm().font_semibold().child(title))
                     .child(
                         div()
+                            .min_w_0()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .child(detail),
@@ -498,6 +508,7 @@ impl ManagerApp {
                         )
                         .child(
                             v_flex()
+                                .flex_1()
                                 .min_w_0()
                                 .gap_1()
                                 .child(div().font_semibold().child(component.name.clone()))

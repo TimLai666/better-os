@@ -1,8 +1,103 @@
 //! Shared UI view models. GPUI rendering primitives are added in the GUI slice.
 
 use better_core::ComponentManifest;
-use gpui::{AnyElement, Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, div};
+use gpui::{
+    AnyElement, App, Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, Window,
+    WindowDecorations, WindowOptions, div,
+};
 use gpui_component::*;
+
+/// The window chrome every first-party Better OS window draws for itself.
+///
+/// GNOME's Mutter offers no server-side decorations to an `xdg-toplevel`
+/// client, so on the Wayland session a person actually runs, a GPUI window has
+/// no close, minimize or maximize button and cannot be dragged unless the
+/// application draws them. Every first-party window therefore carries this bar.
+///
+/// The behaviour — dragging, double-click to maximize, and the three controls —
+/// comes from `gpui_component::TitleBar`, which already talks to the
+/// compositor through `start_window_move`, `zoom_window`, `minimize_window` and
+/// `remove_window`. This wrapper exists so the icon, the title and the spacing
+/// are the same in all seven windows rather than seven near-copies.
+pub mod window_chrome {
+    use super::*;
+
+    /// The height of the shared titlebar, re-exported so a window that has to
+    /// reason about its own content height does not guess.
+    pub use gpui_component::TITLE_BAR_HEIGHT;
+
+    /// The titlebar itself: the application's glyph, its localized window
+    /// title, and the platform's window controls.
+    ///
+    /// `icon` is an element rather than a name so each application passes the
+    /// glyph it already uses in its own header, and the bar never grows a
+    /// table of application identities of its own.
+    pub fn title_bar(
+        icon: impl IntoElement,
+        title: impl Into<SharedString>,
+        foreground: Hsla,
+    ) -> TitleBar {
+        TitleBar::new().child(
+            h_flex().min_w_0().items_center().gap_2().child(icon).child(
+                div()
+                    .min_w_0()
+                    .text_sm()
+                    .font_medium()
+                    .text_color(foreground)
+                    .child(title.into()),
+            ),
+        )
+    }
+
+    /// The window options every decorated first-party window opens with.
+    ///
+    /// Two of these matter on Wayland and neither was set before. `app_id` is
+    /// how the compositor matches a window to its desktop entry — without it
+    /// the shell cannot find the application's icon or name no matter what the
+    /// package installs. `WindowDecorations::Client` states the intent the
+    /// drawn titlebar depends on rather than leaving it to a negotiation the
+    /// compositor was always going to answer the same way.
+    ///
+    /// `app_id` must be the desktop entry's file name without its `.desktop`
+    /// suffix, or the match silently fails.
+    pub fn window_options(app_id: impl Into<String>) -> WindowOptions {
+        WindowOptions {
+            titlebar: Some(TitleBar::title_bar_options()),
+            window_decorations: Some(WindowDecorations::Client),
+            app_id: Some(app_id.into()),
+            ..Default::default()
+        }
+    }
+
+    /// The window options for a transient overlay that draws no titlebar.
+    ///
+    /// Better Launcher is the one first-party window with no title bar, and it
+    /// is deliberate: it is a near-fullscreen overlay a person summons, uses
+    /// once and dismisses with Escape or by launching something. A titlebar
+    /// would give it a second way to close, a drag region it should not have,
+    /// and a maximize button for a window that is already the size it wants.
+    /// It still needs `app_id`, because the shell matches a window to its
+    /// desktop entry — and therefore to its icon and name — by that string
+    /// whether or not the window is decorated.
+    pub fn overlay_window_options(app_id: impl Into<String>) -> WindowOptions {
+        WindowOptions {
+            window_decorations: Some(WindowDecorations::Client),
+            app_id: Some(app_id.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Whether the window is currently drawing its own decorations.
+    ///
+    /// A window that somehow did get server-side decorations would otherwise
+    /// show two titlebars.
+    pub fn is_client_decorated(window: &Window, _: &App) -> bool {
+        matches!(
+            window.window_decorations(),
+            gpui::Decorations::Client { .. }
+        )
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatusCard {

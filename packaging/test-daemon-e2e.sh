@@ -138,9 +138,22 @@ dpkg-query -W -f='${db:Status-Status}' better-launcher | grep -q '^installed$' |
     printf 'better-launcher did not install\n' >&2
     exit 1
 }
+# No package here ships a postinst that runs update-desktop-database or
+# gtk-update-icon-cache, and none needs one. desktop-file-utils registers
+# `interest-noawait /usr/share/applications` and hicolor-icon-theme registers
+# `interest-noawait /usr/share/icons/hicolor`, so dpkg refreshes both caches by
+# trigger after any package drops a file into either directory. Verified on the
+# Zorin 18 / noble host by reading /var/lib/dpkg/info/desktop-file-utils.triggers
+# and hicolor-icon-theme.triggers, whose postinsts run update-desktop-database
+# and gtk-update-icon-cache respectively. A package doing it itself would run
+# the same commands a second time, and would fail on a machine where those
+# packages are absent. That is why the checks below assert the installed files
+# and not a refreshed cache: this image has neither package, so no trigger runs
+# here, and asserting a cache would be testing the image rather than the .deb.
 for required_file in \
     /usr/bin/better-launcher \
     /usr/share/applications/better-launcher.desktop \
+    /usr/share/icons/hicolor/scalable/apps/better-launcher.svg \
     /usr/share/doc/better-launcher/copyright; do
     [[ -s "$required_file" ]] || {
         printf 'Missing %s after installing better-launcher\n' "$required_file" >&2
@@ -170,6 +183,10 @@ fi
 }
 [[ ! -e /usr/share/applications/better-launcher.desktop ]] || {
     printf 'better-launcher left its desktop entry behind after removal\n' >&2
+    exit 1
+}
+[[ ! -e /usr/share/icons/hicolor/scalable/apps/better-launcher.svg ]] || {
+    printf 'better-launcher left its icon behind after removal\n' >&2
     exit 1
 }
 printf 'better-launcher installed and removed cleanly\n'

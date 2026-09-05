@@ -49,3 +49,8 @@ permissions:
     reason: future privileged boundary, not executed by this scaffold
 paths:
   - /usr/bin/better-manager
+  # The window had no menu entry at all until now, so an installed Better
+  # Manager was only reachable from a terminal. The icon is a file rather than
+  # a theme name with nothing behind it, which is what draws a blank tile.
+  - /usr/share/applications/io.betteros.Manager.desktop
+  - /usr/share/icons/hicolor/scalable/apps/better-manager.svg

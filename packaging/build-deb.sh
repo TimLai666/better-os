@@ -414,7 +414,17 @@ POSTRM
     printf 'Depends: %s\n' "$runtime_dependencies"
 }
 
+# Every package with a window ships its own scalable icon into the hicolor
+# theme under the name its desktop entry asks for. A theme name with no file
+# behind it draws a blank tile in the applications grid, which is what every
+# entry did before these icons existed. They are installed per package rather
+# than from one shared icon package so that removing a component takes its icon
+# with it and no package depends on another to draw itself.
 PACKAGE_BINARIES=("manager-gui:usr/bin/better-manager")
+PACKAGE_DATA=(
+    "packaging/manager/io.betteros.Manager.desktop:usr/share/applications/io.betteros.Manager.desktop"
+    "packaging/icons/better-manager.svg:usr/share/icons/hicolor/scalable/apps/better-manager.svg"
+)
 PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
 PACKAGE_RECOMMENDS="better-manager-daemon (= $VERSION)"
 make_package better-manager \
@@ -435,21 +445,31 @@ PACKAGE_BINARIES=(
     "better-monitor-service:usr/bin/better-monitor-service"
     "better-monitor:usr/bin/better-monitor-cli"
 )
-PACKAGE_DATA=("packaging/monitor/better-monitor.service:usr/lib/systemd/user/better-monitor.service")
+PACKAGE_DATA=(
+    "packaging/monitor/better-monitor.service:usr/lib/systemd/user/better-monitor.service"
+    "packaging/monitor/io.betteros.Monitor.desktop:usr/share/applications/io.betteros.Monitor.desktop"
+    "packaging/icons/better-monitor.svg:usr/share/icons/hicolor/scalable/apps/better-monitor.svg"
+)
 PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
 make_package better-monitor \
     'Better OS monitor desktop application' \
     'Better OS desktop application built with the shared manager and monitor contracts.'
 
 PACKAGE_BINARIES=("better-launcher:usr/bin/better-launcher")
-PACKAGE_DATA=("packaging/launcher/better-launcher.desktop:usr/share/applications/better-launcher.desktop")
+PACKAGE_DATA=(
+    "packaging/launcher/better-launcher.desktop:usr/share/applications/better-launcher.desktop"
+    "packaging/icons/better-launcher.svg:usr/share/icons/hicolor/scalable/apps/better-launcher.svg"
+)
 PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
 make_package better-launcher \
     'Better OS application launcher overlay' \
     'One overlay with the search row on top and the whole application library below it.'
 
 PACKAGE_BINARIES=("better-files:usr/bin/better-files")
-PACKAGE_DATA=("packaging/files/io.betteros.Files.desktop:usr/share/applications/io.betteros.Files.desktop")
+PACKAGE_DATA=(
+    "packaging/files/io.betteros.Files.desktop:usr/share/applications/io.betteros.Files.desktop"
+    "packaging/icons/better-files.svg:usr/share/icons/hicolor/scalable/apps/better-files.svg"
+)
 # udisks2 is a Recommends rather than a Depends: without it Better Files still
 # browses files, it just cannot mount or eject a device, and it says so instead
 # of hiding the devices.
@@ -480,6 +500,7 @@ PACKAGE_DATA=(
     "adapters/gnome-shell-touchpad/metadata.json:usr/share/gnome-shell/extensions/$EXTENSION_UUID/metadata.json"
     "adapters/gnome-shell-touchpad/extension.js:usr/share/gnome-shell/extensions/$EXTENSION_UUID/extension.js"
     "adapters/gnome-shell-touchpad/org.betteros.TouchpadAdapter1.xml:usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml"
+    "packaging/icons/better-touchpad.svg:usr/share/icons/hicolor/scalable/apps/better-touchpad.svg"
 )
 PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
 make_package better-touchpad \
@@ -499,6 +520,7 @@ PACKAGE_DATA=(
     "packaging/awake/better-awake.desktop:usr/share/applications/better-awake.desktop"
     "packaging/awake/better-awake-tray.desktop:etc/xdg/autostart/better-awake-tray.desktop"
     "packaging/awake/better-awake.service:usr/lib/systemd/user/better-awake.service"
+    "packaging/icons/better-awake.svg:usr/share/icons/hicolor/scalable/apps/better-awake.svg"
 )
 PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
 make_package better-awake \

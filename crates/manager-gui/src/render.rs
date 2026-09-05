@@ -1,6 +1,6 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{ActiveTheme, scroll::ScrollableElement, *};
+use gpui_component::{ActiveTheme, Icon, IconName, Sizable as _, scroll::ScrollableElement, *};
 
 use crate::{app::ManagerApp, i18n::copy, layout::COMPACT_VIEWPORT_WIDTH, model::Page};
 
@@ -34,15 +34,37 @@ impl ManagerApp {
     }
 }
 
+impl ManagerApp {
+    /// The shared window titlebar. Mutter gives an `xdg-toplevel` client no
+    /// decorations, so this window draws its own or it has no way to be
+    /// closed, minimized, maximized or moved.
+    fn title_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale);
+        better_ui::window_chrome::title_bar(
+            Icon::new(IconName::GalleryVerticalEnd).small(),
+            format!("{} · {}", c.brand_name, c.manager),
+            cx.theme().foreground,
+        )
+        .into_any_element()
+    }
+}
+
 impl Render for ManagerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let compact = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
+        let title_bar = self.title_bar(cx);
 
         if self.page == Page::FirstRun {
-            return div()
+            return v_flex()
                 .relative()
                 .size_full()
-                .child(self.first_run_page(compact, cx))
+                .child(title_bar)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .child(self.first_run_page(compact, cx)),
+                )
                 .into_any_element();
         }
 
@@ -84,6 +106,11 @@ impl Render for ManagerApp {
                     ),
             );
 
-        div().relative().size_full().child(shell).into_any_element()
+        v_flex()
+            .relative()
+            .size_full()
+            .child(title_bar)
+            .child(div().flex_1().min_h_0().child(shell))
+            .into_any_element()
     }
 }

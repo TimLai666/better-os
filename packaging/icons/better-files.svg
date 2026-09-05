@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Better OS application icon. Original geometric mark, drawn for this
+     project; no third-party artwork. The family is one rounded square in the
+     Better OS primary, one accent element in the Better OS tertiary, and one
+     glyph that has to stay legible at 16 pixels. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Better Files">
+  <title>Better Files</title>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1f2937"/>
+  <!-- A folder. The tab is the accent so the shape reads at 16 pixels. -->
+  <path d="M12 22a4 4 0 0 1 4-4h9.4a4 4 0 0 1 3.1 1.5L32 24H12z" fill="#4f6df5"/>
+  <rect x="12" y="23" width="40" height="24" rx="4" fill="#f4f7fb"/>
+</svg>

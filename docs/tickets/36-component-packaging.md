@@ -100,6 +100,31 @@ symlink.
   `crates/touchpad-platform/tests/manifest.rs` validates it the way the manager
   validates a manifest and fails if the declaration drifts from `GnomeBackend`'s
   key table or `TouchpadStore`'s paths.
+- ~~**Two packages ship no desktop entry**~~ — **closed.** `better-manager` and
+  `better-monitor` installed a binary and nothing that names it, so an installed
+  Better Manager or Better Monitor was reachable from a terminal and from
+  nowhere else. Both now ship one: `io.betteros.Manager.desktop` and
+  `io.betteros.Monitor.desktop`, following the `io.betteros.Files.desktop`
+  precedent rather than renaming the five entry filenames that are already
+  published. The monitor entry runs `/usr/bin/better-monitor`, the window, and
+  not the service the user unit starts or the command line that has no window;
+  `verify-deb.sh` asserts that line rather than trusting it.
+- ~~**No icon file existed anywhere in the project**~~ — **closed.** Every
+  desktop entry named `Icon=better-<app>`, and no package shipped a file any of
+  those names resolved to, so the four entries that did reach the applications
+  grid drew a blank tile. Six original project-owned SVGs now live in
+  `packaging/icons/`, and each package with a window installs its own as
+  `usr/share/icons/hicolor/scalable/apps/<name>.svg`. Per package rather than
+  from one shared icon package, so removing a component takes its icon with it.
+  `verify-deb.sh` now fails any shipped entry whose `Icon=` names a file the
+  same package does not carry, which is the check that would have caught this.
+- **No package needs a postinst for either cache.** `desktop-file-utils`
+  registers `interest-noawait /usr/share/applications` and `hicolor-icon-theme`
+  registers `interest-noawait /usr/share/icons/hicolor`, so dpkg refreshes the
+  desktop database and the icon cache by trigger after any package writes into
+  either directory. Read from the trigger files on the Zorin 18 host rather than
+  assumed. A postinst of our own would repeat what the trigger already does and
+  would fail on a machine without those packages.
 - **Checksums stay placeholders** for `better-launcher`, `better-awake`,
   `better-files`, and `better-storage`. ADR 0002 records the checksum of a
   published release asset, and no release carries these components. A hash

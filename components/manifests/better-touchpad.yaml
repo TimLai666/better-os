@@ -159,6 +159,9 @@ paths:
   # text console and works when the configuration itself is what broke.
   # `--normal-mode` removes the marker again.
   - /usr/share/applications/better-touchpad-safe-mode.desktop
+  # One icon for both entries: the safe-mode entry names the same theme name
+  # the settings window does.
+  - /usr/share/icons/hicolor/scalable/apps/better-touchpad.svg
   - ~/.config/better-os/touchpad/config.json
   - ~/.config/better-os/touchpad/backup.json
   - ~/.config/better-os/touchpad/safe-mode

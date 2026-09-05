@@ -97,6 +97,7 @@ permissions:
 paths:
   - /usr/bin/better-launcher
   - /usr/share/applications/better-launcher.desktop
+  - /usr/share/icons/hicolor/scalable/apps/better-launcher.svg
   - /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/better-launcher/name
   - /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/better-launcher/command
   - /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/better-launcher/binding

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Better OS application icon. Original geometric mark, drawn for this
+     project; no third-party artwork. The family is one rounded square in the
+     Better OS primary, one accent element in the Better OS tertiary, and one
+     glyph that has to stay legible at 16 pixels. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Better Awake">
+  <title>Better Awake</title>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1f2937"/>
+  <!-- An open eye: the machine is being kept awake and is watched. -->
+  <path d="M8 32c7-11 15-16.5 24-16.5S49 21 56 32c-7 11-15 16.5-24 16.5S15 43 8 32z"
+        fill="none" stroke="#f4f7fb" stroke-width="4.5" stroke-linejoin="round"/>
+  <circle cx="32" cy="32" r="8" fill="#4f6df5"/>
+</svg>

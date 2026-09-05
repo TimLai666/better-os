@@ -70,6 +70,7 @@ impl MonitorApp {
                     .when(!compact, |header| {
                         header.child(
                             v_flex()
+                                .flex_1()
                                 .min_w_0()
                                 .child(div().font_semibold().child(c.brand_name))
                                 .child(

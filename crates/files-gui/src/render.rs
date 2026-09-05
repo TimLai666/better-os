@@ -2,7 +2,7 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{ActiveTheme, *};
+use gpui_component::{ActiveTheme, Icon, IconName, Sizable as _, *};
 
 use crate::app::FilesApp;
 use crate::i18n::copy;
@@ -68,7 +68,11 @@ impl Render for FilesApp {
             .children(details)
             .children(operations);
 
-        div()
+        // Mutter gives an `xdg-toplevel` client no decorations, so this window
+        // draws its own or it cannot be closed, minimized, maximized or moved.
+        // The dialog and the chooser stay inside the content area rather than
+        // over the bar, so the window controls are never covered.
+        v_flex()
             .relative()
             .size_full()
             .track_focus(&self.focus_handle)
@@ -78,8 +82,19 @@ impl Render for FilesApp {
                     this.on_key(event, window, cx)
                 }),
             )
-            .child(shell)
-            .children(dialog)
-            .children(chooser)
+            .child(better_ui::window_chrome::title_bar(
+                Icon::new(IconName::Folder).small(),
+                format!("{} {}", c.brand_name, c.files),
+                cx.theme().foreground,
+            ))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(shell)
+                    .children(dialog)
+                    .children(chooser),
+            )
     }
 }

@@ -1,7 +1,11 @@
 use crate::{
     app::{demo_manager, translated_component},
     i18n::{Locale, copy},
-    layout::{ActionLayout, MIN_WINDOW_WIDTH, action_layout},
+    layout::{
+        ActionLayout, ColumnLayout, MIN_READABLE_CHARACTERS, MIN_WINDOW_WIDTH,
+        STEP_LABEL_MIN_WIDTH, action_layout, character_advance, characters_per_line,
+        first_run_column, step_label_width,
+    },
     model::{CatalogLine, ComponentInfo},
 };
 use better_core::{ComponentIcon, ComponentId};
@@ -256,6 +260,81 @@ fn synthetic_long_translations_wrap_at_the_supported_minimum_size() {
             ),
             ActionLayout::Wrapped
         );
+    }
+}
+
+/// The first-run step list, and the width its labels are owed.
+///
+/// A field report from a Chinese desktop showed the step column rendered one
+/// character per line beside a compatibility card that had taken the width.
+/// The column had no flex grow factor, so it never claimed the space the row
+/// had already given it. These lock the geometry the fix depends on.
+mod step_list {
+    use super::*;
+
+    /// Every window size a person can actually produce.
+    fn sizes() -> impl Iterator<Item = (f32, f32)> {
+        [MIN_WINDOW_WIDTH, 1024.0, 1280.0, 1920.0, 2560.0]
+            .into_iter()
+            .flat_map(|width| {
+                [1.0, 1.25, 1.5]
+                    .into_iter()
+                    .map(move |scale| (width, scale))
+            })
+    }
+
+    #[test]
+    fn a_step_label_is_never_narrower_than_the_readable_minimum() {
+        for (width, scale) in sizes() {
+            let label = step_label_width(width, scale);
+            assert!(
+                label >= STEP_LABEL_MIN_WIDTH,
+                "{width}x{scale} gives a step label {label} wide"
+            );
+        }
+    }
+
+    #[test]
+    fn a_step_label_holds_a_readable_run_of_characters_in_both_locales() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let advance = character_advance(locale);
+            for (width, scale) in sizes() {
+                let characters = characters_per_line(step_label_width(width, scale), advance);
+                assert!(
+                    characters >= MIN_READABLE_CHARACTERS,
+                    "{locale:?} at {width}x{scale} fits {characters} characters on a line"
+                );
+            }
+        }
+    }
+
+    /// The regression itself, stated as the number it produced.
+    #[test]
+    fn a_column_that_collapses_to_its_min_content_width_is_one_character_wide() {
+        let collapsed = characters_per_line(
+            character_advance(Locale::ZhTw),
+            character_advance(Locale::ZhTw),
+        );
+        assert_eq!(collapsed, 1);
+        assert!(collapsed < MIN_READABLE_CHARACTERS);
+    }
+
+    #[test]
+    fn the_two_first_run_columns_stack_rather_than_squeeze() {
+        // Side by side while both fit at their declared minimum...
+        assert_eq!(first_run_column(1920.0, 1.0).0, ColumnLayout::SideBySide);
+        assert_eq!(
+            first_run_column(MIN_WINDOW_WIDTH, 1.0).0,
+            ColumnLayout::SideBySide
+        );
+        // ...and stacked once they do not, which is what keeps the label wide.
+        assert_eq!(
+            first_run_column(MIN_WINDOW_WIDTH, 1.5).0,
+            ColumnLayout::Stacked
+        );
+        let (_, stacked) = first_run_column(MIN_WINDOW_WIDTH, 1.5);
+        let (_, side_by_side) = first_run_column(MIN_WINDOW_WIDTH, 1.0);
+        assert!(stacked > side_by_side);
     }
 }
 

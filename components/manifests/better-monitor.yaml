@@ -67,4 +67,9 @@ paths:
   - /usr/bin/better-monitor-service
   - /usr/bin/better-monitor-cli
   - /usr/lib/systemd/user/better-monitor.service
+  # The desktop entry launches the window and neither of the other two
+  # executables: the service is started by the user unit, and the command line
+  # has no window to show.
+  - /usr/share/applications/io.betteros.Monitor.desktop
+  - /usr/share/icons/hicolor/scalable/apps/better-monitor.svg
   - /var/lib/better-os/monitor
