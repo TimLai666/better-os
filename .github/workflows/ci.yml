@@ -15,6 +15,12 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # The inventory pins the Cargo.lock hash, so any lockfile change makes it
+      # stale. It needs only `cargo metadata --locked`, so it runs before the
+      # build dependencies and fails in seconds rather than in the package jobs
+      # an hour later — which is how three merges landed with a stale file.
+      - name: Third-party license inventory is current
+        run: bash packaging/generate-third-party-notices.sh --check
       - name: Install GPUI Linux dependencies
         run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
       - run: cargo fmt --all -- --check
