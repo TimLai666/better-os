@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Better OS application icon. Original geometric mark, drawn for this
+     project; no third-party artwork. The family is one rounded square in the
+     Better OS primary, one accent element in the Better OS tertiary, and one
+     glyph that has to stay legible at 16 pixels. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Better Touchpad">
+  <title>Better Touchpad</title>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1f2937"/>
+  <!-- A trackpad with two contacts on it: the gesture surface. -->
+  <rect x="11" y="17" width="42" height="30" rx="6" fill="none" stroke="#f4f7fb" stroke-width="4"/>
+  <circle cx="26" cy="32" r="5" fill="#4f6df5"/>
+  <circle cx="39" cy="32" r="5" fill="#4f6df5"/>
+</svg>

@@ -83,10 +83,12 @@ fn main() {
                 overlay_size(f32::from(bounds.size.width), f32::from(bounds.size.height))
             })
             .unwrap_or((1280.0, 820.0));
+        // The overlay draws no titlebar. It is dismissed with Escape or by
+        // launching something, and `better_ui::window_chrome` records why.
         let window_options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(width), px(height)), cx)),
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-            ..Default::default()
+            ..better_ui::window_chrome::overlay_window_options("better-launcher")
         };
 
         let mut inbox = inbox.take();

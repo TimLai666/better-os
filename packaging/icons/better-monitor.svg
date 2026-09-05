@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Better OS application icon. Original geometric mark, drawn for this
+     project; no third-party artwork. The family is one rounded square in the
+     Better OS primary, one accent element in the Better OS tertiary, and one
+     glyph that has to stay legible at 16 pixels. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Better Monitor">
+  <title>Better Monitor</title>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1f2937"/>
+  <!-- A pulse line: the reading the monitor takes. -->
+  <path d="M13 34h9l5-13 8 24 5-11h11" fill="none" stroke="#f4f7fb" stroke-width="5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="51" cy="34" r="5" fill="#4f6df5"/>
+</svg>

@@ -1,0 +1,25 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Better Manager
+Name[zh_TW]=Better Manager
+GenericName=Component Manager
+GenericName[zh_TW]=元件管理員
+Comment=Install, update, verify, and roll back every Better OS component from one window
+Comment[zh_TW]=在同一個視窗安裝、更新、驗證並還原每一個 Better OS 元件
+# The window opens whether or not better-manager-daemon is installed. The
+# service is a Recommends rather than a Depends, so without it the manager
+# still reads the catalog and reports that it cannot apply a change, which is
+# why the entry is not conditional on the privileged half being present.
+Exec=better-manager
+Icon=better-manager
+Terminal=false
+StartupNotify=true
+# One main category on purpose. PackageManager is the additional category that
+# says what this window is for, and Settings is the main one it travels with:
+# Better Manager is where the other Better OS components are installed and
+# turned on, not a general package manager for the distribution. Adding System
+# as well would place the same application in two menu sections.
+Categories=Settings;PackageManager;
+Keywords=components;install;update;verify;rollback;manager;better os;
+Keywords[zh_TW]=元件;安裝;更新;驗證;還原;管理員;

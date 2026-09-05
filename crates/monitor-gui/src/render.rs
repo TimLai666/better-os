@@ -1,6 +1,6 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{ActiveTheme, scroll::ScrollableElement, *};
+use gpui_component::{ActiveTheme, Icon, IconName, Sizable as _, scroll::ScrollableElement, *};
 
 use crate::app::MonitorApp;
 use crate::i18n::copy;
@@ -49,6 +49,16 @@ impl Render for MonitorApp {
                     ),
             );
 
-        div().relative().size_full().child(shell)
+        // Mutter gives an `xdg-toplevel` client no decorations, so this window
+        // draws its own or it cannot be closed, minimized, maximized or moved.
+        v_flex()
+            .relative()
+            .size_full()
+            .child(better_ui::window_chrome::title_bar(
+                Icon::new(IconName::Inspector).small(),
+                format!("{} · {}", c.brand_name, c.monitor),
+                cx.theme().foreground,
+            ))
+            .child(div().flex_1().min_h_0().child(shell))
     }
 }

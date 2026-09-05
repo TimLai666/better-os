@@ -82,6 +82,7 @@ impl ManagerApp {
                     .when(!compact, |header| {
                         header.child(
                             v_flex()
+                                .flex_1()
                                 .min_w_0()
                                 .child(div().font_semibold().child(c.brand_name))
                                 .child(
@@ -104,6 +105,7 @@ impl ManagerApp {
                         .when(!compact, |row| {
                             row.child(
                                 v_flex()
+                                    .flex_1()
                                     .min_w_0()
                                     .child(div().text_sm().font_semibold().child(profile_label))
                                     .child(

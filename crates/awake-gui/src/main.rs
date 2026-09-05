@@ -40,7 +40,7 @@ fn main() {
         let window_options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1180.0), px(820.0)), cx)),
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-            ..Default::default()
+            ..better_ui::window_chrome::window_options("better-awake")
         };
 
         cx.spawn(async move |cx| {

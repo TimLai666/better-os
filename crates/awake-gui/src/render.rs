@@ -4,7 +4,9 @@
 use gpui::*;
 use gpui_component::{ActiveTheme, scroll::ScrollableElement, *};
 
-use crate::{app::AwakeApp, layout::COMPACT_VIEWPORT_WIDTH, model::Section, shell::actions};
+use crate::{
+    app::AwakeApp, i18n::copy, layout::COMPACT_VIEWPORT_WIDTH, model::Section, shell::actions,
+};
 
 impl AwakeApp {
     fn render_section(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -59,28 +61,39 @@ impl Render for AwakeApp {
                 this.navigate(Section::Settings, cx)
             }))
             .on_action(cx.listener(|this, _: &actions::Refresh, _, cx| this.refresh(cx)))
+            .v_flex()
+            // Mutter gives an `xdg-toplevel` client no decorations, so this
+            // window draws its own or it cannot be closed, minimized,
+            // maximized or moved.
+            .child(better_ui::window_chrome::title_bar(
+                Icon::new(IconName::Sun).small(),
+                copy(self.locale).application_name,
+                cx.theme().foreground,
+            ))
             .child(
-                h_flex()
-                    .size_full()
-                    .min_w_0()
-                    .bg(cx.theme().secondary)
-                    .child(self.sidebar(compact, cx))
-                    .child(
-                        v_flex()
-                            .h_full()
-                            .flex_1()
-                            .min_w_0()
-                            .child(self.top_bar(cx))
-                            .child(
-                                div().flex_1().min_h_0().overflow_y_scrollbar().p_5().child(
-                                    div()
-                                        .w_full()
-                                        .flex()
-                                        .justify_center()
-                                        .child(div().w_full().max_w(px(1320.0)).child(section)),
+                div().flex_1().min_h_0().child(
+                    h_flex()
+                        .size_full()
+                        .min_w_0()
+                        .bg(cx.theme().secondary)
+                        .child(self.sidebar(compact, cx))
+                        .child(
+                            v_flex()
+                                .h_full()
+                                .flex_1()
+                                .min_w_0()
+                                .child(self.top_bar(cx))
+                                .child(
+                                    div().flex_1().min_h_0().overflow_y_scrollbar().p_5().child(
+                                        div()
+                                            .w_full()
+                                            .flex()
+                                            .justify_center()
+                                            .child(div().w_full().max_w(px(1320.0)).child(section)),
+                                    ),
                                 ),
-                            ),
-                    ),
+                        ),
+                ),
             )
     }
 }

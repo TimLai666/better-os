@@ -73,6 +73,9 @@ paths:
   - /usr/share/applications/better-awake.desktop
   - /etc/xdg/autostart/better-awake-tray.desktop
   - /usr/lib/systemd/user/better-awake.service
+  # One icon for both entries: the tray autostart entry names the same theme
+  # name the settings window does.
+  - /usr/share/icons/hicolor/scalable/apps/better-awake.svg
   - ~/.local/state/better-awake/awake-rules.json
   - ~/.local/state/better-awake/awake-history.json
   - ~/.local/state/better-awake/awake-service-state.json

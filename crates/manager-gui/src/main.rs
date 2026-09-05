@@ -31,10 +31,13 @@ fn main() {
         // exists and the saved settings have been read.
         gpui_component::init(cx);
 
+        // `io.betteros.Manager` is the desktop entry's file name without its
+        // suffix. The compositor matches a window to its entry by exactly that
+        // string, so the two have to be changed together.
         let window_options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1280.0), px(820.0)), cx)),
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-            ..Default::default()
+            ..better_ui::window_chrome::window_options("io.betteros.Manager")
         };
 
         cx.spawn(async move |cx| {

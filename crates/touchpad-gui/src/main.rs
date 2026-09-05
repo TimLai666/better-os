@@ -65,7 +65,7 @@ fn main() {
         let window_options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1040.0), px(720.0)), cx)),
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-            ..Default::default()
+            ..better_ui::window_chrome::window_options("better-touchpad")
         };
 
         cx.spawn(async move |cx| {

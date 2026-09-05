@@ -14,10 +14,40 @@
 //! launched in a headless smoke test with nothing else installed.
 
 use app_chooser_gui::cli::{parse_arguments, target_from};
-use app_chooser_gui::{AppChooser, ChooserEvent, Locale, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
+use app_chooser_gui::{
+    AppChooser, ChooserEvent, ChooserMode, Locale, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
+};
 use gpui::*;
-use gpui_component::{Root, Theme, ThemeMode};
+use gpui_component::{ActiveTheme, Icon, IconName, Root, Sizable as _, Theme, ThemeMode, v_flex};
 use gpui_component_assets::Assets;
+
+/// The standalone window around the reusable chooser.
+///
+/// The titlebar lives here rather than in `AppChooser` itself, because the same
+/// surface is also drawn inside Better Files as an overlay — and an overlay
+/// with a window titlebar in the middle of another window would be wrong.
+struct StandaloneChooser {
+    chooser: Entity<AppChooser>,
+    /// The window title says which of the two jobs this chooser was opened
+    /// for, in the same words the surface's own heading uses.
+    title: &'static str,
+}
+
+impl Render for StandaloneChooser {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Mutter gives an `xdg-toplevel` client no decorations, so this window
+        // draws its own or it cannot be closed, minimized, maximized or moved.
+        v_flex()
+            .size_full()
+            .bg(cx.theme().background)
+            .child(better_ui::window_chrome::title_bar(
+                Icon::new(IconName::SquareTerminal).small(),
+                self.title,
+                cx.theme().foreground,
+            ))
+            .child(div().flex_1().min_h_0().child(self.chooser.clone()))
+    }
+}
 
 fn main() {
     let arguments = parse_arguments(std::env::args().skip(1));
@@ -31,7 +61,7 @@ fn main() {
         let window_options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(720.0), px(760.0)), cx)),
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-            ..Default::default()
+            ..better_ui::window_chrome::window_options("io.betteros.AppChooser")
         };
 
         cx.spawn(async move |cx| {
@@ -50,7 +80,13 @@ fn main() {
                     }
                 })
                 .detach();
-                cx.new(|cx| Root::new(chooser, window, cx))
+                let c = app_chooser_gui::i18n::copy(Locale::System);
+                let title = match mode {
+                    ChooserMode::OpenWith => c.open_with_title,
+                    ChooserMode::ChooseExecutable => c.executable_title,
+                };
+                let root = cx.new(|_| StandaloneChooser { chooser, title });
+                cx.new(|cx| Root::new(root, window, cx))
             })
             .expect("failed to open the Better App Chooser window");
         })

@@ -159,6 +159,7 @@ permissions:
 paths:
   - /usr/bin/better-files
   - /usr/share/applications/io.betteros.Files.desktop
+  - /usr/share/icons/hicolor/scalable/apps/better-files.svg
   - ~/.config/better-os/files/view.json
   - ~/.local/share/better-os/files/jobs
   - ~/.config/gtk-3.0/bookmarks

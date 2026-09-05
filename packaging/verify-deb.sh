@@ -63,15 +63,25 @@ required_executables() {
 required_data_files() {
     case "$1" in
         better-manager)
+            printf '%s\n' \
+                usr/share/applications/io.betteros.Manager.desktop \
+                usr/share/icons/hicolor/scalable/apps/better-manager.svg
             ;;
         better-monitor)
-            printf '%s\n' usr/lib/systemd/user/better-monitor.service
+            printf '%s\n' \
+                usr/lib/systemd/user/better-monitor.service \
+                usr/share/applications/io.betteros.Monitor.desktop \
+                usr/share/icons/hicolor/scalable/apps/better-monitor.svg
             ;;
         better-launcher)
-            printf '%s\n' usr/share/applications/better-launcher.desktop
+            printf '%s\n' \
+                usr/share/applications/better-launcher.desktop \
+                usr/share/icons/hicolor/scalable/apps/better-launcher.svg
             ;;
         better-files)
-            printf '%s\n' usr/share/applications/io.betteros.Files.desktop
+            printf '%s\n' \
+                usr/share/applications/io.betteros.Files.desktop \
+                usr/share/icons/hicolor/scalable/apps/better-files.svg
             ;;
         better-touchpad)
             printf '%s\n' \
@@ -80,13 +90,15 @@ required_data_files() {
                 usr/lib/systemd/user/better-touchpad-gestures.service \
                 "usr/share/gnome-shell/extensions/$EXTENSION_UUID/metadata.json" \
                 "usr/share/gnome-shell/extensions/$EXTENSION_UUID/extension.js" \
-                "usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml"
+                "usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml" \
+                usr/share/icons/hicolor/scalable/apps/better-touchpad.svg
             ;;
         better-awake)
             printf '%s\n' \
                 usr/share/applications/better-awake.desktop \
                 etc/xdg/autostart/better-awake-tray.desktop \
-                usr/lib/systemd/user/better-awake.service
+                usr/lib/systemd/user/better-awake.service \
+                usr/share/icons/hicolor/scalable/apps/better-awake.svg
             ;;
         *)
             printf 'No data file list for %s\n' "$1" >&2
@@ -108,6 +120,49 @@ assert_nothing_is_enabled_at_install() {
             "$package_name" "${enablement_links[0]}" >&2
         exit 1
     fi
+}
+
+# desktop-file-validate is what says a shipped entry actually parses. It is not
+# a build dependency of this project, so a host without it prints a note and the
+# check is skipped rather than failing the whole verification — the same shape
+# the e2e harness uses for polkitd, which it starts when it is there and does
+# without when it is not.
+DESKTOP_VALIDATE=1
+if ! command -v desktop-file-validate >/dev/null 2>&1; then
+    DESKTOP_VALIDATE=0
+    printf 'desktop-file-validate is not installed: desktop entry validation skipped\n'
+fi
+
+assert_desktop_entries_are_valid() {
+    local package_name="$1"
+    local extract_dir="$2"
+    local entry icon_name
+    local entries=(
+        "$extract_dir"/usr/share/applications/*.desktop
+        "$extract_dir"/etc/xdg/autostart/*.desktop
+    )
+
+    for entry in ${entries[@]+"${entries[@]}"}; do
+        if ((DESKTOP_VALIDATE)); then
+            desktop-file-validate "$entry" || {
+                printf 'Invalid desktop entry in %s: %s\n' "$package_name" "$entry" >&2
+                exit 1
+            }
+        fi
+        # Icon= is a theme name, not a path, so an entry that names an icon
+        # nobody ships is still a valid entry — it just draws a blank tile in
+        # the applications grid, which is what every Better OS entry did until
+        # the icons were packaged. Every name a shipped entry uses has to have
+        # a file behind it in the same package.
+        icon_name="$(sed -n 's/^Icon=//p' "$entry")"
+        if [[ -n "$icon_name" ]]; then
+            [[ -s "$extract_dir/usr/share/icons/hicolor/scalable/apps/$icon_name.svg" ]] || {
+                printf 'Desktop entry %s in %s names an icon the package does not ship: %s\n' \
+                    "$(basename "$entry")" "$package_name" "$icon_name" >&2
+                exit 1
+            }
+        fi
+    done
 }
 
 for package_name in \
@@ -194,6 +249,7 @@ for package_name in \
     done < <(required_data_files "$package_name")
 
     assert_nothing_is_enabled_at_install "$package_name" "$extract_dir"
+    assert_desktop_entries_are_valid "$package_name" "$extract_dir"
 
     notice_dir="$extract_dir/usr/share/doc/$package_name"
     [[ -s "$notice_dir/copyright" ]] || {
@@ -223,6 +279,13 @@ for package_name in \
     # The claims each package's own payload has to keep. These are the lines a
     # user or another component relies on, not a restatement of the file list.
     case "$package_name" in
+        better-manager)
+            grep -q '^Exec=better-manager$' \
+                "$extract_dir/usr/share/applications/io.betteros.Manager.desktop" || {
+                printf 'The Better Manager desktop entry does not run the packaged window\n' >&2
+                exit 1
+            }
+            ;;
         better-launcher)
             # Clicking a launcher icon opens the launcher. It must never be the
             # thing that closes it, which is what a bare Exec would do.
@@ -292,6 +355,14 @@ for package_name in \
             grep -q '^ExecStart=/usr/bin/better-monitor-service$' \
                 "$extract_dir/usr/lib/systemd/user/better-monitor.service" || {
                 printf 'The Better Monitor user unit does not start the packaged service\n' >&2
+                exit 1
+            }
+            # The package ships three executables and only one of them has a
+            # window. An entry that launched the service or the command line
+            # would put a menu item in the grid that opens nothing.
+            grep -q '^Exec=better-monitor$' \
+                "$extract_dir/usr/share/applications/io.betteros.Monitor.desktop" || {
+                printf 'The Better Monitor desktop entry does not run the window binary\n' >&2
                 exit 1
             }
             ;;
