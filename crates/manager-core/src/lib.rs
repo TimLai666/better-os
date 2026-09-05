@@ -6,6 +6,7 @@
 //! whether a stage was actually carried out on the host is decided by a driver
 //! in [`exec`], never here.
 
+pub mod catalog;
 pub mod exec;
 
 use better_core::{
@@ -947,6 +948,12 @@ impl Manager {
         capabilities: &dyn SystemCapabilities,
     ) -> Result<Self, PlatformError> {
         Ok(Self::new(catalog, capabilities.profile()?))
+    }
+
+    /// The catalog this manager plans from. A caller that refreshes the
+    /// catalog needs it as the base its downgrade guard compares against.
+    pub fn catalog(&self) -> &ComponentCatalog {
+        &self.catalog
     }
 
     pub fn manifests(&self) -> impl Iterator<Item = &ComponentManifest> {

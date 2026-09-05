@@ -1,8 +1,9 @@
-use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
+use better_core::ComponentId;
 use gpui::*;
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::{Theme, ThemeMode};
 use manager_core::ExecutionMode;
+use manager_core::catalog::{CatalogStatus, RefreshOutcome, now_unix_seconds};
 use manager_core::exec::{CancelToken, RealDriver, RunnerEvent, StageProgress, TransactionRunner};
 use manager_core::{
     ActivityKind, ActivityRecord, ComponentFilterPreference, ComponentStatus, DesiredOperation,
@@ -11,9 +12,10 @@ use manager_core::{
     StoredTheme, TransactionPlan,
 };
 use manager_platform::MockPlatform;
+use manager_platform::catalog_fetch::HttpManifestFetcher;
 use manager_platform::download::{ArtifactCache, HttpDownloader};
 use manager_platform::privileged::DbusPrivilegedExecutor;
-use manager_store::{JsonStore, StateStore};
+use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, start_catalog};
 
 use crate::{
     defaults_app::DefaultsState,
@@ -44,6 +46,14 @@ pub(crate) struct ManagerApp {
     pub(crate) manager: Manager,
     pub(crate) state: ManagerState,
     pub(crate) store: JsonStore,
+    /// Where the refreshed catalog is kept between sessions.
+    pub(crate) catalog_store: JsonCatalogStore,
+    /// Where the catalog on screen came from and how far behind it may be.
+    pub(crate) catalog_status: CatalogStatus,
+    pub(crate) catalog_refreshing: bool,
+    /// The running catalog refresh. Dropping it abandons the fetch, which
+    /// changes nothing: a refresh writes only after it has something to write.
+    pub(crate) catalog_task: Option<Task<()>>,
     pub(crate) pending_plan: Option<TransactionPlan>,
     pub(crate) planning_error: Option<AppError>,
     /// Whether this window simulates transactions or actually performs them.
@@ -76,7 +86,13 @@ pub(crate) enum AppError {
 impl ManagerApp {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = JsonStore::from_default_path();
-        let manager = catalog_manager();
+        let catalog_store = JsonCatalogStore::from_default_path();
+        // The catalog a previous refresh cached, or the compiled-in one. This
+        // reads a file and nothing else; fetching happens on a background
+        // thread below, so a slow or absent network never delays the window.
+        let (catalog, catalog_status) = start_catalog(&catalog_store);
+        let manager = Manager::probe(catalog, &MockPlatform::default())
+            .expect("the mock platform always reports a profile");
         let (state, planning_error) = match store.load() {
             Ok(outcome) if manager.validate_state(&outcome.state).is_ok() => (
                 outcome.state,
@@ -100,7 +116,7 @@ impl ManagerApp {
             .as_ref()
             .map(|active| active.plan.clone());
 
-        Self {
+        let mut app = Self {
             page,
             locale,
             search,
@@ -114,11 +130,76 @@ impl ManagerApp {
             planning_error,
             execution: default_execution_mode(),
             defaults: DefaultsState::default(),
+            catalog_store,
+            catalog_status,
+            catalog_refreshing: false,
+            catalog_task: None,
             transfer: None,
             running: None,
             cancel: None,
             _subscriptions: vec![subscription],
+        };
+        app.refresh_catalog_at_launch(cx);
+        app
+    }
+
+    /// Starts the launch-time catalog refresh, unless this run was told to stay
+    /// offline.
+    ///
+    /// `BETTER_MANAGER_OFFLINE=1` exists so a headless smoke, a test, or a
+    /// machine with no network can open the window without a fetch being
+    /// attempted at all. It does not fake a result: the window then shows the
+    /// catalog it has and says where that came from.
+    fn refresh_catalog_at_launch(&mut self, cx: &mut Context<Self>) {
+        if std::env::var_os("BETTER_MANAGER_OFFLINE").is_some() {
+            return;
         }
+        self.refresh_catalog(cx);
+    }
+
+    /// Fetches the published catalog off the UI thread.
+    ///
+    /// Nothing on screen waits for it. While it runs the button says so, and
+    /// when it lands the window adopts whatever it decided — including a
+    /// refusal, which arrives as a visible state rather than as silence.
+    pub(crate) fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
+        if self.catalog_refreshing {
+            return;
+        }
+        self.catalog_refreshing = true;
+        let base = self.manager.catalog().clone();
+        let status = self.catalog_status.clone();
+        let store = self.catalog_store.clone();
+
+        self.catalog_task = Some(cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_spawn(async move {
+                    let fetcher = HttpManifestFetcher::from_environment();
+                    let outcome = manager_core::catalog::refresh(
+                        &fetcher,
+                        &base,
+                        &status,
+                        now_unix_seconds(),
+                    );
+                    // A cache that cannot be written costs the next start a
+                    // fetch and nothing else, so it does not fail the refresh.
+                    let _ = cache_refresh(&store, &outcome);
+                    outcome
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| app.adopt_catalog(outcome, cx));
+        }));
+        cx.notify();
+    }
+
+    /// Adopts what a refresh decided: the catalog it settled on and the state
+    /// that describes it. The host profile is kept, because a catalog refresh
+    /// says nothing about the machine.
+    fn adopt_catalog(&mut self, outcome: RefreshOutcome, cx: &mut Context<Self>) {
+        self.catalog_refreshing = false;
+        self.manager = Manager::new(outcome.catalog, self.manager.profile().clone());
+        self.catalog_status = outcome.status;
+        cx.notify();
     }
 
     /// Whether this window can actually change the machine.
@@ -843,21 +924,13 @@ pub(crate) fn translated_component(
     }
 }
 
+/// The compiled-in catalog, as a manager. The window itself starts from the
+/// cache when there is one; this is what the tests plan against, so a test is
+/// never at the mercy of what a previous run cached.
+#[cfg(test)]
 fn catalog_manager() -> Manager {
-    let manifests = [
-        include_str!("../../../components/manifests/better-manager.yaml"),
-        include_str!("../../../components/manifests/better-monitor.yaml"),
-        include_str!("../../../components/manifests/better-launcher.yaml"),
-        include_str!("../../../components/manifests/better-files.yaml"),
-        include_str!("../../../components/manifests/better-touchpad.yaml"),
-        include_str!("../../../components/manifests/better-awake.yaml"),
-        include_str!("../../../components/manifests/better-storage.yaml"),
-    ]
-    .into_iter()
-    .map(|input| ComponentManifest::parse_yaml(input).expect("example manifest must be valid"))
-    .collect::<Vec<_>>();
     Manager::probe(
-        ComponentCatalog::from_manifests(manifests).expect("example catalog must be valid"),
+        manager_core::catalog::built_in_catalog(),
         &MockPlatform::default(),
     )
     .expect("the mock platform always reports a profile")

@@ -7,6 +7,7 @@
 //! approved, so the shipped implementation refuses every request instead of
 //! pretending to perform one.
 
+pub mod catalog_fetch;
 pub mod download;
 pub mod dpkg;
 #[cfg(feature = "dbus-client")]

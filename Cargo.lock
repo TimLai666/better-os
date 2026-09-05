@@ -4069,6 +4069,7 @@ dependencies = [
  "manager-core",
  "manager-platform",
  "manager-store",
+ "serde_json",
  "tempfile",
  "uuid",
 ]

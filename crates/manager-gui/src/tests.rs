@@ -2,9 +2,12 @@ use crate::{
     app::{demo_manager, translated_component},
     i18n::{Locale, copy},
     layout::{ActionLayout, MIN_WINDOW_WIDTH, action_layout},
-    model::ComponentInfo,
+    model::{CatalogLine, ComponentInfo},
 };
 use better_core::{ComponentIcon, ComponentId};
+use manager_core::catalog::{
+    CatalogDegradation, CatalogSource, CatalogStatus, ManifestRejection, RejectionReason,
+};
 use manager_core::{
     ComponentStatus, DesiredOperation, ManagerSettings, ManagerState, RestartRequirement,
     StoredTheme,
@@ -279,6 +282,163 @@ fn every_real_failure_reason_has_copy_in_both_locales() {
             c.check_host_reconciliation,
         ] {
             assert!(!text.is_empty(), "{locale:?} is missing a failure reason");
+        }
+    }
+}
+
+/// The catalog states a user can actually land in, and what each one says.
+///
+/// These are the whole reason the refresh exists: a catalog that is behind has
+/// to look different from one that is current, in both languages, without the
+/// window having to be open to check.
+mod catalog_state {
+    use super::*;
+
+    fn status(source: CatalogSource, degraded: Option<CatalogDegradation>) -> CatalogStatus {
+        CatalogStatus {
+            source,
+            source_url: Some("https://example.com/manifests".to_string()),
+            fetched_at_unix_seconds: Some(1_000_000),
+            degraded,
+            rejections: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_binary_that_has_never_refreshed_is_shown_as_possibly_outdated() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let line = CatalogLine::present(locale, &CatalogStatus::built_in(), 1_000_000);
+            assert_eq!(line.source, copy(locale).catalog_source_built_in);
+            assert_eq!(line.age, copy(locale).catalog_never_updated);
+            assert!(line.is_degraded());
+            assert_eq!(line.warning, Some(copy(locale).catalog_degraded_never));
+        }
+    }
+
+    #[test]
+    fn a_catalog_fetched_in_this_session_carries_no_warning() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let line =
+                CatalogLine::present(locale, &status(CatalogSource::Remote, None), 1_000_000);
+            assert_eq!(line.source, copy(locale).catalog_source_remote);
+            assert!(!line.is_degraded());
+            assert_eq!(line.warning, None);
+        }
+    }
+
+    #[test]
+    fn each_degraded_state_has_its_own_sentence_in_both_locales() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let c = copy(locale);
+            let cases = [
+                (
+                    CatalogSource::Cache,
+                    CatalogDegradation::RefreshFailedUsingCache,
+                    c.catalog_degraded_failed_cache,
+                ),
+                (
+                    CatalogSource::BuiltIn,
+                    CatalogDegradation::RefreshFailedUsingBuiltIn,
+                    c.catalog_degraded_failed_built_in,
+                ),
+                (
+                    CatalogSource::Remote,
+                    CatalogDegradation::PartiallyRefreshed,
+                    c.catalog_degraded_partial,
+                ),
+            ];
+            let mut seen = Vec::new();
+            for (source, degradation, expected) in cases {
+                let line =
+                    CatalogLine::present(locale, &status(source, Some(degradation)), 1_000_000);
+                assert_eq!(line.warning, Some(expected));
+                assert!(line.is_degraded());
+                seen.push(expected);
+            }
+            // Four states including "never refreshed", four distinct sentences.
+            seen.push(c.catalog_degraded_never);
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), 4);
+        }
+    }
+
+    #[test]
+    fn the_age_of_a_catalog_is_reported_in_the_coarsest_useful_unit() {
+        let base = status(CatalogSource::Cache, None);
+        let at = |now: u64| CatalogLine::present(Locale::EnUs, &base, now).age;
+
+        assert_eq!(at(1_000_030), "Updated moments ago");
+        assert_eq!(at(1_000_000 + 5 * 60), "Updated 5 minutes ago");
+        assert_eq!(at(1_000_000 + 3 * 3600), "Updated 3 hours ago");
+        assert_eq!(at(1_000_000 + 4 * 86_400), "Updated 4 days ago");
+        // A clock that moved backwards reads as recent, never as negative.
+        assert_eq!(at(999_000), "Updated moments ago");
+    }
+
+    #[test]
+    fn refused_manifests_are_counted_on_screen_rather_than_dropped() {
+        let mut degraded = status(
+            CatalogSource::Remote,
+            Some(CatalogDegradation::PartiallyRefreshed),
+        );
+        degraded.rejections = vec![
+            ManifestRejection {
+                file: "better-monitor.yaml".to_string(),
+                reason: RejectionReason::Unreachable,
+            },
+            ManifestRejection {
+                file: "better-files.yaml".to_string(),
+                reason: RejectionReason::Invalid("bad".to_string()),
+            },
+        ];
+
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let line = CatalogLine::present(locale, &degraded, 1_000_000);
+            assert_eq!(line.rejected, 2);
+            let sentence = line.rejected_line(locale).expect("the count is shown");
+            assert!(sentence.contains('2'), "{sentence}");
+            assert!(!sentence.contains("{n}"), "{sentence}");
+        }
+    }
+
+    #[test]
+    fn a_catalog_with_nothing_refused_shows_no_rejection_line() {
+        let line = CatalogLine::present(Locale::EnUs, &status(CatalogSource::Remote, None), 1);
+        assert_eq!(line.rejected, 0);
+        assert_eq!(line.rejected_line(Locale::EnUs), None);
+    }
+
+    #[test]
+    fn the_catalog_copy_exists_in_both_locales_and_never_falls_back_to_english() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let c = copy(locale);
+            for value in [
+                c.catalog_source_built_in,
+                c.catalog_source_cache,
+                c.catalog_source_remote,
+                c.catalog_never_updated,
+                c.catalog_updated_just_now,
+                c.catalog_updated_minutes,
+                c.catalog_updated_hours,
+                c.catalog_updated_days,
+                c.catalog_degraded_never,
+                c.catalog_degraded_failed_cache,
+                c.catalog_degraded_failed_built_in,
+                c.catalog_degraded_partial,
+                c.catalog_rejected,
+                c.catalog_refresh,
+                c.catalog_refreshing,
+            ] {
+                assert!(!value.trim().is_empty());
+            }
+            if locale == Locale::ZhTw {
+                assert_ne!(c.catalog_refresh, copy(Locale::EnUs).catalog_refresh);
+                assert_ne!(
+                    c.catalog_degraded_never,
+                    copy(Locale::EnUs).catalog_degraded_never
+                );
+            }
         }
     }
 }

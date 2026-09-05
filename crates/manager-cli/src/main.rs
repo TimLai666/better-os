@@ -1,7 +1,8 @@
 mod defaults;
 
-use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
+use better_core::ComponentId;
 use clap::{Parser, Subcommand, ValueEnum};
+use manager_core::catalog::{CatalogStatus, now_unix_seconds, refresh as refresh_catalog};
 use manager_core::exec::{
     MockDriver, MockRestoreOutcome, RealDriver, RunnerEvent, StageDriver, StageProgress,
     TransactionRunner,
@@ -11,10 +12,11 @@ use manager_core::{
     OperationProgress, OperationStage, TransactionPlan,
 };
 use manager_platform::MockPlatform;
+use manager_platform::catalog_fetch::HttpManifestFetcher;
 use manager_platform::download::{ArtifactCache, HttpDownloader};
 use manager_platform::dpkg::DpkgProbe;
 use manager_platform::privileged::DbusPrivilegedExecutor;
-use manager_store::{JsonStore, StateStore};
+use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, start_catalog};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -26,6 +28,9 @@ struct Cli {
     /// Use a disposable JSON state file instead of the local default.
     #[arg(long, global = true)]
     state_path: Option<PathBuf>,
+    /// Use a disposable catalog cache file instead of the local default.
+    #[arg(long, global = true)]
+    catalog_path: Option<PathBuf>,
     /// Whether lifecycle commands simulate or actually change this machine.
     ///
     /// Real is the default: a manager that quietly simulated would report a
@@ -81,6 +86,11 @@ enum Command {
         #[arg(long)]
         clear: bool,
     },
+    /// Inspect and refresh the component catalog this manager plans from.
+    Catalog {
+        #[command(subcommand)]
+        command: CatalogCommand,
+    },
     /// Inspect and change which component owns each declared system default.
     Defaults {
         #[command(flatten)]
@@ -88,6 +98,16 @@ enum Command {
         #[command(subcommand)]
         command: defaults::DefaultsCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum CatalogCommand {
+    /// Report where the catalog came from, when, and whether it may be stale.
+    Status,
+    /// Fetch the published manifests, validate them, and cache what was
+    /// adopted. Nothing on the host is changed: this updates the catalog, not
+    /// the machine.
+    Refresh,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -159,25 +179,39 @@ impl From<StageArg> for OperationStage {
     }
 }
 
-fn load_catalog() -> Result<ComponentCatalog, Box<dyn std::error::Error>> {
-    let manifests = [
-        include_str!("../../../components/manifests/better-manager.yaml"),
-        include_str!("../../../components/manifests/better-monitor.yaml"),
-        include_str!("../../../components/manifests/better-launcher.yaml"),
-        include_str!("../../../components/manifests/better-files.yaml"),
-        include_str!("../../../components/manifests/better-touchpad.yaml"),
-        include_str!("../../../components/manifests/better-awake.yaml"),
-        include_str!("../../../components/manifests/better-storage.yaml"),
-    ]
-    .into_iter()
-    .map(|manifest| Ok(ComponentManifest::parse_yaml(manifest)?))
-    .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-    Ok(ComponentCatalog::from_manifests(manifests)?)
-}
-
 fn store_for(path: Option<PathBuf>) -> JsonStore {
     path.map(JsonStore::at_path)
         .unwrap_or_else(JsonStore::from_default_path)
+}
+
+fn catalog_store_for(path: Option<PathBuf>) -> JsonCatalogStore {
+    path.map(JsonCatalogStore::at_path)
+        .unwrap_or_else(JsonCatalogStore::from_default_path)
+}
+
+/// Prints where the catalog came from and whether it may be behind the
+/// published one. Both `catalog status` and `catalog refresh` end here, so the
+/// two commands cannot describe the same state differently.
+fn print_catalog_status(status: &CatalogStatus) {
+    println!("catalog source: {}", status.source);
+    println!(
+        "catalog origin: {}",
+        status.source_url.as_deref().unwrap_or("compiled in")
+    );
+    println!(
+        "catalog fetched: {}",
+        status
+            .fetched_at_unix_seconds
+            .map(|seconds| format!("{seconds} (seconds since the Unix epoch)"))
+            .unwrap_or_else(|| "never".to_string())
+    );
+    match status.degraded {
+        None => println!("catalog state: refreshed in this session"),
+        Some(degradation) => println!("catalog state: may be outdated ({degradation})"),
+    }
+    for rejection in &status.rejections {
+        println!("  rejected {rejection}");
+    }
 }
 
 fn load_state(
@@ -417,7 +451,12 @@ fn execution_mode(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let manager = Manager::probe(load_catalog()?, &MockPlatform::default())?;
+    let catalog_store = catalog_store_for(cli.catalog_path);
+    // The cached catalog if a previous refresh left a usable one, and the
+    // compiled-in manifests otherwise. Nothing is fetched here: a command that
+    // was not asked to refresh does not go to the network.
+    let (catalog, catalog_status) = start_catalog(&catalog_store);
+    let manager = Manager::probe(catalog.clone(), &MockPlatform::default())?;
     let store = store_for(cli.state_path);
     let mut state = load_state(&store, &manager)?;
 
@@ -546,6 +585,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{:?} {:?} {:?}", check.kind, check.status, check.component);
             }
         }
+        Command::Catalog { command } => match command {
+            CatalogCommand::Status => print_catalog_status(&catalog_status),
+            CatalogCommand::Refresh => {
+                let fetcher = HttpManifestFetcher::from_environment();
+                let outcome =
+                    refresh_catalog(&fetcher, &catalog, &catalog_status, now_unix_seconds());
+                println!(
+                    "refreshed {} of {} manifest(s)",
+                    outcome.accepted,
+                    manager_core::catalog::catalog_files().len()
+                );
+                // A cache that cannot be written is said out loud. The fetched
+                // catalog is still correct for this run; only the next start
+                // pays for it.
+                if let Err(error) = cache_refresh(&catalog_store, &outcome) {
+                    println!("catalog cache not written: {error}");
+                }
+                print_catalog_status(&outcome.status);
+            }
+        },
         Command::Defaults { options, command } => {
             let mode = execution_mode(cli.execution, false, false)?;
             defaults::run(
@@ -554,7 +613,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mode,
                 &manager.profile().distribution.clone(),
                 &state,
-                load_catalog()?,
+                catalog,
             )?;
         }
         Command::Activity { clear } => {
@@ -590,7 +649,7 @@ mod tests {
     /// `better-manager`, not a component a user installs on its own.
     #[test]
     fn the_built_in_catalog_offers_every_released_component() {
-        let catalog = load_catalog().expect("the built-in catalog must be valid");
+        let catalog = manager_core::catalog::built_in_catalog();
         for component in [
             "better-manager",
             "better-monitor",
