@@ -515,6 +515,13 @@ impl ManagerApp {
                             self.evidence_label(Some(&failure.evidence)),
                             cx,
                         ))
+                        // The machine detail is what the service actually said
+                        // — "plan targets release 24.04 but this host is 18"
+                        // beats a localized sentence when the user reports a
+                        // failure, so it is shown, untranslated, when present.
+                        .when_some(failure.detail.clone(), |view, detail| {
+                            view.child(self.key_value_row(c.failure_technical_detail, detail, cx))
+                        })
                         .child(self.key_value_row(c.restore_available, recovery_detail, cx)),
                     cx,
                 ),
