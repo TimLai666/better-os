@@ -254,6 +254,7 @@ pub(crate) struct Copy {
     pub(crate) manual_recovery_required: &'static str,
     pub(crate) failed_stage: &'static str,
     pub(crate) failure_evidence: &'static str,
+    pub(crate) failure_technical_detail: &'static str,
     pub(crate) restore_recheck_failed: &'static str,
 
     // Defaults: navigation and summary
@@ -588,6 +589,7 @@ static EN: Copy = Copy {
     manual_recovery_required: "Manual recovery is required before this component can be considered healthy.",
     failed_stage: "Failed stage",
     failure_evidence: "Evidence",
+    failure_technical_detail: "Technical detail",
     restore_recheck_failed: "The restored version did not pass its health check.",
 
     defaults: "Defaults",
@@ -913,6 +915,7 @@ static ZH_TW: Copy = Copy {
     manual_recovery_required: "必須先手動復原，才能確認這個元件的狀態正常。",
     failed_stage: "失敗階段",
     failure_evidence: "佐證",
+    failure_technical_detail: "技術細節",
     restore_recheck_failed: "還原後的版本沒有通過狀態檢查。",
 
     defaults: "預設值",

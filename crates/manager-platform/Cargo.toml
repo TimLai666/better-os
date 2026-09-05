@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 # The client half of the privileged protocol. Off by default so nothing links
 # a D-Bus stack unless it is actually going to talk to the daemon.
-dbus-client = ["dep:zbus"]
+dbus-client = ["dep:zbus", "dep:tokio"]
 
 [dependencies]
 better-core.workspace = true
@@ -19,3 +19,9 @@ sha2 = "0.10"
 thiserror.workspace = true
 ureq = "3"
 zbus = { version = "5", optional = true }
+# Not used directly. Cargo unifies features across the workspace, and several
+# service crates build zbus with its `tokio` feature; that flavor of zbus needs
+# an ambient tokio reactor even through the blocking API, so the client keeps
+# one alive and enters it before every connection. Without this, every zbus
+# call from a plain thread panics with "there is no reactor running".
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time"], optional = true }

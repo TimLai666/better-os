@@ -156,11 +156,22 @@ assert_desktop_entries_are_valid() {
         # a file behind it in the same package.
         icon_name="$(sed -n 's/^Icon=//p' "$entry")"
         if [[ -n "$icon_name" ]]; then
-            [[ -s "$extract_dir/usr/share/icons/hicolor/scalable/apps/$icon_name.svg" ]] || {
+            local icon_file="$extract_dir/usr/share/icons/hicolor/scalable/apps/$icon_name.svg"
+            [[ -s "$icon_file" ]] || {
                 printf 'Desktop entry %s in %s names an icon the package does not ship: %s\n' \
                     "$(basename "$entry")" "$package_name" "$icon_name" >&2
                 exit 1
             }
+            # gdk-pixbuf decides a file is an SVG by sniffing its first bytes,
+            # so `<svg` has to appear near the start. A long comment between
+            # the XML declaration and the root pushed it out of the sniff
+            # window once, and every icon rendered as "unrecognized image" on
+            # a real desktop while remaining a perfectly valid SVG document.
+            if ! head -c 100 "$icon_file" | grep -q '<svg'; then
+                printf 'Icon %s in %s hides <svg> past the loader sniff window\n' \
+                    "$icon_name" "$package_name" >&2
+                exit 1
+            fi
         fi
     done
 }

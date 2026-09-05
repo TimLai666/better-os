@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Better Manager">
 <!-- Better OS application icon. Original geometric mark, drawn for this
      project; no third-party artwork. The family is one rounded square in the
      Better OS primary, one accent element in the Better OS tertiary, and one
      glyph that has to stay legible at 16 pixels. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Better Manager">
   <title>Better Manager</title>
   <rect x="2" y="2" width="60" height="60" rx="14" fill="#1f2937"/>
   <!-- Stacked packages: what the manager installs, updates and rolls back. -->
