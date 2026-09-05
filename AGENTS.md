@@ -116,10 +116,22 @@ GUI or dependency compiles when the relevant command was not executed.
 - A published binary embeds the manifests as they stood when it was built, and a
   manifest can only record a real checksum after its own release is public. So
   the `better-manager` shipped in a release always carries the pre-release
-  placeholder checksums for that release, and only the *next* release ships a
-  built-in catalog that can verify the previous one. Decide whether the catalog
-  should be fetched rather than compiled in before treating the built-in catalog
-  as an install path for the release it belongs to.
+  placeholder checksums for that release. That is now a fallback rather than the
+  only path: ticket 41 and [ADR 0013](docs/decisions/0013-remote-catalog-refresh.md)
+  made the catalog refreshable, so a manager fetches the seven manifest files
+  from `main` over HTTPS, validates them with the same validator the compiled-in
+  ones get, caches the result in the state directory, and shows the built-in
+  catalog with a visible "may be outdated" state when it cannot. Three limits
+  travel with that. The refresh has been proven end to end from this machine, but
+  against a `main` carrying the *real* published 0.2.1 checksums — the
+  placeholder state the fix targets exists only between a version bump and its
+  release, and has not been observed. Signing is still deferred, so HTTPS plus
+  the artifact checksum is the whole integrity story and a rolled-back-then-
+  re-bumped `main` is indistinguishable from a real release. And there is no
+  scheduled refresh: it happens once at launch, on the button, and on
+  `better-manager catalog refresh`, so an install planned from a window that has
+  been open for a week is planned from a week-old catalog whose age is on
+  screen.
 - `better-monitor` ships the window, the session service, the command line, and
   a systemd user unit in one package. v0.1.0 published the window alone, so the
   wider package carries its own version: it moved to 0.2.0 and travels with the

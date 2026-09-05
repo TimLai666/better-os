@@ -1,6 +1,77 @@
 use crate::app::ComponentTranslation;
+use crate::i18n::{Locale, copy};
 use better_core::{ComponentIcon, ComponentId, ComponentManifest, ComponentType};
+use manager_core::catalog::{CatalogDegradation, CatalogSource, CatalogStatus};
 use manager_core::{ComponentRecord, ComponentStatus, HealthState, RestartRequirement};
+
+/// The one status line the Components screen shows about the catalog itself.
+///
+/// It is built here, with no GPUI in sight, because whether a catalog is
+/// presented as current or as possibly outdated is a decision and not a
+/// rendering detail. The screen draws what this says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CatalogLine {
+    /// Where the catalog came from, in the user's words.
+    pub(crate) source: &'static str,
+    /// How old it is, or that it has never been fetched.
+    pub(crate) age: String,
+    /// What is wrong with it, if anything. `None` means it was fetched in full
+    /// during this session.
+    pub(crate) warning: Option<&'static str>,
+    /// How many manifests the last refresh refused.
+    pub(crate) rejected: usize,
+}
+
+impl CatalogLine {
+    pub(crate) fn present(locale: Locale, status: &CatalogStatus, now_unix_seconds: u64) -> Self {
+        let c = copy(locale);
+        Self {
+            source: match status.source {
+                CatalogSource::BuiltIn => c.catalog_source_built_in,
+                CatalogSource::Cache => c.catalog_source_cache,
+                CatalogSource::Remote => c.catalog_source_remote,
+            },
+            age: match status.fetched_at_unix_seconds {
+                None => c.catalog_never_updated.to_string(),
+                Some(fetched_at) => age_phrase(locale, now_unix_seconds.saturating_sub(fetched_at)),
+            },
+            warning: status.degraded.map(|degradation| match degradation {
+                CatalogDegradation::NeverRefreshed => c.catalog_degraded_never,
+                CatalogDegradation::RefreshFailedUsingCache => c.catalog_degraded_failed_cache,
+                CatalogDegradation::RefreshFailedUsingBuiltIn => c.catalog_degraded_failed_built_in,
+                CatalogDegradation::PartiallyRefreshed => c.catalog_degraded_partial,
+            }),
+            rejected: status.rejections.len(),
+        }
+    }
+
+    pub(crate) fn is_degraded(&self) -> bool {
+        self.warning.is_some()
+    }
+
+    /// The count of refused manifests, as a line, when there were any.
+    pub(crate) fn rejected_line(&self, locale: Locale) -> Option<String> {
+        (self.rejected > 0).then(|| {
+            copy(locale)
+                .catalog_rejected
+                .replace("{n}", &self.rejected.to_string())
+        })
+    }
+}
+
+/// How long ago a fetch happened, in the coarsest unit that still says
+/// something. A clock that ran backwards produces "just now" rather than a
+/// negative age.
+fn age_phrase(locale: Locale, seconds: u64) -> String {
+    let c = copy(locale);
+    let (template, value) = match seconds {
+        0..=59 => return c.catalog_updated_just_now.to_string(),
+        60..=3599 => (c.catalog_updated_minutes, seconds / 60),
+        3600..=86_399 => (c.catalog_updated_hours, seconds / 3600),
+        _ => (c.catalog_updated_days, seconds / 86_400),
+    };
+    template.replace("{n}", &value.to_string())
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Page {

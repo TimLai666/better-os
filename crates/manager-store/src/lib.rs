@@ -5,6 +5,13 @@
 //! checks, and atomic rename so a stale CLI or GUI instance cannot silently
 //! overwrite newer history.
 
+pub mod catalog;
+
+pub use catalog::{
+    CATALOG_FILE_NAME, CacheAbsence, CatalogCacheStore, CatalogLoad, CatalogStoreError,
+    JsonCatalogStore, cache_refresh, start as start_catalog,
+};
+
 use manager_core::{ManagerState, STATE_SCHEMA_VERSION, StateValidationError};
 use std::{
     env,

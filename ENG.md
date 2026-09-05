@@ -7,7 +7,12 @@ component manifests ──> better-core validation ──> manager-core
                                                    plan + mock lifecycle state
                        manager-platform ──────────────┘  ├── manager-cli ──┐
                        capability/download/package       └── manager-gui ──┼── manager-store JSON
-                       privileged executor (refuses)                       └── versioned local state
+                       manifest fetcher (catalog)                          └── versioned local state
+                       privileged executor (refuses)                          + catalog cache
+
+published manifests on main ──> manager-platform::catalog_fetch (HTTPS, bounded)
+                                └──> manager_core::catalog  validate, guard, degrade
+                                     └──> manager-store  versioned cache, state dir
 
 monitor-collectors-linux (/proc, /sys) ──> monitor-core metric contracts
                         └──> monitor-service (owns collection, store, audits)
@@ -73,6 +78,20 @@ defaults-core ──> defaults-platform ──> defaults-store ──> manager-g
 suite, not only the two that exist today.
 
 ## Component seams
+
+- **The catalog is fetched, validated, and allowed to be stale out loud.** A
+  manifest checksum can only exist after its release does, so a compiled-in
+  catalog always describes the previous release.
+  `manager-platform::catalog_fetch` fetches bytes over HTTPS and interprets
+  none of them; `manager_core::catalog` applies the same `better-core`
+  validation a built-in manifest gets, plus a file-name-to-component-ID check, a
+  downgrade guard, and a whole-set assembly check; `manager-store` keeps the
+  versioned cache in the state directory and re-validates it on read, so a
+  tampered cache is an absence rather than a catalog. There is exactly one
+  definition of the built-in seven, and both the command line and the window
+  start from it. Four degraded states are representable and every one of them is
+  on screen — there is no state meaning "probably current". See
+  [ADR 0013](docs/decisions/0013-remote-catalog-refresh.md).
 
 - **One catalog, no second scanner.** `app-catalog-core` and
   `app-catalog-platform` are the only place a `.desktop` file is parsed. The

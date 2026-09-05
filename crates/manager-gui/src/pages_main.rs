@@ -7,12 +7,13 @@ use gpui_component::{
     tag::Tag,
     *,
 };
+use manager_core::catalog::now_unix_seconds;
 use manager_core::{ActivityKind, ComponentFilterPreference, ComponentStatus, DesiredOperation};
 
 use crate::{
     app::ManagerApp,
     i18n::copy,
-    model::{ActivityFilter, ComponentInfo, DetailTab, Page},
+    model::{ActivityFilter, CatalogLine, ComponentInfo, DetailTab, Page},
 };
 
 impl ManagerApp {
@@ -300,6 +301,7 @@ impl ManagerApp {
             .gap_5()
             .when_some(self.error_banner(cx), |view, error| view.child(error))
             .child(self.page_heading(c.components_title, c.components_subtitle, true, compact))
+            .child(self.catalog_status_row(cx))
             .child(
                 h_flex()
                     .min_w_0()
@@ -359,6 +361,78 @@ impl ManagerApp {
                 )
             })
             .into_any_element()
+    }
+
+    /// Where this list came from, whether it may be behind the published one,
+    /// and the one button that goes and looks.
+    ///
+    /// A degraded catalog is drawn as a warning rather than a note: the list is
+    /// what a user decides to install from, and one that quietly described the
+    /// previous release would be worse than one that admits it might.
+    fn catalog_status_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale);
+        let line = CatalogLine::present(self.locale, &self.catalog_status, now_unix_seconds());
+        let degraded = line.is_degraded();
+        let rejected = line.rejected_line(self.locale);
+
+        self.surface(
+            h_flex()
+                .min_w_0()
+                .gap_3()
+                .flex_wrap()
+                .items_start()
+                .justify_between()
+                .child(
+                    h_flex()
+                        .min_w_0()
+                        .gap_3()
+                        .items_start()
+                        .child(Icon::new(if degraded {
+                            IconName::TriangleAlert
+                        } else {
+                            IconName::Inbox
+                        }))
+                        .child(
+                            v_flex()
+                                .min_w_0()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .font_medium()
+                                        .child(format!("{} · {}", line.source, line.age)),
+                                )
+                                .when_some(line.warning, |view, warning| {
+                                    view.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().warning_foreground)
+                                            .child(warning),
+                                    )
+                                })
+                                .when_some(rejected, |view, rejected| {
+                                    view.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(rejected),
+                                    )
+                                }),
+                        ),
+                )
+                .child(
+                    Button::new("refresh-catalog")
+                        .label(if self.catalog_refreshing {
+                            c.catalog_refreshing
+                        } else {
+                            c.catalog_refresh
+                        })
+                        .disabled(self.catalog_refreshing)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.refresh_catalog(cx);
+                        })),
+                ),
+            cx,
+        )
     }
 
     fn component_filter_button(
