@@ -145,13 +145,28 @@ commit `8dc9c7eede37917d5af527a0d8df17e84213b48b` 的 post-merge CI run
 唯一變動的 payload 是 `better-touchpad`：它現在會安裝 GNOME Shell adapter
 extension `touchpad-adapter@betteros.org` 與 `better-touchpad-gestured` 服務。
 
-目前的 release 是
+第四個 release 是
 [`v0.2.2`](https://github.com/TimLai666/better-os/releases/tag/v0.2.2)，由 merge
 commit `b5f6e34edad24e199181ce131f4c8a5b490c7fbe` 的 post-merge CI run
 [`33942768617`](https://github.com/TimLai666/better-os/actions/runs/33942768617)
 產生，同樣是八個套件、32 個 `.deb` 與 32 個 `.deb.sha256`。唯一變動的 payload 是
 `better-manager`：它帶進可更新的 component catalog（ADR 0013）。這一版也是
 `install.sh` 一行安裝指令第一次隨 release 一起提供。
+
+目前的 release 是
+[`v0.2.3`](https://github.com/TimLai666/better-os/releases/tag/v0.2.3)，由 merge
+commit `056eaad78f2fc60603335b2d66f10006e39ab0f8` 的 post-merge CI run
+[`33955547574`](https://github.com/TimLai666/better-os/actions/runs/33955547574)
+產生，同樣是八個套件、32 個 `.deb` 與 32 個 `.deb.sha256`。這是 patch release，
+修的是一台實機回報的四個問題：first-run 頁面的中文版面塌陷、每個視窗都沒有
+titlebar 也拖不動、所有應用程式都沒有圖示，以及視窗沒有設定 `app_id`，dock 與
+應用程式清單因此對不到它的 desktop entry。變動橫跨每個 GUI 套件，不是單一元件。
+
+`packaging/build-deb.sh` 從這一版開始會先清掉 `dist/` 裡上一次建置留下的
+`.deb` 與 `.deb.sha256`。`verify-deb.sh` 用不含版號的 glob 挑套件，同一個元件
+match 到兩個檔案就直接失敗，所以升版後留在 `dist/` 的舊套件會讓 verifier 掛
+掉，而且錯誤訊息指的是元件名稱，不是那個殘留檔案。只清最上層的套件檔與
+sidecar，`dist/` 底下的暫存子目錄屬於其他工具，不動。
 
 每次 release 都是所有 asset 從公開 release 重新下載、逐一驗證 checksum 之後，
 才把數值寫回七份 component manifest。升版當下 manifest 內的 checksum 描述的是

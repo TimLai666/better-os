@@ -115,6 +115,29 @@ placeholder checksums — refreshed the seven manifests from `main`, planned
 fetched checksum. The naming contract is what let it do so: the manifest names
 one unambiguous asset, and the fetched checksum described that exact file.
 
+## v0.2.3 verification
+
+The fifth release is published at
+<https://github.com/TimLai666/better-os/releases/tag/v0.2.3> from merge commit
+`056eaad78f2fc60603335b2d66f10006e39ab0f8`. Post-merge CI run
+<https://github.com/TimLai666/better-os/actions/runs/33955547574> passed the Rust
+gate, the installer job, and all four target/architecture package jobs on its
+first attempt. It carries the same eight packages as 32 `.deb` assets and 32
+`.deb.sha256` sidecars; the payload change is the field-reported UI fixes, which
+touch every GUI package rather than one. The public release was downloaded again
+over plain HTTPS, all 32 sidecars verified their matching `.deb` assets, the
+downloaded bytes were byte-identical to the CI artifacts, and each recorded
+checksum was re-hashed from the downloaded package and then cross-checked
+against the published sidecar before the manifests were committed.
+
+This release also found the one gap the naming contract leaves in the release
+tooling rather than in the packages. `packaging/build-deb.sh` never cleared
+`dist/`, and `verify-deb.sh` selects each package by a version-agnostic glob
+that fails when the glob matches more than one file, so a version bump left the
+verifier failing on the previous release's `.deb` — reporting the package name
+and not the stale file. The build script now clears the top-level package files
+and their sidecars before it builds.
+
 ## Deferred
 
 Release automation, package signing, public APT repositories, and release
