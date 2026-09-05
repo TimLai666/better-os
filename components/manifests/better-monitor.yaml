@@ -2,7 +2,7 @@ schema_version: 2
 id: better-monitor
 display_name: Better Monitor
 component_type: diagnostic
-version: 0.2.3
+version: 0.2.4
 summary: Low-cost desktop observation with samples, incidents, and export.
 icon: monitor
 restart: application
@@ -16,31 +16,32 @@ enhances:
 # ticket 36 put the session service, the command line, and the systemd user
 # unit into the same package, so the wider payload took its own version number
 # rather than reusing 0.1.0.
-# The checksums below belong to the published v0.2.3 release assets. Each one
-# was re-hashed from the package downloaded back from the public release rather
-# than copied from its sidecar, which is what ADR 0002 requires a manifest to
-# record.
+# Placeholder checksums until v0.2.4 is published. ADR 0002 records the
+# checksum of a *published* release asset; the v0.2.3 values these variants
+# carried describe 0.2.3's packages, not 0.2.4's. The real values are written
+# back once the release is public and every asset has been re-downloaded and
+# verified.
 artifacts:
   - release: "22.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.3/better-monitor_0.2.3_ubuntu-22.04_amd64.deb
-    sha256: 8b4793557ac1c598331e5f1104d0d7f83b61f963502509f3a5a757a117a20239
-    release_asset: better-monitor_0.2.3_ubuntu-22.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.4/better-monitor_0.2.4_ubuntu-22.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-monitor_0.2.4_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.3/better-monitor_0.2.3_ubuntu-22.04_arm64.deb
-    sha256: 0557e8e48bc1dc76b82d815c0b08a3dae23b100ffdd6d41c147d3c72a2325d63
-    release_asset: better-monitor_0.2.3_ubuntu-22.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.4/better-monitor_0.2.4_ubuntu-22.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-monitor_0.2.4_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.3/better-monitor_0.2.3_ubuntu-24.04_amd64.deb
-    sha256: 321fa674b514618f5502ed06cbcf0b3db733247331e58296f634b27a0b961800
-    release_asset: better-monitor_0.2.3_ubuntu-24.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.4/better-monitor_0.2.4_ubuntu-24.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-monitor_0.2.4_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.3/better-monitor_0.2.3_ubuntu-24.04_arm64.deb
-    sha256: 0fd07ddbf7e9e244950df91e86f783e80151136ec8e720ad0ff9c2846cecb16d
-    release_asset: better-monitor_0.2.3_ubuntu-24.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.4/better-monitor_0.2.4_ubuntu-24.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-monitor_0.2.4_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable
