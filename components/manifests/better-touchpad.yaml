@@ -21,31 +21,30 @@ targets:
 # than invented as a field the parser would ignore.
 enhances:
   - org.gnome.desktop.peripherals
-# Placeholder checksums until v0.2.4 is published. ADR 0002 records the
-# checksum of a *published* release asset; the v0.2.3 values these variants
-# carried describe 0.2.3's packages, not 0.2.4's. The real values are written
-# back once the release is public and every asset has been re-downloaded and
-# verified.
+# The checksums below belong to the published v0.2.4 release assets. Each one
+# was re-hashed from the package downloaded back from the public release rather
+# than copied from its sidecar, which is what ADR 0002 requires a manifest to
+# record.
 artifacts:
   - release: "22.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.4/better-touchpad_0.2.4_ubuntu-22.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: c029454a7aee0c8966b291bd4a39371475766b6c5262d71188ca330356c2bc37
     release_asset: better-touchpad_0.2.4_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.4/better-touchpad_0.2.4_ubuntu-22.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 4cd081fb709358dc93d71210222fe9fa9a8df55803e083d34b786ad2f6e20f8c
     release_asset: better-touchpad_0.2.4_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.4/better-touchpad_0.2.4_ubuntu-24.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 253dea07de1fe5f357e26e6e73f27a515faf935d25fad237336ce597848e1617
     release_asset: better-touchpad_0.2.4_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.4/better-touchpad_0.2.4_ubuntu-24.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: c8b625817921a32268d2e9ccb5527a15ad5ade445bfb7d73173dfc9e77ccef29
     release_asset: better-touchpad_0.2.4_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install

@@ -101,10 +101,10 @@ GUI or dependency compiles when the relevant command was not executed.
   Better OS component has a time-to-photon figure. And the idle CPU figure is a
   headless one: nothing asks the window to repaint, so it is the launcher's own
   idle cost and not a claim about a launcher on a running desktop.
-- All eight packages are published. `v0.2.3` carries every component
+- All eight packages are published. `v0.2.4` carries every component
   `packaging/build-deb.sh` builds, for Ubuntu 22.04 and 24.04 on amd64 and
   arm64, and every shipped manifest now records the checksum of its own
-  published 0.2.3 asset, verified after re-downloading the public release. No
+  published 0.2.4 asset, verified after re-downloading the public release. No
   first party manifest carries a placeholder checksum any more;
   `components/manifests/better-files-example.yaml` is the one exception and is a
   schema fixture, not a released component. A version bump puts the placeholders
@@ -126,15 +126,19 @@ GUI or dependency compiles when the relevant command was not executed.
   cannot be dragged. Better Launcher is the one deliberate exception, recorded
   in code: a near-fullscreen overlay dismissed by Escape gets no titlebar, but
   it still sets `app_id` like every other window, which is what lets a dock or
-  an application grid match a window to its desktop entry. Two things ticket 42
-  left for someone at a real desktop, neither closed by the v0.2.3 release.
-  Press Escape on Better Launcher once: that key path was not edited and no test
-  covers it, so it was reasoned about rather than pressed. And look at the
-  applications grid after an install to confirm the six icons resolve —
-  `verify-deb.sh` fails any entry whose `Icon=` names a file its own package
-  does not carry, which proves the file ships and not that GNOME draws it. Also
-  note that GPUI's window icon is X11-only and takes a raster image, so on
-  Wayland the icon comes from the desktop entry via `app_id`, not from the
+  an application grid match a window to its desktop entry. Pressing Escape on
+  Better Launcher is still owed to someone at a real desktop: that key path has
+  not been edited and no test covers it, so it has been reasoned about rather
+  than pressed. The icon half of that pair moved in v0.2.4 without closing:
+  every icon v0.2.3 shipped was in fact invisible, because gdk-pixbuf chooses a
+  loader by sniffing a file's first bytes and the attribution comment pushed
+  `<svg>` past that window — a valid SVG document that was not an image to the
+  desktop. `verify-deb.sh` now asserts both properties, that the named icon file
+  ships *and* that `<svg` appears inside the first 100 bytes, and all six were
+  rendered through the host's own gdk-pixbuf. That is a loader accepting the
+  file, not GNOME drawing it in a grid, so the desktop confirmation is still
+  owed. Also note that GPUI's window icon is X11-only and takes a raster image,
+  so on Wayland the icon comes from the desktop entry via `app_id`, not from the
   shipped SVG.
 - A published binary embeds the manifests as they stood when it was built, and a
   manifest can only record a real checksum after its own release is public. So
@@ -181,7 +185,7 @@ GUI or dependency compiles when the relevant command was not executed.
   `touchpad-core` emits and its benchmark baselines are the figures in
   `docs/touchpad-sensitivity-mapping.md`, but nothing runs those benchmarks —
   the same unenforced-budget gap `better-files.yaml` carries. Its checksums are
-  the published v0.2.3 ones.
+  the published v0.2.4 ones.
 - A package installs its systemd user unit and does not enable it, matching
   `better-manager-daemon`. Nothing in dpkg stops a running Better Awake, Better
   Monitor, or Better Storage user service at removal either; the manifests'
@@ -358,3 +362,16 @@ GUI or dependency compiles when the relevant command was not executed.
   change rather than a list change. And Better Files is the only component that
   declares a default integration; the other six declare none, which is a
   deferred Issue #10 decision and not an omission this catalog change made.
+- Decide how the build tree is kept from filling the disk. `target/` reached
+  158 GB during the v0.2.4 work and a manual `cargo clean` was what unblocked
+  it. Nothing in the project prunes it, and a release builds the whole workspace
+  twice — debug for the gate, release for the eight packages — so the growth is
+  structural rather than accidental. The two candidate answers are a periodic
+  cleanup someone actually runs and a shared build cache across worktrees; both
+  are decisions, and neither has been made.
+- The license inventory check catches a class of merge that is easy to make.
+  `docs/third-party-licenses.md` pins the `Cargo.lock` hash, so any commit that
+  moves the lockfile and does not regenerate it turns CI red on `main` — which
+  is what the ticket-43 merge commit `c813fd6` did, over one added optional
+  dependency. Regenerate in the same commit that moves the lockfile; a dependency
+  change is a lockfile change even when it adds no new crate to the graph.

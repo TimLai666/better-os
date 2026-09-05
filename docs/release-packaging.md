@@ -153,7 +153,7 @@ commit `b5f6e34edad24e199181ce131f4c8a5b490c7fbe` 的 post-merge CI run
 `better-manager`：它帶進可更新的 component catalog（ADR 0013）。這一版也是
 `install.sh` 一行安裝指令第一次隨 release 一起提供。
 
-目前的 release 是
+第六個 release 是
 [`v0.2.3`](https://github.com/TimLai666/better-os/releases/tag/v0.2.3)，由 merge
 commit `056eaad78f2fc60603335b2d66f10006e39ab0f8` 的 post-merge CI run
 [`33955547574`](https://github.com/TimLai666/better-os/actions/runs/33955547574)
@@ -161,6 +161,21 @@ commit `056eaad78f2fc60603335b2d66f10006e39ab0f8` 的 post-merge CI run
 修的是一台實機回報的四個問題：first-run 頁面的中文版面塌陷、每個視窗都沒有
 titlebar 也拖不動、所有應用程式都沒有圖示，以及視窗沒有設定 `app_id`，dock 與
 應用程式清單因此對不到它的 desktop entry。變動橫跨每個 GUI 套件，不是單一元件。
+
+目前的 release 是
+[`v0.2.4`](https://github.com/TimLai666/better-os/releases/tag/v0.2.4)，由 merge
+commit `42be13da18466d302b761aed4b8e9156f99282d8` 的 post-merge CI run
+[`33970875135`](https://github.com/TimLai666/better-os/actions/runs/33970875135)
+產生，同樣是八個套件、32 個 `.deb` 與 32 個 `.deb.sha256`。這也是 patch release，
+修的是同一台 Zorin 18 實機在 0.2.3 上回報的第二輪問題：daemon 只讀 `VERSION_ID`
+判斷 host release，Zorin 18 因此被判成 release 18，所有安裝一律被拒；0.2.3 才剛
+加進來的六個圖示其實是看不見的，因為 gdk-pixbuf 靠檔案開頭的位元組挑 loader，而
+XML 宣告與 `<svg>` 之間的授權註解把根標籤推出了那個範圍；拒絕畫面把 service 自己
+給的理由吞掉；以及每次開視窗都會出現的 `there is no reactor running` panic。
+
+圖示那一項同時改了 `verify-deb.sh`：它原本只檢查 desktop entry 的 `Icon=` 指到的
+檔案有沒有被同一個套件帶進去，現在還會確認 `<svg` 出現在檔案的前 100 個位元組
+以內。檔案存在與 loader 認得是兩件事，前者過關不代表後者成立。
 
 `packaging/build-deb.sh` 從這一版開始會先清掉 `dist/` 裡上一次建置留下的
 `.deb` 與 `.deb.sha256`。`verify-deb.sh` 用不含版號的 glob 挑套件，同一個元件
