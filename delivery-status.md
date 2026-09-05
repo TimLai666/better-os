@@ -175,10 +175,20 @@ requires.
 
 ## Next Ticket
 
-Ticket 39 — Better Touchpad's advanced customization — is the remaining one.
-Tickets 18 through 38 are done: 38 closed Issue #3's phase 3 by building the
-GNOME Shell adapter the granted GJS exception allowed, so the Mac-style preset
-now reaches the desktop on GNOME 46 Wayland.
+Ticket 41 — the remote catalog refresh — is the remaining one. Tickets 18
+through 40 are done: 38 closed Issue #3's phase 3 by building the GNOME Shell
+adapter the granted GJS exception allowed, so the Mac-style preset now reaches
+the desktop on GNOME 46 Wayland, and 40 put `install.sh` at the repository root
+so a fresh Zorin or Ubuntu machine reaches a checksum-verified Better Manager in
+one command.
+
+Ticket 41 inherits the gap the installer makes visible rather than closes. A
+published `better-manager` embeds the catalog as it stood when it was built, so
+the manifests it carries hold the *previous* release's checksums — the installer
+puts a working Better Manager on the machine, and the components that Better
+Manager then offers to install cannot be verified against the release the
+installer just fetched. Fetching the catalog rather than compiling it in is what
+41 is for.
 
 Three things about that gesture path should be carried into 39 rather than
 rediscovered. Four fingers down maps to the current application's windows and
@@ -1604,3 +1614,47 @@ story, and a `main` that was rolled back and re-bumped is not distinguishable
 from a real release. There is no scheduled refresh: a window left open for a week
 shows a week-old catalog with its age on screen and does not go looking on its
 own.
+
+### Ticket 40 — One-line bootstrap installer
+
+Branch `ticket-40`. `install.sh` at the repository root is the first command a
+person runs on a fresh Zorin or Ubuntu machine, and it installs exactly two
+packages — `better-manager` and `better-manager-daemon` — because everything
+else Better OS ships is installed from inside Better Manager.
+
+**A derivative is identified by its base, not its version number.** Zorin OS
+18.1 reports `VERSION_ID="18"`, which names nothing in the release matrix; the
+only field that says what it is built on is `UBUNTU_CODENAME=noble`. The
+detection therefore prefers the codename (`jammy` → 22.04, `noble` → 24.04) and
+falls back to `VERSION_ID` only for plain Ubuntu. `/etc/os-release` is read
+field by field rather than sourced. An unsupported system or architecture is
+refused with the values that were actually read.
+
+**Nothing is installed before both checksums match.** The latest release is
+resolved through the public GitHub API — no `gh`, no token, and `jq` only when
+it happens to be installed — the two `.deb`s and their `.sha256` sidecars are
+downloaded into a temporary directory, and both are verified before apt is
+reached. Root is asked for once, for a single `apt-get install` of the two
+verified files, and the command is printed verbatim before the password prompt.
+The README one-liner downloads the script to a file and then runs it, rather
+than piping a URL into a root shell.
+
+**Verified.** `bash -n` and the full flag surface on this host: the detection
+table against seven `/etc/os-release` fixtures (Zorin 17 and 18, Ubuntu 22.04
+with and without a codename, Ubuntu 20.04, Fedora, Linux Mint), release
+resolution against the live public API with and without `jq`, and twelve
+`--from-dir` cases including a tampered package, a missing sidecar, two
+candidates for one target, an empty directory, the already-current second run,
+`--uninstall`, and an unsupported architecture. Nothing was installed on the
+host. The apt half runs in the container end-to-end, which now installs both
+packages through `install.sh --from-dir`, refuses a tampered one, re-runs, and
+uninstalls.
+
+Not done, and stated rather than implied: **`shellcheck` did not run** — it is
+not installed on this host, installing it needs root, and AGENTS.md forbids
+mutating the host, so the CI `installer` job is the first place it will actually
+execute; `bash -n` is what ran here. The container e2e was also not run locally,
+because no Docker daemon is available in this worktree — that path is CI-only
+until a Chefer AppCipe run is done. The `sudo` branch is never exercised by CI
+either, since the container runs as root and the runner steps are dry runs, so
+what is tested is the command that gets built, not the prompt around it.

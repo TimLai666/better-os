@@ -477,6 +477,127 @@ DEBIAN_FRONTEND=noninteractive apt-get remove -y better-monitor >/dev/null
 kill "$DAEMON_PID" 2>/dev/null || true
 trap - EXIT
 
+printf '== the bootstrap installer against locally built packages ==\n'
+# install.sh is the command a user pastes on a fresh machine. Its release
+# resolution half needs the public GitHub API and is exercised on the CI
+# runner; this is the half that changes a machine, so it belongs here, where
+# the machine is disposable. --from-dir puts the packages this job just built
+# where a download would have left them. Everything after that point — the
+# checksum verification, the single privileged apt call, the already-current
+# second run, and --uninstall — is the shipped path with nothing stubbed.
+INSTALLER=/opt/better-os/install.sh
+[[ -x "$INSTALLER" ]] || {
+    printf 'Missing the bootstrap installer at %s\n' "$INSTALLER" >&2
+    exit 1
+}
+
+installer_reports_installed() {
+    dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null | grep -q '^installed$'
+}
+
+# Start from a machine with neither package. The daemon was installed the
+# ordinary way at the top of this script, so a successful installer run would
+# otherwise be indistinguishable from what was already there.
+DEBIAN_FRONTEND=noninteractive apt-get remove -y better-manager-daemon >/dev/null
+if installer_reports_installed better-manager-daemon || installer_reports_installed better-manager; then
+    printf 'The installer test did not start from a clean machine\n' >&2
+    exit 1
+fi
+
+# A dry run has to be readable and has to change nothing.
+"$INSTALLER" --from-dir "$DIST_DIR" --dry-run
+for package_name in better-manager better-manager-daemon; do
+    if installer_reports_installed "$package_name"; then
+        printf 'The installer dry run installed %s\n' "$package_name" >&2
+        exit 1
+    fi
+done
+printf 'The installer dry run changed nothing\n'
+
+# A tampered package must be refused before apt is reached. This is the whole
+# reason the checksums are downloaded at all, so it is asserted rather than
+# assumed from the fact that the verification code exists.
+TAMPER_DIR=/tmp/installer-tamper
+rm -rf "$TAMPER_DIR"
+mkdir -p "$TAMPER_DIR"
+cp "$DIST_DIR"/better-manager_*.deb "$DIST_DIR"/better-manager_*.deb.sha256 \
+    "$DIST_DIR"/better-manager-daemon_*.deb "$DIST_DIR"/better-manager-daemon_*.deb.sha256 \
+    "$TAMPER_DIR/"
+printf 'tampered\n' >> "$TAMPER_DIR/$(basename "$(find_package better-manager)")"
+if "$INSTALLER" --from-dir "$TAMPER_DIR" >/tmp/installer-tamper.log 2>&1; then
+    printf 'The installer accepted a package whose checksum did not match\n' >&2
+    exit 1
+fi
+grep -q 'checksum mismatch' /tmp/installer-tamper.log || {
+    printf 'The installer failed on a tampered package for the wrong reason:\n' >&2
+    cat /tmp/installer-tamper.log >&2
+    exit 1
+}
+for package_name in better-manager better-manager-daemon; do
+    if installer_reports_installed "$package_name"; then
+        printf 'A refused checksum still installed %s\n' "$package_name" >&2
+        exit 1
+    fi
+done
+rm -rf "$TAMPER_DIR"
+printf 'The installer refused a tampered package and installed nothing\n'
+
+# The real thing.
+"$INSTALLER" --from-dir "$DIST_DIR"
+for package_name in better-manager better-manager-daemon; do
+    installer_reports_installed "$package_name" || {
+        printf 'The installer did not install %s\n' "$package_name" >&2
+        exit 1
+    }
+done
+for required_file in \
+    /usr/bin/better-manager \
+    /usr/libexec/better-manager-daemon \
+    /usr/share/polkit-1/actions/org.betteros.manager.policy; do
+    [[ -s "$required_file" ]] || {
+        printf 'Missing %s after the installer ran\n' "$required_file" >&2
+        exit 1
+    }
+done
+# The dependency metadata has to carry the manager on its own, in an image
+# with no *-dev packages, exactly as it must on a user's machine.
+if ldd /usr/bin/better-manager | grep -q 'not found'; then
+    printf 'better-manager has an unresolved library after the installer ran\n' >&2
+    exit 1
+fi
+printf 'The installer installed both packages\n'
+
+# Re-running must not reinstall. A user who pastes the command twice should be
+# told the machine is current, not asked for a password again.
+"$INSTALLER" --from-dir "$DIST_DIR" >/tmp/installer-rerun.log 2>&1 || {
+    printf 'The second installer run failed\n' >&2
+    cat /tmp/installer-rerun.log >&2
+    exit 1
+}
+grep -q 'already installed and current' /tmp/installer-rerun.log || {
+    printf 'The second installer run did not report the machine as current:\n' >&2
+    cat /tmp/installer-rerun.log >&2
+    exit 1
+}
+printf 'The installer is idempotent\n'
+
+"$INSTALLER" --uninstall
+for package_name in better-manager better-manager-daemon; do
+    if installer_reports_installed "$package_name"; then
+        printf 'The installer did not remove %s\n' "$package_name" >&2
+        exit 1
+    fi
+done
+[[ ! -e /usr/bin/better-manager ]] || {
+    printf 'The installer left better-manager behind after --uninstall\n' >&2
+    exit 1
+}
+[[ ! -e /usr/libexec/better-manager-daemon ]] || {
+    printf 'The installer left the privileged service behind after --uninstall\n' >&2
+    exit 1
+}
+printf 'The installer removed what it installed\n'
+
 printf '== purge leaves nothing behind ==\n'
 DEBIAN_FRONTEND=noninteractive apt-get purge -y better-manager-daemon
 for leftover in /var/lib/better-os /var/cache/better-os; do

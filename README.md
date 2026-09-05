@@ -4,6 +4,42 @@ Better OS is a modular performance-improvement layer for Zorin OS and Ubuntu.
 It replaces, enhances, or diagnoses desktop and system components one workload
 at a time. It is not a Linux distribution fork.
 
+## Install
+
+Zorin OS or Ubuntu, 22.04 or 24.04, on amd64 or arm64:
+
+```bash
+curl -fsSL -o /tmp/better-os-install.sh https://raw.githubusercontent.com/TimLai666/better-os/main/install.sh && bash /tmp/better-os-install.sh
+```
+
+The download and the run are two steps on purpose. Piping a URL into a root
+shell executes whatever the network happened to return, unread and unverifiable;
+this way the script is a file you can read before you run it, and it asks for
+sudo itself rather than being handed a root shell.
+
+What it does, in order:
+
+- Works out which Ubuntu release this machine is built on. A derivative is
+  identified by `UBUNTU_CODENAME`, not by its own version number — Zorin OS 18
+  reports `VERSION_ID="18"` and `UBUNTU_CODENAME=noble`, which is Ubuntu 24.04.
+  Anything outside 22.04 and 24.04, or outside amd64 and arm64, is refused with
+  the values it read.
+- Resolves the latest published release through the public GitHub API. No `gh`,
+  no token, and no `jq` — `jq` is used when it happens to be installed.
+- Downloads `better-manager` and `better-manager-daemon` with their `.sha256`
+  sidecars into a temporary directory, and verifies both checksums **before**
+  anything is installed. A mismatch stops the run with nothing installed.
+- Prints the one command that needs root, then asks for sudo once and runs it:
+  a single `apt-get install` of the two verified `.deb` files.
+- Installs nothing else. Better Launcher, Better Monitor, Better Files, Better
+  Touchpad, Better Awake, and Better Storage are installed from inside Better
+  Manager, which is the point of installing it first.
+
+Running it again on an unchanged release reports the machine as current and
+asks for nothing. `--dry-run` prints every one of the steps above and changes
+nothing. `--uninstall` removes the two packages it installed, and leaves
+components installed through Better Manager alone.
+
 ## Current scaffold
 
 - `better-core` validates versioned component manifests.

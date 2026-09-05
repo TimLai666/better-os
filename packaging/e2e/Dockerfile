@@ -36,6 +36,10 @@ RUN apt-get update \
 WORKDIR /opt/better-os
 COPY dist/e2e/ /opt/better-os/dist/
 COPY packaging/test-daemon-e2e.sh /opt/better-os/packaging/test-daemon-e2e.sh
+# The bootstrap installer, exercised here for the half of it that changes a
+# machine. It runs as root in this image, so it takes its no-sudo path; the
+# sudo path is the one difference between what runs here and what a user runs.
+COPY install.sh /opt/better-os/install.sh
 # The test-only polkit authorization and the client that drives the authorized
 # path. Neither is in any package: the rule would be a hole in a shipped
 # system, and the client is an example built for this check.
@@ -64,7 +68,7 @@ RUN set -eu; \
         "$fixture_dir/better-rollback-fixture_0.1.0_ubuntu-${UBUNTU_RELEASE}_${architecture}.deb"; \
     rm -rf "$fixture_dir/0.0.9" "$fixture_dir/0.1.0"
 
-RUN chmod +x /opt/better-os/packaging/test-daemon-e2e.sh /opt/better-os/e2e_client
+RUN chmod +x /opt/better-os/packaging/test-daemon-e2e.sh /opt/better-os/e2e_client /opt/better-os/install.sh
 
 ENV BETTER_OS_E2E_CONTAINER=1
 

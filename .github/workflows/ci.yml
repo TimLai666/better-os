@@ -23,6 +23,72 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
 
+  # The bootstrap installer is a shell script with no build step, so its own
+  # checks do not wait for the Rust job. This covers the half of it that needs
+  # nothing built: the linter, and the release resolution against the real
+  # public API. The half that changes a machine runs in the container e2e
+  # below, against the packages that job just built.
+  installer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Lint the installer
+        run: |
+          bash -n install.sh
+          shellcheck install.sh
+      # Detection is a table, and the entry that matters most is the one this
+      # runner cannot be: Zorin OS reports its own version number and names its
+      # Ubuntu base only in UBUNTU_CODENAME. These fixtures are how that row is
+      # checked at all.
+      - name: Release detection maps derivatives to their Ubuntu base
+        run: |
+          set -eu
+          fixtures="$(mktemp -d)"
+          printf 'PRETTY_NAME="Zorin OS 18.1"\nID=zorin\nVERSION_ID="18"\nUBUNTU_CODENAME=noble\nVERSION_CODENAME=noble\n' > "$fixtures/zorin18"
+          printf 'PRETTY_NAME="Zorin OS 17.2"\nID=zorin\nVERSION_ID="17"\nUBUNTU_CODENAME=jammy\nVERSION_CODENAME=jammy\n' > "$fixtures/zorin17"
+          printf 'PRETTY_NAME="Ubuntu 22.04 LTS"\nID=ubuntu\nVERSION_ID="22.04"\n' > "$fixtures/ubuntu2204"
+          printf 'PRETTY_NAME="Ubuntu 20.04 LTS"\nID=ubuntu\nVERSION_ID="20.04"\nUBUNTU_CODENAME=focal\n' > "$fixtures/ubuntu2004"
+          printf 'PRETTY_NAME="Fedora Linux 41"\nID=fedora\nVERSION_ID="41"\n' > "$fixtures/fedora"
+          expect_release() {
+            actual="$(BETTER_OS_INSTALL_OS_RELEASE="$fixtures/$1" bash install.sh --dry-run \
+              | sed -n 's/.*installing the Ubuntu \([0-9.]*\) packages.*/\1/p')"
+            test "$actual" = "$2" || { echo "$1: expected $2, got '${actual:-nothing}'" >&2; exit 1; }
+            echo "$1 -> ubuntu-$2"
+          }
+          expect_refused() {
+            if BETTER_OS_INSTALL_OS_RELEASE="$fixtures/$1" bash install.sh --dry-run >/dev/null 2>&1; then
+              echo "$1: expected the installer to refuse this system" >&2
+              exit 1
+            fi
+            echo "$1 -> refused"
+          }
+          expect_release zorin18 24.04
+          expect_release zorin17 22.04
+          expect_release ubuntu2204 22.04
+          expect_refused ubuntu2004
+          expect_refused fedora
+        env:
+          # Raises the anonymous API rate limit that every job on this runner
+          # network shares. The installer never requires a token.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The jq-free parser is not a fallback nobody takes: a minimal Ubuntu has
+      # no jq, which is the machine this script is written for.
+      - name: Resolve the latest release without jq
+        run: |
+          set -eu
+          shim="$(mktemp -d)"
+          for tool in bash env curl sed awk grep head sha256sum dpkg dpkg-query apt-get mktemp cp rm sudo; do
+            path="$(command -v "$tool" || true)"
+            if [ -n "$path" ]; then ln -s "$path" "$shim/$tool"; fi
+          done
+          test ! -e "$shim/jq"
+          PATH="$shim" bash install.sh --dry-run | tee /tmp/nojq.log
+          grep -q 'releases/download/' /tmp/nojq.log
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   package:
     needs: rust
     strategy:
@@ -92,11 +158,17 @@ jobs:
           done
       - name: Verify Debian packages
         run: bash packaging/verify-deb.sh "dist/${{ matrix.target }}" "${{ matrix.asset_target }}"
+      # The installer's package selection and checksum verification against the
+      # real filenames this job just produced, with no network and nothing
+      # installed. It is the cheap half; the container below runs the apt call.
+      - name: The installer selects and verifies this job's packages
+        run: bash install.sh --from-dir "dist/${{ matrix.target }}" --dry-run
       # The privileged service is the only thing here that changes a machine, so
       # it is exercised against a real dpkg, system bus, and polkitd rather than
       # only against fakes. It runs in a throwaway container for the same reason
       # the local script refuses to run on a host. The same container carries
-      # the apt install/remove smoke for one of the packages ticket 36 added.
+      # the apt install/remove smoke for one of the packages ticket 36 added,
+      # and the bootstrap installer's real install, re-run, and uninstall.
       - name: Run the privileged service end-to-end
         run: |
           # ubuntu-24.04 -> 24.04 for the base image; the script still wants the

@@ -44,6 +44,50 @@ Release package 必須符合以下條件：
 3. `apt install ./<package>.deb` 能自動解析並安裝這些 runtime dependencies，
    使用者不需要先照開發文件安裝 linker packages。
 
+## Bootstrap installer 契約
+
+repository 根目錄的 `install.sh` 是使用者的第一個安裝入口，透過
+`https://raw.githubusercontent.com/TimLai666/better-os/main/install.sh` 取得。
+它只負責 `better-manager` 與 `better-manager-daemon` 兩個套件，其餘元件由
+Better Manager 自己安裝。
+
+這個 script 完全依賴 ADR 0002 的 asset 命名，沒有其他 metadata 可以查：
+
+- 套件檔名必須是
+  `<component>_<version>_ubuntu-<release>_<architecture>.deb`，checksum
+  sidecar 必須是同名加上 `.deb.sha256`，內容為 `sha256sum` 的輸出格式（第一
+  欄是 hash）。
+- `release` 只接受 `22.04` 與 `24.04`，`architecture` 只接受 `amd64` 與
+  `arm64`。命名規則改變、支援矩陣增減 release 或 architecture，都必須同時改
+  `install.sh` 的對應表，否則 installer 會在解析 asset 名稱時直接失敗。
+- 最新版本由 GitHub public API 的
+  `/repos/TimLai666/better-os/releases/latest` 解析，取 `tag_name` 去掉前置
+  `v` 當作版本，再用 `assets[].browser_download_url` 找出對應檔名的下載網址。
+  找不到該檔名就報錯，不會自行拼出可能 404 的網址。不需要 `gh`，不需要
+  token，也不需要 `jq`（有裝就用，沒裝走 grep/sed 的窄比對）。`GITHUB_TOKEN`
+  是選用的，只用來提高匿名 rate limit，只送往 GitHub API。
+- 兩個 `.deb` 的 checksum 都驗過之後，才會執行唯一一次特權指令：一個
+  `apt-get install` 同時安裝兩個檔案。執行前會把那行指令原文印出來。腳本本身
+  是先下載成檔案再執行，README 的一行指令也是這個形式，不是
+  `curl | sudo bash`。
+
+Distribution 判斷讀 `/etc/os-release`，但不 source 它。衍生發行版一律以
+`UBUNTU_CODENAME` 決定 base：Zorin OS 18 回報的是 `VERSION_ID="18"` 與
+`UBUNTU_CODENAME=noble`，也就是 Ubuntu 24.04；Zorin OS 17 是 `jammy`，也就是
+22.04。只有 `ID=ubuntu` 且沒有 codename 時才退回讀 `VERSION_ID`。不在支援矩陣
+內的系統會被拒絕，並印出實際讀到的欄位值。
+
+其他旗標：`--dry-run` 印出全部步驟且不改動任何東西；`--uninstall` 以一次
+`apt-get remove` 移除這兩個套件；`--from-dir <dir>` 改用本地建置好的套件取代
+下載，checksum 驗證照舊，這是 CI 用的離線路徑，不是給使用者的安裝方式。重複
+執行同一個 release 會回報已是最新並且不要求密碼。
+
+CI 分兩半驗證：`installer` job 在 runner 上跑 `shellcheck`、release 偵測的
+fixture 對照表、以及對真實 public API 的 `--dry-run`；package job 用
+`--from-dir` 對剛建置出來的 `dist/` 做一次不連網的選檔與 checksum 驗證，真正
+會改動機器的安裝、重跑、`--uninstall` 與「checksum 不符就不安裝」則在
+`packaging/test-daemon-e2e.sh` 的容器裡執行。
+
 ## Release 驗證
 
 每個支援的 distribution release 與 CPU architecture 都必須在乾淨的桌面
