@@ -254,7 +254,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app-catalog-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "app-catalog-platform",
  "tempfile",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "app-catalog-platform"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "app-catalog-core",
  "notify",
@@ -274,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "app-chooser-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "app-catalog-core",
  "serde",
@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "app-chooser-gui"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "app-catalog-core",
  "app-catalog-platform",
@@ -657,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "awake-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -666,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "awake-gui"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "awake-core",
  "awake-ipc",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "awake-ipc"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "awake-core",
  "serde",
@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "awake-platform"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "awake-core",
  "libc",
@@ -705,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "awake-service"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "awake-core",
  "awake-ipc",
@@ -723,7 +723,7 @@ dependencies = [
 
 [[package]]
 name = "awake-store"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "awake-core",
  "serde",
@@ -734,7 +734,7 @@ dependencies = [
 
 [[package]]
 name = "awake-tray"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "awake-core",
  "awake-ipc",
@@ -777,7 +777,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "better-actions"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "better-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "semver",
  "serde",
@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "better-ui"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-core",
  "gpui",
@@ -1618,7 +1618,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "defaults-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-core",
  "defaults-platform",
@@ -1633,7 +1633,7 @@ dependencies = [
 
 [[package]]
 name = "defaults-platform"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "app-catalog-core",
  "app-chooser-core",
@@ -1646,7 +1646,7 @@ dependencies = [
 
 [[package]]
 name = "defaults-store"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-core",
  "serde",
@@ -2050,7 +2050,7 @@ dependencies = [
 
 [[package]]
 name = "files-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "app-catalog-core",
  "files-platform",
@@ -2061,7 +2061,7 @@ dependencies = [
 
 [[package]]
 name = "files-gui"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "app-catalog-core",
  "app-catalog-platform",
@@ -2091,7 +2091,7 @@ dependencies = [
 
 [[package]]
 name = "files-operations"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "files-core",
  "files-platform",
@@ -2104,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "files-platform"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "app-catalog-core",
  "app-chooser-core",
@@ -2117,7 +2117,7 @@ dependencies = [
 
 [[package]]
 name = "files-preview"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "app-catalog-core",
  "image",
@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "files-search"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "files-core",
  "tempfile",
@@ -3767,14 +3767,14 @@ dependencies = [
 
 [[package]]
 name = "launcher-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "app-catalog-core",
 ]
 
 [[package]]
 name = "launcher-gui"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "app-catalog-core",
  "app-catalog-platform",
@@ -3791,7 +3791,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-platform"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "app-catalog-core",
  "app-catalog-platform",
@@ -4058,7 +4058,7 @@ dependencies = [
 
 [[package]]
 name = "manager-cli"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "app-chooser-core",
  "better-core",
@@ -4076,7 +4076,7 @@ dependencies = [
 
 [[package]]
 name = "manager-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-core",
  "manager-ipc",
@@ -4089,7 +4089,7 @@ dependencies = [
 
 [[package]]
 name = "manager-daemon"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-core",
  "manager-daemon",
@@ -4105,7 +4105,7 @@ dependencies = [
 
 [[package]]
 name = "manager-gui"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-core",
  "better-ui",
@@ -4126,7 +4126,7 @@ dependencies = [
 
 [[package]]
 name = "manager-ipc"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-core",
  "serde",
@@ -4136,7 +4136,7 @@ dependencies = [
 
 [[package]]
 name = "manager-platform"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-core",
  "manager-ipc",
@@ -4150,7 +4150,7 @@ dependencies = [
 
 [[package]]
 name = "manager-store"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-core",
  "manager-core",
@@ -4314,7 +4314,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-actions-linux"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "libc",
  "monitor-core",
@@ -4322,7 +4322,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-cli"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "clap",
  "monitor-collectors-linux",
@@ -4339,7 +4339,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-collectors-linux"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "monitor-core",
  "serde",
@@ -4348,7 +4348,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -4357,7 +4357,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-export"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "monitor-core",
  "monitor-store",
@@ -4369,7 +4369,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-gui"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-ui",
  "gpui",
@@ -4389,7 +4389,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-ipc"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "monitor-core",
  "monitor-store",
@@ -4400,7 +4400,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-service"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "manager-store",
  "monitor-collectors-linux",
@@ -4418,7 +4418,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-store"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "monitor-core",
  "serde",
@@ -4429,7 +4429,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-views"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "monitor-collectors-linux",
  "monitor-core",
@@ -6841,7 +6841,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -6850,7 +6850,7 @@ dependencies = [
 
 [[package]]
 name = "storage-platform"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "futures-util",
  "libc",
@@ -6864,7 +6864,7 @@ dependencies = [
 
 [[package]]
 name = "storage-service"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-core",
  "futures-util",
@@ -7533,7 +7533,7 @@ checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "touchpad-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -7543,7 +7543,7 @@ dependencies = [
 
 [[package]]
 name = "touchpad-gesture-service"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-actions",
  "launcher-platform",
@@ -7557,7 +7557,7 @@ dependencies = [
 
 [[package]]
 name = "touchpad-gestures"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-actions",
  "serde",
@@ -7570,7 +7570,7 @@ dependencies = [
 
 [[package]]
 name = "touchpad-gui"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-actions",
  "better-ui",
@@ -7588,7 +7588,7 @@ dependencies = [
 
 [[package]]
 name = "touchpad-platform"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-core",
  "defaults-platform",
@@ -7601,7 +7601,7 @@ dependencies = [
 
 [[package]]
 name = "touchpad-session"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "better-actions",
  "futures-util",
