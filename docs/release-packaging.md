@@ -137,14 +137,23 @@ commit `96b46f11e814bd4088f630c9c19727e45af9132f` 的 post-merge CI run
 22.04 與 24.04 的 amd64 與 arm64。`better-monitor` 因為 payload 在 ticket 36
 變寬，已隨那次一起升版，同一個版號不再對應兩種內容。
 
-目前的 release 是
+第三個 release 是
 [`v0.2.1`](https://github.com/TimLai666/better-os/releases/tag/v0.2.1)，由 merge
 commit `8dc9c7eede37917d5af527a0d8df17e84213b48b` 的 post-merge CI run
 [`33871736272`](https://github.com/TimLai666/better-os/actions/runs/33871736272)
 產生，同樣是八個套件、32 個 `.deb` 與 32 個 `.deb.sha256`。這是 patch release，
 唯一變動的 payload 是 `better-touchpad`：它現在會安裝 GNOME Shell adapter
 extension `touchpad-adapter@betteros.org` 與 `better-touchpad-gestured` 服務。
-兩次 release 都是所有 asset 從公開 release 重新下載、逐一驗證 checksum 之後，
+
+目前的 release 是
+[`v0.2.2`](https://github.com/TimLai666/better-os/releases/tag/v0.2.2)，由 merge
+commit `b5f6e34edad24e199181ce131f4c8a5b490c7fbe` 的 post-merge CI run
+[`33942768617`](https://github.com/TimLai666/better-os/actions/runs/33942768617)
+產生，同樣是八個套件、32 個 `.deb` 與 32 個 `.deb.sha256`。唯一變動的 payload 是
+`better-manager`：它帶進可更新的 component catalog（ADR 0013）。這一版也是
+`install.sh` 一行安裝指令第一次隨 release 一起提供。
+
+每次 release 都是所有 asset 從公開 release 重新下載、逐一驗證 checksum 之後，
 才把數值寫回七份 component manifest。升版當下 manifest 內的 checksum 描述的是
 上一個 release 的檔案，因此 release branch 上會先換回 placeholder，等新 release
 公開後再寫入真值。

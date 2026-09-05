@@ -101,10 +101,10 @@ GUI or dependency compiles when the relevant command was not executed.
   Better OS component has a time-to-photon figure. And the idle CPU figure is a
   headless one: nothing asks the window to repaint, so it is the launcher's own
   idle cost and not a claim about a launcher on a running desktop.
-- All eight packages are published. `v0.2.1` carries every component
+- All eight packages are published. `v0.2.2` carries every component
   `packaging/build-deb.sh` builds, for Ubuntu 22.04 and 24.04 on amd64 and
   arm64, and every shipped manifest now records the checksum of its own
-  published 0.2.1 asset, verified after re-downloading the public release. No
+  published 0.2.2 asset, verified after re-downloading the public release. No
   first party manifest carries a placeholder checksum any more;
   `components/manifests/better-files-example.yaml` is the one exception and is a
   schema fixture, not a released component. A version bump puts the placeholders
@@ -121,17 +121,29 @@ GUI or dependency compiles when the relevant command was not executed.
   made the catalog refreshable, so a manager fetches the seven manifest files
   from `main` over HTTPS, validates them with the same validator the compiled-in
   ones get, caches the result in the state directory, and shows the built-in
-  catalog with a visible "may be outdated" state when it cannot. Three limits
-  travel with that. The refresh has been proven end to end from this machine, but
-  against a `main` carrying the *real* published 0.2.1 checksums — the
-  placeholder state the fix targets exists only between a version bump and its
-  release, and has not been observed. Signing is still deferred, so HTTPS plus
+  catalog with a visible "may be outdated" state when it cannot. The placeholder
+  state the fix targets has now been observed rather than only reasoned about:
+  the real-network catalog test was run from a build of the v0.2.2 merge commit
+  `b5f6e34`, whose embedded catalog carries that release's placeholders, and it
+  refreshed from `main`, planned `better-monitor` 0.2.2, and verified the real
+  published `.deb` against the fetched checksum. Two limits still travel with it.
+  Signing is still deferred, so HTTPS plus
   the artifact checksum is the whole integrity story and a rolled-back-then-
   re-bumped `main` is indistinguishable from a real release. And there is no
   scheduled refresh: it happens once at launch, on the button, and on
   `better-manager catalog refresh`, so an install planned from a window that has
   been open for a week is planned from a week-old catalog whose age is on
   screen.
+- `install.sh` at the repository root is the first install path for a fresh
+  machine and ships only `better-manager` and `better-manager-daemon`; the other
+  six are installed from inside Better Manager. It has no metadata to read but
+  ADR 0002's asset names, so any change to the naming contract or the supported
+  release/architecture matrix must change the script's tables in the same
+  commit. `docs/release-packaging.md` holds the contract.
+- The CI `rust` job now runs `packaging/generate-third-party-notices.sh --check`
+  before anything is built. `docs/third-party-licenses.md` pins the `Cargo.lock`
+  hash, so any lockfile change makes it stale; regenerate it in the same commit
+  that moves the lockfile rather than letting the check find it.
 - `better-monitor` ships the window, the session service, the command line, and
   a systemd user unit in one package. v0.1.0 published the window alone, so the
   wider package carries its own version: it moved to 0.2.0 and travels with the
@@ -144,7 +156,7 @@ GUI or dependency compiles when the relevant command was not executed.
   `touchpad-core` emits and its benchmark baselines are the figures in
   `docs/touchpad-sensitivity-mapping.md`, but nothing runs those benchmarks —
   the same unenforced-budget gap `better-files.yaml` carries. Its checksums are
-  the published v0.2.1 ones.
+  the published v0.2.2 ones.
 - A package installs its systemd user unit and does not enable it, matching
   `better-manager-daemon`. Nothing in dpkg stops a running Better Awake, Better
   Monitor, or Better Storage user service at removal either; the manifests'

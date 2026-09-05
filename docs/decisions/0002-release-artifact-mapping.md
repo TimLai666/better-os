@@ -92,6 +92,29 @@ values a manifest carries describe the *previous* release's assets, so the seven
 shipped manifests went back to placeholders when the version moved and took real
 values again only after v0.2.1 was public.
 
+## v0.2.2 verification
+
+The fourth release is published at
+<https://github.com/TimLai666/better-os/releases/tag/v0.2.2> from merge commit
+`b5f6e34edad24e199181ce131f4c8a5b490c7fbe`. Post-merge CI run
+<https://github.com/TimLai666/better-os/actions/runs/33942768617> passed the Rust
+gate, the installer job, and all four target/architecture package jobs. It
+carries the same eight packages as 32 `.deb` assets and 32 `.deb.sha256`
+sidecars; the payload change is `better-manager`, which now refreshes its
+component catalog from the published manifests. The public release was
+downloaded again, all 32 sidecars verified their matching `.deb` assets, the
+downloaded bytes were byte-identical to the CI artifacts, and each recorded
+checksum was re-hashed from the downloaded package before the manifests were
+committed.
+
+This release is also where the placeholder rule above was verified from the
+other side. `install.sh` resolved `v0.2.2` from the public API, and a build of
+merge commit `b5f6e34` — whose compiled-in catalog carries this release's
+placeholder checksums — refreshed the seven manifests from `main`, planned
+`better-monitor` 0.2.2, and verified the real published `.deb` against the
+fetched checksum. The naming contract is what let it do so: the manifest names
+one unambiguous asset, and the fetched checksum described that exact file.
+
 ## Deferred
 
 Release automation, package signing, public APT repositories, and release
