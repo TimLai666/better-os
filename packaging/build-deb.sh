@@ -118,6 +118,13 @@ cargo build --release \
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 BUILD_DIR="$TARGET_DIR/release"
 mkdir -p "$OUTPUT_DIR"
+# Clear the packages a previous build left here. `verify-deb.sh` selects each
+# package by a version-agnostic glob and fails when that glob matches more than
+# one file, so a `dist/` still holding the previous version's `.deb` breaks the
+# verifier rather than the build — a failure whose message names the package and
+# not the stale file. Only the top-level package files and their sidecars go:
+# the scratch subdirectories under `dist/` belong to other tools.
+rm -f "$OUTPUT_DIR"/*.deb "$OUTPUT_DIR"/*.deb.sha256
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
