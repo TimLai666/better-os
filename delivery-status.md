@@ -111,29 +111,42 @@ process-state tests and the dpkg doc-exclusion assumption in the container
 check were fixed along the way; the license inventory pins the `Cargo.lock`
 hash and must be regenerated whenever the lockfile changes.
 
-The current release is `v0.2.4`. CI run 33970875135 on merge commit `42be13d`
+The current release is `v0.2.5`. CI run 34008382468 on merge commit `00936c3`
 produced the assets and was green on its first attempt; the release carries 32
 `.deb` files and 32 `.deb.sha256` sidecars, eight packages across ubuntu 22.04
 and 24.04 on amd64 and arm64, plus `LICENSE` and `third-party-licenses.md`.
 Every package was downloaded again with plain `curl` from the public
-`releases/download/v0.2.4/` URL its own manifest carries, all 32 sidecars
+`releases/download/v0.2.5/` URL its own manifest carries, all 32 sidecars
 verified, the downloaded bytes compared byte-for-byte against the CI artifacts,
 and the seven shipped manifests now record checksums re-hashed from those
-downloaded packages. It is a patch release for the second round of defects from
-the same real Zorin 18 install: the daemon refused every install because it read
-`VERSION_ID` rather than resolving the Ubuntu base, the icons 0.2.3 shipped were
-invisible to gdk-pixbuf, a refusal on screen hid the service's own reason, and
-every window launch panicked without a tokio reactor. `v0.2.3` before it
-published the same eight packages from CI run 33955547574 on merge commit
-`056eaad`, `v0.2.2` from run 33942768617 on `b5f6e34`, `v0.2.1` from run
-33871736272 on `8dc9c7e`, and `v0.2.0` from run 33389237001 on `96b46f1`.
+downloaded packages rather than copied from the sidecars, then cross-checked
+against those sidecars by a separate reader. It is a patch release carrying
+tickets 44 and 45: a component page that reports what is installed instead of
+the catalog's version, a stale failure that shows the service's reason and
+offers a retry the planner accepts, dpkg-installed components adopted so the
+manager can offer the update the host needs, a remove action on the detail page
+with self-removal refused in `manager-core`, and a client that reads the host
+through the same `better-core::host` rules the daemon uses.
+
+One behaviour change in it reaches manifests other people write. The client
+used to plan from `MockPlatform`, which reported Ubuntu 24.04 amd64 on every
+machine; the distribution is now `/etc/os-release`'s own `ID`, so a Zorin host
+is `zorin` rather than its Ubuntu base. The release matrix is unaffected —
+22.04 and 24.04 still come from `UBUNTU_CODENAME` — but a third-party manifest
+whose `targets.distributions` lists only `ubuntu` is now refused on Zorin and
+has to list `zorin` as all seven first-party manifests already do.
+
+`v0.2.4` before it published the same eight packages from CI run 33970875135 on
+merge commit `42be13d`, `v0.2.3` from run 33955547574 on `056eaad`, `v0.2.2`
+from run 33942768617 on `b5f6e34`, `v0.2.1` from run 33871736272 on `8dc9c7e`,
+and `v0.2.0` from run 33389237001 on `96b46f1`.
 
 A released binary still embeds the manifests as they stood before its own
-release, so the built-in catalog inside `better-manager` 0.2.4 carries that
+release, so the built-in catalog inside `better-manager` 0.2.5 carries that
 release's pre-publication placeholders. That is no longer the end of the story:
-a refresh from `main` gives a 0.2.4 manager a catalog that verifies 0.2.4, and
+a refresh from `main` gives a 0.2.5 manager a catalog that verifies 0.2.5, and
 the run recorded in M48 is that path executed against the real release rather
-than described — executed against 0.2.2 rather than 0.2.4, since the mechanism
+than described — executed against 0.2.2 rather than 0.2.5, since the mechanism
 was what it proved and nothing about it has changed since.
 
 ## Current Blockers
@@ -191,7 +204,18 @@ requires.
 
 ## Next Ticket
 
-Ticket 45 is done on `ticket-45` and is not merged or released. It closes the
+No ticket is cut. Tickets 18 through 45 are done, merged, and released, and
+`docs/tickets/` holds nothing unstarted. What is waiting is decisions rather
+than implementation, and `AGENTS.md`'s follow-up list is where they live: the
+package signature format, the `better-monitor`/`better-monitor-cli` name
+collision, a stored baseline and a CI job for the benchmark budgets no one
+runs, what to show for a dpkg version `semver` cannot parse, the security
+review the libinput gesture path was made conditional on, and how `target/` is
+kept from filling the disk. Two things are still owed to someone at a real
+desktop: GNOME drawing the six icons in an applications grid after an install,
+and pressing Escape on Better Launcher.
+
+Ticket 45 is merged into `main` and released as `v0.2.5`. It closes the
 follow-up ticket 44 left behind: `manager-gui` and `manager-cli` built their
 `Manager` from `MockPlatform::default()`, so every plan targeted Ubuntu 24.04
 amd64 no matter what the machine was. The client now reads the host, and the
@@ -208,8 +232,8 @@ a third time, and the third copy is where the drift starts. Ticket 43 fixed the
 os-release reading in the daemon because ticket 40's fix in `install.sh` had not
 reached it; this ticket refused to add a third and moved the rules instead.
 
-Ticket 44 is merged into `main` and is not released. It is the second
-round of field reports from the same real Zorin 18 machine, this time running
+Ticket 44 is merged into `main` and released as `v0.2.5` beside 45. It is the
+second round of field reports from the same real Zorin 18 machine, this time running
 `v0.2.3` installed by apt, and it is about a window that described a machine it
 had never asked. Four defects, each fixed at its own cause: the component page
 drew the installed-version row from a helper whose "nothing installed" answer

@@ -16,31 +16,30 @@ targets:
 # restorable to the value that was captured before the change.
 replaces:
   - org.gnome.Nautilus
-# Placeholder checksums until v0.2.5 is published. ADR 0002 records the
-# checksum of a *published* release asset; the v0.2.4 values these variants
-# carried describe 0.2.4's packages, not 0.2.5's. The real values are written
-# back once the release is public and every asset has been re-downloaded and
-# verified.
+# The checksums below belong to the published v0.2.5 release assets. Each one
+# was re-hashed from the package downloaded back from the public release rather
+# than copied from its sidecar, which is what ADR 0002 requires a manifest to
+# record.
 artifacts:
   - release: "22.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.5/better-files_0.2.5_ubuntu-22.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 5d2f580a6916e0642d00dab255517dc3ea09740e008845c6e295627bac6b5d71
     release_asset: better-files_0.2.5_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.5/better-files_0.2.5_ubuntu-22.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: b64470aa2b9f30125c7d772b4ac9cfe07f1252983df6fc8474df1c596cd48f73
     release_asset: better-files_0.2.5_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.5/better-files_0.2.5_ubuntu-24.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 5eeb9ee903abd4a0ff345a1f47f3b7b2ae930b00f2bcd52ee403134fa1b9ebee
     release_asset: better-files_0.2.5_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.5/better-files_0.2.5_ubuntu-24.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 5024fce19d27e29c1b511f7d643212418393b0d1933562fcc22360b7501b9221
     release_asset: better-files_0.2.5_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install

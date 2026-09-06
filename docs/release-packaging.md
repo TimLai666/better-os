@@ -162,7 +162,7 @@ commit `056eaad78f2fc60603335b2d66f10006e39ab0f8` 的 post-merge CI run
 titlebar 也拖不動、所有應用程式都沒有圖示，以及視窗沒有設定 `app_id`，dock 與
 應用程式清單因此對不到它的 desktop entry。變動橫跨每個 GUI 套件，不是單一元件。
 
-目前的 release 是
+上一個 release 是
 [`v0.2.4`](https://github.com/TimLai666/better-os/releases/tag/v0.2.4)，由 merge
 commit `42be13da18466d302b761aed4b8e9156f99282d8` 的 post-merge CI run
 [`33970875135`](https://github.com/TimLai666/better-os/actions/runs/33970875135)
@@ -177,7 +177,26 @@ XML 宣告與 `<svg>` 之間的授權註解把根標籤推出了那個範圍；�
 檔案有沒有被同一個套件帶進去，現在還會確認 `<svg` 出現在檔案的前 100 個位元組
 以內。檔案存在與 loader 認得是兩件事，前者過關不代表後者成立。
 
-`packaging/build-deb.sh` 從這一版開始會先清掉 `dist/` 裡上一次建置留下的
+目前的 release 是
+[`v0.2.5`](https://github.com/TimLai666/better-os/releases/tag/v0.2.5)，由 merge
+commit `00936c371b06447bbdafc0df5791a8f3d428b00b` 的 post-merge CI run
+[`34008382468`](https://github.com/TimLai666/better-os/actions/runs/34008382468)
+產生，同樣是八個套件、32 個 `.deb` 與 32 個 `.deb.sha256`。這是 patch release，
+內容是 ticket 44 與 45：元件頁面不再把 catalog 的版本當成已安裝版本、失敗紀錄
+會說出 service 給的理由並提供 planner 接受的重試、由 dpkg 安裝的元件會被納管
+（`InstallProvenance::Dpkg`，不偽造 artifact 或還原點），詳細頁面有移除動作而
+移除自己在 `manager-core` 就被拒絕，以及 client 與 daemon 共用
+`crates/better-core/src/host.rs` 的主機判斷。
+
+這一版有一個對 manifest 契約的行為變更。先前 client 一律從 `MockPlatform`
+規劃，任何機器都報告 Ubuntu 24.04 amd64；現在 distribution 取 `/etc/os-release`
+的 `ID` 原值，Zorin 主機就是 `zorin`，不是它的 Ubuntu base。Ubuntu 版本仍由
+`UBUNTU_CODENAME` 解析，衍生發行版一律以 base 判斷，這部分沒變。影響落在
+`targets.distributions` 的比對上：只寫 `[ubuntu]` 的第三方 manifest 在 Zorin
+主機上會被拒絕，要支援就必須列出 `zorin`。七份 first-party manifest 都已經同時
+列出 `zorin` 與 `ubuntu`。
+
+`packaging/build-deb.sh` 從 0.2.4 開始會先清掉 `dist/` 裡上一次建置留下的
 `.deb` 與 `.deb.sha256`。`verify-deb.sh` 用不含版號的 glob 挑套件，同一個元件
 match 到兩個檔案就直接失敗，所以升版後留在 `dist/` 的舊套件會讓 verifier 掛
 掉，而且錯誤訊息指的是元件名稱，不是那個殘留檔案。只清最上層的套件檔與
