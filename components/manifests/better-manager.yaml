@@ -2,7 +2,7 @@ schema_version: 2
 id: better-manager
 display_name: Better Manager
 component_type: diagnostic
-version: 0.2.5
+version: 0.2.6
 summary: Installs, updates, verifies, and rolls back every Better OS component.
 icon: manager
 # Better Manager is a component in its own catalog, so updating it replaces the
@@ -15,31 +15,32 @@ targets:
   distributions: [zorin, ubuntu]
   releases: [22.04, 24.04]
   architectures: [amd64, arm64]
-# The checksums below belong to the published v0.2.5 release assets. Each one
-# was re-hashed from the package downloaded back from the public release rather
-# than copied from its sidecar, which is what ADR 0002 requires a manifest to
-# record.
+# Placeholder checksums until v0.2.6 is published. ADR 0002 records the
+# checksum of a *published* release asset; the v0.2.5 values these variants
+# carried describe 0.2.5's packages, not 0.2.6's. The real values are written
+# back once the release is public and every asset has been re-downloaded and
+# verified.
 artifacts:
   - release: "22.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.5/better-manager_0.2.5_ubuntu-22.04_amd64.deb
-    sha256: 3512bcd35c2b1b8cae86a98d357f9a5aeed019d6c13b03292ab123c5179b9b39
-    release_asset: better-manager_0.2.5_ubuntu-22.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-manager_0.2.6_ubuntu-22.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-manager_0.2.6_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.5/better-manager_0.2.5_ubuntu-22.04_arm64.deb
-    sha256: ad71a28cc0b8df319b8cc9bb9bb7075c7498c10cde93f865215cbeb25ce1afcf
-    release_asset: better-manager_0.2.5_ubuntu-22.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-manager_0.2.6_ubuntu-22.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-manager_0.2.6_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.5/better-manager_0.2.5_ubuntu-24.04_amd64.deb
-    sha256: 924bbf3b75e73933a8f51801c4e0bf02351045b914963b3266f01f3392a99a01
-    release_asset: better-manager_0.2.5_ubuntu-24.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-manager_0.2.6_ubuntu-24.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-manager_0.2.6_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.5/better-manager_0.2.5_ubuntu-24.04_arm64.deb
-    sha256: 99fdbe2ebc6d32197cf64ef1e7c14400735f633546be903fb3840a1bc0b78b47
-    release_asset: better-manager_0.2.5_ubuntu-24.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-manager_0.2.6_ubuntu-24.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-manager_0.2.6_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable
