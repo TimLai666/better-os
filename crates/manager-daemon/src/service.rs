@@ -41,6 +41,18 @@ pub struct ManagerService<A: Authorizer + 'static> {
     /// Only one transaction may run at a time. Two concurrent APT runs would
     /// fight over the dpkg lock and interleave in the journal.
     running: Arc<AtomicBool>,
+    /// The runtime this daemon owns, captured where it is unambiguous.
+    ///
+    /// zbus runs on its default async-io flavor across this workspace, for the
+    /// reason `manager-platform::flavor` records: its tokio flavor is a
+    /// compile-time feature that cargo unifies into every binary built beside a
+    /// crate asking for it, and it panics on the plain threads gpui and
+    /// accesskit open their own connections from. The consequence here is that
+    /// zbus polls these method bodies on *its* executor, which is not a tokio
+    /// thread — so `tokio::spawn` and `tokio::task::spawn_blocking` would panic
+    /// looking for a runtime. Every spawn below goes through this handle
+    /// instead, which needs no ambient context. See ticket 49.
+    runtime: tokio::runtime::Handle,
 }
 
 impl<A: Authorizer + 'static> ManagerService<A> {
@@ -56,6 +68,7 @@ impl<A: Authorizer + 'static> ManagerService<A> {
             artifacts,
             journal,
             running: Arc::new(AtomicBool::new(false)),
+            runtime: tokio::runtime::Handle::current(),
         }
     }
 
@@ -90,18 +103,19 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         let filename = filename.to_string();
         let expected = expected_sha256.to_string();
 
-        tokio::task::spawn_blocking(move || {
-            // Take ownership of the descriptor so it is closed when this ends.
-            let file = unsafe {
-                use std::os::fd::FromRawFd;
-                std::fs::File::from_raw_fd(artifact.as_raw_fd())
-            };
-            let mut file = std::mem::ManuallyDrop::new(file);
-            artifacts.stage(&filename, &expected, &mut *file)
-        })
-        .await
-        .map_err(|error| fdo::Error::Failed(error.to_string()))?
-        .map_err(refuse)
+        self.runtime
+            .spawn_blocking(move || {
+                // Take ownership of the descriptor so it is closed when this ends.
+                let file = unsafe {
+                    use std::os::fd::FromRawFd;
+                    std::fs::File::from_raw_fd(artifact.as_raw_fd())
+                };
+                let mut file = std::mem::ManuallyDrop::new(file);
+                artifacts.stage(&filename, &expected, &mut *file)
+            })
+            .await
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?
+            .map_err(refuse)
     }
 
     /// Revalidates and carries out a whole transaction.
@@ -141,7 +155,7 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let transaction_id = plan.transaction_id.clone();
         let signal_emitter = emitter.to_owned();
-        let forwarding = tokio::spawn(async move {
+        let forwarding = self.runtime.spawn(async move {
             while let Some((step_index, stage)) = progress_rx.recv().await {
                 let _ = ManagerService::<A>::step_progress(
                     &signal_emitter,
@@ -154,13 +168,15 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         });
 
         let executor = self.executor.clone();
-        let outcome = tokio::task::spawn_blocking(move || {
-            executor.execute(&plan, &mut |step_index, stage| {
-                let _ = progress_tx.send((step_index, stage));
+        let outcome = self
+            .runtime
+            .spawn_blocking(move || {
+                executor.execute(&plan, &mut |step_index, stage| {
+                    let _ = progress_tx.send((step_index, stage));
+                })
             })
-        })
-        .await
-        .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+            .await
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
         let _ = forwarding.await;
         drop(guard);
 

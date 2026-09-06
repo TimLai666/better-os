@@ -763,6 +763,13 @@ impl ManagerApp {
                         cx,
                     )),
             )
+            // A blocking drift is the reason nothing else on this page will
+            // work, so it goes above the failure that may have caused it. Until
+            // ticket 49 the window said nothing at all about drift: the actions
+            // simply refused and the Updates screen offered nothing.
+            .when_some(component.drift_notice(self.locale), |view, notice| {
+                view.child(self.drift_card(&component, &notice, cx))
+            })
             // A recorded failure belongs on the page that shows the component,
             // not three screens away behind a red tag with no words on it.
             .when_some(component.failure.clone(), |view, failure| {

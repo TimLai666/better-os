@@ -1442,3 +1442,137 @@ mod affordance {
         }
     }
 }
+
+/// Ticket 49: a component whose record and machine disagree now says so, and
+/// offers the one action that resolves it.
+///
+/// Before this, drift was invisible in the window. The record carried it, the
+/// planner refused every operation because of it, and no screen mentioned it —
+/// the field report was a manager that offered no update for itself and gave no
+/// reason.
+mod drift_surface {
+    use super::*;
+    use crate::model::DriftNotice;
+    use manager_core::{ComponentRecord, DriftKind, HealthState, InstallProvenance};
+
+    fn manifest() -> better_core::ComponentManifest {
+        let (manager, _) = demo_manager();
+        manager
+            .manifests()
+            .find(|manifest| manifest.id.as_str() == "better-monitor")
+            .expect("the demo catalog must carry the monitor")
+            .clone()
+    }
+
+    fn record(drift: Option<DriftKind>) -> ComponentRecord {
+        ComponentRecord {
+            installed_version: Some("0.2.3".to_string()),
+            enabled: true,
+            health: HealthState::Healthy,
+            installed_artifact: None,
+            provenance: InstallProvenance::Manager,
+            restore_snapshot: None,
+            failure: None,
+            recovery: None,
+            drift,
+        }
+    }
+
+    fn present(drift: Option<DriftKind>) -> ComponentInfo {
+        let manifest = manifest();
+        ComponentInfo::present(
+            &manifest,
+            Some(&record(drift)),
+            ComponentStatus::Failed,
+            translated_component(Locale::ZhTw, &manifest.id),
+        )
+    }
+
+    #[test]
+    fn a_component_without_drift_shows_no_drift_card() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            assert_eq!(present(None).drift_notice(locale), None);
+        }
+    }
+
+    #[test]
+    fn a_version_disagreement_names_both_versions_in_both_locales() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let notice: DriftNotice = present(Some(DriftKind::VersionMismatch {
+                host: "0.2.1".to_string(),
+            }))
+            .drift_notice(locale)
+            .expect("a drifted component must have something to say");
+
+            assert!(notice.detail.contains("0.2.1"), "{:?}", notice.detail);
+            assert!(notice.detail.contains("0.2.3"), "{:?}", notice.detail);
+            // No template placeholder survives into what a person reads.
+            assert!(!notice.detail.contains('{'), "{:?}", notice.detail);
+            assert!(!notice.title.trim().is_empty());
+            assert!(!notice.consequence.trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_package_the_host_does_not_have_says_so_rather_than_naming_a_second_version() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let notice = present(Some(DriftKind::MissingOnHost))
+                .drift_notice(locale)
+                .expect("a drifted component must have something to say");
+
+            assert!(notice.detail.contains("0.2.3"), "{:?}", notice.detail);
+            assert!(!notice.detail.contains('{'), "{:?}", notice.detail);
+        }
+    }
+
+    #[test]
+    fn the_adoption_copy_exists_in_both_locales() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let c = copy(locale);
+            for value in [
+                c.drift_title,
+                c.drift_blocks_planning,
+                c.adopt_host_state,
+                c.adopt_host_state_confirm,
+                c.adopt_host_state_confirm_action,
+                c.evidence_externally_upgraded,
+                c.evidence_state_adopted,
+            ] {
+                assert!(!value.trim().is_empty());
+            }
+            // The two locales must actually differ, or one of them was copied.
+            assert_ne!(
+                copy(Locale::EnUs).adopt_host_state,
+                copy(Locale::ZhTw).adopt_host_state
+            );
+        }
+    }
+
+    /// A view model cannot prove what a render function does with it. The card
+    /// is what makes the drift visible and the action reachable, so its absence
+    /// from the component page is the regression to catch.
+    #[test]
+    fn the_component_page_draws_the_drift_card_and_asks_before_adopting() {
+        let page = include_str!("pages_main.rs");
+        assert!(
+            page.contains("self.drift_card(&component, &notice, cx)"),
+            "the component detail page must draw the drift card"
+        );
+
+        let card = include_str!("components.rs");
+        // Adoption throws away the restore point, so the first click may only
+        // ask. `adopt_host_state` is reached from the confirming branch alone.
+        assert!(card.contains("this.ask_to_adopt_host_state(Some(ask_id.clone()), cx)"));
+        assert!(card.contains("this.adopt_host_state(&adopt_id, cx)"));
+        let confirm_at = card
+            .find("Button::new(\"drift-adopt-confirm\")")
+            .expect("the confirming branch must exist");
+        let act_at = card
+            .find("this.adopt_host_state(&adopt_id, cx)")
+            .expect("the adopting handler must exist");
+        assert!(
+            confirm_at < act_at,
+            "adoption must only be reachable from the confirmation"
+        );
+    }
+}

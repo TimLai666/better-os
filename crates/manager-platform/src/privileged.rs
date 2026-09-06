@@ -16,23 +16,6 @@ const BUS_NAME: &str = "org.betteros.Manager1";
 const OBJECT_PATH: &str = "/org/betteros/Manager1";
 const INTERFACE: &str = "org.betteros.Manager1";
 
-/// The reactor the tokio-flavored zbus needs alive for its internal tasks.
-///
-/// One runtime for the process, started on first use and never shut down; the
-/// blocking API still blocks the caller, this only gives zbus somewhere to
-/// park its executor.
-fn runtime() -> &'static tokio::runtime::Runtime {
-    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .thread_name("zbus-reactor")
-            .build()
-            .expect("a process that can spawn threads can start a reactor")
-    })
-}
-
 /// Talks to the privileged service over the D-Bus system bus.
 ///
 /// There is no `Default` and no way to build one without a system bus
@@ -49,12 +32,14 @@ impl DbusPrivilegedExecutor {
     /// simulation: a user who asked to install something needs to know it did
     /// not happen.
     pub fn connect() -> Result<Self, PlatformError> {
-        // Workspace feature unification builds zbus with its `tokio` flavor,
-        // and that flavor spawns its internal tasks onto the ambient tokio
-        // runtime even behind the blocking API. A plain thread has none, so
-        // without this guard the spawn panics on a worker thread with "there
-        // is no reactor running" on every window launch.
-        let _reactor = runtime().enter();
+        // zbus runs on its default async-io flavor, which owns its own reactor
+        // and can therefore be called from any thread. This used to enter a
+        // tokio runtime first, because workspace feature unification compiled
+        // zbus's `tokio` flavor into every binary and that flavor panics with
+        // "there is no reactor running" off a tokio thread. The guard only ever
+        // covered this crate's own calls; gpui's portal and accesskit make
+        // their own connections and could not be guarded, so ticket 49 removed
+        // the feature instead. `flavor.rs` keeps it removed.
         let connection = Connection::system()
             .map_err(|error| PlatformError::DaemonUnavailable(error.to_string()))?;
         let executor = Self { connection };
@@ -70,7 +55,6 @@ impl DbusPrivilegedExecutor {
     }
 
     fn proxy(&self) -> Result<Proxy<'_>, PlatformError> {
-        let _reactor = runtime().enter();
         Proxy::new(&self.connection, BUS_NAME, OBJECT_PATH, INTERFACE)
             .map_err(|error| PlatformError::DaemonUnavailable(error.to_string()))
     }

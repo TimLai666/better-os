@@ -23,7 +23,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread"] }
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+zbus = { version = "5" }
 
 [dev-dependencies]
 tempfile.workspace = true

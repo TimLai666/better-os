@@ -656,6 +656,88 @@ impl ManagerApp {
         )
     }
 
+    /// The drift card: what disagrees, and the one way out of it.
+    ///
+    /// This is an Action card in the sense ticket 48 fixed: the heading and the
+    /// sentences are status with no hover and no handler, and the single filled
+    /// control is the only thing on it that does something. It asks before it
+    /// acts, because adopting throws away the recorded restore point.
+    pub(crate) fn drift_card(
+        &self,
+        component: &ComponentInfo,
+        notice: &crate::model::DriftNotice,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = copy(self.locale);
+        let confirming = self.adopt_confirm.as_ref() == Some(&component.core_id);
+        let adopt_id = component.core_id.clone();
+        let ask_id = component.core_id.clone();
+        self.surface(
+            v_flex()
+                .gap_2()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .flex_wrap()
+                        .child(
+                            Icon::new(IconName::TriangleAlert)
+                                .small()
+                                .text_color(cx.theme().yellow),
+                        )
+                        .child(div().text_lg().font_semibold().child(notice.title)),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(notice.detail.clone()),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(notice.consequence),
+                )
+                .when(confirming, |view| {
+                    view.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(c.adopt_host_state_confirm),
+                    )
+                })
+                .child(if confirming {
+                    h_flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(
+                            Button::new("drift-adopt-confirm")
+                                .primary()
+                                .label(c.adopt_host_state_confirm_action)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.adopt_host_state(&adopt_id, cx);
+                                })),
+                        )
+                        .child(Button::new("drift-adopt-cancel").label(c.cancel).on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.ask_to_adopt_host_state(None, cx);
+                            }),
+                        ))
+                        .into_any_element()
+                } else {
+                    Button::new("drift-adopt")
+                        .primary()
+                        .label(c.adopt_host_state)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.ask_to_adopt_host_state(Some(ask_id.clone()), cx);
+                        }))
+                        .into_any_element()
+                }),
+            cx,
+        )
+    }
+
     pub(crate) fn release_notes_surface(
         &self,
         component: &ComponentInfo,

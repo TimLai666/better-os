@@ -18,10 +18,10 @@ dconf-write = ["dep:zbus", "dep:tokio"]
 defaults-platform.workspace = true
 touchpad-core.workspace = true
 thiserror.workspace = true
-# Matches `awake-service`, `awake-gui`, and `launcher-platform`: the workspace
-# has one zbus flavor, and it is the tokio one.
+# The runtime is this crate's own: it blocks on the async dconf call. zbus
+# itself stays on its default async-io flavor — see the root Cargo.toml.
 tokio = { version = "1", features = ["rt-multi-thread", "sync"], optional = true }
-zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }
+zbus = { version = "5", optional = true }
 
 [dev-dependencies]
 # `tests/manifest.rs` validates the shipped Better Touchpad manifest the way

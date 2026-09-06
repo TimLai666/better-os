@@ -24,9 +24,14 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
-# Matches awake-service and manager-daemon: the service runs on tokio, so zbus
-# must use it rather than starting a second reactor beside it.
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+# zbus stays on its default async-io flavor everywhere in this workspace.
+# Cargo unifies features across every package one `cargo build` names, and
+# `packaging/build-deb.sh` builds the services and the windows together, so a
+# single crate asking for zbus's `tokio` feature compiles it into every GUI as
+# well. gpui's XDG desktop portal and accesskit both open their own zbus
+# connections from plain threads that no tokio runtime owns, and the tokio
+# flavor panics there with "there is no reactor running". See ticket 49.
+zbus = { version = "5" }
 
 [dev-dependencies]
 tempfile.workspace = true

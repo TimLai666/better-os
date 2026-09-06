@@ -19,10 +19,10 @@ app-catalog-core.workspace = true
 app-catalog-platform.workspace = true
 launcher-core.workspace = true
 thiserror.workspace = true
-# Matches `awake-service` and `awake-gui`: the workspace has one zbus flavor,
-# and it is the tokio one.
+# The runtime is this crate's own: it blocks on the async bus calls. zbus
+# itself stays on its default async-io flavor — see the root Cargo.toml.
 tokio = { version = "1", features = ["rt-multi-thread", "sync"], optional = true }
-zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }
+zbus = { version = "5", optional = true }
 
 [dev-dependencies]
 better-core.workspace = true
