@@ -14,6 +14,7 @@ use manager_core::{
 use manager_platform::MockPlatform;
 use manager_platform::catalog_fetch::HttpManifestFetcher;
 use manager_platform::download::{ArtifactCache, HttpDownloader};
+use manager_platform::dpkg::DpkgProbe;
 use manager_platform::privileged::DbusPrivilegedExecutor;
 use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, start_catalog};
 
@@ -55,6 +56,10 @@ pub(crate) struct ManagerApp {
     /// changes nothing: a refresh writes only after it has something to write.
     pub(crate) catalog_task: Option<Task<()>>,
     pub(crate) pending_plan: Option<TransactionPlan>,
+    /// The transaction that just ran. The result screens describe this rather
+    /// than `pending_plan`, so a finished plan stops looking like one still
+    /// waiting to be approved.
+    pub(crate) finished_plan: Option<TransactionPlan>,
     pub(crate) planning_error: Option<AppError>,
     /// Whether this window simulates transactions or actually performs them.
     pub(crate) execution: ExecutionMode,
@@ -127,6 +132,7 @@ impl ManagerApp {
             state,
             store,
             pending_plan,
+            finished_plan: None,
             planning_error,
             execution: default_execution_mode(),
             defaults: DefaultsState::default(),
@@ -139,8 +145,34 @@ impl ManagerApp {
             cancel: None,
             _subscriptions: vec![subscription],
         };
+        app.reconcile_with_host();
         app.refresh_catalog_at_launch(cx);
         app
+    }
+
+    /// Asks dpkg what this machine actually has, before anything is drawn.
+    ///
+    /// Reading the package database is a read-only host query and therefore
+    /// allowed outside the privileged boundary. Without it the window counts
+    /// only what it installed itself, which on a machine where apt or the
+    /// bootstrap installer put Better OS there means every screen says nothing
+    /// is installed and no update exists.
+    ///
+    /// A demo window skips it: its state is a fabrication for screenshots, and
+    /// mixing real host facts into it would make it neither.
+    fn reconcile_with_host(&mut self) {
+        if self.execution == ExecutionMode::Mock {
+            return;
+        }
+        let mut candidate = self.state.clone();
+        let revision = candidate.revision;
+        if self
+            .manager
+            .reconcile(&mut candidate, &DpkgProbe)
+            .is_ok_and(|_| candidate.revision != revision)
+        {
+            self.commit_state(candidate);
+        }
     }
 
     /// Starts the launch-time catalog refresh, unless this run was told to stay
@@ -353,7 +385,7 @@ impl ManagerApp {
             ComponentStatus::UpdateAvailable => Some(DesiredOperation::Update),
             ComponentStatus::Disabled => Some(DesiredOperation::Enable),
             ComponentStatus::RestoreAvailable => Some(DesiredOperation::Restore),
-            ComponentStatus::Degraded | ComponentStatus::Failed => Some(DesiredOperation::Verify),
+            ComponentStatus::Degraded | ComponentStatus::Failed => Some(self.retry_operation(id)),
             _ => None,
         };
         if let Some(operation) = operation {
@@ -361,6 +393,33 @@ impl ManagerApp {
         } else {
             self.open_component(id, cx);
         }
+    }
+
+    /// What "try again" means for a component that recorded a failure.
+    ///
+    /// An install that failed before anything was applied leaves nothing
+    /// installed, and a health check on nothing installed is refused by the
+    /// planner — which is how a failed component ended up with a red tag and no
+    /// working action at all. Retrying the install is the operation that
+    /// actually applies there.
+    pub(crate) fn retry_operation(&self, id: &ComponentId) -> DesiredOperation {
+        let installed = self
+            .state
+            .component(id)
+            .and_then(|record| record.installed_version.as_ref())
+            .is_some();
+        if installed {
+            DesiredOperation::Verify
+        } else {
+            DesiredOperation::Install
+        }
+    }
+
+    /// Whether a transaction would replace this application's own package.
+    pub(crate) fn updates_the_manager(steps: &[PlanStep]) -> bool {
+        steps.iter().any(|step| {
+            manager_core::is_self_component(&step.component) && step.operation.mutates_component()
+        })
     }
 
     pub(crate) fn prepare_component_operation(
@@ -484,11 +543,14 @@ impl ManagerApp {
             }
             RunnerEvent::StateSaved(state) => {
                 self.state = *state;
-                self.pending_plan = self
-                    .state
-                    .active_operation
-                    .as_ref()
-                    .map(|active| active.plan.clone());
+                match self.state.active_operation.as_ref() {
+                    Some(active) => self.pending_plan = Some(active.plan.clone()),
+                    // The transaction is over. The plan stops being something
+                    // awaiting review — leaving it there made every component
+                    // in it keep offering "Review changes" — and becomes what
+                    // the result screens describe.
+                    None => self.finished_plan = self.pending_plan.take(),
+                }
                 cx.notify();
             }
             RunnerEvent::Finished(progress) => {
@@ -520,6 +582,9 @@ impl ManagerApp {
                 if !self.commit_state(candidate) {
                     cx.notify();
                     return;
+                }
+                if !matches!(progress, OperationProgress::InProgress { .. }) {
+                    self.finished_plan = self.pending_plan.take();
                 }
                 match progress {
                     OperationProgress::InProgress { .. } => self.navigate(Page::Installing, cx),
@@ -716,6 +781,14 @@ impl ManagerApp {
             .unwrap_or(DiskSpaceCheck::NotRequired)
     }
 
+    /// The steps of the transaction that just ran.
+    pub(crate) fn finished_steps(&self) -> Vec<PlanStep> {
+        self.finished_plan
+            .as_ref()
+            .map(|plan| plan.steps().to_vec())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn active_steps(&self) -> Vec<PlanStep> {
         self.state
             .active_operation
@@ -845,6 +918,12 @@ impl ManagerApp {
                 c.evidence_health_failed
             }
             Some(other) if other.starts_with("daemon.error.state_drift") => c.evidence_state_drift,
+            Some(other)
+                if other.starts_with("daemon.error.plan_rejected")
+                    || other == "daemon.plan_rejected" =>
+            {
+                c.evidence_plan_rejected
+            }
             Some(other) if other.starts_with("daemon.") => c.evidence_daemon_refused,
             _ => c.none,
         }

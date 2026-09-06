@@ -26,6 +26,35 @@ use thiserror::Error;
 /// installing and what it would restore.
 pub const STATE_SCHEMA_VERSION: u32 = 2;
 
+/// The catalog component this manager itself ships as.
+///
+/// The manager is installed from the same catalog it presents, so it is the one
+/// component whose lifecycle it cannot carry out from the outside. Knowing which
+/// row that is belongs here rather than in a presentation layer.
+pub const SELF_COMPONENT_ID: &str = "better-manager";
+
+/// Whether a component id names the manager itself.
+pub fn is_self_component(id: &ComponentId) -> bool {
+    id.as_str() == SELF_COMPONENT_ID
+}
+
+/// How the manager came to believe a component is installed.
+///
+/// This is not decoration. A record the manager wrote carries an artifact, a
+/// restore snapshot, and health evidence; a record adopted from the dpkg
+/// database carries none of those, and presenting the two as the same thing
+/// would claim a history that does not exist.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallProvenance {
+    /// A transaction this manager planned, reviewed, and carried out.
+    #[default]
+    Manager,
+    /// Observed in the dpkg database. Something outside Better Manager — apt,
+    /// the bootstrap installer, a hand-run `dpkg -i` — put it there.
+    Dpkg,
+}
+
 /// Whether a transaction is a deterministic simulation or a real host change.
 ///
 /// A mock transaction never leaves this crate; a real one is carried out by a
@@ -281,6 +310,26 @@ pub struct FailureRecord {
     pub recovery: Option<RecoveryStatus>,
 }
 
+impl FailureRecord {
+    /// The stable key and the machine detail, however the two were recorded.
+    ///
+    /// The privileged service reports one string shaped `key:detail`
+    /// (`daemon.error.plan_rejected:plan targets release 24.04 but this host is
+    /// 18`). Older records kept it whole, which meant a presentation layer
+    /// matched the key prefix, printed a generic sentence, and dropped the only
+    /// part that said what was actually wrong. Reading it apart here keeps
+    /// those records usable without rewriting them.
+    pub fn evidence_parts(&self) -> (&str, Option<&str>) {
+        if let Some(detail) = self.detail.as_deref() {
+            return (self.evidence.as_str(), Some(detail));
+        }
+        match self.evidence.split_once(':') {
+            Some((key, detail)) if !detail.trim().is_empty() => (key, Some(detail)),
+            _ => (self.evidence.as_str(), None),
+        }
+    }
+}
+
 /// What a component looked like before a transaction touched it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ComponentSnapshot {
@@ -322,6 +371,10 @@ pub struct ComponentRecord {
     /// recorded by a version of the manager that tracked one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installed_artifact: Option<PlanArtifact>,
+    /// Who installed what `installed_version` names. Older state files predate
+    /// the distinction and load as manager-installed, which is what they were.
+    #[serde(default)]
+    pub provenance: InstallProvenance,
     pub restore_snapshot: Option<ComponentSnapshot>,
     pub failure: Option<FailureRecord>,
     pub recovery: Option<RecoveryStatus>,
@@ -338,6 +391,7 @@ impl Default for ComponentRecord {
             enabled: false,
             health: HealthState::Healthy,
             installed_artifact: None,
+            provenance: InstallProvenance::Manager,
             restore_snapshot: None,
             failure: None,
             recovery: None,
@@ -642,6 +696,7 @@ impl ManagerState {
                 enabled,
                 health: HealthState::Healthy,
                 installed_artifact: None,
+                provenance: InstallProvenance::Manager,
                 restore_snapshot: None,
                 failure: None,
                 recovery: None,
@@ -865,6 +920,9 @@ pub enum ManagerError {
     AlreadyDisabled(ComponentId),
     #[error("manager.error.no_restore_available:{0}")]
     NoRestoreAvailable(ComponentId),
+    /// The manager was asked to remove itself.
+    #[error("manager.error.cannot_remove_self:{0}")]
+    CannotRemoveSelf(ComponentId),
     #[error("manager.error.incompatible:{component}")]
     Incompatible { component: ComponentId },
     #[error("manager.error.conflict:{component}:{conflict}")]
@@ -1361,10 +1419,19 @@ impl Manager {
 
     /// Compares what the manager recorded against what dpkg reports.
     ///
-    /// Findings are reported, never applied: rewriting `installed_version` from
-    /// a probe would replace one unverified belief with another and lose the
-    /// evidence that the two disagree. Planning for a drifted component is
-    /// blocked until a person resolves it.
+    /// A disagreement about a component the manager installed is reported and
+    /// never applied: rewriting `installed_version` from a probe would replace
+    /// one unverified belief with another and lose the evidence that the two
+    /// disagree. Planning for a drifted component is blocked until a person
+    /// resolves it.
+    ///
+    /// A component the manager has no record of but dpkg holds is a different
+    /// case, and the one the manager itself lands in: apt or the bootstrap
+    /// installer put it on the machine, so there is nothing to disagree with.
+    /// It is adopted at the version dpkg reports, marked
+    /// [`InstallProvenance::Dpkg`], and given no artifact and no restore
+    /// snapshot, because none was ever captured. Adoption is what lets an
+    /// update the host actually needs be seen instead of counted as zero.
     pub fn reconcile(
         &self,
         state: &mut ManagerState,
@@ -1372,6 +1439,7 @@ impl Manager {
     ) -> Result<Vec<DriftFinding>, ManagerError> {
         self.validate_state(state)?;
         let mut findings = Vec::new();
+        let mut adopted = 0_usize;
 
         for manifest in self.manifests().map(|manifest| manifest.id.clone()) {
             let recorded = state
@@ -1393,6 +1461,29 @@ impl Manager {
                 }
             };
 
+            // A version this crate cannot parse cannot be recorded: every other
+            // path — planning, validation, comparison — would then be reasoning
+            // about a string it does not understand. Such a package is left
+            // alone rather than adopted at a version nobody can compare.
+            if recorded.is_none()
+                && let Some(host) = host.as_deref()
+                && Version::parse(upstream_version(host)).is_ok()
+            {
+                let record = state.components.entry(manifest.clone()).or_default();
+                record.installed_version = Some(upstream_version(host).to_string());
+                record.installed_artifact = None;
+                record.provenance = InstallProvenance::Dpkg;
+                record.enabled = true;
+                // dpkg says the package is unpacked and configured, which is
+                // not a health check. An earlier failure stays visible rather
+                // than being cleared by an observation that says nothing about
+                // it.
+                if record.failure.is_none() {
+                    record.health = HealthState::Healthy;
+                }
+                adopted += 1;
+            }
+
             if let Some(record) = state.components.get_mut(&manifest) {
                 record.drift = drift.clone();
             }
@@ -1405,7 +1496,7 @@ impl Manager {
             }
         }
 
-        if !findings.is_empty() {
+        if !findings.is_empty() || adopted > 0 {
             state.bump_revision();
         }
         Ok(findings)
@@ -1589,6 +1680,14 @@ impl Manager {
                 }
             }
             DesiredOperation::Remove => {
+                // Removing the manager means handing the privileged service a
+                // transaction whose own package is the one being deleted, and
+                // leaving the machine with no way to put any component back.
+                // Refused here rather than in a screen, so the CLI cannot do it
+                // either.
+                if is_self_component(id) {
+                    return Err(ManagerError::CannotRemoveSelf(id.clone()));
+                }
                 if record
                     .and_then(|record| record.installed_version.as_ref())
                     .is_none()
@@ -1879,6 +1978,9 @@ impl Manager {
                 DesiredOperation::Install | DesiredOperation::Update => {
                     record.installed_version = step.after_version.clone();
                     record.installed_artifact = step.artifact.clone();
+                    // A reviewed transaction now owns this component, whatever
+                    // put the previous version there.
+                    record.provenance = InstallProvenance::Manager;
                     record.enabled = true;
                     record.health = HealthState::Degraded;
                 }
@@ -1900,12 +2002,14 @@ impl Manager {
                         .ok_or_else(|| ManagerError::NoRestoreAvailable(step.component.clone()))?;
                     record.installed_version = snapshot.installed_version;
                     record.installed_artifact = snapshot.artifact;
+                    record.provenance = InstallProvenance::Manager;
                     record.enabled = snapshot.enabled;
                     record.health = HealthState::Degraded;
                 }
                 DesiredOperation::Remove => {
                     record.installed_version = None;
                     record.installed_artifact = None;
+                    record.provenance = InstallProvenance::Manager;
                     record.enabled = false;
                     record.health = HealthState::Healthy;
                 }

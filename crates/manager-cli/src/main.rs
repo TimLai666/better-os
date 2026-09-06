@@ -8,8 +8,8 @@ use manager_core::exec::{
     TransactionRunner,
 };
 use manager_core::{
-    DesiredOperation, DiskSpaceCheck, ExecutionMode, Manager, ManagerState, MockOutcome,
-    OperationProgress, OperationStage, TransactionPlan,
+    DesiredOperation, DiskSpaceCheck, ExecutionMode, InstallProvenance, Manager, ManagerState,
+    MockOutcome, OperationProgress, OperationStage, TransactionPlan,
 };
 use manager_platform::MockPlatform;
 use manager_platform::catalog_fetch::HttpManifestFetcher;
@@ -557,11 +557,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
         }
         Command::Reconcile => {
+            // Reconciling can adopt a package the host has and the record does
+            // not, which changes the state without producing a finding, so the
+            // revision — not the finding list — decides whether to write.
+            let revision_before = state.revision;
             let findings = manager.reconcile(&mut state, &DpkgProbe)?;
-            // Reconciling changes nothing when the host agrees, and writing an
-            // unchanged state would collide with its own revision.
-            if !findings.is_empty() {
+            if state.revision != revision_before {
                 store.save(&state)?;
+            }
+            for (id, record) in &state.components {
+                if record.provenance == InstallProvenance::Dpkg {
+                    println!(
+                        "installed outside better-manager: {id} {}",
+                        record.installed_version.as_deref().unwrap_or("unknown")
+                    );
+                }
             }
             if findings.is_empty() {
                 println!("no drift: dpkg agrees with every recorded component");

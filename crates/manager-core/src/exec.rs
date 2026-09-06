@@ -358,7 +358,15 @@ fn outcome_to_stage(outcome: &TransactionOutcome) -> StageOutcome {
             Some(WireRecovery::ManualRecoveryRequired) => {
                 StageOutcome::RestoreRequiresManualRecovery
             }
-            _ => StageOutcome::Failed(FailureEvidence::new(error_key.clone())),
+            // The service reports one string shaped `key:detail`. Recording it
+            // whole left the reason — the half a person can act on — inside a
+            // key that presentation only prefix-matches, so it is split here.
+            _ => StageOutcome::Failed(match error_key.split_once(':') {
+                Some((key, detail)) if !detail.trim().is_empty() => {
+                    FailureEvidence::with_detail(key, detail)
+                }
+                _ => FailureEvidence::new(error_key.clone()),
+            }),
         },
         OutcomeStatus::Cancelled => {
             StageOutcome::Failed(FailureEvidence::new("operation.cancelled"))

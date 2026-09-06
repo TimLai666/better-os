@@ -5,7 +5,12 @@ component_type: diagnostic
 version: 0.2.4
 summary: Installs, updates, verifies, and rolls back every Better OS component.
 icon: manager
-restart: none
+# Better Manager is a component in its own catalog, so updating it replaces the
+# package the running window came from. apt handles the in-flight replacement —
+# the process keeps the file it already opened — but the window on screen stays
+# on the old version until it is opened again, so the requirement is a restart
+# of the application and not "none".
+restart: application
 targets:
   distributions: [zorin, ubuntu]
   releases: [22.04, 24.04]

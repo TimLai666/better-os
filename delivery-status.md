@@ -189,7 +189,36 @@ requires.
 
 ## Next Ticket
 
-Ticket 43 is done, it is released as `v0.2.4`, and no ticket is open. Like
+Ticket 44 is done on `ticket-44` and is not merged or released. It is the second
+round of field reports from the same real Zorin 18 machine, this time running
+`v0.2.3` installed by apt, and it is about a window that described a machine it
+had never asked. Four defects, each fixed at its own cause: the component page
+drew the installed-version row from a helper whose "nothing installed" answer
+was the catalog's version; a failure recorded before ticket 43's daemon fix
+rendered as a red tag with the reason nowhere on the page and no retry that the
+planner would accept; the Updates screen counted from manager state alone, so
+the apt-installed manager's own newer release showed as zero; and removal
+existed in `manager-core` and reached no screen that mattered.
+
+Three decisions in it are worth carrying rather than rediscovering, and all
+three are recorded in `docs/tickets/44-component-page-honesty-and-self-update.md`.
+A package dpkg holds and the state does not is now *adopted* with an explicit
+`InstallProvenance::Dpkg` and no fabricated artifact or restore snapshot, and
+the page says who installed it — adoption is what makes an update the host
+actually needs visible at all. Self-update goes through the ordinary daemon
+path, because the manager's package declares the daemon as a Recommends and the
+daemon installs with `--no-install-recommends`, so the service carrying out the
+transaction is never the package being replaced; what was missing was only the
+notice that the open window stays on the old version. And self-removal is
+refused in `manager-core` rather than hidden in a screen, so the CLI cannot do
+it either.
+
+The shape to look for next is the one this ticket kept meeting: a value that had
+a reasonable-looking fallback. `version_label()`'s `None` arm, `reconcile`'s
+`(None, _) => None`, and `outcome_to_stage`'s whole-string evidence were each a
+sensible-looking default that produced a confident false statement on screen.
+
+Ticket 43 is done and released as `v0.2.4`. Like
 ticket 42 before it, it was cut from field reports rather than from the backlog,
 and from the same real Zorin 18 GNOME Wayland machine — this time running
 `v0.2.3`. Four defects, each fixed at its own cause: the daemon refused every
