@@ -8,7 +8,9 @@ use gpui_component::{
     *,
 };
 use manager_core::catalog::now_unix_seconds;
-use manager_core::{ActivityKind, ComponentFilterPreference, ComponentStatus, DesiredOperation};
+use manager_core::{
+    ActivityKind, ComponentFilterPreference, ComponentStatus, DesiredOperation, is_self_component,
+};
 
 use crate::{
     app::ManagerApp,
@@ -512,6 +514,14 @@ impl ManagerApp {
         let disable_id = component.core_id.clone();
         let verify_id = component.core_id.clone();
         let restore_id = component.core_id.clone();
+        let retry_id = component.core_id.clone();
+        let remove_id = component.core_id.clone();
+        // Removing is offered for anything installed except the manager
+        // itself, which `manager-core` refuses to plan.
+        let removable = component.installed_version.is_some()
+            && !is_self_component(&component.core_id)
+            && !pending
+            && !matches!(component.state, ComponentStatus::Incompatible);
         let body = match self.detail_tab {
             DetailTab::Overview => self.surface(
                 v_flex()
@@ -546,7 +556,27 @@ impl ManagerApp {
                         self.restart_requirement_label(component.restart_requirement),
                         cx,
                     ))
-                    .child(self.key_value_row(c.current_version, component.version_label(), cx))
+                    // Two rows, never one. Folding them into a single "version"
+                    // line meant a component that was never installed reported
+                    // the catalog's version as its installed version.
+                    .child(self.key_value_row(
+                        c.current_version,
+                        component.installed_label(c.not_installed),
+                        cx,
+                    ))
+                    .child(self.key_value_row(
+                        c.available_version,
+                        component.available_version.clone(),
+                        cx,
+                    ))
+                    .when(component.installed_outside_manager(), |view| {
+                        view.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(c.installed_outside_manager),
+                        )
+                    })
                     .child(self.key_value_row(
                         c.health,
                         self.status_tag(component.state, pending),
@@ -557,21 +587,24 @@ impl ManagerApp {
             DetailTab::Versions => self.surface(
                 v_flex()
                     .gap_2()
-                    .child(
-                        self.key_value_row(
-                            c.current_version,
-                            component
-                                .installed_version
-                                .clone()
-                                .unwrap_or_else(|| c.none.to_string()),
-                            cx,
-                        ),
-                    )
+                    .child(self.key_value_row(
+                        c.current_version,
+                        component.installed_label(c.not_installed),
+                        cx,
+                    ))
                     .child(self.key_value_row(
                         c.available_version,
                         component.available_version.clone(),
                         cx,
                     ))
+                    .when(component.installed_outside_manager(), |view| {
+                        view.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(c.installed_outside_manager),
+                        )
+                    })
                     .child(self.release_notes_surface(&component, cx)),
                 cx,
             ),
@@ -655,6 +688,11 @@ impl ManagerApp {
                         cx,
                     )),
             )
+            // A recorded failure belongs on the page that shows the component,
+            // not three screens away behind a red tag with no words on it.
+            .when_some(component.failure.clone(), |view, failure| {
+                view.child(self.failure_card(c.last_install_failed.to_string(), &failure, None, cx))
+            })
             .child(body)
             .child(
                 h_flex()
@@ -718,7 +756,60 @@ impl ManagerApp {
                                     })),
                             )
                         },
-                    ),
+                    )
+                    // What "try again" is depends on what actually happened. An
+                    // install that failed before anything was applied leaves
+                    // nothing installed, and offering a health check there is
+                    // an action the planner refuses.
+                    .when(
+                        component.failure.is_some()
+                            && component.installed_version.is_none()
+                            && !pending
+                            && !matches!(component.state, ComponentStatus::Incompatible),
+                        |row| {
+                            row.child(
+                                Button::new("detail-retry-install")
+                                    .primary()
+                                    .label(c.try_install_again)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.prepare_component_operation(
+                                            &retry_id,
+                                            DesiredOperation::Install,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                        },
+                    )
+                    .when(removable, |row| {
+                        row.child(
+                            Button::new("detail-remove")
+                                .danger()
+                                .outline()
+                                .label(c.remove_component)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.prepare_component_operation(
+                                        &remove_id,
+                                        DesiredOperation::Remove,
+                                        cx,
+                                    );
+                                })),
+                        )
+                    }),
+            )
+            // The manager is a component in its own catalog, and the one row
+            // whose removal it cannot carry out. Saying why beats an action
+            // that is simply absent.
+            .when(
+                component.installed_version.is_some() && is_self_component(&component.core_id),
+                |view| {
+                    view.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(c.cannot_remove_self),
+                    )
+                },
             )
             .into_any_element()
     }

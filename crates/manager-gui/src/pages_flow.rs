@@ -76,6 +76,28 @@ impl ManagerApp {
                         cx,
                     ),
                 )
+                // Better Manager is a component in its own catalog, so a plan
+                // can replace the package this window is running from. apt
+                // handles that — the running process keeps the file it already
+                // opened — but the window keeps showing the old version until
+                // it is opened again, and saying so beats letting someone
+                // wonder why nothing looks different.
+                .when(Self::updates_the_manager(&steps), |view| {
+                    view.child(
+                        self.surface(
+                            v_flex()
+                                .gap_1()
+                                .child(div().font_semibold().child(c.self_update_title))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(c.self_update_detail),
+                                ),
+                            cx,
+                        ),
+                    )
+                })
                 .children(steps.iter().map(|step| self.review_step(step, cx)))
                 .child(
                     self.surface(
@@ -400,7 +422,7 @@ impl ManagerApp {
 
     pub(crate) fn finished_page(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale);
-        let steps = self.pending_steps();
+        let steps = self.finished_steps();
         v_flex()
             .gap_5()
             .items_start()
@@ -437,6 +459,22 @@ impl ManagerApp {
                     cx,
                 ),
             )
+            .when(Self::updates_the_manager(&steps), |view| {
+                view.child(
+                    self.surface(
+                        v_flex()
+                            .gap_1()
+                            .child(div().font_semibold().child(c.restart_application))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(c.self_update_detail),
+                            ),
+                        cx,
+                    ),
+                )
+            })
             .child(
                 Button::new("finished-overview")
                     .primary()
@@ -474,6 +512,12 @@ impl ManagerApp {
             .component(&component)
             .and_then(|record| record.restore_snapshot.as_ref())
             .is_some();
+        // Nothing installed means nothing to health-check, so the button says
+        // what it would actually do.
+        let retry_label = match self.retry_operation(&component) {
+            DesiredOperation::Install => c.try_install_again,
+            _ => c.retry_check,
+        };
         let recovery_detail = match failure.recovery {
             Some(RecoveryStatus::PartiallyRestored) => c.recovery_partial,
             Some(RecoveryStatus::ManualRecoveryRequired) => c.manual_recovery_required,
@@ -495,37 +539,12 @@ impl ManagerApp {
             )
             .child(self.page_heading(c.restore_title, c.restore_subtitle, false, compact))
             .when_some(self.error_banner(cx), |view, error| view.child(error))
-            .child(
-                self.surface(
-                    v_flex()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_lg()
-                                .font_semibold()
-                                .child(self.plan_component_name(&component)),
-                        )
-                        .child(self.key_value_row(
-                            c.failed_stage,
-                            self.stage_label(failure.stage),
-                            cx,
-                        ))
-                        .child(self.key_value_row(
-                            c.failure_evidence,
-                            self.evidence_label(Some(&failure.evidence)),
-                            cx,
-                        ))
-                        // The machine detail is what the service actually said
-                        // — "plan targets release 24.04 but this host is 18"
-                        // beats a localized sentence when the user reports a
-                        // failure, so it is shown, untranslated, when present.
-                        .when_some(failure.detail.clone(), |view, detail| {
-                            view.child(self.key_value_row(c.failure_technical_detail, detail, cx))
-                        })
-                        .child(self.key_value_row(c.restore_available, recovery_detail, cx)),
-                    cx,
-                ),
-            )
+            .child(self.failure_card(
+                self.plan_component_name(&component),
+                &failure,
+                Some(recovery_detail),
+                cx,
+            ))
             .child(
                 h_flex()
                     .gap_3()
@@ -547,13 +566,10 @@ impl ManagerApp {
                     })
                     .child(
                         Button::new("retry-health-check")
-                            .label(c.retry_check)
+                            .label(retry_label)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.prepare_recovery(
-                                    component.clone(),
-                                    DesiredOperation::Verify,
-                                    cx,
-                                );
+                                let operation = this.retry_operation(&component);
+                                this.prepare_recovery(component.clone(), operation, cx);
                             })),
                     ),
             )
@@ -562,7 +578,7 @@ impl ManagerApp {
 
     pub(crate) fn restored_page(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale);
-        let steps = self.pending_steps();
+        let steps = self.finished_steps();
         v_flex()
             .gap_5()
             .items_start()

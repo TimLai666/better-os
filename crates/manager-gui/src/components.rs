@@ -373,6 +373,7 @@ impl ManagerApp {
         let can_change = !self.is_pending(&component.core_id)
             && component.state != ComponentStatus::Incompatible;
         let installed = component.installed_version.is_some();
+        let is_manager_itself = manager_core::is_self_component(&component.core_id);
         let enabled = component.enabled;
         let restore_available = component.restore_available;
         let view = cx.entity();
@@ -453,7 +454,10 @@ impl ManagerApp {
                     } else {
                         menu
                     };
-                if can_change && installed {
+                // No remove entry for the manager itself: `manager-core`
+                // refuses to plan its own removal, so offering it would only
+                // produce a refusal.
+                if can_change && installed && !is_manager_itself {
                     let remove_id = id.clone();
                     menu.separator().item(PopupMenuItem::new(c.remove).on_click(
                         window.listener_for(&remove_view, move |this, _, _, cx| {
@@ -538,7 +542,7 @@ impl ManagerApp {
                             div()
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(component.version_label()),
+                                .child(component.version_label(c.not_installed)),
                         )
                         .child(self.kind_tag(component.kind))
                         .child(self.status_tag(component.state, pending)),
@@ -573,6 +577,53 @@ impl ManagerApp {
                         .child(action)
                         .child(overflow),
                 ),
+            cx,
+        )
+    }
+
+    /// The one card that says what actually went wrong.
+    ///
+    /// Shared by the recovery screen and the component page on purpose: a
+    /// recorded failure showed up on the component page as a bare red tag, and
+    /// the reason — the stage, the localized evidence, and the service's own
+    /// untranslated words — was three screens away. Wherever a failure is
+    /// surfaced it is surfaced whole.
+    pub(crate) fn failure_card(
+        &self,
+        title: String,
+        failure: &manager_core::FailureRecord,
+        recovery_detail: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = copy(self.locale);
+        let (key, detail) = failure.evidence_parts();
+        self.surface(
+            v_flex()
+                .gap_2()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .flex_wrap()
+                        .child(
+                            Icon::new(IconName::TriangleAlert)
+                                .small()
+                                .text_color(cx.theme().red),
+                        )
+                        .child(div().text_lg().font_semibold().child(title)),
+                )
+                .child(self.key_value_row(c.failed_stage, self.stage_label(failure.stage), cx))
+                .child(self.key_value_row(c.failure_evidence, self.evidence_label(Some(key)), cx))
+                // The machine detail is what the service actually said — "plan
+                // targets release 24.04 but this host is 18" beats a localized
+                // sentence when the user reports a failure, so it is shown,
+                // untranslated, when present.
+                .when_some(detail.map(str::to_string), |view, detail| {
+                    view.child(self.key_value_row(c.failure_technical_detail, detail, cx))
+                })
+                .when_some(recovery_detail, |view, recovery| {
+                    view.child(self.key_value_row(c.restore_available, recovery, cx))
+                }),
             cx,
         )
     }

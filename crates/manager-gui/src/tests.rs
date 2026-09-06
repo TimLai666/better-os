@@ -365,6 +365,259 @@ fn every_real_failure_reason_has_copy_in_both_locales() {
     }
 }
 
+/// What the component page says about a component, and whether it is true.
+///
+/// A Zorin 18 machine with nothing installed showed "已安裝版本 0.2.4" — the
+/// catalog's version under an installed heading — a red 異常 tag with no reason
+/// anywhere on the page, and no way to remove anything. These lock the rows
+/// that page is built from.
+mod component_page {
+    use super::*;
+    use manager_core::{
+        ComponentRecord, FailureRecord, HealthState, InstallProvenance, OperationStage,
+    };
+
+    fn manifest() -> better_core::ComponentManifest {
+        let (manager, _) = demo_manager();
+        manager
+            .manifests()
+            .find(|manifest| manifest.id.as_str() == "better-monitor")
+            .expect("the demo catalog must carry the monitor")
+            .clone()
+    }
+
+    fn present(record: Option<&ComponentRecord>, status: ComponentStatus) -> ComponentInfo {
+        let manifest = manifest();
+        ComponentInfo::present(
+            &manifest,
+            record,
+            status,
+            translated_component(Locale::ZhTw, &manifest.id),
+        )
+    }
+
+    #[test]
+    fn a_component_that_is_not_installed_never_reports_the_catalog_version_as_installed() {
+        let info = present(None, ComponentStatus::Available);
+
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let c = copy(locale);
+            assert_eq!(info.installed_label(c.not_installed), c.not_installed);
+            // The catalog version still has a home — under its own heading.
+            assert_ne!(info.available_version, c.not_installed);
+            assert_ne!(
+                info.installed_label(c.not_installed),
+                info.available_version
+            );
+        }
+        assert!(!info.installed_outside_manager());
+    }
+
+    #[test]
+    fn an_installed_component_reports_the_version_that_is_installed() {
+        let record = ComponentRecord {
+            installed_version: Some("0.1.0".to_string()),
+            enabled: true,
+            ..ComponentRecord::default()
+        };
+        let info = present(Some(&record), ComponentStatus::UpdateAvailable);
+
+        assert_eq!(
+            info.installed_label(copy(Locale::ZhTw).not_installed),
+            "0.1.0"
+        );
+        assert_eq!(info.available_version, "0.2.4");
+        assert!(!info.installed_outside_manager());
+    }
+
+    #[test]
+    fn a_component_apt_installed_is_shown_as_installed_and_says_who_installed_it() {
+        let record = ComponentRecord {
+            installed_version: Some("0.2.3".to_string()),
+            provenance: InstallProvenance::Dpkg,
+            enabled: true,
+            ..ComponentRecord::default()
+        };
+        let info = present(Some(&record), ComponentStatus::UpdateAvailable);
+
+        assert_eq!(
+            info.installed_label(copy(Locale::ZhTw).not_installed),
+            "0.2.3"
+        );
+        assert!(info.installed_outside_manager());
+        // Nothing was captured for it, so the page must not offer a restore.
+        assert!(!info.restore_available);
+    }
+
+    /// The record the field machine actually wrote. The service's reason lives
+    /// inside the evidence key rather than in `detail`, so a page that only
+    /// prefix-matched the key showed a generic sentence and dropped the words
+    /// that said what was wrong.
+    #[test]
+    fn the_reason_the_service_gave_survives_even_when_it_was_recorded_inside_the_key() {
+        let failure = FailureRecord {
+            component: ComponentId::new("better-awake").unwrap(),
+            stage: OperationStage::Installing,
+            evidence: "daemon.error.plan_rejected:plan targets release 24.04 but this host is 18"
+                .to_string(),
+            detail: None,
+            recovery: None,
+        };
+
+        let (key, detail) = failure.evidence_parts();
+        assert_eq!(key, "daemon.error.plan_rejected");
+        assert_eq!(
+            detail,
+            Some("plan targets release 24.04 but this host is 18")
+        );
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            assert!(!copy(locale).evidence_plan_rejected.trim().is_empty());
+        }
+
+        // A key with nothing after it stays whole rather than gaining an empty
+        // detail row.
+        let bare = FailureRecord {
+            evidence: "download.network".to_string(),
+            ..failure
+        };
+        assert_eq!(bare.evidence_parts(), ("download.network", None));
+    }
+
+    #[test]
+    fn a_recorded_failure_travels_to_the_page_whole_rather_than_as_a_tag() {
+        let record = ComponentRecord {
+            health: HealthState::Failed,
+            failure: Some(FailureRecord {
+                component: ComponentId::new("better-monitor").unwrap(),
+                stage: OperationStage::Installing,
+                evidence: "daemon.error.plan_rejected".to_string(),
+                detail: Some("plan targets release 24.04 but this host is 18".to_string()),
+                recovery: None,
+            }),
+            ..ComponentRecord::default()
+        };
+        let info = present(Some(&record), ComponentStatus::Failed);
+
+        let failure = info.failure.expect("the page needs the failure itself");
+        assert_eq!(failure.stage, OperationStage::Installing);
+        assert_eq!(
+            failure.detail.as_deref(),
+            Some("plan targets release 24.04 but this host is 18")
+        );
+        // The field case exactly: a failure with nothing installed behind it.
+        assert!(info.installed_version.is_none());
+    }
+
+    #[test]
+    fn only_a_plan_that_touches_the_manager_warns_about_restarting_the_application() {
+        let (manager, mut state) = demo_manager();
+        let monitor = ComponentId::new("better-monitor").unwrap();
+        let self_id = ComponentId::new("better-manager").unwrap();
+        assert!(manager_core::is_self_component(&self_id));
+
+        let monitor_plan = manager
+            .plan(&state, &monitor, DesiredOperation::Update)
+            .expect("the monitor must be updatable in the demo state");
+        assert!(!crate::app::ManagerApp::updates_the_manager(
+            monitor_plan.steps()
+        ));
+
+        // Put the manager one release behind so its own update can be planned.
+        state.set_installed(self_id.clone(), "0.0.1", true);
+        let self_plan = manager
+            .plan(&state, &self_id, DesiredOperation::Update)
+            .expect("the manager must be updatable");
+        assert!(crate::app::ManagerApp::updates_the_manager(
+            self_plan.steps()
+        ));
+    }
+
+    #[test]
+    fn the_manager_offers_no_removal_of_itself_and_says_why_in_both_locales() {
+        let (manager, mut state) = demo_manager();
+        let self_id = ComponentId::new("better-manager").unwrap();
+        state.set_installed(self_id.clone(), "0.2.3", true);
+
+        assert!(matches!(
+            manager.plan(&state, &self_id, DesiredOperation::Remove),
+            Err(manager_core::ManagerError::CannotRemoveSelf(_))
+        ));
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            assert!(!copy(locale).cannot_remove_self.trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn every_string_this_page_added_exists_in_both_locales_and_is_translated() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let c = copy(locale);
+            for value in [
+                c.not_installed,
+                c.installed_outside_manager,
+                c.last_install_failed,
+                c.try_install_again,
+                c.remove_component,
+                c.cannot_remove_self,
+                c.self_update_title,
+                c.self_update_detail,
+            ] {
+                assert!(!value.trim().is_empty(), "{locale:?} is missing a string");
+            }
+        }
+        // Traditional Chinese must not fall back to the English wording.
+        let en = copy(Locale::EnUs);
+        let zh = copy(Locale::ZhTw);
+        for (english, chinese) in [
+            (en.not_installed, zh.not_installed),
+            (en.last_install_failed, zh.last_install_failed),
+            (en.try_install_again, zh.try_install_again),
+            (en.remove_component, zh.remove_component),
+            (en.cannot_remove_self, zh.cannot_remove_self),
+            (en.self_update_detail, zh.self_update_detail),
+        ] {
+            assert_ne!(english, chinese);
+        }
+    }
+
+    /// The new action labels never make the row worse than the ones already
+    /// shipped: they wrap where the existing longest labels wrap and sit inline
+    /// where those sit inline, at every supported window size and scale.
+    #[test]
+    fn the_new_action_labels_lay_out_no_worse_than_the_ones_already_shipped() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let c = copy(locale);
+            let new_longest = [c.try_install_again, c.remove_component, c.not_installed]
+                .iter()
+                .map(|label| label.chars().count())
+                .max()
+                .unwrap();
+            let shipped_longest = [c.install_updates, c.restore_previous, c.checking_works]
+                .iter()
+                .map(|label| label.chars().count())
+                .max()
+                .unwrap();
+            assert!(
+                new_longest <= shipped_longest,
+                "{locale:?} added a label longer than anything already on screen"
+            );
+            for width in [MIN_WINDOW_WIDTH, 1280.0, 1920.0] {
+                for scale in [1.0, 1.25, 1.5] {
+                    let shipped = action_layout(width, scale, shipped_longest);
+                    let added = action_layout(width, scale, new_longest);
+                    assert!(
+                        added == ActionLayout::Inline || shipped == ActionLayout::Wrapped,
+                        "{locale:?} at {width}x{scale} wraps a new label where nothing else wraps"
+                    );
+                }
+            }
+            // The explanations are prose in a text block, not buttons, so they
+            // are only required to actually explain something.
+            assert!(c.cannot_remove_self.chars().count() > 20);
+            assert!(c.installed_outside_manager.chars().count() > 20);
+        }
+    }
+}
+
 /// The catalog states a user can actually land in, and what each one says.
 ///
 /// These are the whole reason the refresh exists: a catalog that is behind has

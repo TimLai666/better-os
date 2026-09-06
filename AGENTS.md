@@ -375,3 +375,16 @@ GUI or dependency compiles when the relevant command was not executed.
   is what the ticket-43 merge commit `c813fd6` did, over one added optional
   dependency. Regenerate in the same commit that moves the lockfile; a dependency
   change is a lockfile change even when it adds no new crate to the graph.
+- Better Manager's window is still built with `MockPlatform::default()`, which
+  reports Ubuntu 24.04 amd64 no matter what the host is. It works on Zorin 18
+  only because the daemon independently resolves that host to 24.04, so the two
+  happen to agree; on an arm64 or 22.04 machine they would not, and the plan
+  would be built for the wrong target. The daemon already reads
+  `/etc/os-release` correctly (`manager-daemon/src/host.rs`). Deciding where a
+  real unprivileged `SystemCapabilities` lives, and switching the GUI and CLI to
+  it, is the fix; ticket 44 did not touch it.
+- A dpkg version that is not a semantic version keeps a package invisible to the
+  manager: ticket 44's host reconciliation adopts only what `semver` can parse,
+  because everything downstream compares versions. A package in that state is
+  neither adopted nor reported. Deciding what to show for it — a state, a
+  finding, or a doctor check — is still open.

@@ -2,7 +2,10 @@ use crate::app::ComponentTranslation;
 use crate::i18n::{Locale, copy};
 use better_core::{ComponentIcon, ComponentId, ComponentManifest, ComponentType};
 use manager_core::catalog::{CatalogDegradation, CatalogSource, CatalogStatus};
-use manager_core::{ComponentRecord, ComponentStatus, HealthState, RestartRequirement};
+use manager_core::{
+    ComponentRecord, ComponentStatus, FailureRecord, HealthState, InstallProvenance,
+    RestartRequirement,
+};
 
 /// The one status line the Components screen shows about the catalog itself.
 ///
@@ -139,7 +142,16 @@ pub(crate) struct ComponentInfo {
     pub(crate) summary: String,
     pub(crate) detail: String,
     pub(crate) icon: ComponentIcon,
+    /// What is actually installed on this machine, as far as the manager knows.
+    /// `None` means nothing is — never "the version the catalog offers".
     pub(crate) installed_version: Option<String>,
+    /// Who installed it. A component apt put there carries no artifact and no
+    /// restore snapshot, and the screen says so instead of implying otherwise.
+    pub(crate) provenance: InstallProvenance,
+    /// The attempt that failed, when one did. Kept whole so the component page
+    /// can show the stage, the evidence, and the service's own words rather
+    /// than a bare tag.
+    pub(crate) failure: Option<FailureRecord>,
     pub(crate) enabled: bool,
     pub(crate) available_version: String,
     pub(crate) state: ComponentStatus,
@@ -180,6 +192,8 @@ impl ComponentInfo {
             summary,
             icon: manifest.icon,
             installed_version: record.and_then(|record| record.installed_version.clone()),
+            provenance: record.map(|record| record.provenance).unwrap_or_default(),
+            failure: record.and_then(|record| record.failure.clone()),
             enabled: record.is_some_and(|record| record.enabled),
             available_version: manifest.version.to_string(),
             state,
@@ -196,13 +210,35 @@ impl ComponentInfo {
         }
     }
 
-    pub(crate) fn version_label(&self) -> String {
+    /// What is installed, in the user's words.
+    ///
+    /// The component page used to render [`Self::version_label`] under an
+    /// "Installed version" heading, which meant a component that was never
+    /// installed reported the catalog's version as its own. `not_installed` is
+    /// the only honest answer there.
+    pub(crate) fn installed_label(&self, not_installed: &'static str) -> String {
+        self.installed_version
+            .clone()
+            .unwrap_or_else(|| not_installed.to_string())
+    }
+
+    /// Whether something outside Better Manager put this component here.
+    pub(crate) fn installed_outside_manager(&self) -> bool {
+        self.installed_version.is_some() && self.provenance == InstallProvenance::Dpkg
+    }
+
+    /// The version line on a component card.
+    ///
+    /// A bare catalog version beside a red tag reads as "this installed version
+    /// is broken", so a component with nothing installed says so first and
+    /// offers the catalog version second.
+    pub(crate) fn version_label(&self, not_installed: &'static str) -> String {
         match self.installed_version.as_deref() {
             Some(current) if current != self.available_version => {
                 format!("{current} → {}", self.available_version)
             }
             Some(current) => current.to_string(),
-            None => self.available_version.clone(),
+            None => format!("{not_installed} · {}", self.available_version),
         }
     }
 
