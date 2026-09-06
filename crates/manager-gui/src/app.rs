@@ -11,11 +11,12 @@ use manager_core::{
     OperationProgress, OperationStage, PlanStep, ReleaseChannel, RestartRequirement, StoredLocale,
     StoredTheme, TransactionPlan,
 };
-use manager_platform::MockPlatform;
 use manager_platform::catalog_fetch::HttpManifestFetcher;
 use manager_platform::download::{ArtifactCache, HttpDownloader};
 use manager_platform::dpkg::DpkgProbe;
+use manager_platform::host::ClientPlatform;
 use manager_platform::privileged::DbusPrivilegedExecutor;
+use manager_platform::{SystemCapabilities, SystemProfile};
 use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, start_catalog};
 
 use crate::{
@@ -34,6 +35,40 @@ fn default_execution_mode() -> ExecutionMode {
     match std::env::var("BETTER_MANAGER_EXECUTION").as_deref() {
         Ok("mock") | Ok("demo") => ExecutionMode::Mock,
         _ => ExecutionMode::Real,
+    }
+}
+
+/// The platform this window plans against.
+///
+/// A demo keeps the fixed mock profile, which is the point of a demo: it has
+/// to produce the same screens on any machine and it never changes one. A real
+/// window reads the host, because a plan names a package built for exactly one
+/// Ubuntu release and one architecture, and the privileged service checks that
+/// target against the machine before it applies anything.
+pub(crate) fn platform_for(execution: ExecutionMode) -> ClientPlatform {
+    match execution {
+        ExecutionMode::Mock => ClientPlatform::demo(),
+        ExecutionMode::Real => ClientPlatform::host(),
+    }
+}
+
+/// Builds the manager from whatever the platform reports about the host.
+///
+/// A host the client cannot identify becomes a state on screen rather than a
+/// crash or a silent guess. The manager is still built, from a profile no
+/// manifest declares, so every screen keeps working and every plan fails with
+/// "this component ships nothing for this host" instead of naming packages
+/// built for a release the machine is not running.
+pub(crate) fn probe_manager(
+    catalog: better_core::manifest::ComponentCatalog,
+    platform: &dyn SystemCapabilities,
+) -> (Manager, Option<AppError>) {
+    match Manager::probe(catalog.clone(), platform) {
+        Ok(manager) => (manager, None),
+        Err(_) => (
+            Manager::new(catalog, SystemProfile::unidentified()),
+            Some(AppError::UnsupportedHost),
+        ),
     }
 }
 
@@ -86,6 +121,11 @@ pub(crate) struct Transfer {
 pub(crate) enum AppError {
     Planning,
     Storage,
+    /// This machine is not one Better OS publishes packages for, or could not
+    /// be identified. Nothing can be planned for it, and saying so is the only
+    /// honest screen: the alternative was a plan aimed at Ubuntu 24.04 amd64
+    /// whatever the host actually was.
+    UnsupportedHost,
 }
 
 impl ManagerApp {
@@ -96,8 +136,8 @@ impl ManagerApp {
         // reads a file and nothing else; fetching happens on a background
         // thread below, so a slow or absent network never delays the window.
         let (catalog, catalog_status) = start_catalog(&catalog_store);
-        let manager = Manager::probe(catalog, &MockPlatform::default())
-            .expect("the mock platform always reports a profile");
+        let execution = default_execution_mode();
+        let (manager, host_error) = probe_manager(catalog, &platform_for(execution));
         let (state, planning_error) = match store.load() {
             Ok(outcome) if manager.validate_state(&outcome.state).is_ok() => (
                 outcome.state,
@@ -105,6 +145,10 @@ impl ManagerApp {
             ),
             Ok(_) | Err(_) => (ManagerState::default(), Some(AppError::Storage)),
         };
+        // An unidentified host outranks a storage problem: it is why nothing
+        // on this machine can be planned at all, and the state file is beside
+        // the point until it is resolved.
+        let planning_error = host_error.or(planning_error);
         let locale = locale_from_stored(state.settings.locale);
         apply_theme(state.settings.theme, window, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(copy(locale).search));
@@ -134,7 +178,7 @@ impl ManagerApp {
             pending_plan,
             finished_plan: None,
             planning_error,
-            execution: default_execution_mode(),
+            execution,
             defaults: DefaultsState::default(),
             catalog_store,
             catalog_status,
@@ -947,6 +991,7 @@ impl ManagerApp {
         match self.planning_error {
             Some(AppError::Planning) => c.planning_failed_detail,
             Some(AppError::Storage) => c.storage_error,
+            Some(AppError::UnsupportedHost) => c.unsupported_host,
             None => c.none,
         }
     }
@@ -1010,7 +1055,7 @@ pub(crate) fn translated_component(
 fn catalog_manager() -> Manager {
     Manager::probe(
         manager_core::catalog::built_in_catalog(),
-        &MockPlatform::default(),
+        &manager_platform::MockPlatform::default(),
     )
     .expect("the mock platform always reports a profile")
 }

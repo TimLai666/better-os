@@ -774,3 +774,87 @@ mod catalog_state {
         }
     }
 }
+
+/// The seam that replaced `MockPlatform::default()` in the window.
+///
+/// The mock reports Ubuntu 24.04 amd64 on every machine, so before this a plan
+/// built on a 22.04 or arm64 host named packages that host cannot use. This
+/// asserts which probe each mode gets without reading the machine the tests
+/// happen to run on.
+#[test]
+fn a_real_window_plans_from_the_host_and_a_demo_keeps_the_fixed_profile() {
+    use manager_platform::host::ClientPlatform;
+
+    assert!(matches!(
+        crate::app::platform_for(manager_core::ExecutionMode::Real),
+        ClientPlatform::Host(_)
+    ));
+    assert!(matches!(
+        crate::app::platform_for(manager_core::ExecutionMode::Mock),
+        ClientPlatform::Mock(_)
+    ));
+
+    let ClientPlatform::Host(host) = crate::app::platform_for(manager_core::ExecutionMode::Real)
+    else {
+        panic!("a real window must plan from the host");
+    };
+    assert_eq!(
+        host.os_release_path(),
+        Some(std::path::Path::new("/etc/os-release"))
+    );
+}
+
+#[test]
+fn the_window_plans_for_the_release_and_architecture_the_host_reports() {
+    // A jammy arm64 derivative: both halves differ from the mock's answer, so
+    // either one still being 24.04 or amd64 fails this.
+    let platform = manager_platform::host::HostPlatform::from_fixture(
+        "NAME=\"Zorin OS\"\nID=zorin\nVERSION_ID=\"17\"\nUBUNTU_CODENAME=jammy\n",
+        "arm64",
+    );
+    let (manager, error) =
+        crate::app::probe_manager(manager_core::catalog::built_in_catalog(), &platform);
+
+    assert_eq!(error, None);
+    assert_eq!(manager.profile().release, "22.04");
+    assert_eq!(manager.profile().architecture, "arm64");
+    assert_eq!(manager.profile().distribution, "zorin");
+}
+
+#[test]
+fn an_unidentifiable_host_becomes_a_stated_window_state_and_never_a_guess() {
+    let platform = manager_platform::host::HostPlatform::from_fixture(
+        "NAME=\"Fedora Linux\"\nID=fedora\nVERSION_ID=41\n",
+        "amd64",
+    );
+    let (manager, error) =
+        crate::app::probe_manager(manager_core::catalog::built_in_catalog(), &platform);
+
+    assert_eq!(error, Some(crate::app::AppError::UnsupportedHost));
+    // Not a fallback to the mock's release: a plan aimed at 24.04 on a machine
+    // that is not running it is the defect this state exists to prevent.
+    assert_ne!(manager.profile().release, "24.04");
+    assert_eq!(manager.profile().release, "unknown");
+
+    // And nothing is plannable, rather than plannable against the wrong target.
+    assert!(
+        manager
+            .plan(
+                &ManagerState::default(),
+                &ComponentId::new("better-monitor").expect("id must be valid"),
+                DesiredOperation::Install,
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn the_unsupported_host_state_has_copy_in_both_locales() {
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let message = copy(locale).unsupported_host;
+        assert!(!message.trim().is_empty());
+        // It has to say what is supported, or the person is told only that
+        // something is wrong.
+        assert!(message.contains("22.04") && message.contains("24.04"));
+    }
+}

@@ -17,6 +17,12 @@ The shipped implementations are:
   without fetching anything.
 - `MockPlatform::apply` and `UnapprovedPrivilegedExecutor::execute` both return
   `PrivilegedExecutionNotApproved`.
+- `HostPlatform` (ticket 45) reports the real machine: the Ubuntu base release
+  from `/etc/os-release` and the architecture from `dpkg --print-architecture`.
+  Both are read-only host queries and therefore unprivileged. It is what the
+  GUI and CLI use in real mode; `MockPlatform` stays the demo mode's platform,
+  which is the only thing it was ever meant to be. A host outside the release
+  matrix is an `UnsupportedHost` error and never a default profile.
 
 No shipped code path applies a package change.
 

@@ -56,35 +56,14 @@ impl HostProbe for SystemHostProbe {
 
 /// Resolves the Ubuntu base release from an os-release file.
 ///
-/// Derivatives report their own `VERSION_ID` — Zorin OS 18 says `18`, which
-/// names nothing in the release matrix — so the base comes from
-/// `UBUNTU_CODENAME` first, exactly the way `install.sh` decides which package
-/// to download. `VERSION_ID` stays as the fallback for hosts that carry no
-/// codename field. The two must keep agreeing: a daemon that reads the badge
-/// while the installer reads the base refuses every plan on a derivative,
-/// which is the field failure this function replaced.
+/// The rules live in `better_core::host` because three readers have to agree
+/// on them: this daemon, the unprivileged client that decides which artifact
+/// to plan for, and `install.sh`, which is shell and therefore carries its own
+/// copy with a comment pointing at the shared one. A daemon that read the
+/// badge while the installer read the base refused every plan on a derivative,
+/// which is the field failure this delegation keeps fixed.
 fn parse_ubuntu_release(content: &str) -> Option<String> {
-    if let Some(codename) = parse_field(content, "UBUNTU_CODENAME=") {
-        return match codename.as_str() {
-            "jammy" => Some("22.04".to_string()),
-            "noble" => Some("24.04".to_string()),
-            _ => None,
-        };
-    }
-    parse_field(content, "VERSION_ID=")
-}
-
-/// Pulls one `KEY=` value out of an os-release file, unquoting it.
-fn parse_field(content: &str, prefix: &str) -> Option<String> {
-    content.lines().find_map(|line| {
-        let value = line.strip_prefix(prefix)?;
-        let value = value.trim_matches('"').trim();
-        if value.is_empty() {
-            None
-        } else {
-            Some(value.to_string())
-        }
-    })
+    better_core::host::resolve_ubuntu_release(content)
 }
 
 /// A fixed host, for tests.

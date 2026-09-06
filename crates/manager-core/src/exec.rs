@@ -401,6 +401,12 @@ fn evidence_for(error: &PlatformError) -> FailureEvidence {
         PlatformError::CapabilityUnavailable(detail) => {
             FailureEvidence::with_detail("platform.capability_unavailable", *detail)
         }
+        // A transaction cannot reach this: a manager only exists once the host
+        // was identified. It is here so the mapping stays total, and it keeps
+        // the machine's own description rather than inventing a reason.
+        PlatformError::UnsupportedHost(detail) => {
+            FailureEvidence::with_detail("platform.unsupported_host", detail.clone())
+        }
     }
 }
 
