@@ -91,6 +91,13 @@ pub(crate) struct Copy {
     pub(crate) catalog_rejected: &'static str,
     pub(crate) catalog_refresh: &'static str,
     pub(crate) catalog_refreshing: &'static str,
+
+    // The manual update check on the Updates screen
+    pub(crate) check_updates: &'static str,
+    pub(crate) checking_updates: &'static str,
+    pub(crate) update_check_found: &'static str,
+    pub(crate) update_check_up_to_date: &'static str,
+    pub(crate) update_check_failed: &'static str,
     pub(crate) manager_name: &'static str,
     pub(crate) monitor_name: &'static str,
     pub(crate) files_name: &'static str,
@@ -231,6 +238,12 @@ pub(crate) struct Copy {
     pub(crate) diagnostics_section: &'static str,
     pub(crate) diagnostic_logs: &'static str,
     pub(crate) privacy_note: &'static str,
+
+    // About
+    pub(crate) about_section: &'static str,
+    pub(crate) about_version: &'static str,
+    pub(crate) about_platform: &'static str,
+    pub(crate) about_repository: &'static str,
 
     // Edge states and dialogs
     pub(crate) enable: &'static str,
@@ -442,6 +455,11 @@ static EN: Copy = Copy {
     catalog_rejected: "{n} component description was refused and left unchanged.",
     catalog_refresh: "Update list",
     catalog_refreshing: "Updating the list…",
+    check_updates: "Check for updates",
+    checking_updates: "Checking for updates…",
+    update_check_found: "{n} component updates available",
+    update_check_up_to_date: "Everything is up to date",
+    update_check_failed: "The check could not reach the published catalog",
     manager_name: "Better Manager",
     monitor_name: "Better Monitor",
     files_name: "Better Files",
@@ -577,6 +595,10 @@ static EN: Copy = Copy {
     diagnostics_section: "Diagnostics and privacy",
     diagnostic_logs: "Keep diagnostic logs for failed operations",
     privacy_note: "Manager stores component state and diagnostic history locally. Nothing is uploaded without an explicit export action.",
+    about_section: "About",
+    about_version: "Version",
+    about_platform: "This machine",
+    about_repository: "Project repository",
 
     enable: "Enable",
     remove: "Remove",
@@ -778,6 +800,11 @@ static ZH_TW: Copy = Copy {
     catalog_rejected: "有 {n} 份元件說明未通過檢查，維持原本的內容。",
     catalog_refresh: "更新清單",
     catalog_refreshing: "正在更新清單…",
+    check_updates: "檢查更新",
+    checking_updates: "正在檢查更新…",
+    update_check_found: "有 {n} 個元件可以更新",
+    update_check_up_to_date: "已是最新",
+    update_check_failed: "這次檢查無法取得已發佈的清單",
     manager_name: "Better Manager",
     monitor_name: "Better Monitor",
     files_name: "Better Files",
@@ -913,6 +940,10 @@ static ZH_TW: Copy = Copy {
     diagnostics_section: "診斷與隱私",
     diagnostic_logs: "保留失敗操作的診斷紀錄",
     privacy_note: "元件管理器只在本機保存元件狀態與診斷歷史。除非你主動匯出，否則不會上傳任何資料。",
+    about_section: "關於",
+    about_version: "版本",
+    about_platform: "這台電腦",
+    about_repository: "專案原始碼",
 
     enable: "啟用",
     remove: "移除",

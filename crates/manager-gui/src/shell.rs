@@ -11,7 +11,11 @@ use gpui_component::{
     *,
 };
 
-use crate::{app::ManagerApp, i18n::copy, model::Page};
+use crate::{
+    app::ManagerApp,
+    i18n::copy,
+    model::{MANAGER_VERSION, Page},
+};
 
 impl ManagerApp {
     fn nav_item(
@@ -85,11 +89,16 @@ impl ManagerApp {
                                 .flex_1()
                                 .min_w_0()
                                 .child(div().font_semibold().child(c.brand_name))
+                                // The version sits here rather than in the
+                                // titlebar: the titlebar is shared chrome every
+                                // Better OS window draws the same way, and this
+                                // line is already the one that says which
+                                // application this is.
                                 .child(
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(c.manager),
+                                        .child(format!("{} {}", c.manager, MANAGER_VERSION)),
                                 ),
                         )
                     }),

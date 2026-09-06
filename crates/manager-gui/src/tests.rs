@@ -858,3 +858,291 @@ fn the_unsupported_host_state_has_copy_in_both_locales() {
         assert!(message.contains("22.04") && message.contains("24.04"));
     }
 }
+
+/// What the window says about itself, and what a manual update check reports.
+///
+/// Both are ticket 46's whole point: before it, nothing on screen or on the
+/// command line named the version this manager is, and the only way to ask for
+/// a fresh catalog was a button on another screen that said nothing about
+/// updates afterwards.
+mod version_and_update_check {
+    use super::*;
+    use crate::model::{AboutInfo, MANAGER_VERSION, PROJECT_REPOSITORY, UpdateCheck};
+
+    fn status(
+        source: CatalogSource,
+        degraded: Option<CatalogDegradation>,
+        fetched_at: Option<u64>,
+    ) -> CatalogStatus {
+        CatalogStatus {
+            source,
+            source_url: Some("https://example.com/manifests".to_string()),
+            fetched_at_unix_seconds: fetched_at,
+            degraded,
+            rejections: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_about_section_states_the_built_version_and_the_host_it_planned_for() {
+        let platform = manager_platform::host::HostPlatform::from_fixture(
+            "NAME=\"Zorin OS\"\nID=zorin\nVERSION_ID=\"18\"\nUBUNTU_CODENAME=noble\n",
+            "amd64",
+        );
+        let (manager, error) =
+            crate::app::probe_manager(manager_core::catalog::built_in_catalog(), &platform);
+        assert_eq!(error, None);
+
+        let about = AboutInfo::present(Locale::EnUs, manager.profile());
+
+        // The version is the package's own, so a release bump moves it without
+        // anything else being edited.
+        assert_eq!(about.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(about.version, MANAGER_VERSION);
+        assert_eq!(about.version.split('.').count(), 3, "{}", about.version);
+        // The platform line is what ticket 45's probe read, not an assumption.
+        assert_eq!(about.platform, "zorin 24.04 · amd64");
+        assert_eq!(about.repository, PROJECT_REPOSITORY);
+        assert!(about.repository.starts_with("https://"));
+        assert!(about.name.contains(copy(Locale::EnUs).manager));
+    }
+
+    #[test]
+    fn a_host_the_client_could_not_identify_is_said_so_rather_than_guessed_at() {
+        let platform = manager_platform::host::HostPlatform::from_fixture(
+            "NAME=\"Fedora Linux\"\nID=fedora\nVERSION_ID=41\n",
+            "amd64",
+        );
+        let (manager, error) =
+            crate::app::probe_manager(manager_core::catalog::built_in_catalog(), &platform);
+        assert_eq!(error, Some(crate::app::AppError::UnsupportedHost));
+
+        let about = AboutInfo::present(Locale::ZhTw, manager.profile());
+        assert_eq!(about.platform, "unknown unknown · unknown");
+        assert!(!about.platform.contains("24.04"));
+    }
+
+    #[test]
+    fn the_about_section_is_named_in_the_users_own_language() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let c = copy(locale);
+            for value in [
+                c.about_section,
+                c.about_version,
+                c.about_platform,
+                c.about_repository,
+            ] {
+                assert!(!value.trim().is_empty(), "{locale:?} is missing a string");
+            }
+        }
+        let en = copy(Locale::EnUs);
+        let zh = copy(Locale::ZhTw);
+        for (english, chinese) in [
+            (en.about_section, zh.about_section),
+            (en.about_version, zh.about_version),
+            (en.about_platform, zh.about_platform),
+            (en.about_repository, zh.about_repository),
+        ] {
+            assert_ne!(english, chinese);
+        }
+    }
+
+    #[test]
+    fn a_check_that_found_updates_says_how_many() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let check = UpdateCheck::present(
+                locale,
+                true,
+                false,
+                &status(CatalogSource::Remote, None, Some(1_000_000)),
+                3,
+                1_000_000,
+            );
+            let UpdateCheck::Found(sentence) = check else {
+                panic!("{locale:?} must report the count: {check:?}");
+            };
+            assert!(sentence.contains('3'), "{sentence}");
+            assert!(!sentence.contains("{n}"), "{sentence}");
+        }
+    }
+
+    #[test]
+    fn a_check_that_found_nothing_says_so_with_the_age_of_the_list_it_checked() {
+        let check = UpdateCheck::present(
+            Locale::EnUs,
+            true,
+            false,
+            &status(CatalogSource::Remote, None, Some(1_000_000)),
+            0,
+            1_000_000 + 5 * 60,
+        );
+        assert_eq!(check, UpdateCheck::UpToDate("Updated 5 minutes ago".into()));
+
+        // A catalog nothing has ever fetched says that instead of a fake age.
+        let never = UpdateCheck::present(
+            Locale::EnUs,
+            true,
+            false,
+            &status(CatalogSource::BuiltIn, None, None),
+            0,
+            1_000_000,
+        );
+        assert_eq!(
+            never,
+            UpdateCheck::UpToDate(copy(Locale::EnUs).catalog_never_updated.to_string())
+        );
+    }
+
+    #[test]
+    fn a_refresh_that_failed_explains_which_list_is_on_screen_instead() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let c = copy(locale);
+            let cases = [
+                (
+                    CatalogSource::Cache,
+                    CatalogDegradation::RefreshFailedUsingCache,
+                    c.catalog_degraded_failed_cache,
+                ),
+                (
+                    CatalogSource::BuiltIn,
+                    CatalogDegradation::RefreshFailedUsingBuiltIn,
+                    c.catalog_degraded_failed_built_in,
+                ),
+                (
+                    CatalogSource::BuiltIn,
+                    CatalogDegradation::NeverRefreshed,
+                    c.catalog_degraded_never,
+                ),
+            ];
+            for (source, degradation, expected) in cases {
+                // A count exists, and is still not reported as the answer: the
+                // check never reached the published catalog, so the number it
+                // would print describes the old list.
+                let check = UpdateCheck::present(
+                    locale,
+                    true,
+                    false,
+                    &status(source, Some(degradation), Some(1_000_000)),
+                    2,
+                    1_000_000,
+                );
+                assert_eq!(check, UpdateCheck::Failed(expected));
+            }
+        }
+    }
+
+    #[test]
+    fn a_partly_refused_refresh_still_reports_the_count_it_did_adopt() {
+        // The newer manifests were adopted, and the catalog line beside this
+        // one already carries the refusal, so calling this a failed check would
+        // be the inaccurate answer.
+        let check = UpdateCheck::present(
+            Locale::EnUs,
+            true,
+            false,
+            &status(
+                CatalogSource::Remote,
+                Some(CatalogDegradation::PartiallyRefreshed),
+                Some(1_000_000),
+            ),
+            1,
+            1_000_000,
+        );
+        assert!(matches!(check, UpdateCheck::Found(_)), "{check:?}");
+    }
+
+    #[test]
+    fn nothing_is_claimed_before_a_check_is_asked_for_or_while_one_runs() {
+        let current = status(CatalogSource::Remote, None, Some(1_000_000));
+        assert_eq!(
+            UpdateCheck::present(Locale::EnUs, false, false, &current, 4, 1_000_000),
+            UpdateCheck::NotRun
+        );
+        // Running outranks the previous result: a stale count under a spinner
+        // reads as this check's answer.
+        assert_eq!(
+            UpdateCheck::present(Locale::EnUs, true, true, &current, 4, 1_000_000),
+            UpdateCheck::Running
+        );
+    }
+
+    #[test]
+    fn the_update_check_copy_exists_in_both_locales_and_never_falls_back_to_english() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let c = copy(locale);
+            for value in [
+                c.check_updates,
+                c.checking_updates,
+                c.update_check_found,
+                c.update_check_up_to_date,
+                c.update_check_failed,
+            ] {
+                assert!(!value.trim().is_empty(), "{locale:?} is missing a string");
+            }
+            assert!(c.update_check_found.contains("{n}"));
+        }
+        let en = copy(Locale::EnUs);
+        let zh = copy(Locale::ZhTw);
+        for (english, chinese) in [
+            (en.check_updates, zh.check_updates),
+            (en.checking_updates, zh.checking_updates),
+            (en.update_check_found, zh.update_check_found),
+            (en.update_check_up_to_date, zh.update_check_up_to_date),
+            (en.update_check_failed, zh.update_check_failed),
+        ] {
+            assert_ne!(english, chinese);
+        }
+    }
+
+    /// The check button and the About rows never make a row worse than what is
+    /// already shipped, at every supported window size and scale.
+    #[test]
+    fn the_new_labels_lay_out_no_worse_than_the_ones_already_shipped() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let c = copy(locale);
+            let new_longest = [
+                c.check_updates,
+                c.checking_updates,
+                c.about_version,
+                c.about_platform,
+                c.about_repository,
+            ]
+            .iter()
+            .map(|label| label.chars().count())
+            .max()
+            .unwrap();
+            let shipped_longest = [c.install_updates, c.restore_previous, c.catalog_refreshing]
+                .iter()
+                .map(|label| label.chars().count())
+                .max()
+                .unwrap();
+            assert!(
+                new_longest <= shipped_longest,
+                "{locale:?} added a label longer than anything already on screen"
+            );
+            for width in [MIN_WINDOW_WIDTH, 1280.0, 1920.0] {
+                for scale in [1.0, 1.25, 1.5] {
+                    let shipped = action_layout(width, scale, shipped_longest);
+                    let added = action_layout(width, scale, new_longest);
+                    assert!(
+                        added == ActionLayout::Inline || shipped == ActionLayout::Wrapped,
+                        "{locale:?} at {width}x{scale} wraps a new label where nothing else wraps"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The repository line is the longest fixed string the About section shows,
+    /// and it is a URL that must not be truncated into something misleading.
+    #[test]
+    fn the_repository_line_fits_the_narrowest_supported_window() {
+        let characters = characters_per_line(MIN_WINDOW_WIDTH, 1.0);
+        assert!(
+            PROJECT_REPOSITORY.chars().count() <= characters,
+            "{PROJECT_REPOSITORY} needs {} of {characters} characters",
+            PROJECT_REPOSITORY.chars().count()
+        );
+        assert!(characters >= MIN_READABLE_CHARACTERS);
+    }
+}
