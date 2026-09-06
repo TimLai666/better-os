@@ -101,10 +101,10 @@ GUI or dependency compiles when the relevant command was not executed.
   Better OS component has a time-to-photon figure. And the idle CPU figure is a
   headless one: nothing asks the window to repaint, so it is the launcher's own
   idle cost and not a claim about a launcher on a running desktop.
-- All eight packages are published. `v0.2.6` carries every component
+- All eight packages are published. `v0.2.7` carries every component
   `packaging/build-deb.sh` builds, for Ubuntu 22.04 and 24.04 on amd64 and
   arm64, and every shipped manifest now records the checksum of its own
-  published 0.2.6 asset, verified after re-downloading the public release. No
+  published 0.2.7 asset, verified after re-downloading the public release. No
   first party manifest carries a placeholder checksum any more;
   `components/manifests/better-files-example.yaml` is the one exception and is a
   schema fixture, not a released component. A version bump puts the placeholders
@@ -154,9 +154,9 @@ GUI or dependency compiles when the relevant command was not executed.
   `b5f6e34`, whose embedded catalog carries that release's placeholders, and it
   refreshed from `main`, planned `better-monitor` 0.2.2, and verified the real
   published `.deb` against the fetched checksum. That run has not been repeated
-  since; v0.2.3, v0.2.4, v0.2.5, and v0.2.6 changed nothing about the mechanism,
+  since; v0.2.3 through v0.2.7 changed nothing about the mechanism,
   so the observation stands for the path and not for any later release's own
-  binary.
+  binary. v0.2.7 is no different: nothing about the mechanism moved.
   Two limits still travel with it.
   Signing is still deferred, so HTTPS plus
   the artifact checksum is the whole integrity story and a rolled-back-then-
@@ -188,7 +188,7 @@ GUI or dependency compiles when the relevant command was not executed.
   `touchpad-core` emits and its benchmark baselines are the figures in
   `docs/touchpad-sensitivity-mapping.md`, but nothing runs those benchmarks —
   the same unenforced-budget gap `better-files.yaml` carries. Its checksums are
-  the published v0.2.6 ones.
+  the published v0.2.7 ones.
 - A package installs its systemd user unit and does not enable it, matching
   `better-manager-daemon`. Nothing in dpkg stops a running Better Awake, Better
   Monitor, or Better Storage user service at removal either; the manifests'
@@ -438,12 +438,16 @@ GUI or dependency compiles when the relevant command was not executed.
   no files is healthy under the current rule and would silently stop testing
   rollback.
 - Neither the container end-to-end check nor the footer has been observed since
-  ticket 47, and `v0.2.6` shipping them did not change that. The e2e is CI-only
+  ticket 47, and neither `v0.2.6` nor `v0.2.7` shipping them changed that. The e2e is CI-only
   from this worktree — no Docker daemon — and the footer's
   `Zorin OS 18 · Ubuntu 24.04 base` line is asserted by test from the real host
   probe's output rather than looked at on a running desktop. A published release
   is not a report from the machine that filed the defect: nobody has yet watched
-  the Zorin 18 host install Better Awake on 0.2.6 and keep it.
+  the Zorin 18 host install Better Awake on 0.2.6 or 0.2.7 and keep it, and
+  nobody has watched it upgrade to 0.2.7 and find the update the drift had been
+  hiding. Ticket 49's self-heal was proved against that machine's real state
+  record copied to a scratch path, which is evidence about the record and not
+  about the machine.
 - **zbus stays on its default `async-io` flavor across this workspace.** The
   backend is a compile-time cargo feature and cargo unifies features across
   every package one `cargo build` names, so a single crate asking for
@@ -467,7 +471,8 @@ GUI or dependency compiles when the relevant command was not executed.
   the command line.** This is `better-monitor`'s split, and it is now the rule
   for a component that ships both. The window refuses an argument it does not
   understand with exit 2 and names the command line, rather than opening a
-  window a person waiting at a terminal cannot escape. The other five windows
+  window a person waiting at a terminal cannot escape. Both binaries are in the
+  published `better-manager` package from v0.2.7 on. The other five windows
   still swallow their arguments; fixing that needs each of them to have a
   command line to point at first.
 - Reconciliation adopts a host that is **ahead** of the record and blocks on
@@ -479,7 +484,7 @@ GUI or dependency compiles when the relevant command was not executed.
   have, and a version `semver` cannot order all stay blocking findings, and the
   way out of one is `Manager::adopt_host_state` — from the component page or
   from `better-manager-cli reconcile --adopt <id>`, never by editing the state
-  file. Adoption drops the restore snapshot and the recorded artifact, because
+  file. Both shipped in v0.2.7. Adoption drops the restore snapshot and the recorded artifact, because
   they name a version the machine no longer has; the GUI says so before it acts.
 - A dpkg version that is not a semantic version keeps a package invisible to the
   manager: ticket 44's host reconciliation adopts only what `semver` can parse,

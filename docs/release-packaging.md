@@ -196,7 +196,7 @@ commit `00936c371b06447bbdafc0df5791a8f3d428b00b` 的 post-merge CI run
 主機上會被拒絕，要支援就必須列出 `zorin`。七份 first-party manifest 都已經同時
 列出 `zorin` 與 `ubuntu`。
 
-目前的 release 是
+上一個 release 是
 [`v0.2.6`](https://github.com/TimLai666/better-os/releases/tag/v0.2.6)，由 merge
 commit `3c8f2a08684aacb152229ed0d567274276b1949b` 的 post-merge CI run
 [`34019971299`](https://github.com/TimLai666/better-os/actions/runs/34019971299)
@@ -211,6 +211,29 @@ commit `3c8f2a08684aacb152229ed0d567274276b1949b` 的 post-merge CI run
 在 `/usr/share/doc/<package>/` 的 `THIRD-PARTY-LICENSES.md` 在精簡映像上會被
 `--path-exclude` 丟掉，卻仍留在 dpkg 的檔案清單裡，所以健康檢查必須讀 dpkg 自己的
 設定才能分辨「被設定成不要裝」與「不見了」。
+
+目前的 release 是
+[`v0.2.7`](https://github.com/TimLai666/better-os/releases/tag/v0.2.7)，由 merge
+commit `adb3f44e26fc6eae7a970b08f4f4100a5634bbfb` 的 post-merge CI run
+[`34039904348`](https://github.com/TimLai666/better-os/actions/runs/34039904348)
+產生，同樣是八個套件、32 個 `.deb` 與 32 個 `.deb.sha256`。這是 patch release，
+內容是 ticket 49。
+
+其中兩項改到 packaging 自己的契約。`better-manager` 套件從這一版起同時安裝
+`/usr/bin/better-manager`（視窗）與 `/usr/bin/better-manager-cli`（命令列）：先前
+`build-deb.sh` 只裝 `manager-gui`，命令列根本沒被打包，所以在終端機打
+`better-manager catalog status` 打開的是一個不會結束的視窗，從終端機看就是 hang。
+命名沿用 `better-monitor` 既有的切法，並成為「同一個元件同時出視窗與命令列」的通則。
+
+另一項是 zbus 的 I/O backend。它是 compile-time 的 cargo feature，而 cargo 會把同
+一次 `cargo build` 涵蓋到的所有 package 的 feature 聯集起來——`build-deb.sh` 正是
+把服務與視窗放在同一次 build——所以只要有一個 crate 要求 `zbus/tokio`，那個 flavor
+就會被編進旁邊每一個 GPUI 視窗，而 gpui 的 `ashpd` 與 `accesskit_unix` 各自在沒有
+tokio runtime 的執行緒上開自己的連線，於是每個視窗啟動都 panic。整個 workspace 已
+移回預設的 `async-io`，`crates/manager-platform/src/flavor.rs` 會在該 feature 回來
+時讓 build 失敗並指出檔案與行號。這是 packaging 層要記住的事實，不只是某個 crate 的
+選擇：只要建置方式維持「一次 build 同時產出服務與視窗」，任何一個 crate 的 feature
+都是全體的 feature。
 
 `packaging/build-deb.sh` 從 0.2.4 開始會先清掉 `dist/` 裡上一次建置留下的
 `.deb` 與 `.deb.sha256`。`verify-deb.sh` 用不含版號的 glob 挑套件，同一個元件
