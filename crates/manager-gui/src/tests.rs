@@ -1146,3 +1146,254 @@ mod version_and_update_check {
         assert!(characters >= MIN_READABLE_CHARACTERS);
     }
 }
+
+/// The affordance rule, asserted where it can be: on the view models the
+/// screens draw from.
+///
+/// A Zorin 18 machine reported the manager's failure surfaces as a wall of
+/// pills that all looked pressable and mostly were not. The rule the project
+/// now holds itself to is that anything that looks clickable must be
+/// clickable, and anything that is not clickable must not look like a button.
+/// `gpui_component::Tag` could not satisfy it — it paints the same theme
+/// tokens a `Button` of the same variant paints, and adds an unconditional
+/// hover — so every status in this window is a `better_ui::StatusPill` now.
+/// These tests are what stops one drifting back.
+mod affordance {
+    use super::*;
+    use crate::app::ManagerApp;
+    use crate::defaults_model::PrimaryAction;
+    use crate::model::ComponentKind;
+    use better_ui::{Affordance, StatusPill, StatusTone};
+    use defaults_core::AggregateState;
+    use manager_core::{ActivityKind, DoctorCheckStatus, HealthState};
+
+    /// Every status indicator this window can draw, in one place. A screen
+    /// that grows a new one and does not add it here is the gap this test is
+    /// meant to make visible, so the list is by state rather than by screen.
+    fn every_status_indicator(locale: Locale) -> Vec<StatusPill> {
+        let c = copy(locale);
+        let mut pills = Vec::new();
+        for status in [
+            ComponentStatus::Available,
+            ComponentStatus::Downloading,
+            ComponentStatus::ReadyToInstall,
+            ComponentStatus::Installing,
+            ComponentStatus::Verifying,
+            ComponentStatus::Healthy,
+            ComponentStatus::UpdateAvailable,
+            ComponentStatus::Disabled,
+            ComponentStatus::Incompatible,
+            ComponentStatus::Degraded,
+            ComponentStatus::Failed,
+            ComponentStatus::RestoreAvailable,
+        ] {
+            pills.push(ManagerApp::status_pill(locale, status, false));
+            pills.push(ManagerApp::status_pill(locale, status, true));
+        }
+        for kind in [
+            ComponentKind::Replacement,
+            ComponentKind::Enhancement,
+            ComponentKind::Diagnostic,
+        ] {
+            pills.push(ManagerApp::kind_pill(locale, kind));
+        }
+        for health in [
+            HealthState::Healthy,
+            HealthState::Degraded,
+            HealthState::Failed,
+        ] {
+            pills.push(ManagerApp::health_pill(locale, health));
+        }
+        for status in [
+            DoctorCheckStatus::Passed,
+            DoctorCheckStatus::Warning,
+            DoctorCheckStatus::Failed,
+        ] {
+            pills.push(ManagerApp::doctor_pill(c, status));
+        }
+        for kind in [
+            ActivityKind::Success,
+            ActivityKind::RecoverySuccess,
+            ActivityKind::Failure,
+            ActivityKind::Warning,
+            ActivityKind::RecoveryPartial,
+            ActivityKind::ManualRecovery,
+            ActivityKind::Information,
+        ] {
+            pills.push(ManagerApp::activity_pill(c, kind));
+        }
+        for aggregate in [
+            AggregateState::Default,
+            AggregateState::NotDefault,
+            AggregateState::PartiallyDefault,
+            AggregateState::ChangedExternally,
+            AggregateState::NeedsSignOut,
+        ] {
+            pills.push(ManagerApp::defaults_state_pill(locale, &aggregate));
+        }
+        pills
+    }
+
+    #[test]
+    fn every_status_indicator_is_a_status_and_never_an_action() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let pills = every_status_indicator(locale);
+            assert!(
+                pills.len() >= 40,
+                "the enumeration lost indicators: {}",
+                pills.len()
+            );
+            for pill in pills {
+                assert_eq!(
+                    StatusPill::AFFORDANCE,
+                    Affordance::Status,
+                    "{pill:?} must never read as something to press"
+                );
+                assert!(
+                    !pill.label.trim().is_empty(),
+                    "{locale:?} left a status indicator with no words"
+                );
+            }
+        }
+    }
+
+    /// A status carries its tone, and the window draws a tone as a tint rather
+    /// than as the fill a button of the same tone wears. What this locks is
+    /// that a failure is still recognisably a failure after the change: the
+    /// point was never to make every status grey.
+    #[test]
+    fn a_failure_still_reads_as_a_failure() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            assert_eq!(
+                ManagerApp::status_pill(locale, ComponentStatus::Failed, false).tone,
+                StatusTone::Danger
+            );
+            assert_eq!(
+                ManagerApp::status_pill(locale, ComponentStatus::RestoreAvailable, false).tone,
+                StatusTone::Danger
+            );
+            assert_eq!(
+                ManagerApp::health_pill(locale, HealthState::Healthy).tone,
+                StatusTone::Success
+            );
+            assert_eq!(
+                ManagerApp::doctor_pill(copy(locale), DoctorCheckStatus::Failed).tone,
+                StatusTone::Danger
+            );
+            assert_eq!(
+                ManagerApp::activity_pill(copy(locale), ActivityKind::Failure).tone,
+                StatusTone::Danger
+            );
+        }
+    }
+
+    /// A pending change reads the same whatever the component's own state is,
+    /// because what the person needs to know is that they already asked for
+    /// something.
+    #[test]
+    fn a_pending_component_reads_as_pending_whatever_its_state() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let pending = ManagerApp::status_pill(locale, ComponentStatus::Failed, true);
+            assert_eq!(pending.label.as_ref(), copy(locale).ready_to_install);
+            assert_eq!(pending.tone, StatusTone::Info);
+        }
+    }
+
+    /// The Defaults row's leading control. A component that is already the
+    /// default has nothing to carry out, so it gets no button at all — not a
+    /// permanently disabled one repeating the pill beside it.
+    #[test]
+    fn a_component_already_the_default_leads_with_a_status_not_a_button() {
+        assert_eq!(
+            PrimaryAction::AlreadyDefault.affordance(),
+            Affordance::Status
+        );
+        assert_eq!(PrimaryAction::MakeDefault.affordance(), Affordance::Action);
+        assert_eq!(PrimaryAction::Verify.affordance(), Affordance::Action);
+        assert_eq!(
+            PrimaryAction::of(&AggregateState::Default),
+            PrimaryAction::AlreadyDefault
+        );
+    }
+
+    /// The two screens the field report named, locked against the source
+    /// that draws them.
+    ///
+    /// A view model cannot prove what a render function does with it, and a
+    /// headless test cannot open a window. What it can do is read the render
+    /// code: no screen in this window may build a status out of
+    /// `gpui_component::Tag`, whose filled variants paint the same tokens a
+    /// `Button` paints and which adds a hover a caller cannot switch off.
+    #[test]
+    fn no_screen_draws_a_status_with_the_toolkit_tag() {
+        for (name, source) in [
+            ("components.rs", include_str!("components.rs")),
+            ("pages_main.rs", include_str!("pages_main.rs")),
+            ("pages_flow.rs", include_str!("pages_flow.rs")),
+            ("pages_settings.rs", include_str!("pages_settings.rs")),
+            ("pages_defaults.rs", include_str!("pages_defaults.rs")),
+        ] {
+            assert!(
+                !source.contains("Tag::"),
+                "{name} builds a status out of gpui_component::Tag again"
+            );
+            assert!(
+                !source.contains("tag::Tag"),
+                "{name} imports gpui_component::tag::Tag again"
+            );
+        }
+    }
+
+    /// The failure card's recovery row, locked at the call site. Asserting the
+    /// two strings differ is not enough on its own: the defect was the render
+    /// passing the *value's* key as the label, which no comparison of copy
+    /// constants can see.
+    #[test]
+    fn the_failure_card_labels_its_recovery_row_as_a_heading() {
+        let source = include_str!("components.rs");
+        assert!(
+            source.contains("self.key_value_row(c.recovery_status, recovery, cx)"),
+            "the failure card no longer labels its recovery row with recovery_status"
+        );
+        assert!(
+            !source.contains("self.key_value_row(c.restore_available, recovery, cx)"),
+            "the failure card prints its own label as its value again"
+        );
+    }
+
+    /// The Defaults row, locked at the call site, for the same reason.
+    #[test]
+    fn the_defaults_row_draws_no_button_for_a_component_already_the_default() {
+        let source = include_str!("pages_defaults.rs");
+        assert!(
+            !source.contains(".disabled(true)"),
+            "a Defaults control is a permanently disabled button again"
+        );
+        assert!(
+            source.contains("PrimaryAction::AlreadyDefault => {"),
+            "the AlreadyDefault arm no longer decides on its own"
+        );
+    }
+
+    /// The failure card's recovery row. It used to label the row with the same
+    /// sentence it printed as the value — "a previous version can be restored"
+    /// on both sides of the colon — which told a person nothing. The label is
+    /// now a heading and the value is what actually happened.
+    #[test]
+    fn the_recovery_row_never_prints_its_own_label_as_its_value() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let c = copy(locale);
+            assert!(!c.recovery_status.trim().is_empty());
+            for value in [
+                c.restore_available,
+                c.recovery_partial,
+                c.manual_recovery_required,
+            ] {
+                assert_ne!(
+                    c.recovery_status, value,
+                    "{locale:?} prints the recovery label as its own value again"
+                );
+            }
+        }
+    }
+}

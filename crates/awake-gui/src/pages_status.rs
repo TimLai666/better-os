@@ -5,12 +5,12 @@
 //! window inferred.
 
 use awake_core::{SessionOrigin, SessionPolicy};
+use better_ui::{StatusPill, StatusTone};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, IconName,
     button::{Button, ButtonVariants},
-    tag::Tag,
     *,
 };
 
@@ -213,12 +213,10 @@ impl AwakeApp {
                             .font_semibold()
                             .child(reason.display_name().to_string()),
                     )
-                    .child(
-                        Tag::secondary()
-                            .small()
-                            .rounded_full()
-                            .child(reason.origin_label(c)),
-                    ),
+                    .child(self.pill(
+                        StatusPill::new(reason.origin_label(c), StatusTone::Neutral),
+                        cx,
+                    )),
             )
             .when_some(reason.started_at_unix_seconds, |view, started| {
                 view.child(self.key_value(
@@ -395,12 +393,7 @@ impl AwakeApp {
                     .child(length.label(c)),
             )
             .when(is_default, |row| {
-                row.child(
-                    Tag::primary()
-                        .small()
-                        .rounded_full()
-                        .child(c.default_preset),
-                )
+                row.child(self.pill(StatusPill::new(c.default_preset, StatusTone::Info), cx))
             })
             .child(
                 h_flex()

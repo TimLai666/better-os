@@ -1,11 +1,11 @@
 use better_core::ComponentIcon;
+use better_ui::{BadgeStyle, StatusPill, StatusTone};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, Icon, IconName,
     button::{Button, ButtonVariants},
     menu::{DropdownMenu as _, PopupMenuItem},
-    tag::Tag,
     *,
 };
 use manager_core::{
@@ -14,7 +14,7 @@ use manager_core::{
 
 use crate::{
     app::ManagerApp,
-    i18n::copy,
+    i18n::{Locale, copy},
     model::{ComponentInfo, ComponentKind, Page},
 };
 
@@ -222,83 +222,107 @@ impl ManagerApp {
         )
     }
 
-    pub(crate) fn status_tag(&self, status: ComponentStatus, pending: bool) -> Tag {
-        let c = copy(self.locale);
+    /// The colors one status tone is drawn in.
+    ///
+    /// Deliberately *not* the fill a button of the same tone would use. A
+    /// status is tinted and outlined — the border and the text carry the tone,
+    /// the background only hints at it — so a `danger` status and a `danger`
+    /// action can never be told apart by shape alone. `better_ui::Affordance`
+    /// states the rule this implements.
+    fn status_pill_style(&self, tone: StatusTone, cx: &mut Context<Self>) -> BadgeStyle {
+        let accent = match tone {
+            StatusTone::Neutral => {
+                return BadgeStyle {
+                    foreground: cx.theme().muted_foreground,
+                    background: cx.theme().secondary,
+                    border: cx.theme().border,
+                };
+            }
+            StatusTone::Info => cx.theme().info,
+            StatusTone::Success => cx.theme().success,
+            StatusTone::Warning => cx.theme().warning,
+            StatusTone::Danger => cx.theme().danger,
+        };
+        BadgeStyle {
+            foreground: accent,
+            background: accent.opacity(0.12),
+            border: accent.opacity(0.4),
+        }
+    }
+
+    /// Draw one read-only status indicator.
+    ///
+    /// Every status in this window goes through here, which is what keeps the
+    /// promise that none of them responds to a pointer.
+    pub(crate) fn pill(&self, pill: StatusPill, cx: &mut Context<Self>) -> AnyElement {
+        let style = self.status_pill_style(pill.tone, cx);
+        pill.render(style).into_any_element()
+    }
+
+    /// How one component's state reads. An associated function taking a
+    /// locale rather than a method, so a test can enumerate every state
+    /// without opening a window.
+    pub(crate) fn status_pill(
+        locale: Locale,
+        status: ComponentStatus,
+        pending: bool,
+    ) -> StatusPill {
+        let c = copy(locale);
         if pending {
-            return Tag::info().small().rounded_full().child(c.ready_to_install);
+            return StatusPill::new(c.ready_to_install, StatusTone::Info);
         }
-        match status {
-            ComponentStatus::Available => Tag::info().small().rounded_full().child(c.available),
-            ComponentStatus::Downloading => Tag::info().small().rounded_full().child(c.downloading),
-            ComponentStatus::ReadyToInstall => {
-                Tag::info().small().rounded_full().child(c.ready_to_install)
-            }
-            ComponentStatus::Installing => {
-                Tag::info().small().rounded_full().child(c.installing_files)
-            }
-            ComponentStatus::Verifying => {
-                Tag::info().small().rounded_full().child(c.checking_works)
-            }
-            ComponentStatus::Healthy => Tag::success().small().rounded_full().child(c.healthy),
-            ComponentStatus::UpdateAvailable => Tag::warning()
-                .small()
-                .rounded_full()
-                .child(c.update_available),
-            ComponentStatus::Disabled => Tag::secondary().small().rounded_full().child(c.disabled),
-            ComponentStatus::Incompatible => Tag::danger()
-                .outline()
-                .small()
-                .rounded_full()
-                .child(c.incompatible),
-            ComponentStatus::Degraded => Tag::warning().small().rounded_full().child(c.degraded),
-            ComponentStatus::Failed => Tag::danger().small().rounded_full().child(c.failed),
-            ComponentStatus::RestoreAvailable => Tag::danger()
-                .small()
-                .rounded_full()
-                .child(c.restore_available_status),
-        }
+        let (label, tone) = match status {
+            ComponentStatus::Available => (c.available, StatusTone::Info),
+            ComponentStatus::Downloading => (c.downloading, StatusTone::Info),
+            ComponentStatus::ReadyToInstall => (c.ready_to_install, StatusTone::Info),
+            ComponentStatus::Installing => (c.installing_files, StatusTone::Info),
+            ComponentStatus::Verifying => (c.checking_works, StatusTone::Info),
+            ComponentStatus::Healthy => (c.healthy, StatusTone::Success),
+            ComponentStatus::UpdateAvailable => (c.update_available, StatusTone::Warning),
+            ComponentStatus::Disabled => (c.disabled, StatusTone::Neutral),
+            ComponentStatus::Incompatible => (c.incompatible, StatusTone::Danger),
+            ComponentStatus::Degraded => (c.degraded, StatusTone::Warning),
+            ComponentStatus::Failed => (c.failed, StatusTone::Danger),
+            ComponentStatus::RestoreAvailable => (c.restore_available_status, StatusTone::Danger),
+        };
+        StatusPill::new(label, tone)
     }
 
-    pub(crate) fn kind_tag(&self, kind: ComponentKind) -> Tag {
-        let c = copy(self.locale);
-        match kind {
-            ComponentKind::Replacement => Tag::info()
-                .outline()
-                .small()
-                .rounded_full()
-                .child(c.replacement),
-            ComponentKind::Enhancement => Tag::success()
-                .outline()
-                .small()
-                .rounded_full()
-                .child(c.enhancement),
-            ComponentKind::Diagnostic => Tag::secondary()
-                .outline()
-                .small()
-                .rounded_full()
-                .child(c.diagnostic),
-        }
+    pub(crate) fn status_tag(
+        &self,
+        status: ComponentStatus,
+        pending: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.pill(Self::status_pill(self.locale, status, pending), cx)
     }
 
-    fn health_tag(&self, health: HealthState) -> Tag {
-        let c = copy(self.locale);
-        match health {
-            HealthState::Healthy => Tag::success()
-                .outline()
-                .small()
-                .rounded_full()
-                .child(c.healthy),
-            HealthState::Degraded => Tag::warning()
-                .outline()
-                .small()
-                .rounded_full()
-                .child(c.degraded),
-            HealthState::Failed => Tag::danger()
-                .outline()
-                .small()
-                .rounded_full()
-                .child(c.failed),
-        }
+    pub(crate) fn kind_pill(locale: Locale, kind: ComponentKind) -> StatusPill {
+        let c = copy(locale);
+        let (label, tone) = match kind {
+            ComponentKind::Replacement => (c.replacement, StatusTone::Info),
+            ComponentKind::Enhancement => (c.enhancement, StatusTone::Success),
+            ComponentKind::Diagnostic => (c.diagnostic, StatusTone::Neutral),
+        };
+        StatusPill::new(label, tone)
+    }
+
+    pub(crate) fn kind_tag(&self, kind: ComponentKind, cx: &mut Context<Self>) -> AnyElement {
+        self.pill(Self::kind_pill(self.locale, kind), cx)
+    }
+
+    pub(crate) fn health_pill(locale: Locale, health: HealthState) -> StatusPill {
+        let c = copy(locale);
+        let (label, tone) = match health {
+            HealthState::Healthy => (c.healthy, StatusTone::Success),
+            HealthState::Degraded => (c.degraded, StatusTone::Warning),
+            HealthState::Failed => (c.failed, StatusTone::Danger),
+        };
+        StatusPill::new(label, tone)
+    }
+
+    fn health_tag(&self, health: HealthState, cx: &mut Context<Self>) -> AnyElement {
+        self.pill(Self::health_pill(self.locale, health), cx)
     }
 
     /// Maps the icon a manifest declares onto a shipped glyph. The manifest
@@ -544,8 +568,8 @@ impl ManagerApp {
                                 .text_color(cx.theme().muted_foreground)
                                 .child(component.version_label(c.not_installed)),
                         )
-                        .child(self.kind_tag(component.kind))
-                        .child(self.status_tag(component.state, pending)),
+                        .child(self.kind_tag(component.kind, cx))
+                        .child(self.status_tag(component.state, pending, cx)),
                 )
                 .child(
                     h_flex()
@@ -553,15 +577,14 @@ impl ManagerApp {
                         .items_center()
                         .flex_wrap()
                         .when(component.installed_version.is_some(), |row| {
-                            row.child(self.health_tag(component.health))
+                            row.child(self.health_tag(component.health, cx))
                         })
                         .when(component.restore_available, |row| {
                             row.child(
-                                Tag::info()
-                                    .outline()
-                                    .small()
-                                    .rounded_full()
-                                    .child(c.restore_available),
+                                self.pill(
+                                    StatusPill::new(c.restore_available, StatusTone::Info),
+                                    cx,
+                                ),
                             )
                         })
                         .child(
@@ -621,8 +644,13 @@ impl ManagerApp {
                 .when_some(detail.map(str::to_string), |view, detail| {
                     view.child(self.key_value_row(c.failure_technical_detail, detail, cx))
                 })
+                // Labelled "recovery", not "a previous version can be
+                // restored". The label used to be the latter and the value in
+                // the ordinary case was the same sentence again, so the row
+                // read as one string printed twice and said nothing about what
+                // the recovery actually did.
                 .when_some(recovery_detail, |view, recovery| {
-                    view.child(self.key_value_row(c.restore_available, recovery, cx))
+                    view.child(self.key_value_row(c.recovery_status, recovery, cx))
                 }),
             cx,
         )

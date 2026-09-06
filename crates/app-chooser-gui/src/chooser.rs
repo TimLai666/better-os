@@ -373,19 +373,24 @@ impl AppChooser {
         }
     }
 
+    /// A badge here is always a statement about an application — which one is
+    /// already the default, where an entry came from, whether it declares the
+    /// selected type. None of them can be clicked, so an emphasized one is
+    /// tinted rather than filled: a solid `primary` fill is what this window's
+    /// primary button wears, and a pill wearing it promises an action it does
+    /// not have. `better_ui::Affordance` states the rule.
     fn badge_style(&self, strong: bool, cx: &App) -> BadgeStyle {
+        if !strong {
+            return BadgeStyle {
+                foreground: cx.theme().muted_foreground,
+                background: cx.theme().muted,
+                border: cx.theme().border,
+            };
+        }
         BadgeStyle {
-            foreground: if strong {
-                cx.theme().primary_foreground
-            } else {
-                cx.theme().muted_foreground
-            },
-            background: if strong {
-                cx.theme().primary
-            } else {
-                cx.theme().muted
-            },
-            border: cx.theme().border,
+            foreground: cx.theme().primary,
+            background: cx.theme().primary.opacity(0.12),
+            border: cx.theme().primary.opacity(0.4),
         }
     }
 

@@ -5,6 +5,7 @@
 //! both per-component actions all open a review screen first, which is the
 //! whole point of the feature.
 
+use better_ui::{StatusPill, StatusTone};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
@@ -12,7 +13,6 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     sidebar::SidebarMenuItem,
-    tag::Tag,
     *,
 };
 
@@ -68,26 +68,28 @@ impl ManagerApp {
         )
     }
 
-    fn defaults_state_tag(&self, aggregate: &AggregateState) -> Tag {
-        let label = aggregate_label(self.locale, aggregate);
-        match aggregate {
-            AggregateState::Default => Tag::success().small().rounded_full().child(label),
-            AggregateState::NotDefault => Tag::secondary().small().rounded_full().child(label),
-            AggregateState::PartiallyDefault => Tag::info().small().rounded_full().child(label),
-            AggregateState::ChangedExternally => Tag::warning().small().rounded_full().child(label),
-            AggregateState::NeedsSignOut => {
-                Tag::info().outline().small().rounded_full().child(label)
-            }
-            AggregateState::Conflict { .. } => Tag::danger().small().rounded_full().child(label),
-            AggregateState::Unavailable { .. } => Tag::secondary()
-                .outline()
-                .small()
-                .rounded_full()
-                .child(label),
-            AggregateState::Unknown { .. } => {
-                Tag::warning().outline().small().rounded_full().child(label)
-            }
-        }
+    /// How one component's overall defaults state reads. Every arm is a
+    /// status: the row's actions live in `defaults_row_actions`.
+    pub(crate) fn defaults_state_pill(
+        locale: crate::i18n::Locale,
+        aggregate: &AggregateState,
+    ) -> StatusPill {
+        let label = aggregate_label(locale, aggregate);
+        let tone = match aggregate {
+            AggregateState::Default => StatusTone::Success,
+            AggregateState::NotDefault => StatusTone::Neutral,
+            AggregateState::PartiallyDefault => StatusTone::Info,
+            AggregateState::ChangedExternally => StatusTone::Warning,
+            AggregateState::NeedsSignOut => StatusTone::Info,
+            AggregateState::Conflict { .. } => StatusTone::Danger,
+            AggregateState::Unavailable { .. } => StatusTone::Neutral,
+            AggregateState::Unknown { .. } => StatusTone::Warning,
+        };
+        StatusPill::new(label, tone)
+    }
+
+    fn defaults_state_tag(&self, aggregate: &AggregateState, cx: &mut Context<Self>) -> AnyElement {
+        self.pill(Self::defaults_state_pill(self.locale, aggregate), cx)
     }
 
     pub(crate) fn defaults_page(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -274,13 +276,17 @@ impl ManagerApp {
                                 .gap_2()
                                 .items_center()
                                 .flex_wrap()
-                                .child(self.defaults_state_tag(&row.aggregate))
-                                .child(Tag::secondary().small().rounded_full().child(
-                                    if row.restore_available {
-                                        c.saved_previous_value
-                                    } else {
-                                        c.no_saved_previous_value
-                                    },
+                                .child(self.defaults_state_tag(&row.aggregate, cx))
+                                .child(self.pill(
+                                    StatusPill::new(
+                                        if row.restore_available {
+                                            c.saved_previous_value
+                                        } else {
+                                            c.no_saved_previous_value
+                                        },
+                                        StatusTone::Neutral,
+                                    ),
+                                    cx,
                                 )),
                         ),
                 )
@@ -300,26 +306,43 @@ impl ManagerApp {
         let c = copy(self.locale);
         let busy = self.defaults.busy;
         let primary_id = row.component.clone();
+        // A primary button is drawn only where `PrimaryAction::affordance`
+        // says there is an action. `AlreadyDefault` is a state — it used to be
+        // a permanently disabled button repeating the state pill beside it —
+        // and the pill is what says it now.
         let primary = match row.primary {
-            PrimaryAction::MakeDefault => Button::new(row.element_id("defaults-primary"))
-                .primary()
-                .label(row.primary.label(self.locale))
-                .disabled(busy)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.review_defaults(PlanKind::Apply, Selection::one(primary_id.clone()), cx);
-                })),
-            PrimaryAction::AlreadyDefault => Button::new(row.element_id("defaults-primary"))
-                .label(row.primary.label(self.locale))
-                .disabled(true),
-            PrimaryAction::Verify => Button::new(row.element_id("defaults-primary"))
-                .label(row.primary.label(self.locale))
-                .disabled(busy)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.verify_defaults(Selection::one(primary_id.clone()), cx);
-                })),
+            PrimaryAction::MakeDefault => Some(
+                Button::new(row.element_id("defaults-primary"))
+                    .primary()
+                    .label(row.primary.label(self.locale))
+                    .disabled(busy)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.review_defaults(
+                            PlanKind::Apply,
+                            Selection::one(primary_id.clone()),
+                            cx,
+                        );
+                    })),
+            ),
+            PrimaryAction::AlreadyDefault => {
+                debug_assert_eq!(row.primary.affordance(), better_ui::Affordance::Status);
+                None
+            }
+            PrimaryAction::Verify => Some(
+                Button::new(row.element_id("defaults-primary"))
+                    .label(row.primary.label(self.locale))
+                    .disabled(busy)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.verify_defaults(Selection::one(primary_id.clone()), cx);
+                    })),
+            ),
         };
 
-        let mut actions = h_flex().gap_2().items_center().flex_wrap().child(primary);
+        let mut actions = h_flex()
+            .gap_2()
+            .items_center()
+            .flex_wrap()
+            .when_some(primary, |row, primary| row.child(primary));
         for secondary in &row.secondary {
             let component = row.component.clone();
             actions = match secondary {
@@ -413,7 +436,7 @@ impl ManagerApp {
                                 h_flex()
                                     .gap_2()
                                     .flex_wrap()
-                                    .child(self.defaults_state_tag(&row.aggregate)),
+                                    .child(self.defaults_state_tag(&row.aggregate, cx)),
                             ),
                     )
                     .child(
@@ -446,11 +469,15 @@ impl ManagerApp {
                                                 .font_semibold()
                                                 .child(kind_label(self.locale, integration.kind)),
                                         )
-                                        .child(Tag::secondary().small().rounded_full().child(
-                                            integration_state_label(
-                                                self.locale,
-                                                &integration.state,
+                                        .child(self.pill(
+                                            StatusPill::new(
+                                                integration_state_label(
+                                                    self.locale,
+                                                    &integration.state,
+                                                ),
+                                                StatusTone::Neutral,
                                             ),
+                                            cx,
                                         )),
                                 )
                                 .child(self.key_value_row(
@@ -732,12 +759,13 @@ impl ManagerApp {
                             .child(kind_label(self.locale, entry.kind)),
                     )
                     .when(restoring, |row| {
-                        row.child(
-                            Tag::secondary()
-                                .small()
-                                .rounded_full()
-                                .child(entry.restore_class.label(self.locale)),
-                        )
+                        row.child(self.pill(
+                            StatusPill::new(
+                                entry.restore_class.label(self.locale),
+                                StatusTone::Neutral,
+                            ),
+                            cx,
+                        ))
                     }),
             )
             .child(self.key_value_row(c.current_value, entry.current_owner.clone(), cx))
@@ -811,29 +839,20 @@ impl ManagerApp {
                 false,
                 compact,
             ))
-            .child(
-                self.surface(
-                    h_flex().gap_2().items_center().child(
-                        Tag::secondary()
-                            .small()
-                            .rounded_full()
-                            .child(outcome_headline(self.locale, outcome)),
-                    ),
+            .child(self.surface(
+                h_flex().gap_2().items_center().child(self.pill(
+                    StatusPill::new(outcome_headline(self.locale, outcome), StatusTone::Neutral),
                     cx,
-                ),
-            )
+                )),
+                cx,
+            ))
             .child(
                 self.surface(
                     v_flex().gap_2().children(
                         rows.iter()
                             .map(|row| {
-                                let tag = match row.tone {
-                                    ResultTone::Success => Tag::success(),
-                                    ResultTone::Pending => Tag::info(),
-                                    ResultTone::Warning => Tag::warning(),
-                                    ResultTone::Failure => Tag::danger(),
-                                    ResultTone::Neutral => Tag::secondary(),
-                                };
+                                let tag = self
+                                    .pill(StatusPill::new(row.label, result_tone(row.tone)), cx);
                                 h_flex()
                                     .w_full()
                                     .min_w_0()
@@ -861,7 +880,7 @@ impl ManagerApp {
                                                     ),
                                             ),
                                     )
-                                    .child(tag.small().rounded_full().child(row.label))
+                                    .child(tag)
                                     .into_any_element()
                             })
                             .collect::<Vec<_>>(),
@@ -880,5 +899,17 @@ impl ManagerApp {
                 ),
             )
             .into_any_element()
+    }
+}
+
+/// The tone one defaults result row reads in. Separate from the row so a test
+/// can assert the mapping without a window.
+pub(crate) fn result_tone(tone: ResultTone) -> StatusTone {
+    match tone {
+        ResultTone::Success => StatusTone::Success,
+        ResultTone::Pending => StatusTone::Info,
+        ResultTone::Warning => StatusTone::Warning,
+        ResultTone::Failure => StatusTone::Danger,
+        ResultTone::Neutral => StatusTone::Neutral,
     }
 }

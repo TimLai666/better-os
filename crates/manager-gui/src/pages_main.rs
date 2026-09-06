@@ -1,10 +1,10 @@
+use better_ui::{StatusPill, StatusTone};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, Icon, IconName,
     button::{Button, ButtonVariants},
     scroll::ScrollableElement,
-    tag::Tag,
     *,
 };
 use manager_core::catalog::now_unix_seconds;
@@ -654,7 +654,7 @@ impl ManagerApp {
                     })
                     .child(self.key_value_row(
                         c.health,
-                        self.status_tag(component.state, pending),
+                        self.status_tag(component.state, pending, cx),
                         cx,
                     )),
                 cx,
@@ -728,8 +728,8 @@ impl ManagerApp {
                                 h_flex()
                                     .gap_2()
                                     .flex_wrap()
-                                    .child(self.kind_tag(component.kind))
-                                    .child(self.status_tag(component.state, pending)),
+                                    .child(self.kind_tag(component.kind, cx))
+                                    .child(self.status_tag(component.state, pending, cx)),
                             ),
                     )
                     .child(
@@ -1066,24 +1066,29 @@ impl ManagerApp {
             }))
     }
 
+    /// How one activity entry reads. A record of something that already
+    /// happened is never an action, so it is a pill and not a button.
+    pub(crate) fn activity_pill(c: &'static crate::i18n::Copy, kind: ActivityKind) -> StatusPill {
+        let (label, tone) = match kind {
+            ActivityKind::Success | ActivityKind::RecoverySuccess => {
+                (c.successful, StatusTone::Success)
+            }
+            ActivityKind::Failure => (c.failed, StatusTone::Danger),
+            ActivityKind::Warning
+            | ActivityKind::RecoveryPartial
+            | ActivityKind::ManualRecovery => (c.warnings, StatusTone::Warning),
+            ActivityKind::Information => (c.activity, StatusTone::Neutral),
+        };
+        StatusPill::new(label, tone)
+    }
+
     fn activity_row(
         &self,
         entry: &manager_core::ActivityRecord,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let c = copy(self.locale);
-        let tag = match entry.kind {
-            ActivityKind::Success | ActivityKind::RecoverySuccess => {
-                Tag::success().small().rounded_full().child(c.successful)
-            }
-            ActivityKind::Failure => Tag::danger().small().rounded_full().child(c.failed),
-            ActivityKind::Warning
-            | ActivityKind::RecoveryPartial
-            | ActivityKind::ManualRecovery => {
-                Tag::warning().small().rounded_full().child(c.warnings)
-            }
-            ActivityKind::Information => Tag::secondary().small().rounded_full().child(c.activity),
-        };
+        let tag = self.pill(Self::activity_pill(c, entry.kind), cx);
         let operation = entry
             .operation
             .map(|operation| self.operation_label(operation))

@@ -1,10 +1,10 @@
+use better_ui::{StatusPill, StatusTone};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, Icon, IconName,
     button::{Button, ButtonVariants},
     progress::Progress,
-    tag::Tag,
     *,
 };
 use manager_core::{DesiredOperation, OperationStage, RecoveryStatus};
@@ -392,13 +392,16 @@ impl ManagerApp {
         let active = current == Some(stage);
         let complete =
             current.is_some_and(|current| stage_progress(current) > stage_progress(stage));
-        let tag = if complete {
-            Tag::success().small().rounded_full().child("✓")
-        } else if active {
-            Tag::info().small().rounded_full().child("…")
-        } else {
-            Tag::secondary().small().rounded_full().child("○")
-        };
+        let tag = self.pill(
+            if complete {
+                StatusPill::new("✓", StatusTone::Success)
+            } else if active {
+                StatusPill::new("…", StatusTone::Info)
+            } else {
+                StatusPill::new("○", StatusTone::Neutral)
+            },
+            cx,
+        );
         h_flex()
             .w_full()
             .min_w_0()

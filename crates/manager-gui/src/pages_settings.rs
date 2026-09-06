@@ -1,10 +1,10 @@
+use better_ui::{StatusPill, StatusTone};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, IconName,
     button::{Button, ButtonVariants},
     switch::Switch,
-    tag::Tag,
     *,
 };
 use manager_core::{DoctorCheck, DoctorCheckKind, DoctorCheckStatus, ReleaseChannel, StoredTheme};
@@ -172,6 +172,20 @@ impl ManagerApp {
             .into_any_element()
     }
 
+    /// How one doctor check result reads. It reports what a check found, so it
+    /// is a pill: nothing about it can be clicked.
+    pub(crate) fn doctor_pill(
+        c: &'static crate::i18n::Copy,
+        status: DoctorCheckStatus,
+    ) -> StatusPill {
+        let (label, tone) = match status {
+            DoctorCheckStatus::Passed => (c.passed, StatusTone::Success),
+            DoctorCheckStatus::Warning => (c.warnings, StatusTone::Warning),
+            DoctorCheckStatus::Failed => (c.failed, StatusTone::Danger),
+        };
+        StatusPill::new(label, tone)
+    }
+
     fn doctor_row(&self, check: &DoctorCheck, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale);
         let label = match check.kind {
@@ -181,11 +195,7 @@ impl ManagerApp {
             DoctorCheckKind::RestoreData => c.restore_available,
             DoctorCheckKind::HostReconciliation => c.check_host_reconciliation,
         };
-        let status = match check.status {
-            DoctorCheckStatus::Passed => Tag::success().small().rounded_full().child(c.passed),
-            DoctorCheckStatus::Warning => Tag::warning().small().rounded_full().child(c.warnings),
-            DoctorCheckStatus::Failed => Tag::danger().small().rounded_full().child(c.failed),
-        };
+        let status = self.pill(Self::doctor_pill(c, check.status), cx);
         h_flex()
             .w_full()
             .min_w_0()

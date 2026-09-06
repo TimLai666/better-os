@@ -5,12 +5,12 @@
 //! the only section that changes something this window owns rather than
 //! something the service owns.
 
+use better_ui::{StatusPill, StatusTone};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme,
     button::{Button, ButtonVariants},
-    tag::Tag,
     *,
 };
 
@@ -92,12 +92,10 @@ impl AwakeApp {
                                 .font_semibold()
                                 .child(entry.started_label(self.offset)),
                         )
-                        .child(
-                            Tag::secondary()
-                                .small()
-                                .rounded_full()
-                                .child(entry.cause_label(c)),
-                        ),
+                        .child(self.pill(
+                            StatusPill::new(entry.cause_label(c), StatusTone::Neutral),
+                            cx,
+                        )),
                 )
                 .child(self.key_value(c.history_origin, entry.origin_label(c), cx))
                 .child(self.key_value(c.history_ended, entry.ended_label(self.offset, c), cx))
