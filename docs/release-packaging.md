@@ -162,7 +162,7 @@ commit `056eaad78f2fc60603335b2d66f10006e39ab0f8` 的 post-merge CI run
 titlebar 也拖不動、所有應用程式都沒有圖示，以及視窗沒有設定 `app_id`，dock 與
 應用程式清單因此對不到它的 desktop entry。變動橫跨每個 GUI 套件，不是單一元件。
 
-上一個 release 是
+再上一個 release 是
 [`v0.2.4`](https://github.com/TimLai666/better-os/releases/tag/v0.2.4)，由 merge
 commit `42be13da18466d302b761aed4b8e9156f99282d8` 的 post-merge CI run
 [`33970875135`](https://github.com/TimLai666/better-os/actions/runs/33970875135)
@@ -177,7 +177,7 @@ XML 宣告與 `<svg>` 之間的授權註解把根標籤推出了那個範圍；�
 檔案有沒有被同一個套件帶進去，現在還會確認 `<svg` 出現在檔案的前 100 個位元組
 以內。檔案存在與 loader 認得是兩件事，前者過關不代表後者成立。
 
-目前的 release 是
+上一個 release 是
 [`v0.2.5`](https://github.com/TimLai666/better-os/releases/tag/v0.2.5)，由 merge
 commit `00936c371b06447bbdafc0df5791a8f3d428b00b` 的 post-merge CI run
 [`34008382468`](https://github.com/TimLai666/better-os/actions/runs/34008382468)
@@ -195,6 +195,22 @@ commit `00936c371b06447bbdafc0df5791a8f3d428b00b` 的 post-merge CI run
 `targets.distributions` 的比對上：只寫 `[ubuntu]` 的第三方 manifest 在 Zorin
 主機上會被拒絕，要支援就必須列出 `zorin`。七份 first-party manifest 都已經同時
 列出 `zorin` 與 `ubuntu`。
+
+目前的 release 是
+[`v0.2.6`](https://github.com/TimLai666/better-os/releases/tag/v0.2.6)，由 merge
+commit `3c8f2a08684aacb152229ed0d567274276b1949b` 的 post-merge CI run
+[`34019971299`](https://github.com/TimLai666/better-os/actions/runs/34019971299)
+產生，同樣是八個套件、32 個 `.deb` 與 32 個 `.deb.sha256`。這是 patch release，
+內容是 ticket 46、47、48。
+
+其中 ticket 47 是 release 契約自己會踩到的一項：daemon 的健康檢查從套件名稱推出
+`/usr/bin/<元件名>`，而 `packaging/build-deb.sh` 建出來的八個套件裡有三個不裝同名
+執行檔——`better-awake`、`better-storage` 與 `better-manager-daemon`——所以這三個
+套件在任何機器上都裝得起來、檢查不過、然後被還原。判準改成問 dpkg：套件已安裝，
+且 `dpkg-query -L` 列出的每個路徑都在。這連帶影響 packaging 的一個假設：`.deb` 裝
+在 `/usr/share/doc/<package>/` 的 `THIRD-PARTY-LICENSES.md` 在精簡映像上會被
+`--path-exclude` 丟掉，卻仍留在 dpkg 的檔案清單裡，所以健康檢查必須讀 dpkg 自己的
+設定才能分辨「被設定成不要裝」與「不見了」。
 
 `packaging/build-deb.sh` 從 0.2.4 開始會先清掉 `dist/` 裡上一次建置留下的
 `.deb` 與 `.deb.sha256`。`verify-deb.sh` 用不含版號的 glob 挑套件，同一個元件

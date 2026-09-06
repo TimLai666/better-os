@@ -100,6 +100,7 @@ privileged mutation out of the GUI and CLI.
 | M53 | ticket 46 — the manager states its version and can be asked to check for updates (needs M52) | agent | done | Two field-reported gaps, both about a manager that knew something and said nothing. Nothing anywhere showed the manager's own version: not the window, not a Settings page, and not the command line, where `better-manager --version` was an unknown argument because the `clap` command declared a name and an `about` and no `version`. And the only way to refresh the catalog was the Components screen's "Update list" button, which reports on the list rather than on updates, so the Updates screen said "everything is up to date" about a catalog whose age it never showed. The version now comes from `env!("CARGO_PKG_VERSION")` in both binaries — the workspace version every crate inherits, so there is no second number to keep in step — and appears in a Settings About section (application name, version, the machine ticket 45's probe actually read, and the project repository as text, because nothing in this window opens a browser), in the sidebar header beside the application's own name, and from `--version` on the command line. The titlebar was deliberately left alone: `better_ui::window_chrome` is shared chrome every Better OS window draws the same way, and a version in one application's titlebar would be an inconsistency rather than a feature. The Updates screen gained the check: `check_for_updates` sets one flag and calls the same `refresh_catalog` the Components button calls, so there is one fetch path and the two screens cannot disagree about the catalog, and the UI thread is never blocked — the button disables itself and says it is checking while the background fetch runs. What the check may then claim is a view model rather than a rendering detail: `UpdateCheck` reports the count when the refresh landed and something is newer, `已是最新` with the list's age when nothing is, and the degraded state's own sentence when the refresh fell back to the cache or to the built-in catalog. Two judgements travel with it. A failed refresh never prints a count, though one exists, because that number describes the list the check failed to replace. And a partly refused refresh is not a failure — the newer manifests were adopted — so it reports its count, with the refusal carried by the catalog freshness row, which the Updates screen now shares with the Components screen as one `catalog_status_row` rather than a copy. 13 new tests, none reading the machine they run on: 11 in `manager-gui` over the About section against a Zorin 18 fixture and against an unidentifiable host, all five result states, both locales for every new string, the house overflow check at three widths and three scales, and the repository URL fitting the narrowest supported window; 2 in `manager-cli` running the shipped binary with `--version` and `-V`. Full gate green: fmt, check, clippy `-D warnings`, and 2,568 workspace tests. A 9-second `ZED_HEADLESS=1` smoke on a scratch XDG stayed silent, and an on-host run in a nested sandbox compositor against a scratch XDG tree — nothing on the machine touched — showed `元件管理器 0.2.5` in the sidebar, `版本 0.2.5` and `這台電腦 zorin 24.04 · amd64` in the About section, and the check moving both rows together from the built-in catalog's "尚未下載過" warning to `已是最新 · 剛剛更新` over `剛剛下載的清單 · 剛剛更新`. Two limits: the failed-refresh copy was exercised through the view model rather than by making a real fetch fail on the host, and the repository line is text because making it open a browser is a decision about what this window may launch |
 | M54 | ticket 48 — the affordance audit: what looks clickable is clickable (needs M53) | agent | done, one case unverified on screen | A field report from the Zorin 18 install said the manager's failure surfaces were full of things that read as buttons and did nothing. It was right, and the cause was one shared component rather than a handful of screens. `gpui_component::Tag` — which every first-party status indicator was built from — paints `cx.theme().danger`, `primary`, `success`, `warning` and `info` as solid fills, and `gpui_component::button::Button` paints the *same tokens* for the same variants, so a filled danger tag and a `.danger()` button were the identical fill on the identical rounded shape; and `Tag`'s render ends with an unconditional `.hover(opacity(0.9))` applied after `.refine_style`, so a caller could not switch it off from outside. On the components list that put a solid red `可還原` pill immediately left of the solid red `查看修復方式` button, which is why the button read as decoration. The button was never dead: it is a wired `Button::danger().on_click(open_component)` and it was clicked on the compositor and navigated — fixing the *pill* is what fixes the button, and stripping the button would have been the wrong call. The rule is now written down in `better-ui` as `Affordance`, a closed two-case split: an Action has a handler and may wear an action fill, a Status has no hover, no cursor, no handler and no saturated action fill, and is tinted and outlined instead. `StatusPill` and `StatusTone` make it a *type* rather than a convention — a status is pure data with no colors, so all 46 indicators the manager can draw are enumerable in a unit test with no window open, and `StatusPill::AFFORDANCE` is a constant the test reads. Two more defects were fixed at their own causes rather than restyled. The restore screen printed **可還原上一個版本 · 可還原上一個版本**, the same sentence as both the label and the value of one row, because the failure card labelled its recovery row with the string that is also that row's ordinary value; it now reads `復原狀態 · 可還原上一個版本`. And the Defaults row drew a permanently `.disabled(true)` button for a component that is already the default, repeating the state pill beside it — not an unavailable action but a state wearing button chrome, and `PrimaryAction::affordance()` now says so and the row draws no primary control. The other six windows were audited at grep depth plus render reading: `awake-gui` had seven of the same `Tag` violations including two literal `Tag::primary()` action fills, `app-chooser-gui` filled a badge with its own primary-button fill, and `monitor-gui`, `files-gui`, `touchpad-gui`, `launcher-gui` and `awake-tray` were clean — touchpad's hand-rolled badge was already outline-only. No dead control was found in any of the seven: a scan for `Button::new` with no following handler returned two candidates, both false positives on inspection. One violation is noted and deliberately not touched: `gpui_component::SidebarFooter` paints a full accent hover across its whole row, and in all four windows that use it the row is a static host-profile label with no handler — it is ticket 47's file in `manager-gui` and is left for that merge to reconcile, with the other three named so the shared cause is not lost. 8 new tests (2,579 passing workspace-wide, 0 failing), three of them source-level, because a view model cannot prove what a render function does with it: no render file may contain `Tag::` again, the failure card must label its recovery row with `recovery_status`, and no Defaults control may be a permanently disabled button. Each was checked against the defect it describes rather than assumed to work — reverting the recovery-row label makes its test fail. Full gate green: fmt, check, clippy `-D warnings`, 2,579 tests, and 8 s `ZED_HEADLESS=1` smokes of all three changed windows. On-host verification ran both builds in a nested sway sandbox against a scratch XDG tree seeded with the same failed-component state, `main` at `282f3c0` against this branch: the before build reproduced the solid-red-pill-beside-solid-red-button pair and the duplicated recovery row exactly as reported, and the after build shows exactly one solid fill per row and it is always the button. One limit, stated rather than implied: the `AlreadyDefault` Defaults row was **not** seen on screen, because this host has no component that is currently the XDG default and the screen only ever produced the `Verify` arm — that fix rests on its test and on the code, not on a photograph |
 | M55 | ticket 47 — the health check asks dpkg what the package installed (needs M52) | agent | done | the fourth round of field reports from the same Zorin 18 machine, now on `v0.2.5`: every install of Better Awake passed apt, failed its health check with `/usr/bin/better-awake is missing`, and was rolled back, so the GUI said 「元件未通過健康檢查」 while the daemon honestly removed what it had just installed. `manager-daemon/src/health.rs` derived one path from the package name, and three of the eight shipped packages are not shaped that way — `better-awake` installs `better-awake-service`, `awake-tray`, and `awake-gui`; `better-storage` installs `better-storage-service` and `better-storage-doctor`; and `better-manager-daemon` installs `/usr/libexec/better-manager-daemon`, so the manager could never have updated its own privileged service either. The guess is gone: `AptDriver::installed_files` asks `dpkg-query -L` and `dpkg-query -W -f='${Conffiles}'`, and an install, update, or restore is healthy when dpkg reports the package installed **and** every path dpkg lists for it is on disk. Directories are skipped because they are shared between packages; conffiles are skipped because dpkg lets a machine's owner delete one and does not call the package broken; paths this machine's dpkg was configured never to unpack are skipped, which nearly shipped as a worse version of the very bug being fixed — `--path-exclude` drops a file at unpack and leaves it in the file list, `dpkg --verify` calls it `missing` too, and every minimized image (the `ubuntu:24.04` container the e2e runs in included) excludes `/usr/share/doc/*` where every Better OS package installs `THIRD-PARTY-LICENSES.md`, so the first version of this fix would have failed every package on every minimized machine; it was caught by installing a fixture package into a throwaway `--root` with the Docker image's own filters and watching dpkg list a file it had not written, and `manager-daemon/src/dpkg_config.rs` now reads `/etc/dpkg/dpkg.cfg.d/*`, `/etc/dpkg/dpkg.cfg`, and `apt-config dump DPkg::Options` for the answer; a symlink counts as present if the link exists, dangling or not, because the link is the file the package installed and `symlink_metadata` never follows it out of the package. Removal is unchanged, and `Undetermined` now covers a file-list query that fails as well as a version query that fails, so a broken dpkg database can never read as a pass. The trust model did not move — the paths come from dpkg's record of the package the daemon verified by checksum and installed itself, nothing a manifest wrote reaches the check, and nothing is executed. One detail kept it honest: a query's output is not truncated to the log tail the way a transaction's output is, because a truncated list would silently check fewer files than the package installed. Seven new daemon tests, seven more for the path filters, and one rewritten — an awake-shaped package passes, a missing listed file fails and is named, a deleted conffile is not a broken package, a path-excluded file is not a missing file, an unreadable list is `Undetermined`, and `SystemHealthProbe` against a real temporary directory answers directory, present, dangling-symlink-present, missing — plus a whole executor transaction installing an awake-shaped package without a rollback, and parser tests over dpkg's diversion prose and an `obsolete` conffile. The container e2e could not have caught this class, because its authorized path installs `better-monitor`, which passed the old rule: it now installs and removes `better-awake` through the privileged service, asserts `succeeded` and `healthy`, asserts `/usr/bin/better-awake` does **not** exist so the test says so if the package ever grows one, and checks every path `dpkg-query -L` lists against the real filesystem — at no infrastructure cost, since `dpkg-shlibdeps` gives `better-awake` the same graphics libraries the image already installs. The rollback fixture had to change with it: its 0.1.0 package shipped no files at all, which under the new rule is healthy, so it now ships two and deletes one in its postinst after dpkg has recorded it — dpkg says installed and lists a file that is not there, which is precisely what the check exists to catch. Separately and small, the window footer read `zorin 24.04`, a Zorin version that does not exist; `better_core::host::describe_distribution` supplies the host's own name and badge, `SystemProfile::distribution_label` carries it as a display value never matched against a manifest, and the footer now reads `Zorin OS 18 · Ubuntu 24.04 base` (`基礎` in zh-TW), `Ubuntu 24.04` alone on plain Ubuntu, and `unknown` on a host that was never identified — both lines truncating rather than widening the rail. Crate-scoped gate green in a cold worktree: fmt over the workspace, and check, test, and clippy `-D warnings` for `manager-daemon`, `better-core`, `manager-platform`, and `manager-core`, with `cargo check -p manager-gui` and its 66 tests for the footer; the full workspace gate runs after merge. Two things are not proved here: the container e2e has no Docker daemon in this worktree and is CI-only until someone runs it, and the new footer string is asserted by test from the real host probe's output rather than looked at on a running desktop |
+| M56 | v0.2.6 public release — the health check that lets Better Awake and Better Storage stay installed (needs M53, M54, M55) | agent | done | the release tickets 46, 47, and 48 were waiting for, and the one a real machine could not work around: before it, every install of Better Awake or Better Storage passed apt, failed the health check on a `/usr/bin/<name>` that those packages never install, and was rolled back. Workspace version 0.2.5 → 0.2.6, the seven shipped manifests re-pointed at the 0.2.6 assets with checksums back to placeholders per the ADR 0002 rule, and `docs/third-party-licenses.md` regenerated because it pins the `Cargo.lock` hash the version bump moved. No version hard-code needed fixing this time, and that was checked rather than assumed: the five literal `0.2.5` strings left in the tree were each read — four are the fake dpkg driver's fixture version in `crates/manager-daemon/src/health.rs`, which would read the same for any value, and one is a comment in `packaging/test-daemon-e2e.sh` naming the release whose field report that test reproduces — so none of them tracks the workspace version. Full gate green locally before the merge: fmt, `cargo check --workspace`, clippy `-D warnings`, 168 test targets and 2,599 tests, `packaging/generate-third-party-notices.sh --check`, and `build-deb.sh` plus `verify-deb.sh` end to end on amd64 over all eight packages, leaving exactly 8 `.deb` and 8 `.deb.sha256` in `dist/`. Post-merge CI run [34019971299](https://github.com/TimLai666/better-os/actions/runs/34019971299) on merge commit `3c8f2a0` green across all six jobs on its first attempt — rust, installer, and the four package jobs — with no red run and no retry. [`v0.2.6`](https://github.com/TimLai666/better-os/releases/tag/v0.2.6) published with 66 assets — 32 `.deb`, 32 `.deb.sha256`, `LICENSE`, and `third-party-licenses.md` — the full 8 × 2 × 2 matrix enumerated component by component with nothing missing and nothing unexpected. Every package was then fetched again with plain `curl` from the exact public `releases/download/v0.2.6/` URL each manifest carries, so the 28 URLs are proven to resolve rather than assumed; all 32 sidecars verified, and all 64 downloaded files compared byte-for-byte against the CI artifacts with no difference. The 28 artifact variants across the seven manifests now carry the published 0.2.6 checksums, each re-hashed from the downloaded package rather than copied from a sidecar, then cross-checked a second time against those sidecars by a separate reader so a mistake in the writer could not pass by repeating itself. 168 test targets and 2,599 tests pass against the real checksums. `bash install.sh --dry-run` resolved `v0.2.6` from the public API, named the four 24.04 amd64 URLs it would fetch, and reported the 0.2.5 on this host as the version it would replace; nothing was installed. Three things this release does not prove, stated rather than implied: the container end-to-end check that now installs `better-awake` through the privileged service ran in CI and not here, because this worktree has no Docker daemon; the new `Zorin OS 18 · Ubuntu 24.04 base` footer is asserted by test from the real host probe's output rather than looked at on a running desktop; and ticket 48's `AlreadyDefault` Defaults row was never seen on screen, because no Better OS component is currently this machine's XDG default. The release itself was created from the main session with the user's approval — this session's `gh release create` was refused by the permission classifier, and the assets, notes, and target SHA were staged and handed over rather than worked around |
 
 Every milestone from M21 onward shares the same base gate: `cargo fmt --all --
 --check`, `cargo check --workspace`, `cargo test --workspace`, and `cargo clippy
@@ -114,42 +115,51 @@ process-state tests and the dpkg doc-exclusion assumption in the container
 check were fixed along the way; the license inventory pins the `Cargo.lock`
 hash and must be regenerated whenever the lockfile changes.
 
-The current release is `v0.2.5`. CI run 34008382468 on merge commit `00936c3`
+The current release is `v0.2.6`. CI run 34019971299 on merge commit `3c8f2a0`
 produced the assets and was green on its first attempt; the release carries 32
 `.deb` files and 32 `.deb.sha256` sidecars, eight packages across ubuntu 22.04
 and 24.04 on amd64 and arm64, plus `LICENSE` and `third-party-licenses.md`.
 Every package was downloaded again with plain `curl` from the public
-`releases/download/v0.2.5/` URL its own manifest carries, all 32 sidecars
+`releases/download/v0.2.6/` URL its own manifest carries, all 32 sidecars
 verified, the downloaded bytes compared byte-for-byte against the CI artifacts,
 and the seven shipped manifests now record checksums re-hashed from those
 downloaded packages rather than copied from the sidecars, then cross-checked
 against those sidecars by a separate reader. It is a patch release carrying
-tickets 44 and 45: a component page that reports what is installed instead of
-the catalog's version, a stale failure that shows the service's reason and
-offers a retry the planner accepts, dpkg-installed components adopted so the
-manager can offer the update the host needs, a remove action on the detail page
-with self-removal refused in `manager-core`, and a client that reads the host
-through the same `better-core::host` rules the daemon uses.
+tickets 46, 47, and 48.
 
-One behaviour change in it reaches manifests other people write. The client
-used to plan from `MockPlatform`, which reported Ubuntu 24.04 amd64 on every
-machine; the distribution is now `/etc/os-release`'s own `ID`, so a Zorin host
-is `zorin` rather than its Ubuntu base. The release matrix is unaffected —
-22.04 and 24.04 still come from `UBUNTU_CODENAME` — but a third-party manifest
-whose `targets.distributions` lists only `ubuntu` is now refused on Zorin and
-has to list `zorin` as all seven first-party manifests already do.
+Ticket 47 is the one a machine could not work around. The daemon's health check
+derived `/usr/bin/<component>` from the package name, and three of the eight
+shipped packages install no binary of their own name, so every install of
+Better Awake or Better Storage passed apt, failed the check, and was rolled
+back — and the manager could never have updated its own privileged service. The
+check now asks dpkg which files the package installed, and reads dpkg's own
+`--path-exclude` configuration so a file dpkg was told never to unpack is not
+read as a missing one. Ticket 48 makes the affordance rule a type in
+`better-ui`: a status indicator no longer wears button chrome, so the one solid
+fill on a row is always the control that responds. Ticket 46 gives the manager
+three places to state its own version — a Settings About section, the sidebar
+header, and `better-manager --version` — and an explicit check on the Updates
+page that runs the same catalog refresh the Components screen calls. The window
+footer also reads `Zorin OS 18 · Ubuntu 24.04 base` rather than the
+`zorin 24.04` that names no release anyone ships.
 
-`v0.2.4` before it published the same eight packages from CI run 33970875135 on
-merge commit `42be13d`, `v0.2.3` from run 33955547574 on `056eaad`, `v0.2.2`
-from run 33942768617 on `b5f6e34`, `v0.2.1` from run 33871736272 on `8dc9c7e`,
-and `v0.2.0` from run 33389237001 on `96b46f1`.
+`v0.2.5` before it published the same eight packages from CI run 34008382468 on
+merge commit `00936c3`, `v0.2.4` from run 33970875135 on `42be13d`, `v0.2.3`
+from run 33955547574 on `056eaad`, `v0.2.2` from run 33942768617 on `b5f6e34`,
+`v0.2.1` from run 33871736272 on `8dc9c7e`, and `v0.2.0` from run 33389237001
+on `96b46f1`. `v0.2.5` carries the behaviour change that reaches manifests
+other people write: the distribution is `/etc/os-release`'s own `ID`, so a
+Zorin host is `zorin` rather than its Ubuntu base, and a third-party manifest
+whose `targets.distributions` lists only `ubuntu` is refused there. The release
+matrix is unaffected — 22.04 and 24.04 still come from `UBUNTU_CODENAME` — and
+all seven first-party manifests list both.
 
 A released binary still embeds the manifests as they stood before its own
-release, so the built-in catalog inside `better-manager` 0.2.5 carries that
+release, so the built-in catalog inside `better-manager` 0.2.6 carries that
 release's pre-publication placeholders. That is no longer the end of the story:
-a refresh from `main` gives a 0.2.5 manager a catalog that verifies 0.2.5, and
+a refresh from `main` gives a 0.2.6 manager a catalog that verifies 0.2.6, and
 the run recorded in M48 is that path executed against the real release rather
-than described — executed against 0.2.2 rather than 0.2.5, since the mechanism
+than described — executed against 0.2.2 rather than 0.2.6, since the mechanism
 was what it proved and nothing about it has changed since.
 
 ## Current Blockers
@@ -207,18 +217,30 @@ requires.
 
 ## Next Ticket
 
-Ticket 47 is done on `ticket-47` and not merged. It is the fourth round of
-field reports from the same Zorin 18 machine: the health check derived
+No ticket is cut. Tickets 18 through 48 are done, merged, and released, and
+`docs/tickets/` holds nothing unstarted.
+
+Ticket 47 is merged into `main` and released as `v0.2.6`. It is the fourth
+round of field reports from the same Zorin 18 machine: the health check derived
 `/usr/bin/<component>` from the package name, so Better Awake — and Better
 Storage, and the privileged service's own package — passed apt, failed the
 check, and were rolled back. The check now asks dpkg which files the package
 installed, and reads dpkg's path filters so a file dpkg was told not to unpack
 is not read as a missing one. `docs/tickets/47-health-check-file-list.md` has
-the reasoning, and the release it needs to reach a machine is a version bump
-nobody has cut.
+the reasoning. What it still owes is an observation rather than a fix: the
+container end-to-end check that installs `better-awake` through the privileged
+service has only ever run in CI, because no worktree here has a Docker daemon,
+and nobody has watched a real machine install Better Awake on 0.2.6.
 
-Ticket 46 is merged into `main` and not yet released. It is the third round of
-field reports from the same machine, and both halves are about a manager that
+Ticket 48 is merged into `main` and released as `v0.2.6` beside 47. The
+affordance rule is a type in `better-ui` now — an Action has a handler and may
+wear an action fill, a Status has no hover, no cursor, and no saturated fill —
+so the solid red pill that made a real button look like decoration is gone.
+One case in it was never seen on screen: the Defaults row for a component that
+is already the XDG default, because no machine here has one.
+
+Ticket 46 is merged into `main` and released as `v0.2.6`. It is the third round
+of field reports from the same machine, and both halves are about a manager that
 knew something and said nothing. The version now has three places to appear — a
 Settings About section, the sidebar header, and `better-manager --version`, all
 reading the same `CARGO_PKG_VERSION` — and the Updates screen has an explicit
@@ -228,16 +250,18 @@ not land. The reasoning, including why the titlebar was left alone and why a
 failed refresh reports no count, is in
 `docs/tickets/46-version-visibility-and-update-check.md`.
 
-Tickets 18 through 45 are done, merged, and released, and `docs/tickets/` holds
-nothing else unstarted. What is waiting is decisions rather
+What is waiting is decisions rather
 than implementation, and `AGENTS.md`'s follow-up list is where they live: the
 package signature format, the `better-monitor`/`better-monitor-cli` name
 collision, a stored baseline and a CI job for the benchmark budgets no one
 runs, what to show for a dpkg version `semver` cannot parse, the security
 review the libinput gesture path was made conditional on, and how `target/` is
-kept from filling the disk. Two things are still owed to someone at a real
-desktop: GNOME drawing the six icons in an applications grid after an install,
-and pressing Escape on Better Launcher.
+kept from filling the disk. What is owed to someone at a real desktop has grown
+rather than shrunk: GNOME drawing the six icons in an applications grid after an
+install, pressing Escape on Better Launcher, the `Zorin OS 18 · Ubuntu 24.04
+base` footer looked at rather than asserted from the host probe's output, the
+Defaults row for a component that is already the XDG default, and a real
+machine installing Better Awake on 0.2.6 and keeping it.
 
 Ticket 45 is merged into `main` and released as `v0.2.5`. It closes the
 follow-up ticket 44 left behind: `manager-gui` and `manager-cli` built their

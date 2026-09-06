@@ -15,31 +15,30 @@ targets:
   distributions: [zorin, ubuntu]
   releases: [22.04, 24.04]
   architectures: [amd64, arm64]
-# Placeholder checksums until v0.2.6 is published. ADR 0002 records the
-# checksum of a *published* release asset; the v0.2.5 values these variants
-# carried describe 0.2.5's packages, not 0.2.6's. The real values are written
-# back once the release is public and every asset has been re-downloaded and
-# verified.
+# The checksums below belong to the published v0.2.6 release assets. Each one
+# was re-hashed from the package downloaded back from the public release rather
+# than copied from its sidecar, which is what ADR 0002 requires a manifest to
+# record.
 artifacts:
   - release: "22.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-manager_0.2.6_ubuntu-22.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 090269849b10faa5a032d4cac1526899b131768240a5c997663be90c75c8a14f
     release_asset: better-manager_0.2.6_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-manager_0.2.6_ubuntu-22.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 341e5e882a0a1dee536bc336adc5962eb8cce239f2fbc1ffba134c0926400eb1
     release_asset: better-manager_0.2.6_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-manager_0.2.6_ubuntu-24.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: c84fadfb9fe408f144b8d87e8a85f2d2d018b1ab24b1601313433fe959ff4382
     release_asset: better-manager_0.2.6_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-manager_0.2.6_ubuntu-24.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: dda141ec3aaf17f7e91b0ef71b3406b60c661e0c6ec5a04ff2ae97e11103dd23
     release_asset: better-manager_0.2.6_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
