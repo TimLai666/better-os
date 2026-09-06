@@ -25,6 +25,12 @@ use thiserror::Error;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SystemProfile {
     pub distribution: String,
+    /// What the host calls itself, badge version included: `Zorin OS 18`. It is
+    /// for showing a person, never for matching a manifest — `distribution` and
+    /// `release` are what a plan is checked against. `None` means the host
+    /// named nothing, or was never identified at all.
+    #[serde(default)]
+    pub distribution_label: Option<String>,
     pub release: String,
     pub architecture: String,
     /// Free space on the install target, when the platform can report it.
@@ -36,6 +42,7 @@ impl Default for SystemProfile {
     fn default() -> Self {
         Self {
             distribution: "ubuntu".to_string(),
+            distribution_label: Some("Ubuntu 24.04".to_string()),
             release: "24.04".to_string(),
             architecture: "amd64".to_string(),
             free_disk_bytes: None,
@@ -53,6 +60,7 @@ impl SystemProfile {
     pub fn unidentified() -> Self {
         Self {
             distribution: "unknown".to_string(),
+            distribution_label: None,
             release: "unknown".to_string(),
             architecture: "unknown".to_string(),
             free_disk_bytes: None,
@@ -266,6 +274,7 @@ mod tests {
     fn the_mock_platform_reports_the_profile_it_was_given() {
         let platform = MockPlatform::new(SystemProfile {
             distribution: "zorin".to_string(),
+            distribution_label: Some("Zorin OS 18".to_string()),
             release: "18".to_string(),
             architecture: "arm64".to_string(),
             free_disk_bytes: Some(4096),

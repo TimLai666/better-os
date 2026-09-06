@@ -437,7 +437,7 @@ mod tests {
                 artifacts: Arc::new(ArtifactStore::new(root.join("archives"))),
                 journal: Arc::new(Journal::new(root.join("state"))),
                 apt: Arc::new(apt),
-                health: Arc::new(FakeHealthProbe(
+                health: Arc::new(FakeHealthProbe::with_files(
                     binaries
                         .into_iter()
                         .map(|name| PathBuf::from("/usr/bin").join(name))
@@ -507,6 +507,45 @@ mod tests {
                 size_bytes: 64,
             }),
         }
+    }
+
+    /// The field failure this replaces: `better-awake` installs fine and ships
+    /// no binary of its own name, so the old health rule failed every install
+    /// of it and the daemon rolled back what it had just installed.
+    #[test]
+    fn a_multi_binary_package_named_after_none_of_its_binaries_installs() {
+        const AWAKE_DEB: &str = "better-awake_0.1.0_ubuntu-24.04_amd64.deb";
+        let harness = Harness::new(
+            "awake-shape",
+            FakeAptDriver::new()
+                .with_deb(AWAKE_DEB, fields("better-awake"))
+                .with_files(
+                    "better-awake",
+                    &[
+                        "/usr/bin/better-awake-service",
+                        "/usr/bin/awake-tray",
+                        "/usr/bin/awake-gui",
+                    ],
+                    &[],
+                ),
+            vec!["better-awake-service", "awake-tray", "awake-gui"],
+        );
+        let checksum = harness.stage(AWAKE_DEB);
+        let plan = plan(vec![install_step("better-awake", AWAKE_DEB, checksum)]);
+
+        let outcome = harness.executor().execute(&plan, &mut |_, _| {}).unwrap();
+
+        assert_eq!(outcome.status, OutcomeStatus::Succeeded);
+        assert_eq!(outcome.reports[0].health, HealthResult::Healthy);
+        assert!(
+            outcome.rollback_records.is_empty()
+                || !harness
+                    .apt
+                    .calls()
+                    .iter()
+                    .any(|call| call == "remove:better-awake"),
+            "a healthy install must not be rolled back"
+        );
     }
 
     #[test]

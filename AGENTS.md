@@ -398,6 +398,48 @@ GUI or dependency compiles when the relevant command was not executed.
   to the matrix, decide whether the manifest field should keep naming exact IDs
   or start naming a base, because every derivative added under the current rule
   needs every manifest edited.
+- A component's health check is dpkg's file list now, not a path derived from
+  the package name. `/usr/bin/<component>` was the old rule and it was wrong
+  about three of the eight shipped packages — `better-awake`, `better-storage`,
+  and `better-manager-daemon` install no binary of their own name — so every
+  install of them passed apt, failed the check, and was rolled back. An install,
+  update, or restore is healthy when dpkg reports the package installed and
+  every path `dpkg-query -L` lists for it exists. Three exemptions are
+  deliberate and are the places to look first if the check ever passes something
+  it should not: directories are skipped, conffiles are skipped because dpkg
+  lets an owner delete one, and a package that lists no files at all is healthy
+  because everything it listed is there. Do not reintroduce a path derived from
+  a name, and do not read a path a manifest supplied — the file list is dpkg's
+  record of the package the daemon itself verified and installed, which is why
+  it may be trusted.
+- **dpkg lists files it was configured never to install.** `--path-exclude`
+  drops a file at unpack and leaves it in the package's file list, and
+  `dpkg --verify` calls it `missing` as well, so no dpkg query can tell that
+  absence from a broken package — only dpkg's configuration can.
+  `manager-daemon/src/dpkg_config.rs` reads `/etc/dpkg/dpkg.cfg.d/*` and
+  `/etc/dpkg/dpkg.cfg`, plus `apt-config dump DPkg::Options`, because the daemon
+  installs through `apt-get`. This matters on every minimized image, the
+  `ubuntu:24.04` container the end-to-end check runs in included: it excludes
+  `/usr/share/doc/*`, and every Better OS package installs
+  `THIRD-PARTY-LICENSES.md` there. A health check that ignored those filters
+  would fail every package on such a machine. Two limits travel with it: a
+  filter written into root's `~/.dpkg.cfg` is not read, because the driver
+  clears the environment and never resolves a home directory, and the glob
+  matcher is this project's own rather than the C library's `fnmatch`, so a
+  pattern using anything beyond `*`, `?`, and `[...]` classes is not understood.
+- The container end-to-end check now installs `better-awake` through the
+  privileged service, for its shape rather than its features, and asserts that
+  `/usr/bin/better-awake` does not exist. If that package ever gains a binary of
+  its own name, the assertion fails on purpose: it is saying the test no longer
+  proves what it was added to prove, and another multi-binary package has to
+  take its place. The rollback fixture beside it is unhealthy because its
+  postinst deletes a file dpkg has already recorded; a fixture that simply ships
+  no files is healthy under the current rule and would silently stop testing
+  rollback.
+- Neither the container end-to-end check nor the new footer has been observed
+  since ticket 47. The e2e is CI-only from this worktree — no Docker daemon —
+  and the footer's `Zorin OS 18 · Ubuntu 24.04 base` line is asserted by test
+  from the real host probe's output rather than looked at on a running desktop.
 - A dpkg version that is not a semantic version keeps a package invisible to the
   manager: ticket 44's host reconciliation adopts only what `semver` can parse,
   because everything downstream compares versions. A package in that state is

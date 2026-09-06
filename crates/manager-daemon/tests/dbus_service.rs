@@ -133,7 +133,7 @@ async fn serve(
     let executor = Arc::new(Executor {
         apt: Arc::new(apt),
         host: Arc::new(FixedHostProbe::ubuntu_2404()),
-        health: Arc::new(FakeHealthProbe(vec![std::path::PathBuf::from(
+        health: Arc::new(FakeHealthProbe::with_files(vec![std::path::PathBuf::from(
             "/usr/bin/better-monitor",
         )])),
         artifacts: fixture.artifacts.clone(),

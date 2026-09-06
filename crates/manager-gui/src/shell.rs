@@ -14,7 +14,7 @@ use gpui_component::{
 use crate::{
     app::ManagerApp,
     i18n::copy,
-    model::{MANAGER_VERSION, Page},
+    model::{MANAGER_VERSION, Page, host_line},
 };
 
 impl ManagerApp {
@@ -41,7 +41,7 @@ impl ManagerApp {
     pub(crate) fn sidebar(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale);
         let profile = self.manager.profile();
-        let profile_label = format!("{} {}", profile.distribution, profile.release);
+        let profile_label = host_line(profile, c.ubuntu_base);
         let architecture = profile.architecture.clone();
         let menu = SidebarMenu::new().children([
             self.nav_item(
@@ -116,9 +116,20 @@ impl ManagerApp {
                                 v_flex()
                                     .flex_1()
                                     .min_w_0()
-                                    .child(div().text_sm().font_semibold().child(profile_label))
+                                    // The host line is the longest string in
+                                    // the sidebar and a derivative makes it
+                                    // longer still, so it truncates rather than
+                                    // pushing the footer wider than the rail.
                                     .child(
                                         div()
+                                            .truncate()
+                                            .text_sm()
+                                            .font_semibold()
+                                            .child(profile_label),
+                                    )
+                                    .child(
+                                        div()
+                                            .truncate()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
                                             .child(architecture),

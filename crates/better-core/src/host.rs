@@ -58,6 +58,23 @@ pub fn resolve_distribution_id(content: &str) -> String {
     os_release_field(content, "ID").unwrap_or_else(|| "ubuntu".to_string())
 }
 
+/// What the distribution calls itself, badge version included: `Zorin OS 18`,
+/// `Ubuntu 24.04`.
+///
+/// This is the host's own identity and never the Ubuntu base its packages are
+/// built for. Both belong on screen — a Zorin host is Zorin OS 18 *and* built on
+/// Ubuntu 24.04 — and showing only `zorin 24.04`, as the window footer did,
+/// reads as a Zorin version that does not exist.
+///
+/// `None` means the file named nothing at all to show.
+pub fn describe_distribution(content: &str) -> Option<String> {
+    let name = os_release_field(content, "NAME").or_else(|| os_release_field(content, "ID"))?;
+    match os_release_field(content, "VERSION_ID") {
+        Some(version) => Some(format!("{name} {version}")),
+        None => Some(name),
+    }
+}
+
 /// Pulls one `KEY=` value out of an os-release file, unquoting it.
 pub fn os_release_field(content: &str, key: &str) -> Option<String> {
     content.lines().find_map(|line| {
@@ -180,6 +197,28 @@ mod tests {
             Some("24.04")
         );
         assert_eq!(os_release_field(content, "MISSING"), None);
+    }
+
+    #[test]
+    fn a_distribution_describes_itself_by_its_own_name_and_badge() {
+        assert_eq!(
+            describe_distribution(ZORIN_18).as_deref(),
+            Some("Zorin OS 18")
+        );
+        assert_eq!(
+            describe_distribution(UBUNTU_2404).as_deref(),
+            Some("Ubuntu 24.04")
+        );
+        // No NAME to go on: the ID is what is left, and a version is optional.
+        assert_eq!(
+            describe_distribution("ID=zorin\nVERSION_ID=\"18\"\n").as_deref(),
+            Some("zorin 18")
+        );
+        assert_eq!(
+            describe_distribution("NAME=\"Zorin OS\"\n").as_deref(),
+            Some("Zorin OS")
+        );
+        assert_eq!(describe_distribution(""), None);
     }
 
     #[test]
