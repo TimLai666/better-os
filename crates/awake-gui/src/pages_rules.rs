@@ -5,13 +5,13 @@
 //! like it works. `ConditionView` decides that; this file only obeys it.
 
 use awake_core::{Combine, Condition, ProcessMatchKind, ProviderKind, Schedule, Weekday};
+use better_ui::{StatusPill, StatusTone};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, IconName,
     button::{Button, ButtonVariants},
     input::Input,
-    tag::Tag,
     *,
 };
 
@@ -191,26 +191,28 @@ impl AwakeApp {
                                 .font_semibold()
                                 .child(rule.name.clone()),
                         )
-                        .child(
-                            if enabled {
-                                Tag::success()
-                            } else {
-                                Tag::secondary()
-                            }
-                            .small()
-                            .rounded_full()
-                            .child(rule.state_label(c)),
-                        )
-                        .child(
-                            if rule.matching_now {
-                                Tag::primary()
-                            } else {
-                                Tag::secondary()
-                            }
-                            .small()
-                            .rounded_full()
-                            .child(rule.matching_label(c)),
-                        ),
+                        .child(self.pill(
+                            StatusPill::new(
+                                rule.state_label(c),
+                                if enabled {
+                                    StatusTone::Success
+                                } else {
+                                    StatusTone::Neutral
+                                },
+                            ),
+                            cx,
+                        ))
+                        .child(self.pill(
+                            StatusPill::new(
+                                rule.matching_label(c),
+                                if rule.matching_now {
+                                    StatusTone::Info
+                                } else {
+                                    StatusTone::Neutral
+                                },
+                            ),
+                            cx,
+                        )),
                 )
                 .child(self.key_value(c.rule_priority, rule.priority.to_string(), cx))
                 .child(self.priority_stepper(rule_id, rule.priority, cx))

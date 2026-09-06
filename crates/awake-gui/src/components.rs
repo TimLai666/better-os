@@ -46,6 +46,38 @@ impl AwakeApp {
             .into_any_element()
     }
 
+    /// Draw one read-only status indicator.
+    ///
+    /// A status is tinted and outlined, never filled in an action color: this
+    /// window's `primary` fill belongs to its buttons, and a pill wearing it
+    /// promises something to click. `better_ui::Affordance` states the rule,
+    /// and `better_ui::badge` — which this draws through — registers no hover
+    /// and no click handler. `gpui_component::Tag`, which these replaced,
+    /// could do neither.
+    pub(crate) fn pill(&self, pill: better_ui::StatusPill, cx: &mut Context<Self>) -> AnyElement {
+        let accent = match pill.tone {
+            better_ui::StatusTone::Neutral => {
+                return pill
+                    .render(better_ui::BadgeStyle {
+                        foreground: cx.theme().muted_foreground,
+                        background: cx.theme().secondary,
+                        border: cx.theme().border,
+                    })
+                    .into_any_element();
+            }
+            better_ui::StatusTone::Info => cx.theme().info,
+            better_ui::StatusTone::Success => cx.theme().success,
+            better_ui::StatusTone::Warning => cx.theme().warning,
+            better_ui::StatusTone::Danger => cx.theme().danger,
+        };
+        pill.render(better_ui::BadgeStyle {
+            foreground: accent,
+            background: accent.opacity(0.12),
+            border: accent.opacity(0.4),
+        })
+        .into_any_element()
+    }
+
     pub(crate) fn card_title(&self, title: impl Into<SharedString>) -> AnyElement {
         div()
             .text_lg()

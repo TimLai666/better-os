@@ -90,6 +90,22 @@ impl PrimaryAction {
             Self::Verify => c.verify_again,
         }
     }
+
+    /// Whether this leads with something a person can do.
+    ///
+    /// `AlreadyDefault` is a state, not an operation that happens to be
+    /// unavailable: there is nothing the manager could carry out for it. It
+    /// used to be drawn as a permanently disabled button repeating the state
+    /// pill beside it, which is the affordance rule broken in both directions
+    /// at once — button chrome on a status, and a control that could never do
+    /// anything. `better_ui::Affordance` states the rule; the Defaults screen
+    /// draws a primary button only for the `Action` arms.
+    pub(crate) fn affordance(self) -> better_ui::Affordance {
+        match self {
+            Self::MakeDefault | Self::Verify => better_ui::Affordance::Action,
+            Self::AlreadyDefault => better_ui::Affordance::Status,
+        }
+    }
 }
 
 /// What a row offers besides its primary action.
