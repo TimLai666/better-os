@@ -4,7 +4,7 @@ use better_core::{ComponentIcon, ComponentId, ComponentManifest, ComponentType};
 use manager_core::catalog::{CatalogDegradation, CatalogSource, CatalogStatus};
 use manager_core::{
     ComponentRecord, ComponentStatus, FailureRecord, HealthState, InstallProvenance,
-    RestartRequirement,
+    RestartRequirement, SystemProfile,
 };
 
 /// The one status line the Components screen shows about the catalog itself.
@@ -246,5 +246,32 @@ impl ComponentInfo {
     /// lowercase ASCII, digits, and dashes by the manifest parser.
     pub(crate) fn element_id(&self, prefix: &str) -> String {
         format!("{prefix}-{}", self.core_id)
+    }
+}
+
+/// The release and distribution a profile carries when the host could not be
+/// identified at all. `SystemProfile::unidentified` writes it.
+const UNKNOWN: &str = "unknown";
+
+/// The one line the window footer shows about the machine.
+///
+/// A Zorin host is two facts, and the footer used to show them as one: it
+/// printed the distribution ID beside the resolved Ubuntu release, so a Zorin
+/// OS 18 machine read as "zorin 24.04" — a Zorin version that does not exist.
+/// This keeps them apart. The host's own name and badge come first, the Ubuntu
+/// base it is built on second, and a plain Ubuntu machine has only one fact to
+/// show and shows it alone.
+pub(crate) fn host_line(profile: &SystemProfile, base_word: &str) -> String {
+    let base_is_known = profile.release != UNKNOWN;
+    match (&profile.distribution_label, base_is_known) {
+        // A derivative: its own identity, then the base its packages come from.
+        (Some(label), true) if profile.distribution != "ubuntu" => {
+            format!("{label} · Ubuntu {} {base_word}", profile.release)
+        }
+        // Plain Ubuntu, or a derivative whose base was never resolved.
+        (Some(label), _) => label.clone(),
+        // The host named itself nothing. Whatever was resolved is all there is.
+        (None, true) => format!("Ubuntu {}", profile.release),
+        (None, false) => profile.distribution.clone(),
     }
 }

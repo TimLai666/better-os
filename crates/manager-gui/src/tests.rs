@@ -6,7 +6,7 @@ use crate::{
         STEP_LABEL_MIN_WIDTH, action_layout, character_advance, characters_per_line,
         first_run_column, step_label_width,
     },
-    model::{CatalogLine, ComponentInfo},
+    model::{CatalogLine, ComponentInfo, host_line},
 };
 use better_core::{ComponentIcon, ComponentId};
 use manager_core::catalog::{
@@ -14,8 +14,9 @@ use manager_core::catalog::{
 };
 use manager_core::{
     ComponentStatus, DesiredOperation, ManagerSettings, ManagerState, RestartRequirement,
-    StoredTheme,
+    StoredTheme, SystemProfile,
 };
+use manager_platform::{SystemCapabilities, host::HostPlatform};
 
 #[test]
 fn required_visible_copy_exists_in_both_locales() {
@@ -846,6 +847,50 @@ fn an_unidentifiable_host_becomes_a_stated_window_state_and_never_a_guess() {
             )
             .is_err()
     );
+}
+
+/// The footer used to print the distribution ID beside the Ubuntu release a
+/// plan is built for, so the project's own primary target read as "zorin
+/// 24.04" — a Zorin version that does not exist. These are the profiles the
+/// real host probe produces, not hand-written labels.
+#[test]
+fn the_footer_tells_a_host_apart_from_the_ubuntu_base_it_is_built_on() {
+    let c = copy(Locale::EnUs);
+    let zorin = HostPlatform::from_fixture(
+        "NAME=\"Zorin OS\"\nID=zorin\nPRETTY_NAME=\"Zorin OS 18\"\nVERSION_ID=\"18\"\n\
+         UBUNTU_CODENAME=noble\n",
+        "amd64",
+    )
+    .profile()
+    .expect("a noble-based host is supported");
+    assert_eq!(
+        host_line(&zorin, c.ubuntu_base),
+        "Zorin OS 18 · Ubuntu 24.04 base"
+    );
+    assert_eq!(
+        host_line(&zorin, copy(Locale::ZhTw).ubuntu_base),
+        "Zorin OS 18 · Ubuntu 24.04 基礎"
+    );
+
+    // Plain Ubuntu is one fact and shows one: no base note, and no
+    // "Ubuntu 24.04 · Ubuntu 24.04 base" either.
+    let ubuntu = HostPlatform::from_fixture(
+        "NAME=\"Ubuntu\"\nID=ubuntu\nVERSION_ID=\"24.04\"\nUBUNTU_CODENAME=noble\n",
+        "amd64",
+    )
+    .profile()
+    .expect("plain ubuntu 24.04 is supported");
+    assert_eq!(host_line(&ubuntu, c.ubuntu_base), "Ubuntu 24.04");
+}
+
+#[test]
+fn a_host_the_window_could_not_identify_names_no_release_at_all() {
+    let line = host_line(
+        &SystemProfile::unidentified(),
+        copy(Locale::EnUs).ubuntu_base,
+    );
+    assert_eq!(line, "unknown");
+    assert!(!line.contains("24.04"), "{line}");
 }
 
 #[test]

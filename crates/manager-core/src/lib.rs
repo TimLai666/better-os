@@ -2270,6 +2270,7 @@ mod tests {
             catalog(),
             SystemProfile {
                 distribution: "ubuntu".to_string(),
+                distribution_label: Some("Ubuntu 22.04".to_string()),
                 release: "22.04".to_string(),
                 architecture: "arm64".to_string(),
                 free_disk_bytes: None,

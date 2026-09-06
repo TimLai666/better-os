@@ -47,21 +47,31 @@ COPY packaging/e2e/50-better-os-e2e.rules packaging/e2e/50-better-os-e2e.pkla /o
 COPY dist/e2e-client/e2e_client /opt/better-os/e2e_client
 
 # These fixtures are deliberately built in the disposable container rather
-# than copied from dist/. The old package has the executable the real health
-# probe expects; the new package has no /usr/bin/better-rollback-fixture, so a
-# real update can apply successfully and then fail its health check.
+# than copied from dist/. Both ship the same two files, and the new package's
+# postinst deletes one of them after dpkg has unpacked and recorded it. That is
+# the state the health check exists to catch: dpkg says the package installed
+# and lists a file that is not on disk, so a real update can apply successfully
+# and then fail its health check.
+#
+# Neither fixture is named after its own binaries, which is the shape
+# better-awake ships and the shape the previous health rule failed on. The old
+# package passing its check here is that rule's replacement being exercised
+# against real dpkg state rather than only against a fake.
 RUN set -eu; \
     fixture_dir=/opt/better-os/e2e-fixtures; \
     architecture="$(dpkg --print-architecture)"; \
     for version in 0.0.9 0.1.0; do \
         root="$fixture_dir/$version"; \
-        mkdir -p "$root/DEBIAN"; \
+        mkdir -p "$root/DEBIAN" "$root/usr/bin" "$root/usr/share/better-os"; \
         printf 'Package: better-rollback-fixture\nVersion: %s\nArchitecture: %s\nDescription: Better OS rollback fixture\n' \
             "$version" "$architecture" > "$root/DEBIAN/control"; \
+        printf '#!/bin/sh\nexit 0\n' > "$root/usr/bin/rollback-fixture-service"; \
+        chmod 0755 "$root/usr/bin/rollback-fixture-service"; \
+        printf 'fixture %s\n' "$version" > "$root/usr/share/better-os/rollback-fixture.data"; \
     done; \
-    mkdir -p "$fixture_dir/0.0.9/usr/bin"; \
-    printf '#!/bin/sh\nexit 0\n' > "$fixture_dir/0.0.9/usr/bin/better-rollback-fixture"; \
-    chmod 0755 "$fixture_dir/0.0.9/usr/bin/better-rollback-fixture"; \
+    printf '#!/bin/sh\nset -e\nrm -f /usr/bin/rollback-fixture-service\nexit 0\n' \
+        > "$fixture_dir/0.1.0/DEBIAN/postinst"; \
+    chmod 0755 "$fixture_dir/0.1.0/DEBIAN/postinst"; \
     dpkg-deb --build --root-owner-group "$fixture_dir/0.0.9" \
         "$fixture_dir/better-rollback-fixture_0.0.9_ubuntu-${UBUNTU_RELEASE}_${architecture}.deb"; \
     dpkg-deb --build --root-owner-group "$fixture_dir/0.1.0" \

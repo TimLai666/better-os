@@ -16,7 +16,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use better_core::host::{describe_os_release, resolve_distribution_id, resolve_ubuntu_release};
+use better_core::host::{
+    describe_distribution, describe_os_release, resolve_distribution_id, resolve_ubuntu_release,
+};
 
 use crate::{MockPlatform, PlatformError, SystemCapabilities, SystemProfile};
 
@@ -122,6 +124,7 @@ impl HostPlatform {
             .ok_or_else(|| PlatformError::UnsupportedHost(describe_os_release(content)))?;
         Ok(SystemProfile {
             distribution: resolve_distribution_id(content),
+            distribution_label: describe_distribution(content),
             release,
             architecture: architecture.to_string(),
             // Free space is a separate question from what the host is, and
@@ -191,6 +194,9 @@ mod tests {
             .expect("a noble-based host is supported");
         assert_eq!(profile.release, "24.04");
         assert_eq!(profile.distribution, "zorin");
+        // What the window shows a person: its own name and badge, kept apart
+        // from the Ubuntu base its packages come from.
+        assert_eq!(profile.distribution_label.as_deref(), Some("Zorin OS 18"));
         assert_eq!(profile.architecture, "amd64");
         assert_eq!(profile.free_disk_bytes, None);
     }

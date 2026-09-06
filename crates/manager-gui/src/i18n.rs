@@ -56,6 +56,10 @@ pub(crate) struct Copy {
     pub(crate) load_catalog_description: &'static str,
     pub(crate) compatibility_check: &'static str,
     pub(crate) distribution: &'static str,
+    /// The word after the Ubuntu release in the footer, which says that release
+    /// is the base a derivative is built on and not the derivative's own
+    /// version: "Zorin OS 18 · Ubuntu 24.04 base".
+    pub(crate) ubuntu_base: &'static str,
     pub(crate) architecture: &'static str,
     pub(crate) no_changes_yet: &'static str,
 
@@ -410,6 +414,7 @@ static EN: Copy = Copy {
     load_catalog_description: "Read manifests and compare available versions with installed state.",
     compatibility_check: "Compatibility check",
     distribution: "Distribution",
+    ubuntu_base: "base",
     architecture: "Architecture",
     no_changes_yet: "No system changes will happen yet.",
 
@@ -746,6 +751,7 @@ static ZH_TW: Copy = Copy {
     load_catalog_description: "讀取元件資訊，並比較可用版本與目前安裝狀態。",
     compatibility_check: "相容性檢查",
     distribution: "發行版",
+    ubuntu_base: "基礎",
     architecture: "處理器架構",
     no_changes_yet: "目前還不會變更系統。",
 

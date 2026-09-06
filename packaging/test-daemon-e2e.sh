@@ -50,6 +50,14 @@ find_package() {
 
 DAEMON_DEB="$(find_package better-manager-daemon)"
 MONITOR_DEB="$(find_package better-monitor)"
+# better-awake is here for its shape rather than for its features: it ships
+# better-awake-service, awake-tray, and awake-gui and no /usr/bin/better-awake.
+# The health check used to derive that one path from the package name, so every
+# install of this package failed its check and was rolled back on real machines.
+# It costs nothing extra to carry: dpkg-shlibdeps gives it the same graphics
+# libraries the image already installs for better-monitor and better-launcher,
+# so no new base image and no network at test time.
+AWAKE_DEB="$(find_package better-awake)"
 FIXTURE_DIR=/opt/better-os/e2e-fixtures
 ROLLBACK_COMPONENT=better-rollback-fixture
 ROLLBACK_OLD_DEB="$FIXTURE_DIR/${ROLLBACK_COMPONENT}_0.0.9_${RELEASE_TARGET}_${ARCH}.deb"
@@ -490,6 +498,85 @@ dpkg-query -W -f='${db:Status-Status}' better-monitor | grep -q '^installed$' ||
 printf 'The service refused a plan that disagreed with dpkg, and changed nothing\n'
 
 DEBIAN_FRONTEND=noninteractive apt-get remove -y better-monitor >/dev/null
+
+printf '== a package with no binary of its own name installs and stays installed ==\n'
+# The field failure of v0.2.5, reproduced against real dpkg state and the real
+# health check. This package must pass its check without a /usr/bin/better-awake
+# existing anywhere, and must still be installed when the transaction ends.
+if dpkg-query -W -f='${db:Status-Status}' better-awake 2>/dev/null | grep -q '^installed$'; then
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y better-awake >/dev/null
+fi
+AWAKE_ASSET="$(basename "$AWAKE_DEB")"
+cp "$AWAKE_DEB" "/tmp/$AWAKE_ASSET"
+outcome="$("$CLIENT" install "$RELEASE_ID" "$ARCH" "/tmp/$AWAKE_ASSET")" || {
+    printf 'The authorized better-awake install was refused\n' >&2
+    exit 1
+}
+printf 'better-awake outcome: %s\n' "$outcome"
+printf '%s' "$outcome" | grep -q '"state":"succeeded"' || {
+    printf 'The better-awake transaction did not succeed\n' >&2
+    exit 1
+}
+printf '%s' "$outcome" | grep -q '"state":"healthy"' || {
+    printf 'better-awake did not pass its health check\n' >&2
+    exit 1
+}
+[[ ! -e /usr/bin/better-awake ]] || {
+    printf 'better-awake now ships a binary of its own name; this check no longer proves anything\n' >&2
+    exit 1
+}
+for required_file in \
+    /usr/bin/better-awake-service \
+    /usr/bin/awake-tray \
+    /usr/bin/awake-gui; do
+    [[ -s "$required_file" ]] || {
+        printf 'Missing %s after installing better-awake\n' "$required_file" >&2
+        exit 1
+    }
+done
+dpkg-query -W -f='${db:Status-Status}' better-awake | grep -q '^installed$' || {
+    printf 'better-awake was rolled back despite a healthy install\n' >&2
+    exit 1
+}
+# Every file dpkg lists is what the health check now asserts, so assert it here
+# too, against the real database rather than the daemon's report of it.
+#
+# Except under /usr/share/doc: this image configures dpkg with
+# `path-exclude=/usr/share/doc/*`, and dpkg lists path-excluded files even
+# though it never unpacked them. That is why the daemon reads dpkg's own filter
+# configuration before failing a package for a missing file — and it is why
+# this install passing its check on this image is worth something: a health
+# check that ignored those filters would fail every package here.
+while read -r listed_path; do
+    case "$listed_path" in
+        /usr/share/doc/*) continue ;;
+    esac
+    [[ -e "$listed_path" || -L "$listed_path" ]] || {
+        printf 'dpkg lists %s for better-awake but it is not on disk\n' "$listed_path" >&2
+        exit 1
+    }
+done < <(dpkg-query -L better-awake | grep '^/')
+# The image's filters must actually be what the comment above says, or this
+# check is proving less than it claims.
+grep -rqs 'path-exclude' /etc/dpkg/dpkg.cfg /etc/dpkg/dpkg.cfg.d/ || {
+    printf 'This image configures no dpkg path-exclude, so the excluded-file path is untested here\n'
+}
+printf 'better-awake installed through the service and passed its health check\n'
+
+outcome="$("$CLIENT" remove "$RELEASE_ID" "$ARCH" better-awake "$(dpkg-query -W -f='${Version}' better-awake)")" || {
+    printf 'The authorized better-awake removal was refused\n' >&2
+    exit 1
+}
+printf '%s' "$outcome" | grep -q '"state":"succeeded"' || {
+    printf 'The better-awake removal did not succeed\n' >&2
+    exit 1
+}
+if dpkg-query -W -f='${db:Status-Status}' better-awake 2>/dev/null | grep -q '^installed$'; then
+    printf 'better-awake survived removal through the service\n' >&2
+    exit 1
+fi
+rm -f "/tmp/$AWAKE_ASSET"
+printf 'better-awake removed through the service\n'
 
 kill "$DAEMON_PID" 2>/dev/null || true
 trap - EXIT

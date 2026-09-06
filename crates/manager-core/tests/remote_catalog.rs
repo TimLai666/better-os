@@ -60,6 +60,7 @@ fn a_manager_refreshes_the_published_catalog_and_plans_a_verified_install() {
         outcome.catalog,
         SystemProfile {
             distribution: "ubuntu".to_string(),
+            distribution_label: Some("Ubuntu 24.04".to_string()),
             release: "24.04".to_string(),
             architecture: "amd64".to_string(),
             free_disk_bytes: Some(8 * 1024 * 1024 * 1024),

@@ -764,6 +764,7 @@ fn an_undeclared_restart_scope_is_never_reported_as_not_required() {
 fn the_manager_takes_host_capabilities_from_the_platform_backend() {
     let platform = manager_platform::MockPlatform::new(SystemProfile {
         distribution: "zorin".to_string(),
+        distribution_label: Some("Zorin OS 18".to_string()),
         release: "18".to_string(),
         architecture: "arm64".to_string(),
         free_disk_bytes: Some(8192),
