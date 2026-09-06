@@ -2,7 +2,7 @@ schema_version: 2
 id: better-files
 display_name: Better Files
 component_type: replacement
-version: 0.2.6
+version: 0.2.7
 summary: A file manager whose operations are durable jobs and whose devices say when they are safe to unplug.
 icon: files
 restart: application
@@ -16,31 +16,32 @@ targets:
 # restorable to the value that was captured before the change.
 replaces:
   - org.gnome.Nautilus
-# The checksums below belong to the published v0.2.6 release assets. Each one
-# was re-hashed from the package downloaded back from the public release rather
-# than copied from its sidecar, which is what ADR 0002 requires a manifest to
-# record.
+# Placeholder checksums until v0.2.7 is published. ADR 0002 records the
+# checksum of a *published* release asset; the v0.2.6 values these variants
+# carried describe 0.2.6's packages, not 0.2.7's. The real values are written
+# back once the release is public and every asset has been re-downloaded and
+# verified.
 artifacts:
   - release: "22.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-files_0.2.6_ubuntu-22.04_amd64.deb
-    sha256: e7ff2adb2ad55d9f6c12c2c34d494917d52f53b831c7488bbce3b08b19078a34
-    release_asset: better-files_0.2.6_ubuntu-22.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.7/better-files_0.2.7_ubuntu-22.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-files_0.2.7_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-files_0.2.6_ubuntu-22.04_arm64.deb
-    sha256: 1ea62c0106ebf9d50ed94271eab5936b9c61b1b45e8db083c202953e579e9a5a
-    release_asset: better-files_0.2.6_ubuntu-22.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.7/better-files_0.2.7_ubuntu-22.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-files_0.2.7_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-files_0.2.6_ubuntu-24.04_amd64.deb
-    sha256: 29a66d65aa362800a020f6bb738b76d307bb8dec8d3915a66a4b0135a505769d
-    release_asset: better-files_0.2.6_ubuntu-24.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.7/better-files_0.2.7_ubuntu-24.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-files_0.2.7_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-files_0.2.6_ubuntu-24.04_arm64.deb
-    sha256: fd471cd0357d0585ed3f52ad93f4132f31d29393f7b5be21fc6eb2604eba36b1
-    release_asset: better-files_0.2.6_ubuntu-24.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.7/better-files_0.2.7_ubuntu-24.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-files_0.2.7_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable

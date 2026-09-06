@@ -2,7 +2,7 @@ schema_version: 2
 id: better-awake
 display_name: Better Awake
 component_type: enhancement
-version: 0.2.6
+version: 0.2.7
 summary: Keep-awake sessions and automatic rules, with every reason the machine is awake shown.
 icon: generic
 restart: application
@@ -10,31 +10,32 @@ targets:
   distributions: [zorin, ubuntu]
   releases: [22.04, 24.04]
   architectures: [amd64, arm64]
-# The checksums below belong to the published v0.2.6 release assets. Each one
-# was re-hashed from the package downloaded back from the public release rather
-# than copied from its sidecar, which is what ADR 0002 requires a manifest to
-# record.
+# Placeholder checksums until v0.2.7 is published. ADR 0002 records the
+# checksum of a *published* release asset; the v0.2.6 values these variants
+# carried describe 0.2.6's packages, not 0.2.7's. The real values are written
+# back once the release is public and every asset has been re-downloaded and
+# verified.
 artifacts:
   - release: "22.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-awake_0.2.6_ubuntu-22.04_amd64.deb
-    sha256: 5c79bb1fd34f001a1706c53e467b903fd4cefa7361c7b31de9c43c90fb0f7dab
-    release_asset: better-awake_0.2.6_ubuntu-22.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.7/better-awake_0.2.7_ubuntu-22.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-awake_0.2.7_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-awake_0.2.6_ubuntu-22.04_arm64.deb
-    sha256: cee018bc43fe5febb70253b40b4142cf290bf7acdecf68e94e49954ab4dcabf8
-    release_asset: better-awake_0.2.6_ubuntu-22.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.7/better-awake_0.2.7_ubuntu-22.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-awake_0.2.7_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-awake_0.2.6_ubuntu-24.04_amd64.deb
-    sha256: e983f2964aeff6624368486ca469bbea9ae7c6a80f674452d610b30c272f10b5
-    release_asset: better-awake_0.2.6_ubuntu-24.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.7/better-awake_0.2.7_ubuntu-24.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-awake_0.2.7_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.6/better-awake_0.2.6_ubuntu-24.04_arm64.deb
-    sha256: acaf7203c6819f904a4bdece1aed8cd2127543d30e684305e411ad1e2a432510
-    release_asset: better-awake_0.2.6_ubuntu-24.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.7/better-awake_0.2.7_ubuntu-24.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-awake_0.2.7_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable
