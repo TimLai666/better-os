@@ -10,6 +10,7 @@
 pub mod catalog_fetch;
 pub mod download;
 pub mod dpkg;
+mod flavor;
 pub mod host;
 #[cfg(feature = "dbus-client")]
 pub mod privileged;

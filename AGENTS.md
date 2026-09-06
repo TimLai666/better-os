@@ -444,6 +444,43 @@ GUI or dependency compiles when the relevant command was not executed.
   probe's output rather than looked at on a running desktop. A published release
   is not a report from the machine that filed the defect: nobody has yet watched
   the Zorin 18 host install Better Awake on 0.2.6 and keep it.
+- **zbus stays on its default `async-io` flavor across this workspace.** The
+  backend is a compile-time cargo feature and cargo unifies features across
+  every package one `cargo build` names, so a single crate asking for
+  `zbus/tokio` compiles that flavor into every binary built beside it —
+  including every GPUI window, because `packaging/build-deb.sh` builds the
+  services and the windows in one invocation. gpui's XDG desktop portal
+  (`ashpd`) and `accesskit_unix` each open their own zbus connection from a
+  plain thread no tokio runtime owns, and the tokio flavor panics there with
+  "there is no reactor running". Neither thread is reachable from this project,
+  so no runtime guard can cover them; ticket 43's guard in `privileged.rs` only
+  ever covered our own calls, and is gone with the flavor that needed it.
+  `crates/manager-platform/src/flavor.rs` fails the build with the file and line
+  if the feature comes back. The cost is on the service side and is paid
+  explicitly: zbus now polls a served method body on its own executor rather
+  than as a tokio task, so a handler must not call `tokio::spawn` or
+  `tokio::task::spawn_blocking` — the panic is swallowed inside the task and the
+  *caller* hangs. `manager-daemon` and `storage-service` capture a
+  `tokio::runtime::Handle` at construction and spawn through it. Any new handler
+  that needs tokio must do the same.
+- **`/usr/bin/better-manager` is the window; `/usr/bin/better-manager-cli` is
+  the command line.** This is `better-monitor`'s split, and it is now the rule
+  for a component that ships both. The window refuses an argument it does not
+  understand with exit 2 and names the command line, rather than opening a
+  window a person waiting at a terminal cannot escape. The other five windows
+  still swallow their arguments; fixing that needs each of them to have a
+  command line to point at first.
+- Reconciliation adopts a host that is **ahead** of the record and blocks on
+  every other disagreement. An external `apt` or `install.sh` upgrade is
+  supported — it is the only way the manager can be upgraded — so a newer
+  version under dpkg's ownership is the machine having moved forward, not drift,
+  and it clears the failure and failed health that describe the version it
+  replaced. A host that is behind, a package the record claims and dpkg does not
+  have, and a version `semver` cannot order all stay blocking findings, and the
+  way out of one is `Manager::adopt_host_state` — from the component page or
+  from `better-manager-cli reconcile --adopt <id>`, never by editing the state
+  file. Adoption drops the restore snapshot and the recorded artifact, because
+  they name a version the machine no longer has; the GUI says so before it acts.
 - A dpkg version that is not a semantic version keeps a package invisible to the
   manager: ticket 44's host reconciliation adopts only what `semver` can parse,
   because everything downstream compares versions. A package in that state is

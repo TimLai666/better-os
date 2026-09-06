@@ -72,7 +72,12 @@ fn no_screen_names_a_setting_backend_or_runs_a_command() {
         "defaults_platform",
         "gsettings",
         "xdg-mime",
-        "std::process",
+        // Spawning a process, in both the spelled-out and the imported form.
+        // Narrowed from `std::process` in ticket 49: the window now refuses a
+        // command-line argument and exits with a status rather than opening a
+        // window, and `std::process::exit` runs nothing. What this test is
+        // about is the GUI changing the machine itself, which is still caught.
+        "std::process::Command",
         "Command::new",
         "dconf",
     ];

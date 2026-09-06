@@ -101,6 +101,7 @@ export RUST_FONTCONFIG_DLOPEN="${RUST_FONTCONFIG_DLOPEN:-1}"
 "$ROOT_DIR/packaging/generate-third-party-notices.sh" --check
 cargo build --release \
     -p manager-gui \
+    -p manager-cli \
     -p manager-daemon \
     -p monitor-gui \
     -p monitor-service \
@@ -427,7 +428,16 @@ POSTRM
 # entry did before these icons existed. They are installed per package rather
 # than from one shared icon package so that removing a component takes its icon
 # with it and no package depends on another to draw itself.
-PACKAGE_BINARIES=("manager-gui:usr/bin/better-manager")
+# /usr/bin/better-manager stays the window, because that is the name the
+# desktop entry, the component manifest, and every published package already
+# use. The command line ships beside it as better-manager-cli, following
+# better-monitor. Before ticket 49 it shipped nowhere at all, and the window
+# answered `better-manager catalog status` by opening a window and never
+# exiting, which is what the field report described as a hang.
+PACKAGE_BINARIES=(
+    "manager-gui:usr/bin/better-manager"
+    "manager-cli:usr/bin/better-manager-cli"
+)
 PACKAGE_DATA=(
     "packaging/manager/io.betteros.Manager.desktop:usr/share/applications/io.betteros.Manager.desktop"
     "packaging/icons/better-manager.svg:usr/share/icons/hicolor/scalable/apps/better-manager.svg"

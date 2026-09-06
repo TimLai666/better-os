@@ -967,22 +967,26 @@ fn a_component_the_host_no_longer_has_is_reported_without_rewriting_the_record()
     );
 }
 
+/// The host being *behind* the record is a disagreement nobody can explain: no
+/// supported path downgrades a Better OS package, so something happened that
+/// the manager did not see. Ticket 49 kept this direction blocking while making
+/// the opposite one self-heal.
 #[test]
 fn a_version_the_host_disagrees_about_blocks_planning_until_it_is_resolved() {
     let manager = Manager::new(catalog(), SystemProfile::default());
     let mut state = ManagerState::default();
-    state.set_installed(id("better-monitor"), "0.0.1", true);
+    state.set_installed(id("better-monitor"), "0.9.9", true);
 
     let findings = manager
         .reconcile(
             &mut state,
-            &FixedPackageStateProbe::new(&[("better-monitor", "0.9.9")]),
+            &FixedPackageStateProbe::new(&[("better-monitor", "0.0.1")]),
         )
         .unwrap();
     assert_eq!(
         findings[0].drift,
         DriftKind::VersionMismatch {
-            host: "0.9.9".to_string()
+            host: "0.0.1".to_string()
         }
     );
 
@@ -1107,22 +1111,25 @@ mod host_reconciliation {
         assert_eq!(record.installed_version.as_deref(), Some("0.1.0"));
     }
 
+    /// Adoption still never overwrites a recorded version with an older one:
+    /// the record is the evidence that the two disagree, and a downgrade nobody
+    /// asked for is not something to write down as fact.
     #[test]
-    fn adoption_never_overwrites_a_version_the_manager_recorded() {
+    fn adoption_never_overwrites_a_recorded_version_with_an_older_one() {
         let manager = manager();
         let mut state = ManagerState::default();
-        state.set_installed(id("better-monitor"), "0.1.0", true);
+        state.set_installed(id("better-monitor"), "0.9.9", true);
 
         let findings = manager
             .reconcile(
                 &mut state,
-                &FixedPackageStateProbe::new(&[("better-monitor", "0.9.9")]),
+                &FixedPackageStateProbe::new(&[("better-monitor", "0.1.0")]),
             )
             .unwrap();
 
         assert_eq!(findings.len(), 1);
         let record = state.component(&id("better-monitor")).unwrap();
-        assert_eq!(record.installed_version.as_deref(), Some("0.1.0"));
+        assert_eq!(record.installed_version.as_deref(), Some("0.9.9"));
         assert_eq!(record.provenance, InstallProvenance::Manager);
     }
 
@@ -1349,5 +1356,333 @@ fn complete(
             MockOutcome::Succeed
         };
         manager.advance_mock(state, outcome).unwrap();
+    }
+}
+
+/// Ticket 49's matrix.
+///
+/// The field case: a Zorin 18 machine whose `better-manager` was upgraded to
+/// 0.2.5 with `install.sh`, while the manager's own record still said 0.2.3 and
+/// carried the failure from the attempt that had made it try. Reconciliation
+/// called that drift, drift blocks planning, and the Updates screen therefore
+/// offered nothing for the one component that actually had an update — the
+/// manager punished the user for upgrading it the only way it could be
+/// upgraded.
+///
+/// Every combination of what dpkg says, who the record thinks installed it, and
+/// whether it is carrying a failure is enumerated here, because the whole point
+/// of the change is which cells self-heal and which stay blocking.
+mod host_self_heal {
+    use super::*;
+    use manager_core::InstallProvenance;
+
+    const RECORDED: &str = "0.2.3";
+
+    fn manager() -> Manager {
+        Manager::new(catalog(), SystemProfile::default())
+    }
+
+    /// A record at `RECORDED` with the requested provenance, and optionally the
+    /// failure a real failed install leaves behind.
+    fn state_with(provenance: InstallProvenance, failed: bool) -> ManagerState {
+        let manager = manager();
+        let mut state = ManagerState::default();
+        let component = id("better-monitor");
+        if failed {
+            fail_an_install(&manager, &mut state, &component, OperationStage::Installing);
+        }
+        let record = state.components.entry(component).or_default();
+        record.installed_version = Some(RECORDED.to_string());
+        record.enabled = true;
+        record.provenance = provenance;
+        state
+    }
+
+    fn probe(host: Option<&str>) -> FixedPackageStateProbe {
+        match host {
+            Some(version) => FixedPackageStateProbe::new(&[("better-monitor", version)]),
+            None => FixedPackageStateProbe::new(&[]),
+        }
+    }
+
+    /// The whole matrix in one table: host version against provenance against
+    /// health. `heals` is the version the record should end up at, and `None`
+    /// means the record must be left exactly as it was and a finding raised.
+    #[test]
+    fn the_host_newer_cell_self_heals_and_every_other_cell_stays_blocking() {
+        let cases: [(Option<&str>, Option<&str>); 5] = [
+            // The host moved forward. Adopt it, whoever installed it and
+            // whatever the record was carrying.
+            (Some("0.2.5"), Some("0.2.5")),
+            // dpkg carries an epoch the manifest never does. Comparison and
+            // adoption both use the upstream part.
+            (Some("1:0.2.5"), Some("0.2.5")),
+            // Agreement. Nothing to do, nothing to report.
+            (Some(RECORDED), Some(RECORDED)),
+            // The host is behind. No supported path downgrades a package, so
+            // this is a disagreement, not an upgrade.
+            (Some("0.2.1"), None),
+            // dpkg has never heard of a package the record claims.
+            (None, None),
+        ];
+
+        for provenance in [InstallProvenance::Manager, InstallProvenance::Dpkg] {
+            for failed in [false, true] {
+                for (host, expected) in cases {
+                    let manager = manager();
+                    let mut state = state_with(provenance, failed);
+                    let findings = manager.reconcile(&mut state, &probe(host)).unwrap();
+                    let record = state.component(&id("better-monitor")).unwrap().clone();
+                    let case = format!("host={host:?} provenance={provenance:?} failed={failed}");
+
+                    match expected {
+                        Some(adopted) if adopted == RECORDED => {
+                            assert!(findings.is_empty(), "{case}: agreement is not a finding");
+                            assert_eq!(
+                                record.installed_version.as_deref(),
+                                Some(RECORDED),
+                                "{case}"
+                            );
+                            assert_eq!(record.provenance, provenance, "{case}");
+                            assert_eq!(record.failure.is_some(), failed, "{case}");
+                        }
+                        Some(adopted) => {
+                            assert!(
+                                findings.is_empty(),
+                                "{case}: an external upgrade must not block planning"
+                            );
+                            assert_eq!(
+                                record.installed_version.as_deref(),
+                                Some(adopted),
+                                "{case}"
+                            );
+                            assert_eq!(record.provenance, InstallProvenance::Dpkg, "{case}");
+                            assert_eq!(record.health, HealthState::Healthy, "{case}");
+                            assert!(
+                                record.failure.is_none(),
+                                "{case}: a stale failure is cleared"
+                            );
+                            assert!(record.recovery.is_none(), "{case}");
+                            assert!(record.drift.is_none(), "{case}");
+                            assert!(record.installed_artifact.is_none(), "{case}");
+                            assert!(record.restore_snapshot.is_none(), "{case}");
+                            // Whether a component should run is the user's
+                            // decision, and dpkg has no opinion about it.
+                            assert!(record.enabled, "{case}");
+                            assert!(
+                                state.activity.iter().any(|entry| entry
+                                    .evidence
+                                    .as_deref()
+                                    .is_some_and(|evidence| evidence
+                                        .starts_with("host.externally_upgraded:"))),
+                                "{case}: the upgrade is written into the activity log"
+                            );
+                            // Planning works again, which is the point.
+                            assert!(
+                                manager
+                                    .plan(&state, &id("better-monitor"), DesiredOperation::Update)
+                                    .is_ok()
+                                    || manager.status(&state, &id("better-monitor")).is_ok(),
+                                "{case}"
+                            );
+                        }
+                        None => {
+                            assert_eq!(findings.len(), 1, "{case}: this direction must block");
+                            assert_eq!(
+                                record.installed_version.as_deref(),
+                                Some(RECORDED),
+                                "{case}"
+                            );
+                            assert_eq!(record.provenance, provenance, "{case}");
+                            assert_eq!(record.failure.is_some(), failed, "{case}");
+                            assert!(record.drift.is_some(), "{case}");
+                            assert!(
+                                matches!(
+                                    manager.plan(
+                                        &state,
+                                        &id("better-monitor"),
+                                        DesiredOperation::Update
+                                    ),
+                                    Err(ManagerError::HostDrift(_))
+                                ),
+                                "{case}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A version nothing can order is never adopted, in either direction. The
+    /// manager would otherwise be recording a string it cannot compare, which
+    /// every later plan would then reason about.
+    #[test]
+    fn a_version_that_cannot_be_ordered_is_reported_rather_than_adopted() {
+        let manager = manager();
+        let mut state = state_with(InstallProvenance::Manager, false);
+        let findings = manager
+            .reconcile(
+                &mut state,
+                &FixedPackageStateProbe::new(&[("better-monitor", "2.0-1ubuntu1")]),
+            )
+            .unwrap();
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].drift,
+            DriftKind::VersionMismatch {
+                host: "2.0-1ubuntu1".to_string()
+            }
+        );
+        let record = state.component(&id("better-monitor")).unwrap();
+        assert_eq!(record.installed_version.as_deref(), Some(RECORDED));
+    }
+
+    /// The exact field record: 0.2.3 recorded, manager provenance, a failure
+    /// left over from an earlier `plan_rejected`, and dpkg holding 0.2.5.
+    #[test]
+    fn the_reported_machine_heals_and_the_updates_screen_can_offer_again() {
+        let manager = manager();
+        let mut state = state_with(InstallProvenance::Manager, true);
+        let component = id("better-monitor");
+        assert_eq!(
+            state.component(&component).unwrap().health,
+            HealthState::Failed
+        );
+
+        let findings = manager
+            .reconcile(&mut state, &probe(Some("0.2.5")))
+            .unwrap();
+
+        assert!(findings.is_empty());
+        let record = state.component(&component).unwrap();
+        assert_eq!(record.installed_version.as_deref(), Some("0.2.5"));
+        assert_eq!(record.health, HealthState::Healthy);
+        assert!(record.failure.is_none());
+        assert!(manager.status(&state, &component).is_ok());
+    }
+
+    /// The way out of the blocking half: the same adoption, on request.
+    #[test]
+    fn adopting_the_host_state_clears_a_blocking_drift() {
+        let manager = manager();
+        let mut state = state_with(InstallProvenance::Manager, true);
+        let component = id("better-monitor");
+        manager
+            .reconcile(&mut state, &probe(Some("0.2.1")))
+            .unwrap();
+        assert!(state.component(&component).unwrap().drift.is_some());
+
+        let adoption = manager
+            .adopt_host_state(&mut state, &component, &probe(Some("0.2.1")))
+            .unwrap();
+
+        assert!(adoption.changed);
+        assert_eq!(adoption.recorded.as_deref(), Some(RECORDED));
+        assert_eq!(adoption.adopted.as_deref(), Some("0.2.1"));
+        let record = state.component(&component).unwrap();
+        assert_eq!(record.installed_version.as_deref(), Some("0.2.1"));
+        assert_eq!(record.provenance, InstallProvenance::Dpkg);
+        assert!(record.drift.is_none());
+        assert!(record.failure.is_none());
+        assert!(
+            manager
+                .plan(&state, &component, DesiredOperation::Update)
+                .is_ok()
+        );
+        assert!(state.activity.iter().any(|entry| {
+            entry
+                .evidence
+                .as_deref()
+                .is_some_and(|evidence| evidence.starts_with("host.state_adopted:"))
+        }));
+    }
+
+    /// Adopting a host that has nothing means the record says nothing either.
+    #[test]
+    fn adopting_a_host_without_the_package_empties_the_record() {
+        let manager = manager();
+        let mut state = state_with(InstallProvenance::Manager, false);
+        let component = id("better-monitor");
+
+        let adoption = manager
+            .adopt_host_state(&mut state, &component, &probe(None))
+            .unwrap();
+
+        assert!(adoption.changed);
+        assert_eq!(adoption.adopted, None);
+        let record = state.component(&component).unwrap();
+        assert_eq!(record.installed_version, None);
+        assert!(!record.enabled);
+        assert!(record.drift.is_none());
+    }
+
+    /// Adoption is idempotent: a record that already agrees is not rewritten,
+    /// so the revision does not move and the activity log does not fill up.
+    #[test]
+    fn adopting_a_record_that_already_agrees_writes_nothing() {
+        let manager = manager();
+        let mut state = state_with(InstallProvenance::Dpkg, false);
+        let component = id("better-monitor");
+        manager
+            .adopt_host_state(&mut state, &component, &probe(Some(RECORDED)))
+            .unwrap();
+        let revision = state.revision;
+        let entries = state.activity.len();
+
+        let adoption = manager
+            .adopt_host_state(&mut state, &component, &probe(Some(RECORDED)))
+            .unwrap();
+
+        assert!(!adoption.changed);
+        assert_eq!(state.revision, revision);
+        assert_eq!(state.activity.len(), entries);
+    }
+
+    /// A version nothing can order is refused on request as well, rather than
+    /// written down because a person asked for it.
+    #[test]
+    fn adopting_a_version_that_cannot_be_ordered_is_refused() {
+        let manager = manager();
+        let mut state = state_with(InstallProvenance::Manager, false);
+        assert!(matches!(
+            manager.adopt_host_state(
+                &mut state,
+                &id("better-monitor"),
+                &FixedPackageStateProbe::new(&[("better-monitor", "2.0-1ubuntu1")]),
+            ),
+            Err(ManagerError::HostVersionUnreadable(_))
+        ));
+    }
+
+    /// Adoption during a transaction would edit the record the transaction is
+    /// in the middle of changing.
+    #[test]
+    fn adoption_is_refused_while_an_operation_is_running() {
+        let manager = manager();
+        let mut state = ManagerState::default();
+        let component = id("better-monitor");
+        let plan = manager
+            .plan(&state, &component, DesiredOperation::Install)
+            .unwrap();
+        manager.begin(&mut state, plan).unwrap();
+
+        assert!(matches!(
+            manager.adopt_host_state(&mut state, &component, &probe(Some("0.2.5"))),
+            Err(ManagerError::ActiveOperation)
+        ));
+    }
+
+    /// A component that is not in the catalog has no host state to adopt.
+    #[test]
+    fn adopting_an_unknown_component_is_refused() {
+        let manager = manager();
+        let mut state = ManagerState::default();
+        assert!(
+            manager
+                .adopt_host_state(&mut state, &id("better-nothing"), &probe(None))
+                .is_err()
+        );
     }
 }

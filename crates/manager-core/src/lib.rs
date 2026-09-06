@@ -836,6 +836,107 @@ pub struct DriftFinding {
     pub drift: DriftKind,
 }
 
+/// What one component's record and dpkg's answer add up to.
+///
+/// Every reconciliation decision is made here and nowhere else, so the line
+/// between "the machine moved forward" and "these two disagree" is one closed
+/// set of cases rather than a chain of conditions spread through the loop.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum HostComparison {
+    /// Neither side has it, or dpkg has a version nothing can order and the
+    /// record has nothing to compare it against. Left alone.
+    Absent,
+    /// Both agree on the version.
+    Agreed,
+    /// Nothing is recorded and dpkg holds an orderable version: adopt it.
+    Adoptable { host: String },
+    /// Both orderable, and the host is ahead: the machine was upgraded from
+    /// outside the manager, which is a supported thing to do.
+    HostAhead { host: String },
+    /// The host is behind, gone, or unorderable. Blocking.
+    Drifted(DriftKind),
+}
+
+impl HostComparison {
+    fn of(recorded: Option<&str>, host: Option<&str>) -> Self {
+        match (recorded, host) {
+            (None, None) => Self::Absent,
+            (None, Some(host)) => match Version::parse(upstream_version(host)) {
+                Ok(_) => Self::Adoptable {
+                    host: upstream_version(host).to_string(),
+                },
+                Err(_) => Self::Absent,
+            },
+            (Some(_), None) => Self::Drifted(DriftKind::MissingOnHost),
+            (Some(recorded), Some(host)) => {
+                if upstream_version(host) == upstream_version(recorded) {
+                    return Self::Agreed;
+                }
+                match (
+                    Version::parse(upstream_version(host)),
+                    Version::parse(upstream_version(recorded)),
+                ) {
+                    (Ok(host_version), Ok(recorded_version)) if host_version > recorded_version => {
+                        Self::HostAhead {
+                            host: upstream_version(host).to_string(),
+                        }
+                    }
+                    // A host behind the record, or a version on either side
+                    // that cannot be ordered. Both are reported, never applied.
+                    _ => Self::Drifted(DriftKind::VersionMismatch {
+                        host: host.to_string(),
+                    }),
+                }
+            }
+        }
+    }
+
+    fn drift(&self) -> Option<DriftKind> {
+        match self {
+            Self::Drifted(kind) => Some(kind.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// Writes dpkg's answer into a record as the whole truth about the component.
+///
+/// One function for both the self-healing path and the requested one, so the
+/// two cannot end up meaning different things by "adopt". Everything the
+/// manager believed and the host cannot confirm is dropped: the artifact and
+/// the restore snapshot name a version this machine no longer has, and the
+/// failure and its recovery status describe an install that has since been
+/// replaced. `enabled` survives, because dpkg has no opinion on it.
+fn adopt_host_version(record: &mut ComponentRecord, host: Option<&str>) {
+    match host {
+        Some(version) => record.installed_version = Some(version.to_string()),
+        None => {
+            record.installed_version = None;
+            record.enabled = false;
+        }
+    }
+    record.installed_artifact = None;
+    record.provenance = InstallProvenance::Dpkg;
+    record.restore_snapshot = None;
+    record.failure = None;
+    record.recovery = None;
+    record.health = HealthState::Healthy;
+    record.drift = None;
+}
+
+/// What [`Manager::adopt_host_state`] did, so the caller can say it out loud.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostAdoption {
+    pub component: ComponentId,
+    /// What the record said before, if anything.
+    pub recorded: Option<String>,
+    /// What dpkg reports now. `None` means the host does not have the package.
+    pub adopted: Option<String>,
+    /// Whether the record actually moved. An adoption of a record that already
+    /// agreed with the host writes nothing and logs nothing.
+    pub changed: bool,
+}
+
 /// What actually happened during a stage.
 ///
 /// This replaces the caller-supplied [`MockOutcome`] at the lifecycle boundary.
@@ -984,6 +1085,10 @@ pub enum ManagerError {
     /// reviewed.
     #[error("manager.error.host_drift:{0}")]
     HostDrift(ComponentId),
+    /// dpkg holds a version string this crate cannot order. Adopting it would
+    /// put the record into the one state reconciliation refuses to create.
+    #[error("manager.error.host_version_unreadable:{0}")]
+    HostVersionUnreadable(ComponentId),
 }
 
 /// The shared non-privileged planning and mock lifecycle API.
@@ -1432,6 +1537,22 @@ impl Manager {
     /// [`InstallProvenance::Dpkg`], and given no artifact and no restore
     /// snapshot, because none was ever captured. Adoption is what lets an
     /// update the host actually needs be seen instead of counted as zero.
+    ///
+    /// A host that is *ahead* of the record is the third case, and it is not
+    /// drift either. `install.sh` and `apt` are supported ways to upgrade a
+    /// Better OS package — the manager cannot upgrade itself from the inside —
+    /// so a newer version under dpkg's own ownership is the machine having
+    /// moved forward, not two beliefs in conflict. It is adopted the same way
+    /// a fresh package is, the record's failure and failed health are cleared
+    /// because they describe a version that is no longer installed, and no
+    /// finding is emitted, because a finding blocks planning and blocking
+    /// planning here is what left an externally upgraded manager with nothing
+    /// to offer on the Updates screen.
+    ///
+    /// The dangerous directions stay blocking, because each one means something
+    /// the manager cannot explain: a host *behind* the record, a package the
+    /// record claims and dpkg has never heard of, and a version on either side
+    /// that `semver` cannot parse and therefore cannot order.
     pub fn reconcile(
         &self,
         state: &mut ManagerState,
@@ -1439,7 +1560,7 @@ impl Manager {
     ) -> Result<Vec<DriftFinding>, ManagerError> {
         self.validate_state(state)?;
         let mut findings = Vec::new();
-        let mut adopted = 0_usize;
+        let mut changed = 0_usize;
 
         for manifest in self.manifests().map(|manifest| manifest.id.clone()) {
             let recorded = state
@@ -1449,39 +1570,47 @@ impl Manager {
                 .installed_version(manifest.as_str())
                 .map_err(|_| ManagerError::HostUnreadable(manifest.clone()))?;
 
-            let drift = match (&recorded, &host) {
-                (None, _) => None,
-                (Some(_), None) => Some(DriftKind::MissingOnHost),
-                (Some(recorded), Some(host)) => {
-                    if upstream_version(host) == upstream_version(recorded) {
-                        None
-                    } else {
-                        Some(DriftKind::VersionMismatch { host: host.clone() })
-                    }
-                }
-            };
+            let comparison = HostComparison::of(recorded.as_deref(), host.as_deref());
+            let drift = comparison.drift();
 
-            // A version this crate cannot parse cannot be recorded: every other
-            // path — planning, validation, comparison — would then be reasoning
-            // about a string it does not understand. Such a package is left
-            // alone rather than adopted at a version nobody can compare.
-            if recorded.is_none()
-                && let Some(host) = host.as_deref()
-                && Version::parse(upstream_version(host)).is_ok()
-            {
-                let record = state.components.entry(manifest.clone()).or_default();
-                record.installed_version = Some(upstream_version(host).to_string());
-                record.installed_artifact = None;
-                record.provenance = InstallProvenance::Dpkg;
-                record.enabled = true;
-                // dpkg says the package is unpacked and configured, which is
-                // not a health check. An earlier failure stays visible rather
-                // than being cleared by an observation that says nothing about
-                // it.
-                if record.failure.is_none() {
-                    record.health = HealthState::Healthy;
+            match &comparison {
+                // A version this crate cannot parse cannot be recorded: every
+                // other path — planning, validation, comparison — would then be
+                // reasoning about a string it does not understand. Such a
+                // package is left alone rather than adopted at a version nobody
+                // can compare.
+                HostComparison::Adoptable { host } => {
+                    let record = state.components.entry(manifest.clone()).or_default();
+                    record.installed_version = Some(host.clone());
+                    record.installed_artifact = None;
+                    record.provenance = InstallProvenance::Dpkg;
+                    record.enabled = true;
+                    // dpkg says the package is unpacked and configured, which
+                    // is not a health check. An earlier failure stays visible
+                    // rather than being cleared by an observation that says
+                    // nothing about it.
+                    if record.failure.is_none() {
+                        record.health = HealthState::Healthy;
+                    }
+                    changed += 1;
                 }
-                adopted += 1;
+                HostComparison::HostAhead { host } => {
+                    let previous = recorded.clone();
+                    let record = state.components.entry(manifest.clone()).or_default();
+                    adopt_host_version(record, Some(host));
+                    state.record(
+                        ActivityKind::Information,
+                        Some(manifest.clone()),
+                        None,
+                        None,
+                        Some(format!(
+                            "host.externally_upgraded:{}->{host}",
+                            previous.as_deref().unwrap_or("unknown")
+                        )),
+                    );
+                    changed += 1;
+                }
+                HostComparison::Absent | HostComparison::Agreed | HostComparison::Drifted(_) => {}
             }
 
             if let Some(record) = state.components.get_mut(&manifest) {
@@ -1496,10 +1625,82 @@ impl Manager {
             }
         }
 
-        if !findings.is_empty() || adopted > 0 {
+        if !findings.is_empty() || changed > 0 {
             state.bump_revision();
         }
         Ok(findings)
+    }
+
+    /// Takes dpkg's answer as the truth about one component, on request.
+    ///
+    /// This is the way out of a blocking drift finding, and the only one:
+    /// [`reconcile`](Self::reconcile) self-heals the safe direction on its own
+    /// and refuses to guess at the rest, so something has to be able to say
+    /// "the machine is right, write it down". It is deliberately a manager-core
+    /// operation rather than a presentation-layer edit of the state file: the
+    /// same rules — what a record may hold after adoption, what is lost by it,
+    /// what the activity log says happened — apply whether the request came
+    /// from the window or the command line.
+    ///
+    /// What adoption costs is stated rather than hidden: the restore snapshot
+    /// and the recorded artifact go, because they describe a version this
+    /// machine no longer has, and a restore offered from them would fail at the
+    /// point of use. `enabled` is kept, because whether a component should run
+    /// is the user's decision and dpkg has no opinion about it.
+    pub fn adopt_host_state(
+        &self,
+        state: &mut ManagerState,
+        id: &ComponentId,
+        probe: &dyn PackageStateProbe,
+    ) -> Result<HostAdoption, ManagerError> {
+        self.validate_state(state)?;
+        self.manifest(id)?;
+        if state.active_operation.is_some() {
+            return Err(ManagerError::ActiveOperation);
+        }
+
+        let host = probe
+            .installed_version(id.as_str())
+            .map_err(|_| ManagerError::HostUnreadable(id.clone()))?;
+        // Adopting a version nothing can order would put the record back into
+        // exactly the state reconciliation refuses to create.
+        if let Some(host) = host.as_deref()
+            && Version::parse(upstream_version(host)).is_err()
+        {
+            return Err(ManagerError::HostVersionUnreadable(id.clone()));
+        }
+        let host = host.map(|host| upstream_version(&host).to_string());
+
+        let previous = state
+            .component(id)
+            .and_then(|record| record.installed_version.clone());
+        let before = state.component(id).cloned();
+
+        let record = state.components.entry(id.clone()).or_default();
+        adopt_host_version(record, host.as_deref());
+        let changed = before.as_ref() != Some(&*record);
+
+        if changed {
+            state.record(
+                ActivityKind::Information,
+                Some(id.clone()),
+                None,
+                None,
+                Some(format!(
+                    "host.state_adopted:{}->{}",
+                    previous.as_deref().unwrap_or("not installed"),
+                    host.as_deref().unwrap_or("not installed")
+                )),
+            );
+            state.bump_revision();
+        }
+
+        Ok(HostAdoption {
+            component: id.clone(),
+            recorded: previous,
+            adopted: host,
+            changed,
+        })
     }
 
     pub fn doctor(&self, state: &ManagerState) -> Result<Vec<DoctorCheck>, ManagerError> {

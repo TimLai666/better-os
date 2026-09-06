@@ -24,4 +24,4 @@ launcher-platform = { workspace = true, features = ["session-bus"] }
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+zbus = { version = "5" }

@@ -50,7 +50,15 @@ struct Cli {
 enum Command {
     List,
     /// Compare recorded component versions against what dpkg reports.
-    Reconcile,
+    ///
+    /// Without a flag this only reports. `--adopt <id>` is the way out of a
+    /// drift finding: it writes what dpkg says about that one component into
+    /// the record, which is what unblocks planning for it.
+    Reconcile {
+        /// Take dpkg's answer about this component as the truth.
+        #[arg(long, value_name = "ID")]
+        adopt: Option<String>,
+    },
     Validate,
     Status {
         id: Option<String>,
@@ -577,10 +585,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mode,
             )?;
         }
-        Command::Reconcile => {
+        Command::Reconcile { adopt: Some(id) } => {
+            let component = ComponentId::new(id)?;
+            let adoption = manager.adopt_host_state(&mut state, &component, &DpkgProbe)?;
+            if adoption.changed {
+                store.save(&state)?;
+            }
+            println!(
+                "adopted host state for {}: {} -> {}",
+                adoption.component,
+                adoption.recorded.as_deref().unwrap_or("not installed"),
+                adoption.adopted.as_deref().unwrap_or("not installed"),
+            );
+            if !adoption.changed {
+                println!("the record already agreed with dpkg; nothing was written");
+            }
+        }
+        Command::Reconcile { adopt: None } => {
             // Reconciling can adopt a package the host has and the record does
-            // not, which changes the state without producing a finding, so the
-            // revision — not the finding list — decides whether to write.
+            // not, and can heal a component the host upgraded from outside the
+            // manager; both change the state without producing a finding, so
+            // the revision — not the finding list — decides whether to write.
             let revision_before = state.revision;
             let findings = manager.reconcile(&mut state, &DpkgProbe)?;
             if state.revision != revision_before {
@@ -597,12 +622,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if findings.is_empty() {
                 println!("no drift: dpkg agrees with every recorded component");
             }
-            for finding in findings {
+            for finding in &findings {
                 println!(
                     "drift {} recorded={} {:?}",
                     finding.component,
                     finding.recorded.as_deref().unwrap_or("not installed"),
                     finding.drift
+                );
+            }
+            // A finding blocks planning for that component, so the report says
+            // what to do about it rather than leaving a dead end.
+            for finding in &findings {
+                println!(
+                    "  to accept what this machine has: better-manager-cli reconcile --adopt {}",
+                    finding.component
                 );
             }
         }

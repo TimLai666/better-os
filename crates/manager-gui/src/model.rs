@@ -3,7 +3,7 @@ use crate::i18n::{Locale, copy};
 use better_core::{ComponentIcon, ComponentId, ComponentManifest, ComponentType};
 use manager_core::catalog::{CatalogDegradation, CatalogSource, CatalogStatus};
 use manager_core::{
-    ComponentRecord, ComponentStatus, FailureRecord, HealthState, InstallProvenance,
+    ComponentRecord, ComponentStatus, DriftKind, FailureRecord, HealthState, InstallProvenance,
     RestartRequirement, SystemProfile,
 };
 
@@ -251,6 +251,10 @@ pub(crate) struct ComponentInfo {
     /// can show the stage, the evidence, and the service's own words rather
     /// than a bare tag.
     pub(crate) failure: Option<FailureRecord>,
+    /// Set when this machine and the record disagree in a direction the manager
+    /// will not resolve on its own. Reconciliation adopts a host that is ahead;
+    /// everything else lands here and blocks planning until a person decides.
+    pub(crate) drift: Option<DriftKind>,
     pub(crate) enabled: bool,
     pub(crate) available_version: String,
     pub(crate) state: ComponentStatus,
@@ -262,6 +266,16 @@ pub(crate) struct ComponentInfo {
     pub(crate) enhances: Vec<String>,
     pub(crate) paths: Vec<String>,
     pub(crate) release_notes: Vec<String>,
+}
+
+/// The drift card's words. Three sentences, in the order a person needs them:
+/// what is wrong, which two things disagree, and what it costs until it is
+/// resolved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DriftNotice {
+    pub(crate) title: &'static str,
+    pub(crate) detail: String,
+    pub(crate) consequence: &'static str,
 }
 
 impl ComponentInfo {
@@ -293,6 +307,7 @@ impl ComponentInfo {
             installed_version: record.and_then(|record| record.installed_version.clone()),
             provenance: record.map(|record| record.provenance).unwrap_or_default(),
             failure: record.and_then(|record| record.failure.clone()),
+            drift: record.and_then(|record| record.drift.clone()),
             enabled: record.is_some_and(|record| record.enabled),
             available_version: manifest.version.to_string(),
             state,
@@ -319,6 +334,29 @@ impl ComponentInfo {
         self.installed_version
             .clone()
             .unwrap_or_else(|| not_installed.to_string())
+    }
+
+    /// What the window says about a component whose record and machine
+    /// disagree: which two things disagree, and what that costs.
+    ///
+    /// Built here rather than in the render function because deciding that a
+    /// component cannot be planned for, and saying which direction the
+    /// disagreement runs in, is a decision and not a rendering detail.
+    pub(crate) fn drift_notice(&self, locale: Locale) -> Option<DriftNotice> {
+        let c = copy(locale);
+        let recorded = self.installed_label(c.not_installed);
+        let detail = match self.drift.as_ref()? {
+            DriftKind::MissingOnHost => c.drift_missing_on_host.replace("{recorded}", &recorded),
+            DriftKind::VersionMismatch { host } => c
+                .drift_version_mismatch
+                .replace("{host}", host)
+                .replace("{recorded}", &recorded),
+        };
+        Some(DriftNotice {
+            title: c.drift_title,
+            detail,
+            consequence: c.drift_blocks_planning,
+        })
     }
 
     /// Whether something outside Better Manager put this component here.

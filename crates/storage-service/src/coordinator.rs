@@ -98,6 +98,15 @@ pub struct StorageCoordinator<C: DeviceControl> {
     known: BTreeMap<DeviceHandle, PlatformDevice>,
     diagnostics: VecDeque<Diagnostic>,
     updates: broadcast::Sender<DeviceReport>,
+    /// The runtime this service owns, when it was built inside one.
+    ///
+    /// zbus runs on its default async-io flavor across this workspace — see
+    /// `manager-platform::flavor` and ticket 49 — which means zbus polls these
+    /// method bodies on its own executor rather than on a tokio thread. A bare
+    /// `tokio::task::spawn_blocking` would panic looking for a runtime, so the
+    /// handle is captured where it is unambiguous. A coordinator built outside
+    /// a runtime has none, and runs the same work inline.
+    runtime: Option<tokio::runtime::Handle>,
 }
 
 impl<C: DeviceControl> StorageCoordinator<C> {
@@ -123,7 +132,20 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             known: BTreeMap::new(),
             diagnostics: VecDeque::new(),
             updates,
+            runtime: tokio::runtime::Handle::try_current().ok(),
         })
+    }
+
+    /// Runs blocking file work off the executor polling this future.
+    async fn off_thread<F, T>(&self, work: F) -> Option<T>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        match &self.runtime {
+            Some(runtime) => runtime.spawn_blocking(work).await.ok(),
+            None => Some(work()),
+        }
     }
 
     pub fn clock(&self) -> &Clock {
@@ -450,19 +472,19 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         let open_use_inspector = self.open_use.clone();
         let probe_device = device.clone();
         let probe_mount = mount_point.clone();
-        // File I/O, so it runs off the async runtime's threads.
-        let (writeback, open_writers) = tokio::task::spawn_blocking(move || {
-            let writeback = writeback_inspector.pending(&probe_device);
-            let open_writers = match &probe_mount {
-                Some(mount) => open_use_inspector.open_writers(mount),
-                None => SignalStatus::Unavailable {
-                    detail: "the volume is not mounted".to_string(),
-                },
-            };
-            (writeback, open_writers)
-        })
-        .await
-        .ok()?;
+        // File I/O, so it runs off the executor polling this future.
+        let (writeback, open_writers) = self
+            .off_thread(move || {
+                let writeback = writeback_inspector.pending(&probe_device);
+                let open_writers = match &probe_mount {
+                    Some(mount) => open_use_inspector.open_writers(mount),
+                    None => SignalStatus::Unavailable {
+                        detail: "the volume is not mounted".to_string(),
+                    },
+                };
+                (writeback, open_writers)
+            })
+            .await?;
 
         let now = self.clock.now();
         self.registry.apply(
@@ -485,9 +507,8 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             .get(handle)
             .and_then(|machine| machine.mount_point().map(PathBuf::from))?;
         let backend = self.flush.clone();
-        tokio::task::spawn_blocking(move || backend.flush_filesystem(&mount_point))
+        self.off_thread(move || backend.flush_filesystem(&mount_point))
             .await
-            .ok()
     }
 
     async fn flush_once(&mut self, handle: &DeviceHandle) -> Option<Transition> {

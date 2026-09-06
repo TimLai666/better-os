@@ -111,7 +111,14 @@ storage-platform = { path = "crates/storage-platform" }
 storage-service = { path = "crates/storage-service" }
 libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+# zbus stays on its default async-io flavor everywhere in this workspace.
+# Cargo unifies features across every package one `cargo build` names, and
+# `packaging/build-deb.sh` builds the services and the windows together, so a
+# single crate asking for zbus's `tokio` feature compiles it into every GUI as
+# well. gpui's XDG desktop portal and accesskit both open their own zbus
+# connections from plain threads that no tokio runtime owns, and the tokio
+# flavor panics there with "there is no reactor running". See ticket 49.
+zbus = { version = "5" }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

@@ -109,6 +109,12 @@ pub(crate) struct ManagerApp {
     /// Set while a real transaction is running. Dropping it stops the work.
     pub(crate) running: Option<Task<()>>,
     pub(crate) cancel: Option<CancelToken>,
+    /// The component whose drift card is currently asking "are you sure".
+    ///
+    /// Adoption throws away the recorded restore point, so it is not something
+    /// one click does. The confirmation lives here rather than in a modal
+    /// because the sentence a person needs is already on the card they clicked.
+    pub(crate) adopt_confirm: Option<ComponentId>,
     pub(crate) _subscriptions: Vec<Subscription>,
 }
 
@@ -191,6 +197,7 @@ impl ManagerApp {
             transfer: None,
             running: None,
             cancel: None,
+            adopt_confirm: None,
             _subscriptions: vec![subscription],
         };
         app.reconcile_with_host();
@@ -221,6 +228,45 @@ impl ManagerApp {
         {
             self.commit_state(candidate);
         }
+    }
+
+    /// Asks for confirmation before adopting what the machine has, or takes
+    /// the confirmation back.
+    pub(crate) fn ask_to_adopt_host_state(
+        &mut self,
+        id: Option<ComponentId>,
+        cx: &mut Context<Self>,
+    ) {
+        self.adopt_confirm = id;
+        cx.notify();
+    }
+
+    /// Records what dpkg says about one component as the truth.
+    ///
+    /// The decision is `manager-core`'s: what a record may hold afterwards,
+    /// what adoption costs, and what the activity log says happened are the
+    /// same whether the request came from here or from the command line. This
+    /// window only asks, and saves what comes back.
+    pub(crate) fn adopt_host_state(&mut self, id: &ComponentId, cx: &mut Context<Self>) {
+        self.adopt_confirm = None;
+        // A demo window's state is a fabrication for screenshots; writing a
+        // real machine's package state into it would make it neither.
+        if self.execution == ExecutionMode::Mock {
+            cx.notify();
+            return;
+        }
+        let mut candidate = self.state.clone();
+        match self
+            .manager
+            .adopt_host_state(&mut candidate, id, &DpkgProbe)
+        {
+            Ok(adoption) if adoption.changed => {
+                self.commit_state(candidate);
+            }
+            Ok(_) => {}
+            Err(_) => self.planning_error = Some(AppError::Planning),
+        }
+        cx.notify();
     }
 
     /// Starts the launch-time catalog refresh, unless this run was told to stay
@@ -990,6 +1036,10 @@ impl ManagerApp {
                 c.evidence_health_failed
             }
             Some(other) if other.starts_with("daemon.error.state_drift") => c.evidence_state_drift,
+            Some(other) if other.starts_with("host.externally_upgraded") => {
+                c.evidence_externally_upgraded
+            }
+            Some(other) if other.starts_with("host.state_adopted") => c.evidence_state_adopted,
             Some(other)
                 if other.starts_with("daemon.error.plan_rejected")
                     || other == "daemon.plan_rejected" =>
