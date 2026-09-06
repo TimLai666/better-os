@@ -11,10 +11,10 @@ use manager_core::{
     DesiredOperation, DiskSpaceCheck, ExecutionMode, InstallProvenance, Manager, ManagerState,
     MockOutcome, OperationProgress, OperationStage, TransactionPlan,
 };
-use manager_platform::MockPlatform;
 use manager_platform::catalog_fetch::HttpManifestFetcher;
 use manager_platform::download::{ArtifactCache, HttpDownloader};
 use manager_platform::dpkg::DpkgProbe;
+use manager_platform::host::ClientPlatform;
 use manager_platform::privileged::DbusPrivilegedExecutor;
 use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, start_catalog};
 use std::path::PathBuf;
@@ -116,6 +116,19 @@ enum ExecutionArg {
     Mock,
     /// Download, verify, and apply through the privileged service.
     Real,
+}
+
+/// The platform this run plans against.
+///
+/// `--execution mock` keeps the fixed mock profile, so a simulation produces
+/// the same walkthrough on any machine. A real run reads the host: a plan
+/// names a package built for exactly one Ubuntu release and one architecture,
+/// and the privileged service checks that target against the machine.
+fn platform_for(execution: ExecutionArg) -> ClientPlatform {
+    match execution {
+        ExecutionArg::Mock => ClientPlatform::demo(),
+        ExecutionArg::Real => ClientPlatform::host(),
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -456,7 +469,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // compiled-in manifests otherwise. Nothing is fetched here: a command that
     // was not asked to refresh does not go to the network.
     let (catalog, catalog_status) = start_catalog(&catalog_store);
-    let manager = Manager::probe(catalog.clone(), &MockPlatform::default())?;
+    // An unsupported host stops the command here rather than letting it plan
+    // for a release this machine is not running. `--execution mock` still
+    // works everywhere, which is what a walkthrough on an unsupported machine
+    // is for.
+    let manager = Manager::probe(catalog.clone(), &platform_for(cli.execution))?;
     let store = store_for(cli.state_path);
     let mut state = load_state(&store, &manager)?;
 
@@ -679,5 +696,49 @@ mod tests {
                 "{component} must declare all four release/architecture variants"
             );
         }
+    }
+
+    /// The seam that replaced `MockPlatform::default()`. The mock answers
+    /// Ubuntu 24.04 amd64 on every machine, so a real run on a 22.04 or arm64
+    /// host used to plan for packages that host cannot use. Asserted through
+    /// the seam so the test does not depend on the machine it runs on.
+    #[test]
+    fn a_real_run_plans_from_the_host_and_a_mock_run_keeps_the_fixed_profile() {
+        assert!(matches!(
+            platform_for(ExecutionArg::Real),
+            ClientPlatform::Host(_)
+        ));
+        assert!(matches!(
+            platform_for(ExecutionArg::Mock),
+            ClientPlatform::Mock(_)
+        ));
+
+        let ClientPlatform::Host(host) = platform_for(ExecutionArg::Real) else {
+            panic!("a real run must plan from the host");
+        };
+        assert_eq!(
+            host.os_release_path(),
+            Some(std::path::Path::new("/etc/os-release"))
+        );
+    }
+
+    /// A host outside the release matrix stops the command instead of planning
+    /// for a release it is not running.
+    #[test]
+    fn an_unidentifiable_host_refuses_rather_than_planning_for_a_guess() {
+        let platform = manager_platform::host::HostPlatform::from_fixture(
+            "NAME=\"Fedora Linux\"\nID=fedora\nVERSION_ID=41\n",
+            "amd64",
+        );
+        let Err(error) = Manager::probe(manager_core::catalog::built_in_catalog(), &platform)
+        else {
+            panic!("a host outside the matrix must not resolve");
+        };
+        assert!(
+            error
+                .to_string()
+                .starts_with("platform.error.unsupported_host:"),
+            "{error}"
+        );
     }
 }

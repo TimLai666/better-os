@@ -10,6 +10,7 @@
 pub mod catalog_fetch;
 pub mod download;
 pub mod dpkg;
+pub mod host;
 #[cfg(feature = "dbus-client")]
 pub mod privileged;
 
@@ -37,6 +38,23 @@ impl Default for SystemProfile {
             distribution: "ubuntu".to_string(),
             release: "24.04".to_string(),
             architecture: "amd64".to_string(),
+            free_disk_bytes: None,
+        }
+    }
+}
+
+impl SystemProfile {
+    /// A profile for a host that could not be identified.
+    ///
+    /// No manifest declares these values, so every plan against it fails with
+    /// "no artifact for this host" rather than quietly targeting a release the
+    /// machine is not running. A window that cannot identify its host has to
+    /// keep a profile of some kind; this is the one that cannot mislead.
+    pub fn unidentified() -> Self {
+        Self {
+            distribution: "unknown".to_string(),
+            release: "unknown".to_string(),
+            architecture: "unknown".to_string(),
             free_disk_bytes: None,
         }
     }
@@ -134,6 +152,12 @@ pub trait PrivilegedTransactionExecutor: Send + Sync {
 pub enum PlatformError {
     #[error("platform.error.capability_unavailable:{0}")]
     CapabilityUnavailable(&'static str),
+    /// This machine is not one Better OS publishes packages for, or could not
+    /// be identified at all. The detail names the fields that were read. It is
+    /// deliberately not a fallback profile: planning for a release the host is
+    /// not running produces packages built against the wrong libc.
+    #[error("platform.error.unsupported_host:{0}")]
+    UnsupportedHost(String),
     #[error("platform.error.download_failed:{component}")]
     DownloadFailed { component: ComponentId },
     #[error("platform.error.checksum_mismatch:{component}")]

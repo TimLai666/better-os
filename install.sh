@@ -137,6 +137,12 @@ require_commands() {
 # field that says what it is built on is UBUNTU_CODENAME=noble. The codename
 # is therefore preferred over the version wherever one exists, and VERSION_ID
 # is the fallback for plain Ubuntu.
+#
+# The same rules live in Rust in `crates/better-core/src/host.rs`, which the
+# privileged daemon and the unprivileged client both call. This is shell and
+# cannot share that code, so the two are kept matching by hand and by fixture:
+# every case below has a test there. Change one and change the other, or the
+# installer fetches one release's packages while the client plans for another.
 detect_ubuntu_release() {
     # The path is a variable so the mapping can be exercised against a fixture
     # for a release this machine is not running. It only chooses which
