@@ -426,7 +426,7 @@ mod component_page {
             info.installed_label(copy(Locale::ZhTw).not_installed),
             "0.1.0"
         );
-        assert_eq!(info.available_version, "0.2.4");
+        assert_eq!(info.available_version, manifest().version.to_string());
         assert!(!info.installed_outside_manager());
     }
 
