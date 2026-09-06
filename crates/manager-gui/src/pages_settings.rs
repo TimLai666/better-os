@@ -12,7 +12,7 @@ use manager_core::{DoctorCheck, DoctorCheckKind, DoctorCheckStatus, ReleaseChann
 use crate::{
     app::ManagerApp,
     i18n::{Locale, copy},
-    model::Page,
+    model::{AboutInfo, Page},
 };
 
 impl ManagerApp {
@@ -388,7 +388,28 @@ impl ManagerApp {
                     cx,
                 ),
             )
+            .child(self.about_section(cx))
             .into_any_element()
+    }
+
+    /// What this build is, and which machine it decided it is running on.
+    ///
+    /// The version comes from the package this binary was built from, and the
+    /// platform line is the profile the manager actually planned against — the
+    /// same values the sidebar footer shows, not a second reading of the host.
+    fn about_section(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale);
+        let about = AboutInfo::present(self.locale, self.manager.profile());
+        self.surface(
+            v_flex()
+                .gap_4()
+                .child(div().text_lg().font_semibold().child(c.about_section))
+                .child(div().font_medium().child(about.name))
+                .child(self.key_value_row(c.about_version, about.version, cx))
+                .child(self.key_value_row(c.about_platform, about.platform, cx))
+                .child(self.key_value_row(c.about_repository, about.repository, cx)),
+            cx,
+        )
     }
 
     fn theme_button(

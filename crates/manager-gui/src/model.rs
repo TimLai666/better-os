@@ -76,6 +76,105 @@ fn age_phrase(locale: Locale, seconds: u64) -> String {
     template.replace("{n}", &value.to_string())
 }
 
+/// The version of the manager this window is, taken from the package it was
+/// built from. There is no second place to keep it in step with.
+pub(crate) const MANAGER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Where this build's own source lives. Shown as text rather than as a link:
+/// nothing in this window opens a browser, and a line that looked clickable and
+/// did nothing would be worse than one that does not pretend.
+pub(crate) const PROJECT_REPOSITORY: &str = "https://github.com/TimLai666/better-os";
+
+/// What the About section states about this build and this machine.
+///
+/// The platform line is the profile the manager actually planned from, so on a
+/// host the client could not identify it reads `unknown`, which is what the
+/// window knows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AboutInfo {
+    pub(crate) name: String,
+    pub(crate) version: &'static str,
+    pub(crate) platform: String,
+    pub(crate) repository: &'static str,
+}
+
+impl AboutInfo {
+    pub(crate) fn present(locale: Locale, profile: &manager_platform::SystemProfile) -> Self {
+        let c = copy(locale);
+        Self {
+            name: format!("{} {}", c.brand_name, c.manager),
+            version: MANAGER_VERSION,
+            platform: format!(
+                "{} {} · {}",
+                profile.distribution, profile.release, profile.architecture
+            ),
+            repository: PROJECT_REPOSITORY,
+        }
+    }
+}
+
+/// What the manual "Check for updates" button has to say.
+///
+/// The check is a catalog refresh followed by a recount, so its result can only
+/// be one of four things: it has not been asked for, it is running, the refresh
+/// did not reach the published catalog, or it finished and the count is what it
+/// is. A refresh that came back partly refused is not a failure — the newer
+/// manifests were adopted — and the catalog line beside this one already says
+/// what was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum UpdateCheck {
+    NotRun,
+    Running,
+    /// The refresh fell back to the cache or to the built-in catalog. Carries
+    /// that state's own sentence, so the person is told which list they are
+    /// looking at rather than only that something went wrong.
+    Failed(&'static str),
+    /// How many components have a newer version, as a sentence.
+    Found(String),
+    /// Nothing to update, and how old the list that says so is.
+    UpToDate(String),
+}
+
+impl UpdateCheck {
+    pub(crate) fn present(
+        locale: Locale,
+        requested: bool,
+        running: bool,
+        status: &CatalogStatus,
+        updates: usize,
+        now_unix_seconds: u64,
+    ) -> Self {
+        let c = copy(locale);
+        if running {
+            return Self::Running;
+        }
+        if !requested {
+            return Self::NotRun;
+        }
+        match status.degraded {
+            Some(CatalogDegradation::NeverRefreshed) => Self::Failed(c.catalog_degraded_never),
+            Some(CatalogDegradation::RefreshFailedUsingCache) => {
+                Self::Failed(c.catalog_degraded_failed_cache)
+            }
+            Some(CatalogDegradation::RefreshFailedUsingBuiltIn) => {
+                Self::Failed(c.catalog_degraded_failed_built_in)
+            }
+            Some(CatalogDegradation::PartiallyRefreshed) | None => {
+                if updates > 0 {
+                    Self::Found(c.update_check_found.replace("{n}", &updates.to_string()))
+                } else {
+                    Self::UpToDate(match status.fetched_at_unix_seconds {
+                        None => c.catalog_never_updated.to_string(),
+                        Some(fetched_at) => {
+                            age_phrase(locale, now_unix_seconds.saturating_sub(fetched_at))
+                        }
+                    })
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Page {
     FirstRun,

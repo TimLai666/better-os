@@ -160,10 +160,11 @@ GUI or dependency compiles when the relevant command was not executed.
   Signing is still deferred, so HTTPS plus
   the artifact checksum is the whole integrity story and a rolled-back-then-
   re-bumped `main` is indistinguishable from a real release. And there is no
-  scheduled refresh: it happens once at launch, on the button, and on
-  `better-manager catalog refresh`, so an install planned from a window that has
-  been open for a week is planned from a week-old catalog whose age is on
-  screen.
+  scheduled refresh: it happens once at launch, on either of the two buttons
+  that ask for one — the Components screen's list refresh and the Updates
+  screen's check, which call the same method — and on `better-manager catalog
+  refresh`, so an install planned from a window that has been open for a week is
+  planned from a week-old catalog whose age is on screen.
 - `install.sh` at the repository root is the first install path for a fresh
   machine and ships only `better-manager` and `better-manager-daemon`; the other
   six are installed from inside Better Manager. It has no metadata to read but

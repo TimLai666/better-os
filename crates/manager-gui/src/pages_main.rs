@@ -15,7 +15,7 @@ use manager_core::{
 use crate::{
     app::ManagerApp,
     i18n::copy,
-    model::{ActivityFilter, CatalogLine, ComponentInfo, DetailTab, Page},
+    model::{ActivityFilter, CatalogLine, ComponentInfo, DetailTab, Page, UpdateCheck},
 };
 
 impl ManagerApp {
@@ -438,6 +438,81 @@ impl ManagerApp {
         )
     }
 
+    /// The manual update check: one button, and whatever the last check found.
+    ///
+    /// The button starts the same catalog refresh the Components screen's does,
+    /// on the same background thread, so the window keeps drawing while the
+    /// fetch runs and the two screens can never disagree about the catalog.
+    fn update_check_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale);
+        let check = self.update_check();
+        let (title, detail, warn) = match &check {
+            UpdateCheck::NotRun => (c.updates_title.to_string(), None, false),
+            UpdateCheck::Running => (c.checking_updates.to_string(), None, false),
+            UpdateCheck::Failed(reason) => (c.update_check_failed.to_string(), Some(*reason), true),
+            UpdateCheck::Found(sentence) => (sentence.clone(), None, false),
+            UpdateCheck::UpToDate(age) => (
+                c.update_check_up_to_date.to_string(),
+                Some(age.as_str()),
+                false,
+            ),
+        };
+        let detail = detail.map(|detail| detail.to_string());
+
+        self.surface(
+            h_flex()
+                .min_w_0()
+                .gap_3()
+                .flex_wrap()
+                .items_start()
+                .justify_between()
+                .child(
+                    h_flex()
+                        .min_w_0()
+                        .gap_3()
+                        .items_start()
+                        .child(Icon::new(if warn {
+                            IconName::TriangleAlert
+                        } else {
+                            IconName::ArrowDown
+                        }))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .child(div().font_medium().child(title))
+                                .when_some(detail, |view, detail| {
+                                    view.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(if warn {
+                                                cx.theme().warning_foreground
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            })
+                                            .child(detail),
+                                    )
+                                }),
+                        ),
+                )
+                .child(
+                    Button::new("check-updates")
+                        .primary()
+                        .label(if self.catalog_refreshing {
+                            c.checking_updates
+                        } else {
+                            c.check_updates
+                        })
+                        .disabled(self.catalog_refreshing)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.check_for_updates(cx);
+                        })),
+                ),
+            cx,
+        )
+    }
+
     fn component_filter_button(
         &self,
         id: &'static str,
@@ -825,6 +900,10 @@ impl ManagerApp {
             .gap_5()
             .when_some(self.error_banner(cx), |view, error| view.child(error))
             .child(self.page_heading(c.updates_title, c.components_subtitle, false, compact))
+            // The check and the list it was checked against, in that order: a
+            // count means nothing without saying how old the list behind it is.
+            .child(self.update_check_row(cx))
+            .child(self.catalog_status_row(cx))
             .when(updates.is_empty(), |view| {
                 view.child(
                     self.empty_state(
