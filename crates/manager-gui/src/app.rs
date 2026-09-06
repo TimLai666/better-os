@@ -22,7 +22,7 @@ use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, star
 use crate::{
     defaults_app::DefaultsState,
     i18n::{Locale, copy},
-    model::{ActivityFilter, ComponentInfo, DetailTab, Page},
+    model::{ActivityFilter, ComponentInfo, DetailTab, Page, UpdateCheck},
 };
 
 /// How this window runs transactions.
@@ -87,6 +87,9 @@ pub(crate) struct ManagerApp {
     /// Where the catalog on screen came from and how far behind it may be.
     pub(crate) catalog_status: CatalogStatus,
     pub(crate) catalog_refreshing: bool,
+    /// Whether someone asked this window to check for updates. Until they have,
+    /// the Updates screen states nothing about a check that never ran.
+    pub(crate) update_check_requested: bool,
     /// The running catalog refresh. Dropping it abandons the fetch, which
     /// changes nothing: a refresh writes only after it has something to write.
     pub(crate) catalog_task: Option<Task<()>>,
@@ -183,6 +186,7 @@ impl ManagerApp {
             catalog_store,
             catalog_status,
             catalog_refreshing: false,
+            update_check_requested: false,
             catalog_task: None,
             transfer: None,
             running: None,
@@ -266,6 +270,30 @@ impl ManagerApp {
             let _ = this.update(cx, |app, cx| app.adopt_catalog(outcome, cx));
         }));
         cx.notify();
+    }
+
+    /// Checks for updates, which is the catalog refresh followed by a recount.
+    ///
+    /// It is deliberately the same code path as the Components screen's button:
+    /// two ways to ask the same question that could disagree about the answer
+    /// is the defect this avoids. The count itself is derived from the adopted
+    /// catalog, so nothing has to be recomputed when the fetch lands.
+    pub(crate) fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        self.update_check_requested = true;
+        self.refresh_catalog(cx);
+        cx.notify();
+    }
+
+    /// What the manual check has to say right now.
+    pub(crate) fn update_check(&self) -> UpdateCheck {
+        UpdateCheck::present(
+            self.locale,
+            self.update_check_requested,
+            self.catalog_refreshing,
+            &self.catalog_status,
+            self.update_plan_count(),
+            now_unix_seconds(),
+        )
     }
 
     /// Adopts what a refresh decided: the catalog it settled on and the state

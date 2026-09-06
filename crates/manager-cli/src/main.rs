@@ -20,8 +20,12 @@ use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, star
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
+// `version` prints this crate's own `CARGO_PKG_VERSION`, which is the workspace
+// version every Better OS crate inherits. Without it `--version` was an unknown
+// argument and the manager had no way of saying which build it is.
 #[command(
     name = "better-manager",
+    version,
     about = "Inspect, plan, and apply Better OS component lifecycle changes"
 )]
 struct Cli {
