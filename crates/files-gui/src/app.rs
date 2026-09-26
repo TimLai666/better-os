@@ -279,6 +279,20 @@ impl FilesApp {
             }
             return;
         }
+        // The format chooser is answered from the keyboard as well as with its
+        // buttons, and nothing else reaches the window behind it.
+        if matches!(self.session.dialog, Some(PendingDialog::Compress(_))) {
+            let modifiers = Modifiers {
+                control: event.keystroke.modifiers.control,
+                shift: event.keystroke.modifiers.shift,
+                alt: event.keystroke.modifiers.alt,
+            };
+            if let Some(key) = crate::keys::chooser_key_for(&event.keystroke.key, modifiers) {
+                self.session.chooser_key(key);
+                cx.notify();
+            }
+            return;
+        }
         // The text fields own their own keys while one is focused.
         if self.editing_path || self.editing_search || self.session.dialog.is_some() {
             if event.keystroke.key == "escape" {
@@ -441,8 +455,8 @@ impl FilesApp {
             }
             // Answered by its format buttons, not by a confirm: nothing to
             // submit, so it stays open.
-            PendingDialog::Compress(request) => {
-                self.session.dialog = Some(PendingDialog::Compress(request));
+            PendingDialog::Compress(chooser) => {
+                self.session.dialog = Some(PendingDialog::Compress(chooser));
             }
         }
         cx.notify();

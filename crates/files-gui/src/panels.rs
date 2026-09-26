@@ -546,8 +546,8 @@ impl FilesApp {
     pub(crate) fn dialog(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let c = copy(self.locale());
         let dialog = self.session.dialog.clone()?;
-        if let PendingDialog::Compress(request) = &dialog {
-            return Some(self.compress_dialog(request, cx));
+        if let PendingDialog::Compress(chooser) = &dialog {
+            return Some(self.compress_dialog(chooser, cx));
         }
         let (title, confirm_label) = match &dialog {
             PendingDialog::NewFolder => (c.new_folder_name, c.new_folder),
@@ -615,21 +615,29 @@ impl FilesApp {
 
     /// The format chooser for Compress: one button per format, each labelled
     /// with the archive's file name, so the choice shows what will be made.
+    /// The one the keyboard is on is drawn as the primary button, which is
+    /// the one Enter presses; `keys::chooser_key_for` moves it.
     fn compress_dialog(
         &mut self,
-        request: &crate::commands::CompressRequest,
+        chooser: &crate::commands::CompressChooser,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let c = copy(self.locale());
+        let focused = chooser.focused();
         let mut formats = v_flex().gap_2();
         for format in files_operations::ArchiveFormat::ALL {
-            let label = request.file_name(format).to_string_lossy().into_owned();
+            let label = chooser
+                .request
+                .file_name(format)
+                .to_string_lossy()
+                .into_owned();
             formats = formats.child(
                 Button::new(SharedString::from(format!(
                     "compress-{}",
                     format.extension()
                 )))
                 .w_full()
+                .when(format == focused, |button| button.primary())
                 .label(label)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.session.compress(format);

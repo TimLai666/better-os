@@ -281,6 +281,37 @@ impl CompressRequest {
     }
 }
 
+/// The format chooser for a [`CompressRequest`]: which format the keyboard
+/// is on. It opens on the first of [`ArchiveFormat::ALL`], `.zip`, the one any
+/// recipient can open.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompressChooser {
+    pub request: CompressRequest,
+    focused: usize,
+}
+
+impl CompressChooser {
+    pub fn new(request: CompressRequest) -> Self {
+        Self {
+            request,
+            focused: 0,
+        }
+    }
+
+    pub fn focused(&self) -> ArchiveFormat {
+        ArchiveFormat::ALL[self.focused % ArchiveFormat::ALL.len()]
+    }
+
+    pub fn next(&mut self) {
+        self.focused = (self.focused + 1) % ArchiveFormat::ALL.len();
+    }
+
+    pub fn previous(&mut self) {
+        let count = ArchiveFormat::ALL.len();
+        self.focused = (self.focused + count - 1) % count;
+    }
+}
+
 /// Asks to compress the selection. The archive goes beside it, named after
 /// the one item selected — a file without its extension, `report.pdf` giving
 /// `report.zip` — or after the folder they are in when there are several.

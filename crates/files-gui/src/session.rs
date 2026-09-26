@@ -39,13 +39,13 @@ use storage_core::RemovalPolicy;
 
 use crate::apps::{ApplicationDetails, CatalogHandle, LaunchReport};
 use crate::bookmarks::{BookmarkFile, BookmarkStore, PinOutcome};
-use crate::commands::{self, ArchiveActions, Clipboard, CommandRefusal, CompressRequest};
+use crate::commands::{self, ArchiveActions, Clipboard, CommandRefusal, CompressChooser};
 use crate::content::{ContentView, SelectionInput};
 use crate::devices::{
     CollectionMode, DeviceInventory, DeviceLink, DeviceNotice, DeviceRow, NoDeviceLink, is_under,
 };
 use crate::i18n::{Copy, Locale};
-use crate::keys::{Command, Focus};
+use crate::keys::{ChooserKey, Command, Focus};
 use crate::launch::StartProblem;
 use crate::opcenter::{self, JobRow, SessionHistory};
 use crate::openwith::{ChooserRequest, DefaultHandlers, DefaultSource, OpenRoute, SessionDefaults};
@@ -227,8 +227,8 @@ pub enum PendingDialog {
         targets: Vec<DeleteTarget>,
     },
     /// Compress, waiting for a format. The request holds the selection it was
-    /// opened for.
-    Compress(CompressRequest),
+    /// opened for, and the chooser which format the keyboard is on.
+    Compress(CompressChooser),
 }
 
 /// One window's worth of state.
@@ -1442,7 +1442,7 @@ impl FilesSession {
         match commands::compress_request(&location, &self.selected_entries()) {
             Ok(request) => {
                 self.notice = None;
-                self.dialog = Some(PendingDialog::Compress(request));
+                self.dialog = Some(PendingDialog::Compress(CompressChooser::new(request)));
             }
             Err(refusal) => self.notice = Some(Notice::Command(refusal)),
         }
@@ -1450,10 +1450,26 @@ impl FilesSession {
 
     /// Answers the format chooser.
     pub fn compress(&mut self, format: ArchiveFormat) {
-        let Some(PendingDialog::Compress(request)) = self.dialog.take() else {
+        let Some(PendingDialog::Compress(chooser)) = self.dialog.take() else {
             return;
         };
-        self.submit_or_notice(request.spec(format));
+        self.submit_or_notice(chooser.request.spec(format));
+    }
+
+    /// One keystroke in the format chooser. Does nothing when it is not open.
+    pub fn chooser_key(&mut self, key: ChooserKey) {
+        let Some(PendingDialog::Compress(chooser)) = &mut self.dialog else {
+            return;
+        };
+        match key {
+            ChooserKey::Previous => chooser.previous(),
+            ChooserKey::Next => chooser.next(),
+            ChooserKey::Confirm => {
+                let format = chooser.focused();
+                self.compress(format);
+            }
+            ChooserKey::Cancel => self.dialog = None,
+        }
     }
 
     pub fn extract_selection(&mut self) {
@@ -1652,6 +1668,8 @@ impl FilesSession {
             Command::DeletePermanently => self.request_permanent_delete(),
             Command::RestoreFromTrash => self.restore_selection_from_trash(),
             Command::ToggleOperations => self.operations_open = !self.operations_open,
+            Command::Compress => self.request_compress(),
+            Command::Extract => self.extract_selection(),
             Command::MoveBookmarkUp => {
                 if let Some(index) = self.sidebar_cursor {
                     self.move_bookmark_up(index);

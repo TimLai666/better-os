@@ -1810,11 +1810,11 @@ fn a_selection_is_compressed_in_the_chosen_format_and_extracted_back_beside_it()
     assert!(!actions.extract, "a text file is not an archive");
 
     session.request_compress();
-    let Some(PendingDialog::Compress(request)) = session.dialog.clone() else {
+    let Some(PendingDialog::Compress(chooser)) = session.dialog.clone() else {
         panic!("the format chooser opened: {:?}", session.dialog);
     };
     assert_eq!(
-        request.file_name(ArchiveFormat::TarZst),
+        chooser.request.file_name(ArchiveFormat::TarZst),
         std::ffi::OsString::from("notes.tar.zst")
     );
     session.compress(ArchiveFormat::TarZst);
@@ -1826,6 +1826,45 @@ fn a_selection_is_compressed_in_the_chosen_format_and_extracted_back_beside_it()
     select_named(&mut session, "notes.tar.zst");
     assert!(session.archive_actions().extract);
     session.extract_selection();
+    let unpacked = finish_last_job(&mut session);
+    assert_eq!(unpacked.state, files_operations::JobState::Completed);
+    assert_eq!(
+        fs::read(documents.join("notes/notes.txt")).unwrap(),
+        b"hello world"
+    );
+}
+
+#[test]
+fn compress_and_extract_can_be_done_without_a_pointer() {
+    use crate::keys::{ChooserKey, Command};
+    let (rig, mut session) = plain();
+    settle(&mut session);
+    let documents = rig.home.join("Documents");
+    select_named(&mut session, "notes.txt");
+
+    // The shortcut opens the chooser on its first format.
+    session.dispatch(Command::Compress, 1, 10);
+    let Some(PendingDialog::Compress(chooser)) = session.dialog.clone() else {
+        panic!("the chooser opened: {:?}", session.dialog);
+    };
+    assert_eq!(chooser.focused(), ArchiveFormat::Zip);
+
+    // Escape closes it and nothing is made.
+    session.chooser_key(ChooserKey::Cancel);
+    assert_eq!(session.dialog, None);
+    assert!(session.engine().jobs().is_empty());
+
+    // Down once is .tar.gz, and Enter makes it.
+    session.dispatch(Command::Compress, 1, 10);
+    session.chooser_key(ChooserKey::Next);
+    session.chooser_key(ChooserKey::Confirm);
+    assert_eq!(session.dialog, None);
+    let made = finish_last_job(&mut session);
+    assert_eq!(made.state, files_operations::JobState::Completed);
+    assert!(documents.join("notes.tar.gz").is_file());
+
+    select_named(&mut session, "notes.tar.gz");
+    session.dispatch(Command::Extract, 1, 10);
     let unpacked = finish_last_job(&mut session);
     assert_eq!(unpacked.state, files_operations::JobState::Completed);
     assert_eq!(

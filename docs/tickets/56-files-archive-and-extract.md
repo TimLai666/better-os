@@ -90,7 +90,25 @@ and an Extract button for the selection.
   with one button per format, each labelled with the file it will make, named
   after the one selected item (`report.pdf` gives `report.zip`) or after the
   folder when several are selected. Both labels and the refusal have zh-TW and
-  en-US text. `tracking::written_paths` names the archive file for a compress
+  en-US text. The window has no selection menu, so the two are toolbar buttons
+  rather than menu entries.
+- **The keyboard.** `Ctrl+Shift+P` opens the format chooser for the selection
+  and `Ctrl+Shift+E` extracts it, both through `keys::command_for` like every
+  other shortcut. No file manager has a common key for either: Nautilus, Files
+  on GNOME, binds none, and neither does Windows File Explorer. `C` and `A`
+  were the obvious letters and are taken, because `Ctrl+C` and `Ctrl+A` are
+  Copy and Select All with or without Shift, so Compress is `P` for "pack" and
+  Extract is `E`. Both need Shift, so `Ctrl+P` and `Ctrl+E` stay unbound. Neither
+  is a GNOME Shell, Mutter, or media-key default, and IBus's unicode and emoji
+  keys are `Ctrl+Shift+U` and `Super+.`; the keybinding schemas on the Zorin 18
+  host were read to confirm none of them binds either key. In the chooser,
+  `keys::chooser_key_for` decides every key: Up, Left, and Shift+Tab move to
+  the previous format, Down, Right, and Tab to the next, both wrapping; Enter
+  or Space makes the archive in the focused format; Escape closes it. Nothing
+  else reaches the file list while it is open. It opens focused on `.zip`, the
+  format any recipient can open, and the focused format is drawn as the
+  primary button. `commands::CompressChooser` holds the focus, with no GPUI in
+  it. `tracking::written_paths` names the archive file for a compress
   and the destination folder for an extract, so a compress onto a removable
   disk or an extract onto one is reported to the storage layer as a write to
   that disk.
@@ -131,11 +149,6 @@ so concatenated frames are read one after another.
   file. Extraction does honour a tar's hard-link entries.
 - **Zip entries other than stored and deflate** (deflate64, bzip2, LZMA, zstd,
   encrypted) fail as `archive_unreadable`. Each would be another dependency.
-- **No keyboard shortcut.** The ticket asked for a menu entry. The window has
-  no selection menu, so Compress… and Extract are toolbar buttons beside the
-  other view controls, enabled from the selection. Issue #6 asks for keyboard
-  reach to everything; a shortcut for the two, and a keyboard path through the
-  format chooser, are not built.
 - **Overwrite of an existing folder** is refused rather than merged into.
 - **The archive is not re-read to verify it.** "Verified" for a compress means
   the archive exists under its real name after the rename.
@@ -158,5 +171,9 @@ so concatenated frames are read one after another.
   and there is no benchmark. The tar.zst path's thread and channel have not
   been measured against a file-sized copy.
 - **The window was not opened.** The toolbar buttons and the format chooser
-  are drawn from `archive_actions` and `CompressRequest`, which are tested,
-  but no one has clicked them.
+  are drawn from `archive_actions` and `CompressChooser`, and the keys from
+  `command_for` and `chooser_key_for`, all of which are tested, but no one has
+  clicked the buttons or pressed the keys in a running window. In particular it
+  is not confirmed that the window still holds keyboard focus after the
+  Compress… button is clicked with a pointer, which is what the chooser's keys
+  depend on when it is opened that way rather than with `Ctrl+Shift+P`.

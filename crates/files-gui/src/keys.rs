@@ -73,6 +73,12 @@ pub enum Command {
     DeletePermanently,
     RestoreFromTrash,
     ToggleOperations,
+    /// Opens the format chooser for the selection. `Ctrl+Shift+P`, for
+    /// "pack": no file manager has a common key for it, and `C` and `A` are
+    /// already Copy and Select All with or without Shift.
+    Compress,
+    /// Extracts every selected archive. `Ctrl+Shift+E`.
+    Extract,
 
     // Sidebar
     /// Move the focused bookmark one place earlier. The keyboard-accessible
@@ -198,6 +204,8 @@ pub fn command_for(
         "v" if control => return Some(Command::Paste),
         "d" if control => return Some(Command::Duplicate),
         "n" if control && shift => return Some(Command::NewFolder),
+        "p" if control && shift => return Some(Command::Compress),
+        "e" if control && shift => return Some(Command::Extract),
         "o" if control && shift => return Some(Command::OpenWith),
         "o" if control => return Some(Command::ToggleOperations),
         "z" if control => return Some(Command::RestoreFromTrash),
@@ -236,6 +244,39 @@ pub fn command_for(
         }
     }
     None
+}
+
+/// What a keystroke does while the Compress format chooser is open.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChooserKey {
+    /// The format before the focused one, wrapping to the last.
+    Previous,
+    /// The format after the focused one, wrapping to the first.
+    Next,
+    /// Make the archive in the focused format.
+    Confirm,
+    /// Close the chooser and make nothing.
+    Cancel,
+}
+
+/// Maps one keystroke inside the format chooser.
+///
+/// The formats are a single column, so the arrows and Tab move through them,
+/// Enter or Space picks the focused one the way it presses a focused button,
+/// and Escape leaves. Every other key is swallowed, so nothing reaches the
+/// file list behind the chooser while it is open.
+pub fn chooser_key_for(key: &str, modifiers: Modifiers) -> Option<ChooserKey> {
+    if !modifiers.bare() {
+        return None;
+    }
+    match key {
+        "tab" if modifiers.shift => Some(ChooserKey::Previous),
+        "up" | "left" => Some(ChooserKey::Previous),
+        "down" | "right" | "tab" => Some(ChooserKey::Next),
+        "enter" | "space" => Some(ChooserKey::Confirm),
+        "escape" => Some(ChooserKey::Cancel),
+        _ => None,
+    }
 }
 
 /// The character a keystroke would have typed, when it typed one.
