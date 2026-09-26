@@ -17,7 +17,7 @@ use zbus::interface;
 use zbus::object_server::SignalEmitter;
 
 use crate::backend::InhibitorBackend;
-use crate::engine::AwakeEngine;
+use crate::engine::{AwakeEngine, EndedSession};
 
 pub const BUS_NAME: &str = "org.betteros.Awake1";
 pub const OBJECT_PATH: &str = "/org/betteros/Awake1";
@@ -66,17 +66,17 @@ impl<B: InhibitorBackend + 'static> AwakeDbusService<B> {
                 | awake_ipc::RequestBody::TestRule { .. }
         );
 
-        let response = self.engine.handle(request).await;
+        let (response, ended) = self.engine.handle_reporting(request).await;
+
+        // A session the service ended by itself while answering is announced
+        // first, so a client reads why it ended before the status that no
+        // longer lists it.
+        announce_ended::<B>(&emitter, &ended).await;
 
         // A change every client must see, pushed once, carrying the whole
         // state so a client that missed an earlier signal is still correct.
         if !query_only {
-            let event = AwakeEvent::new(EventBody::StatusChanged(Box::new(
-                self.engine.status().await,
-            )));
-            if let Ok(document) = event.to_json() {
-                let _ = Self::status_changed(&emitter, &document).await;
-            }
+            announce_status(&emitter, &self.engine).await;
         }
 
         response
@@ -84,12 +84,71 @@ impl<B: InhibitorBackend + 'static> AwakeDbusService<B> {
             .unwrap_or_else(|error| rejection_string(error.to_string()))
     }
 
+    /// Carries every event document the service pushes, not only a status:
+    /// a `SessionEnded` travels on it too, just before the status that no
+    /// longer lists the session.
     #[zbus(signal)]
     async fn status_changed(emitter: &SignalEmitter<'_>, event_json: &str) -> zbus::Result<()>;
 
     #[zbus(property)]
     async fn protocol_version(&self) -> u32 {
         awake_ipc::PROTOCOL_VERSION
+    }
+}
+
+/// One service tick, with every session it ended pushed to the clients.
+///
+/// A tick is not answering anyone, so without this a session that expired or
+/// hit its battery threshold would end with every open menu still showing it.
+/// Each ended session is announced once, then the status that follows it. A
+/// tick that ended nothing pushes nothing.
+pub async fn tick_and_announce<B: InhibitorBackend + 'static>(
+    engine: &AwakeEngine<B>,
+    emitter: &SignalEmitter<'_>,
+) -> Vec<EndedSession> {
+    let ended = engine.tick().await;
+    if !ended.is_empty() {
+        announce_ended::<B>(emitter, &ended).await;
+        announce_status(emitter, engine).await;
+    }
+    ended
+}
+
+/// Releases everything and, while the service is still on the bus to say so,
+/// tells the clients which sessions that ended.
+pub async fn shutdown_and_announce<B: InhibitorBackend + 'static>(
+    engine: &AwakeEngine<B>,
+    emitter: &SignalEmitter<'_>,
+) -> Vec<EndedSession> {
+    let ended = engine.shutdown().await;
+    if !ended.is_empty() {
+        announce_ended::<B>(emitter, &ended).await;
+        announce_status(emitter, engine).await;
+    }
+    ended
+}
+
+/// A signal that cannot be sent has no one to report to — the bus is the
+/// channel the report would travel on — so a failure is dropped here, as the
+/// status signal always has been.
+async fn announce_ended<B: InhibitorBackend + 'static>(
+    emitter: &SignalEmitter<'_>,
+    ended: &[EndedSession],
+) {
+    for ended in ended {
+        if let Ok(document) = ended.event().to_json() {
+            let _ = AwakeDbusService::<B>::status_changed(emitter, &document).await;
+        }
+    }
+}
+
+async fn announce_status<B: InhibitorBackend + 'static>(
+    emitter: &SignalEmitter<'_>,
+    engine: &AwakeEngine<B>,
+) {
+    let event = AwakeEvent::new(EventBody::StatusChanged(Box::new(engine.status().await)));
+    if let Ok(document) = event.to_json() {
+        let _ = AwakeDbusService::<B>::status_changed(emitter, &document).await;
     }
 }
 

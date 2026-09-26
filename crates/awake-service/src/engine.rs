@@ -11,10 +11,10 @@ use awake_core::{
     Session, SessionId, TransitionError,
 };
 use awake_ipc::{
-    AwakeRequest, AwakeResponse, HistoryDocument, MAX_HISTORY_PAGE, RequestBody, RuleTestDocument,
-    RulesDocument, StatusDocument, WireActiveRule, WireBackend, WireBatteryProtection,
-    WireConflict, WireHistoryEntry, WireInterrupted, WireProvider, WireReason, WireRuleSummary,
-    WireSession, WireSuppression,
+    AwakeEvent, AwakeRequest, AwakeResponse, EventBody, HistoryDocument, MAX_HISTORY_PAGE,
+    RequestBody, RuleTestDocument, RulesDocument, StatusDocument, WireActiveRule, WireBackend,
+    WireBatteryProtection, WireConflict, WireHistoryEntry, WireInterrupted, WireProvider,
+    WireReason, WireRuleSummary, WireSession, WireSuppression,
 };
 use awake_store::history::{HistoryEntry, MAX_HISTORY_ENTRIES, StartedSession};
 use awake_store::{JsonStore, PersistedSession, ServiceState};
@@ -55,6 +55,41 @@ pub struct BatteryStop {
     pub percent: u8,
 }
 
+/// A session that ended, with what a client needs to explain it.
+///
+/// Each one comes out of exactly one state transition, so a caller that
+/// announces what it is handed announces every end once.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EndedSession {
+    pub session: SessionId,
+    pub cause: EndCause,
+    /// The battery stop threshold the session carried. For a low-battery stop
+    /// this is the line that was crossed.
+    pub battery_stop_percent: Option<u8>,
+}
+
+impl EndedSession {
+    /// The `SessionEnded` event that tells the clients.
+    pub fn event(&self) -> AwakeEvent {
+        AwakeEvent::new(EventBody::SessionEnded {
+            session_id: self.session.0,
+            cause: self.cause.as_key().to_string(),
+            battery_stop_percent: self.battery_stop_percent,
+            battery_percent: self.battery_stop().map(|stop| stop.percent),
+        })
+    }
+
+    pub fn battery_stop(&self) -> Option<BatteryStop> {
+        match self.cause {
+            EndCause::BatteryThreshold { percent } => Some(BatteryStop {
+                session: self.session,
+                percent,
+            }),
+            _ => None,
+        }
+    }
+}
+
 impl<B: InhibitorBackend> AwakeEngine<B> {
     /// Loads the previous state, probes the backend, and reports anything the
     /// previous run left open.
@@ -69,6 +104,28 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
             awake_store::history::HistoryStore::from_default_path(),
             awake_platform::Roots::system(),
         );
+        Self::start_with_rules(backend, store, clock, driver).await
+    }
+
+    /// Starts with every file the service keeps — state, rules, history — in
+    /// `directory`, under the names the service gives them, and with the
+    /// providers reading a `/proc` and `/sys` tree under `directory` rather than
+    /// this machine's. An empty directory is a machine with no battery, no
+    /// charger, and no rules.
+    ///
+    /// For tests only: [`Self::start`] writes to the person's real History.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn start_in(backend: B, directory: &std::path::Path, clock: Arc<dyn Clock>) -> Self {
+        let driver = RuleDriver::load(
+            awake_store::rules::RulesStore::at_path(
+                directory.join(awake_store::rules::RULES_FILE_NAME),
+            ),
+            awake_store::history::HistoryStore::at_path(
+                directory.join(awake_store::history::HISTORY_FILE_NAME),
+            ),
+            awake_platform::Roots::at(directory),
+        );
+        let store = JsonStore::at_path(directory.join(awake_store::STATE_FILE_NAME));
         Self::start_with_rules(backend, store, clock, driver).await
     }
 
@@ -165,17 +222,40 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
     /// A request that changes nothing still answers with the full state, so a
     /// client is never left guessing what its own command did.
     pub async fn handle(&self, request: AwakeRequest) -> AwakeResponse {
+        self.handle_reporting(request).await.0
+    }
+
+    /// Answers one client request, and hands back any session the service
+    /// ended on its own while answering it.
+    ///
+    /// Only a low-battery stop counts. Every other end on this path is what the
+    /// request asked for — ending a session, pausing the rules, editing a rule
+    /// so it no longer matches — and the client that asked already has its
+    /// answer. Protection is never asked for: a rule edit re-reads the battery,
+    /// and a stop found that way is the service's own decision.
+    pub async fn handle_reporting(
+        &self,
+        request: AwakeRequest,
+    ) -> (AwakeResponse, Vec<EndedSession>) {
         let now = self.now();
 
         // The rule surface answers with its own document shapes, so it is
         // dispatched before the session path rather than folded into it.
         match &request.body {
-            RequestBody::QueryRules => return AwakeResponse::rules(self.rules_document(now).await),
+            RequestBody::QueryRules => {
+                return (
+                    AwakeResponse::rules(self.rules_document(now).await),
+                    Vec::new(),
+                );
+            }
             RequestBody::TestRule { rule_id } => {
-                return self.test_rule(RuleId(*rule_id), now).await;
+                return (self.test_rule(RuleId(*rule_id), now).await, Vec::new());
             }
             RequestBody::QueryHistory { limit } => {
-                return AwakeResponse::history(self.history_document(*limit, now).await);
+                return (
+                    AwakeResponse::history(self.history_document(*limit, now).await),
+                    Vec::new(),
+                );
             }
             body => {
                 if let Some(edit) = rule_edit_for(body, now) {
@@ -185,15 +265,16 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
         }
 
         let command = match self.command_for(&request) {
-            Ok(None) => return AwakeResponse::status(self.status().await),
+            Ok(None) => return (AwakeResponse::status(self.status().await), Vec::new()),
             Ok(Some(command)) => command,
-            Err(error_key) => return AwakeResponse::rejected(error_key),
+            Err(error_key) => return (AwakeResponse::rejected(error_key), Vec::new()),
         };
 
-        match self.apply(command, now).await {
+        let response = match self.apply(command, now).await {
             Ok(()) => AwakeResponse::status(self.status().await),
             Err(error) => AwakeResponse::rejected(error.to_string()),
-        }
+        };
+        (response, Vec::new())
     }
 
     /// Applies one rule edit, then re-evaluates immediately.
@@ -201,21 +282,27 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
     /// Immediately, not at the next tick: a person who has just switched a rule
     /// on and watched nothing happen for five seconds has been told the feature
     /// is broken.
-    async fn apply_rule_edit(&self, edit: RuleEdit, now: u64) -> AwakeResponse {
+    async fn apply_rule_edit(
+        &self,
+        edit: RuleEdit,
+        now: u64,
+    ) -> (AwakeResponse, Vec<EndedSession>) {
         let answers_with_status = edit.answers_with_status();
         {
             let mut rules = self.rules.lock().await;
             if let Err(error) = rules.edit(edit) {
-                return AwakeResponse::rejected(error.to_string());
+                return (AwakeResponse::rejected(error.to_string()), Vec::new());
             }
         }
-        self.reconcile_rules(now, true).await;
+        let mut ended = self.reconcile_rules(now, true).await;
+        ended.retain(|ended| ended.battery_stop().is_some());
 
-        if answers_with_status {
+        let response = if answers_with_status {
             AwakeResponse::status(self.status().await)
         } else {
             AwakeResponse::rules(self.rules_document(now).await)
-        }
+        };
+        (response, ended)
     }
 
     /// Samples the providers, evaluates the rules, and brings the trigger
@@ -224,8 +311,10 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
     /// `force` skips the provider cadences, which is right after an edit and
     /// wrong on a tick — honouring the cadence is what keeps the idle cost
     /// bounded.
-    async fn reconcile_rules(&self, now: u64, force: bool) -> Vec<BatteryStop> {
-        let (desired, suppression, battery_percent) = {
+    ///
+    /// Returns every session the pass ended.
+    async fn reconcile_rules(&self, now: u64, force: bool) -> Vec<EndedSession> {
+        let (mut desired, suppression, battery_percent) = {
             let mut rules = self.rules.lock().await;
             let evaluation = if force {
                 rules.evaluate_now(now)
@@ -251,56 +340,79 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
             EndCause::TriggerCleared
         };
 
-        let effects = {
+        let (effects, mut ended, held_back) = {
             let mut inner = self.inner.lock().await;
-            let mut effects = inner
-                .state
-                .apply(
-                    Command::SyncTriggerSessions {
-                        desired,
-                        clear_cause,
-                    },
-                    now,
-                )
-                .unwrap_or_default();
-            effects.extend(
-                inner
-                    .state
-                    .apply(
-                        Command::RulesSuppressed {
-                            suppressed: suppression.is_some(),
-                        },
-                        now,
-                    )
-                    .unwrap_or_default(),
-            );
-            record(&mut inner, &effects, now);
-            effects
+
+            // A rule the battery would stop the moment it started is not given
+            // a session. Starting it only for protection to end it again would
+            // be a fresh stop — a history entry and a notification — on every
+            // pass for as long as the rule matches and the battery stays low.
+            // It is held back as a refusal instead, so it still reads as
+            // matching-but-not-holding. A rule already holding a session keeps
+            // it here, so protection below ends it as the battery stop it is.
+            let mut held_back: Vec<(RuleId, String)> = Vec::new();
+            if let Some(percent) = battery_percent {
+                desired.retain(|wanted| {
+                    let held = inner.state.session_for_rule(wanted.rule).is_none()
+                        && wanted
+                            .battery_stop_percent
+                            .is_some_and(|threshold| percent < threshold);
+                    if held {
+                        held_back.push((
+                            wanted.rule,
+                            format!("awake.battery.below_stop_threshold:{percent}"),
+                        ));
+                    }
+                    !held
+                });
+            }
+
+            let (mut effects, ended) = transition(
+                &mut inner,
+                Command::SyncTriggerSessions {
+                    desired,
+                    clear_cause,
+                },
+                now,
+            )
+            .unwrap_or_default();
+            let (suppressed, _) = transition(
+                &mut inner,
+                Command::RulesSuppressed {
+                    suppressed: suppression.is_some(),
+                },
+                now,
+            )
+            .unwrap_or_default();
+            effects.extend(suppressed);
+            (effects, ended, held_back)
         };
 
         // A rule that matched and could not be given a session is recorded, so
         // the tray and the editor can show it rather than leaving the user to
         // wonder why nothing happened.
-        let refused: Vec<(RuleId, String)> = effects
+        let mut refused: Vec<(RuleId, String)> = effects
             .iter()
             .filter_map(|effect| match effect {
                 Effect::TriggerRefused { rule, error_key } => Some((*rule, error_key.clone())),
                 _ => None,
             })
             .collect();
+        refused.extend(held_back);
         self.rules.lock().await.set_refused(refused);
 
         self.record_history(&effects, now).await;
         self.reconcile(&effects).await;
         self.persist().await;
 
-        // Protection runs after the rules, not before, so a rule that just took
-        // hold on a flat battery is stopped on the same pass rather than being
-        // allowed to hold the machine awake until the next one.
-        match battery_percent {
-            Some(percent) => self.report_battery(percent).await,
-            None => Vec::new(),
+        // Protection runs after the rules, not before, so a rule whose edited
+        // threshold is now above the reading is stopped on the same pass as a
+        // battery stop rather than being allowed to hold the machine awake
+        // until the next one.
+        if let Some(percent) = battery_percent {
+            ended.extend(self.battery_level(percent, now).await);
         }
+        ended
     }
 
     /// Translates a validated request into a state-machine command. `None`
@@ -522,48 +634,38 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
         rules.save_history();
     }
 
-    /// Low-battery stops from the last transition, so the service can raise a
-    /// notification for each. Ticket 26 requires a notification *and* a history
-    /// entry; the history entry is written by [`Self::record_history`].
-    pub fn battery_stops(effects: &[Effect]) -> Vec<BatteryStop> {
-        effects
-            .iter()
-            .filter_map(|effect| match effect {
-                Effect::SessionEnded {
-                    session,
-                    cause: EndCause::BatteryThreshold { percent },
-                } => Some(BatteryStop {
-                    session: *session,
-                    percent: *percent,
-                }),
-                _ => None,
-            })
-            .collect()
-    }
-
     /// Applies a command and carries out every effect it produced.
     pub async fn apply(&self, command: Command, now: u64) -> Result<(), TransitionError> {
         self.apply_reporting(command, now).await.map(|_| ())
     }
 
     /// Applies a command and hands back the effects, so a caller that must react
-    /// to one — a low-battery stop needs a notification — can see it rather than
-    /// re-deriving it from the state afterwards.
+    /// to one can see it rather than re-deriving it from the state afterwards.
     pub async fn apply_reporting(
         &self,
         command: Command,
         now: u64,
     ) -> Result<Vec<Effect>, TransitionError> {
-        let effects = {
+        self.apply_transition(command, now)
+            .await
+            .map(|(effects, _)| effects)
+    }
+
+    /// Applies a command, carries out its effects, and hands back both the
+    /// effects and the sessions it ended.
+    async fn apply_transition(
+        &self,
+        command: Command,
+        now: u64,
+    ) -> Result<(Vec<Effect>, Vec<EndedSession>), TransitionError> {
+        let (effects, ended) = {
             let mut inner = self.inner.lock().await;
-            let effects = inner.state.apply(command, now)?;
-            record(&mut inner, &effects, now);
-            effects
+            transition(&mut inner, command, now)?
         };
         self.record_history(&effects, now).await;
         self.reconcile(&effects).await;
         self.persist().await;
-        Ok(effects)
+        Ok((effects, ended))
     }
 
     /// One service tick: reap expired sessions, re-evaluate the rules against
@@ -573,29 +675,41 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
     /// tick does not mean five-second polling of everything: a provider is only
     /// re-read when its own interval has elapsed, and a provider no enabled rule
     /// needs is never read at all.
-    /// Returns any low-battery stop this tick produced, so the caller can raise
-    /// the notification Issue #13 requires alongside the history entry the
-    /// engine has already written.
-    pub async fn tick(&self) -> Vec<BatteryStop> {
+    ///
+    /// Returns every session this tick ended — expired, stopped by low battery,
+    /// or released by a rule that stopped matching. None of them was asked for
+    /// by a client, so the caller tells the clients; the history entry is
+    /// already written.
+    pub async fn tick(&self) -> Vec<EndedSession> {
         let now = self.now();
-        let _ = self.apply(Command::Expire, now).await;
-        let stops = self.reconcile_rules(now, false).await;
+        let mut ended = self
+            .apply_transition(Command::Expire, now)
+            .await
+            .map(|(_, ended)| ended)
+            .unwrap_or_default();
+        ended.extend(self.reconcile_rules(now, false).await);
         self.verify_lease().await;
         self.persist().await;
-        stops
+        ended
     }
 
     /// Reports a battery reading, which ends sessions that watch for it.
     ///
-    /// Returns the sessions it stopped, so the caller can raise the notification
-    /// ticket 26 requires alongside the history entry this already wrote.
+    /// Returns the sessions it stopped. The history entry is already written.
     pub async fn report_battery(&self, percent: u8) -> Vec<BatteryStop> {
         let now = self.now();
-        let effects = self
-            .apply_reporting(Command::BatteryLevel { percent }, now)
+        self.battery_level(percent, now)
             .await
-            .unwrap_or_default();
-        Self::battery_stops(&effects)
+            .iter()
+            .filter_map(EndedSession::battery_stop)
+            .collect()
+    }
+
+    async fn battery_level(&self, percent: u8, now: u64) -> Vec<EndedSession> {
+        self.apply_transition(Command::BatteryLevel { percent }, now)
+            .await
+            .map(|(_, ended)| ended)
+            .unwrap_or_default()
     }
 
     /// Whether this machine runs on a battery.
@@ -613,7 +727,11 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
     /// point is to have an answer now rather than at the next tick.
     pub async fn evaluate_rules_now(&self) -> Vec<BatteryStop> {
         let now = self.now();
-        self.reconcile_rules(now, true).await
+        self.reconcile_rules(now, true)
+            .await
+            .iter()
+            .filter_map(EndedSession::battery_stop)
+            .collect()
     }
 
     /// Asks the backend whether the lease is still in force and raises
@@ -668,16 +786,14 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
 
     /// Releases everything and records a clean shutdown, so the next run has
     /// nothing to explain.
-    pub async fn shutdown(&self) {
+    ///
+    /// Returns the sessions it ended, so the clients can be told before the
+    /// service leaves the bus.
+    pub async fn shutdown(&self) -> Vec<EndedSession> {
         let now = self.now();
-        let effects = {
+        let (effects, ended) = {
             let mut inner = self.inner.lock().await;
-            let effects = inner
-                .state
-                .apply(Command::Shutdown, now)
-                .unwrap_or_default();
-            record(&mut inner, &effects, now);
-            effects
+            transition(&mut inner, Command::Shutdown, now).unwrap_or_default()
         };
         self.reconcile(&effects).await;
 
@@ -686,6 +802,7 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
         inner.persisted.run.shut_down_at_unix_seconds = Some(now);
         inner.persisted.trim();
         let _ = self.store.save(&inner.persisted);
+        ended
     }
 
     /// Whether the service is still holding an inhibitor. Used by tests and by
@@ -916,6 +1033,41 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
     }
 }
 
+/// Applies one command under the session lock, mirrors it into the persisted
+/// record, and names the sessions it ended.
+///
+/// The thresholds are read before the command runs, because by the time the
+/// state machine reports a session ended it no longer holds it.
+fn transition<L>(
+    inner: &mut Inner<L>,
+    command: Command,
+    now: u64,
+) -> Result<(Vec<Effect>, Vec<EndedSession>), TransitionError> {
+    let thresholds: Vec<(SessionId, Option<u8>)> = inner
+        .state
+        .sessions()
+        .iter()
+        .map(|session| (session.id, session.battery_stop_percent))
+        .collect();
+    let effects = inner.state.apply(command, now)?;
+    record(inner, &effects, now);
+    let ended = effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::SessionEnded { session, cause } => Some(EndedSession {
+                session: *session,
+                cause: *cause,
+                battery_stop_percent: thresholds
+                    .iter()
+                    .find(|(id, _)| id == session)
+                    .and_then(|(_, threshold)| *threshold),
+            }),
+            _ => None,
+        })
+        .collect();
+    Ok((effects, ended))
+}
+
 /// Mirrors the effects into the persisted record, so a crash right after a
 /// change still leaves a file that explains what was running.
 fn record<L>(inner: &mut Inner<L>, effects: &[Effect], now: u64) {
@@ -1116,6 +1268,27 @@ mod tests {
 
     async fn fixture() -> Fixture {
         fixture_with(FakeInhibitorBackend::logind_shaped()).await
+    }
+
+    /// A second run of the service over the files a fixture's run left in
+    /// `directory`, the way the next login finds them.
+    async fn restart(
+        directory: &std::path::Path,
+        store: &JsonStore,
+        clock: Arc<FixedClock>,
+    ) -> AwakeEngine<FakeInhibitorBackend> {
+        let driver = crate::rules::RuleDriver::load(
+            awake_store::rules::RulesStore::at_path(directory.join("rules.json")),
+            awake_store::history::HistoryStore::at_path(directory.join("history.json")),
+            awake_platform::Roots::at(directory),
+        );
+        AwakeEngine::start_with_rules(
+            FakeInhibitorBackend::logind_shaped(),
+            store.clone(),
+            clock,
+            driver,
+        )
+        .await
     }
 
     /// A rule that matches while the charger is plugged in, which the fixture
@@ -1500,11 +1673,10 @@ mod tests {
         // No shutdown: this is what a crash leaves behind.
         drop(fixture.engine);
 
-        let clock = Arc::new(FixedClock::at(NOW + 5_000));
-        let next = AwakeEngine::start(
-            FakeInhibitorBackend::logind_shaped(),
-            fixture.store.clone(),
-            clock,
+        let next = restart(
+            fixture._directory.path(),
+            &fixture.store,
+            Arc::new(FixedClock::at(NOW + 5_000)),
         )
         .await;
 
@@ -1537,9 +1709,9 @@ mod tests {
             .await;
         fixture.engine.shutdown().await;
 
-        let next = AwakeEngine::start(
-            FakeInhibitorBackend::logind_shaped(),
-            fixture.store.clone(),
+        let next = restart(
+            fixture._directory.path(),
+            &fixture.store,
             Arc::new(FixedClock::at(NOW + 100)),
         )
         .await;
@@ -1954,18 +2126,10 @@ mod tests {
         fixture.create_rule(on_ac_rule("Charging")).await;
         fixture.engine.shutdown().await;
 
-        let driver = crate::rules::RuleDriver::load(
-            awake_store::rules::RulesStore::at_path(fixture._directory.path().join("rules.json")),
-            awake_store::history::HistoryStore::at_path(
-                fixture._directory.path().join("history.json"),
-            ),
-            fixture.roots.clone(),
-        );
-        let next = AwakeEngine::start_with_rules(
-            FakeInhibitorBackend::logind_shaped(),
-            fixture.store.clone(),
+        let next = restart(
+            fixture._directory.path(),
+            &fixture.store,
             Arc::new(FixedClock::at(NOW + 100)),
-            driver,
         )
         .await;
         next.evaluate_rules_now().await;
@@ -2063,6 +2227,201 @@ mod tests {
         assert_eq!(entry.end_cause.as_deref(), Some("battery_threshold"));
         assert_eq!(entry.battery_stop_percent_at_stop, Some(9));
         assert_eq!(entry.origin, awake_core::SessionOrigin::Trigger);
+    }
+
+    #[tokio::test]
+    async fn a_rule_stopped_by_a_flat_battery_is_not_restarted_and_stopped_again_every_tick() {
+        let fixture = fixture().await;
+        fixture.create_rule(on_ac_rule("Charging")).await;
+        fixture.set_battery(9);
+
+        // The charger is still plugged in, so the rule still matches on every
+        // tick after the stop. Restarting its session only for protection to
+        // end it again would be a new stop, and a new notification, every tick.
+        for _ in 0..3 {
+            fixture.clock.advance(60);
+            fixture.engine.tick().await;
+        }
+
+        assert!(!fixture.engine.holds_inhibitor().await);
+        assert!(fixture.engine.status().await.sessions.is_empty());
+        let response = fixture
+            .engine
+            .handle(AwakeRequest::new(RequestBody::QueryHistory { limit: 10 }))
+            .await;
+        assert_eq!(history_of(&response).total, 1, "one stop, not one per tick");
+        assert_eq!(
+            fixture.engine.status().await.rule_summary.refused,
+            1,
+            "a rule that matches and is held back by the battery says so"
+        );
+    }
+
+    // ---- Sessions the service ends on its own ------------------------------
+
+    #[tokio::test]
+    async fn a_session_that_expires_on_a_tick_is_reported_as_ended_once() {
+        let fixture = fixture().await;
+        fixture
+            .engine
+            .handle(start(WireEnd::Duration { seconds: 900 }))
+            .await;
+        let session_id = fixture.engine.status().await.sessions[0].session_id;
+
+        fixture.clock.advance(900);
+        assert_eq!(
+            fixture.engine.tick().await,
+            vec![EndedSession {
+                session: SessionId(session_id),
+                cause: EndCause::Expired,
+                battery_stop_percent: Some(20),
+            }]
+        );
+
+        fixture.clock.advance(60);
+        assert!(
+            fixture.engine.tick().await.is_empty(),
+            "a session is reported ended once, not on every tick after it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_low_battery_stop_on_a_tick_is_reported_once_with_the_threshold_it_crossed() {
+        let fixture = fixture().await;
+        fixture.engine.handle(start(WireEnd::Indefinite)).await;
+        let session_id = fixture.engine.status().await.sessions[0].session_id;
+
+        fixture.set_battery(9);
+        fixture.clock.advance(60);
+        let ended = fixture.engine.tick().await;
+
+        assert_eq!(
+            ended,
+            vec![EndedSession {
+                session: SessionId(session_id),
+                cause: EndCause::BatteryThreshold { percent: 9 },
+                battery_stop_percent: Some(20),
+            }]
+        );
+        assert_eq!(
+            ended[0].event().body,
+            awake_ipc::EventBody::SessionEnded {
+                session_id,
+                cause: "battery_threshold".to_string(),
+                battery_stop_percent: Some(20),
+                battery_percent: Some(9),
+            }
+        );
+
+        fixture.clock.advance(60);
+        assert!(fixture.engine.tick().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_rule_that_stops_matching_on_a_tick_is_reported_as_ended() {
+        let fixture = fixture().await;
+        fixture.create_rule(on_ac_rule("Charging")).await;
+        let session_id = fixture.engine.status().await.sessions[0].session_id;
+
+        fixture.set_on_ac(false);
+        fixture.clock.advance(60);
+        let ended = fixture.engine.tick().await;
+
+        assert_eq!(
+            ended
+                .iter()
+                .map(|ended| (ended.session, ended.cause))
+                .collect::<Vec<_>>(),
+            vec![(SessionId(session_id), EndCause::TriggerCleared)]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_the_client_ended_is_not_reported_as_one_the_service_ended() {
+        let fixture = fixture().await;
+        fixture.engine.handle(start(WireEnd::Indefinite)).await;
+
+        let (response, ended) = fixture
+            .engine
+            .handle_reporting(AwakeRequest::new(RequestBody::EndManualSession))
+            .await;
+
+        assert!(status_of(&response).sessions.is_empty());
+        assert!(
+            ended.is_empty(),
+            "the client that asked already has its answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_battery_stop_made_while_answering_a_rule_edit_is_still_reported() {
+        let fixture = fixture().await;
+        fixture.engine.handle(start(WireEnd::Indefinite)).await;
+        let session_id = fixture.engine.status().await.sessions[0].session_id;
+        fixture.set_battery(9);
+
+        // Editing a rule re-reads every provider, so the flat battery is seen
+        // while answering a request that had nothing to do with the session.
+        let (_, ended) = fixture
+            .engine
+            .handle_reporting(AwakeRequest::new(RequestBody::CreateRule {
+                rule: Box::new(on_ac_rule("Charging")),
+            }))
+            .await;
+
+        assert_eq!(
+            ended,
+            vec![EndedSession {
+                session: SessionId(session_id),
+                cause: EndCause::BatteryThreshold { percent: 9 },
+                battery_stop_percent: Some(20),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn raising_a_running_rules_threshold_above_the_reading_is_a_battery_stop() {
+        let fixture = fixture().await;
+        let rule_id = fixture.create_rule(on_ac_rule("Charging")).await;
+        let session_id = fixture.engine.status().await.sessions[0].session_id;
+
+        let mut edited = on_ac_rule("Charging");
+        edited.battery_stop_percent = Some(90);
+        let (_, ended) = fixture
+            .engine
+            .handle_reporting(AwakeRequest::new(RequestBody::UpdateRule {
+                rule_id,
+                rule: Box::new(edited),
+            }))
+            .await;
+
+        assert_eq!(
+            ended,
+            vec![EndedSession {
+                session: SessionId(session_id),
+                cause: EndCause::BatteryThreshold { percent: 80 },
+                battery_stop_percent: Some(90),
+            }],
+            "the session the rule held is stopped by protection, not cleared as if the rule \
+             had stopped matching"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_reports_every_session_it_ended() {
+        let fixture = fixture().await;
+        fixture.engine.handle(start(WireEnd::Indefinite)).await;
+        let session_id = fixture.engine.status().await.sessions[0].session_id;
+
+        let ended = fixture.engine.shutdown().await;
+
+        assert_eq!(
+            ended
+                .iter()
+                .map(|ended| (ended.session, ended.cause))
+                .collect::<Vec<_>>(),
+            vec![(SessionId(session_id), EndCause::ServiceShutdown)]
+        );
     }
 
     // ---- History -----------------------------------------------------------

@@ -11,13 +11,18 @@ pub mod item;
 pub mod labels;
 pub mod localtime;
 pub mod menu;
+pub mod notify;
 pub mod sni;
 
-pub use client::{ClientError, ServiceClient, start_request, status_from_event};
+pub use client::{
+    ClientError, LowBatteryStop, ServiceClient, ServiceEvent, service_event, start_request,
+    status_from_event,
+};
 pub use controller::{APPLICATION_BINARY, Activation, TrayController};
 pub use dbusmenu::DbusMenu;
 pub use item::StatusNotifierItem;
 pub use labels::{Labels, Locale};
 pub use localtime::UtcOffset;
 pub use menu::{Menu, MenuAction, MenuItem, QuickOptions, build as build_menu};
+pub use notify::{DesktopNotifier, NotifyError, handle_event};
 pub use sni::{ITEM_PATH, MENU_PATH, TrayAvailability, register_and_verify};
