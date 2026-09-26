@@ -3,7 +3,7 @@
 **Epic:** Better Files (Issue #6) · **User Story:** a person can make a `.zip`
 or `.tar.gz` of a selection and extract one they downloaded, as a job they can
 pause, cancel, and resume · **Branch:** `ticket-56` · **Blocked by:** 51, 52,
-53, 54, 55 (they edit the same job engine and window) · **Status:** implemented, not merged
+53, 54, 55 (they edit the same job engine and window) · **Status:** merged, not released
 
 ## What it delivers
 

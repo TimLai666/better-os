@@ -339,15 +339,23 @@ GUI or dependency compiles when the relevant command was not executed.
   no second `mimeapps.list` editor may be written.
 - Better Files runs its operations as durable jobs now: `files-operations` owns
   copy, move, duplicate, rename, bulk rename, trash, restore, permanent delete,
-  and checksum, and a job survives every handle to it being dropped. A job is a
-  header plus an append-only item journal, a trash on a removable disk goes to
-  that volume's own trash, and a copy keeps hard links. What is still open:
-  archive and extract are ticket 56; the volume trash and hard links have been
-  tested on temporary directories with a device-number seam, never on a second
-  real device, and FAT or exFAT media not at all; the Trash view reads every
-  mounted filesystem's trash, network shares included, so an unreachable server
-  can stall that listing; and two processes submitting a job at the same instant
-  can still pick the same job number.
+  checksum, compress, and extract, and a job survives every handle to it being
+  dropped. A job is a header plus an append-only item journal, a trash on a
+  removable disk goes to that volume's own trash, and a copy keeps hard links.
+  What is still open: the volume trash and hard links have been tested on
+  temporary directories with a device-number seam, never on a second real
+  device, and FAT or exFAT media not at all; the Trash view reads every mounted
+  filesystem's trash, network shares included, so an unreachable server can
+  stall that listing; and two processes submitting a job at the same instant can
+  still pick the same job number.
+- Extraction refuses absolute paths, `..`, and links that leave the target, and
+  stops at the size and entry limits in `files-operations`' policy. Those limits
+  were proved with small archives and lowered limits, never with a real
+  decompression bomb, and a zip that declares a huge central directory is read
+  whole before the entry count is checked. Compression writes `.tar.zst` with
+  the pure-Rust `ruzstd`, whose only level is its fastest, so those archives are
+  larger than `zstd`'s default would make them. Zip reads only stored and
+  deflate entries.
 - Decide whether a Better Files job should survive a logout or a reboot, and
   where the Better Copy boundary sits. Issue #6 defers both; persistence today
   covers a UI restart only.

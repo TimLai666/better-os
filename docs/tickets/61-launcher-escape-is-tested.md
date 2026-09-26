@@ -2,7 +2,7 @@
 
 **Epic:** Better Launcher (Issue #2) · **User Story:** a person can dismiss the
 launcher overlay with Escape · **Branch:** `ticket-60-62` · **Blocked by:**
-none · **Status:** implemented, not merged
+none · **Status:** merged, not released
 
 ## What it delivers
 

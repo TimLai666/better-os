@@ -2,7 +2,7 @@
 
 **Epic:** Better Files (Issue #6) · **User Story:** a person can copy a very
 large tree and still resume it after Better Files restarts · **Branch:**
-`ticket-53-55` · **Blocked by:** none · **Status:** implemented, not merged
+`ticket-53-55` · **Blocked by:** none · **Status:** merged, not released
 
 ## What it delivers
 

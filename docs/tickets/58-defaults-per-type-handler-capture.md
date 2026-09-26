@@ -3,7 +3,7 @@
 **Epic:** Better Defaults (Issue #10) · **User Story:** a person whose image
 types open in two different viewers can still apply Better Files' handler
 group and later get both viewers back · **Branch:** `ticket-57-58` ·
-**Blocked by:** none · **Status:** implemented, not merged
+**Blocked by:** none · **Status:** merged, not released
 
 ## What it delivers
 
