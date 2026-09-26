@@ -284,6 +284,13 @@ pub(crate) fn observed_label(locale: Locale, observed: &ObservedValue) -> String
         ObservedValue::Unknown { .. } => c.value_unknown.to_string(),
         ObservedValue::Unsupported { .. } => c.value_unsupported.to_string(),
         ObservedValue::PermissionDenied { .. } => c.value_permission_denied.to_string(),
+        // Types that open in different applications are listed one by one,
+        // because naming one of them would hide the others.
+        ObservedValue::Mixed { per_key } => per_key
+            .iter()
+            .map(|key| format!("{}: {}", key.key, observed_label(locale, &key.observed)))
+            .collect::<Vec<_>>()
+            .join("; "),
     }
 }
 
@@ -778,50 +785,11 @@ pub(crate) fn result_rows(
     outcome: &DefaultsOutcome,
     name_of: &dyn Fn(&ComponentId) -> String,
 ) -> Vec<ResultRow> {
-    let c = copy(locale);
     outcome
         .results
         .iter()
         .map(|result| {
-            let (label, tone, detail) = match &result.outcome {
-                EntryOutcome::Applied { value } => (
-                    c.result_applied,
-                    ResultTone::Success,
-                    Some(value_label(locale, value)),
-                ),
-                EntryOutcome::AppliedNeedsSignOut { value } => (
-                    c.state_needs_sign_out,
-                    ResultTone::Pending,
-                    Some(value_label(locale, value)),
-                ),
-                EntryOutcome::Restored { value } => (
-                    c.result_restored,
-                    ResultTone::Success,
-                    Some(observed_label(locale, value)),
-                ),
-                EntryOutcome::AlreadyCorrect => {
-                    (c.result_already_correct, ResultTone::Success, None)
-                }
-                EntryOutcome::NotVerified { observed } => (
-                    c.result_not_verified,
-                    ResultTone::Failure,
-                    Some(observed_label(locale, observed)),
-                ),
-                EntryOutcome::VerificationInconclusive { observed } => (
-                    c.result_inconclusive,
-                    ResultTone::Warning,
-                    Some(observed_label(locale, observed)),
-                ),
-                EntryOutcome::Skipped { reason } => (
-                    c.result_skipped,
-                    ResultTone::Neutral,
-                    Some(skip_reason_label(locale, reason).to_string()),
-                ),
-                EntryOutcome::ManualActionRequired { .. } => {
-                    (c.manual_action_required, ResultTone::Warning, None)
-                }
-                EntryOutcome::Failed { .. } => (c.result_failed, ResultTone::Failure, None),
-            };
+            let (label, tone, detail) = outcome_parts(locale, &result.outcome);
             ResultRow {
                 component: result.component.clone(),
                 name: name_of(&result.component),
@@ -834,11 +802,99 @@ pub(crate) fn result_rows(
         .collect()
 }
 
+/// The words, tone, and detail for one outcome.
+fn outcome_parts(
+    locale: Locale,
+    outcome: &EntryOutcome,
+) -> (&'static str, ResultTone, Option<String>) {
+    let c = copy(locale);
+    match outcome {
+        EntryOutcome::Applied { value } => (
+            c.result_applied,
+            ResultTone::Success,
+            Some(value_label(locale, value)),
+        ),
+        EntryOutcome::AppliedNeedsSignOut { value } => (
+            c.state_needs_sign_out,
+            ResultTone::Pending,
+            Some(value_label(locale, value)),
+        ),
+        EntryOutcome::Restored { value } => (
+            c.result_restored,
+            ResultTone::Success,
+            Some(observed_label(locale, value)),
+        ),
+        EntryOutcome::AlreadyCorrect => (c.result_already_correct, ResultTone::Success, None),
+        EntryOutcome::NotVerified { observed } => (
+            c.result_not_verified,
+            ResultTone::Failure,
+            Some(observed_label(locale, observed)),
+        ),
+        EntryOutcome::VerificationInconclusive { observed } => (
+            c.result_inconclusive,
+            ResultTone::Warning,
+            Some(observed_label(locale, observed)),
+        ),
+        EntryOutcome::Skipped { reason } => (
+            c.result_skipped,
+            ResultTone::Neutral,
+            Some(skip_reason_label(locale, reason).to_string()),
+        ),
+        EntryOutcome::ManualActionRequired { .. } => {
+            (c.manual_action_required, ResultTone::Warning, None)
+        }
+        EntryOutcome::Failed { .. } => (c.result_failed, ResultTone::Failure, None),
+        EntryOutcome::PerKey { keys } => {
+            let any_restored = keys.iter().any(|key| key.outcome.is_success());
+            let (label, tone) = if outcome.is_success() {
+                (c.result_restored, ResultTone::Success)
+            } else if outcome.is_failure() {
+                (
+                    if any_restored {
+                        c.result_partial
+                    } else {
+                        c.result_failed
+                    },
+                    ResultTone::Failure,
+                )
+            } else if any_restored {
+                (c.result_partial, ResultTone::Warning)
+            } else {
+                (c.manual_action_required, ResultTone::Warning)
+            };
+            // Each type with what its own verifying read saw, or why it was
+            // not put back.
+            let detail = keys
+                .iter()
+                .map(|key| {
+                    let said = match &key.outcome {
+                        EntryOutcome::Restored { value } => observed_label(locale, value),
+                        other => match outcome_parts(locale, other) {
+                            (label, _, Some(detail)) => format!("{label} ({detail})"),
+                            (label, _, None) => label.to_string(),
+                        },
+                    };
+                    format!("{}: {said}", key.key)
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            (label, tone, Some(detail))
+        }
+    }
+}
+
 /// The one line above the per-entry results.
 pub(crate) fn outcome_headline(locale: Locale, outcome: &DefaultsOutcome) -> &'static str {
     let c = copy(locale);
+    // A group restored type by type counts as having changed something when
+    // any one of its types went back.
+    let changed_something = outcome.succeeded() > 0
+        || outcome.results.iter().any(|result| {
+            matches!(&result.outcome, EntryOutcome::PerKey { keys }
+                if keys.iter().any(|key| key.outcome.is_success()))
+        });
     if outcome.has_failures() {
-        if outcome.succeeded() > 0 {
+        if changed_something {
             c.result_partial
         } else {
             c.result_failed

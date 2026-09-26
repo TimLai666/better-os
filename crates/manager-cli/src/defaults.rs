@@ -7,7 +7,7 @@
 use std::error::Error;
 use std::path::PathBuf;
 
-use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
+use better_core::{ComponentCatalog, ComponentId, ComponentManifest, ObservedValue};
 use clap::{Args, Subcommand};
 use defaults_core::{
     AdapterMode, AdapterSession, AggregateState, ComponentReadiness, Confirmations, DefaultsEngine,
@@ -195,16 +195,20 @@ fn print_report(report: &DefaultsReport) {
             aggregate_label(&component.aggregate)
         );
         for status in &component.integrations {
+            let current = match status.current.per_key() {
+                Some(_) => "per-type".to_string(),
+                None => format!("{:?}", status.current),
+            };
             println!(
-                "  {} {:?} {} current={:?} desired={:?} session_effect={:?} restore_available={}",
+                "  {} {:?} {} current={current} desired={:?} session_effect={:?} restore_available={}",
                 status.integration,
                 status.kind,
                 state_label(&status.state),
-                status.current,
                 status.desired,
                 status.session_effect,
                 status.restore_available
             );
+            print_per_type("    ", "current", &status.current);
         }
     }
 }
@@ -249,19 +253,21 @@ fn print_plan(plan: &DefaultsPlan) {
     for entry in &plan.entries {
         let action = match &entry.action {
             PlanAction::Apply { to } => format!("apply {to:?}"),
+            PlanAction::Restore { to } if to.per_key().is_some() => {
+                "restore per type, each to its captured value".to_string()
+            }
             PlanAction::Restore { to } => format!("restore {to:?}"),
             PlanAction::Skip { reason } => format!("skip {reason:?}"),
         };
         println!("{}:{} {action}", entry.component, entry.integration);
-        println!("  current: {:?}", entry.current);
-        println!(
-            "  captured previous: {}",
-            entry
-                .captured_previous
-                .as_ref()
-                .map(|value| format!("{value:?}"))
-                .unwrap_or_else(|| "nothing captured yet".to_string())
-        );
+        if !print_per_type("  ", "current", &entry.current) {
+            println!("  current: {:?}", entry.current);
+        }
+        match &entry.captured_previous {
+            Some(value) if print_per_type("  ", "captured previous", value) => {}
+            Some(value) => println!("  captured previous: {value:?}"),
+            None => println!("  captured previous: nothing captured yet"),
+        }
         println!("  session effect: {:?}", entry.session_effect);
         if entry.requires_confirmation {
             println!(
@@ -293,35 +299,80 @@ fn print_outcome(outcome: &DefaultsOutcome) {
         println!("recorded results into snapshot {id}");
     }
     for result in &outcome.results {
-        let line = match &result.outcome {
-            EntryOutcome::Applied { value } => format!("applied {value:?}"),
-            EntryOutcome::AppliedNeedsSignOut { value } => {
-                format!("applied {value:?}, effective after sign-out")
+        println!(
+            "{}:{} {}",
+            result.component,
+            result.integration,
+            outcome_line(&result.outcome)
+        );
+        if let EntryOutcome::PerKey { keys } = &result.outcome {
+            for key in keys {
+                let line = match &key.outcome {
+                    EntryOutcome::Restored { value } => {
+                        format!("restored {}", observed_text(value))
+                    }
+                    other => outcome_line(other),
+                };
+                println!("    {}: {line}", key.key);
             }
-            EntryOutcome::Restored { value } => format!("restored {value:?}"),
-            EntryOutcome::AlreadyCorrect => "already correct".to_string(),
-            EntryOutcome::NotVerified { observed } => {
-                format!("NOT VERIFIED: the setting now reads {observed:?}")
-            }
-            EntryOutcome::VerificationInconclusive { observed } => {
-                format!("could not verify: the setting reads {observed:?}")
-            }
-            EntryOutcome::Skipped { reason } => format!("skipped {reason:?}"),
-            EntryOutcome::ManualActionRequired { reason, detail } => format!(
-                "manual action required: {reason}{}",
-                detail
-                    .as_ref()
-                    .map(|detail| format!(" ({detail})"))
-                    .unwrap_or_default()
-            ),
-            EntryOutcome::Failed { reason, detail } => format!(
-                "failed: {reason}{}",
-                detail
-                    .as_ref()
-                    .map(|detail| format!(" ({detail})"))
-                    .unwrap_or_default()
-            ),
-        };
-        println!("{}:{} {line}", result.component, result.integration);
+        }
+    }
+}
+
+/// Each key of a reading that differs per key, one per line under `label`.
+/// Returns whether it printed anything, so a caller prints a single value
+/// otherwise.
+fn print_per_type(indent: &str, label: &str, observed: &ObservedValue) -> bool {
+    let Some(per_key) = observed.per_key() else {
+        return false;
+    };
+    println!("{indent}{label}, per type:");
+    for key in per_key {
+        println!("{indent}  {}: {}", key.key, observed_text(&key.observed));
+    }
+    true
+}
+
+fn observed_text(observed: &ObservedValue) -> String {
+    match observed {
+        ObservedValue::Set { value } => format!("{value:?}"),
+        other => format!("{other:?}"),
+    }
+}
+
+fn outcome_line(outcome: &EntryOutcome) -> String {
+    match outcome {
+        EntryOutcome::Applied { value } => format!("applied {value:?}"),
+        EntryOutcome::AppliedNeedsSignOut { value } => {
+            format!("applied {value:?}, effective after sign-out")
+        }
+        EntryOutcome::Restored { value } => format!("restored {value:?}"),
+        EntryOutcome::AlreadyCorrect => "already correct".to_string(),
+        EntryOutcome::NotVerified { observed } => {
+            format!("NOT VERIFIED: the setting now reads {observed:?}")
+        }
+        EntryOutcome::VerificationInconclusive { observed } => {
+            format!("could not verify: the setting reads {observed:?}")
+        }
+        EntryOutcome::Skipped { reason } => format!("skipped {reason:?}"),
+        EntryOutcome::ManualActionRequired { reason, detail } => format!(
+            "manual action required: {reason}{}",
+            detail
+                .as_ref()
+                .map(|detail| format!(" ({detail})"))
+                .unwrap_or_default()
+        ),
+        EntryOutcome::Failed { reason, detail } => format!(
+            "failed: {reason}{}",
+            detail
+                .as_ref()
+                .map(|detail| format!(" ({detail})"))
+                .unwrap_or_default()
+        ),
+        EntryOutcome::PerKey { keys } => format!(
+            "restored per type ({} of {} types put back)",
+            keys.iter().filter(|key| key.outcome.is_success()).count(),
+            keys.len()
+        ),
     }
 }

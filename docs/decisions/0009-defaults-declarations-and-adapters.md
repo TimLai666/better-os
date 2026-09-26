@@ -7,9 +7,31 @@ these decisions and does not revisit them.
 
 Decision 4's second option — writing through the `ca.desrt.dconf` D-Bus service
 — was built by ticket 29 and is recorded in
-[ADR 0010](0010-touchpad-ranges-and-dconf-writes.md). Better Defaults has not
-adopted it; its two GNOME adapters still report manual action required, because
-adopting the path changes this component's behaviour and its tests.
+[ADR 0010](0010-touchpad-ranges-and-dconf-writes.md). **Ticket 57 adopted it.**
+The writer and the change-set encoder moved from `touchpad-platform` into
+`defaults-platform`, behind its `dconf-write` feature, which `defaults-core`
+turns on; `touchpad-platform` re-exports both under their old names. The
+encoder gained the string array every GNOME keybinding is, pinned against
+GLib's bytes like the other types. The `gnome-keybinding` and
+`gnome-desktop-setting` rows of the table in decision 4 now read, apply, and
+verify: every declared key goes to the service in one change set, and the
+outcome is Applied only when a second read of the database agrees. One reading
+changed with it. A key the user's database does not hold, or a database that
+does not exist yet, now reads as *nothing set* rather than as unknown, because
+that is the reading a restore can reproduce — by resetting the key, not by
+writing a guess at the schema default. The compiled schema default itself is
+still not read and not claimed. A build without the feature still reports
+manual action required for a change.
+
+**Ticket 58 changed the mixed handler group** described under Consequences. A
+group whose keys each read definitely and disagree is now a per-key reading
+rather than unknown: the preview lists each key's current value, apply is
+allowed, the snapshot stores each key's previous value, and restore writes each
+key back to its own value and reports each key's verifying read. A type that
+had no default is still Manual action required on restore, for the reason given
+under Consequences. Snapshots are schema version 2 from this change, because a
+version 1 reader cannot parse a per-key value; version 1 files are read
+unchanged.
 
 ## Context
 

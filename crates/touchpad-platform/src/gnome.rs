@@ -490,7 +490,10 @@ impl GnomeBackend {
             return Ok(());
         }
         match &self.writer {
-            Some(writer) => writer.change(changeset).map(|_tag| ()),
+            Some(writer) => writer
+                .change(changeset)
+                .map(|_tag| ())
+                .map_err(crate::PlatformError::from),
             None => Err(crate::PlatformError::NoWriteSupport),
         }
     }

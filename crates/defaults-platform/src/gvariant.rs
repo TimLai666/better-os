@@ -28,18 +28,22 @@
 //!   variant's bytes plus one zero byte for Just.
 //! - `v` is the child's bytes, a zero byte, then the child's type signature.
 //! - A dictionary entry aligns to 8, because a variant does.
+//! - `as` is each string with its terminator, back to back, then one offset per
+//!   string. An empty array is no bytes at all, which is still a value: GNOME
+//!   disables a keybinding by storing `@as []`, and a reset would restore it.
 
 use std::collections::BTreeMap;
 
 use thiserror::Error;
 
-/// A value a change set can write. These are the three GVariant types the GNOME
-/// touchpad and mouse schemas actually use.
+/// A value a change set can write: the three GVariant types the GNOME touchpad
+/// and mouse schemas use, and the string array every GNOME keybinding is.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChangeValue {
     Boolean(bool),
     Double(f64),
     Text(String),
+    TextList(Vec<String>),
 }
 
 #[derive(Clone, Debug, Error, PartialEq)]
@@ -48,6 +52,8 @@ pub enum ChangesetError {
     BadPrefix(String),
     #[error("a dconf key name must not be empty or contain '/' or a nul byte, unlike {0:?}")]
     BadKey(String),
+    #[error("{0:?} is not a dconf key under this change set's prefix")]
+    BadPath(String),
     #[error("a dconf string value must not contain a nul byte")]
     NulInValue,
     #[error("a dconf value must be a real number, not {0}")]
@@ -56,9 +62,10 @@ pub enum ChangesetError {
 
 /// A set of changes under one path prefix.
 ///
-/// Entries are kept sorted, which is what the dconf client's own tree-backed
-/// change set produces, so the same set of changes always serializes to the
-/// same bytes.
+/// Entries are kept sorted by full path, which is what the dconf client's own
+/// tree-backed change set produces, so the same set of changes always
+/// serializes to the same bytes. The prefix `/` admits any key, which is how
+/// one change set spans several directories.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Changeset {
     prefix: String,
@@ -94,32 +101,52 @@ impl Changeset {
     /// The full paths this change set would write, for a caller that has to
     /// report what it is about to touch.
     pub fn paths(&self) -> Vec<String> {
-        self.entries
-            .keys()
-            .map(|key| format!("{}{key}", self.prefix))
-            .collect()
+        self.entries.keys().cloned().collect()
     }
 
     pub fn set(&mut self, key: &str, value: ChangeValue) -> Result<(), ChangesetError> {
         check_key(key)?;
-        match &value {
-            ChangeValue::Text(text) if text.contains('\0') => {
-                return Err(ChangesetError::NulInValue);
-            }
-            ChangeValue::Double(number) if !number.is_finite() => {
-                return Err(ChangesetError::NotFinite(*number));
-            }
-            _ => {}
-        }
-        self.entries.insert(key.to_string(), Some(value));
+        check_value(&value)?;
+        self.entries
+            .insert(format!("{}{key}", self.prefix), Some(value));
         Ok(())
     }
 
     /// Removes the key, so the session's own default applies again.
     pub fn reset(&mut self, key: &str) -> Result<(), ChangesetError> {
         check_key(key)?;
-        self.entries.insert(key.to_string(), None);
+        self.entries.insert(format!("{}{key}", self.prefix), None);
         Ok(())
+    }
+
+    /// Writes a key named by its full path, which must lie under the prefix.
+    pub fn set_path(&mut self, path: &str, value: ChangeValue) -> Result<(), ChangesetError> {
+        self.check_path(path)?;
+        check_value(&value)?;
+        self.entries.insert(path.to_string(), Some(value));
+        Ok(())
+    }
+
+    /// Resets a key named by its full path, which must lie under the prefix.
+    pub fn reset_path(&mut self, path: &str) -> Result<(), ChangesetError> {
+        self.check_path(path)?;
+        self.entries.insert(path.to_string(), None);
+        Ok(())
+    }
+
+    /// A dconf key: absolute, under the prefix, not a directory, and with no
+    /// empty path segment.
+    fn check_path(&self, path: &str) -> Result<(), ChangesetError> {
+        let valid = path
+            .strip_prefix(&self.prefix)
+            .is_some_and(|relative| !relative.is_empty() && !relative.ends_with('/'))
+            && !path.contains("//")
+            && !path.contains('\0');
+        if valid {
+            Ok(())
+        } else {
+            Err(ChangesetError::BadPath(path.to_string()))
+        }
     }
 
     /// The bytes `ca.desrt.dconf.Writer.Change` takes.
@@ -129,12 +156,9 @@ impl Changeset {
     pub fn serialise(&self) -> Vec<u8> {
         let mut data = Vec::new();
         let mut ends = Vec::with_capacity(self.entries.len());
-        for (key, value) in &self.entries {
+        for (path, value) in &self.entries {
             pad_to_eight(&mut data);
-            data.extend_from_slice(&entry_bytes(
-                &format!("{}{key}", self.prefix),
-                value.as_ref(),
-            ));
+            data.extend_from_slice(&entry_bytes(path, value.as_ref()));
             ends.push(data.len());
         }
         let width = offset_width(data.len(), ends.len());
@@ -150,6 +174,19 @@ fn check_key(key: &str) -> Result<(), ChangesetError> {
         return Err(ChangesetError::BadKey(key.to_string()));
     }
     Ok(())
+}
+
+fn check_value(value: &ChangeValue) -> Result<(), ChangesetError> {
+    match value {
+        ChangeValue::Text(text) if text.contains('\0') => Err(ChangesetError::NulInValue),
+        ChangeValue::TextList(values) if values.iter().any(|value| value.contains('\0')) => {
+            Err(ChangesetError::NulInValue)
+        }
+        ChangeValue::Double(number) if !number.is_finite() => {
+            Err(ChangesetError::NotFinite(*number))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// One `{smv}`: the key string, then the maybe-variant, then the offset that
@@ -186,7 +223,29 @@ fn variant_bytes(value: &ChangeValue) -> Vec<u8> {
             bytes.extend_from_slice(&[0, 0, b's']);
             bytes
         }
+        ChangeValue::TextList(values) => {
+            let mut bytes = string_array_bytes(values);
+            bytes.extend_from_slice(&[0, b'a', b's']);
+            bytes
+        }
     }
+}
+
+/// One `as`: every string with its terminator, then the end of each in order.
+/// A string aligns to 1, so there is no padding between them.
+fn string_array_bytes(values: &[String]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut ends = Vec::with_capacity(values.len());
+    for value in values {
+        bytes.extend_from_slice(value.as_bytes());
+        bytes.push(0);
+        ends.push(bytes.len());
+    }
+    let width = offset_width(bytes.len(), ends.len());
+    for end in ends {
+        push_offset(&mut bytes, end, width);
+    }
+    bytes
 }
 
 fn pad_to_eight(bytes: &mut Vec<u8>) {
@@ -413,5 +472,143 @@ mod tests {
                 "/org/gnome/desktop/peripherals/touchpad/tap-to-click".to_string(),
             ]
         );
+    }
+
+    // The string-array encodings below were produced the same way, with
+    // `GLib.Variant('as', [...])` as the value, on GLib 2.80.
+
+    const CLOSE: &str = "/org/gnome/desktop/wm/keybindings/close";
+    const CLOSE_HEX: &str =
+        "2f6f72672f676e6f6d652f6465736b746f702f776d2f6b657962696e64696e67732f636c6f7365";
+
+    fn text_list(values: &[&str]) -> ChangeValue {
+        ChangeValue::TextList(values.iter().map(|value| value.to_string()).collect())
+    }
+
+    #[test]
+    fn a_string_array_matches_the_bytes_glib_produces() {
+        let mut changeset = Changeset::new("/").unwrap();
+        changeset
+            .set_path(CLOSE, text_list(&["<Super>q", "<Alt>F4"]))
+            .unwrap();
+        assert_eq!(
+            hex(&changeset.serialise()),
+            format!("{CLOSE_HEX}003c53757065723e71003c416c743e4634000911006173002840")
+        );
+    }
+
+    #[test]
+    fn an_empty_string_array_is_a_value_rather_than_a_reset() {
+        // `@as []` is how GNOME disables a keybinding, so an empty list has to
+        // survive as a value: a reset would put the default binding back.
+        let mut changeset = Changeset::new("/").unwrap();
+        changeset.set_path(CLOSE, text_list(&[])).unwrap();
+        assert_eq!(
+            hex(&changeset.serialise()),
+            format!("{CLOSE_HEX}0000617300282d")
+        );
+    }
+
+    #[test]
+    fn a_string_array_long_enough_to_widen_its_own_offsets_matches_glib() {
+        // Twenty entries take the array itself past 255 bytes, so the offsets
+        // inside it widen to two bytes as well as the ones around it.
+        let values: Vec<String> = (1..=20)
+            .map(|index| format!("<Super><Shift>F{index}"))
+            .collect();
+        let mut changeset = Changeset::new("/").unwrap();
+        changeset
+            .set_path(CLOSE, ChangeValue::TextList(values))
+            .unwrap();
+        let bytes = changeset.serialise();
+        assert_eq!(bytes.len(), 439);
+        assert_eq!(
+            hex(&bytes[bytes.len() - 48..]),
+            "110022003300440055006600770088009900ab00bd00cf00e100f3000501170129013b014d015f01\
+006173002800b501"
+        );
+    }
+
+    #[test]
+    fn one_change_set_can_span_several_directories_and_matches_glib() {
+        // A declaration may name keys in different directories, and they are
+        // written in one call so the service applies all of them or none.
+        let mut changeset = Changeset::new("/").unwrap();
+        changeset
+            .set_path(
+                "/org/gnome/settings-daemon/plugins/media-keys/home",
+                ChangeValue::Boolean(false),
+            )
+            .unwrap();
+        changeset
+            .reset_path("/org/gnome/settings-daemon/plugins/media-keys/home")
+            .unwrap();
+        changeset.set_path(CLOSE, text_list(&["<Super>q"])).unwrap();
+        changeset
+            .set_path(
+                "/org/gnome/nautilus/preferences/show-image-thumbnails",
+                ChangeValue::Text("never".to_string()),
+            )
+            .unwrap();
+        changeset
+            .set_path(
+                "/org/gnome/desktop/interface/enable-animations",
+                ChangeValue::Boolean(true),
+            )
+            .unwrap();
+        assert_eq!(
+            hex(&changeset.serialise()),
+            "2f6f72672f676e6f6d652f6465736b746f702f696e746572666163652f656e61626c652d616e696d\
+6174696f6e730000010062002f0000002f6f72672f676e6f6d652f6465736b746f702f776d2f6b65\
+7962696e64696e67732f636c6f7365003c53757065723e7100090061730028002f6f72672f676e6f\
+6d652f6e617574696c75732f707265666572656e6365732f73686f772d696d6167652d7468756d62\
+6e61696c730000006e6576657200007300360000000000002f6f72672f676e6f6d652f7365747469\
+6e67732d6461656d6f6e2f706c7567696e732f6d656469612d6b6579732f686f6d65000000000000\
+33356fb2f1"
+        );
+    }
+
+    #[test]
+    fn a_full_path_outside_the_prefix_or_not_a_key_is_refused() {
+        let mut changeset = Changeset::new(TOUCHPAD).unwrap();
+        for path in [
+            "/org/gnome/desktop/wm/keybindings/close",
+            "/org/gnome/desktop/peripherals/touchpad/",
+            "/org/gnome/desktop/peripherals/touchpad//speed",
+            "org/gnome/desktop/peripherals/touchpad/speed",
+            "/org/gnome/desktop/peripherals/touchpad/sp\0eed",
+        ] {
+            assert!(
+                matches!(
+                    changeset.set_path(path, ChangeValue::Boolean(true)),
+                    Err(ChangesetError::BadPath(_))
+                ),
+                "{path:?} was accepted"
+            );
+            assert!(matches!(
+                changeset.reset_path(path),
+                Err(ChangesetError::BadPath(_))
+            ));
+        }
+        assert!(changeset.is_empty());
+        changeset
+            .set_path(
+                "/org/gnome/desktop/peripherals/touchpad/speed",
+                ChangeValue::Double(0.35),
+            )
+            .unwrap();
+        let mut relative = Changeset::new(TOUCHPAD).unwrap();
+        relative.set("speed", ChangeValue::Double(0.35)).unwrap();
+        assert_eq!(changeset.serialise(), relative.serialise());
+    }
+
+    #[test]
+    fn a_string_array_holding_a_nul_byte_is_refused() {
+        let mut changeset = Changeset::new("/").unwrap();
+        assert_eq!(
+            changeset.set_path(CLOSE, text_list(&["<Super>q", "<Alt>\0F4"])),
+            Err(ChangesetError::NulInValue)
+        );
+        assert!(changeset.is_empty());
     }
 }

@@ -16,7 +16,7 @@ use std::io;
 use std::path::Path;
 use std::rc::Rc;
 
-use better_core::defaults::{AdapterId, ObservedValue};
+use better_core::defaults::{AdapterId, KeyObservation, ObservedValue};
 
 use crate::{AdapterRequest, AdapterSet, DefaultsAdapter, WriteOutcome, WriteValue};
 
@@ -179,12 +179,25 @@ impl DefaultsAdapter for InMemoryAdapter {
         self.id
     }
 
+    /// A slot holds one reading per integration. A request narrowed to one
+    /// key reads that key's own value — its entry in a mixed reading, or the
+    /// group's one value — so a simulated handler group behaves like a real one
+    /// key by key.
     fn read(&self, request: &AdapterRequest<'_>) -> ObservedValue {
-        self.values
+        let stored = self
+            .values
             .borrow()
             .get(&self.key(&Self::slot(request)))
             .cloned()
-            .unwrap_or(ObservedValue::Unset)
+            .unwrap_or(ObservedValue::Unset);
+        match (stored.per_key(), request.keys()) {
+            (Some(per_key), [only]) if request.is_narrowed() => per_key
+                .iter()
+                .find(|key| &key.key == only)
+                .map(|key| key.observed.clone())
+                .unwrap_or(stored),
+            _ => stored,
+        }
     }
 
     fn write(&mut self, request: &AdapterRequest<'_>, value: &WriteValue) -> WriteOutcome {
@@ -205,13 +218,43 @@ impl DefaultsAdapter for InMemoryAdapter {
                 WriteOutcome::Written
             }
             MockBehavior::Accept => {
-                let next = match value {
+                let written = match value {
                     WriteValue::Set { value } => ObservedValue::Set {
                         value: value.clone(),
                     },
                     WriteValue::Clear => ObservedValue::Unset,
                 };
-                if self.values.borrow().get(&key) == Some(&next) {
+                // Writing one key of a group changes that key alone.
+                let stored = self.values.borrow().get(&key).cloned();
+                let next = match request.keys() {
+                    [only] if request.is_narrowed() => {
+                        let before = stored.clone().unwrap_or(ObservedValue::Unset);
+                        crate::collapse(
+                            request
+                                .integration
+                                .target
+                                .keys
+                                .iter()
+                                .map(|declared| KeyObservation {
+                                    key: declared.clone(),
+                                    observed: if declared == only {
+                                        written.clone()
+                                    } else {
+                                        before
+                                            .per_key()
+                                            .and_then(|per_key| {
+                                                per_key.iter().find(|key| &key.key == declared)
+                                            })
+                                            .map(|key| key.observed.clone())
+                                            .unwrap_or_else(|| before.clone())
+                                    },
+                                })
+                                .collect(),
+                        )
+                    }
+                    _ => written,
+                };
+                if stored.as_ref() == Some(&next) {
                     return WriteOutcome::AlreadyCorrect;
                 }
                 self.writes.push(slot);
