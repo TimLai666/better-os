@@ -230,8 +230,16 @@ requires.
 
 ## Next Ticket
 
-There is no next ticket. Tickets 18 through 49 are done, merged, and released,
-and `docs/tickets/` holds nothing unstarted.
+Tickets 50 through 62 are open. They turn the `AGENTS.md` follow-ups that need
+no owner decision into work: Better Files opening the folder it was given (50),
+its own writes holding a device's readiness (51), Performance mode with its
+risks explained (52), per-device trash (53), hard links (54), an append-only job
+journal (55), and archive and extract (56, blocked by 51–55); Better Defaults
+writing GNOME settings itself (57) and capturing a mixed handler group per type
+(58); Better Awake's low-battery notification (59); windows that refuse an
+argument they do not understand (60); a test for Escape on Better Launcher
+(61); and a Rust baseline and CI actions that match reality (62). Everything
+except 56 can start now. Tickets 18 through 49 are done, merged, and released.
 
 Ticket 49 is merged into `main` and released as `v0.2.7`. It is the fifth round
 of field reports from the same Zorin 18 machine and closes three of them:
