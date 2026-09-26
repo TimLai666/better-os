@@ -412,12 +412,12 @@ fn transfer_leaf(
                 // An existing directory cannot be replaced by a file with a
                 // rename, and removing it would delete its contents without
                 // being asked. That is a failure, not an overwrite.
-                if let Ok(existing) = fs::symlink_metadata(&destination) {
-                    if existing.is_dir() {
-                        return Ok(ItemOutcome::Failed(OperationError::IsADirectory {
-                            path: destination.clone(),
-                        }));
-                    }
+                if let Ok(existing) = fs::symlink_metadata(&destination)
+                    && existing.is_dir()
+                {
+                    return Ok(ItemOutcome::Failed(OperationError::IsADirectory {
+                        path: destination.clone(),
+                    }));
                 }
             }
         }
@@ -506,12 +506,11 @@ fn transfer_leaf(
     // The source is re-checked before the destination is compared to it, so a
     // file somebody else rewrote mid-copy is reported as what it is rather
     // than as a copy that came out the wrong size.
-    if is_move {
-        if let Some(expected) = &item.snapshot {
-            if let Err(error) = fsops::ensure_unchanged(&item.source, expected) {
-                return Ok(ItemOutcome::Failed(error));
-            }
-        }
+    if is_move
+        && let Some(expected) = &item.snapshot
+        && let Err(error) = fsops::ensure_unchanged(&item.source, expected)
+    {
+        return Ok(ItemOutcome::Failed(error));
     }
 
     let verified = if policy.verify {
@@ -523,10 +522,8 @@ fn transfer_leaf(
         false
     };
 
-    if is_move {
-        if let Err(error) = finish_move(&item.source, item.snapshot.as_ref()) {
-            return Ok(ItemOutcome::Failed(error));
-        }
+    if is_move && let Err(error) = finish_move(&item.source, item.snapshot.as_ref()) {
+        return Ok(ItemOutcome::Failed(error));
     }
 
     Ok(ItemOutcome::Done {

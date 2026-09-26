@@ -1,4 +1,4 @@
-//! `better-monitor`: the command line over the same contracts as the window.
+//! `better-monitor-cli`: the command line over the same contracts as the window.
 //!
 //! Every subcommand goes through `monitor-ipc` when the service is running and
 //! through `monitor-store` when it is not, and it says which one it did. That
@@ -22,10 +22,15 @@ use monitor_store::{
     HistoryStore, Incident, IncidentWindow, Inventory, RetentionPolicy, StoreError, TimeRange,
 };
 
+/// The name the command line is installed under. `/usr/bin/better-monitor`
+/// is the window, so every name this crate prints is this one.
+pub const PROGRAM: &str = "better-monitor-cli";
+
 /// Better Monitor's command line.
 #[derive(Debug, Parser)]
 #[command(
-    name = "better-monitor",
+    name = PROGRAM,
+    bin_name = PROGRAM,
     about = "Inspect, record, mark, and export what Better Monitor observed",
     version
 )]
@@ -592,7 +597,7 @@ async fn doctor(cli: &Cli) -> Result<String, CliError> {
             });
             findings.push(
                 "nothing is recording history. Start better-monitor-service, or use \
-                 `better-monitor record` for a fixed-length session."
+                 `better-monitor-cli record` for a fixed-length session."
                     .to_string(),
             );
             match open_store(cli) {
@@ -733,14 +738,33 @@ mod tests {
         Cli::command().debug_assert();
     }
 
+    /// The window owns `/usr/bin/better-monitor`, so the command line is
+    /// installed as `better-monitor-cli` and has to call itself that wherever
+    /// it prints a name, whatever name it was started under.
+    #[test]
+    fn help_version_and_usage_errors_name_the_installed_command() {
+        let help = Cli::command().render_help().to_string();
+        assert!(help.contains("Usage: better-monitor-cli "), "{help}");
+        let version = Cli::command().render_version().to_string();
+        assert!(version.starts_with("better-monitor-cli "), "{version}");
+        let error = Cli::try_parse_from(["target/debug/better-monitor", "bogus"])
+            .expect_err("an unknown subcommand is refused")
+            .to_string();
+        assert!(error.contains("Usage: better-monitor-cli "), "{error}");
+        assert_eq!(PROGRAM, "better-monitor-cli");
+    }
+
     #[test]
     fn all_five_subcommands_the_ticket_names_are_reachable() {
         for (arguments, matched) in [
-            (vec!["better-monitor", "inspect"], "inspect"),
-            (vec!["better-monitor", "record"], "record"),
-            (vec!["better-monitor", "mark"], "mark"),
-            (vec!["better-monitor", "export", "--to", "/tmp/x"], "export"),
-            (vec!["better-monitor", "doctor"], "doctor"),
+            (vec!["better-monitor-cli", "inspect"], "inspect"),
+            (vec!["better-monitor-cli", "record"], "record"),
+            (vec!["better-monitor-cli", "mark"], "mark"),
+            (
+                vec!["better-monitor-cli", "export", "--to", "/tmp/x"],
+                "export",
+            ),
+            (vec!["better-monitor-cli", "doctor"], "doctor"),
         ] {
             let cli = Cli::try_parse_from(arguments).expect(matched);
             let name = match cli.command {
@@ -756,13 +780,13 @@ mod tests {
 
     #[test]
     fn command_lines_are_off_unless_they_are_asked_for() {
-        let cli = Cli::try_parse_from(["better-monitor", "record"]).unwrap();
+        let cli = Cli::try_parse_from(["better-monitor-cli", "record"]).unwrap();
         let Command::Record(args) = cli.command else {
             unreachable!()
         };
         assert!(!args.command_lines);
 
-        let cli = Cli::try_parse_from(["better-monitor", "record", "--command-lines"]).unwrap();
+        let cli = Cli::try_parse_from(["better-monitor-cli", "record", "--command-lines"]).unwrap();
         let Command::Record(args) = cli.command else {
             unreachable!()
         };
@@ -771,12 +795,12 @@ mod tests {
 
     #[test]
     fn an_export_needs_a_destination() {
-        assert!(Cli::try_parse_from(["better-monitor", "export"]).is_err());
+        assert!(Cli::try_parse_from(["better-monitor-cli", "export"]).is_err());
     }
 
     #[test]
     fn the_incident_window_defaults_match_the_store() {
-        let cli = Cli::try_parse_from(["better-monitor", "mark"]).unwrap();
+        let cli = Cli::try_parse_from(["better-monitor-cli", "mark"]).unwrap();
         let Command::Mark(args) = cli.command else {
             unreachable!()
         };
@@ -795,7 +819,7 @@ mod tests {
     async fn an_impossible_window_is_refused_before_anything_is_written() {
         let directory = tempfile::tempdir().unwrap();
         let cli = Cli::try_parse_from([
-            "better-monitor",
+            "better-monitor-cli",
             "--offline",
             "--store",
             directory.path().to_str().unwrap(),

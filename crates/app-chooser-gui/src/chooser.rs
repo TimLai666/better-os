@@ -853,10 +853,10 @@ impl AppChooser {
         if let Some(section) = self.section(c.section_other, &snapshot.sections.other, cx) {
             sections.push(section);
         }
-        if self.expanded {
-            if let Some(section) = self.section(c.section_all, &snapshot.sections.all, cx) {
-                sections.push(section);
-            }
+        if self.expanded
+            && let Some(section) = self.section(c.section_all, &snapshot.sections.all, cx)
+        {
+            sections.push(section);
         }
         if sections.is_empty() {
             sections.push(

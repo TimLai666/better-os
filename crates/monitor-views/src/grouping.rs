@@ -264,12 +264,14 @@ fn unescape_unit(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == b'\\' && index + 3 < bytes.len() && bytes[index + 1] == b'x' {
-            if let Ok(code) = u8::from_str_radix(&raw[index + 2..index + 4], 16) {
-                out.push(code as char);
-                index += 4;
-                continue;
-            }
+        if bytes[index] == b'\\'
+            && index + 3 < bytes.len()
+            && bytes[index + 1] == b'x'
+            && let Ok(code) = u8::from_str_radix(&raw[index + 2..index + 4], 16)
+        {
+            out.push(code as char);
+            index += 4;
+            continue;
         }
         out.push(bytes[index] as char);
         index += 1;

@@ -142,7 +142,7 @@ fn hash_items(bytes: &[u8], start: usize, end: usize) -> Result<Vec<HashItem>, G
         return Err(GvdbError::Truncated);
     }
     let span = end - items_start;
-    if span % HASH_ITEM_SIZE != 0 {
+    if !span.is_multiple_of(HASH_ITEM_SIZE) {
         return Err(GvdbError::Truncated);
     }
 
@@ -251,7 +251,7 @@ fn decode_string_array(child: &[u8]) -> Option<Vec<String>> {
         return None;
     }
     let last = read_offset(child, child.len() - offset_width, offset_width)?;
-    if last > child.len() || (child.len() - last) % offset_width != 0 {
+    if last > child.len() || !(child.len() - last).is_multiple_of(offset_width) {
         return None;
     }
     let count = (child.len() - last) / offset_width;

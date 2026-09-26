@@ -333,13 +333,13 @@ impl StateStore for JsonStore {
             source,
         })?;
         let _lock = self.acquire_lock()?;
-        if let Some(stored) = self.existing_revision()? {
-            if stored >= state.revision {
-                return Err(StoreError::StaleWrite {
-                    stored,
-                    attempted: state.revision,
-                });
-            }
+        if let Some(stored) = self.existing_revision()?
+            && stored >= state.revision
+        {
+            return Err(StoreError::StaleWrite {
+                stored,
+                attempted: state.revision,
+            });
         }
 
         let temporary = self.temporary_path();

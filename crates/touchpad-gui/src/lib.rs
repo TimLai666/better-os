@@ -11,6 +11,7 @@
 //! over this crate's own source rather than leaving it to review.
 
 pub mod app;
+pub mod command_line;
 pub mod gestures_model;
 #[cfg(test)]
 mod gestures_tests;

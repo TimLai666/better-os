@@ -81,15 +81,15 @@ impl<'probe> CatalogBuilder<'probe> {
         bytes: &[u8],
     ) {
         // A lower-ranked file cannot win, so it is not even parsed.
-        if let Some(existing) = self.candidates.get(&desktop_id) {
-            if existing.rank <= directory.rank {
-                self.shadowed.push(ShadowedEntry {
-                    desktop_id,
-                    path,
-                    rank: directory.rank,
-                });
-                return;
-            }
+        if let Some(existing) = self.candidates.get(&desktop_id)
+            && existing.rank <= directory.rank
+        {
+            self.shadowed.push(ShadowedEntry {
+                desktop_id,
+                path,
+                rank: directory.rank,
+            });
+            return;
         }
         let parsed = DesktopFile::parse_bytes(bytes).and_then(|file| {
             ApplicationRecord::from_desktop_file(

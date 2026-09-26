@@ -1202,16 +1202,16 @@ impl Manager {
             return Ok(ComponentStatus::Incompatible);
         }
 
-        if let Some(active) = &state.active_operation {
-            if active.plan.steps.iter().any(|step| &step.component == id) {
-                return Ok(match active.stage {
-                    OperationStage::Downloading => ComponentStatus::Downloading,
-                    OperationStage::Installing | OperationStage::ApplyingSettings => {
-                        ComponentStatus::Installing
-                    }
-                    OperationStage::CheckingHealth => ComponentStatus::Verifying,
-                });
-            }
+        if let Some(active) = &state.active_operation
+            && active.plan.steps.iter().any(|step| &step.component == id)
+        {
+            return Ok(match active.stage {
+                OperationStage::Downloading => ComponentStatus::Downloading,
+                OperationStage::Installing | OperationStage::ApplyingSettings => {
+                    ComponentStatus::Installing
+                }
+                OperationStage::CheckingHealth => ComponentStatus::Verifying,
+            });
         }
 
         let Some(record) = state.component(id) else {

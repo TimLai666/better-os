@@ -190,13 +190,14 @@ impl<'a> DefaultsEngine<'a> {
             status.state = IntegrationState::Conflict { claimant };
             return status;
         }
-        if let Some(last_known) = record.and_then(SnapshotEntry::last_known_value) {
-            if current.is_determinate() && current.value() != Some(last_known) {
-                status.state = IntegrationState::ChangedExternally {
-                    last_known: Some(last_known.clone()),
-                };
-                return status;
-            }
+        if let Some(last_known) = record.and_then(SnapshotEntry::last_known_value)
+            && current.is_determinate()
+            && current.value() != Some(last_known)
+        {
+            status.state = IntegrationState::ChangedExternally {
+                last_known: Some(last_known.clone()),
+            };
+            return status;
         }
         if !current.is_determinate() {
             status.state = IntegrationState::Unknown {

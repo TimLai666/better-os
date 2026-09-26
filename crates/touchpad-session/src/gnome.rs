@@ -428,10 +428,10 @@ impl ShellBridge for FakeShellBridge {
             return Err(error);
         }
         state.calls.push(request);
-        if let ShellRequest::SuppressBuiltInGestures(suppress) = request {
-            if let Some(capabilities) = state.capabilities.as_mut() {
-                capabilities.built_in_gestures_suppressed = suppress;
-            }
+        if let ShellRequest::SuppressBuiltInGestures(suppress) = request
+            && let Some(capabilities) = state.capabilities.as_mut()
+        {
+            capabilities.built_in_gestures_suppressed = suppress;
         }
         Ok(())
     }

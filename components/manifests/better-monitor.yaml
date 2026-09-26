@@ -61,8 +61,8 @@ permissions:
 paths:
   # /usr/bin/better-monitor is the window, because that is what the published
   # v0.1.0 package installed. The command line is installed beside it as
-  # better-monitor-cli even though its own --help says `better-monitor`; the
-  # collision and what resolving it would cost are in ticket 36.
+  # better-monitor-cli and calls itself that, and the window refuses the
+  # command line's arguments and names it (ticket 60).
   - /usr/bin/better-monitor
   - /usr/bin/better-monitor-service
   - /usr/bin/better-monitor-cli

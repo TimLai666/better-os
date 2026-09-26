@@ -1,10 +1,14 @@
 //! Better Touchpad.
 //!
 //! ```text
-//! better-touchpad [--lang zh-TW|en-US] [--offline]
+//! better-touchpad [--lang zh-TW|en-US] [--page <page>] [--offline]
 //! better-touchpad --safe-mode      # disable Better Touchpad integration
 //! better-touchpad --normal-mode    # enable it again
+//! better-touchpad --help | --version
 //! ```
+//!
+//! Any other argument is refused with exit status 2; see
+//! [`touchpad_gui::command_line`].
 //!
 //! `--safe-mode` is the recovery entry point Issue #3 requires. It writes one
 //! marker file and exits without opening a window or touching a setting, so it
@@ -21,6 +25,7 @@ use touchpad_gui::{
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    touchpad_gui::command_line::COMMAND_LINE.open_or_exit(&arguments);
 
     if arguments.iter().any(|argument| argument == "--safe-mode") {
         return match TouchpadStore::for_user().enable_safe_mode() {
