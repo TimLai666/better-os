@@ -12,15 +12,17 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use awake_ipc::{AwakeRequest, RequestBody, WireEnd, WireIndicator};
+use awake_ipc::{
+    AwakeEvent, AwakeRequest, EventBody, RequestBody, StatusDocument, WireEnd, WireIndicator,
+};
 use awake_service::backend::{FakeInhibitorBackend, FixedClock};
 use awake_service::{AwakeDbusService, AwakeEngine, OBJECT_PATH};
-use awake_store::JsonStore;
-use awake_tray::client::ServiceClient;
+use awake_tray::client::{LowBatteryStop, ServiceClient};
 use awake_tray::controller::TrayController;
 use awake_tray::dbusmenu::DbusMenu;
 use awake_tray::item::StatusNotifierItem;
 use awake_tray::labels::Locale;
+use awake_tray::notify::{DesktopNotifier, NotifyError, handle_event};
 use awake_tray::sni::{ITEM_PATH, MENU_PATH, TrayAvailability, register_and_verify};
 use serde::Deserialize;
 use zbus::zvariant::{OwnedValue, Type};
@@ -135,12 +137,14 @@ struct Service {
 }
 
 async fn serve_service(bus: &PrivateBus) -> zbus::Result<Service> {
+    // Every file the service keeps, and the `/proc` and `/sys` its providers
+    // read, are in this directory, so no test touches the developer's own
+    // History, rules, or battery.
     let directory = tempfile::tempdir().unwrap();
-    let store = JsonStore::at_path(directory.path().join("state.json"));
     let engine = Arc::new(
-        AwakeEngine::start(
+        AwakeEngine::start_in(
             FakeInhibitorBackend::logind_shaped(),
-            store,
+            directory.path(),
             Arc::new(FixedClock::at(NOW)),
         )
         .await,
@@ -211,6 +215,28 @@ async fn a_malformed_request_is_refused_as_an_answer_not_as_a_transport_error() 
         response.body,
         awake_ipc::ResponseBody::Rejected { .. }
     ));
+}
+
+#[tokio::test]
+async fn the_test_service_keeps_its_history_in_its_own_directory() {
+    let bus = bus_or_skip!();
+    let service = serve_service(&bus).await.unwrap();
+    let client = client(&bus).await;
+
+    client.send(start(WireEnd::Indefinite)).await.unwrap();
+    client
+        .send(AwakeRequest::new(RequestBody::EndManualSession))
+        .await
+        .unwrap();
+
+    assert!(
+        service
+            ._directory
+            .path()
+            .join(awake_store::history::HISTORY_FILE_NAME)
+            .exists(),
+        "the session this test ran must be recorded in the test's own directory"
+    );
 }
 
 #[tokio::test]
@@ -522,4 +548,328 @@ async fn the_item_reports_the_icon_and_tooltip_for_the_state_it_is_in() {
         String::try_from(icon.try_clone().unwrap()).unwrap(),
         "better-awake-active"
     );
+}
+
+// ---- Desktop notifications -----------------------------------------------
+//
+// The notification service is a fake under a test-only name on the private
+// bus. Nothing here can reach the developer's own notification daemon: the
+// bus is not theirs, and the name is not one any daemon answers to.
+
+const NOTIFICATIONS_NAME: &str = "org.betteros.NotificationsTest";
+
+/// One `Notify` call as the fake received it.
+#[derive(Clone, Debug)]
+struct Raised {
+    signature: String,
+    app_name: String,
+    replaces_id: u32,
+    summary: String,
+    body: String,
+    expire_timeout: i32,
+}
+
+#[derive(Clone, Copy)]
+enum Behaviour {
+    Accept,
+    Refuse,
+    NeverAnswer,
+}
+
+struct FakeNotifications {
+    raised: Arc<Mutex<Vec<Raised>>>,
+    behaviour: Behaviour,
+}
+
+#[zbus::interface(name = "org.freedesktop.Notifications")]
+impl FakeNotifications {
+    #[allow(clippy::too_many_arguments)]
+    async fn notify(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        app_name: String,
+        replaces_id: u32,
+        _app_icon: String,
+        summary: String,
+        body: String,
+        _actions: Vec<String>,
+        _hints: HashMap<String, OwnedValue>,
+        expire_timeout: i32,
+    ) -> zbus::fdo::Result<u32> {
+        match self.behaviour {
+            Behaviour::Accept => {}
+            Behaviour::Refuse => {
+                return Err(zbus::fdo::Error::Failed(
+                    "notifications are off".to_string(),
+                ));
+            }
+            Behaviour::NeverAnswer => std::future::pending::<()>().await,
+        }
+        let mut raised = self.raised.lock().unwrap();
+        raised.push(Raised {
+            signature: header.signature().to_string_no_parens(),
+            app_name,
+            replaces_id,
+            summary,
+            body,
+            expire_timeout,
+        });
+        Ok(raised.len() as u32)
+    }
+}
+
+async fn serve_notifications(
+    bus: &PrivateBus,
+    behaviour: Behaviour,
+) -> (zbus::Connection, Arc<Mutex<Vec<Raised>>>) {
+    let raised = Arc::new(Mutex::new(Vec::new()));
+    let address: zbus::Address = bus.address.parse().unwrap();
+    let connection = zbus::connection::Builder::address(address)
+        .unwrap()
+        .name(NOTIFICATIONS_NAME)
+        .unwrap()
+        .serve_at(
+            "/org/freedesktop/Notifications",
+            FakeNotifications {
+                raised: raised.clone(),
+                behaviour,
+            },
+        )
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    (connection, raised)
+}
+
+async fn notifier(bus: &PrivateBus, locale: Locale) -> DesktopNotifier {
+    DesktopNotifier::with_destination(
+        &bus.connect().await.unwrap(),
+        NOTIFICATIONS_NAME.to_string(),
+        locale,
+    )
+    .await
+    .unwrap()
+}
+
+fn session_ended(
+    cause: &str,
+    battery_stop_percent: Option<u8>,
+    battery_percent: Option<u8>,
+) -> String {
+    AwakeEvent::new(EventBody::SessionEnded {
+        session_id: 7,
+        cause: cause.to_string(),
+        battery_stop_percent,
+        battery_percent,
+    })
+    .to_json()
+    .unwrap()
+}
+
+fn low_battery_stop() -> String {
+    session_ended("battery_threshold", Some(20), Some(19))
+}
+
+fn status_event() -> (String, StatusDocument) {
+    let status = StatusDocument {
+        indicator: WireIndicator::Inactive,
+        effective_policy: awake_core::SessionPolicy::default(),
+        unmet_policy: Vec::new(),
+        battery_stop_percent: None,
+        sessions: Vec::new(),
+        reasons: Vec::new(),
+        backend: awake_ipc::WireBackend {
+            name: "logind".to_string(),
+            available: true,
+            capabilities: awake_core::BackendCapabilities::NONE,
+            detail: None,
+        },
+        attention: None,
+        interrupted_previous_session: None,
+        reduced_security_confirmed: false,
+        active_rules: Vec::new(),
+        rule_summary: awake_ipc::WireRuleSummary::default(),
+        rules_suppression: None,
+        conflicts: Vec::new(),
+        providers: Vec::new(),
+        battery_protection: awake_ipc::WireBatteryProtection::default(),
+        now_unix_seconds: NOW,
+    };
+    let document = AwakeEvent::new(EventBody::StatusChanged(Box::new(status.clone())))
+        .to_json()
+        .unwrap();
+    (document, status)
+}
+
+#[tokio::test]
+async fn a_low_battery_stop_raises_one_notification_naming_the_threshold_it_crossed() {
+    let bus = bus_or_skip!();
+    let (_daemon, raised) = serve_notifications(&bus, Behaviour::Accept).await;
+
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        raised.lock().unwrap().clear();
+        let notifier = notifier(&bus, locale).await;
+
+        assert_eq!(
+            handle_event(&low_battery_stop(), Some(&notifier)).await,
+            None
+        );
+
+        let raised = raised.lock().unwrap().clone();
+        assert_eq!(
+            raised.len(),
+            1,
+            "{}: one stop, one notification",
+            locale.tag()
+        );
+        let notification = &raised[0];
+        assert_eq!(
+            notification.signature, "susssasa{sv}i",
+            "the call must match the Notify signature in the freedesktop specification"
+        );
+        assert_eq!(notification.app_name, locale.labels().application_name);
+        assert_eq!(notification.replaces_id, 0);
+        assert_eq!(notification.expire_timeout, -1);
+        assert!(
+            notification.summary.contains("20%"),
+            "{}: the threshold must be named: {}",
+            locale.tag(),
+            notification.summary
+        );
+        assert!(
+            notification.body.contains("19%"),
+            "{}: the reading must be named: {}",
+            locale.tag(),
+            notification.body
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_notification_is_worded_in_the_trays_own_locale() {
+    let bus = bus_or_skip!();
+    let (_daemon, raised) = serve_notifications(&bus, Behaviour::Accept).await;
+
+    handle_event(
+        &low_battery_stop(),
+        Some(&notifier(&bus, Locale::EnUs).await),
+    )
+    .await;
+    handle_event(
+        &low_battery_stop(),
+        Some(&notifier(&bus, Locale::ZhTw).await),
+    )
+    .await;
+
+    let raised = raised.lock().unwrap().clone();
+    assert_eq!(raised.len(), 2);
+    assert_ne!(raised[0].summary, raised[1].summary);
+    assert!(raised[0].summary.is_ascii());
+    assert!(
+        !raised[1].summary.is_ascii(),
+        "zh-TW is not the English wording"
+    );
+}
+
+#[tokio::test]
+async fn a_session_that_ended_for_any_other_reason_raises_no_notification() {
+    let bus = bus_or_skip!();
+    let (_daemon, raised) = serve_notifications(&bus, Behaviour::Accept).await;
+    let notifier = notifier(&bus, Locale::EnUs).await;
+
+    for cause in [
+        "expired",
+        "trigger_cleared",
+        "rules_suppressed",
+        "service_shutdown",
+        "user_request",
+    ] {
+        handle_event(&session_ended(cause, Some(20), None), Some(&notifier)).await;
+    }
+
+    assert!(raised.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn no_notification_daemon_is_reported_and_the_tray_keeps_following_the_service() {
+    let bus = bus_or_skip!();
+    // Nothing owns the notification name on this bus.
+    let notifier = notifier(&bus, Locale::EnUs).await;
+
+    assert!(matches!(
+        notifier
+            .low_battery_stop(&LowBatteryStop {
+                session_id: 7,
+                threshold_percent: 20,
+                percent: 19,
+            })
+            .await,
+        Err(NotifyError::Call(_))
+    ));
+
+    assert_eq!(
+        handle_event(&low_battery_stop(), Some(&notifier)).await,
+        None
+    );
+    let (document, status) = status_event();
+    assert_eq!(
+        handle_event(&document, Some(&notifier)).await,
+        Some(status),
+        "a failed notification must not stop the next status from reaching the menu"
+    );
+}
+
+#[tokio::test]
+async fn a_tray_with_no_notifier_at_all_still_follows_the_service() {
+    let (document, status) = status_event();
+    assert_eq!(handle_event(&low_battery_stop(), None).await, None);
+    assert_eq!(handle_event(&document, None).await, Some(status));
+}
+
+#[tokio::test]
+async fn a_notification_daemon_that_refuses_is_reported_and_the_tray_keeps_going() {
+    let bus = bus_or_skip!();
+    let (_daemon, raised) = serve_notifications(&bus, Behaviour::Refuse).await;
+    let notifier = notifier(&bus, Locale::EnUs).await;
+
+    assert!(matches!(
+        notifier
+            .low_battery_stop(&LowBatteryStop {
+                session_id: 7,
+                threshold_percent: 20,
+                percent: 19,
+            })
+            .await,
+        Err(NotifyError::Call(_))
+    ));
+    assert!(raised.lock().unwrap().is_empty());
+
+    let (document, status) = status_event();
+    assert_eq!(
+        handle_event(&low_battery_stop(), Some(&notifier)).await,
+        None
+    );
+    assert_eq!(handle_event(&document, Some(&notifier)).await, Some(status));
+}
+
+#[tokio::test]
+async fn a_notification_daemon_that_never_answers_is_given_up_on() {
+    let bus = bus_or_skip!();
+    let (_daemon, _raised) = serve_notifications(&bus, Behaviour::NeverAnswer).await;
+    let notifier = notifier(&bus, Locale::EnUs)
+        .await
+        .with_timeout(std::time::Duration::from_millis(200));
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        notifier.low_battery_stop(&LowBatteryStop {
+            session_id: 7,
+            threshold_percent: 20,
+            percent: 19,
+        }),
+    )
+    .await
+    .expect("the notifier must give up rather than hold the tray's event loop");
+    assert_eq!(outcome, Err(NotifyError::TimedOut));
 }
