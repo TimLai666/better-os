@@ -204,11 +204,10 @@ Issue #8 has no active implementation blocker either. Every acceptance
 criterion in the issue is met, and the five remaining gaps from the branch
 audit are closed under ticket 08.
 
-The declared Rust 1.85 baseline is still incompatible with the current
-lockfile: an isolated Rust 1.85 build stops before compilation because
-dependencies now require up to Rust 1.92. The GitHub workflow uses stable Rust.
-The Issue #8 Chefer AppCipe passed with Rust 1.97. The supported toolchain
-policy still needs alignment.
+The workspace declares Rust 1.95, the oldest toolchain that builds the locked
+graph: gpui at the locked commit calls `std::hint::cold_path`, stable from 1.95,
+and 1.92 through 1.94 were each tried and fail. The CI `msrv` job checks the
+workspace with exactly the declared version (ticket 62).
 
 ## Next Verifiable Output
 

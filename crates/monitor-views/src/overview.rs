@@ -370,15 +370,15 @@ fn verdict_for(
     }
 
     // Pressure answers the question utilization cannot, so it is read first.
-    if let Some(full) = full.any_value().copied() {
-        if full >= FULL_PRESSURE_PERCENT {
-            return ResourceVerdict::Saturated { full_percent: full };
-        }
+    if let Some(full) = full.any_value().copied()
+        && full >= FULL_PRESSURE_PERCENT
+    {
+        return ResourceVerdict::Saturated { full_percent: full };
     }
-    if let Some(some) = some.any_value().copied() {
-        if some >= SOME_PRESSURE_PERCENT {
-            return ResourceVerdict::UnderPressure { some_percent: some };
-        }
+    if let Some(some) = some.any_value().copied()
+        && some >= SOME_PRESSURE_PERCENT
+    {
+        return ResourceVerdict::UnderPressure { some_percent: some };
     }
 
     match utilization.any_value().copied() {

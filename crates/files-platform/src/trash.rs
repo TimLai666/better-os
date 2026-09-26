@@ -179,10 +179,10 @@ impl TrashDirectory {
 fn volume_topdir_of(root: &Path) -> Option<PathBuf> {
     let name = root.file_name()?.as_bytes();
     let parent = root.parent()?;
-    if let Some(uid) = name.strip_prefix(b".Trash-") {
-        if is_uid(uid) {
-            return Some(parent.to_path_buf());
-        }
+    if let Some(uid) = name.strip_prefix(b".Trash-")
+        && is_uid(uid)
+    {
+        return Some(parent.to_path_buf());
     }
     if is_uid(name) && parent.file_name().map(OsStrExt::as_bytes) == Some(b".Trash") {
         return parent.parent().map(Path::to_path_buf);
@@ -372,12 +372,13 @@ fn percent_decode(value: &str) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&value[index + 1..index + 3], 16) {
-                out.push(byte);
-                index += 3;
-                continue;
-            }
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let Ok(byte) = u8::from_str_radix(&value[index + 1..index + 3], 16)
+        {
+            out.push(byte);
+            index += 3;
+            continue;
         }
         out.push(bytes[index]);
         index += 1;

@@ -249,7 +249,7 @@ fn string_array_bytes(values: &[String]) -> Vec<u8> {
 }
 
 fn pad_to_eight(bytes: &mut Vec<u8>) {
-    while bytes.len() % 8 != 0 {
+    while !bytes.len().is_multiple_of(8) {
         bytes.push(0);
     }
 }

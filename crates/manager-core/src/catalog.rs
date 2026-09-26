@@ -292,13 +292,12 @@ pub fn now_unix_seconds() -> u64 {
 /// tampered or truncated cache degrades to the one catalog whose contents are
 /// part of the binary.
 pub fn catalog_at_start(cache: Option<CachedCatalog>) -> (ComponentCatalog, CatalogStatus) {
-    if let Some(cache) = cache {
-        if cache.schema_version == CATALOG_CACHE_SCHEMA_VERSION {
-            if let Ok(catalog) = cache.catalog() {
-                let status = CatalogStatus::from_cache(&cache);
-                return (catalog, status);
-            }
-        }
+    if let Some(cache) = cache
+        && cache.schema_version == CATALOG_CACHE_SCHEMA_VERSION
+        && let Ok(catalog) = cache.catalog()
+    {
+        let status = CatalogStatus::from_cache(&cache);
+        return (catalog, status);
     }
     (built_in_catalog(), CatalogStatus::built_in())
 }
@@ -425,13 +424,13 @@ fn evaluate(
         });
     }
 
-    if let Some(current) = held.get(&manifest.id) {
-        if manifest.version < current.version {
-            return Err(RejectionReason::Downgrade {
-                held: current.version.clone(),
-                offered: manifest.version.clone(),
-            });
-        }
+    if let Some(current) = held.get(&manifest.id)
+        && manifest.version < current.version
+    {
+        return Err(RejectionReason::Downgrade {
+            held: current.version.clone(),
+            offered: manifest.version.clone(),
+        });
     }
 
     Ok(manifest)

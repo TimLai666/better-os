@@ -99,7 +99,7 @@ impl ServiceConfig {
     }
 
     /// A service reading a captured machine and writing to a temporary
-    /// directory. Used by the tests and by `better-monitor record`.
+    /// directory. Used by the tests and by `better-monitor-cli record`.
     pub fn at(store_root: impl Into<PathBuf>, roots: Roots, audit: AuditSources) -> Self {
         Self {
             store_root: store_root.into(),

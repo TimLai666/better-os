@@ -344,10 +344,10 @@ fn migrate_v1(value: &Value) -> Result<TouchpadConfig, ConfigError> {
         config.scrolling.natural = natural;
     }
 
-    if let Some(clicking) = value.get("clicking") {
-        if let Some(tap) = clicking.get("tap_to_click").and_then(Value::as_bool) {
-            config.clicking.tap_to_click = tap;
-        }
+    if let Some(clicking) = value.get("clicking")
+        && let Some(tap) = clicking.get("tap_to_click").and_then(Value::as_bool)
+    {
+        config.clicking.tap_to_click = tap;
     }
 
     config.schema_version = CONFIG_SCHEMA_VERSION;

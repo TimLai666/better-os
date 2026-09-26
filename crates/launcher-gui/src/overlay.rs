@@ -27,7 +27,7 @@ use launcher_platform::catalog::{LauncherSnapshot, MetadataWatch, load_snapshot}
 use launcher_platform::{CatalogLauncher, SessionCapabilities};
 
 use crate::i18n::{Locale, copy};
-use crate::model::{Activation, LoadState, Move, Notice, OverlayModel};
+use crate::model::{Activation, KeyAction, LoadState, Notice, OverlayModel, key_action};
 use crate::{TILE_WIDTH, grid_columns};
 
 /// How long a watch waits before re-arming. Long on purpose: the wait is
@@ -184,28 +184,23 @@ impl LauncherOverlay {
 
     /// Handles the keys the overlay owns, before the search row sees them.
     ///
-    /// Only navigation, launching, and closing are taken. Everything else
-    /// falls through to the search row, which is why typing keeps working while
-    /// the arrow keys move through the grid.
+    /// Which key does what is [`key_action`]'s decision, tested in `model.rs`.
+    /// Everything it leaves alone falls through to the search row, which is
+    /// why typing keeps working while the arrow keys move through the grid.
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let movement = match event.keystroke.key.as_str() {
-            "escape" => {
+        let movement = match key_action(event.keystroke.key.as_str()) {
+            Some(KeyAction::Close) => {
                 cx.emit(OverlayEvent::Closed);
                 cx.stop_propagation();
                 return;
             }
-            "enter" => {
+            Some(KeyAction::Launch) => {
                 self.launch_selected(cx);
                 cx.stop_propagation();
                 return;
             }
-            "right" => Move::Next,
-            "left" => Move::Previous,
-            "down" => Move::NextRow,
-            "up" => Move::PreviousRow,
-            "home" => Move::First,
-            "end" => Move::Last,
-            _ => return,
+            Some(KeyAction::Move(movement)) => movement,
+            None => return,
         };
         self.model.set_columns(grid_columns(
             f32::from(window.viewport_size().width),

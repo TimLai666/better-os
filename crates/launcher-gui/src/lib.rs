@@ -10,8 +10,8 @@
 //! Where each thing lives:
 //!
 //! - [`model`] is everything that can be decided without a window: rows,
-//!   selection, keyboard movement, launch outcomes. It has no GPUI dependency,
-//!   so all of it is tested with no display backend.
+//!   selection, keyboard movement, which key does what, launch outcomes. It
+//!   has no GPUI dependency, so all of it is tested with no display backend.
 //! - [`overlay`] draws that model with `better-ui` primitives and routes keys
 //!   and clicks back into it. It decides nothing.
 //! - [`i18n`] holds the wording.
@@ -25,6 +25,7 @@
 //! category sections, and a shortcut that is described but not installed. None
 //! of them is hard-coded anywhere a later decision would have to hunt for.
 
+pub mod command_line;
 pub mod i18n;
 pub mod model;
 pub mod overlay;
@@ -33,7 +34,7 @@ pub mod startup;
 mod tests;
 
 pub use i18n::Locale;
-pub use model::{Activation, LoadState, Move, Notice, OverlayModel};
+pub use model::{Activation, KeyAction, LoadState, Move, Notice, OverlayModel, key_action};
 pub use overlay::{LauncherOverlay, OverlayEvent};
 
 /// The launcher-level benchmarks, as `(name, workload, metric)`.

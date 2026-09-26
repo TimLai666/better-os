@@ -12,7 +12,7 @@ use monitor_cli::{Cli, run};
 
 async fn cli(store: &Path, arguments: &[&str]) -> String {
     let mut all = vec![
-        "better-monitor",
+        "better-monitor-cli",
         "--offline",
         "--store",
         store.to_str().unwrap(),
@@ -24,7 +24,7 @@ async fn cli(store: &Path, arguments: &[&str]) -> String {
 
 async fn cli_error(store: &Path, arguments: &[&str]) -> String {
     let mut all = vec![
-        "better-monitor",
+        "better-monitor-cli",
         "--offline",
         "--store",
         store.to_str().unwrap(),
@@ -70,6 +70,10 @@ async fn record_writes_history_and_the_other_subcommands_read_it() {
     assert!(doctored.contains("service          not consulted"));
     assert!(doctored.contains("schema version"));
     assert!(doctored.contains("What needs attention"));
+    assert!(
+        doctored.contains("`better-monitor-cli record`"),
+        "the advice must name the installed command:\n{doctored}"
+    );
 }
 
 #[tokio::test]
@@ -171,7 +175,7 @@ async fn json_output_is_machine_readable_for_every_reading_subcommand() {
 
     for arguments in [vec!["inspect"], vec!["doctor"]] {
         let mut all = vec![
-            "better-monitor",
+            "better-monitor-cli",
             "--offline",
             "--json",
             "--store",

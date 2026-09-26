@@ -58,7 +58,12 @@ members = [
 [workspace.package]
 edition = "2024"
 version = "0.2.7"
-rust-version = "1.85"
+# The oldest Rust that builds the locked dependency graph. `cargo metadata`
+# cannot say this on its own: the highest `rust-version` a locked crate
+# declares is 1.92 (oo7), but Zed's git crates declare none, and gpui at the
+# locked commit calls `std::hint::cold_path`, which is stable from 1.95. The CI
+# `msrv` job reads this line and checks the workspace with exactly it.
+rust-version = "1.95"
 authors = ["Better OS contributors"]
 license = "GPL-3.0-or-later"
 

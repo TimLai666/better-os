@@ -891,10 +891,10 @@ impl GestureScreen {
         if self.captured.is_none() {
             self.captured = Some(approved.previous().clone());
         }
-        if let Some(store) = store {
-            if let Err(error) = store.capture_once(approved.previous()) {
-                self.problem = Some(error.to_string());
-            }
+        if let Some(store) = store
+            && let Err(error) = store.capture_once(approved.previous())
+        {
+            self.problem = Some(error.to_string());
         }
 
         let (config, report) = approved.apply_with(self.adapter.as_mut(), &mut self.suppression);
@@ -961,10 +961,10 @@ impl GestureScreen {
     }
 
     fn save(&mut self, store: Option<&GestureStore>) {
-        if let Some(store) = store {
-            if let Err(error) = store.save_profiles(&self.document()) {
-                self.problem = Some(error.to_string());
-            }
+        if let Some(store) = store
+            && let Err(error) = store.save_profiles(&self.document())
+        {
+            self.problem = Some(error.to_string());
         }
     }
 

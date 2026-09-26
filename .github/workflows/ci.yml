@@ -10,7 +10,7 @@ jobs:
     env:
       RUST_FONTCONFIG_DLOPEN: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -29,6 +29,40 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
 
+  # The workspace declares the oldest Rust it builds with, and stable CI would
+  # never notice that declaration going stale: it did, from 1.85 to a lockfile
+  # that needed 1.95. This job reads `rust-version` from Cargo.toml and checks
+  # every target with exactly that toolchain, so a dependency bump that needs a
+  # newer compiler fails here rather than on a contributor's machine.
+  msrv:
+    runs-on: ubuntu-latest
+    env:
+      RUST_FONTCONFIG_DLOPEN: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read the declared Rust version
+        id: declared
+        run: |
+          set -eu
+          version="$(awk '
+            $0 == "[workspace.package]" { in_section = 1; next }
+            /^\[/ { in_section = 0 }
+            in_section && $1 == "rust-version" { gsub(/"/, "", $3); print $3; exit }
+          ' Cargo.toml)"
+          test -n "$version" || { echo "no rust-version in [workspace.package]" >&2; exit 1; }
+          echo "rust-version is $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.declared.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install GPUI Linux dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - name: The declared Rust version builds the workspace
+        run: |
+          rustc --version
+          cargo check --workspace --all-targets --locked
+
   # The bootstrap installer is a shell script with no build step, so its own
   # checks do not wait for the Rust job. This covers the half of it that needs
   # nothing built: the linter, and the release resolution against the real
@@ -37,7 +71,7 @@ jobs:
   installer:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Lint the installer
@@ -121,7 +155,7 @@ jobs:
     env:
       RUST_FONTCONFIG_DLOPEN: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Verify native runner architecture
         run: |
@@ -193,7 +227,7 @@ jobs:
           docker run --rm "better-os-e2e:${{ matrix.target }}"
           rm -rf dist/e2e dist/e2e-client
       - name: Upload Debian packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: better-os-deb-packages-${{ matrix.target }}
           path: |

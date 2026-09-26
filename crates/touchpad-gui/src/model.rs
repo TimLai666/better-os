@@ -358,10 +358,10 @@ impl TouchpadModel {
         }
         let report = backend.apply(&plan);
         self.state.record(&report);
-        if let Some(store) = store {
-            if let Err(error) = store.save_config(self.state.config()) {
-                self.configuration_problem = Some(error.to_string());
-            }
+        if let Some(store) = store
+            && let Err(error) = store.save_config(self.state.config())
+        {
+            self.configuration_problem = Some(error.to_string());
         }
         let outcome = report.state();
         self.last_run = Some((RunKind::Apply, report));
@@ -378,10 +378,10 @@ impl TouchpadModel {
         let plan = self.state.restore_plan(scope)?;
         let report = backend.restore(&plan);
         self.state.record_restore(&report);
-        if let Some(store) = store {
-            if let Err(error) = store.save_config(self.state.config()) {
-                self.configuration_problem = Some(error.to_string());
-            }
+        if let Some(store) = store
+            && let Err(error) = store.save_config(self.state.config())
+        {
+            self.configuration_problem = Some(error.to_string());
         }
         let outcome = report.state();
         self.last_run = Some((RunKind::Restore, report));

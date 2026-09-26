@@ -141,12 +141,11 @@ pub fn default_simulated_desktop_path() -> PathBuf {
 /// apply, and guessing here would make it apply anyway.
 pub fn desktop_session() -> String {
     for key in ["XDG_CURRENT_DESKTOP", "DESKTOP_SESSION"] {
-        if let Ok(value) = std::env::var(key) {
-            if let Some(first) = value.split(':').next() {
-                if !first.trim().is_empty() {
-                    return first.trim().to_lowercase();
-                }
-            }
+        if let Ok(value) = std::env::var(key)
+            && let Some(first) = value.split(':').next()
+            && !first.trim().is_empty()
+        {
+            return first.trim().to_lowercase();
         }
     }
     "unknown".to_string()
