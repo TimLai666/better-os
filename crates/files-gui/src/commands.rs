@@ -13,7 +13,7 @@
 //! at when the destination cannot take them.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use files_core::{Entry, EntryBody, LocalPath, Location, TrashLocation};
 use files_operations::{
@@ -70,12 +70,16 @@ pub fn selected_paths(entries: &[&Entry]) -> Vec<LocalPath> {
 }
 
 /// The trash items among the selection, for restore and for emptying.
-pub fn selected_trash_items(entries: &[&Entry], trash_root: &Path) -> Vec<TrashItemRef> {
+///
+/// Each item names the trash it is actually in. The Trash view merges the home
+/// trash with every device's own, so one selection can span several, and the
+/// only thing that says which is where the item's bytes are stored.
+pub fn selected_trash_items(entries: &[&Entry]) -> Vec<TrashItemRef> {
     entries
         .iter()
         .filter_map(|entry| match &entry.body {
             EntryBody::Trashed(facts) => Some(TrashItemRef::new(
-                trash_root.to_path_buf(),
+                files_platform::trash_root_of(facts.stored_path.as_path())?,
                 facts.item.clone(),
             )),
             _ => None,
@@ -186,21 +190,11 @@ pub fn restore_from_trash(
 }
 
 /// The delete targets for a selection: trash items when the Trash is being
-/// viewed, plain paths everywhere else.
-///
-/// The trash root is optional because deleting a file by path does not need
-/// one. Only emptying an item out of the trash does, and a session with no
-/// trash directory produces no such targets rather than refusing every delete.
-pub fn delete_targets(
-    location: &Location,
-    entries: &[&Entry],
-    trash_root: Option<&Path>,
-) -> Vec<DeleteTarget> {
+/// viewed, each emptied from the trash it is in, and plain paths everywhere
+/// else.
+pub fn delete_targets(location: &Location, entries: &[&Entry]) -> Vec<DeleteTarget> {
     if matches!(location, Location::Trash(_)) {
-        let Some(trash_root) = trash_root else {
-            return Vec::new();
-        };
-        return selected_trash_items(entries, trash_root)
+        return selected_trash_items(entries)
             .into_iter()
             .map(DeleteTarget::TrashItem)
             .collect();
@@ -217,4 +211,57 @@ fn usable(name: &str) -> Result<OsString, CommandRefusal> {
         return Err(CommandRefusal::UnusableName);
     }
     Ok(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use files_core::{EntryKind, TrashedFacts};
+
+    use super::*;
+
+    fn in_trash(root: &str, stem: &str) -> Entry {
+        let mut entry = Entry::file(
+            stem,
+            LocalPath::new(Path::new(root).join("files").join(stem)).unwrap(),
+            EntryKind::File,
+        );
+        entry.body = EntryBody::Trashed(TrashedFacts {
+            item: stem.to_string(),
+            original_path: PathBuf::from("/somewhere").join(stem),
+            deleted_at: None,
+            stored_path: LocalPath::new(Path::new(root).join("files").join(stem)).unwrap(),
+        });
+        entry
+    }
+
+    #[test]
+    fn each_trashed_entry_is_acted_on_in_the_trash_it_is_in() {
+        let home = in_trash("/home/user/.local/share/Trash", "report.txt");
+        let stick = in_trash("/media/user/STICK/.Trash-1000", "report.txt");
+        let entries = [&home, &stick];
+
+        assert_eq!(
+            selected_trash_items(&entries),
+            vec![
+                TrashItemRef::new("/home/user/.local/share/Trash", "report.txt"),
+                TrashItemRef::new("/media/user/STICK/.Trash-1000", "report.txt"),
+            ]
+        );
+        let targets = delete_targets(&Location::Trash(TrashLocation::Root), &entries);
+        assert_eq!(
+            targets,
+            vec![
+                DeleteTarget::TrashItem(TrashItemRef::new(
+                    "/home/user/.local/share/Trash",
+                    "report.txt"
+                )),
+                DeleteTarget::TrashItem(TrashItemRef::new(
+                    "/media/user/STICK/.Trash-1000",
+                    "report.txt"
+                )),
+            ]
+        );
+    }
 }

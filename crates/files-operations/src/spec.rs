@@ -253,10 +253,11 @@ pub enum Operation {
     },
     Trash {
         sources: Vec<LocalPath>,
-        /// Which trash directory to use. `None` means the home trash resolved
-        /// from the environment, which is what a desktop wants. Naming one
-        /// explicitly is how a caller targets a device's own trash, and how the
-        /// tests avoid depending on the process environment.
+        /// The home trash for this job. `None` means the one resolved from the
+        /// environment, which is what a desktop wants; naming one is how the
+        /// tests avoid depending on the process environment. Either way, an
+        /// item on another device goes to that device's own trash, and only an
+        /// item whose device has no usable trash is copied into this one.
         trash_root: Option<PathBuf>,
     },
     RestoreFromTrash {

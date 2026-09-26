@@ -35,14 +35,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::conflict::{Conflict, ConflictDecision, ConflictPolicy, Resolution};
 use crate::error::OperationError;
-use crate::exec::{self, ItemOutcome, JobControl};
+use crate::exec::{self, CopiedInode, ItemOutcome, JobControl};
 use crate::log::{LogEvent, OperationLog};
-use crate::plan::PlanItem;
+use crate::plan::{InodeKey, PlanItem};
 use crate::policy::FailurePolicy;
 use crate::progress::{ItemProgress, Progress, RateEstimator, RemainingTime, Throughput};
 use crate::spec::{JobSpec, OperationKind};
 use crate::state::JobState;
-use crate::store::{ItemRecord, ItemStatus, JobRecord, JobStore, RECORD_SCHEMA_VERSION};
+use crate::store::{
+    ItemRecord, ItemStatus, JobRecord, JobStore, JournalCursor, JournalEntry, RECORD_SCHEMA_VERSION,
+};
 
 /// A job's identity, unique within one engine.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -138,6 +140,14 @@ struct JobShared {
     last_persisted: Option<Instant>,
     checksums: Vec<(PathBuf, String)>,
     failures: Vec<(PathBuf, OperationError)>,
+    /// Where this job copied each hard-linked inode. Kept across a retry, so a
+    /// retried second path can still link to a first path copied earlier; not
+    /// persisted, so a job never links to a destination a previous process
+    /// wrote.
+    hard_links: HashMap<InodeKey, CopiedInode>,
+    /// Where the job's item journal stands, and what changed since the last
+    /// persist.
+    journal: JournalCursor,
 }
 
 struct Job {
@@ -192,24 +202,57 @@ impl Job {
 
     fn record(&self, shared: &JobShared) -> JobRecord {
         JobRecord {
+            items: shared.items.clone(),
+            checksums: shared
+                .checksums
+                .iter()
+                .map(|(path, digest)| checksum_line(path, digest))
+                .collect(),
+            ..self.header(shared)
+        }
+    }
+
+    /// The record without its items and checksums: what a header-only
+    /// persist writes, built without copying the item list.
+    fn header(&self, shared: &JobShared) -> JobRecord {
+        JobRecord {
             schema_version: RECORD_SCHEMA_VERSION,
             id: self.id.0,
             kind: self.kind,
             state: shared.state,
             progress: shared.progress,
-            items: shared.items.clone(),
+            items: Vec::new(),
             log: shared.log.clone(),
             updated_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_secs())
                 .unwrap_or(0),
-            checksums: shared
-                .checksums
-                .iter()
-                .map(|(path, digest)| (path.to_string_lossy().into_owned(), digest.clone()))
-                .collect(),
+            checksums: Vec::new(),
         }
     }
+
+    /// Writes the record whole, compacting the journal, and brings the
+    /// journal cursor in step. Called with the job's lock held, at the points
+    /// where the job is not running: submission, cancellation before start,
+    /// and the end.
+    fn write_whole(&self, store: Option<&JobStore>, shared: &mut JobShared) {
+        let Some(store) = store else {
+            return;
+        };
+        let record = self.record(shared);
+        shared.journal.take_changed();
+        match store.write(&record) {
+            Ok(_) => shared
+                .journal
+                .rewritten(record.items.len(), record.checksums.len()),
+            Err(_) => shared.journal.append_failed(),
+        }
+    }
+}
+
+/// A digest as the record stores it.
+fn checksum_line(path: &std::path::Path, digest: &str) -> (String, String) {
+    (path.to_string_lossy().into_owned(), digest.to_string())
 }
 
 /// Something outside the engine that has to know when a job starts touching
@@ -327,7 +370,15 @@ impl JobEngine {
             queue: Mutex::new(VecDeque::new()),
             ready: Condvar::new(),
             stopping: AtomicBool::new(false),
-            next_id: AtomicU64::new(1),
+            // Numbering continues after the records an earlier process left,
+            // so a new job never overwrites one of them.
+            next_id: AtomicU64::new(
+                config
+                    .store
+                    .as_ref()
+                    .and_then(JobStore::highest_id)
+                    .map_or(1, |highest| highest.saturating_add(1)),
+            ),
             store: config.store,
             defaults: config.conflicts,
             observer,
@@ -364,7 +415,7 @@ impl JobEngine {
                 crate::spec::Operation::PermanentDelete { .. }
             ));
         }
-        let id = JobId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
+        let id = self.next_free_id();
         let mut conflicts = self.inner.defaults.clone();
         for (kind, resolution) in standing_answers(&spec.conflicts) {
             conflicts.remember(kind, resolution);
@@ -390,6 +441,8 @@ impl JobEngine {
                 last_persisted: None,
                 checksums: Vec::new(),
                 failures: Vec::new(),
+                hard_links: HashMap::new(),
+                journal: JournalCursor::default(),
             }),
             signal: Condvar::new(),
             listeners: Mutex::new(Vec::new()),
@@ -409,6 +462,23 @@ impl JobEngine {
             id,
             events: receiver,
         })
+    }
+
+    /// The next job number whose record is not already on disk.
+    ///
+    /// The engine starts after the highest number in its store, and a number
+    /// another process used since then is skipped here, so a record left by
+    /// any process — an interrupted job recovery would report — is never
+    /// overwritten. Two processes submitting at the same instant can still
+    /// pick the same number; nothing claims it on disk until the first write.
+    fn next_free_id(&self) -> JobId {
+        loop {
+            let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+            match &self.inner.store {
+                Some(store) if store.holds(id) => continue,
+                _ => return JobId(id),
+            }
+        }
     }
 
     /// A second event stream for a job somebody else submitted.
@@ -502,9 +572,8 @@ impl JobEngine {
         if shared.state == JobState::Queued {
             // Nothing has picked it up, so it settles here.
             job.set_state(&mut shared, JobState::Cancelled);
-            let record = job.record(&shared);
+            job.write_whole(self.inner.store.as_ref(), &mut shared);
             drop(shared);
-            self.write_record(&record);
             job.publish(JobEvent::Finished(id, JobState::Cancelled));
             return true;
         }
@@ -553,6 +622,7 @@ impl JobEngine {
         for index in retryable {
             shared.items[index].status = ItemStatus::Pending;
             shared.items[index].error = None;
+            shared.journal.changed(index);
         }
         shared.progress.items_failed = 0;
         shared.failures.clear();
@@ -613,16 +683,8 @@ impl JobEngine {
     }
 
     fn persist(&self, job: &Arc<Job>) {
-        let shared = job.shared.lock().expect("job state");
-        let record = job.record(&shared);
-        drop(shared);
-        self.write_record(&record);
-    }
-
-    fn write_record(&self, record: &JobRecord) {
-        if let Some(store) = &self.inner.store {
-            let _ = store.write(record);
-        }
+        let mut shared = job.shared.lock().expect("job state");
+        job.write_whole(self.inner.store.as_ref(), &mut shared);
     }
 }
 
@@ -751,6 +813,7 @@ fn run_job(inner: &Arc<Inner>, job: Arc<Job>) {
                 error: None,
             })
             .collect();
+        shared.journal.items_replaced();
         shared.progress = Progress {
             items_total: plan.total_items(),
             bytes_total: plan.total_bytes(),
@@ -882,27 +945,27 @@ fn finish(
     state: JobState,
 ) {
     shared.last_persisted = Some(Instant::now());
-    let record = job.record(shared);
-    if let Some(store) = &inner.store {
-        let _ = store.write(&record);
-    }
+    // A finished job's journal is compacted to one line per item.
+    job.write_whole(inner.store.as_ref(), shared);
     job.publish(JobEvent::Finished(job.id, state));
 }
 
-/// How often a running job's record is rewritten.
+/// How often a running job's record is persisted.
 ///
-/// The record holds every item, so writing it after every item is quadratic:
-/// a 100,000-file copy would write 100,000 records averaging tens of megabytes
-/// each, and the benchmark measured that cost at ten times the copy itself.
+/// A persist rewrites the header and appends the item statuses that changed
+/// since the last one; see [`crate::store`]. Persisting after every item would
+/// still rewrite the header, and with it the bounded log, once per item, so
+/// the interval stays.
 ///
 /// Throttling trades a little recovery precision for a job that finishes. What
-/// is preserved is the property that matters: a record on disk is always a
-/// complete document that says the job was running and which items it had. An
-/// item that finished in the last quarter second comes back marked pending, so
-/// a resubmitted job re-copies it — conservative in the safe direction, and the
-/// conflict model already covers a destination that is unexpectedly there.
+/// is preserved is the property that matters: what is on disk always says the
+/// job was running and which items it had. An item that finished in the last
+/// quarter second comes back marked pending, so a resubmitted job re-copies it
+/// — conservative in the safe direction, and the conflict model already covers
+/// a destination that is unexpectedly there.
 ///
-/// State changes and the final state are written immediately regardless.
+/// Submission, a cancellation before start, and the final state are written
+/// immediately regardless.
 const PERSIST_INTERVAL: Duration = Duration::from_millis(250);
 
 fn persist(inner: &Arc<Inner>, job: &Arc<Job>) {
@@ -918,9 +981,60 @@ fn persist(inner: &Arc<Inner>, job: &Arc<Job>) {
         return;
     }
     shared.last_persisted = Some(now);
-    let record = job.record(&shared);
+    // What is written is taken under the lock and written without it, so a
+    // snapshot never waits on the disk. Items that change in between are left
+    // in the cursor for the next persist.
+    let changed = shared.journal.take_changed();
+    let live = shared.items.len() + shared.checksums.len();
+    if shared.journal.must_rewrite(live) {
+        let record = job.record(&shared);
+        drop(shared);
+        let written = store.write(&record);
+        let mut shared = job.shared.lock().expect("job state");
+        match written {
+            Ok(_) => shared
+                .journal
+                .rewritten(record.items.len(), record.checksums.len()),
+            Err(_) => shared.journal.append_failed(),
+        }
+        return;
+    }
+
+    let mut entries: Vec<JournalEntry> = changed
+        .into_iter()
+        .filter_map(|index| {
+            let item = shared.items.get(index)?;
+            Some(JournalEntry::Status {
+                index: index as u64,
+                status: item.status,
+                error: item.error.clone(),
+            })
+        })
+        .collect();
+    let checksums = shared.checksums.len();
+    entries.extend(
+        shared.checksums[shared.journal.checksums_written().min(checksums)..]
+            .iter()
+            .map(|(path, digest)| {
+                let (path, digest) = checksum_line(path, digest);
+                JournalEntry::Checksum { path, digest }
+            }),
+    );
+    let header = job.header(&shared);
     drop(shared);
-    let _ = store.write(&record);
+    // The journal before the header, so the header never describes progress
+    // the journal does not hold.
+    let appended = if entries.is_empty() {
+        Ok(0)
+    } else {
+        store.append(job.id.0, &entries)
+    };
+    let _ = store.write_header(&header);
+    let mut shared = job.shared.lock().expect("job state");
+    match appended {
+        Ok(_) => shared.journal.appended(entries.len(), checksums),
+        Err(_) => shared.journal.append_failed(),
+    }
 }
 
 fn run_item(
@@ -1015,6 +1129,9 @@ fn record_outcome(job: &Arc<Job>, item: &PlanItem, index: usize, outcome: ItemOu
             );
             stop = job.spec.policy.on_failure != FailurePolicy::Continue;
         }
+    }
+    if counts && index < shared.items.len() {
+        shared.journal.changed(index);
     }
     let elapsed = shared.started.elapsed();
     let bytes = shared.progress.bytes_done;
@@ -1145,5 +1262,15 @@ impl JobControl for WorkerControl {
     fn checksum(&mut self, path: PathBuf, digest: String) {
         let mut shared = self.job.shared.lock().expect("job state");
         shared.checksums.push((path, digest));
+    }
+
+    fn copied_inode(&mut self, key: InodeKey) -> Option<CopiedInode> {
+        let shared = self.job.shared.lock().expect("job state");
+        shared.hard_links.get(&key).cloned()
+    }
+
+    fn record_copied_inode(&mut self, key: InodeKey, copied: CopiedInode) {
+        let mut shared = self.job.shared.lock().expect("job state");
+        shared.hard_links.insert(key, copied);
     }
 }

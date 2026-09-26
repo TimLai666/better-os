@@ -18,15 +18,27 @@
 //! name, so neither ends up with the other's data under its own record.
 //!
 //! The move itself is a `rename(2)`, which works only within one filesystem.
-//! Trashing something from a mounted device therefore fails with
-//! [`TrashError::CrossDevice`], and the caller decides what to do about it —
-//! `files-operations` falls back to copying into the home trash and deleting
-//! the source. The per-device `.Trash-$uid` directory the specification also
-//! allows is not created here: creating a top-level `.Trash` on a removable
-//! device, checking its sticky bit, and falling back to `.Trash-$uid` is a
-//! separate piece of work with its own permission cases, and pretending to
-//! support it while silently using the home trash would put the user's files
-//! somewhere they did not expect.
+//! Trashing something from a mounted device into the home trash therefore
+//! fails with [`TrashError::CrossDevice`].
+//!
+//! ## Per-volume trash
+//!
+//! The specification gives every mounted device its own trash, so deleting a
+//! large file on a USB disk does not copy it onto the home partition. The top
+//! directory of an item is the mount point of its device, found by
+//! [`top_directory`] walking up while the device number stays the same. On
+//! that top directory, [`volume_trash`] uses `$topdir/.Trash/$uid` when
+//! `$topdir/.Trash` is a real directory with the sticky bit set — an
+//! administrator's shared trash — and otherwise `$topdir/.Trash-$uid`,
+//! created with mode 0700. A shared `.Trash` that is a symbolic link or lacks
+//! the sticky bit is refused, because either would let another user read or
+//! replace what this user deletes.
+//!
+//! A `.trashinfo` in a volume trash records the original path relative to the
+//! top directory, so the record stays right when the device is mounted
+//! somewhere else next time. A [`TrashDirectory`] recognises the two volume
+//! layouts from its own root and resolves a relative path back against its top
+//! directory; a relative path that would climb out of it is refused.
 //!
 //! Nothing in the write side converts a path to a `String`. An original path
 //! is percent-encoded from its bytes and decoded back to bytes, so a file whose
@@ -37,7 +49,8 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::Write;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
@@ -49,15 +62,30 @@ use files_core::error::ListingError;
 use files_core::listing::{Cancelled, ListingSink};
 use files_core::location::LocalPath;
 
-/// One trash directory: the home one, or a device's `.Trash-<uid>`.
+use crate::mounts::MountTable;
+
+/// One trash directory: the home one, or a device's `.Trash-<uid>` or
+/// `.Trash/<uid>`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrashDirectory {
     root: PathBuf,
+    /// The top directory of the device this trash belongs to, when the root is
+    /// one of the specification's two volume layouts. `None` for the home
+    /// trash and for any other directory used as one.
+    topdir: Option<PathBuf>,
 }
 
 impl TrashDirectory {
+    /// A trash directory at `root`.
+    ///
+    /// A root named `$topdir/.Trash-<digits>` or `$topdir/.Trash/<digits>` is a
+    /// volume trash, and knows its top directory from that name alone. That is
+    /// what lets a restore or a purge named only by its trash root resolve a
+    /// relative record without asking the mount table again.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        let root = root.into();
+        let topdir = volume_topdir_of(&root);
+        Self { root, topdir }
     }
 
     /// The home trash: `$XDG_DATA_HOME/Trash`, falling back to
@@ -91,6 +119,92 @@ impl TrashDirectory {
     pub fn exists(&self) -> bool {
         self.info_dir().is_dir()
     }
+
+    /// The top directory of the device, for a volume trash.
+    pub fn topdir(&self) -> Option<&Path> {
+        self.topdir.as_deref()
+    }
+
+    /// What a relative `Path` in a record is relative to: the top directory of
+    /// a volume trash, and the directory the home trash sits in otherwise,
+    /// which is `$XDG_DATA_HOME` as the specification says.
+    fn relative_base(&self) -> &Path {
+        match &self.topdir {
+            Some(topdir) => topdir,
+            None => self.root.parent().unwrap_or(Path::new("/")),
+        }
+    }
+
+    /// Turns a record's `Path` into the absolute path it names.
+    ///
+    /// A relative path may not contain `..` or any other component that
+    /// leaves the base: a record on a removable disk is written by whoever
+    /// last had the disk, and a restore must not be steered outside the device
+    /// by it.
+    fn resolve(&self, recorded: &Path) -> Option<PathBuf> {
+        if recorded.is_absolute() {
+            return Some(recorded.to_path_buf());
+        }
+        let mut components = recorded.components().peekable();
+        components.peek()?;
+        if !components.all(|component| matches!(component, Component::Normal(_))) {
+            return None;
+        }
+        Some(self.relative_base().join(recorded))
+    }
+
+    /// What a new record says for `original`: relative to the top directory
+    /// for a volume trash, absolute for the home trash.
+    fn record_path(&self, original: &Path) -> PathBuf {
+        let Some(topdir) = &self.topdir else {
+            return original.to_path_buf();
+        };
+        // The top directory was found from a canonical path, so the item's
+        // location is compared in the same form. Only the parent is resolved:
+        // trashing a symlink trashes the link, not what it points at.
+        let located = match (original.parent(), original.file_name()) {
+            (Some(parent), Some(name)) => fs::canonicalize(parent)
+                .map(|parent| parent.join(name))
+                .unwrap_or_else(|_| original.to_path_buf()),
+            _ => original.to_path_buf(),
+        };
+        match located.strip_prefix(topdir) {
+            Ok(relative) if !relative.as_os_str().is_empty() => relative.to_path_buf(),
+            _ => original.to_path_buf(),
+        }
+    }
+}
+
+/// The top directory a volume trash root implies, if it is one.
+fn volume_topdir_of(root: &Path) -> Option<PathBuf> {
+    let name = root.file_name()?.as_bytes();
+    let parent = root.parent()?;
+    if let Some(uid) = name.strip_prefix(b".Trash-") {
+        if is_uid(uid) {
+            return Some(parent.to_path_buf());
+        }
+    }
+    if is_uid(name) && parent.file_name().map(OsStrExt::as_bytes) == Some(b".Trash") {
+        return parent.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+fn is_uid(bytes: &[u8]) -> bool {
+    !bytes.is_empty() && bytes.iter().all(u8::is_ascii_digit)
+}
+
+/// The trash root a stored item lives under: `<root>/files/<item>`.
+///
+/// A listing that merges several trashes hands out entries whose trash is only
+/// known from where their bytes are, and this is the one place that knows the
+/// layout well enough to walk back from there.
+pub fn trash_root_of(stored_path: &Path) -> Option<PathBuf> {
+    let files = stored_path.parent()?;
+    if files.file_name() != Some(OsStr::new("files")) {
+        return None;
+    }
+    files.parent().map(Path::to_path_buf)
 }
 
 /// What one `.trashinfo` file says.
@@ -132,7 +246,12 @@ pub fn read_trash(trash: &TrashDirectory, sink: &mut ListingSink) -> Result<(), 
             )?;
             continue;
         };
-        let Some(info) = parse_trash_info(&contents) else {
+        let Some(info) = parse_trash_info(&contents).and_then(|info| {
+            Some(TrashInfo {
+                original_path: trash.resolve(&info.original_path)?,
+                ..info
+            })
+        }) else {
             sink.skip(
                 stem,
                 ListingError::Io {
@@ -382,6 +501,10 @@ pub enum TrashError {
     /// The directory the item came from no longer exists.
     #[error("files.trash.error.original_parent_missing:{}", .path.to_string_lossy())]
     OriginalParentMissing { path: PathBuf },
+    /// A per-user trash directory exists and must not be used: it is a
+    /// symbolic link, not a directory, or owned by someone else.
+    #[error("files.trash.error.unusable:{}:{reason}", .path.to_string_lossy())]
+    Unusable { path: PathBuf, reason: String },
     #[error("files.trash.error.io:{}:{reason}", .path.to_string_lossy())]
     Io { path: PathBuf, reason: String },
 }
@@ -450,7 +573,7 @@ pub fn move_to_trash(trash: &TrashDirectory, source: &Path) -> Result<TrashedIte
         .unwrap_or(0);
     let record = format!(
         "[Trash Info]\nPath={}\nDeletionDate={}\n",
-        percent_encode(&original),
+        percent_encode(&trash.record_path(&original)),
         format_deletion_date(seconds)
     );
 
@@ -511,10 +634,11 @@ pub fn original_path_of(trash: &TrashDirectory, item: &str) -> Result<PathBuf, T
     let contents = fs::read_to_string(&info_path).map_err(|_| TrashError::NoRecord {
         item: item.to_string(),
     })?;
-    let info = parse_trash_info(&contents).ok_or_else(|| TrashError::NoRecord {
-        item: item.to_string(),
-    })?;
-    Ok(info.original_path)
+    parse_trash_info(&contents)
+        .and_then(|info| trash.resolve(&info.original_path))
+        .ok_or_else(|| TrashError::NoRecord {
+            item: item.to_string(),
+        })
 }
 
 /// Puts a trashed item back where it came from.
@@ -591,6 +715,310 @@ pub fn purge(trash: &TrashDirectory, item: &str) -> Result<(), TrashError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(TrashError::io(&info_path, &error)),
     }
+}
+
+// --- Per-volume trash ------------------------------------------------------
+
+/// Answers which device a path is on.
+///
+/// The host's answer is `lstat`'s `st_dev`. The seam exists because a second
+/// device is something a test suite cannot mount without privilege, and the
+/// walk that finds a top directory only does anything interesting when there
+/// is one.
+pub trait DeviceProbe {
+    fn device_of(&self, path: &Path) -> std::io::Result<u64>;
+}
+
+/// The running host's devices.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HostDevices;
+
+impl DeviceProbe for HostDevices {
+    fn device_of(&self, path: &Path) -> std::io::Result<u64> {
+        fs::symlink_metadata(path).map(|metadata| metadata.dev())
+    }
+}
+
+/// The mount point of the device `directory` is on: the highest ancestor still
+/// on the same device.
+///
+/// The walk is lexical, so `directory` must be canonical. Walking `..` through
+/// a symbolic link would climb a different tree from the one the kernel sees.
+pub fn top_directory(directory: &Path, probe: &dyn DeviceProbe) -> std::io::Result<PathBuf> {
+    let device = probe.device_of(directory)?;
+    let mut top = directory;
+    while let Some(parent) = top.parent() {
+        if probe.device_of(parent)? != device {
+            break;
+        }
+        top = parent;
+    }
+    Ok(top.to_path_buf())
+}
+
+/// Whether `item` is on the same device as `trash`, so trashing it there is a
+/// `rename(2)`.
+///
+/// The trash root may not exist yet on a fresh account, so its device is read
+/// from the nearest ancestor that does.
+pub fn shares_device(
+    trash: &TrashDirectory,
+    item: &Path,
+    probe: &dyn DeviceProbe,
+) -> std::io::Result<bool> {
+    let parent = canonical_parent(item)?;
+    let item_device = probe.device_of(&parent)?;
+    let mut candidate = Some(trash.root());
+    while let Some(path) = candidate {
+        match probe.device_of(path) {
+            Ok(device) => return Ok(device == item_device),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                candidate = path.parent();
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+}
+
+fn canonical_parent(item: &Path) -> std::io::Result<PathBuf> {
+    let parent = absolute(item)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    fs::canonicalize(parent)
+}
+
+/// What `$topdir/.Trash`, the administrator's shared trash, turned out to be.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SharedTrash {
+    /// A real directory with the sticky bit: used through `.Trash/$uid`.
+    Usable,
+    /// Not there. The ordinary case on a removable disk.
+    Missing,
+    /// A symbolic link. Refused: it could point anywhere, including into
+    /// another user's files.
+    Symlink,
+    NotADirectory,
+    /// A directory without the sticky bit. Refused: without it any user could
+    /// delete or replace another user's trashed files.
+    NotSticky,
+    /// Could not be examined.
+    Unreadable,
+    /// Usable, but this user's directory inside it was not: a symbolic link,
+    /// not a directory, or owned by someone else.
+    UserDirectoryUnusable,
+}
+
+impl SharedTrash {
+    /// A stable key for the operation log.
+    pub fn key(self) -> &'static str {
+        match self {
+            SharedTrash::Usable => "files.trash.shared.usable",
+            SharedTrash::Missing => "files.trash.shared.missing",
+            SharedTrash::Symlink => "files.trash.shared.symlink",
+            SharedTrash::NotADirectory => "files.trash.shared.not_a_directory",
+            SharedTrash::NotSticky => "files.trash.shared.not_sticky",
+            SharedTrash::Unreadable => "files.trash.shared.unreadable",
+            SharedTrash::UserDirectoryUnusable => "files.trash.shared.user_directory_unusable",
+        }
+    }
+}
+
+/// Checks `$topdir/.Trash` the way the specification requires before anything
+/// is put in it or taken out of it.
+pub fn shared_trash_status(topdir: &Path) -> SharedTrash {
+    match fs::symlink_metadata(topdir.join(".Trash")) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => SharedTrash::Missing,
+        Err(_) => SharedTrash::Unreadable,
+        Ok(metadata) if metadata.file_type().is_symlink() => SharedTrash::Symlink,
+        Ok(metadata) if !metadata.is_dir() => SharedTrash::NotADirectory,
+        Ok(metadata) if metadata.mode() & STICKY == 0 => SharedTrash::NotSticky,
+        Ok(_) => SharedTrash::Usable,
+    }
+}
+
+const STICKY: u32 = 0o1000;
+
+/// The trash a device's items go to, and why it is that one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VolumeTrash {
+    pub directory: TrashDirectory,
+    /// What the shared `.Trash` was. Anything other than `Usable` or
+    /// `Missing` is a check that failed, which the specification says to
+    /// report; the caller logs it.
+    pub shared: SharedTrash,
+}
+
+/// Picks, and creates when needed, the trash on the device whose top directory
+/// is `topdir`.
+///
+/// `$topdir/.Trash/$uid` when the shared `.Trash` passes its checks, and
+/// `$topdir/.Trash-$uid` otherwise. Either per-user directory must be a real
+/// directory owned by `uid`; a missing one is created with mode 0700.
+pub fn volume_trash(topdir: &Path, uid: u32) -> Result<VolumeTrash, TrashError> {
+    let mut shared = shared_trash_status(topdir);
+    if shared == SharedTrash::Usable {
+        let root = topdir.join(".Trash").join(uid.to_string());
+        if ensure_private_directory(&root, uid).is_ok() {
+            return Ok(VolumeTrash {
+                directory: TrashDirectory::new(root),
+                shared,
+            });
+        }
+        shared = SharedTrash::UserDirectoryUnusable;
+    }
+    let root = topdir.join(format!(".Trash-{uid}"));
+    ensure_private_directory(&root, uid)?;
+    Ok(VolumeTrash {
+        directory: TrashDirectory::new(root),
+        shared,
+    })
+}
+
+/// The volume trash for `item`, found from the device its directory is on.
+pub fn volume_trash_for(
+    item: &Path,
+    uid: u32,
+    probe: &dyn DeviceProbe,
+) -> Result<VolumeTrash, TrashError> {
+    let parent = canonical_parent(item).map_err(|error| TrashError::io(item, &error))?;
+    let topdir = top_directory(&parent, probe).map_err(|error| TrashError::io(&parent, &error))?;
+    volume_trash(&topdir, uid)
+}
+
+/// Makes sure a per-user trash directory is one this user may use, creating it
+/// with mode 0700 when it is missing.
+fn ensure_private_directory(path: &Path, uid: u32) -> Result<(), TrashError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => check_private_directory(path, &metadata, uid),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match fs::DirBuilder::new().mode(0o700).create(path) {
+                Ok(()) => {
+                    // The umask can only have removed bits, but it could have
+                    // removed the owner's own; the mode is set, not hoped for.
+                    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                        .map_err(|error| TrashError::io(path, &error))
+                }
+                // Somebody else created it in between: check what they made.
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let metadata =
+                        fs::symlink_metadata(path).map_err(|error| TrashError::io(path, &error))?;
+                    check_private_directory(path, &metadata, uid)
+                }
+                Err(error) => Err(TrashError::io(path, &error)),
+            }
+        }
+        Err(error) => Err(TrashError::io(path, &error)),
+    }
+}
+
+fn check_private_directory(
+    path: &Path,
+    metadata: &fs::Metadata,
+    uid: u32,
+) -> Result<(), TrashError> {
+    let reason = if metadata.file_type().is_symlink() {
+        "symlink"
+    } else if !metadata.is_dir() {
+        "not_a_directory"
+    } else if metadata.uid() != uid {
+        "wrong_owner"
+    } else {
+        return Ok(());
+    };
+    Err(TrashError::Unusable {
+        path: path.to_path_buf(),
+        reason: reason.to_string(),
+    })
+}
+
+/// Filesystems that are never a user's storage, so their mount points are not
+/// searched for a trash. Kernel interfaces, automount triggers — asking one
+/// about `.Trash-$uid` would mount something — package images, and FUSE views
+/// of storage that is already mounted elsewhere.
+const NOT_STORAGE: &[&str] = &[
+    "autofs",
+    "binfmt_misc",
+    "bpf",
+    "cgroup",
+    "cgroup2",
+    "configfs",
+    "debugfs",
+    "devpts",
+    "devtmpfs",
+    "efivarfs",
+    "fuse.gvfsd-fuse",
+    "fuse.portal",
+    "fusectl",
+    "hugetlbfs",
+    "mqueue",
+    "nsfs",
+    "proc",
+    "pstore",
+    "rpc_pipefs",
+    "securityfs",
+    "squashfs",
+    "sysfs",
+    "tracefs",
+];
+
+/// Every existing volume trash this user can read, one per volume.
+///
+/// Nothing is created here. A shared `.Trash` that fails its checks is not
+/// read, for the same reason it is not written. A volume mounted twice — a
+/// bind mount — lists once.
+pub fn volume_trashes(mounts: &MountTable, uid: u32) -> Vec<TrashDirectory> {
+    let mut seen = std::collections::HashSet::new();
+    let mut found = Vec::new();
+    for mount in mounts.mounts() {
+        if NOT_STORAGE.contains(&mount.filesystem.as_str()) {
+            continue;
+        }
+        let topdir = &mount.mount_point;
+        let mut candidates = Vec::with_capacity(2);
+        if shared_trash_status(topdir) == SharedTrash::Usable {
+            candidates.push(topdir.join(".Trash").join(uid.to_string()));
+        }
+        candidates.push(topdir.join(format!(".Trash-{uid}")));
+        for root in candidates {
+            let Ok(metadata) = fs::symlink_metadata(&root) else {
+                continue;
+            };
+            if check_private_directory(&root, &metadata, uid).is_err() {
+                continue;
+            }
+            let trash = TrashDirectory::new(&root);
+            if fs::read_dir(trash.info_dir()).is_err() {
+                continue;
+            }
+            if seen.insert((metadata.dev(), metadata.ino())) {
+                found.push(trash);
+            }
+        }
+    }
+    found
+}
+
+/// The real user ID of this process, from `/proc/self/status`.
+///
+/// Read from the kernel's status file rather than through a C binding, which
+/// this crate does not otherwise need. `None` only when `/proc` is not
+/// mounted, and a caller then has no volume trash to offer.
+pub fn current_uid() -> Option<u32> {
+    parse_status_uid(&fs::read_to_string("/proc/self/status").ok()?)
+}
+
+/// The first field of the `Uid:` line, which is the real user ID — the one the
+/// specification's `$uid` means.
+fn parse_status_uid(status: &str) -> Option<u32> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// The `attempt`-th candidate name for an item called `base`.
@@ -972,6 +1400,295 @@ mod tests {
         assert_eq!(
             PathBuf::from(OsString::from_vec(percent_decode(&encoded))),
             path
+        );
+    }
+
+    // --- Per-volume trash -------------------------------------------------
+
+    use std::collections::HashMap;
+
+    /// A device map a test controls: the longest matching prefix names the
+    /// device, the way a mount table would if the suite could mount anything.
+    struct FakeDevices {
+        devices: HashMap<PathBuf, u64>,
+    }
+
+    impl FakeDevices {
+        fn new(entries: &[(&Path, u64)]) -> Self {
+            Self {
+                devices: entries
+                    .iter()
+                    .map(|(path, device)| (path.to_path_buf(), *device))
+                    .collect(),
+            }
+        }
+    }
+
+    impl DeviceProbe for FakeDevices {
+        fn device_of(&self, path: &Path) -> std::io::Result<u64> {
+            self.devices
+                .iter()
+                .filter(|(prefix, _)| path.starts_with(prefix))
+                .max_by_key(|(prefix, _)| prefix.as_os_str().len())
+                .map(|(_, device)| *device)
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+        }
+    }
+
+    fn uid() -> u32 {
+        current_uid().expect("this process has a uid")
+    }
+
+    #[test]
+    fn the_top_directory_is_where_the_device_number_changes() {
+        let devices = FakeDevices::new(&[(Path::new("/"), 1), (Path::new("/media/user/STICK"), 7)]);
+        assert_eq!(
+            top_directory(Path::new("/media/user/STICK/photos/2024"), &devices).unwrap(),
+            Path::new("/media/user/STICK")
+        );
+        // A directory that is itself the mount point is its own top.
+        assert_eq!(
+            top_directory(Path::new("/media/user/STICK"), &devices).unwrap(),
+            Path::new("/media/user/STICK")
+        );
+        // Everything on the root device walks all the way up.
+        assert_eq!(
+            top_directory(Path::new("/home/user/Documents"), &devices).unwrap(),
+            Path::new("/")
+        );
+    }
+
+    #[test]
+    fn a_device_that_cannot_be_asked_about_stops_the_walk_with_an_error() {
+        let devices = FakeDevices::new(&[(Path::new("/media"), 3)]);
+        assert!(top_directory(Path::new("/media/user"), &devices).is_err());
+    }
+
+    #[test]
+    fn the_shared_trash_is_refused_when_missing_a_symlink_or_not_sticky() {
+        let top = tempfile::tempdir().unwrap();
+        assert_eq!(shared_trash_status(top.path()), SharedTrash::Missing);
+
+        let elsewhere = top.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::set_permissions(&elsewhere, fs::Permissions::from_mode(0o1777)).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, top.path().join(".Trash")).unwrap();
+        assert_eq!(shared_trash_status(top.path()), SharedTrash::Symlink);
+        fs::remove_file(top.path().join(".Trash")).unwrap();
+
+        fs::write(top.path().join(".Trash"), b"not a directory").unwrap();
+        assert_eq!(shared_trash_status(top.path()), SharedTrash::NotADirectory);
+        fs::remove_file(top.path().join(".Trash")).unwrap();
+
+        fs::create_dir(top.path().join(".Trash")).unwrap();
+        fs::set_permissions(top.path().join(".Trash"), fs::Permissions::from_mode(0o777)).unwrap();
+        assert_eq!(shared_trash_status(top.path()), SharedTrash::NotSticky);
+
+        fs::set_permissions(
+            top.path().join(".Trash"),
+            fs::Permissions::from_mode(0o1777),
+        )
+        .unwrap();
+        assert_eq!(shared_trash_status(top.path()), SharedTrash::Usable);
+    }
+
+    #[test]
+    fn a_volume_without_a_usable_shared_trash_gets_a_private_one_with_mode_0700() {
+        let top = tempfile::tempdir().unwrap();
+        // Present but not sticky: the specification says it must not be used.
+        fs::create_dir(top.path().join(".Trash")).unwrap();
+        fs::set_permissions(top.path().join(".Trash"), fs::Permissions::from_mode(0o777)).unwrap();
+
+        let uid = uid();
+        let volume = volume_trash(top.path(), uid).unwrap();
+        assert_eq!(volume.shared, SharedTrash::NotSticky);
+        let expected = top.path().join(format!(".Trash-{uid}"));
+        assert_eq!(volume.directory.root(), expected);
+        assert_eq!(volume.directory.topdir(), Some(top.path()));
+        let mode = fs::metadata(&expected).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o700);
+        assert!(
+            !top.path().join(".Trash").join(uid.to_string()).exists(),
+            "nothing was created inside the rejected shared trash"
+        );
+    }
+
+    #[test]
+    fn a_sticky_shared_trash_is_used_through_a_per_user_directory() {
+        let top = tempfile::tempdir().unwrap();
+        fs::create_dir(top.path().join(".Trash")).unwrap();
+        fs::set_permissions(
+            top.path().join(".Trash"),
+            fs::Permissions::from_mode(0o1777),
+        )
+        .unwrap();
+
+        let uid = uid();
+        let volume = volume_trash(top.path(), uid).unwrap();
+        assert_eq!(volume.shared, SharedTrash::Usable);
+        assert_eq!(
+            volume.directory.root(),
+            top.path().join(".Trash").join(uid.to_string())
+        );
+        assert_eq!(volume.directory.topdir(), Some(top.path()));
+        assert!(!top.path().join(format!(".Trash-{uid}")).exists());
+    }
+
+    #[test]
+    fn a_private_trash_that_is_a_symlink_is_refused_rather_than_followed() {
+        let top = tempfile::tempdir().unwrap();
+        let uid = uid();
+        let decoy = top.path().join("decoy");
+        fs::create_dir(&decoy).unwrap();
+        std::os::unix::fs::symlink(&decoy, top.path().join(format!(".Trash-{uid}"))).unwrap();
+        assert!(volume_trash(top.path(), uid).is_err());
+        assert_eq!(fs::read_dir(&decoy).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_volume_trash_records_the_path_relative_to_its_top_directory() {
+        let top = tempfile::tempdir().unwrap();
+        let folder = top.path().join("photos");
+        fs::create_dir(&folder).unwrap();
+        let file = folder.join("beach.jpg");
+        fs::write(&file, b"jpeg").unwrap();
+
+        let volume = volume_trash(top.path(), uid()).unwrap().directory;
+        let item = move_to_trash(&volume, &file).unwrap();
+        let record = fs::read_to_string(&item.info_path).unwrap();
+        assert!(
+            record.contains("\nPath=photos/beach.jpg\n"),
+            "expected a relative path, got {record}"
+        );
+        // The original path callers see is absolute again.
+        assert_eq!(item.original_path, file);
+        assert_eq!(original_path_of(&volume, &item.item).unwrap(), file);
+
+        // The read side resolves it against the top directory too.
+        let (entries, skipped) = list(&volume);
+        assert!(skipped.is_empty());
+        match &entries[0].body {
+            EntryBody::Trashed(facts) => assert_eq!(facts.original_path, file),
+            other => panic!("expected a trashed entry, got {other:?}"),
+        }
+
+        assert_eq!(restore(&volume, &item.item).unwrap(), file);
+        assert_eq!(fs::read(&file).unwrap(), b"jpeg");
+    }
+
+    #[test]
+    fn a_trash_directory_named_by_its_root_knows_its_top_directory() {
+        let uid = uid();
+        let private = TrashDirectory::new(format!("/media/user/STICK/.Trash-{uid}"));
+        assert_eq!(private.topdir(), Some(Path::new("/media/user/STICK")));
+        let shared = TrashDirectory::new(format!("/media/user/STICK/.Trash/{uid}"));
+        assert_eq!(shared.topdir(), Some(Path::new("/media/user/STICK")));
+        let home = TrashDirectory::new("/home/user/.local/share/Trash");
+        assert_eq!(home.topdir(), None);
+        assert_eq!(
+            trash_root_of(Path::new("/media/user/STICK/.Trash-1000/files/a.txt")),
+            Some(PathBuf::from("/media/user/STICK/.Trash-1000"))
+        );
+    }
+
+    #[test]
+    fn a_relative_record_that_climbs_out_of_its_top_directory_is_refused() {
+        let top = tempfile::tempdir().unwrap();
+        let volume = volume_trash(top.path(), uid()).unwrap().directory;
+        ensure_trash(&volume).unwrap();
+        add_item(
+            &volume,
+            "escape",
+            "[Trash Info]\nPath=../../etc/passwd\nDeletionDate=2024-01-01T00:00:00\n",
+            b"x",
+        );
+        let (entries, skipped) = list(&volume);
+        assert!(entries.is_empty());
+        assert_eq!(skipped, ["escape"]);
+        assert!(matches!(
+            original_path_of(&volume, "escape"),
+            Err(TrashError::NoRecord { .. })
+        ));
+    }
+
+    #[test]
+    fn a_relative_record_in_the_home_trash_is_read_against_the_data_directory() {
+        let (root, trash) = fixture();
+        add_item(
+            &trash,
+            "kept.txt",
+            "[Trash Info]\nPath=notes/kept.txt\nDeletionDate=2024-01-01T00:00:00\n",
+            b"x",
+        );
+        assert_eq!(
+            original_path_of(&trash, "kept.txt").unwrap(),
+            root.path().join("notes/kept.txt")
+        );
+    }
+
+    #[test]
+    fn every_readable_volume_trash_is_found_from_the_mount_table() {
+        let root = tempfile::tempdir().unwrap();
+        let uid = uid();
+        let stick = root.path().join("stick");
+        let disk = root.path().join("disk");
+        let empty = root.path().join("empty");
+        let proc_like = root.path().join("proc");
+        for path in [&stick, &disk, &empty, &proc_like] {
+            fs::create_dir(path).unwrap();
+        }
+        // A private trash on one volume, a shared one on another, none on a
+        // third, and a trash-shaped directory on a pseudo filesystem that must
+        // not be looked at.
+        fs::create_dir_all(stick.join(format!(".Trash-{uid}/info"))).unwrap();
+        fs::create_dir(disk.join(".Trash")).unwrap();
+        fs::set_permissions(disk.join(".Trash"), fs::Permissions::from_mode(0o1777)).unwrap();
+        fs::create_dir_all(disk.join(format!(".Trash/{uid}/info"))).unwrap();
+        fs::create_dir_all(proc_like.join(format!(".Trash-{uid}/info"))).unwrap();
+
+        let mountinfo = root.path().join("mountinfo");
+        fs::write(
+            &mountinfo,
+            format!(
+                "1 0 8:1 / {} rw - vfat /dev/sdb1 rw\n\
+                 2 0 8:2 / {} rw - ext4 /dev/sdc1 rw\n\
+                 3 0 8:3 / {} rw - ext4 /dev/sdd1 rw\n\
+                 4 0 0:5 / {} rw - proc proc rw\n\
+                 5 0 8:1 / {} rw - vfat /dev/sdb1 rw\n",
+                stick.display(),
+                disk.display(),
+                empty.display(),
+                proc_like.display(),
+                // The same volume mounted twice lists once.
+                stick.display(),
+            ),
+        )
+        .unwrap();
+        let table = crate::mounts::read_mount_table(&mountinfo);
+        let mut roots: Vec<PathBuf> = volume_trashes(&table, uid)
+            .into_iter()
+            .map(|trash| trash.root().to_path_buf())
+            .collect();
+        roots.sort();
+        let mut expected = vec![
+            stick.join(format!(".Trash-{uid}")),
+            disk.join(format!(".Trash/{uid}")),
+        ];
+        expected.sort();
+        assert_eq!(roots, expected);
+        // Listing never creates a trash.
+        assert!(!empty.join(format!(".Trash-{uid}")).exists());
+    }
+
+    #[test]
+    fn the_uid_is_the_real_one_from_the_status_file() {
+        let status = "Name:\tbash\nUid:\t1000\t0\t0\t0\nGid:\t1000\t1000\t1000\t1000\n";
+        assert_eq!(parse_status_uid(status), Some(1000));
+        assert_eq!(parse_status_uid("Name:\tbash\n"), None);
+        assert_eq!(
+            current_uid(),
+            Some(fs::metadata("/proc/self").unwrap().uid()),
+            "the running process reports the uid it owns /proc/self with"
         );
     }
 
