@@ -8,12 +8,44 @@
 //! until each one has been ticked. It has no GPUI in it; the window draws it.
 //!
 //! Switching back to Direct Removal asks nothing, because it gives nothing up.
+//!
+//! The window does not offer Performance mode at all while
+//! [`OFFER_PERFORMANCE_MODE`] is off; [`offered_switch`] is where a device row
+//! learns what it may offer.
 
 use std::collections::BTreeSet;
 
 use storage_core::{PERFORMANCE_RISK_KEYS, RemovalPolicy};
 
 use crate::i18n::Copy;
+
+/// Whether the window offers to switch a device to Performance mode.
+///
+/// Off by the project owner's decision. Performance mode changes no mount
+/// option and no cache setting yet, so it makes no write faster; its only
+/// effect is that a device is never called safe to unplug without Eject.
+/// Turn this on once the mount-option work ticket 31 left to an ADR makes the
+/// mode actually speed up writes, and reword `policy_risk_throughput`, which
+/// says this version delivers no speed-up, in the same change. The
+/// confirmation below stays built and tested so nothing else has to be
+/// rebuilt; `a_direct_removal_device_is_not_offered_performance_mode` records
+/// this decision and changes with it.
+///
+/// A device already in Performance mode is offered Direct Removal either way.
+pub const OFFER_PERFORMANCE_MODE: bool = false;
+
+/// The policy a device's row offers to switch to, or `None` when it offers
+/// none.
+pub fn offered_switch(current: RemovalPolicy) -> Option<RemovalPolicy> {
+    switch_for(current, OFFER_PERFORMANCE_MODE)
+}
+
+fn switch_for(current: RemovalPolicy, offer_performance: bool) -> Option<RemovalPolicy> {
+    match current {
+        RemovalPolicy::DirectRemoval => offer_performance.then_some(RemovalPolicy::Performance),
+        RemovalPolicy::Performance => Some(RemovalPolicy::DirectRemoval),
+    }
+}
 
 /// What one risk key says, in the window's language. `None` for a key this
 /// build has no words for, which a test turns into a failure.
@@ -164,6 +196,36 @@ mod tests {
             .collect();
         declared.sort();
         assert_eq!(sent, declared, "exactly the ticked keys, nothing else");
+    }
+
+    #[test]
+    fn a_direct_removal_device_is_not_offered_performance_mode() {
+        // The owner's decision while Performance mode changes no mount option:
+        // turning `OFFER_PERFORMANCE_MODE` on is the one place that reverses
+        // it, and this assertion goes with it.
+        assert_eq!(offered_switch(RemovalPolicy::DirectRemoval), None);
+    }
+
+    #[test]
+    fn a_performance_mode_device_is_always_offered_direct_removal() {
+        assert_eq!(
+            offered_switch(RemovalPolicy::Performance),
+            Some(RemovalPolicy::DirectRemoval)
+        );
+        for offer_performance in [false, true] {
+            assert_eq!(
+                switch_for(RemovalPolicy::Performance, offer_performance),
+                Some(RemovalPolicy::DirectRemoval)
+            );
+        }
+    }
+
+    #[test]
+    fn turning_the_switch_on_offers_performance_mode_again() {
+        assert_eq!(
+            switch_for(RemovalPolicy::DirectRemoval, true),
+            Some(RemovalPolicy::Performance)
+        );
     }
 
     #[test]

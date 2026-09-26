@@ -678,19 +678,17 @@ impl FilesApp {
         let warning = row.is_warning();
         let volatile = row.identity_volatile;
         let unsafe_removal = row.unsafe_removal.is_some();
-        // The policy the device does not have, offered as one action. Its
-        // label is the existing policy name, so the words match the state line
-        // and the confirmation.
-        let (other_policy, other_label) = match row.policy {
-            storage_core::RemovalPolicy::DirectRemoval => (
-                storage_core::RemovalPolicy::Performance,
-                c.device_policy_performance,
-            ),
-            storage_core::RemovalPolicy::Performance => (
-                storage_core::RemovalPolicy::DirectRemoval,
-                c.device_policy_direct_removal,
-            ),
-        };
+        // The policy the device does not have, offered as one action when
+        // `crate::policy` allows it; a Direct Removal device offers nothing
+        // while Performance mode is held back. Its label is the existing
+        // policy name, so the words match the state line and the confirmation.
+        let offered = crate::policy::offered_switch(row.policy).map(|policy| {
+            let label = match policy {
+                storage_core::RemovalPolicy::Performance => c.device_policy_performance,
+                storage_core::RemovalPolicy::DirectRemoval => c.device_policy_direct_removal,
+            };
+            (policy, label)
+        });
         let policy_path = row.object_path.clone();
 
         let line = h_flex()
@@ -757,30 +755,32 @@ impl FilesApp {
                     })),
             );
 
+        // A clickable line rather than a button: the label has to wrap in a
+        // 236-pixel sidebar at 150%, and a button clips instead. It carries a
+        // click handler and a hover state, which is what makes a `div` an
+        // action under `better_ui`'s affordance rule.
+        let policy_line = offered.map(|(other_policy, other_label)| {
+            div()
+                .id(SharedString::from(format!("policy-{policy_path}")))
+                .ml_8()
+                .mr_2()
+                .px_1()
+                .rounded(cx.theme().radius)
+                .text_xs()
+                .text_color(cx.theme().link)
+                .cursor_pointer()
+                .hover(|style| style.bg(cx.theme().accent))
+                .child(c.device_policy_switch.replace("{policy}", other_label))
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    this.session.choose_policy(&policy_path, other_policy);
+                    cx.notify();
+                }))
+        });
+
         v_flex()
             .w_full()
             .child(line)
-            .child(
-                // A clickable line rather than a button: the label has to wrap
-                // in a 236-pixel sidebar at 150%, and a button clips instead.
-                // It carries a click handler and a hover state, which is what
-                // makes a `div` an action under `better_ui`'s affordance rule.
-                div()
-                    .id(SharedString::from(format!("policy-{policy_path}")))
-                    .ml_8()
-                    .mr_2()
-                    .px_1()
-                    .rounded(cx.theme().radius)
-                    .text_xs()
-                    .text_color(cx.theme().link)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(cx.theme().accent))
-                    .child(c.device_policy_switch.replace("{policy}", other_label))
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.session.choose_policy(&policy_path, other_policy);
-                        cx.notify();
-                    })),
-            )
+            .children(policy_line)
             .into_any_element()
     }
 

@@ -69,6 +69,23 @@ yet. If that is not acceptable to ship, the alternative is to hold the choice
 back until a policy change that actually speeds up writes exists, which is the
 mount-option decision ticket 31 left to an ADR.
 
+**The owner decided to hold it back.** Better Files no longer offers
+Performance mode anywhere in its window: a Direct Removal device's row shows no
+policy line, so neither a click nor a key can reach the confirmation. The
+reason is the finding above. A choice that only takes away the "ready to
+unplug" promise, and speeds up nothing, is not worth offering yet. A device
+already in Performance mode, set some other way, still shows "Use Direct
+removal" (「改用直接移除」) and switches back at once without a confirmation.
+
+`OFFER_PERFORMANCE_MODE` in `crates/files-gui/src/policy.rs` is the one switch,
+and `offered_switch` is where a row asks what it may offer. Turn it on once
+Performance mode changes a mount option or a cache setting and so makes writes
+faster, which is the ADR ticket 31 left open. At the same time, reword the
+throughput risk, which says this version delivers no speed-up, and change the
+test `a_direct_removal_device_is_not_offered_performance_mode`, which records
+this decision. The confirmation, the session flow, and their tests stay in
+place and keep passing, so nothing else has to be rebuilt.
+
 Verified: 3 model tests in `policy.rs`, 5 session tests in
 `integration_tests.rs`, and 2 in `devicelink.rs` driving the in-process
 coordinator through a refused and an accepted request. Not verified: the
