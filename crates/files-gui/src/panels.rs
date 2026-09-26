@@ -546,12 +546,16 @@ impl FilesApp {
     pub(crate) fn dialog(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let c = copy(self.locale());
         let dialog = self.session.dialog.clone()?;
+        if let PendingDialog::Compress(request) = &dialog {
+            return Some(self.compress_dialog(request, cx));
+        }
         let (title, confirm_label) = match &dialog {
             PendingDialog::NewFolder => (c.new_folder_name, c.new_folder),
             PendingDialog::NewFile => (c.new_file_name, c.new_file),
             PendingDialog::Rename(_) => (c.rename_to, c.rename),
             PendingDialog::RenameBookmark(_) => (c.bookmark_label_placeholder, c.rename_bookmark),
             PendingDialog::ConfirmDelete { .. } => (c.confirm_delete_title, c.confirm),
+            PendingDialog::Compress(_) => (c.compress_title, c.compress),
         };
         let confirming_delete = matches!(dialog, PendingDialog::ConfirmDelete { .. });
         let count = match &dialog {
@@ -607,6 +611,60 @@ impl FilesApp {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// The format chooser for Compress: one button per format, each labelled
+    /// with the archive's file name, so the choice shows what will be made.
+    fn compress_dialog(
+        &mut self,
+        request: &crate::commands::CompressRequest,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = copy(self.locale());
+        let mut formats = v_flex().gap_2();
+        for format in files_operations::ArchiveFormat::ALL {
+            let label = request.file_name(format).to_string_lossy().into_owned();
+            formats = formats.child(
+                Button::new(SharedString::from(format!(
+                    "compress-{}",
+                    format.extension()
+                )))
+                .w_full()
+                .label(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.session.compress(format);
+                    cx.notify();
+                })),
+            );
+        }
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui::black().opacity(0.4))
+            .child(
+                v_flex()
+                    .w(px(420.0))
+                    .max_w_full()
+                    .gap_3()
+                    .p_4()
+                    .rounded(cx.theme().radius)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().popover)
+                    .child(div().font_semibold().child(c.compress_title))
+                    .child(formats)
+                    .child(
+                        h_flex().justify_end().child(
+                            Button::new("compress-cancel")
+                                .label(c.dismiss)
+                                .on_click(cx.listener(|this, _, _, cx| this.dismiss_dialog(cx))),
+                        ),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// The Performance mode confirmation: every risk in words, each one ticked

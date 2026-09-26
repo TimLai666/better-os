@@ -137,6 +137,12 @@ pub fn written_paths(
             })
             .collect(),
         Operation::Checksum { .. } => Vec::new(),
+        // The archive file, which is created where it is named; its sources
+        // are only read.
+        Operation::Archive { destination, .. } => vec![destination.as_path().to_path_buf()],
+        // The folder each archive is extracted into is created inside
+        // `destination`; the archives are only read.
+        Operation::Extract { destination, .. } => vec![destination.as_path().to_path_buf()],
     }
 }
 
@@ -391,6 +397,24 @@ mod tests {
                 algorithm: Default::default(),
             }),
             Vec::<PathBuf>::new()
+        );
+        // Compressing a folder on the internal disk onto a stick writes the
+        // stick; extracting from the stick onto the internal disk writes the
+        // internal disk, and only reads the stick.
+        assert_eq!(
+            paths(Operation::Archive {
+                sources: vec![local("/home/tim/photos")],
+                destination: local("/media/usb/photos.zip"),
+                format: files_operations::ArchiveFormat::Zip,
+            }),
+            vec![PathBuf::from("/media/usb/photos.zip")]
+        );
+        assert_eq!(
+            paths(Operation::Extract {
+                archives: vec![local("/media/usb/photos.tar.zst")],
+                destination: local("/home/tim/Downloads"),
+            }),
+            vec![PathBuf::from("/home/tim/Downloads")]
         );
     }
 

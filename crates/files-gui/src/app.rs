@@ -439,6 +439,11 @@ impl FilesApp {
                 self.session.dialog = Some(PendingDialog::ConfirmDelete { targets });
                 self.session.confirm_permanent_delete();
             }
+            // Answered by its format buttons, not by a confirm: nothing to
+            // submit, so it stays open.
+            PendingDialog::Compress(request) => {
+                self.session.dialog = Some(PendingDialog::Compress(request));
+            }
         }
         cx.notify();
     }

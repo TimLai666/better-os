@@ -115,16 +115,16 @@ pub struct CopyReport {
 }
 
 /// Removes a temporary destination unless the copy committed it.
-struct TempGuard {
+pub(crate) struct TempGuard {
     path: Option<PathBuf>,
 }
 
 impl TempGuard {
-    fn new(path: PathBuf) -> Self {
+    pub(crate) fn new(path: PathBuf) -> Self {
         Self { path: Some(path) }
     }
 
-    fn commit(&mut self) {
+    pub(crate) fn commit(&mut self) {
         self.path = None;
     }
 }

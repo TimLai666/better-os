@@ -24,7 +24,9 @@ use crate::fsops::{self, FileSnapshot};
 use crate::log::{LogEvent, SkipReason};
 use crate::plan::{InodeKey, ItemKind, Plan, PlanItem, WalkOrder, walk_source};
 use crate::policy::{CopyPolicy, MoveStrategy};
-use crate::spec::{DeleteTarget, Operation, RenamePattern, TrashItemRef, is_usable_name};
+use crate::spec::{
+    ArchiveFormat, DeleteTarget, Operation, RenamePattern, TrashItemRef, is_usable_name,
+};
 
 /// The executor's window onto the job that owns it.
 pub trait JobControl {
@@ -225,6 +227,55 @@ pub fn build_plan(operation: &Operation, policy: &CopyPolicy) -> Plan {
                 plan.items.push(item);
             }
         }
+        Operation::Archive {
+            sources,
+            destination,
+            ..
+        } => {
+            // One item, the archive. The walk here only counts the bytes the
+            // archive will read, which is the honest total; the item walks
+            // again when it runs, and reports anything it cannot read then.
+            let mut counted = Plan::default();
+            for source in sources {
+                walk_source(
+                    source.as_path(),
+                    None,
+                    WalkOrder::Prologue,
+                    policy,
+                    &mut counted,
+                );
+            }
+            let archive = destination.as_path().to_path_buf();
+            let mut item = PlanItem::new(ItemKind::File, archive.clone(), Some(archive));
+            item.bytes = counted.total_bytes();
+            plan.items.push(item);
+        }
+        Operation::Extract {
+            archives,
+            destination,
+        } => {
+            // One item per archive, each going into a folder of its own. The
+            // total is the archives' own size, which is what an extraction
+            // reads; what they unpack to is not known until they are read.
+            for archive in archives {
+                let name = archive
+                    .as_path()
+                    .file_name()
+                    .unwrap_or_else(|| OsStr::new("archive"));
+                let folder = destination
+                    .as_path()
+                    .join(ArchiveFormat::folder_name_for(name));
+                let mut item = PlanItem::new(
+                    ItemKind::File,
+                    archive.as_path().to_path_buf(),
+                    Some(folder),
+                );
+                item.bytes = fs::metadata(archive.as_path())
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0);
+                plan.items.push(item);
+            }
+        }
     }
     plan
 }
@@ -271,7 +322,74 @@ pub fn execute_item(
         },
         Operation::PermanentDelete { targets, .. } => Ok(permanent_delete(item, targets, control)),
         Operation::Checksum { .. } => checksum_one(item, policy, control),
+        Operation::Archive {
+            sources, format, ..
+        } => crate::archive::archive_one(item, sources, *format, policy, control),
+        Operation::Extract { .. } => crate::extract::extract_one(item, policy, control),
     }
+}
+
+/// Where a new destination goes once any conflict about it is settled.
+pub(crate) enum Settled {
+    /// Create it here: the requested path, or the generated name a rename
+    /// answer chose.
+    Proceed(PathBuf),
+    /// The conflict decided the item: skipped, or refused.
+    Finished(ItemOutcome),
+}
+
+/// Raises the conflict an occupied destination is, and applies the answer.
+///
+/// For an operation that creates one new thing — an archive, an extracted
+/// folder — rather than transferring a source. An existing directory is never
+/// overwritten, because replacing it would delete what is inside without
+/// asking; `replace_file` says whether an existing file may be, which is true
+/// for an archive written over an older one and false for a folder that would
+/// have to replace a file.
+pub(crate) fn settle_destination(
+    source: Option<&Path>,
+    destination: &Path,
+    replace_file: bool,
+    control: &mut dyn JobControl,
+) -> Result<Settled, OperationError> {
+    let Some(mut conflict) = detect_conflict(source.unwrap_or(destination), destination) else {
+        return Ok(Settled::Proceed(destination.to_path_buf()));
+    };
+    conflict.source = source.map(Path::to_path_buf);
+    let kind = conflict.kind;
+    Ok(match control.resolve(conflict)? {
+        Resolution::Skip => Settled::Finished(ItemOutcome::Skipped(SkipReason::ConflictSkipped)),
+        Resolution::Cancel => {
+            return Err(OperationError::Cancelled {
+                path: destination.to_path_buf(),
+            });
+        }
+        Resolution::Rename => {
+            let parent = destination.parent().unwrap_or(Path::new("/"));
+            let name = destination
+                .file_name()
+                .unwrap_or_else(|| OsStr::new("unnamed"));
+            Settled::Proceed(next_available_name(parent, name))
+        }
+        Resolution::Overwrite => match fs::symlink_metadata(destination) {
+            _ if !kind.accepts_overwrite() => {
+                Settled::Finished(ItemOutcome::Failed(OperationError::ConflictUnresolved {
+                    path: destination.to_path_buf(),
+                }))
+            }
+            Ok(existing) if existing.is_dir() => {
+                Settled::Finished(ItemOutcome::Failed(OperationError::IsADirectory {
+                    path: destination.to_path_buf(),
+                }))
+            }
+            Ok(_) if !replace_file => {
+                Settled::Finished(ItemOutcome::Failed(OperationError::AlreadyExists {
+                    path: destination.to_path_buf(),
+                }))
+            }
+            _ => Settled::Proceed(destination.to_path_buf()),
+        },
+    })
 }
 
 // --- Create, rename ------------------------------------------------------

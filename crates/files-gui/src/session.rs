@@ -28,8 +28,8 @@ use files_core::{
     TabId, TabSet, TrashLocation,
 };
 use files_operations::{
-    ConflictDecision, DeleteConfirmation, DeleteTarget, JobEngine, JobId, JobSnapshot, JobSpec,
-    OperationError,
+    ArchiveFormat, ConflictDecision, DeleteConfirmation, DeleteTarget, JobEngine, JobId,
+    JobSnapshot, JobSpec, OperationError,
 };
 use files_platform::{MountTable, UserDirectories};
 
@@ -39,7 +39,7 @@ use storage_core::RemovalPolicy;
 
 use crate::apps::{ApplicationDetails, CatalogHandle, LaunchReport};
 use crate::bookmarks::{BookmarkFile, BookmarkStore, PinOutcome};
-use crate::commands::{self, Clipboard, CommandRefusal};
+use crate::commands::{self, ArchiveActions, Clipboard, CommandRefusal, CompressRequest};
 use crate::content::{ContentView, SelectionInput};
 use crate::devices::{
     CollectionMode, DeviceInventory, DeviceLink, DeviceNotice, DeviceRow, NoDeviceLink, is_under,
@@ -139,6 +139,7 @@ impl Notice {
                 CommandRefusal::NotAFilesystemLocation => c.not_writable_here.to_string(),
                 CommandRefusal::UnusableName => c.name_not_usable.to_string(),
                 CommandRefusal::NotInTrash => c.refusal_in_trash.to_string(),
+                CommandRefusal::NotAnArchive => c.not_an_archive.to_string(),
             },
             Notice::Refused(refusal) => crate::i18n::refusal_label(*refusal, c).to_string(),
             Notice::Navigation(error) => match error {
@@ -225,6 +226,9 @@ pub enum PendingDialog {
     ConfirmDelete {
         targets: Vec<DeleteTarget>,
     },
+    /// Compress, waiting for a format. The request holds the selection it was
+    /// opened for.
+    Compress(CompressRequest),
 }
 
 /// One window's worth of state.
@@ -1413,6 +1417,48 @@ impl FilesSession {
             return;
         };
         let built = commands::delete_permanently(targets, DeleteConfirmation::explicit());
+        self.submit_or_notice(built);
+    }
+
+    /// Which of Compress and Extract the current selection offers.
+    ///
+    /// The toolbar asks every frame, so this looks up the selected entries by
+    /// identity rather than walking the whole listing the way
+    /// [`Self::selected_entries`] does to keep them in visible order.
+    pub fn archive_actions(&self) -> ArchiveActions {
+        let model = self.pane().model();
+        let selected: Vec<&Entry> = model
+            .selection()
+            .ids()
+            .filter_map(|id| model.get(id))
+            .collect();
+        commands::archive_actions(self.location(), &selected)
+    }
+
+    /// Opens the format chooser for the selection. Nothing is written until a
+    /// format is picked.
+    pub fn request_compress(&mut self) {
+        let location = self.location().clone();
+        match commands::compress_request(&location, &self.selected_entries()) {
+            Ok(request) => {
+                self.notice = None;
+                self.dialog = Some(PendingDialog::Compress(request));
+            }
+            Err(refusal) => self.notice = Some(Notice::Command(refusal)),
+        }
+    }
+
+    /// Answers the format chooser.
+    pub fn compress(&mut self, format: ArchiveFormat) {
+        let Some(PendingDialog::Compress(request)) = self.dialog.take() else {
+            return;
+        };
+        self.submit_or_notice(request.spec(format));
+    }
+
+    pub fn extract_selection(&mut self) {
+        let location = self.location().clone();
+        let built = commands::extract(&location, &self.selected_entries());
         self.submit_or_notice(built);
     }
 

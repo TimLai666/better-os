@@ -271,6 +271,107 @@ pub enum Operation {
         targets: Vec<LocalPath>,
         algorithm: ChecksumAlgorithm,
     },
+    /// Packs every source, with everything under it, into one new archive
+    /// file. `destination` is the archive itself, not the directory it goes
+    /// in; an archive already there is a conflict like any other destination.
+    Archive {
+        sources: Vec<LocalPath>,
+        destination: LocalPath,
+        format: ArchiveFormat,
+    },
+    /// Unpacks each archive into a new folder named after it inside
+    /// `destination`: `photos.tar.gz` becomes `photos/`. A folder already
+    /// there is a conflict, answered by the job's conflict policy.
+    Extract {
+        archives: Vec<LocalPath>,
+        destination: LocalPath,
+    },
+}
+
+/// The archive formats Better Files writes and reads.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveFormat {
+    Zip,
+    Tar,
+    TarGz,
+    TarZst,
+}
+
+/// Every name suffix an archive is recognised by, longest first so `.tar.gz`
+/// is found before `.gz` could be considered, and the format each one means.
+const ARCHIVE_SUFFIXES: [(&[u8], ArchiveFormat); 6] = [
+    (b".tar.zst", ArchiveFormat::TarZst),
+    (b".tar.gz", ArchiveFormat::TarGz),
+    (b".tzst", ArchiveFormat::TarZst),
+    (b".tgz", ArchiveFormat::TarGz),
+    (b".tar", ArchiveFormat::Tar),
+    (b".zip", ArchiveFormat::Zip),
+];
+
+impl ArchiveFormat {
+    /// In the order a format chooser offers them.
+    pub const ALL: [ArchiveFormat; 4] = [
+        ArchiveFormat::Zip,
+        ArchiveFormat::TarGz,
+        ArchiveFormat::TarZst,
+        ArchiveFormat::Tar,
+    ];
+
+    /// The extension a new archive of this format is given, without the dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            ArchiveFormat::Zip => "zip",
+            ArchiveFormat::Tar => "tar",
+            ArchiveFormat::TarGz => "tar.gz",
+            ArchiveFormat::TarZst => "tar.zst",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            ArchiveFormat::Zip => "files.archive.format.zip",
+            ArchiveFormat::Tar => "files.archive.format.tar",
+            ArchiveFormat::TarGz => "files.archive.format.tar_gz",
+            ArchiveFormat::TarZst => "files.archive.format.tar_zst",
+        }
+    }
+
+    /// The format a file name says an archive is in, ignoring ASCII case, with
+    /// the length of the suffix that said so. `None` for a name that is not
+    /// an archive's, including a bare `.gz` or `.zst`, which compress one file
+    /// rather than holding several.
+    pub fn from_file_name(name: &OsStr) -> Option<ArchiveFormat> {
+        suffix_of(name).map(|(format, _)| format)
+    }
+
+    /// The folder an archive is extracted into: its name without the archive
+    /// suffix. A name that would be left empty or unusable, such as `.zip`,
+    /// gives `archive`.
+    pub fn folder_name_for(name: &OsStr) -> OsString {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let bytes = name.as_bytes();
+        let stem = match suffix_of(name) {
+            Some((_, length)) => &bytes[..bytes.len() - length],
+            None => bytes,
+        };
+        let stem = OsString::from_vec(stem.to_vec());
+        if is_usable_name(&stem) {
+            stem
+        } else {
+            OsString::from("archive")
+        }
+    }
+}
+
+fn suffix_of(name: &OsStr) -> Option<(ArchiveFormat, usize)> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = name.as_bytes();
+    ARCHIVE_SUFFIXES.iter().find_map(|(suffix, format)| {
+        let length = suffix.len();
+        (bytes.len() >= length && bytes[bytes.len() - length..].eq_ignore_ascii_case(suffix))
+            .then_some((*format, length))
+    })
 }
 
 /// Which digest a checksum job computes.
@@ -301,6 +402,8 @@ pub enum OperationKind {
     RestoreFromTrash,
     PermanentDelete,
     Checksum,
+    Archive,
+    Extract,
 }
 
 impl OperationKind {
@@ -317,6 +420,8 @@ impl OperationKind {
             OperationKind::RestoreFromTrash => "files.operation.kind.restore_from_trash",
             OperationKind::PermanentDelete => "files.operation.kind.permanent_delete",
             OperationKind::Checksum => "files.operation.kind.checksum",
+            OperationKind::Archive => "files.operation.kind.archive",
+            OperationKind::Extract => "files.operation.kind.extract",
         }
     }
 
@@ -333,6 +438,10 @@ impl OperationKind {
     }
 
     /// Whether the job has a safe compensating action.
+    ///
+    /// Archive and extract claim none, because they need none: each builds its
+    /// result under a temporary name and only renames it into place once it is
+    /// complete, so a cancelled or failed one leaves nothing to undo.
     ///
     /// A copy can be rolled back by deleting exactly the destinations it
     /// created, and a create by removing what it created. A move cannot: after
@@ -359,6 +468,8 @@ impl OperationKind {
                 | OperationKind::Move
                 | OperationKind::Duplicate
                 | OperationKind::Checksum
+                | OperationKind::Archive
+                | OperationKind::Extract
         )
     }
 }
@@ -377,6 +488,8 @@ impl Operation {
             Operation::RestoreFromTrash { .. } => OperationKind::RestoreFromTrash,
             Operation::PermanentDelete { .. } => OperationKind::PermanentDelete,
             Operation::Checksum { .. } => OperationKind::Checksum,
+            Operation::Archive { .. } => OperationKind::Archive,
+            Operation::Extract { .. } => OperationKind::Extract,
         }
     }
 }
@@ -459,6 +572,35 @@ impl JobSpec {
                     if pattern.apply(current, index as u64).is_none() {
                         return Err(OperationError::InvalidName {
                             name: target.as_path().to_path_buf(),
+                        });
+                    }
+                }
+            }
+            Operation::Archive { destination, .. } => {
+                let usable = destination
+                    .as_path()
+                    .file_name()
+                    .is_some_and(is_usable_name);
+                if !usable {
+                    return Err(OperationError::InvalidName {
+                        name: destination.as_path().to_path_buf(),
+                    });
+                }
+            }
+            Operation::Extract { archives, .. } => {
+                // The format is decided from the content when the job runs;
+                // the name is what decides the folder, and a name that is not
+                // an archive's would give a folder named after a text file.
+                for archive in archives {
+                    let recognised = archive
+                        .as_path()
+                        .file_name()
+                        .and_then(ArchiveFormat::from_file_name)
+                        .is_some();
+                    if !recognised {
+                        return Err(OperationError::ArchiveUnreadable {
+                            path: archive.as_path().to_path_buf(),
+                            reason: "files.archive.error.unknown_format".to_string(),
                         });
                     }
                 }

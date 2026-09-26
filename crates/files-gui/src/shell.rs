@@ -31,6 +31,7 @@ impl FilesApp {
         let mode = self.session.preferences.view_mode;
         let order = self.session.preferences.order();
         let active_jobs = crate::opcenter::active_count(&self.session.jobs);
+        let archive = self.session.archive_actions();
 
         h_flex()
             .w_full()
@@ -114,6 +115,24 @@ impl FilesApp {
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.session.toggle_hidden();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("compress")
+                    .label(c.compress)
+                    .disabled(!archive.compress)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.session.request_compress();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("extract")
+                    .label(c.extract)
+                    .disabled(!archive.extract)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.session.extract_selection();
                         cx.notify();
                     })),
             )

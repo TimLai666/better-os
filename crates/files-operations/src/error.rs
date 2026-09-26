@@ -155,6 +155,46 @@ pub enum OperationError {
     /// restore needs is gone.
     #[error("files.operation.error.trash_unavailable:{reason}")]
     TrashUnavailable { reason: String },
+    /// An archive entry that would land outside the folder it is extracted
+    /// into, or would write through a link to get there, or cannot be stored
+    /// in the chosen format. `entry` is the entry's own name as the archive
+    /// spells it, bytes and all, and `reason` a stable key
+    /// (`files.archive.entry.*`) saying which rule it broke. Refusing one
+    /// entry stops the whole extraction: the folder is only ever complete.
+    #[error(
+        "files.operation.error.archive_entry_refused:{}:{}:{reason}",
+        display_path(.path),
+        display_name(.entry)
+    )]
+    ArchiveEntryRefused {
+        #[serde(with = "crate::store::path_bytes")]
+        path: PathBuf,
+        #[serde(with = "crate::store::path_bytes")]
+        entry: PathBuf,
+        reason: String,
+    },
+    /// The archive unpacks to more than the job's limit allows. `maximum` is
+    /// the limit that was reached, so the message can say what it was.
+    #[error(
+        "files.operation.error.archive_limit_exceeded:{}:{}:{maximum}",
+        display_path(.path),
+        .limit.key()
+    )]
+    ArchiveLimitExceeded {
+        #[serde(with = "crate::store::path_bytes")]
+        path: PathBuf,
+        limit: ArchiveLimit,
+        maximum: u64,
+    },
+    /// The file is not an archive this build reads, or it is damaged: a
+    /// truncated stream, a checksum that does not match, an encrypted zip
+    /// entry. `reason` is what the decoder said.
+    #[error("files.operation.error.archive_unreadable:{}:{reason}", display_path(.path))]
+    ArchiveUnreadable {
+        #[serde(with = "crate::store::path_bytes")]
+        path: PathBuf,
+        reason: String,
+    },
     /// Anything the classifier did not recognise, carrying the raw errno so a
     /// bug report says which one it was.
     #[error("files.operation.error.io:{}:{reason}", display_path(.path))]
@@ -164,6 +204,25 @@ pub enum OperationError {
         reason: String,
         errno: Option<i32>,
     },
+}
+
+/// Which extraction limit an archive reached.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveLimit {
+    /// [`crate::policy::ExtractLimits::max_bytes`]: bytes actually written.
+    UnpackedBytes,
+    /// [`crate::policy::ExtractLimits::max_entries`]: entries read.
+    Entries,
+}
+
+impl ArchiveLimit {
+    pub fn key(self) -> &'static str {
+        match self {
+            ArchiveLimit::UnpackedBytes => "unpacked_bytes",
+            ArchiveLimit::Entries => "entries",
+        }
+    }
 }
 
 impl OperationError {
@@ -218,6 +277,9 @@ impl OperationError {
             | Self::VerificationFailed { path, .. }
             | Self::Cancelled { path }
             | Self::ConflictUnresolved { path }
+            | Self::ArchiveEntryRefused { path, .. }
+            | Self::ArchiveLimitExceeded { path, .. }
+            | Self::ArchiveUnreadable { path, .. }
             | Self::Io { path, .. } => Some(path),
             Self::InvalidName { name } => Some(name),
             Self::ConfirmationRequired | Self::Interrupted | Self::TrashUnavailable { .. } => None,
@@ -250,6 +312,9 @@ impl OperationError {
             Self::Interrupted => "files.operation.error.interrupted",
             Self::ConflictUnresolved { .. } => "files.operation.error.conflict_unresolved",
             Self::TrashUnavailable { .. } => "files.operation.error.trash_unavailable",
+            Self::ArchiveEntryRefused { .. } => "files.operation.error.archive_entry_refused",
+            Self::ArchiveLimitExceeded { .. } => "files.operation.error.archive_limit_exceeded",
+            Self::ArchiveUnreadable { .. } => "files.operation.error.archive_unreadable",
             Self::Io { .. } => "files.operation.error.io",
         }
     }
@@ -353,6 +418,41 @@ mod tests {
                 .to_string()
                 .starts_with("files.operation.error.permission_denied:")
         );
+    }
+
+    #[test]
+    fn an_archive_refusal_names_the_entry_and_the_rule_it_broke() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let error = OperationError::ArchiveEntryRefused {
+            path: "/home/a/evil.tar".into(),
+            entry: PathBuf::from(OsStr::from_bytes(b"../\xffetc")),
+            reason: "files.archive.entry.parent_traversal".to_string(),
+        };
+        assert_eq!(error.path(), Some(Path::new("/home/a/evil.tar")));
+        assert_eq!(
+            error.to_string(),
+            "files.operation.error.archive_entry_refused:/home/a/evil.tar:../\u{fffd}etc:files.archive.entry.parent_traversal"
+        );
+        // The entry's bytes survive the record even though the rendering
+        // cannot show them.
+        let text = serde_json::to_string(&error).unwrap();
+        assert_eq!(
+            serde_json::from_str::<OperationError>(&text).unwrap(),
+            error
+        );
+        assert!(!error.is_retryable());
+
+        let limit = OperationError::ArchiveLimitExceeded {
+            path: "/a.zip".into(),
+            limit: ArchiveLimit::Entries,
+            maximum: 3,
+        };
+        assert_eq!(
+            limit.to_string(),
+            "files.operation.error.archive_limit_exceeded:/a.zip:entries:3"
+        );
+        assert!(!limit.is_retryable());
     }
 
     #[test]

@@ -1411,6 +1411,8 @@ fn chrome_labels(c: &'static crate::i18n::Copy) -> Vec<&'static str> {
         c.new_tab,
         c.close_tab,
         c.reopen_closed_tab,
+        c.compress,
+        c.extract,
     ]
 }
 
@@ -1541,6 +1543,8 @@ fn both_languages_define_every_string_and_none_of_them_is_empty() {
             OperationKind::RestoreFromTrash,
             OperationKind::PermanentDelete,
             OperationKind::Checksum,
+            OperationKind::Archive,
+            OperationKind::Extract,
         ] {
             assert!(!crate::i18n::job_kind_label(kind, c).trim().is_empty());
         }

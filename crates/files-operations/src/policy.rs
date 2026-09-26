@@ -28,6 +28,10 @@
 //! either the previous content or nothing — never a truncated file under the
 //! real name. The temporary is removed on every exit path.
 //!
+//! An archive is written the same way, under a temporary name beside it, and
+//! an extraction into a temporary directory renamed to its folder once every
+//! entry is in; [`ExtractLimits`] bounds what one extraction may write.
+//!
 //! A move is a rename when source and destination share a filesystem, and a
 //! copy, a verification, then a source delete when they do not. The source is
 //! deleted only after the destination verifies, and only after a metadata
@@ -131,6 +135,45 @@ pub enum MoveStrategy {
     AlwaysCopyThenDelete,
 }
 
+/// The most an extraction writes, in bytes of unpacked content, before it
+/// stops: 64 GiB.
+///
+/// An archive is untrusted input and its compressed size says nothing about
+/// what it unpacks to — a few kilobytes of zip can declare terabytes of
+/// zeroes. The limit is on what is actually written, counted as it is
+/// written, so an entry that understates its own size is stopped too. 64 GiB
+/// is larger than any archive a desktop user plausibly extracts through a file
+/// manager and smaller than the free space on most disks the extraction could
+/// fill.
+pub const MAX_EXTRACTED_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+
+/// The most entries an extraction creates before it stops: one million.
+///
+/// A million-entry archive is a source tree or a package mirror, not a
+/// download a person unpacks by hand, and an archive of empty entries costs
+/// inodes and directory scans that no byte limit sees.
+pub const MAX_EXTRACTED_ENTRIES: u64 = 1_000_000;
+
+/// The ceilings one extraction is held to.
+///
+/// The defaults are [`MAX_EXTRACTED_BYTES`] and [`MAX_EXTRACTED_ENTRIES`].
+/// Carried in the policy rather than read from the constants directly so the
+/// suite can prove the stop with a small archive instead of writing 64 GiB.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExtractLimits {
+    pub max_bytes: u64,
+    pub max_entries: u64,
+}
+
+impl Default for ExtractLimits {
+    fn default() -> Self {
+        Self {
+            max_bytes: MAX_EXTRACTED_BYTES,
+            max_entries: MAX_EXTRACTED_ENTRIES,
+        }
+    }
+}
+
 /// The whole policy for one job.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CopyPolicy {
@@ -152,6 +195,8 @@ pub struct CopyPolicy {
     pub chunk_bytes: usize,
     /// Whether the destination is re-read and compared after each item.
     pub verify: bool,
+    /// How much an extraction may unpack before it stops.
+    pub extract_limits: ExtractLimits,
 }
 
 impl Default for CopyPolicy {
@@ -168,6 +213,7 @@ impl Default for CopyPolicy {
             moves: MoveStrategy::RenameWhenPossible,
             chunk_bytes: 1024 * 1024,
             verify: true,
+            extract_limits: ExtractLimits::default(),
         }
     }
 }
