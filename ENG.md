@@ -330,7 +330,8 @@ suite, not only the two that exist today.
   would put the whole Better Monitor metric-contract stack in every Better Awake
   binary to answer whether the charger is plugged in.
 - `touchpad-platform` writes and reads what it claims. Its GVariant change-set
-  encoder is pinned byte-for-byte against values GLib produced, including the
+  encoder, which lives in `defaults-platform` and is shared with Better
+  Defaults, is pinned byte-for-byte against values GLib produced, including the
   boundary where framing offsets widen, because a hand-rolled encoder that
   drifts from the specification is accepted by the dconf service and writes
   nothing. Device parsing runs over recorded `/proc` and `/sys` trees through a
@@ -349,8 +350,13 @@ suite, not only the two that exist today.
   provable before a real adapter exists for that kind. Its two real adapters are
   tested against recorded input rather than the running desktop: `mimeapps.list`
   content for the XDG adapter, and a `dconf compile` fixture database for the
-  GNOME one. `defaults-store` is the snapshot seam, tested for round-trip,
-  history, and every way a snapshot on disk can be unusable.
+  GNOME one. The GNOME adapter's writes go through a `ChangesetSender` seam: a
+  fake stands in where the point is a refused or unconfirmed write, and a real
+  `dconf-service` on a private bus, with every XDG directory in a temporary
+  directory and no activatable service, is where a change is written, read
+  back, and reset. `defaults-store` is the snapshot seam, tested for round-trip,
+  history, the version 1 files written before per-key capture, and every way a
+  snapshot on disk can be unusable.
 - `files-operations` is tested by dropping the owning UI handle mid-job and by
   injecting full disks, permission errors, and a device that disappears
   mid-copy.

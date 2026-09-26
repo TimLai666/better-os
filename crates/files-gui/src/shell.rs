@@ -659,8 +659,22 @@ impl FilesApp {
         let warning = row.is_warning();
         let volatile = row.identity_volatile;
         let unsafe_removal = row.unsafe_removal.is_some();
+        // The policy the device does not have, offered as one action. Its
+        // label is the existing policy name, so the words match the state line
+        // and the confirmation.
+        let (other_policy, other_label) = match row.policy {
+            storage_core::RemovalPolicy::DirectRemoval => (
+                storage_core::RemovalPolicy::Performance,
+                c.device_policy_performance,
+            ),
+            storage_core::RemovalPolicy::Performance => (
+                storage_core::RemovalPolicy::DirectRemoval,
+                c.device_policy_direct_removal,
+            ),
+        };
+        let policy_path = row.object_path.clone();
 
-        h_flex()
+        let line = h_flex()
             .w_full()
             .items_start()
             .gap_1()
@@ -720,6 +734,31 @@ impl FilesApp {
                     .tooltip(c.device_eject)
                     .on_click(cx.listener(move |this, _, _window, cx| {
                         this.session.eject_device(&eject_path);
+                        cx.notify();
+                    })),
+            );
+
+        v_flex()
+            .w_full()
+            .child(line)
+            .child(
+                // A clickable line rather than a button: the label has to wrap
+                // in a 236-pixel sidebar at 150%, and a button clips instead.
+                // It carries a click handler and a hover state, which is what
+                // makes a `div` an action under `better_ui`'s affordance rule.
+                div()
+                    .id(SharedString::from(format!("policy-{policy_path}")))
+                    .ml_8()
+                    .mr_2()
+                    .px_1()
+                    .rounded(cx.theme().radius)
+                    .text_xs()
+                    .text_color(cx.theme().link)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(cx.theme().accent))
+                    .child(c.device_policy_switch.replace("{policy}", other_label))
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.session.choose_policy(&policy_path, other_policy);
                         cx.notify();
                     })),
             )

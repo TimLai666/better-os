@@ -266,15 +266,18 @@ pub enum EntryBody {
 ///
 /// Selection has to survive entries being inserted around it as a listing
 /// streams in, so it cannot be an index. Within one listing a name is unique
-/// for a directory and a desktop ID is unique for the Applications location.
+/// for a directory, a desktop ID is unique for the Applications location, and a
+/// stored path is unique across every trash the Trash location merges.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum EntryId {
     /// A filename, as the directory reported it.
     Name(String),
     /// A desktop ID from the shared catalog.
     Application(String),
-    /// A trash item stem.
-    TrashItem(String),
+    /// Where a trashed item is stored. Not its stem: the Trash view merges the
+    /// home trash with every device's own, and two of them can each hold a
+    /// `report.txt`.
+    TrashItem(PathBuf),
 }
 
 /// One row in a listing.
@@ -321,7 +324,9 @@ impl Entry {
             EntryBody::Application(facts) => {
                 EntryId::Application(facts.desktop_id.as_str().to_string())
             }
-            EntryBody::Trashed(facts) => EntryId::TrashItem(facts.item.clone()),
+            EntryBody::Trashed(facts) => {
+                EntryId::TrashItem(facts.stored_path.as_path().to_path_buf())
+            }
         }
     }
 

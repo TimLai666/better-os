@@ -127,9 +127,62 @@ impl ServiceClient {
 
 /// Turns a `StatusChanged` signal body into the status it carries.
 pub fn status_from_event(document: &str) -> Result<Option<StatusDocument>, ClientError> {
+    Ok(match service_event(document)? {
+        ServiceEvent::Status(status) => Some(*status),
+        ServiceEvent::LowBatteryStop(_) | ServiceEvent::Other => None,
+    })
+}
+
+/// A session the service stopped because the battery fell below the
+/// threshold the session carried.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LowBatteryStop {
+    pub session_id: u64,
+    /// The threshold that was crossed, in percent.
+    pub threshold_percent: u8,
+    /// The reading that crossed it.
+    pub percent: u8,
+}
+
+/// What one signal body means to the tray.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ServiceEvent {
+    Status(Box<StatusDocument>),
+    LowBatteryStop(LowBatteryStop),
+    /// Anything the tray has nothing to do for. A session that ended for
+    /// another reason is shown by the status that follows it.
+    Other,
+}
+
+/// Reads one signal body the service pushed.
+///
+/// A low-battery stop that does not say which threshold it crossed is an
+/// error rather than a notification with the number missing.
+pub fn service_event(document: &str) -> Result<ServiceEvent, ClientError> {
     match awake_ipc::AwakeEvent::from_json(document)?.body {
-        EventBody::StatusChanged(status) => Ok(Some(*status)),
-        EventBody::SessionEnded { .. } | EventBody::BackendFailure { .. } => Ok(None),
+        EventBody::StatusChanged(status) => Ok(ServiceEvent::Status(status)),
+        EventBody::SessionEnded {
+            session_id,
+            cause,
+            battery_stop_percent,
+            battery_percent,
+        } if cause == awake_core::EndCause::BatteryThreshold { percent: 0 }.as_key() => {
+            match (battery_stop_percent, battery_percent) {
+                (Some(threshold_percent), Some(percent)) => {
+                    Ok(ServiceEvent::LowBatteryStop(LowBatteryStop {
+                        session_id,
+                        threshold_percent,
+                        percent,
+                    }))
+                }
+                _ => Err(ClientError::Protocol(format!(
+                    "awake.tray.error.battery_stop_without_threshold:{session_id}"
+                ))),
+            }
+        }
+        EventBody::SessionEnded { .. } | EventBody::BackendFailure { .. } => {
+            Ok(ServiceEvent::Other)
+        }
     }
 }
 
@@ -245,6 +298,50 @@ mod tests {
         .to_json()
         .unwrap();
         assert_eq!(status_from_event(&document).unwrap(), None);
+    }
+
+    fn session_ended(
+        cause: &str,
+        battery_stop_percent: Option<u8>,
+        battery_percent: Option<u8>,
+    ) -> String {
+        awake_ipc::AwakeEvent::new(EventBody::SessionEnded {
+            session_id: 3,
+            cause: cause.to_string(),
+            battery_stop_percent,
+            battery_percent,
+        })
+        .to_json()
+        .unwrap()
+    }
+
+    #[test]
+    fn a_low_battery_stop_is_read_with_the_threshold_it_crossed() {
+        assert_eq!(
+            service_event(&session_ended("battery_threshold", Some(20), Some(19))).unwrap(),
+            ServiceEvent::LowBatteryStop(LowBatteryStop {
+                session_id: 3,
+                threshold_percent: 20,
+                percent: 19,
+            })
+        );
+    }
+
+    #[test]
+    fn a_session_that_ended_for_another_reason_is_not_a_low_battery_stop() {
+        for cause in ["expired", "trigger_cleared", "service_shutdown"] {
+            assert_eq!(
+                service_event(&session_ended(cause, Some(20), None)).unwrap(),
+                ServiceEvent::Other,
+                "{cause}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_low_battery_stop_that_does_not_say_its_threshold_is_an_error() {
+        assert!(service_event(&session_ended("battery_threshold", None, Some(19))).is_err());
+        assert!(service_event(&session_ended("battery_threshold", Some(20), None)).is_err());
     }
 
     #[test]

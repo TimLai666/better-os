@@ -13,7 +13,7 @@ pub mod service;
 pub use backend::{
     BackendError, Clock, InhibitWhat, InhibitorBackend, LeaseHealth, LeaseRequest, SystemClock,
 };
-pub use engine::{AwakeEngine, BatteryStop, INHIBITOR_WHO};
+pub use engine::{AwakeEngine, BatteryStop, EndedSession, INHIBITOR_WHO};
 pub use logind::LogindBackend;
 pub use rules::{RuleDriver, RuleEdit};
 pub use service::{AwakeDbusService, BUS_NAME, INTERFACE_NAME, OBJECT_PATH};

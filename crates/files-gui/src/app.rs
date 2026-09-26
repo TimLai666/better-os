@@ -20,6 +20,7 @@ use crate::apps::CatalogHandle;
 use crate::devicelink::StorageLink;
 use crate::i18n::Locale;
 use crate::keys::{Modifiers, command_for};
+use crate::launch::StartPlan;
 use crate::layout::{COMPACT_VIEWPORT_WIDTH, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, visible_rows};
 use crate::openwith::SessionDefaults;
 use crate::prefs::PreferenceStore;
@@ -67,7 +68,7 @@ pub struct FilesApp {
 }
 
 impl FilesApp {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>, start: StartPlan) -> Self {
         let preference_store = PreferenceStore::from_env();
         let loaded = preference_store.load();
         let preferences = loaded.preferences;
@@ -81,13 +82,18 @@ impl FilesApp {
         // change, and the answer to any change is a whole reload, because
         // precedence means one new file can reveal a different application.
         start_catalog_thread(catalog.clone());
-        let start = directories
+        // One link, two holders: the session draws device states from it, and
+        // the job tracker reports this process's writes through it — from a
+        // job's own thread, and for as long as the job runs.
+        let link: Arc<dyn crate::devices::DeviceLink> = Arc::new(StorageLink::start());
+        crate::shared_tracker().attach(link.clone());
+        let default = directories
             .home()
             .cloned()
             .unwrap_or_else(|| files_core::Location::Local(files_core::LocalPath::root()));
 
         let mut session = FilesSession::new(SessionSetup {
-            start,
+            start: start.location(default),
             preferences,
             preference_store,
             bookmark_store: crate::bookmarks::BookmarkStore::from_env(),
@@ -100,13 +106,25 @@ impl FilesApp {
             // The real thing: the platform crate spawns from an argument
             // vector built out of the desktop entry.
             spawner: Box::new(app_catalog_platform::SystemSpawner),
-            link: Box::new(StorageLink::start()),
+            link: Box::new(crate::devices::SharedLink(link)),
             preview: PreviewPanel::default(),
         });
         session.preview.open = session.preferences.preview_open;
         session.search.include_hidden = session.preferences.search_hidden;
         if let Some(problem) = loaded.problem {
             session.notice = Some(Notice::Key(problem));
+        }
+        // A file handed to the window opens in its folder, selected. The
+        // selection is set before the listing has delivered anything and holds
+        // until the entry arrives.
+        if let Some(name) = start.selection() {
+            session.select_by_name(name);
+        }
+        if start.needs_notice() {
+            session.notice = Some(Notice::Start {
+                problem: start.problem,
+                ignored: start.ignored,
+            });
         }
 
         let locale = session.locale;
@@ -252,6 +270,15 @@ impl FilesApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The Performance mode confirmation is answered with its own buttons;
+        // Escape is Cancel, and nothing else reaches the window behind it.
+        if self.session.policy_confirmation.is_some() {
+            if event.keystroke.key == "escape" {
+                self.session.cancel_policy();
+                cx.notify();
+            }
+            return;
+        }
         // The text fields own their own keys while one is focused.
         if self.editing_path || self.editing_search || self.session.dialog.is_some() {
             if event.keystroke.key == "escape" {
@@ -461,8 +488,8 @@ impl Focusable for FilesApp {
     }
 }
 
-/// Opens the window.
-pub fn run() {
+/// Opens the window at the location the command line resolved to.
+pub fn run(start: StartPlan) {
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
 
     app.run(move |cx| {
@@ -476,7 +503,7 @@ pub fn run() {
 
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
-                let view = cx.new(|cx| FilesApp::new(window, cx));
+                let view = cx.new(|cx| FilesApp::new(window, cx, start));
                 cx.new(|cx| gpui_component::Root::new(view, window, cx))
             })
             .expect("failed to open Better Files window");

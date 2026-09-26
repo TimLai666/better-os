@@ -12,6 +12,7 @@ use awake_tray::controller::TrayController;
 use awake_tray::dbusmenu::DbusMenu;
 use awake_tray::item::StatusNotifierItem;
 use awake_tray::labels::Locale;
+use awake_tray::notify::{DesktopNotifier, handle_event};
 use awake_tray::sni::{ITEM_PATH, MENU_PATH, TrayAvailability, register_and_verify};
 
 #[tokio::main(flavor = "multi_thread")]
@@ -27,11 +28,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let controller = Arc::new(TrayController::new(
-        client,
-        Locale::from_environment(),
-        status,
-    ));
+    let locale = Locale::from_environment();
+    let controller = Arc::new(TrayController::new(client, locale, status));
 
     connection
         .object_server()
@@ -62,6 +60,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // A missing notification service costs the low-battery notification and
+    // nothing else, so it is said and the tray starts anyway.
+    let notifier = match DesktopNotifier::connect(&connection, locale).await {
+        Ok(notifier) => Some(notifier),
+        Err(error) => {
+            eprintln!("better-awake-tray: desktop notifications are unavailable: {error}");
+            None
+        }
+    };
+
     // Follow the service rather than polling it, so an idle tray costs nothing:
     // no timer, no busy loop, and no countdown recomputed when nobody is
     // looking at the menu.
@@ -80,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::future::poll_fn(|context| stream.as_mut().poll_next(context)).await
         {
             let Ok(args) = signal.args() else { continue };
-            if let Ok(Some(status)) = awake_tray::status_from_event(args.event_json()) {
+            if let Some(status) = handle_event(args.event_json(), notifier.as_ref()).await {
                 updates.set_status(status).await;
             }
         }

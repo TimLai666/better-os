@@ -15,7 +15,7 @@
 //! | POSIX ACLs | carried only where the filesystem exposes them as `system.posix_acl_*` extended attributes | there is no portable unprivileged interface beyond that, and a silently dropped ACL is reported in the operation log rather than assumed away |
 //! | Extended attributes | copied where the destination supports them, per-attribute failures logged and not fatal | a destination filesystem that has no xattrs must not fail a copy |
 //! | Symbolic links | copied as links, pointing at the same target text | following them would silently duplicate the target and turn one 4 GB link farm into forty |
-//! | Hard links | not preserved between separately copied files | detecting shared inodes across a whole job needs a job-wide inode map, which is a real feature and not this ticket |
+//! | Hard links | preserved within one job: the first path to an inode is copied and every later path is linked to that copy, when the destination filesystem allows `link(2)` | a backup tree of hard-linked snapshots must not come out several times its size. A refused link, or a first copy that changed since the job wrote it, is copied instead and logged |
 //! | Sparse regions | preserved through `SEEK_HOLE`/`SEEK_DATA` where the filesystem answers, dense copy where it does not | a 100 GB sparse image must not become 100 GB of zeroes on the destination |
 //! | Durability | `fsync` on each file then on its parent directory when the destination is removable | the flush that makes an external disk safe to unplug is `storage-service`'s job; this is the file-level half of it |
 //!

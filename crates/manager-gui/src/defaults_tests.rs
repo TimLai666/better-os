@@ -710,6 +710,140 @@ fn a_partly_successful_run_says_so_rather_than_claiming_success() {
     );
 }
 
+fn per_type(pairs: &[(&str, ObservedValue)]) -> ObservedValue {
+    ObservedValue::Mixed {
+        per_key: pairs
+            .iter()
+            .map(|(key, observed)| better_core::defaults::KeyObservation {
+                key: key.to_string(),
+                observed: observed.clone(),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn a_group_whose_types_open_in_different_applications_lists_each_owner() {
+    let mixed = per_type(&[
+        ("image/png", observed("org.gnome.eog.desktop")),
+        ("image/jpeg", observed("org.gnome.gThumb.desktop")),
+        ("image/webp", ObservedValue::Unset),
+    ]);
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let label = observed_label(locale, &mixed);
+        assert!(
+            label.contains("image/png: org.gnome.eog.desktop"),
+            "{label}"
+        );
+        assert!(
+            label.contains("image/jpeg: org.gnome.gThumb.desktop"),
+            "{label}"
+        );
+        assert!(
+            label.contains(&format!("image/webp: {}", copy(locale).value_none)),
+            "{label}"
+        );
+    }
+
+    let mut apply = applying("better-files", "image-viewer");
+    apply.current = mixed.clone();
+    apply.captured_previous = None;
+    let review = review_of(PlanKind::Apply, vec![apply]);
+    let entry = &review.components()[0].entries[0];
+    assert_eq!(entry.current_owner, observed_label(Locale::EnUs, &mixed));
+    assert!(entry.changes_something);
+
+    let mut restore = entry_with_capture(mixed.clone());
+    restore.action = PlanAction::Restore { to: mixed.clone() };
+    let review = review_of(PlanKind::Restore, vec![restore]);
+    let entry = &review.components()[0].entries[0];
+    assert_eq!(entry.new_owner, observed_label(Locale::EnUs, &mixed));
+    assert!(entry.restorable);
+    assert_eq!(entry.restore_class, RestoreClass::Safe);
+}
+
+fn entry_with_capture(captured: ObservedValue) -> PlanEntry {
+    let mut entry = applying("better-files", "image-viewer");
+    entry.current = observed("io.betteros.Files.desktop");
+    entry.captured_previous = Some(captured);
+    entry
+}
+
+#[test]
+fn a_group_restored_type_by_type_reports_what_each_type_now_reads() {
+    let key = |key: &str, outcome: EntryOutcome| defaults_core::KeyOutcome {
+        key: key.to_string(),
+        outcome,
+    };
+    let run = |keys: Vec<defaults_core::KeyOutcome>| DefaultsOutcome {
+        kind: PlanKind::Restore,
+        results: vec![EntryResult {
+            component: component("better-files"),
+            integration: integration("image-viewer"),
+            outcome: EntryOutcome::PerKey { keys },
+        }],
+        baseline_snapshot: None,
+        recorded_snapshot: Some("snapshot".to_string()),
+    };
+    let restored = |value: &str| EntryOutcome::Restored {
+        value: observed(value),
+    };
+
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let c = copy(locale);
+        let all = run(vec![
+            key("image/png", restored("org.gnome.eog.desktop")),
+            key("image/jpeg", restored("org.gnome.gThumb.desktop")),
+        ]);
+        let row = &result_rows(locale, &all, &|component| component.to_string())[0];
+        assert_eq!(row.label, c.result_restored);
+        assert_eq!(row.tone, ResultTone::Success);
+        let detail = row.detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains("image/png: org.gnome.eog.desktop"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("image/jpeg: org.gnome.gThumb.desktop"),
+            "{detail}"
+        );
+
+        let manual = run(vec![
+            key("image/png", restored("org.gnome.eog.desktop")),
+            key(
+                "image/webp",
+                EntryOutcome::ManualActionRequired {
+                    reason: "xdg.clearing_a_default_is_not_supported".to_string(),
+                    detail: None,
+                },
+            ),
+        ]);
+        let row = &result_rows(locale, &manual, &|component| component.to_string())[0];
+        assert_eq!(row.label, c.result_partial);
+        assert_eq!(row.tone, ResultTone::Warning);
+        let detail = row.detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains(&format!("image/webp: {}", c.manual_action_required)),
+            "{detail}"
+        );
+        assert!(!detail.contains("xdg."), "{detail} leaks a machine key");
+
+        let failed = run(vec![
+            key("image/png", restored("org.gnome.eog.desktop")),
+            key(
+                "image/jpeg",
+                EntryOutcome::NotVerified {
+                    observed: observed("io.betteros.Files.desktop"),
+                },
+            ),
+        ]);
+        let row = &result_rows(locale, &failed, &|component| component.to_string())[0];
+        assert_eq!(row.label, c.result_partial);
+        assert_eq!(row.tone, ResultTone::Failure);
+        assert_eq!(outcome_headline(locale, &failed), c.result_partial);
+    }
+}
+
 #[test]
 fn the_last_verified_time_comes_from_the_newest_snapshot_that_confirmed_it() {
     let directory = tempfile::tempdir().expect("a temporary directory");

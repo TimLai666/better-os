@@ -215,3 +215,209 @@ fn a_record_left_by_a_newer_build_is_reported_rather_than_deleted_or_run() {
     ));
     assert!(recovery.damaged[0].0.exists(), "the record was deleted");
 }
+
+fn journal_path(store: &JobStore, id: u64) -> std::path::PathBuf {
+    store.root().join(format!("job-{id:020}.items.jsonl"))
+}
+
+#[test]
+fn a_running_job_appends_item_progress_and_a_finished_one_is_compacted() {
+    let root = tempfile::tempdir().unwrap();
+    let store = JobStore::new(root.path().join("jobs"));
+    let source = root.path().join("source");
+    fs::create_dir(&source).unwrap();
+    for index in 0..3_000 {
+        write_pattern(&source.join(format!("file-{index:05}.bin")), 16);
+    }
+    let destination = root.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+
+    let engine = engine_with(&store);
+    let handle = engine
+        .submit(JobSpec::new(Operation::Copy {
+            sources: vec![local(&source)],
+            destination: local(&destination),
+        }))
+        .unwrap();
+    let id = handle.id();
+    let journal = journal_path(&store, id.value());
+
+    support::wait_for(&engine, id, |snapshot| snapshot.progress.items_done >= 5);
+    assert!(engine.pause(id));
+    support::wait_for(&engine, id, |snapshot| snapshot.state == JobState::Paused);
+    // Longer than the persist interval, so the next item is persisted.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let before = fs::read(&journal).unwrap();
+    let done = engine.snapshot(id).unwrap().progress.items_done;
+
+    assert!(engine.resume(id));
+    support::wait_for(&engine, id, |snapshot| {
+        snapshot.progress.items_done >= done + 5
+    });
+    assert!(engine.pause(id));
+    support::wait_for(&engine, id, |snapshot| snapshot.state == JobState::Paused);
+    let after = fs::read(&journal).unwrap();
+    assert!(
+        after.len() > before.len() && after.starts_with(&before),
+        "item progress was appended to the journal, not rewritten"
+    );
+
+    assert!(engine.resume(id));
+    let finished = engine.wait(id, support::LIMIT).unwrap();
+    assert_eq!(finished.state, JobState::Completed);
+    let record = store.read(id.value()).unwrap();
+    let lines = fs::read_to_string(&journal).unwrap().lines().count();
+    assert_eq!(lines, record.items.len(), "compacted to one line per item");
+    assert!(
+        record
+            .items
+            .iter()
+            .all(|item| item.status == ItemStatus::Done)
+    );
+}
+
+/// The number the ticket asks for, at a size a test can afford: what one
+/// persist writes once the job's items are on disk. The same figure at
+/// 100,001 items, and the single-file format's figures for comparison, come
+/// from `cargo bench -p files-operations`.
+#[test]
+fn a_persist_writes_the_same_bytes_at_ten_thousand_and_a_hundred_thousand_items() {
+    let root = tempfile::tempdir().unwrap();
+    let store = JobStore::new(root.path().join("jobs"));
+    let mut costs = Vec::new();
+    for (id, count) in [(1u64, 10_001usize), (2, 100_001)] {
+        let mut record = files_operations::JobRecord {
+            schema_version: files_operations::store::RECORD_SCHEMA_VERSION,
+            id,
+            kind: files_operations::OperationKind::Copy,
+            state: JobState::Running,
+            progress: files_operations::Progress {
+                items_total: count as u64,
+                ..files_operations::Progress::default()
+            },
+            items: (0..count)
+                .map(|index| files_operations::ItemRecord {
+                    source: format!("/home/user/source/file-{index:06}.bin").into(),
+                    destination: Some(format!("/home/user/destination/file-{index:06}.bin").into()),
+                    status: ItemStatus::Pending,
+                    bytes: 512,
+                    error: None,
+                })
+                .collect(),
+            log: files_operations::OperationLog::default(),
+            updated_at: 1,
+            checksums: Vec::new(),
+        };
+        store.write(&record).unwrap();
+        record.items[7].status = ItemStatus::Done;
+        record.progress.items_done = 1;
+        let appended = store
+            .append(
+                id,
+                &[files_operations::store::JournalEntry::Status {
+                    index: 7,
+                    status: ItemStatus::Done,
+                    error: None,
+                }],
+            )
+            .unwrap();
+        let header = store.write_header(&record).unwrap();
+        println!("{count} items: one persist wrote {appended} + {header} bytes");
+        costs.push(appended + header);
+    }
+    let difference = costs[0].abs_diff(costs[1]);
+    assert!(
+        difference <= 8,
+        "a persist grew with the item count: {costs:?}"
+    );
+}
+
+/// Job numbers used to start at one in every process, so the first job a new
+/// Better Files submitted overwrote whatever record job 1 had left, including
+/// one that recovery would have reported as interrupted.
+#[test]
+fn a_new_process_does_not_overwrite_the_records_an_earlier_one_left() {
+    let root = tempfile::tempdir().unwrap();
+    let store = JobStore::new(root.path().join("jobs"));
+    // What a process that died mid-copy left behind: job 1, still running.
+    let abandoned = files_operations::JobRecord {
+        schema_version: files_operations::store::RECORD_SCHEMA_VERSION,
+        id: 1,
+        kind: files_operations::OperationKind::Copy,
+        state: JobState::Running,
+        progress: files_operations::Progress {
+            items_total: 1,
+            ..files_operations::Progress::default()
+        },
+        items: vec![files_operations::ItemRecord {
+            source: "/home/user/big.iso".into(),
+            destination: Some("/media/usb/big.iso".into()),
+            status: ItemStatus::Pending,
+            bytes: 1,
+            error: None,
+        }],
+        log: files_operations::OperationLog::default(),
+        updated_at: 1,
+        checksums: Vec::new(),
+    };
+    store.write(&abandoned).unwrap();
+    // And a record this build cannot read, which still holds its number.
+    fs::write(store.root().join("job-00000000000000000004.json"), b"{").unwrap();
+
+    let source = root.path().join("a.bin");
+    write_pattern(&source, 64);
+    let destination = root.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    let engine = engine_with(&store);
+    let handle = engine
+        .submit(JobSpec::new(Operation::Copy {
+            sources: vec![local(&source)],
+            destination: local(&destination),
+        }))
+        .unwrap();
+    engine.wait(handle.id(), support::LIMIT).unwrap();
+    assert!(
+        handle.id().value() > 4,
+        "the new job took number {} from an earlier process",
+        handle.id().value()
+    );
+
+    let recovery = store.recover();
+    let interrupted: Vec<u64> = recovery
+        .interrupted
+        .iter()
+        .map(|record| record.id)
+        .collect();
+    assert_eq!(interrupted, vec![1]);
+    assert_eq!(
+        recovery.interrupted[0].items[0].destination.as_deref(),
+        Some(std::path::Path::new("/media/usb/big.iso"))
+    );
+    assert_eq!(recovery.damaged.len(), 1);
+    assert_eq!(recovery.settled.len(), 1);
+}
+
+/// A second process writing to the same store after this engine started is
+/// not overwritten either: a number whose record exists is skipped.
+#[test]
+fn a_number_another_process_took_after_this_engine_started_is_skipped() {
+    let root = tempfile::tempdir().unwrap();
+    let store = JobStore::new(root.path().join("jobs"));
+    let engine = engine_with(&store);
+    fs::create_dir_all(store.root()).unwrap();
+    fs::write(store.root().join("job-00000000000000000001.json"), b"{").unwrap();
+    fs::write(store.root().join("job-00000000000000000002.json"), b"{").unwrap();
+
+    let handle = engine
+        .submit(JobSpec::new(Operation::CreateFolder {
+            parent: local(root.path()),
+            name: "made".into(),
+        }))
+        .unwrap();
+    engine.wait(handle.id(), support::LIMIT).unwrap();
+    assert_eq!(handle.id().value(), 3);
+    assert_eq!(
+        fs::read(store.root().join("job-00000000000000000001.json")).unwrap(),
+        b"{"
+    );
+}

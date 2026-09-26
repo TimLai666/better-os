@@ -66,6 +66,30 @@ pub enum LogEvent {
     /// The move fell back to copy, verify, delete because the destination is
     /// on another filesystem.
     CrossDeviceFallback,
+    /// The item went to the trash on its own device, `$topdir/.Trash-$uid` or
+    /// `$topdir/.Trash/$uid`, rather than to the home trash. The record's path
+    /// is where it is stored.
+    TrashedOnDevice,
+    /// The item's device trash could not be used as the specification wants,
+    /// with the stable key saying why. Followed by
+    /// [`LogEvent::CrossDeviceFallback`] when the item then went to the home
+    /// trash instead.
+    DeviceTrashUnavailable {
+        reason: String,
+    },
+    /// The destination was created as a hard link to `first`, the destination
+    /// this job already copied the same source inode to.
+    HardLinked {
+        #[serde(with = "crate::store::path_bytes")]
+        first: PathBuf,
+    },
+    /// The source shares its inode with a file this job already copied, and
+    /// the destination was copied rather than linked. `reason` is a stable
+    /// key: the first copy changed or vanished since the job wrote it, or the
+    /// error `link(2)` gave.
+    HardLinkNotPreserved {
+        reason: String,
+    },
     /// The copy reproduced the source's holes rather than writing zeroes.
     SparseRegionsPreserved {
         holes: u64,

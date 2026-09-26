@@ -6,7 +6,7 @@ pub mod manifest;
 
 pub use defaults::{
     AdapterId, DefaultIntegration, DefaultsValue, HealthPrerequisite, IntegrationExclusivity,
-    IntegrationId, IntegrationKind, IntegrationTarget, MAX_INTEGRATION_ID_LENGTH,
+    IntegrationId, IntegrationKind, IntegrationTarget, KeyObservation, MAX_INTEGRATION_ID_LENGTH,
     MAX_TARGET_KEY_LENGTH, ObservedValue, RequiredPrivilege, RestorePolicy, SessionEffect,
 };
 pub use host::{

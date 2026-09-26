@@ -109,8 +109,8 @@ impl AdapterSession {
 ///
 /// Every other integration kind has no adapter at all, which is how the planner
 /// reports manual action required instead of guessing a command. The two GNOME
-/// adapters read and verify; they report manual action for a change, for the
-/// reasons ADR 0009 records.
+/// adapters read the user's dconf database and write through the session's
+/// dconf service, which they reach only when a change is actually made.
 fn production_adapters() -> Result<AdapterSet, AdapterSessionError> {
     let writable = XdgDefaultAppAdapter::for_user()
         .map_err(|error| AdapterSessionError::DefaultApplications(error.to_string()))?;

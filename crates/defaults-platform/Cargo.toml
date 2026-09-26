@@ -5,6 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# The dconf write path: a `ca.desrt.dconf.Writer.Change` call over the session
+# bus. Without it the GNOME adapters read and verify, and report Manual action
+# required for a change, and the crate links no D-Bus stack.
+dconf-write = ["dep:zbus", "dep:tokio"]
+
 [dependencies]
 app-catalog-core.workspace = true
 app-chooser-core.workspace = true
@@ -12,6 +18,10 @@ better-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# The runtime is this crate's own: it blocks on the async dconf call. zbus
+# itself stays on its default async-io flavor — see the root Cargo.toml.
+tokio = { version = "1", features = ["rt-multi-thread", "sync"], optional = true }
+zbus = { version = "5", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

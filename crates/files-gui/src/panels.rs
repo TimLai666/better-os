@@ -5,6 +5,7 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme,
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
     input::Input,
     scroll::ScrollableElement,
     *,
@@ -601,6 +602,88 @@ impl FilesApp {
                                         .on_click(
                                             cx.listener(|this, _, _, cx| this.submit_dialog(cx)),
                                         ),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The Performance mode confirmation: every risk in words, each one ticked
+    /// by hand, and a confirm button that stays disabled until all of them
+    /// are. The decisions are `crate::policy`'s; this only draws them.
+    pub(crate) fn policy_dialog(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let c = copy(self.locale());
+        let confirmation = self.session.policy_confirmation.clone()?;
+        let can_confirm = confirmation.can_confirm();
+
+        let mut risks = v_flex().gap_2();
+        for (key, ticked) in confirmation.risks() {
+            let text = crate::policy::risk_text(key, c).unwrap_or(key);
+            risks = risks.child(
+                Checkbox::new(SharedString::from(format!("policy-risk-{key}")))
+                    .w_full()
+                    .label(text)
+                    .checked(ticked)
+                    .on_click(cx.listener(move |this, _: &bool, _, cx| {
+                        this.session.toggle_policy_risk(key);
+                        cx.notify();
+                    })),
+            );
+        }
+
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui::black().opacity(0.4))
+                .child(
+                    v_flex()
+                        .w(px(460.0))
+                        .max_w_full()
+                        .gap_3()
+                        .p_4()
+                        .rounded(cx.theme().radius)
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().popover)
+                        .child(
+                            div()
+                                .font_semibold()
+                                .child(c.policy_title.replace("{device}", &confirmation.label)),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(c.policy_intro),
+                        )
+                        .child(risks)
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .justify_end()
+                                .flex_wrap()
+                                .child(
+                                    Button::new("policy-cancel")
+                                        .label(c.policy_cancel)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.session.cancel_policy();
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("policy-confirm")
+                                        .danger()
+                                        .label(c.policy_turn_on)
+                                        .disabled(!can_confirm)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.session.confirm_policy();
+                                            cx.notify();
+                                        })),
                                 ),
                         ),
                 )

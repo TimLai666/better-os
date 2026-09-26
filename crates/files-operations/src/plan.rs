@@ -12,9 +12,14 @@
 //! has arrived somewhere it has already been. The set is maintained even when
 //! the policy copies symlinks as links and cannot loop, because a bind mount
 //! pointing at an ancestor produces the same cycle without a symlink in sight.
+//!
+//! A regular file with more than one link carries its `(device, inode)` pair
+//! as an [`InodeKey`]. Two items with the same key are one file reached by two
+//! paths, and the executor copies it once and links the rest.
 
 use std::collections::HashSet;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::error::OperationError;
@@ -49,6 +54,13 @@ impl ItemKind {
     }
 }
 
+/// A file's identity on its device: what two hard links have in common.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct InodeKey {
+    pub device: u64,
+    pub inode: u64,
+}
+
 /// One unit of work.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlanItem {
@@ -62,6 +74,9 @@ pub struct PlanItem {
     /// What the source looked like at plan time, re-checked before anything
     /// destructive happens to it.
     pub snapshot: Option<FileSnapshot>,
+    /// For a regular file with more than one link, the inode it names, so the
+    /// executor can link a second path to the first path's copy.
+    pub hard_link: Option<InodeKey>,
 }
 
 impl PlanItem {
@@ -72,6 +87,7 @@ impl PlanItem {
             destination,
             bytes: 0,
             snapshot: None,
+            hard_link: None,
         }
     }
 }
@@ -96,6 +112,23 @@ impl Plan {
 
     pub fn total_bytes(&self) -> u64 {
         self.items.iter().map(|item| item.bytes).sum()
+    }
+
+    /// Counts the bytes of a hard-linked file once, at its first path.
+    ///
+    /// The later paths are links, not copies, so their bytes are not work the
+    /// job will do. Should a link fail and the file be copied after all, the
+    /// byte count overshoots rather than the bar stopping short, and the
+    /// progress fractions are clamped.
+    pub fn count_linked_bytes_once(&mut self) {
+        let mut seen = HashSet::new();
+        for item in &mut self.items {
+            if let Some(key) = item.hard_link {
+                if !seen.insert(key) {
+                    item.bytes = 0;
+                }
+            }
+        }
     }
 }
 
@@ -175,7 +208,6 @@ fn walk_inner(
     };
 
     if followed.is_dir() {
-        use std::os::unix::fs::MetadataExt;
         // The loop guard. A directory reached twice is a cycle, whether a
         // symlink or a bind mount made it.
         if !visited.insert((followed.dev(), followed.ino())) {
@@ -264,6 +296,12 @@ fn walk_inner(
     } else {
         0
     };
+    if kind == ItemKind::File && followed.nlink() > 1 {
+        item.hard_link = Some(InodeKey {
+            device: followed.dev(),
+            inode: followed.ino(),
+        });
+    }
     item.snapshot = Some(snapshot);
     plan.items.push(item);
 }

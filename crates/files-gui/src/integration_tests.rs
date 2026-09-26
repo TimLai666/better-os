@@ -25,8 +25,8 @@ use storage_service::protocol::{BlockerReport, DeviceReport, StateReport, Unsafe
 use crate::apps::{CatalogHandle, ExecutableSummary, LaunchReport};
 use crate::bookmarks::BookmarkStore;
 use crate::devices::{
-    CollectionMode, DeviceInventory, DeviceLink, DeviceNotice, UnsafeRemoval, is_under, row_from,
-    state_label,
+    CollectionMode, DeviceInventory, DeviceLink, DeviceNotice, MountedDevice, UnsafeRemoval,
+    is_under, row_from, state_label,
 };
 use crate::i18n::{EN_US, ZH_TW};
 use crate::openwith::{ChooserRequest, DefaultSource, OpenRoute, SessionDefaults, route_open_file};
@@ -98,6 +98,11 @@ struct FakeLink {
     mode: Mutex<CollectionMode>,
     queued: Mutex<Vec<DeviceNotice>>,
     calls: Mutex<Vec<String>>,
+    mounted: Mutex<Vec<MountedDevice>>,
+    /// A path whose existence is recorded with every started notice, which is
+    /// how a test proves the notice came before the job's first write.
+    watched: Mutex<Option<PathBuf>>,
+    refuse_started: std::sync::atomic::AtomicBool,
 }
 
 impl FakeLink {
@@ -106,7 +111,21 @@ impl FakeLink {
             mode: Mutex::new(mode),
             queued: Mutex::new(Vec::new()),
             calls: Mutex::new(Vec::new()),
+            mounted: Mutex::new(Vec::new()),
+            watched: Mutex::new(None),
+            refuse_started: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    fn mount(&self, object_path: &str, mount_point: &std::path::Path) {
+        self.mounted.lock().unwrap().push(MountedDevice {
+            object_path: object_path.to_string(),
+            mount_point: mount_point.to_path_buf(),
+        });
+    }
+
+    fn watch(&self, path: PathBuf) {
+        *self.watched.lock().unwrap() = Some(path);
     }
 
     fn push(&self, notice: DeviceNotice) {
@@ -139,6 +158,42 @@ impl DeviceLink for Arc<FakeLink> {
     }
     fn poll(&self) -> Vec<DeviceNotice> {
         std::mem::take(&mut *self.queued.lock().unwrap())
+    }
+    fn mounted_devices(&self) -> Vec<MountedDevice> {
+        self.mounted.lock().unwrap().clone()
+    }
+    fn operation_started(&self, object_path: &str, operation: &str) -> Result<(), String> {
+        let written = self
+            .watched
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|path| path.exists());
+        self.calls.lock().unwrap().push(format!(
+            "started {object_path} {operation} written={written}"
+        ));
+        if self
+            .refuse_started
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err("the service is not answering".to_string());
+        }
+        Ok(())
+    }
+    fn operation_completed(&self, object_path: &str, operation: &str) -> Result<(), String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("completed {object_path} {operation}"));
+        Ok(())
+    }
+    fn request_policy(&self, request: crate::policy::PolicyRequest) {
+        self.calls.lock().unwrap().push(format!(
+            "policy {} {} [{}]",
+            request.object_path,
+            request.policy.as_str(),
+            request.acknowledged_risks.join(",")
+        ));
     }
 }
 
@@ -1283,4 +1338,432 @@ fn a_row_clicked_during_a_search_selects_the_entry_it_shows() {
         session.focused_entry().map(|entry| entry.name.as_str()),
         Some("photo.png")
     );
+}
+
+// =========================================================================
+// Starting at a given location (ticket 50)
+// =========================================================================
+
+#[test]
+fn a_file_given_at_start_is_selected_once_its_folder_is_listed() {
+    let (_rig, mut session) = plain();
+    // Selected before a single entry has arrived, the way the window does it
+    // straight after opening.
+    session.select_by_name("notes.txt");
+    settle(&mut session);
+    let selected: Vec<&str> = session
+        .selected_entries()
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(selected, vec!["notes.txt"]);
+    assert_eq!(
+        session.focused_entry().map(|entry| entry.name.as_str()),
+        Some("notes.txt")
+    );
+}
+
+#[test]
+fn the_start_notice_says_why_and_counts_what_was_ignored_in_both_languages() {
+    use crate::launch::StartProblem;
+    let problems = [
+        StartProblem::NotLocal,
+        StartProblem::Malformed,
+        StartProblem::NotFound,
+        StartProblem::Unreadable,
+    ];
+    for c in [&EN_US, &ZH_TW] {
+        let mut seen = std::collections::HashSet::new();
+        for problem in problems {
+            let message = Notice::Start {
+                problem: Some(problem),
+                ignored: 0,
+            }
+            .message(c);
+            assert!(!message.is_empty());
+            assert!(seen.insert(message), "each reason reads differently");
+        }
+        let both = Notice::Start {
+            problem: Some(StartProblem::NotFound),
+            ignored: 2,
+        }
+        .message(c);
+        assert!(both.contains('2'), "{both}");
+        let only_ignored = Notice::Start {
+            problem: None,
+            ignored: 1,
+        }
+        .message(c);
+        assert!(only_ignored.contains('1'), "{only_ignored}");
+    }
+    assert_ne!(
+        Notice::Start {
+            problem: Some(StartProblem::NotFound),
+            ignored: 0
+        }
+        .message(&EN_US),
+        Notice::Start {
+            problem: Some(StartProblem::NotFound),
+            ignored: 0
+        }
+        .message(&ZH_TW)
+    );
+}
+
+// =========================================================================
+// Better Files' own writes hold readiness (ticket 51)
+// =========================================================================
+
+const USB: &str = "/org/freedesktop/UDisks2/block_devices/sdb1";
+const OTHER_USB: &str = "/org/freedesktop/UDisks2/block_devices/sdc1";
+
+/// An engine whose jobs are tracked through a fake link, with a home folder
+/// and a "USB stick" that is just another temporary directory the link says is
+/// mounted.
+struct Tracked {
+    root: tempfile::TempDir,
+    link: Arc<FakeLink>,
+    engine: JobEngine,
+}
+
+impl Tracked {
+    fn new() -> Self {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("home")).unwrap();
+        fs::create_dir_all(root.path().join("usb")).unwrap();
+        fs::create_dir_all(root.path().join("other-usb")).unwrap();
+        let link = FakeLink::new(CollectionMode::Service);
+        link.mount(USB, &root.path().join("usb").canonicalize().unwrap());
+        link.mount(
+            OTHER_USB,
+            &root.path().join("other-usb").canonicalize().unwrap(),
+        );
+        let tracker = Arc::new(StorageTracker::new(None));
+        tracker.attach(Arc::new(link.clone()));
+        let engine = JobEngine::with_observer(
+            EngineConfig {
+                store: None,
+                ..EngineConfig::default()
+            },
+            tracker,
+        );
+        Self { root, link, engine }
+    }
+
+    fn path(&self, relative: &str) -> PathBuf {
+        self.root.path().join(relative)
+    }
+
+    fn run(&self, operation: files_operations::Operation) -> (files_operations::JobId, JobState) {
+        let handle = self
+            .engine
+            .submit(files_operations::JobSpec::new(operation))
+            .unwrap();
+        let state = self
+            .engine
+            .wait(handle.id(), std::time::Duration::from_secs(20))
+            .expect("the job finished")
+            .state;
+        (handle.id(), state)
+    }
+}
+
+fn operation(id: files_operations::JobId) -> String {
+    crate::tracking::operation_id(std::process::id(), id)
+}
+
+fn local(path: PathBuf) -> files_core::LocalPath {
+    files_core::LocalPath::new(path).unwrap()
+}
+
+use crate::tracking::StorageTracker;
+use files_operations::JobState;
+
+#[test]
+fn a_copy_to_a_device_is_registered_before_its_first_write_and_released_after() {
+    let rig = Tracked::new();
+    fs::write(rig.path("home/report.pdf"), b"quarterly").unwrap();
+    rig.link.watch(rig.path("usb/report.pdf"));
+
+    let (id, state) = rig.run(files_operations::Operation::Copy {
+        sources: vec![local(rig.path("home/report.pdf"))],
+        destination: local(rig.path("usb")),
+    });
+    assert_eq!(state, JobState::Completed);
+    let op = operation(id);
+    assert_eq!(
+        rig.link.calls(),
+        vec![
+            format!("started {USB} {op} written=false"),
+            format!("completed {USB} {op}"),
+        ]
+    );
+}
+
+#[test]
+fn a_destination_reached_through_a_link_or_dotdot_still_finds_the_device() {
+    let rig = Tracked::new();
+    fs::write(rig.path("home/a.txt"), b"a").unwrap();
+    std::os::unix::fs::symlink(rig.path("usb"), rig.path("home/stick")).unwrap();
+
+    let (id, _) = rig.run(files_operations::Operation::Copy {
+        sources: vec![local(rig.path("home/a.txt"))],
+        destination: local(rig.path("home/stick")),
+    });
+    let (second, _) = rig.run(files_operations::Operation::CreateFolder {
+        parent: local(rig.path("home/../usb")),
+        name: "new".into(),
+    });
+    let calls = rig.link.calls();
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    assert!(calls[0].starts_with(&format!("started {USB} {}", operation(id))));
+    assert!(calls[2].starts_with(&format!("started {USB} {}", operation(second))));
+}
+
+#[test]
+fn a_job_on_no_tracked_device_sends_nothing() {
+    let rig = Tracked::new();
+    fs::write(rig.path("home/a.txt"), b"a").unwrap();
+    fs::create_dir(rig.path("home/backup")).unwrap();
+    let (_, state) = rig.run(files_operations::Operation::Copy {
+        sources: vec![local(rig.path("home/a.txt"))],
+        destination: local(rig.path("home/backup")),
+    });
+    assert_eq!(state, JobState::Completed);
+    assert!(rig.link.calls().is_empty());
+}
+
+#[test]
+fn a_move_from_one_device_to_another_holds_both() {
+    let rig = Tracked::new();
+    fs::write(rig.path("usb/photo.jpg"), b"jpeg").unwrap();
+    let (id, state) = rig.run(files_operations::Operation::Move {
+        sources: vec![local(rig.path("usb/photo.jpg"))],
+        destination: local(rig.path("other-usb")),
+    });
+    assert_eq!(state, JobState::Completed);
+    let op = operation(id);
+    assert_eq!(
+        rig.link.calls(),
+        vec![
+            format!("started {OTHER_USB} {op} written=false"),
+            format!("started {USB} {op} written=false"),
+            format!("completed {OTHER_USB} {op}"),
+            format!("completed {USB} {op}"),
+        ]
+    );
+}
+
+#[test]
+fn a_failed_or_cancelled_job_still_releases_the_device() {
+    let rig = Tracked::new();
+    // Failed: the source is not there.
+    let (failed, state) = rig.run(files_operations::Operation::Copy {
+        sources: vec![local(rig.path("home/missing.txt"))],
+        destination: local(rig.path("usb")),
+    });
+    assert_eq!(state, JobState::Failed);
+
+    // Cancelled: parked on a conflict, then cancelled.
+    fs::write(rig.path("home/clash.txt"), b"new").unwrap();
+    fs::write(rig.path("usb/clash.txt"), b"old").unwrap();
+    let handle = rig
+        .engine
+        .submit(files_operations::JobSpec::new(
+            files_operations::Operation::Copy {
+                sources: vec![local(rig.path("home/clash.txt"))],
+                destination: local(rig.path("usb")),
+            },
+        ))
+        .unwrap();
+    rig.engine
+        .wait_for(
+            handle.id(),
+            std::time::Duration::from_secs(20),
+            |snapshot| snapshot.state == JobState::WaitingOnConflict,
+        )
+        .expect("the job parked");
+    rig.engine.cancel(handle.id());
+    let cancelled = rig
+        .engine
+        .wait(handle.id(), std::time::Duration::from_secs(20))
+        .unwrap();
+    assert_eq!(cancelled.state, JobState::Cancelled);
+
+    let calls = rig.link.calls();
+    assert!(calls.contains(&format!("completed {USB} {}", operation(failed))));
+    assert!(calls.contains(&format!("completed {USB} {}", operation(handle.id()))));
+}
+
+#[test]
+fn a_notice_that_fails_is_logged_and_never_fails_the_job() {
+    let rig = Tracked::new();
+    rig.link
+        .refuse_started
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    fs::write(rig.path("home/a.txt"), b"a").unwrap();
+    let (id, state) = rig.run(files_operations::Operation::Copy {
+        sources: vec![local(rig.path("home/a.txt"))],
+        destination: local(rig.path("usb")),
+    });
+    assert_eq!(state, JobState::Completed);
+    assert!(rig.path("usb/a.txt").exists());
+    // The completion is still sent: the service may have recorded the start
+    // even though the answer never came back.
+    assert!(
+        rig.link
+            .calls()
+            .contains(&format!("completed {USB} {}", operation(id)))
+    );
+}
+
+// =========================================================================
+// Choosing Performance mode after reading its risks (ticket 52)
+// =========================================================================
+
+fn with_stick(policy: RemovalPolicy) -> (Rig, FilesSession) {
+    let (rig, mut session) = plain();
+    let mut stick = report(USB, Some("/media/tim/PHOTOS"), ready());
+    stick.policy = policy;
+    if policy == RemovalPolicy::Performance {
+        stick.state = StateReport::PerformanceMode {
+            active_write: false,
+            eject_required: true,
+        };
+    }
+    rig.link.push(DeviceNotice::Inventory(vec![stick]));
+    session.pump();
+    (rig, session)
+}
+
+fn policy_calls(link: &FakeLink) -> Vec<String> {
+    link.calls()
+        .into_iter()
+        .filter(|call| call.starts_with("policy "))
+        .collect()
+}
+
+#[test]
+fn choosing_performance_mode_asks_first_and_cancelling_sends_nothing() {
+    let (rig, mut session) = with_stick(RemovalPolicy::DirectRemoval);
+    session.choose_policy(USB, RemovalPolicy::Performance);
+    let confirmation = session
+        .policy_confirmation
+        .as_ref()
+        .expect("the risks are shown before anything is sent");
+    assert_eq!(confirmation.label, "PHOTOS");
+    assert!(!confirmation.can_confirm());
+
+    // Confirming before every risk is ticked does nothing at all.
+    session.toggle_policy_risk(storage_core::PERFORMANCE_RISK_KEYS[0]);
+    session.confirm_policy();
+    assert!(session.policy_confirmation.is_some());
+    assert!(policy_calls(&rig.link).is_empty());
+
+    session.cancel_policy();
+    assert!(session.policy_confirmation.is_none());
+    assert!(
+        policy_calls(&rig.link).is_empty(),
+        "cancelling sends nothing"
+    );
+}
+
+#[test]
+fn the_request_carries_the_confirmed_risks_and_the_row_waits_for_the_service() {
+    let (rig, mut session) = with_stick(RemovalPolicy::DirectRemoval);
+    session.choose_policy(USB, RemovalPolicy::Performance);
+    for key in storage_core::PERFORMANCE_RISK_KEYS {
+        session.toggle_policy_risk(key);
+    }
+    session.confirm_policy();
+    assert!(session.policy_confirmation.is_none());
+    let mut keys: Vec<&str> = storage_core::PERFORMANCE_RISK_KEYS.to_vec();
+    keys.sort();
+    assert_eq!(
+        policy_calls(&rig.link),
+        vec![format!("policy {USB} performance [{}]", keys.join(","))]
+    );
+
+    // Asked for is not the same as granted: the row still shows what the
+    // service last reported.
+    rig.link.push(DeviceNotice::PolicyApplied {
+        object_path: USB.to_string(),
+    });
+    session.pump();
+    assert_eq!(
+        session.device_rows()[0].policy,
+        RemovalPolicy::DirectRemoval
+    );
+
+    let mut now = report(
+        USB,
+        Some("/media/tim/PHOTOS"),
+        StateReport::PerformanceMode {
+            active_write: false,
+            eject_required: true,
+        },
+    );
+    now.policy = RemovalPolicy::Performance;
+    rig.link.push(DeviceNotice::Inventory(vec![now]));
+    session.pump();
+    assert_eq!(session.device_rows()[0].policy, RemovalPolicy::Performance);
+}
+
+#[test]
+fn a_refusal_is_shown_with_its_reason_and_the_reported_policy_stays() {
+    let (rig, mut session) = with_stick(RemovalPolicy::DirectRemoval);
+    session.choose_policy(USB, RemovalPolicy::Performance);
+    for key in storage_core::PERFORMANCE_RISK_KEYS {
+        session.toggle_policy_risk(key);
+    }
+    session.confirm_policy();
+    rig.link.push(DeviceNotice::PolicyRefused {
+        object_path: USB.to_string(),
+        detail: "two connected devices report the same identity".to_string(),
+    });
+    session.pump();
+
+    assert_eq!(
+        session.notice,
+        Some(Notice::Device(Box::new(DeviceEvent::PolicyRefused {
+            label: "PHOTOS".to_string(),
+            detail: "two connected devices report the same identity".to_string(),
+        })))
+    );
+    for c in [&EN_US, &ZH_TW] {
+        let message = session.notice.as_ref().unwrap().message(c);
+        assert!(message.contains("PHOTOS"), "{message}");
+        assert!(message.contains("same identity"), "{message}");
+    }
+    assert_eq!(
+        session.device_rows()[0].policy,
+        RemovalPolicy::DirectRemoval
+    );
+}
+
+#[test]
+fn switching_back_to_direct_removal_needs_no_confirmation() {
+    let (rig, mut session) = with_stick(RemovalPolicy::Performance);
+    session.choose_policy(USB, RemovalPolicy::Performance);
+    assert!(
+        session.policy_confirmation.is_none(),
+        "choosing the policy a device already has asks nothing"
+    );
+    session.choose_policy(USB, RemovalPolicy::DirectRemoval);
+    assert!(session.policy_confirmation.is_none());
+    assert_eq!(
+        policy_calls(&rig.link),
+        vec![format!("policy {USB} direct_removal []")]
+    );
+}
+
+#[test]
+fn the_policy_switch_is_worded_with_the_existing_policy_names() {
+    for c in [&EN_US, &ZH_TW] {
+        assert!(c.device_policy_switch.contains("{policy}"));
+        for name in [c.device_policy_performance, c.device_policy_direct_removal] {
+            let offered = c.device_policy_switch.replace("{policy}", name);
+            assert!(offered.contains(name), "{offered}");
+        }
+    }
 }

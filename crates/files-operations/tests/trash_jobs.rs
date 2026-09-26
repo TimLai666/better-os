@@ -268,10 +268,12 @@ fn trashing_something_already_gone_is_a_skip_rather_than_a_failure() {
 #[test]
 fn the_cross_filesystem_trash_fallback_is_selected_by_the_error_the_kernel_gives() {
     // Trashing across a filesystem boundary needs a second filesystem, which
-    // the suite cannot mount. What is proven here is the decision: the trash
+    // the suite cannot mount. What is proven here is the error: the trash
     // write side reports `CrossDevice` rather than a generic failure, and that
-    // is the single condition `files-operations` switches to copy-and-delete
-    // into the home trash on.
+    // is what sends `files-operations` to the item's own device trash, with
+    // copy-and-delete into the home trash only as the last resort. The device
+    // choice itself is tested in `exec`'s unit tests through a device probe
+    // that says which device a path is on.
     use files_platform::trash::TrashError;
     let error = TrashError::CrossDevice {
         path: "/media/stick/file".into(),
@@ -286,4 +288,93 @@ fn the_cross_filesystem_trash_fallback_is_selected_by_the_error_the_kernel_gives
     // decision the user makes, it is a path the engine takes.
     let conflict = Conflict::exists(None, "/media/stick/file".into());
     assert_eq!(conflict.kind, ConflictKind::Exists);
+}
+
+/// A device trash inside a temporary "top directory". The suite cannot mount a
+/// second device, so the device is simulated by its layout alone: the trash
+/// root is `$topdir/.Trash-$uid`, which is what makes the record relative.
+fn device_trash(topdir: &std::path::Path) -> std::path::PathBuf {
+    let uid = files_platform::trash::current_uid().expect("a uid");
+    files_platform::trash::volume_trash(topdir, uid)
+        .expect("a private trash could be created")
+        .directory
+        .root()
+        .to_path_buf()
+}
+
+#[test]
+fn an_item_in_a_device_trash_restores_against_that_devices_top_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let topdir = fs::canonicalize(root.path()).unwrap().join("stick");
+    fs::create_dir_all(topdir.join("photos")).unwrap();
+    let file = topdir.join("photos/beach.jpg");
+    fs::write(&file, b"jpeg").unwrap();
+    let trash_root = device_trash(&topdir);
+
+    let engine = engine();
+    run_ok(
+        &engine,
+        JobSpec::new(Operation::Trash {
+            sources: vec![local(&file)],
+            trash_root: Some(trash_root.clone()),
+        }),
+    );
+    let record = fs::read_to_string(trash_root.join("info/beach.jpg.trashinfo")).unwrap();
+    assert!(record.contains("\nPath=photos/beach.jpg\n"), "{record}");
+
+    run_ok(
+        &engine,
+        JobSpec::new(Operation::RestoreFromTrash {
+            items: vec![TrashItemRef::new(&trash_root, "beach.jpg")],
+        }),
+    );
+    assert_eq!(fs::read(&file).unwrap(), b"jpeg");
+    assert!(!trash_root.join("info/beach.jpg.trashinfo").exists());
+}
+
+#[test]
+fn a_device_trash_empties_through_the_same_permanent_delete() {
+    let root = tempfile::tempdir().unwrap();
+    let topdir = fs::canonicalize(root.path()).unwrap().join("stick");
+    fs::create_dir_all(&topdir).unwrap();
+    let home_trash = root.path().join("home/Trash");
+    let on_device = topdir.join("video.mkv");
+    let at_home = root.path().join("notes.txt");
+    fs::write(&on_device, b"v").unwrap();
+    fs::write(&at_home, b"n").unwrap();
+    let device_root = device_trash(&topdir);
+
+    let engine = engine();
+    run_ok(
+        &engine,
+        JobSpec::new(Operation::Trash {
+            sources: vec![local(&on_device)],
+            trash_root: Some(device_root.clone()),
+        }),
+    );
+    run_ok(
+        &engine,
+        JobSpec::new(Operation::Trash {
+            sources: vec![local(&at_home)],
+            trash_root: Some(home_trash.clone()),
+        }),
+    );
+
+    // One delete job across both kinds of trash, the way the Trash view sends
+    // it for a selection that spans them.
+    let snapshot = run_ok(
+        &engine,
+        JobSpec::new(Operation::PermanentDelete {
+            targets: vec![
+                DeleteTarget::TrashItem(TrashItemRef::new(&device_root, "video.mkv")),
+                DeleteTarget::TrashItem(TrashItemRef::new(&home_trash, "notes.txt")),
+            ],
+            confirmation: DeleteConfirmation::explicit(),
+        }),
+    );
+    assert_eq!(snapshot.progress.items_done, 2);
+    for trash in [&device_root, &home_trash] {
+        assert_eq!(fs::read_dir(trash.join("files")).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(trash.join("info")).unwrap().count(), 0);
+    }
 }

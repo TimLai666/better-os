@@ -230,17 +230,46 @@ pub enum EntryOutcome {
         reason: String,
         detail: Option<String>,
     },
+    /// A group captured key by key was restored key by key: each key's own
+    /// outcome, including what its verifying read saw.
+    PerKey {
+        keys: Vec<KeyOutcome>,
+    },
+}
+
+/// What happened to one key of a group restored key by key.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct KeyOutcome {
+    pub key: String,
+    pub outcome: EntryOutcome,
 }
 
 impl EntryOutcome {
+    /// Whether the entry did everything it set out to do. A group restored key
+    /// by key succeeded only when every key did.
     pub fn is_success(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::Applied { .. }
-                | Self::AppliedNeedsSignOut { .. }
-                | Self::Restored { .. }
-                | Self::AlreadyCorrect
-        )
+            | Self::AppliedNeedsSignOut { .. }
+            | Self::Restored { .. }
+            | Self::AlreadyCorrect => true,
+            Self::PerKey { keys } => {
+                !keys.is_empty() && keys.iter().all(|key| key.outcome.is_success())
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the entry, or any key in it, tried and did not get the result it
+    /// wanted. Manual action and a skip are not failures: nothing was tried.
+    pub fn is_failure(&self) -> bool {
+        match self {
+            Self::Failed { .. }
+            | Self::NotVerified { .. }
+            | Self::VerificationInconclusive { .. } => true,
+            Self::PerKey { keys } => keys.iter().any(|key| key.outcome.is_failure()),
+            _ => false,
+        }
     }
 }
 
@@ -274,13 +303,8 @@ impl DefaultsOutcome {
     /// still a failure for those entries, and the successful ones stay
     /// successful.
     pub fn has_failures(&self) -> bool {
-        self.results.iter().any(|result| {
-            matches!(
-                result.outcome,
-                EntryOutcome::Failed { .. }
-                    | EntryOutcome::NotVerified { .. }
-                    | EntryOutcome::VerificationInconclusive { .. }
-            )
-        })
+        self.results
+            .iter()
+            .any(|result| result.outcome.is_failure())
     }
 }

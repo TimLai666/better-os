@@ -12,16 +12,13 @@ default = ["dconf-write"]
 # cannot change a setting is not the component; a consumer that only wants
 # device enumeration, session detection, and reading can turn it off and link
 # no D-Bus stack.
-dconf-write = ["dep:zbus", "dep:tokio"]
+# The writer itself lives in `defaults-platform`, which Better Defaults shares.
+dconf-write = ["defaults-platform/dconf-write"]
 
 [dependencies]
 defaults-platform.workspace = true
 touchpad-core.workspace = true
 thiserror.workspace = true
-# The runtime is this crate's own: it blocks on the async dconf call. zbus
-# itself stays on its default async-io flavor — see the root Cargo.toml.
-tokio = { version = "1", features = ["rt-multi-thread", "sync"], optional = true }
-zbus = { version = "5", optional = true }
 
 [dev-dependencies]
 # `tests/manifest.rs` validates the shipped Better Touchpad manifest the way
