@@ -1749,7 +1749,12 @@ fn switching_back_to_direct_removal_needs_no_confirmation() {
         session.policy_confirmation.is_none(),
         "choosing the policy a device already has asks nothing"
     );
-    session.choose_policy(USB, RemovalPolicy::DirectRemoval);
+    // What the row offers a Performance mode device, chosen the way the row
+    // chooses it.
+    let offered = crate::policy::offered_switch(session.device_rows()[0].policy)
+        .expect("a Performance mode device is always offered a way back");
+    assert_eq!(offered, RemovalPolicy::DirectRemoval);
+    session.choose_policy(USB, offered);
     assert!(session.policy_confirmation.is_none());
     assert_eq!(
         policy_calls(&rig.link),

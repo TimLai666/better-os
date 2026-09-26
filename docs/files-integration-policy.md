@@ -178,8 +178,17 @@ The operation is named `better-files:<pid>:job-<n>`.
 
 ## Devices: choosing Performance mode
 
-Each device row offers the policy it does not have. Choosing Performance mode
-opens a confirmation that lists every key in `PERFORMANCE_RISK_KEYS` in words,
+The window does not offer Performance mode today. `OFFER_PERFORMANCE_MODE` in
+`crates/files-gui/src/policy.rs` is off by the project owner's decision, because
+the mode changes no mount option or cache setting and so makes no write faster.
+A Direct Removal device's row shows no policy line. A device already in
+Performance mode still offers Direct Removal, which is sent at once. The rest
+of this section describes what turning the switch on brings back; it is built
+and tested.
+
+With the switch on, each device row offers the policy it does not have.
+Choosing Performance mode opens a confirmation that lists every key in
+`PERFORMANCE_RISK_KEYS` in words,
 each with its own tick box; the confirm button stays disabled until every box is
 ticked, and cancelling sends nothing. The request carries exactly the ticked
 keys. Switching back to Direct Removal is sent at once.
