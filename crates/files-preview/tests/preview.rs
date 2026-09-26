@@ -259,6 +259,11 @@ fn encoding_detection_says_which_reading_it_is_showing() {
         decode(&[0xFE, 0xFF, 0, b'h', 0, b'i']),
         ("hi".to_string(), TextEncoding::Utf16Be)
     );
+    // A UTF-16 file cut mid code unit drops the stray trailing byte.
+    assert_eq!(
+        decode(&[0xFF, 0xFE, b'h', 0, b'i', 0, b'!']),
+        ("hi".to_string(), TextEncoding::Utf16Le)
+    );
     // 0xE9 is "é" in Latin-1 and invalid on its own in UTF-8.
     assert_eq!(
         decode(b"caf\xE9 au lait"),

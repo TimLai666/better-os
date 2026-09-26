@@ -187,11 +187,13 @@ pub fn decode(bytes: &[u8]) -> (String, TextEncoding) {
 }
 
 fn decode_utf16(bytes: &[u8], encoding: TextEncoding) -> String {
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| match encoding {
-            TextEncoding::Utf16Be => u16::from_be_bytes([pair[0], pair[1]]),
-            _ => u16::from_le_bytes([pair[0], pair[1]]),
+    // A trailing odd byte is not a whole code unit and is dropped.
+    let (pairs, _) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs
+        .iter()
+        .map(|&pair| match encoding {
+            TextEncoding::Utf16Be => u16::from_be_bytes(pair),
+            _ => u16::from_le_bytes(pair),
         })
         .collect();
     String::from_utf16_lossy(&units)
