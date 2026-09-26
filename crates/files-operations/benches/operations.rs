@@ -69,6 +69,7 @@ fn main() {
     same_filesystem_move(root.path(), &sizes);
     cross_filesystem_move(root.path(), &sizes);
     persistence_cost(root.path(), &sizes);
+    persist_bytes(root.path());
     engine_overhead(root.path(), &sizes);
 }
 
@@ -244,9 +245,10 @@ fn cross_filesystem_move(root: &Path, sizes: &Sizes) {
 
 /// What persistence costs.
 ///
-/// The ticket asks for completion *and* persistence time. Every state change
-/// writes the whole record, so the interesting number is what one write of a
-/// large record costs — that is the per-item tax a long job pays over and over.
+/// The ticket asks for completion *and* persistence time. A whole write — the
+/// header and the compacted item journal — happens at submission, at the end,
+/// and at compaction; a running job's persists append instead, and
+/// [`persist_bytes`] measures those.
 fn persistence_cost(root: &Path, sizes: &Sizes) {
     let source = root.join("persist-source");
     fs::create_dir_all(&source).expect("the fixture directory");
@@ -288,17 +290,133 @@ fn persistence_cost(root: &Path, sizes: &Sizes) {
         "compare with the same count above, which had none",
     );
     report(
-        &format!("{items} items: one record write"),
+        &format!("{items} items: one whole write"),
         median(&writes),
-        "paid once per state change",
+        "after planning, at the end, and at compaction",
     );
-    let size = fs::metadata(store_root.join(format!("job-{:020}.json", handle.id().value())))
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
-    println!("{:<56} {:>10} bytes", "the record on disk", size);
+    let size: u64 = ["json", "items.jsonl"]
+        .iter()
+        .map(|extension| {
+            fs::metadata(store_root.join(format!("job-{:020}.{extension}", handle.id().value())))
+                .map(|metadata| metadata.len())
+                .unwrap_or(0)
+        })
+        .sum();
+    println!(
+        "{:<56} {:>10} bytes",
+        "the record on disk, header and journal", size
+    );
     fs::remove_dir_all(&source).ok();
     fs::remove_dir_all(&destination).ok();
     println!();
+}
+
+/// Bytes one persist of a running job writes, before and after the item
+/// journal, at 10,001 and 100,001 items.
+///
+/// Before: the single-file record every persist used to rewrite, serialized
+/// exactly as that writer did. After: the header plus the status lines that
+/// changed since the last persist, for one changed item and for one 250 ms
+/// interval at the small-file rate measured above (about 28,600 files/s, so
+/// 7,157 items). Both use the same record, including a log at its cap. Always
+/// run at full size: it serializes and writes records, and copies nothing.
+fn persist_bytes(root: &Path) {
+    const INTERVAL_ITEMS: usize = 7_157;
+    let store = files_operations::JobStore::new(root.join("persist-bytes"));
+    for (id, count) in [(1u64, 10_001usize), (2, 100_001)] {
+        let mut record = synthetic_record(root, id, count);
+        let mut legacy = record.clone();
+        legacy.schema_version = 1;
+        let before = serde_json::to_vec_pretty(&legacy)
+            .expect("the single-file record")
+            .len();
+        let whole = store.write(&record).expect("the whole write");
+
+        record.items[0].status = files_operations::ItemStatus::Done;
+        let one = store
+            .append(id, &[status_line(0)])
+            .expect("one status line")
+            + store.write_header(&record).expect("the header");
+
+        let lines: Vec<files_operations::JournalEntry> =
+            (1..=INTERVAL_ITEMS).map(status_line).collect();
+        let interval = store
+            .append(id, &lines)
+            .expect("an interval of status lines")
+            + store.write_header(&record).expect("the header");
+
+        println!("{count} items, bytes written per persist:");
+        println!(
+            "{:<56} {:>12} bytes",
+            "  before: the whole single-file record", before
+        );
+        println!(
+            "{:<56} {:>12} bytes",
+            "  after: whole write, after planning and at the end", whole
+        );
+        println!("{:<56} {:>12} bytes", "  after: one item changed", one);
+        println!(
+            "{:<56} {:>12} bytes",
+            format!("  after: {INTERVAL_ITEMS} items changed (one interval)"),
+            interval
+        );
+    }
+    println!();
+}
+
+fn status_line(index: usize) -> files_operations::JournalEntry {
+    files_operations::JournalEntry::Status {
+        index: index as u64,
+        status: files_operations::ItemStatus::Done,
+        error: None,
+    }
+}
+
+/// A copy job's record the way the engine builds one: every item planned, and
+/// a log that has hit its cap with a start and a completion per item.
+fn synthetic_record(root: &Path, id: u64, count: usize) -> files_operations::JobRecord {
+    let source = root.join("persist-source");
+    let destination = root.join("persist-destination");
+    let mut log = files_operations::OperationLog::default();
+    for index in 0..count {
+        let path = source.join(format!("file-{index:06}.bin"));
+        log.push(
+            index as u64,
+            Some(path.clone()),
+            files_operations::LogEvent::ItemStarted { bytes: 512 },
+        );
+        log.push(
+            index as u64,
+            Some(path),
+            files_operations::LogEvent::ItemCompleted {
+                bytes: 512,
+                verified: true,
+            },
+        );
+    }
+    files_operations::JobRecord {
+        schema_version: files_operations::store::RECORD_SCHEMA_VERSION,
+        id,
+        kind: files_operations::OperationKind::Copy,
+        state: JobState::Running,
+        progress: files_operations::Progress {
+            items_total: count as u64,
+            bytes_total: 512 * count as u64,
+            ..files_operations::Progress::default()
+        },
+        items: (0..count)
+            .map(|index| files_operations::ItemRecord {
+                source: source.join(format!("file-{index:06}.bin")),
+                destination: Some(destination.join(format!("file-{index:06}.bin"))),
+                status: files_operations::ItemStatus::Pending,
+                bytes: 512,
+                error: None,
+            })
+            .collect(),
+        log,
+        updated_at: 1,
+        checksums: Vec::new(),
+    }
 }
 
 fn engine_overhead(root: &Path, sizes: &Sizes) {

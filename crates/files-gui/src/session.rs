@@ -1280,13 +1280,8 @@ impl FilesSession {
     /// Asks for a permanent delete. Nothing is deleted here: the targets are
     /// held in a dialog until the confirmation is answered.
     pub fn request_permanent_delete(&mut self) {
-        // Deleting a file by path needs no trash directory. Only emptying an
-        // item out of the trash does, and that case is handled by producing no
-        // targets rather than by refusing every delete.
-        let trash_root = self.trash_root();
         let location = self.location().clone();
-        let targets =
-            commands::delete_targets(&location, &self.selected_entries(), trash_root.as_deref());
+        let targets = commands::delete_targets(&location, &self.selected_entries());
         if targets.is_empty() {
             self.notice = Some(Notice::Command(CommandRefusal::NothingToActOn));
             return;
@@ -1306,12 +1301,8 @@ impl FilesSession {
     }
 
     pub fn restore_selection_from_trash(&mut self) {
-        let Some(trash_root) = self.trash_root() else {
-            self.notice = Some(Notice::Command(CommandRefusal::NotInTrash));
-            return;
-        };
         let location = self.location().clone();
-        let items = commands::selected_trash_items(&self.selected_entries(), &trash_root);
+        let items = commands::selected_trash_items(&self.selected_entries());
         let built = commands::restore_from_trash(&location, items);
         self.submit_or_notice(built);
     }
@@ -1331,11 +1322,6 @@ impl FilesSession {
     pub fn rename(&mut self, path: &LocalPath, new_name: &str) {
         let built = commands::rename(path, new_name);
         self.submit_or_notice(built);
-    }
-
-    /// The trash this session writes to.
-    pub fn trash_root(&self) -> Option<std::path::PathBuf> {
-        self.reader.trash().map(|trash| trash.root().to_path_buf())
     }
 
     pub fn pause_job(&mut self, id: JobId) {

@@ -39,7 +39,7 @@ Proof: `tests/lifecycle.rs::a_job_that_outlives_its_handle_finishes_anyway`.
 | POSIX ACLs | Carried only where the filesystem exposes them as `system.posix_acl_*` extended attributes | No portable unprivileged interface beyond that. An ACL that would not cross is recorded in the operation log, not dropped silently |
 | Extended attributes | Copied where the destination takes them; per-attribute refusals logged, never fatal | A FAT stick with no xattrs must not fail a copy |
 | Symbolic links | Copied as links, same target text | Following them turns one link farm into forty copies of its target |
-| Hard links | Not preserved between separately copied files | Needs a job-wide inode map; a real feature, and not this ticket |
+| Hard links | Preserved within one job: the first path to an inode is copied, every later path is linked to that copy with `link(2)`. A cross-filesystem move keeps them the same way; a same-filesystem move is a rename and never touches them | Before linking, the first copy is re-read and must still be the file the job wrote (same inode, size, and modification time). A changed or vanished first copy, or a refused link — another filesystem, a filesystem without hard links, a permission — is copied instead and logged as `hard_link_not_preserved` with the reason. The map lives as long as the job: a retry keeps it, a job resubmitted after a restart starts empty and so never links to a destination an earlier process wrote. Links to files outside the job's sources are not recreated |
 | Sparse regions | Preserved through `SEEK_HOLE`/`SEEK_DATA`; dense copy where the filesystem does not answer | A 100 GB sparse image must not become 100 GB of zeroes |
 | Durability | `fsync` per file then per parent directory when the destination is declared removable | The device-level flush that makes a disk safe to unplug is `storage-service`'s |
 
@@ -47,7 +47,8 @@ Proof: `tests/metadata_policy.rs`, eleven tests. Two of them state their own
 limit: the sparse test skips its hole assertions on a filesystem that does not
 support holes, and the extended-attribute test skips on a filesystem that
 refuses `user.*` attributes. Both report which happened rather than passing
-quietly.
+quietly. Hard links are proven by `tests/hard_links.rs` and by a unit test in
+`exec.rs` that makes `link(2)` fail for real with `EXDEV`.
 
 ## Partial copy and move
 
@@ -120,6 +121,7 @@ persisted record. Only the `Display` rendering is lossy.
 | Device disappearing | Classification only: needs hardware. All three errno values the kernel produces are covered |
 | Case conflict | Classification only: needs a case-insensitive mount |
 | Cross-filesystem move | Forced by policy flag, not by a second mount: the code path is identical, what is simulated is the `EXDEV` that selects it |
+| Trash on another device | Simulated through a device probe that reports which device a path is on, with the device trash really inside a temporary directory. The `.Trash` checks, the 0700 creation, relative records, restore, and purge are real |
 
 ## Trash
 
@@ -138,20 +140,48 @@ wrote, so a record never outlives the data it describes.
 - **Permanent delete**: data first, record second, so an interruption leaves an
   orphaned record — which the read side already skips and reports — rather than
   a file nothing can name.
-- **Cross-filesystem**: `rename` fails with `EXDEV`, and the job falls back to
-  copying into the home trash and deleting the source, in that order. The
-  per-device `.Trash` and `.Trash-$uid` directories the specification also
-  allows are **not** implemented. Creating a top-level `.Trash`, checking its
-  sticky bit, and falling back per-uid is separate work with its own permission
-  cases, and using the home trash while claiming device-trash support would put
-  the user's files somewhere they did not expect.
+- **Another device**: an item goes to its own device's trash, not the home
+  one. The device's top directory is its mount point, found by walking up
+  while the device number stays the same. On it, `$topdir/.Trash/$uid` is used
+  when `$topdir/.Trash` is a real directory with the sticky bit, and
+  `$topdir/.Trash-$uid`, created with mode 0700, otherwise. A `.Trash` that is a
+  symbolic link or lacks the sticky bit is refused and the refusal is logged. A
+  per-user directory that is a symbolic link, not a directory, or owned by
+  someone else is not used. The record in a device trash holds the path
+  relative to the top directory, so it survives the device being mounted
+  somewhere else, and a relative path containing `..` is refused on read.
+- **A device with no usable trash**: only then is the item copied into the home
+  trash and the source deleted, in that order, and the log says why
+  (`device_trash_unavailable` followed by `cross_device_fallback`).
+- **The Trash view** lists the home trash and every existing device trash the
+  user can read, found from the mount table each time it is opened. Kernel
+  interfaces, automount points, package images, and FUSE views of other
+  storage are not searched. Restore and permanent delete act on each item in
+  the trash it is in, so one selection may span several.
 
 ## Persistence and recovery
 
-Every state change writes the job's record, through a temporary and a rename, so
-the file on disk always holds a complete document. While a job is running the
-record is rewritten at most every 250 ms rather than after every item; see the
-measured cost below for why, and for what that costs in recovery precision.
+A job is stored as two files: a header, `job-<id>.json`, holding the state,
+the progress, and the bounded operation log, and an item journal,
+`job-<id>.items.jsonl`, one JSON line per planned item followed by one line per
+status change and per checksum. Nothing in the header grows with the item
+count.
+
+- **A running job appends.** At most every 250 ms the job appends the status
+  lines that changed since the last persist, then rewrites the header through a
+  temporary and a rename. Nothing already in the journal is rewritten.
+- **The journal is written whole** — compacted to one line per item — at
+  submission, once the items are planned, when the job finishes, when a crash is recovered, and when it has
+  grown past four times its live entries, which only repeated retries reach. A
+  failed append also forces the next persist to write it whole, so a partial
+  line is never appended after.
+- **Replay** reads the item lines and applies the status lines over them. A
+  final line that does not parse is a crash mid-append and is ignored; a line
+  that does not parse anywhere else, or a status for an item never planned,
+  reports the record as damaged.
+- **The first format migrates on load.** A schema version 1 record, one JSON
+  document holding every item, is read as it stands and rewritten as a header
+  and a journal.
 
 A record found in `running`, `paused`, or `waiting-on-conflict` after a restart
 belonged to a process that is gone. Recovery moves it to `failed` with
@@ -196,11 +226,14 @@ so a tmpfs run cannot be mistaken for a disk run.
 | 100,000 files, plan only | 175.2 ms | 5% of the copy: the walk that buys an honest total |
 | 100,000 files, same-filesystem move | 1,478 ms | 67,643 files/s, no bytes copied |
 | One 128 MB file, cross-filesystem move | 39.0 ms | Copy, verify, delete |
-| 10,001 items, copy with a job store attached | 419.4 ms | Against 350 ms for the same count with no store |
-| 10,001 items, one record write | 21.6 ms | Paid at most every 250 ms, not per item |
-| The record on disk, 10,001 items | 17.5 MB | Every item and a bounded log |
+| 10,001 items, copy with a job store attached | 481.6 ms | About 355 ms is 10,001 files at the 100,000-file rate measured in the same run (28,145 files/s) |
+| 10,001 items, one whole write | 4.8 ms | Header and compacted journal, after planning and at the end; a running job's persist appends instead, see below |
+| The record on disk, 10,001 items | 5.6 MB | Header and journal together, after the job finished |
 | One 64 MB file, `fsops::copy_file` directly | 11.0 ms | No job |
 | The same copy as a job | 16.4 ms | The engine costs about 5.4 ms, or roughly 50% on a copy this short |
+
+The three 10,001-item rows were measured again for ticket 55, after the item
+journal replaced the whole-record rewrite. The other rows are ticket 33's run.
 
 The engine's overhead is fixed per job — the plan walk, the worker handoff, the
 first record write — so it is a large fraction of an 11 ms copy and a rounding
@@ -215,12 +248,33 @@ of the 201 writes serialized a record that had grown by one more item. Records
 are now written at most every 250 ms while a job runs, plus immediately on every
 state change and at the end. After the change the same job costs 14.7 ms.
 
-Two things follow from the 17.5 MB record for 10,001 items:
+### What one persist writes
 
-- The record is a full rewrite, not a journal. A job of a million items would
-  produce a record of gigabytes, so a very large job needs an append-only item
-  journal before it is offered. That is a follow-up, named rather than
-  discovered later.
+Measured by `persist_bytes` in the same benchmark, which runs at full size even
+in `--test` mode because it copies nothing. The record is a copy job's, with
+every item planned and the log at its cap.
+
+| Items | Before: the whole single-file record | After: one item changed | After: 7,157 items changed | After: whole write, after planning and at the end |
+| --- | --- | --- | --- | --- |
+| 10,001 | 15,538,968 bytes | 559,727 bytes | 995,139 bytes | 5,030,116 bytes |
+| 100,001 | 137,941,019 bytes | 561,778 bytes | 997,190 bytes | 45,262,167 bytes |
+
+Before the journal, every persist of a running job rewrote the first column,
+four times a second. After it, a persist writes the header and the changed
+lines, and that cost is the same at 100,001 items as at 10,001. 7,157 items is
+one 250 ms interval at the measured small-file rate. The whole write happens
+once the items are planned and at the end, not per persist. The earlier 17.5 MB figure for
+10,001 items came from a real job with longer paths; the 15.5 MB here is the
+same format for the synthetic record, measured on the same ext4 host as the
+table above.
+
+Nearly all of the header is the operation log: 2,304 records at its cap, whose
+paths are stored as byte arrays so a name that is not UTF-8 survives. That is
+what keeps a persist near half a megabyte. It is bounded, and it does not grow
+with the job.
+
+One thing still follows from the throttle:
+
 - The throttle costs recovery precision. An item that finished in the last
   quarter second before a crash comes back marked pending, so a resubmitted job
   re-copies it. That is conservative in the safe direction, and the conflict

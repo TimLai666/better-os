@@ -57,9 +57,9 @@ pub use conflict::{
 };
 pub use engine::{EngineConfig, JobEngine, JobEvent, JobHandle, JobId, JobSnapshot};
 pub use error::OperationError;
-pub use exec::{ItemOutcome, JobControl, build_plan, preview_bulk_rename};
+pub use exec::{CopiedInode, ItemOutcome, JobControl, build_plan, preview_bulk_rename};
 pub use log::{LogEvent, LogRecord, MetadataProperty, OperationLog, SkipReason};
-pub use plan::{ItemKind, Plan, PlanItem};
+pub use plan::{InodeKey, ItemKind, Plan, PlanItem};
 pub use policy::{
     CopyPolicy, DestinationDurability, FailurePolicy, FsyncPolicy, MoveStrategy, SparsePolicy,
     SymlinkPolicy,
@@ -70,4 +70,4 @@ pub use spec::{
     RenamePattern, TrashItemRef,
 };
 pub use state::JobState;
-pub use store::{ItemRecord, ItemStatus, JobRecord, JobStore, Recovery, StoreError};
+pub use store::{ItemRecord, ItemStatus, JobRecord, JobStore, JournalEntry, Recovery, StoreError};
