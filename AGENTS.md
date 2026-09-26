@@ -51,6 +51,13 @@ updated, verified, and rolled back through shared manager operations.
   needs a new ADR.
 - Every behavior change needs tests. Run formatting, linting, workspace checks,
   and tests before handoff.
+- Give every worktree of this repository its own `CARGO_TARGET_DIR`. Cargo
+  hashes a path crate by its path inside the workspace, so two worktrees sharing
+  one target overwrite each other's artifacts and a stale build from the other
+  tree is judged fresh.
+- `rust-version` in the workspace manifest is the oldest toolchain that builds
+  the locked graph. A change that needs a newer compiler raises it in the same
+  commit; the CI `msrv` job checks the workspace with exactly that version.
 
 ## Handoff
 
@@ -63,8 +70,6 @@ GUI or dependency compiles when the relevant command was not executed.
 - Build each supported Ubuntu release in a compatible base environment. The
   current Zorin 18 host produces `libc6 (>= 2.39)` and must not supply a 22.04
   release artifact.
-- Update GitHub Actions dependencies after the Node.js 20 deprecation warning
-  on `actions/checkout` and `actions/upload-artifact` is addressed.
 - Review the license implications of every copyleft dependency before release.
 - Better Monitor now presents its collectors: `monitor-views` owns grouping and
   the table, apps, and overview models with no GPUI dependency, and
@@ -91,8 +96,6 @@ GUI or dependency compiles when the relevant command was not executed.
   channel. Checksums are currently the only integrity mechanism.
 - Decide whether the daemon should offer a `dpkg --configure -a` repair action
   for a transaction interrupted by a crash or power loss.
-- Align the declared Rust 1.85 baseline with the lockfile dependency MSRV
-  before treating Rust 1.85 as a supported build target.
 - Better Launcher is measured now: `cargo bench -p launcher-gui --bench
   launcher_suite` runs all five manifest benchmarks and
   `docs/launcher-performance.md` records the numbers and the hardware. Two
@@ -126,10 +129,10 @@ GUI or dependency compiles when the relevant command was not executed.
   cannot be dragged. Better Launcher is the one deliberate exception, recorded
   in code: a near-fullscreen overlay dismissed by Escape gets no titlebar, but
   it still sets `app_id` like every other window, which is what lets a dock or
-  an application grid match a window to its desktop entry. Pressing Escape on
-  Better Launcher is still owed to someone at a real desktop: that key path has
-  not been edited and no test covers it, so it has been reasoned about rather
-  than pressed. The icon half of that pair moved in v0.2.4 without closing:
+  an application grid match a window to its desktop entry. Escape on Better
+  Launcher is now a tested key mapping and was pressed in a headless sway
+  session, where it closed the overlay; it has still not been pressed on a GNOME
+  desktop. The icon half of that pair moved in v0.2.4 without closing:
   every icon v0.2.3 shipped was in fact invisible, because gdk-pixbuf chooses a
   loader by sniffing a file's first bytes and the attribution comment pushed
   `<svg>` past that window — a valid SVG document that was not an image to the
@@ -180,10 +183,6 @@ GUI or dependency compiles when the relevant command was not executed.
   a systemd user unit in one package. v0.1.0 published the window alone, so the
   wider package carries its own version: it moved to 0.2.0 and travels with the
   workspace since. One version number no longer names two payloads.
-- The command line's own `--help` says `better-monitor`, and the window already
-  owns `/usr/bin/better-monitor` in a published package, so the CLI is installed
-  as `better-monitor-cli`. Decide which of the two is renamed; a packaging
-  change cannot fix a name a crate hard-codes.
 - `better-touchpad` now has a manifest. Its health checks are the IDs
   `touchpad-core` emits and its benchmark baselines are the figures in
   `docs/touchpad-sensitivity-mapping.md`, but nothing runs those benchmarks —
@@ -198,9 +197,11 @@ GUI or dependency compiles when the relevant command was not executed.
   needs a compositor adapter and reports itself unavailable; audio reads ALSA and
   cannot see Bluetooth or network sinks. Both limits are recorded in ADR 0010 and
   in the provider modules. Do not claim full trigger coverage.
-- A Better Awake low-battery stop writes a history entry and prints to stderr.
-  The desktop notification belongs to the tray and is not wired, so a stop is
-  visible in the log and in History but does not raise a notification.
+- A Better Awake low-battery stop raises its desktop notification from the
+  tray, so with no tray running a stop is still only in History and on the
+  service's stderr. The notification has been exercised against a fake
+  notification service on a private bus and has not been seen on a GNOME
+  desktop.
 - Every Better OS desktop binary links an HTTP client. `gpui-component-assets`
   depends on `zed-reqwest`, which brings hyper and rustls, so "performs no
   network request" is provable for Better OS crates and not for the shipped
@@ -281,12 +282,11 @@ GUI or dependency compiles when the relevant command was not executed.
   carries application back, forward, zoom, and rotate because Issue #3's table
   does, and every adapter reports all four unsupported. A four-row preview that
   says "no backend can do this yet" is honest but it is not a feature.
-- Let the GNOME defaults adapters adopt the dconf write path that now exists.
-  Ticket 29 built it — `ca.desrt.dconf.Writer.Change` over the session bus, with
-  the change set encoded in `touchpad-platform`'s `gvariant` module and pinned
-  against GLib's own bytes — and ADR 0010 records the decision. Better Defaults
-  still reports Manual action required for a change, because adopting the path
-  changes its behaviour and its tests.
+- Better Defaults writes GNOME keybindings and desktop settings through the
+  dconf service now, and the write has only ever reached a real `dconf-service`
+  on a private bus. Nobody has watched GNOME Shell or Settings pick up a change
+  it made. No shipped manifest declares a GNOME integration yet, so the path is
+  unreachable from the built-in catalog until one does.
 - Better Touchpad shows vertical scroll factor, horizontal scroll factor, and
   smooth scrolling as unavailable, because GNOME 46 has no key for any of them.
   The model and the mock backend carry all three; making them live is one table
@@ -304,17 +304,18 @@ GUI or dependency compiles when the relevant command was not executed.
   because an in-process engine never sees the tracked-operation notices another
   application would have sent to a service. Do not add a third fallback that
   invents a state.
-- `files-operations` does not yet tell the storage service when a job finishes.
-  `StorageClient::notify_operation_completed` exists and is tested against a
-  running service; the job engine has no device identity for a destination path,
-  so nothing calls it. Until a path is mapped to a UDisks2 object, a Better Files
-  copy to an external device reaches the service only through the platform
-  signals, not as a tracked operation — which means readiness can be claimed
-  earlier than it should be for our own writes. Close this before claiming Issue
-  #5's readiness rule is fully implemented.
-- Better Files cannot turn Performance mode on. The client can set the policy and
-  the service refuses it without the acknowledged risks, but no UI presents those
-  risks, and Issue #5 requires the trade-off explained before activation.
+- A Better Files job that writes to an external device is a tracked operation
+  in the storage service from before its first write to after its last. Two
+  gaps remain. If Better Files exits or crashes mid-job the completion is never
+  sent, and the service keeps the device out of "ready to unplug" until it
+  restarts or the device is replugged; closing that means the service tying an
+  operation to its sender's bus name. And a job started before the window's
+  device link has its first device list is not registered at all.
+- Better Files offers Performance mode behind a confirmation of each declared
+  risk, and the mode makes no write faster yet: nothing changes a mount option
+  or a cache setting, so its only effect is to stop claiming a device is safe to
+  unplug without ejecting. The risk text says so. Decide whether to keep
+  offering it before the mount-option work ticket 31 left to an ADR exists.
 - Preview treats a parser as a boundary, not a sandbox. The size limit, the
   decoder's own allocation limits, and a `catch_unwind` are what exist;
   `docs/files-preview-policy.md` states what each one does and does not buy. A
@@ -336,18 +337,17 @@ GUI or dependency compiles when the relevant command was not executed.
   association" operation. Without one, restoring an XDG default that previously
   had no owner reports Manual action required rather than clearing the line, and
   no second `mimeapps.list` editor may be written.
-- Capture a handler group's previous value per declared type. A group whose
-  types currently point at different applications reads as unknown and is
-  refused rather than flattened into one owner, which is safe but coarse.
 - Better Files runs its operations as durable jobs now: `files-operations` owns
   copy, move, duplicate, rename, bulk rename, trash, restore, permanent delete,
-  and checksum, and a job survives every handle to it being dropped. Four gaps
-  are open and should not be assumed closed. Archive and extract are not built.
-  The trash has no per-device `.Trash-$uid`, so a deletion on a removable disk
-  copies into the home trash. Hard links are not preserved between separately
-  copied files. And a job record is a full rewrite rather than a journal, which
-  is 17.5 MB at 10,001 items and grows linearly, so a job of a million items
-  needs an append-only item journal first.
+  and checksum, and a job survives every handle to it being dropped. A job is a
+  header plus an append-only item journal, a trash on a removable disk goes to
+  that volume's own trash, and a copy keeps hard links. What is still open:
+  archive and extract are ticket 56; the volume trash and hard links have been
+  tested on temporary directories with a device-number seam, never on a second
+  real device, and FAT or exFAT media not at all; the Trash view reads every
+  mounted filesystem's trash, network shares included, so an unreachable server
+  can stall that listing; and two processes submitting a job at the same instant
+  can still pick the same job number.
 - Decide whether a Better Files job should survive a logout or a reboot, and
   where the Better Copy boundary sits. Issue #6 defers both; persistence today
   covers a UI restart only.
@@ -358,20 +358,16 @@ GUI or dependency compiles when the relevant command was not executed.
 - The built-in catalog now carries all seven released component manifests, so
   `better-manager list` offers the whole suite and `better-manager defaults
   inspect` reports Better Files' declared file-manager integration rather than
-  an empty state. Two gaps stay open. `better-files-example.yaml` is still in
-  the shipped catalog beside the real `better-files`, which shows a user a
-  fixture; removing it means moving the `better-files-example` entry in
-  `manager-gui`'s `translated_component` and its GUI test, which is a code
-  change rather than a list change. And Better Files is the only component that
+  an empty state. Better Files is the only component that
   declares a default integration; the other six declare none, which is a
   deferred Issue #10 decision and not an omission this catalog change made.
 - Decide how the build tree is kept from filling the disk. `target/` reached
   158 GB during the v0.2.4 work and a manual `cargo clean` was what unblocked
   it. Nothing in the project prunes it, and a release builds the whole workspace
   twice — debug for the gate, release for the eight packages — so the growth is
-  structural rather than accidental. The two candidate answers are a periodic
-  cleanup someone actually runs and a shared build cache across worktrees; both
-  are decisions, and neither has been made.
+  structural rather than accidental. A periodic cleanup someone actually runs is
+  the remaining candidate answer, and it has not been decided. One `target/`
+  shared between worktrees is not an answer: see the rule under Working rules.
 - The license inventory check catches a class of merge that is easy to make.
   `docs/third-party-licenses.md` pins the `Cargo.lock` hash, so any commit that
   moves the lockfile and does not regenerate it turns CI red on `main` — which
@@ -472,9 +468,13 @@ GUI or dependency compiles when the relevant command was not executed.
   for a component that ships both. The window refuses an argument it does not
   understand with exit 2 and names the command line, rather than opening a
   window a person waiting at a terminal cannot escape. Both binaries are in the
-  published `better-manager` package from v0.2.7 on. The other five windows
-  still swallow their arguments; fixing that needs each of them to have a
-  command line to point at first.
+  published `better-manager` package from v0.2.7 on. Every other window follows
+  the same rule through `better_ui::command_line`: it answers `--help` and
+  `--version`, keeps the flags its desktop entries pass, and refuses the rest
+  with exit 2. Better Files also takes the location the desktop hands it.
+- Better Launcher's left and right arrow keys do not move the selection in its
+  grid; up and down do. The key mapping sends them to the selection, so the
+  search field is the likely taker. Nobody has confirmed the cause.
 - Reconciliation adopts a host that is **ahead** of the record and blocks on
   every other disagreement. An external `apt` or `install.sh` upgrade is
   supported — it is the only way the manager can be upgraded — so a newer
