@@ -311,11 +311,12 @@ GUI or dependency compiles when the relevant command was not executed.
   restarts or the device is replugged; closing that means the service tying an
   operation to its sender's bus name. And a job started before the window's
   device link has its first device list is not registered at all.
-- Better Files offers Performance mode behind a confirmation of each declared
-  risk, and the mode makes no write faster yet: nothing changes a mount option
-  or a cache setting, so its only effect is to stop claiming a device is safe to
-  unplug without ejecting. The risk text says so. Decide whether to keep
-  offering it before the mount-option work ticket 31 left to an ADR exists.
+- Better Files does not offer Performance mode: `files_gui::policy::
+  OFFER_PERFORMANCE_MODE` is off because the mode changes no mount option or
+  cache setting and so makes no write faster. A device already in the mode is
+  still offered Direct Removal. Turn it on only with the mount-option work
+  ticket 31 left to an ADR, and reword the throughput risk text in the same
+  change.
 - Preview treats a parser as a boundary, not a sandbox. The size limit, the
   decoder's own allocation limits, and a `catch_unwind` are what exist;
   `docs/files-preview-policy.md` states what each one does and does not buy. A
