@@ -560,39 +560,39 @@ impl<'a> DefaultsEngine<'a> {
 
         // A group captured key by key goes back key by key: each key to its own
         // previous value, each verified by its own read.
-        if let PlanAction::Restore { to } = &entry.action {
-            if let Some(per_key) = to.per_key() {
-                let keys = per_key
-                    .iter()
-                    .map(|captured| {
-                        let outcome = match AdapterRequest::new(&entry.component, integration)
-                            .narrowed_to(&captured.key)
-                        {
-                            Some(request) => self.change_and_verify(
-                                &PlanAction::Restore {
-                                    to: captured.observed.clone(),
-                                },
-                                integration,
-                                &request,
-                                adapters,
-                            ),
-                            // The manifest no longer declares this key, so
-                            // Better OS has no business writing it.
-                            None => EntryOutcome::Failed {
-                                reason: "defaults.key_left_the_manifest".to_string(),
-                                detail: Some(captured.key.clone()),
+        if let PlanAction::Restore { to } = &entry.action
+            && let Some(per_key) = to.per_key()
+        {
+            let keys = per_key
+                .iter()
+                .map(|captured| {
+                    let outcome = match AdapterRequest::new(&entry.component, integration)
+                        .narrowed_to(&captured.key)
+                    {
+                        Some(request) => self.change_and_verify(
+                            &PlanAction::Restore {
+                                to: captured.observed.clone(),
                             },
-                        };
-                        KeyOutcome {
-                            key: captured.key.clone(),
-                            outcome,
-                        }
-                    })
-                    .collect();
-                let outcome = EntryOutcome::PerKey { keys };
-                let update = self.snapshot_update(entry, integration, &outcome, previous);
-                return (outcome, update);
-            }
+                            integration,
+                            &request,
+                            adapters,
+                        ),
+                        // The manifest no longer declares this key, so
+                        // Better OS has no business writing it.
+                        None => EntryOutcome::Failed {
+                            reason: "defaults.key_left_the_manifest".to_string(),
+                            detail: Some(captured.key.clone()),
+                        },
+                    };
+                    KeyOutcome {
+                        key: captured.key.clone(),
+                        outcome,
+                    }
+                })
+                .collect();
+            let outcome = EntryOutcome::PerKey { keys };
+            let update = self.snapshot_update(entry, integration, &outcome, previous);
+            return (outcome, update);
         }
 
         let request = AdapterRequest::new(&entry.component, integration);

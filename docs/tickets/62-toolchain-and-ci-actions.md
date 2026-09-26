@@ -45,9 +45,12 @@ Under `-D warnings` they fail CI, so `cargo clippy --fix` applied them in
 twenty files across `app-catalog-core`, `app-chooser-core`, `app-chooser-gui`,
 `defaults-core`, `defaults-platform`, `files-operations`, `files-platform`,
 `manager-core`, `manager-store`, `monitor-views`, `touchpad-core`,
-`touchpad-gui`, `touchpad-platform`, and `touchpad-session`. Every change is a
-mechanical rewrite with the same behaviour, and the workspace test suite passes
-after it.
+`touchpad-gui`, `touchpad-platform`, and `touchpad-session`. After `main` was
+merged in with tickets 50–59, the same fix ran again over the code those
+tickets added, in `defaults-core`, `files-operations`, and `files-platform`;
+the `touchpad-platform` encoder change travelled with the file to
+`defaults-platform`. Every change is a mechanical rewrite with the same
+behaviour, and the workspace test suite passes after it.
 
 CI gained an `msrv` job. It reads `rust-version` from `[workspace.package]`,
 installs exactly that toolchain with `dtolnay/rust-toolchain@master`, and runs

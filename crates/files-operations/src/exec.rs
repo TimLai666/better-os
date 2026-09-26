@@ -495,11 +495,10 @@ fn transfer_leaf(
         );
     }
 
-    if let Some(key) = item.hard_link {
-        if let Some(outcome) = link_to_first_copy(item, key, &destination, policy, is_move, control)
-        {
-            return Ok(outcome);
-        }
+    if let Some(key) = item.hard_link
+        && let Some(outcome) = link_to_first_copy(item, key, &destination, policy, is_move, control)
+    {
+        return Ok(outcome);
     }
 
     let mut hook = |written: u64| {
@@ -555,22 +554,20 @@ fn transfer_leaf(
     // The copy is the one later paths to the same inode link to. A copy made
     // because a link could not be is recorded too, replacing a first copy that
     // is no longer fit to link to.
-    if let Some(key) = item.hard_link {
-        if let Ok(snapshot) = FileSnapshot::read(&destination) {
-            control.record_copied_inode(
-                key,
-                CopiedInode {
-                    destination: destination.clone(),
-                    snapshot,
-                },
-            );
-        }
+    if let Some(key) = item.hard_link
+        && let Ok(snapshot) = FileSnapshot::read(&destination)
+    {
+        control.record_copied_inode(
+            key,
+            CopiedInode {
+                destination: destination.clone(),
+                snapshot,
+            },
+        );
     }
 
-    if is_move {
-        if let Err(error) = finish_move(&item.source, item.snapshot.as_ref()) {
-            return Ok(ItemOutcome::Failed(error));
-        }
+    if is_move && let Err(error) = finish_move(&item.source, item.snapshot.as_ref()) {
+        return Ok(ItemOutcome::Failed(error));
     }
 
     Ok(ItemOutcome::Done {
@@ -640,12 +637,11 @@ fn link_to_first_copy(
         },
     );
 
-    if is_move {
-        if let Some(expected) = &item.snapshot {
-            if let Err(error) = fsops::ensure_unchanged(&item.source, expected) {
-                return Some(ItemOutcome::Failed(error));
-            }
-        }
+    if is_move
+        && let Some(expected) = &item.snapshot
+        && let Err(error) = fsops::ensure_unchanged(&item.source, expected)
+    {
+        return Some(ItemOutcome::Failed(error));
     }
     let verified = if policy.verify {
         match fsops::verify_copy(&item.source, destination, policy) {
@@ -655,10 +651,8 @@ fn link_to_first_copy(
     } else {
         false
     };
-    if is_move {
-        if let Err(error) = finish_move(&item.source, item.snapshot.as_ref()) {
-            return Some(ItemOutcome::Failed(error));
-        }
+    if is_move && let Err(error) = finish_move(&item.source, item.snapshot.as_ref()) {
+        return Some(ItemOutcome::Failed(error));
     }
     Some(ItemOutcome::Done { bytes: 0, verified })
 }

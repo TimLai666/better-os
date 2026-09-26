@@ -179,10 +179,10 @@ impl TrashDirectory {
 fn volume_topdir_of(root: &Path) -> Option<PathBuf> {
     let name = root.file_name()?.as_bytes();
     let parent = root.parent()?;
-    if let Some(uid) = name.strip_prefix(b".Trash-") {
-        if is_uid(uid) {
-            return Some(parent.to_path_buf());
-        }
+    if let Some(uid) = name.strip_prefix(b".Trash-")
+        && is_uid(uid)
+    {
+        return Some(parent.to_path_buf());
     }
     if is_uid(name) && parent.file_name().map(OsStrExt::as_bytes) == Some(b".Trash") {
         return parent.parent().map(Path::to_path_buf);
