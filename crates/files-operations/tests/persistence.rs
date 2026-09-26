@@ -331,3 +331,93 @@ fn a_persist_writes_the_same_bytes_at_ten_thousand_and_a_hundred_thousand_items(
         "a persist grew with the item count: {costs:?}"
     );
 }
+
+/// Job numbers used to start at one in every process, so the first job a new
+/// Better Files submitted overwrote whatever record job 1 had left, including
+/// one that recovery would have reported as interrupted.
+#[test]
+fn a_new_process_does_not_overwrite_the_records_an_earlier_one_left() {
+    let root = tempfile::tempdir().unwrap();
+    let store = JobStore::new(root.path().join("jobs"));
+    // What a process that died mid-copy left behind: job 1, still running.
+    let abandoned = files_operations::JobRecord {
+        schema_version: files_operations::store::RECORD_SCHEMA_VERSION,
+        id: 1,
+        kind: files_operations::OperationKind::Copy,
+        state: JobState::Running,
+        progress: files_operations::Progress {
+            items_total: 1,
+            ..files_operations::Progress::default()
+        },
+        items: vec![files_operations::ItemRecord {
+            source: "/home/user/big.iso".into(),
+            destination: Some("/media/usb/big.iso".into()),
+            status: ItemStatus::Pending,
+            bytes: 1,
+            error: None,
+        }],
+        log: files_operations::OperationLog::default(),
+        updated_at: 1,
+        checksums: Vec::new(),
+    };
+    store.write(&abandoned).unwrap();
+    // And a record this build cannot read, which still holds its number.
+    fs::write(store.root().join("job-00000000000000000004.json"), b"{").unwrap();
+
+    let source = root.path().join("a.bin");
+    write_pattern(&source, 64);
+    let destination = root.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    let engine = engine_with(&store);
+    let handle = engine
+        .submit(JobSpec::new(Operation::Copy {
+            sources: vec![local(&source)],
+            destination: local(&destination),
+        }))
+        .unwrap();
+    engine.wait(handle.id(), support::LIMIT).unwrap();
+    assert!(
+        handle.id().value() > 4,
+        "the new job took number {} from an earlier process",
+        handle.id().value()
+    );
+
+    let recovery = store.recover();
+    let interrupted: Vec<u64> = recovery
+        .interrupted
+        .iter()
+        .map(|record| record.id)
+        .collect();
+    assert_eq!(interrupted, vec![1]);
+    assert_eq!(
+        recovery.interrupted[0].items[0].destination.as_deref(),
+        Some(std::path::Path::new("/media/usb/big.iso"))
+    );
+    assert_eq!(recovery.damaged.len(), 1);
+    assert_eq!(recovery.settled.len(), 1);
+}
+
+/// A second process writing to the same store after this engine started is
+/// not overwritten either: a number whose record exists is skipped.
+#[test]
+fn a_number_another_process_took_after_this_engine_started_is_skipped() {
+    let root = tempfile::tempdir().unwrap();
+    let store = JobStore::new(root.path().join("jobs"));
+    let engine = engine_with(&store);
+    fs::create_dir_all(store.root()).unwrap();
+    fs::write(store.root().join("job-00000000000000000001.json"), b"{").unwrap();
+    fs::write(store.root().join("job-00000000000000000002.json"), b"{").unwrap();
+
+    let handle = engine
+        .submit(JobSpec::new(Operation::CreateFolder {
+            parent: local(root.path()),
+            name: "made".into(),
+        }))
+        .unwrap();
+    engine.wait(handle.id(), support::LIMIT).unwrap();
+    assert_eq!(handle.id().value(), 3);
+    assert_eq!(
+        fs::read(store.root().join("job-00000000000000000001.json")).unwrap(),
+        b"{"
+    );
+}

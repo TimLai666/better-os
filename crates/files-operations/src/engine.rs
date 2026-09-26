@@ -370,7 +370,15 @@ impl JobEngine {
             queue: Mutex::new(VecDeque::new()),
             ready: Condvar::new(),
             stopping: AtomicBool::new(false),
-            next_id: AtomicU64::new(1),
+            // Numbering continues after the records an earlier process left,
+            // so a new job never overwrites one of them.
+            next_id: AtomicU64::new(
+                config
+                    .store
+                    .as_ref()
+                    .and_then(JobStore::highest_id)
+                    .map_or(1, |highest| highest.saturating_add(1)),
+            ),
             store: config.store,
             defaults: config.conflicts,
             observer,
@@ -407,7 +415,7 @@ impl JobEngine {
                 crate::spec::Operation::PermanentDelete { .. }
             ));
         }
-        let id = JobId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
+        let id = self.next_free_id();
         let mut conflicts = self.inner.defaults.clone();
         for (kind, resolution) in standing_answers(&spec.conflicts) {
             conflicts.remember(kind, resolution);
@@ -454,6 +462,23 @@ impl JobEngine {
             id,
             events: receiver,
         })
+    }
+
+    /// The next job number whose record is not already on disk.
+    ///
+    /// The engine starts after the highest number in its store, and a number
+    /// another process used since then is skipped here, so a record left by
+    /// any process — an interrupted job recovery would report — is never
+    /// overwritten. Two processes submitting at the same instant can still
+    /// pick the same number; nothing claims it on disk until the first write.
+    fn next_free_id(&self) -> JobId {
+        loop {
+            let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+            match &self.inner.store {
+                Some(store) if store.holds(id) => continue,
+                _ => return JobId(id),
+            }
+        }
     }
 
     /// A second event stream for a job somebody else submitted.

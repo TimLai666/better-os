@@ -109,6 +109,10 @@ pub fn written_paths(
         }
         // A duplicate is written beside its source.
         Operation::Duplicate { sources } => paths(sources),
+        // An item on another device goes to that device's own trash, which is
+        // on the same device as the item, so the sources already name it. The
+        // home trash is named as well, because an item whose device has no
+        // usable trash is copied there instead.
         Operation::Trash {
             sources,
             trash_root,
@@ -155,8 +159,9 @@ pub fn devices_written(
 }
 
 /// The identifier a job is registered under. Unique across processes, because
-/// job numbers start at one in every Better Files process and the service
-/// hears from all of them.
+/// the service hears from all of them and a job number alone is not: it
+/// continues from the job store, but two processes running at once can still
+/// pick the same one.
 pub fn operation_id(process: u32, job: JobId) -> String {
     format!("better-files:{process}:{job}")
 }
@@ -405,6 +410,52 @@ mod tests {
                 PathBuf::from("/home/tim/.local/share/Trash"),
                 PathBuf::from("/media/usb/photo.jpg"),
             ]
+        );
+    }
+
+    #[test]
+    fn trashing_on_a_usb_disk_holds_that_disk_where_its_own_trash_is_written() {
+        // The item goes to `/media/usb/.Trash-1000`, on the disk itself, and
+        // only when the disk has no usable trash to the home trash.
+        let devices = vec![mounted("/usb", "/media/usb"), mounted("/home", "/home")];
+        let trash = Operation::Trash {
+            sources: vec![local("/media/usb/videos/clip.mkv")],
+            trash_root: None,
+        };
+        assert_eq!(
+            devices_written(
+                &trash,
+                Some(Path::new("/home/tim/.local/share/Trash")),
+                &no_trash_info,
+                &devices
+            ),
+            vec!["/usb".to_string(), "/home".to_string()]
+        );
+        // Restoring from, and emptying, the disk's own trash write only there.
+        let item = TrashItemRef::new("/media/usb/.Trash-1000", "clip.mkv");
+        let original = |_: &TrashItemRef| Some(PathBuf::from("/media/usb/videos/clip.mkv"));
+        assert_eq!(
+            devices_written(
+                &Operation::RestoreFromTrash {
+                    items: vec![item.clone()]
+                },
+                None,
+                &original,
+                &devices
+            ),
+            vec!["/usb".to_string()]
+        );
+        assert_eq!(
+            devices_written(
+                &Operation::PermanentDelete {
+                    targets: vec![DeleteTarget::TrashItem(item)],
+                    confirmation: DeleteConfirmation::explicit(),
+                },
+                None,
+                &no_trash_info,
+                &devices
+            ),
+            vec!["/usb".to_string()]
         );
     }
 

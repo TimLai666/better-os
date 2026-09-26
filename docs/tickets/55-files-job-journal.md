@@ -70,6 +70,21 @@ as they were, and compacted when the job ends. It failed when the engine was
 temporarily forced back to writing the whole record every time. The other shows
 one persist costing the same at 10,001 and 100,001 items.
 
+- **Job numbers no longer restart at one.** The engine used to number jobs
+  from one in every process, and since tickets 50–52 the window runs its
+  engine with a store. So the first job a new Better Files submitted
+  overwrote whatever record job 1 had left, including one recovery would have
+  reported as interrupted. Now an engine with a store starts after the highest
+  number any header or journal in it carries. A record this build cannot read
+  still holds its number. At submission, a number whose record is already on
+  disk is skipped, so a second process that wrote since this one started is
+  not overwritten either. Two processes submitting at the same instant can
+  still pick the same number, because nothing claims it on disk before the
+  first write. The storage tracker already told the processes apart with the
+  process id. Tests: `tests/persistence.rs::a_new_process_does_not_overwrite_the_records_an_earlier_one_left`
+  and `a_number_another_process_took_after_this_engine_started_is_skipped`,
+  both seen failing first (the new job took number 1).
+
 ### Bytes written per persist
 
 From `cargo bench -p files-operations`, function `persist_bytes`. The record is

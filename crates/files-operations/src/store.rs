@@ -429,6 +429,23 @@ impl JobStore {
         fs::rename(&temporary, path).map_err(|error| StoreError::io(path, &error))
     }
 
+    /// The highest job number with a header or a journal in the store,
+    /// readable or not. A record this build cannot parse still holds its
+    /// number: it may be a newer build's, and it is reported, not replaced.
+    pub fn highest_id(&self) -> Option<u64> {
+        fs::read_dir(&self.root)
+            .ok()?
+            .flatten()
+            .filter_map(|entry| record_id(&entry.file_name()))
+            .max()
+    }
+
+    /// Whether a record with this number is on disk.
+    pub fn holds(&self, id: u64) -> bool {
+        fs::symlink_metadata(self.path_for(id)).is_ok()
+            || fs::symlink_metadata(self.journal_for(id)).is_ok()
+    }
+
     pub fn read(&self, id: u64) -> Result<JobRecord, StoreError> {
         self.read_record(&self.path_for(id))
     }
@@ -527,6 +544,19 @@ impl JobStore {
         }
         recovery
     }
+}
+
+/// The job number in a header's or a journal's file name.
+fn record_id(name: &std::ffi::OsStr) -> Option<u64> {
+    let name = name.to_str()?;
+    let rest = name.strip_prefix("job-")?;
+    let digits = rest
+        .strip_suffix(".items.jsonl")
+        .or_else(|| rest.strip_suffix(".json"))?;
+    if digits.len() != 20 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 fn push_line<T: Serialize>(buffer: &mut Vec<u8>, entry: &T, path: &Path) -> Result<(), StoreError> {

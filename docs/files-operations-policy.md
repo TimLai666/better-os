@@ -179,6 +179,12 @@ count.
   final line that does not parse is a crash mid-append and is ignored; a line
   that does not parse anywhere else, or a status for an item never planned,
   reports the record as damaged.
+- **Job numbers continue across processes.** An engine with a store numbers
+  its jobs after the highest number already in it, readable or not, and skips
+  a number whose record appeared since. A new process therefore never
+  overwrites an earlier one's record, including an interrupted job recovery
+  would report. Two processes submitting at the same instant can still pick
+  the same number.
 - **The first format migrates on load.** A schema version 1 record, one JSON
   document holding every item, is read as it stands and rewritten as a header
   and a journal.
