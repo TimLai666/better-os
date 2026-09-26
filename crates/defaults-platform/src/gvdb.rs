@@ -8,8 +8,7 @@
 //! Only reading is implemented, and deliberately so. The dconf service keeps
 //! its own view of this file and rewrites it; a process that edited the bytes
 //! behind the service would have its change ignored or overwritten. Writing
-//! belongs to the service, and until that path exists the keybinding adapter
-//! says so instead of guessing.
+//! belongs to the service, and goes through it: see the `dconf_writer` module.
 //!
 //! The file is untrusted input. Every offset is bounds-checked, a parent chain
 //! that loops is refused rather than followed, and a value type this reader

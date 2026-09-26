@@ -273,6 +273,18 @@ pub enum ObservedValue {
     Unsupported { reason: String },
     /// The adapter was refused access.
     PermissionDenied { reason: String },
+    /// The declared keys were each read definitely and they disagree — a
+    /// handler group whose types open in different applications. Every key
+    /// keeps its own reading, in declared order, so the group is never
+    /// flattened into one owner and each key can be put back to its own.
+    Mixed { per_key: Vec<KeyObservation> },
+}
+
+/// What one declared key of an integration held.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct KeyObservation {
+    pub key: String,
+    pub observed: ObservedValue,
 }
 
 impl ObservedValue {
@@ -283,10 +295,29 @@ impl ObservedValue {
         }
     }
 
+    /// Each key's own reading, when the keys disagree.
+    pub fn per_key(&self) -> Option<&[KeyObservation]> {
+        match self {
+            Self::Mixed { per_key } => Some(per_key),
+            _ => None,
+        }
+    }
+
     /// Whether this observation is definite enough to compare against a desired
-    /// or captured value. An indefinite reading is never treated as agreement.
+    /// or captured value. An indefinite reading is never treated as agreement,
+    /// and a mixed reading is definite only when every key in it is set or
+    /// unset.
     pub fn is_determinate(&self) -> bool {
-        matches!(self, Self::Set { .. } | Self::Unset)
+        match self {
+            Self::Set { .. } | Self::Unset => true,
+            Self::Mixed { per_key } => {
+                !per_key.is_empty()
+                    && per_key
+                        .iter()
+                        .all(|key| matches!(key.observed, Self::Set { .. } | Self::Unset))
+            }
+            _ => false,
+        }
     }
 }
 
@@ -407,4 +438,67 @@ pub(crate) fn validate_declarations(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(value: &str) -> ObservedValue {
+        ObservedValue::Set {
+            value: DefaultsValue::DesktopEntry(value.to_string()),
+        }
+    }
+
+    fn keyed(key: &str, observed: ObservedValue) -> KeyObservation {
+        KeyObservation {
+            key: key.to_string(),
+            observed,
+        }
+    }
+
+    #[test]
+    fn a_mixed_reading_is_definite_only_when_every_key_was_read_definitely() {
+        let mixed = ObservedValue::Mixed {
+            per_key: vec![
+                keyed("image/png", entry("org.gnome.eog.desktop")),
+                keyed("image/jpeg", ObservedValue::Unset),
+            ],
+        };
+        assert!(mixed.is_determinate());
+        assert_eq!(mixed.value(), None);
+
+        let unreadable = ObservedValue::Mixed {
+            per_key: vec![
+                keyed("image/png", entry("org.gnome.eog.desktop")),
+                keyed(
+                    "image/jpeg",
+                    ObservedValue::Unknown {
+                        reason: "test".to_string(),
+                    },
+                ),
+            ],
+        };
+        assert!(!unreadable.is_determinate());
+        assert!(!ObservedValue::Mixed { per_key: vec![] }.is_determinate());
+    }
+
+    #[test]
+    fn a_mixed_reading_keeps_its_keys_in_order_through_json() {
+        let mixed = ObservedValue::Mixed {
+            per_key: vec![
+                keyed("image/png", entry("org.gnome.eog.desktop")),
+                keyed("image/jpeg", entry("org.gnome.gThumb.desktop")),
+            ],
+        };
+        let json = serde_json::to_string(&mixed).unwrap();
+        assert!(json.find("image/png") < json.find("image/jpeg"));
+        assert_eq!(serde_json::from_str::<ObservedValue>(&json).unwrap(), mixed);
+        assert_eq!(
+            mixed.per_key().map(|keys| keys.len()),
+            Some(2),
+            "a mixed reading lists every key"
+        );
+        assert_eq!(entry("a.desktop").per_key(), None);
+    }
 }

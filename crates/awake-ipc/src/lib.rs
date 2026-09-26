@@ -889,9 +889,19 @@ pub enum EventBody {
     /// The full state, so a client that missed an event is still correct after
     /// the next one.
     StatusChanged(Box<StatusDocument>),
+    /// A session the service ended without a client asking it to. Sent once
+    /// per session, before the `StatusChanged` that no longer lists it.
     SessionEnded {
         session_id: u64,
+        /// `awake_core::EndCause::as_key`.
         cause: String,
+        /// The battery stop threshold the session carried, in percent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        battery_stop_percent: Option<u8>,
+        /// The battery reading that ended it. Present only for a low-battery
+        /// stop.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        battery_percent: Option<u8>,
     },
     BackendFailure {
         error_key: String,
@@ -1053,6 +1063,34 @@ mod tests {
         let event = AwakeEvent::new(EventBody::StatusChanged(Box::new(status())));
         let document = event.to_json().unwrap();
         assert_eq!(AwakeEvent::from_json(&document).unwrap(), event);
+    }
+
+    #[test]
+    fn a_low_battery_stop_carries_the_threshold_and_the_reading_on_the_wire() {
+        let event = AwakeEvent::new(EventBody::SessionEnded {
+            session_id: 3,
+            cause: "battery_threshold".to_string(),
+            battery_stop_percent: Some(20),
+            battery_percent: Some(19),
+        });
+        let document = event.to_json().unwrap();
+        assert_eq!(AwakeEvent::from_json(&document).unwrap(), event);
+    }
+
+    #[test]
+    fn a_session_ended_event_without_battery_fields_still_reads() {
+        let document = format!(
+            r#"{{"protocol_version":{PROTOCOL_VERSION},"body":{{"event":"session_ended","session_id":4,"cause":"expired"}}}}"#
+        );
+        assert_eq!(
+            AwakeEvent::from_json(&document).unwrap().body,
+            EventBody::SessionEnded {
+                session_id: 4,
+                cause: "expired".to_string(),
+                battery_stop_percent: None,
+                battery_percent: None,
+            }
+        );
     }
 
     #[test]

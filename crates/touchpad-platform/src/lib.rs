@@ -21,14 +21,18 @@
 
 pub mod devices;
 pub mod gnome;
-pub mod gvariant;
 pub mod keybindings;
 pub mod mock;
 pub mod roots;
 pub mod session;
 
+/// The change-set encoder, shared with Better Defaults. It lives in
+/// `defaults-platform` so both components write dconf the same way.
+pub use defaults_platform::gvariant;
+
+/// The dconf writer, shared with Better Defaults the same way.
 #[cfg(feature = "dconf-write")]
-pub mod dconf;
+pub use defaults_platform::dconf_writer as dconf;
 
 use thiserror::Error;
 use touchpad_core::{
@@ -63,6 +67,16 @@ pub enum PlatformError {
     NoWriteSupport,
     #[error(transparent)]
     Changeset(#[from] ChangesetError),
+}
+
+#[cfg(feature = "dconf-write")]
+impl From<dconf::WriterError> for PlatformError {
+    fn from(error: dconf::WriterError) -> Self {
+        match error {
+            dconf::WriterError::NoSessionBus(detail) => Self::NoSessionBus(detail),
+            dconf::WriterError::CallFailed(detail) => Self::CallFailed(detail),
+        }
+    }
 }
 
 /// What a backend did when asked to write.

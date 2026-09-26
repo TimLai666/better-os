@@ -3,7 +3,10 @@
 //! ADR 0009 recorded three options for changing a dconf key and chose the third
 //! — read and verify, report manual action required for a change — because the
 //! second needed a GVariant change set, a D-Bus client, and a live session bus
-//! to test against. This is that second option, built.
+//! to test against. This is that second option, built by ticket 29 for Better
+//! Touchpad and moved here by ticket 57 so that Better Defaults' GNOME adapters
+//! write through the same path. `touchpad-platform` re-exports this module as
+//! its own `dconf`.
 //!
 //! Editing `~/.config/dconf/user` directly is still wrong, and nothing here
 //! does it. The dconf service owns that file, caches it, and rewrites it; a
@@ -16,17 +19,27 @@
 //! Nothing here is privileged. The user writer at `/ca/desrt/dconf/Writer/user`
 //! is the caller's own per-user database, reached over the session bus.
 
+use thiserror::Error;
 use tokio::runtime::Runtime;
 use zbus::Connection;
 
-use crate::PlatformError;
 use crate::gvariant::Changeset;
 
 const SERVICE: &str = "ca.desrt.dconf";
 const INTERFACE: &str = "ca.desrt.dconf.Writer";
-/// The caller's own per-user database. There is also a system writer; Better
-/// Touchpad has no business with it and never names it.
+/// The caller's own per-user database. There is also a system writer; nothing
+/// in Better OS has business with it and nothing names it.
 pub const USER_WRITER_PATH: &str = "/ca/desrt/dconf/Writer/user";
+
+/// Why a change could not be sent. `touchpad-platform` converts this into its
+/// own `PlatformError` variants of the same names.
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+pub enum WriterError {
+    #[error("no session bus is reachable: {0}")]
+    NoSessionBus(String),
+    #[error("the dconf service refused the call: {0}")]
+    CallFailed(String),
+}
 
 pub struct DconfWriter {
     runtime: Runtime,
@@ -36,40 +49,40 @@ pub struct DconfWriter {
 
 impl DconfWriter {
     /// Connects to the session bus this process was started in.
-    pub fn connect() -> Result<Self, PlatformError> {
+    pub fn connect() -> Result<Self, WriterError> {
         Self::build(None, USER_WRITER_PATH)
     }
 
     /// Connects to an explicit bus address and writer path. Only a test uses
     /// this, and only so it never touches the developer's own session.
-    pub fn connect_to(address: &str, object_path: &str) -> Result<Self, PlatformError> {
+    pub fn connect_to(address: &str, object_path: &str) -> Result<Self, WriterError> {
         Self::build(Some(address), object_path)
     }
 
-    fn build(address: Option<&str>, object_path: &str) -> Result<Self, PlatformError> {
+    fn build(address: Option<&str>, object_path: &str) -> Result<Self, WriterError> {
         // One worker: this runtime exists to dispatch a handful of method
         // calls, not to do work. Same shape as `launcher-platform`'s bus.
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()
-            .map_err(|error| PlatformError::NoSessionBus(error.to_string()))?;
+            .map_err(|error| WriterError::NoSessionBus(error.to_string()))?;
         let connection = runtime.block_on(async {
             match address {
                 Some(address) => {
                     let address: zbus::Address =
                         address.parse().map_err(|error: zbus::Error| {
-                            PlatformError::NoSessionBus(error.to_string())
+                            WriterError::NoSessionBus(error.to_string())
                         })?;
                     zbus::connection::Builder::address(address)
-                        .map_err(|error| PlatformError::NoSessionBus(error.to_string()))?
+                        .map_err(|error| WriterError::NoSessionBus(error.to_string()))?
                         .build()
                         .await
-                        .map_err(|error| PlatformError::NoSessionBus(error.to_string()))
+                        .map_err(|error| WriterError::NoSessionBus(error.to_string()))
                 }
                 None => Connection::session()
                     .await
-                    .map_err(|error| PlatformError::NoSessionBus(error.to_string())),
+                    .map_err(|error| WriterError::NoSessionBus(error.to_string())),
             }
         })?;
         Ok(Self {
@@ -84,7 +97,7 @@ impl DconfWriter {
     /// This is what makes the difference between "the control centre can apply
     /// settings" and "it cannot", and it is asked before any control is
     /// offered rather than after a user has moved a slider.
-    pub fn probe(&self) -> Result<(), PlatformError> {
+    pub fn probe(&self) -> Result<(), WriterError> {
         self.runtime.block_on(async {
             self.connection
                 .call_method(
@@ -96,7 +109,7 @@ impl DconfWriter {
                 )
                 .await
                 .map(|_| ())
-                .map_err(|error| PlatformError::CallFailed(error.to_string()))
+                .map_err(|error| WriterError::CallFailed(error.to_string()))
         })
     }
 
@@ -104,7 +117,7 @@ impl DconfWriter {
     ///
     /// An empty change set is not sent. The service would accept it, but a
     /// call that writes nothing is a notification for no reason.
-    pub fn change(&self, changeset: &Changeset) -> Result<String, PlatformError> {
+    pub fn change(&self, changeset: &Changeset) -> Result<String, WriterError> {
         if changeset.is_empty() {
             return Ok(String::new());
         }
@@ -120,11 +133,11 @@ impl DconfWriter {
                     &(blob,),
                 )
                 .await
-                .map_err(|error| PlatformError::CallFailed(error.to_string()))?;
+                .map_err(|error| WriterError::CallFailed(error.to_string()))?;
             reply
                 .body()
                 .deserialize::<String>()
-                .map_err(|error| PlatformError::CallFailed(error.to_string()))
+                .map_err(|error| WriterError::CallFailed(error.to_string()))
         })
     }
 }
@@ -149,14 +162,14 @@ mod tests {
             USER_WRITER_PATH,
         )
         .expect_err("there is no bus at that path");
-        assert!(matches!(error, PlatformError::NoSessionBus(_)));
+        assert!(matches!(error, WriterError::NoSessionBus(_)));
     }
 
     #[test]
     fn an_address_that_is_not_an_address_is_refused_before_any_connection() {
         assert!(matches!(
             DconfWriter::connect_to("this is not a bus address", USER_WRITER_PATH),
-            Err(PlatformError::NoSessionBus(_))
+            Err(WriterError::NoSessionBus(_))
         ));
     }
 }

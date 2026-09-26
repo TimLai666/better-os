@@ -35,6 +35,7 @@ use files_platform::{MountTable, UserDirectories};
 
 use app_catalog_core::{DesktopId, MimeType};
 use app_catalog_platform::ProcessSpawner;
+use storage_core::RemovalPolicy;
 
 use crate::apps::{ApplicationDetails, CatalogHandle, LaunchReport};
 use crate::bookmarks::{BookmarkFile, BookmarkStore, PinOutcome};
@@ -45,8 +46,10 @@ use crate::devices::{
 };
 use crate::i18n::{Copy, Locale};
 use crate::keys::{Command, Focus};
+use crate::launch::StartProblem;
 use crate::opcenter::{self, JobRow, SessionHistory};
 use crate::openwith::{ChooserRequest, DefaultHandlers, DefaultSource, OpenRoute, SessionDefaults};
+use crate::policy::{PerformanceConfirmation, PolicyRequest};
 use crate::prefs::{FilesPreferences, ItemScale, PreferenceStore, ViewMode};
 use crate::preview::PreviewPanel;
 use crate::reader::FilesReader;
@@ -82,6 +85,12 @@ pub enum Notice {
     /// The application set for this type is not installed any more, so the
     /// chooser was opened instead of a launch happening.
     DefaultApplicationMissing,
+    /// What happened to the location the window was started with: why it
+    /// could not be opened, and how many further locations were ignored.
+    Start {
+        problem: Option<StartProblem>,
+        ignored: usize,
+    },
 }
 
 /// A device event worth telling the user about.
@@ -113,6 +122,11 @@ pub enum DeviceEvent {
     UnsafeRemoval {
         label: String,
         recommend_filesystem_check: bool,
+    },
+    /// The storage layer refused a removal-policy change, with its reason.
+    PolicyRefused {
+        label: String,
+        detail: String,
     },
 }
 
@@ -170,9 +184,30 @@ impl Notice {
                     }
                     message
                 }
+                // The reason is the storage layer's own sentence. It is shown
+                // as it came, because a paraphrase could hide what was wrong.
+                DeviceEvent::PolicyRefused { label, detail } => {
+                    format!("{label}: {} ({detail})", c.device_policy_refused)
+                }
             },
             Notice::NoMimeType => c.open_with_no_mime_type.to_string(),
             Notice::DefaultApplicationMissing => c.open_with_default_missing.to_string(),
+            Notice::Start { problem, ignored } => {
+                let reason = problem.map(|problem| match problem {
+                    StartProblem::NotLocal => c.start_not_local,
+                    StartProblem::Malformed => c.start_malformed,
+                    StartProblem::NotFound => c.start_not_found,
+                    StartProblem::Unreadable => c.start_unreadable,
+                });
+                let ignored = (*ignored > 0)
+                    .then(|| c.start_ignored.replace("{count}", &ignored.to_string()));
+                match (reason, ignored) {
+                    (Some(reason), Some(ignored)) => format!("{reason} {ignored}"),
+                    (Some(reason), None) => reason.to_string(),
+                    (None, Some(ignored)) => ignored,
+                    (None, None) => String::new(),
+                }
+            }
         }
     }
 }
@@ -242,6 +277,8 @@ pub struct FilesSession {
     pub chooser: Option<ChooserRequest>,
     /// The application whose details panel is open.
     pub details: Option<ApplicationDetails>,
+    /// The Performance mode confirmation, while it is open.
+    pub policy_confirmation: Option<PerformanceConfirmation>,
 }
 
 /// Everything a session is built from.
@@ -357,6 +394,7 @@ impl FilesSession {
             search: SearchState::default(),
             chooser: None,
             details: None,
+            policy_confirmation: None,
         }
     }
 
@@ -643,6 +681,20 @@ impl FilesSession {
         let scrolled = content.type_ahead_key(self.pane_mut().model_mut(), character, now);
         self.content = content;
         scrolled
+    }
+
+    /// Selects the entry with this display name in the active pane, whether or
+    /// not the listing has delivered it yet.
+    ///
+    /// The selection names an entry rather than an index, so it survives the
+    /// listing streaming in around it, and the cursor lands on the entry the
+    /// moment it arrives.
+    pub fn select_by_name(&mut self, name: &str) {
+        self.pane_mut()
+            .model_mut()
+            .selection_mut()
+            .select_only(EntryId::Name(name.to_string()));
+        self.resync_content();
     }
 
     /// The entries currently selected, in visible order.
@@ -994,7 +1046,71 @@ impl FilesSession {
                 object_path,
                 unsafe_removal,
             } => self.handle_disconnect(&object_path, unsafe_removal),
+            // Nothing to draw yet: the row changes when an inventory reports
+            // the new policy, not when a request for one was accepted.
+            DeviceNotice::PolicyApplied { .. } => {}
+            DeviceNotice::PolicyRefused {
+                object_path,
+                detail,
+            } => {
+                self.notice = Some(Notice::Device(Box::new(DeviceEvent::PolicyRefused {
+                    label: self.device_label(&object_path),
+                    detail,
+                })));
+            }
         }
+    }
+
+    // --- Removal policy (ticket 52) ----------------------------------------
+
+    /// A policy was chosen for a device from its sidebar row.
+    ///
+    /// Performance mode opens the confirmation and sends nothing yet. Direct
+    /// Removal is sent at once: it gives nothing up, so there is nothing to
+    /// confirm. Choosing the policy the device already reports does nothing.
+    pub fn choose_policy(&mut self, object_path: &str, policy: RemovalPolicy) {
+        let Some(row) = self.devices.get(object_path) else {
+            return;
+        };
+        if row.policy == policy {
+            return;
+        }
+        match policy {
+            RemovalPolicy::Performance => {
+                self.policy_confirmation =
+                    Some(PerformanceConfirmation::new(object_path, row.label.clone()));
+            }
+            RemovalPolicy::DirectRemoval => {
+                self.policy_confirmation = None;
+                self.link
+                    .request_policy(PolicyRequest::direct_removal(object_path));
+            }
+        }
+    }
+
+    pub fn toggle_policy_risk(&mut self, key: &str) {
+        if let Some(confirmation) = self.policy_confirmation.as_mut() {
+            confirmation.toggle(key);
+        }
+    }
+
+    /// Sends the confirmed request, if every risk has been ticked. Until then
+    /// it does nothing, and the confirmation stays open.
+    pub fn confirm_policy(&mut self) {
+        let Some(request) = self
+            .policy_confirmation
+            .as_ref()
+            .and_then(PerformanceConfirmation::request)
+        else {
+            return;
+        };
+        self.policy_confirmation = None;
+        self.link.request_policy(request);
+    }
+
+    /// Closes the confirmation and sends nothing.
+    pub fn cancel_policy(&mut self) {
+        self.policy_confirmation = None;
     }
 
     fn device_label(&self, object_path: &str) -> String {

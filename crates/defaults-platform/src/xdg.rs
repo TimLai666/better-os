@@ -15,7 +15,7 @@
 
 use app_catalog_core::{DesktopId, MimeType};
 use app_chooser_core::AssociationStore;
-use better_core::defaults::{AdapterId, DefaultsValue, ObservedValue};
+use better_core::defaults::{AdapterId, DefaultsValue, KeyObservation, ObservedValue};
 
 use crate::{AdapterRequest, DefaultsAdapter, WriteOutcome, WriteValue, collapse};
 
@@ -74,15 +74,18 @@ impl DefaultsAdapter for XdgDefaultAppAdapter {
             request
                 .keys()
                 .iter()
-                .map(|key| match MimeType::parse(key) {
-                    None => ObservedValue::Unsupported {
-                        reason: format!("xdg.invalid_mime_type:{key}"),
-                    },
-                    Some(mime) => match associations.default_for(&mime) {
-                        Some(desktop_id) => ObservedValue::Set {
-                            value: DefaultsValue::DesktopEntry(desktop_id.as_str().to_string()),
+                .map(|key| KeyObservation {
+                    key: key.clone(),
+                    observed: match MimeType::parse(key) {
+                        None => ObservedValue::Unsupported {
+                            reason: format!("xdg.invalid_mime_type:{key}"),
                         },
-                        None => ObservedValue::Unset,
+                        Some(mime) => match associations.default_for(&mime) {
+                            Some(desktop_id) => ObservedValue::Set {
+                                value: DefaultsValue::DesktopEntry(desktop_id.as_str().to_string()),
+                            },
+                            None => ObservedValue::Unset,
+                        },
                     },
                 })
                 .collect(),

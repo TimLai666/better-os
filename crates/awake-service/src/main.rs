@@ -7,11 +7,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use awake_service::service::{shutdown_and_announce, tick_and_announce};
 use awake_service::{
     AwakeDbusService, AwakeEngine, BUS_NAME, LogindBackend, OBJECT_PATH, SystemClock,
     TICK_INTERVAL_SECONDS,
 };
 use awake_store::JsonStore;
+use zbus::object_server::SignalEmitter;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -47,25 +49,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     connection.request_name(BUS_NAME).await?;
 
+    let emitter = SignalEmitter::new(&connection, OBJECT_PATH)?.into_owned();
     let ticking = engine.clone();
+    let tick_emitter = emitter.clone();
     let ticker = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(TICK_INTERVAL_SECONDS));
-        let mut announced: Vec<u64> = Vec::new();
         loop {
             interval.tick().await;
 
-            // A low-battery stop must be told to the user, not just recorded.
-            // The history entry is written by the engine; this is the other half
-            // Issue #13 asks for. Announced ids are remembered so one stop is
-            // reported once even though the reading stays low.
-            for stop in ticking.tick().await {
-                if !announced.contains(&stop.session.0) {
-                    announced.push(stop.session.0);
-                    // stderr, because the service has no notification backend of
-                    // its own and the tray is the thing that owns the desktop
-                    // notification. Saying it here means a stop is never silent
-                    // even when no tray is running, which is exactly when a user
-                    // would otherwise have no idea why their session ended.
+            // Every session a tick ends is pushed to the clients as
+            // `SessionEnded`, and the tray raises the desktop notification for
+            // a low-battery stop. The stop is also said on stderr, so it is
+            // never silent when no tray is running — which is exactly when a
+            // user would otherwise have no idea why their session ended.
+            for ended in tick_and_announce(&ticking, &tick_emitter).await {
+                if let Some(stop) = ended.battery_stop() {
                     eprintln!(
                         "better-awake-service: session {} ended because the battery reached {}%",
                         stop.session, stop.percent
@@ -85,6 +83,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ticker.abort();
-    engine.shutdown().await;
+    shutdown_and_announce(&engine, &emitter).await;
     Ok(())
 }

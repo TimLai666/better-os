@@ -28,8 +28,8 @@ pub mod status;
 pub use adapters::{AdapterMode, AdapterSession, AdapterSessionError};
 pub use engine::DefaultsEngine;
 pub use plan::{
-    Confirmations, DefaultsOutcome, DefaultsPlan, EntryOutcome, EntryResult, PLAN_SCHEMA_VERSION,
-    PlanAction, PlanEntry, PlanKind, PlanWarning, Selection, SkipReason,
+    Confirmations, DefaultsOutcome, DefaultsPlan, EntryOutcome, EntryResult, KeyOutcome,
+    PLAN_SCHEMA_VERSION, PlanAction, PlanEntry, PlanKind, PlanWarning, Selection, SkipReason,
 };
 pub use status::{
     AggregateState, ComponentDefaults, ComponentReadiness, DefaultsReport, IntegrationState,

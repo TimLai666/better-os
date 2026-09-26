@@ -155,19 +155,48 @@ not have been written is not a fact to clean up quietly. An idle device unplugge
 from a folder nobody is looking at produces nothing, which is the whole point of
 Direct Removal.
 
+## Devices: Better Files' own writes are tracked operations
+
+A job that writes to a mounted external device is registered with the storage
+layer from before its first write until it ends, whatever the outcome.
+
+- `files-operations` has a generic `JobObserver` and knows nothing about
+  devices. The engine calls it on the job's worker thread before the job plans
+  or writes anything, and again after the last write but before the terminal
+  state is visible. A job cancelled while still queued is never announced.
+- `files_gui::tracking` decides which paths a job changes (a copy its
+  destination, a move its destination and every source, a trash its sources and
+  the trash, a restore the path the `.trashinfo` records, a checksum nothing),
+  resolves symbolic links and `..`, and picks the device whose mount point is
+  the longest whole-component prefix. A path on no device sends nothing.
+- The started notice waits for the storage layer's answer for up to two
+  seconds. A notice that fails or times out is written to standard error and the
+  job goes ahead; the completion is still sent.
+- With no service, the same notices reach the in-process engine.
+
+The operation is named `better-files:<pid>:job-<n>`.
+
+## Devices: choosing Performance mode
+
+Each device row offers the policy it does not have. Choosing Performance mode
+opens a confirmation that lists every key in `PERFORMANCE_RISK_KEYS` in words,
+each with its own tick box; the confirm button stays disabled until every box is
+ticked, and cancelling sends nothing. The request carries exactly the ticked
+keys. Switching back to Direct Removal is sent at once.
+
+The row shows the policy the storage layer reports, never the one requested. A
+refusal is shown with the storage layer's own reason.
+
+The window does not say an in-process choice lasts only while it is open,
+because it does not: the in-process engine writes the same preference file the
+service reads.
+
+Performance mode does not yet change how a disk is mounted or cached, so it does
+not make writes faster. The throughput risk says so in both languages rather than
+promising a speed-up nothing delivers.
+
 ## What is not wired
 
-- **Performance mode cannot be turned on from Better Files.** The client can set
-  the policy and the service refuses it without the acknowledged risks, but no
-  UI presents those risks. Issue #5 requires the trade-off to be explained before
-  activation, and an explanation is not something to improvise in a sidebar
-  context menu.
-- **File-operation completion does not notify the storage service.** The client
-  method exists and is tested; `files-operations` does not call it, because the
-  job engine has no device identity for a destination path. Wiring it means
-  mapping a path to a UDisks2 object, which is a `files-operations` change. Until
-  it lands, a Better Files copy to an external device is visible to the service
-  only through the platform signals, not as a tracked operation.
 - **Applications has no category sections and no dedicated grid.** It renders
   through the ordinary content view, which gives it grid and list, sorting,
   keyboard navigation, and search for free. Categories are carried on every

@@ -68,7 +68,9 @@ impl From<ProtocolError> for ClientError {
     }
 }
 
-/// A connected client.
+/// A connected client. Cloning shares the connection, which is what lets a
+/// caller run a slow call as its own task.
+#[derive(Clone)]
 pub struct StorageClient {
     proxy: StorageProxy<'static>,
 }

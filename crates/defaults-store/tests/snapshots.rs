@@ -262,3 +262,89 @@ fn the_last_value_better_manager_wrote_prefers_the_verified_one() {
     record.last_verified_value = Some(verified.clone());
     assert_eq!(record.last_known_value(), Some(&verified));
 }
+
+/// Exactly what a build from before per-type capture wrote: schema version 1,
+/// and a previous value that is one owner.
+const VERSION_1_SNAPSHOT: &[u8] = br#"{
+  "schema_version": 1,
+  "snapshot_id": "00000000001790000000-4242-000000000",
+  "created_at": 1790000000,
+  "system_identity": { "distribution": "zorin", "desktop_session": "gnome" },
+  "entries": [
+    {
+      "component_id": "better-files",
+      "integration_id": "default-file-manager",
+      "previous_value": {
+        "state": "set",
+        "value": { "type": "desktop_entry", "value": "org.gnome.Nautilus.desktop" }
+      },
+      "better_value": { "type": "desktop_entry", "value": "io.betteros.Files.desktop" },
+      "applied_value": { "type": "desktop_entry", "value": "io.betteros.Files.desktop" },
+      "last_verified_value": { "type": "desktop_entry", "value": "io.betteros.Files.desktop" },
+      "restore_state": "available"
+    }
+  ]
+}
+"#;
+
+#[test]
+fn a_snapshot_written_before_per_type_capture_still_loads() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SnapshotStore::at_path(directory.path());
+    std::fs::write(
+        directory.path().join("00-version-1.json"),
+        VERSION_1_SNAPSHOT,
+    )
+    .unwrap();
+
+    let history = store.history().unwrap();
+
+    assert!(history.damaged().is_empty(), "{:?}", history.damaged());
+    assert_eq!(history.snapshots().len(), 1);
+    assert_eq!(history.snapshots()[0].schema_version, 1);
+    assert_eq!(
+        history
+            .latest_entry(
+                &ComponentId::new("better-files").unwrap(),
+                &IntegrationId::new("default-file-manager").unwrap()
+            )
+            .map(|entry| entry.previous_value.clone()),
+        Some(nautilus())
+    );
+}
+
+#[test]
+fn a_group_captured_type_by_type_keeps_every_type_through_the_store() {
+    use better_core::defaults::KeyObservation;
+
+    let directory = tempfile::tempdir().unwrap();
+    let store = SnapshotStore::at_path(directory.path());
+    let per_type = ObservedValue::Mixed {
+        per_key: vec![
+            KeyObservation {
+                key: "image/png".to_string(),
+                observed: ObservedValue::Set {
+                    value: DefaultsValue::DesktopEntry("org.gnome.eog.desktop".to_string()),
+                },
+            },
+            KeyObservation {
+                key: "image/jpeg".to_string(),
+                observed: ObservedValue::Unset,
+            },
+        ],
+    };
+    let snapshot = Snapshot::new(
+        identity(),
+        vec![entry("better-files", "image-viewer", per_type.clone())],
+    );
+    // A per-type value is something a version 1 reader cannot parse, so the
+    // file says it needs a newer reader rather than looking corrupt to one.
+    assert_eq!(snapshot.schema_version, 2);
+    assert_eq!(defaults_store::SNAPSHOT_SCHEMA_VERSION, 2);
+
+    store.write(&snapshot).unwrap();
+    let history = store.history().unwrap();
+
+    assert_eq!(history.snapshots(), std::slice::from_ref(&snapshot));
+    assert_eq!(history.snapshots()[0].entries[0].previous_value, per_type);
+}

@@ -117,6 +117,11 @@ pub struct Labels {
     /// explanation, so it says where it came from rather than inventing one.
     pub tray_session_reason: &'static str,
     pub security_confirmation_needed: &'static str,
+    /// The desktop notification raised when low battery ends a session.
+    /// `{threshold}` is the stop threshold that was crossed.
+    pub low_battery_stop_summary: &'static str,
+    /// `{percent}` is the reading that crossed it.
+    pub low_battery_stop_body: &'static str,
 }
 
 pub const ZH_TW: Labels = Labels {
@@ -177,6 +182,8 @@ pub const ZH_TW: Labels = Labels {
     active_reasons: "{count} 個進行中的原因",
     tray_session_reason: "從系統匣開始的工作階段",
     security_confirmation_needed: "需要在主視窗確認",
+    low_battery_stop_summary: "電量低於 {threshold}%，已停止保持清醒",
+    low_battery_stop_body: "工作階段在電量剩 {percent}% 時結束。",
 };
 
 pub const EN_US: Labels = Labels {
@@ -237,6 +244,8 @@ pub const EN_US: Labels = Labels {
     active_reasons: "{count} active reasons",
     tray_session_reason: "Started from the tray",
     security_confirmation_needed: "Confirm in the main window",
+    low_battery_stop_summary: "Stopped keeping awake: battery below {threshold}%",
+    low_battery_stop_body: "The session ended at {percent}% battery.",
 };
 
 impl Locale {

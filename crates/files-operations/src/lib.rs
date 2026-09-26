@@ -55,7 +55,7 @@ pub mod store;
 pub use conflict::{
     Conflict, ConflictDecision, ConflictKind, ConflictPolicy, Resolution, ResolutionScope,
 };
-pub use engine::{EngineConfig, JobEngine, JobEvent, JobHandle, JobId, JobSnapshot};
+pub use engine::{EngineConfig, JobEngine, JobEvent, JobHandle, JobId, JobObserver, JobSnapshot};
 pub use error::OperationError;
 pub use exec::{CopiedInode, ItemOutcome, JobControl, build_plan, preview_bulk_rename};
 pub use log::{LogEvent, LogRecord, MetadataProperty, OperationLog, SkipReason};
