@@ -34,6 +34,7 @@ use storage_core::{DeviceStateKind, RemovalPolicy};
 use storage_service::protocol::{DeviceReport, StateReport};
 
 use crate::i18n::Copy;
+use crate::policy::PolicyRequest;
 
 /// Where the window's device states are coming from.
 ///
@@ -220,14 +221,36 @@ pub enum DeviceNotice {
         object_path: String,
         unsafe_removal: Option<UnsafeRemoval>,
     },
+    /// The storage layer accepted a policy change. The row shows the new
+    /// policy only once an inventory reports it.
+    PolicyApplied {
+        object_path: String,
+    },
+    /// The storage layer refused a policy change, and said why.
+    PolicyRefused {
+        object_path: String,
+        detail: String,
+    },
+}
+
+/// A device that is mounted, as the tracked-operation mapping needs it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MountedDevice {
+    pub object_path: String,
+    pub mount_point: PathBuf,
 }
 
 /// The window's connection to the storage layer.
 ///
-/// Deliberately synchronous and non-blocking from the caller's side: a request
+/// Deliberately synchronous and non-blocking from the window's side: a request
 /// is posted and the answer arrives through [`DeviceLink::poll`] on a later
 /// frame. Everything async lives behind the implementation, so the session —
 /// and every test of it — is ordinary straight-line code.
+///
+/// The operation notices are the exception, and they are never called from
+/// the window: [`crate::tracking::StorageTracker`] calls them from a job's
+/// worker thread, where waiting is what keeps the job from writing before the
+/// storage layer knows about it.
 pub trait DeviceLink: Send + Sync {
     fn mode(&self) -> CollectionMode;
     /// Asks for a mount. The answer is a `Mounted` or `MountFailed` notice.
@@ -237,6 +260,54 @@ pub trait DeviceLink: Send + Sync {
     fn request_refresh(&self);
     /// Takes whatever has arrived. Never blocks.
     fn poll(&self) -> Vec<DeviceNotice>;
+    /// The devices that are mounted, as the link last saw them.
+    fn mounted_devices(&self) -> Vec<MountedDevice>;
+    /// Tells the storage layer a Better Files job is about to write to this
+    /// device. Blocks until the backend has recorded it, or until the link
+    /// stops waiting and says so.
+    fn operation_started(&self, object_path: &str, operation: &str) -> Result<(), String>;
+    /// Tells the storage layer the job is done with the device. Does not wait
+    /// for the answer: the flush it triggers takes as long as the disk needs.
+    fn operation_completed(&self, object_path: &str, operation: &str) -> Result<(), String>;
+    /// Asks for a policy change. The answer is a `PolicyApplied` or
+    /// `PolicyRefused` notice.
+    fn request_policy(&self, request: PolicyRequest);
+}
+
+/// One link shared between the window and the job tracker.
+///
+/// The session owns its link as a box; the tracker, which outlives any one
+/// window's session, holds the same link through an `Arc`.
+pub struct SharedLink(pub std::sync::Arc<dyn DeviceLink>);
+
+impl DeviceLink for SharedLink {
+    fn mode(&self) -> CollectionMode {
+        self.0.mode()
+    }
+    fn request_mount(&self, object_path: &str) {
+        self.0.request_mount(object_path)
+    }
+    fn request_eject(&self, object_path: &str) {
+        self.0.request_eject(object_path)
+    }
+    fn request_refresh(&self) {
+        self.0.request_refresh()
+    }
+    fn poll(&self) -> Vec<DeviceNotice> {
+        self.0.poll()
+    }
+    fn mounted_devices(&self) -> Vec<MountedDevice> {
+        self.0.mounted_devices()
+    }
+    fn operation_started(&self, object_path: &str, operation: &str) -> Result<(), String> {
+        self.0.operation_started(object_path, operation)
+    }
+    fn operation_completed(&self, object_path: &str, operation: &str) -> Result<(), String> {
+        self.0.operation_completed(object_path, operation)
+    }
+    fn request_policy(&self, request: PolicyRequest) {
+        self.0.request_policy(request)
+    }
 }
 
 /// A link with nothing behind it.
@@ -258,6 +329,16 @@ impl DeviceLink for NoDeviceLink {
     fn poll(&self) -> Vec<DeviceNotice> {
         Vec::new()
     }
+    fn mounted_devices(&self) -> Vec<MountedDevice> {
+        Vec::new()
+    }
+    fn operation_started(&self, _object_path: &str, _operation: &str) -> Result<(), String> {
+        Err("no storage link in this build".to_string())
+    }
+    fn operation_completed(&self, _object_path: &str, _operation: &str) -> Result<(), String> {
+        Err("no storage link in this build".to_string())
+    }
+    fn request_policy(&self, _request: PolicyRequest) {}
 }
 
 /// The device rows the window is currently drawing.

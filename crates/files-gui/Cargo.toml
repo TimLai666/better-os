@@ -40,6 +40,9 @@ smol = "2"
 
 [dev-dependencies]
 better-core.workspace = true
+# The fake platform, so the in-process storage engine can be driven without a
+# disk. Test builds only; the shipped binary never has it.
+storage-platform = { workspace = true, features = ["test-support"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile.workspace = true
 

@@ -26,9 +26,11 @@ pub mod devices;
 pub mod format;
 pub mod i18n;
 pub mod keys;
+pub mod launch;
 pub mod layout;
 pub mod opcenter;
 pub mod openwith;
+pub mod policy;
 pub mod prefs;
 pub mod preview;
 pub mod reader;
@@ -36,6 +38,7 @@ pub mod search;
 pub mod session;
 pub mod sidebar;
 pub mod toolbar;
+pub mod tracking;
 
 mod app;
 mod panels;
@@ -59,15 +62,30 @@ use files_operations::{EngineConfig, JobEngine, JobStore};
 /// take a running copy with it. Two windows submitting at once share the same
 /// queue and the same worker pool, which is also what makes the operation
 /// center in either window show every job rather than only its own.
+///
+/// Every job it runs is reported to [`shared_tracker`], which is how a copy to
+/// an external disk reaches the storage layer as a tracked operation.
 pub fn shared_engine() -> Arc<JobEngine> {
     static ENGINE: OnceLock<Arc<JobEngine>> = OnceLock::new();
     ENGINE
         .get_or_init(|| {
-            Arc::new(JobEngine::new(EngineConfig {
-                store: Some(JobStore::new(job_store_root())),
-                ..EngineConfig::default()
-            }))
+            Arc::new(JobEngine::with_observer(
+                EngineConfig {
+                    store: Some(JobStore::new(job_store_root())),
+                    ..EngineConfig::default()
+                },
+                shared_tracker(),
+            ))
         })
+        .clone()
+}
+
+/// The one job tracker this process runs, beside the one engine. The window
+/// attaches its storage link to it when it opens.
+pub fn shared_tracker() -> Arc<tracking::StorageTracker> {
+    static TRACKER: OnceLock<Arc<tracking::StorageTracker>> = OnceLock::new();
+    TRACKER
+        .get_or_init(|| Arc::new(tracking::StorageTracker::from_env()))
         .clone()
 }
 

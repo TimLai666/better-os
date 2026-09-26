@@ -27,6 +27,7 @@ impl Render for FilesApp {
             .operations_open
             .then(|| self.operation_center(cx));
         let dialog = self.dialog(cx);
+        let policy_dialog = self.policy_dialog(cx);
         let searching = self.session.search.is_active() || self.editing_search;
         let search_bar = searching.then(|| self.search_bar(cx));
         // The preview pane and the details panel are the same slot: both are a
@@ -94,6 +95,7 @@ impl Render for FilesApp {
                     .min_h_0()
                     .child(shell)
                     .children(dialog)
+                    .children(policy_dialog)
                     .children(chooser),
             )
     }

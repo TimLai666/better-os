@@ -212,6 +212,25 @@ impl Job {
     }
 }
 
+/// Something outside the engine that has to know when a job starts touching
+/// the filesystem and when it has stopped.
+///
+/// Both calls are made on the worker thread that runs the job, and the job
+/// waits for them: [`JobObserver::starting`] returns before the job's first
+/// write, and [`JobObserver::finished`] returns before the job's terminal state
+/// is visible to anyone. That ordering is the point — a removable-storage layer
+/// told about a copy after its first byte landed could already have called the
+/// device ready. An observer that blocks delays the job by exactly that long,
+/// so it should bound its own waiting. It must not fail the job; there is
+/// nothing to return.
+///
+/// A job cancelled while it was still queued never started, so it produces
+/// neither call. A retried job produces a fresh pair for each run.
+pub trait JobObserver: Send + Sync {
+    fn starting(&self, id: JobId, spec: &JobSpec);
+    fn finished(&self, id: JobId, spec: &JobSpec, state: JobState);
+}
+
 /// How the engine is configured.
 #[derive(Clone, Debug)]
 pub struct EngineConfig {
@@ -242,6 +261,7 @@ struct Inner {
     next_id: AtomicU64,
     store: Option<JobStore>,
     defaults: ConflictPolicy,
+    observer: Option<Arc<dyn JobObserver>>,
 }
 
 /// The engine.
@@ -292,7 +312,16 @@ impl JobHandle {
 }
 
 impl JobEngine {
+    /// An engine that tells `observer` when each job starts and finishes.
+    pub fn with_observer(config: EngineConfig, observer: Arc<dyn JobObserver>) -> Self {
+        Self::build(config, Some(observer))
+    }
+
     pub fn new(config: EngineConfig) -> Self {
+        Self::build(config, None)
+    }
+
+    fn build(config: EngineConfig, observer: Option<Arc<dyn JobObserver>>) -> Self {
         let inner = Arc::new(Inner {
             jobs: Mutex::new(HashMap::new()),
             queue: Mutex::new(VecDeque::new()),
@@ -301,6 +330,7 @@ impl JobEngine {
             next_id: AtomicU64::new(1),
             store: config.store,
             defaults: config.conflicts,
+            observer,
         });
         let mut workers = Vec::new();
         for index in 0..config.workers.max(1) {
@@ -694,6 +724,11 @@ fn run_job(inner: &Arc<Inner>, job: Arc<Job>) {
         shared.estimator = RateEstimator::default();
         job.set_state(&mut shared, JobState::Running);
     }
+    // Before the plan, and so before the first write. No lock is held: the
+    // observer may block, and a pause or cancel must still be accepted.
+    if let Some(observer) = &inner.observer {
+        observer.starting(job.id, &job.spec);
+    }
     job.publish(JobEvent::Started(job.id));
 
     // A retry run reuses the item list it already has; a first run plans.
@@ -827,6 +862,13 @@ fn run_job(inner: &Arc<Inner>, job: Arc<Job>) {
             item_bytes_base: 0,
         };
         exec::rollback(&created, &mut control);
+        shared = job.shared.lock().expect("job state");
+    }
+    // The observer hears the outcome before anyone can see it, so nothing
+    // reads a finished job whose writes the observer still thinks are running.
+    if let Some(observer) = &inner.observer {
+        drop(shared);
+        observer.finished(job.id, &job.spec, final_state);
         shared = job.shared.lock().expect("job state");
     }
     job.set_state(&mut shared, final_state);
