@@ -1620,6 +1620,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 name = "defaults-core"
 version = "0.2.7"
 dependencies = [
+ "app-chooser-core",
  "better-core",
  "defaults-platform",
  "defaults-store",
@@ -1642,6 +1643,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
+ "tokio",
+ "zbus",
 ]
 
 [[package]]
@@ -7593,9 +7596,7 @@ dependencies = [
  "defaults-platform",
  "tempfile",
  "thiserror 2.0.19",
- "tokio",
  "touchpad-core",
- "zbus",
 ]
 
 [[package]]

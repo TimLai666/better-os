@@ -246,20 +246,6 @@ fn applying_a_group_sets_every_declared_type() {
 }
 
 #[test]
-fn a_group_whose_types_disagree_is_unknown_rather_than_one_of_them() {
-    let fixture = Fixture::new(Some(HAND_EDITED));
-    let component = ComponentId::new("better-files").unwrap();
-    let integration = integration(&["inode/directory", "application/zip"]);
-
-    assert!(matches!(
-        fixture
-            .adapter()
-            .read(&AdapterRequest::new(&component, &integration)),
-        ObservedValue::Unknown { .. }
-    ));
-}
-
-#[test]
 fn applying_what_is_already_there_writes_nothing() {
     let fixture = Fixture::new(Some(
         "[Default Applications]\ninode/directory=io.betteros.Files.desktop\n",
@@ -296,4 +282,44 @@ fn the_read_only_adapter_refuses_to_write() {
         WriteOutcome::ManualActionRequired { reason, .. } if reason == "xdg.read_only_adapter"
     ));
     assert_eq!(fixture.contents(), HAND_EDITED);
+}
+
+#[test]
+fn a_group_whose_types_open_in_different_applications_is_read_type_by_type() {
+    let fixture = Fixture::new(Some(
+        "[Default Applications]\nimage/png=org.gnome.eog.desktop\n\
+         image/jpeg=org.gnome.gThumb.desktop\n",
+    ));
+    let component = ComponentId::new("better-files").unwrap();
+    let integration = integration(&["image/png", "image/jpeg", "image/webp"]);
+
+    let observed = fixture
+        .adapter()
+        .read(&AdapterRequest::new(&component, &integration));
+
+    let ObservedValue::Mixed { per_key } = observed else {
+        panic!("a mixed group must not collapse into one owner: {observed:?}");
+    };
+    let listed: Vec<(&str, &ObservedValue)> = per_key
+        .iter()
+        .map(|entry| (entry.key.as_str(), &entry.observed))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            (
+                "image/png",
+                &ObservedValue::Set {
+                    value: DefaultsValue::DesktopEntry("org.gnome.eog.desktop".to_string())
+                }
+            ),
+            (
+                "image/jpeg",
+                &ObservedValue::Set {
+                    value: DefaultsValue::DesktopEntry("org.gnome.gThumb.desktop".to_string())
+                }
+            ),
+            ("image/webp", &ObservedValue::Unset),
+        ]
+    );
 }

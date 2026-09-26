@@ -19,8 +19,8 @@ use defaults_store::{
 use std::collections::BTreeMap;
 
 use crate::plan::{
-    Confirmations, DefaultsOutcome, DefaultsPlan, EntryOutcome, EntryResult, PlanAction, PlanEntry,
-    PlanKind, PlanWarning, Selection, SkipReason,
+    Confirmations, DefaultsOutcome, DefaultsPlan, EntryOutcome, EntryResult, KeyOutcome,
+    PlanAction, PlanEntry, PlanKind, PlanWarning, Selection, SkipReason,
 };
 use crate::status::{
     AggregateState, ComponentDefaults, ComponentReadiness, DefaultsReport, IntegrationState,
@@ -553,34 +553,90 @@ impl<'a> DefaultsEngine<'a> {
             );
         };
 
+        let previous = latest
+            .and_then(|snapshot| snapshot.entry(&entry.component, &entry.integration))
+            .cloned();
+
+        // A group captured key by key goes back key by key: each key to its own
+        // previous value, each verified by its own read.
+        if let PlanAction::Restore { to } = &entry.action {
+            if let Some(per_key) = to.per_key() {
+                let keys = per_key
+                    .iter()
+                    .map(|captured| {
+                        let outcome = match AdapterRequest::new(&entry.component, integration)
+                            .narrowed_to(&captured.key)
+                        {
+                            Some(request) => self.change_and_verify(
+                                &PlanAction::Restore {
+                                    to: captured.observed.clone(),
+                                },
+                                integration,
+                                &request,
+                                adapters,
+                            ),
+                            // The manifest no longer declares this key, so
+                            // Better OS has no business writing it.
+                            None => EntryOutcome::Failed {
+                                reason: "defaults.key_left_the_manifest".to_string(),
+                                detail: Some(captured.key.clone()),
+                            },
+                        };
+                        KeyOutcome {
+                            key: captured.key.clone(),
+                            outcome,
+                        }
+                    })
+                    .collect();
+                let outcome = EntryOutcome::PerKey { keys };
+                let update = self.snapshot_update(entry, integration, &outcome, previous);
+                return (outcome, update);
+            }
+        }
+
         let request = AdapterRequest::new(&entry.component, integration);
-        let target = match &entry.action {
+        let outcome = self.change_and_verify(&entry.action, integration, &request, adapters);
+        let update = self.snapshot_update(entry, integration, &outcome, previous);
+        (outcome, update)
+    }
+
+    /// Writes one change and reads it back. The outcome is only a success when
+    /// the verifying read agrees with what was asked for.
+    fn change_and_verify(
+        &self,
+        action: &PlanAction,
+        integration: &DefaultIntegration,
+        request: &AdapterRequest<'_>,
+        adapters: &mut AdapterSet,
+    ) -> EntryOutcome {
+        let target = match action {
             PlanAction::Apply { to } => ObservedValue::Set { value: to.clone() },
             PlanAction::Restore { to } => to.clone(),
-            PlanAction::Skip { .. } => unreachable!("handled above"),
+            PlanAction::Skip { reason } => {
+                return EntryOutcome::Skipped {
+                    reason: reason.clone(),
+                };
+            }
         };
 
         let Some(adapter) = adapters.get_mut(integration.apply_adapter) else {
-            return (
-                EntryOutcome::Skipped {
-                    reason: SkipReason::NoProductionAdapter {
-                        adapter: integration.apply_adapter,
-                    },
+            return EntryOutcome::Skipped {
+                reason: SkipReason::NoProductionAdapter {
+                    adapter: integration.apply_adapter,
                 },
-                None,
-            );
+            };
         };
-        let write = match &entry.action {
-            PlanAction::Apply { .. } => adapter.apply(&request),
-            PlanAction::Restore { to } => adapter.restore(&request, to),
+        let write = match action {
+            PlanAction::Apply { .. } => adapter.apply(request),
+            PlanAction::Restore { to } => adapter.restore(request, to),
             PlanAction::Skip { .. } => unreachable!("handled above"),
         };
         match write {
             WriteOutcome::ManualActionRequired { reason, detail } => {
-                return (EntryOutcome::ManualActionRequired { reason, detail }, None);
+                return EntryOutcome::ManualActionRequired { reason, detail };
             }
             WriteOutcome::Failed { reason, detail } => {
-                return (EntryOutcome::Failed { reason, detail }, None);
+                return EntryOutcome::Failed { reason, detail };
             }
             WriteOutcome::Written | WriteOutcome::AlreadyCorrect => {}
         }
@@ -591,7 +647,7 @@ impl<'a> DefaultsEngine<'a> {
             .get(integration.verify_adapter)
             .or_else(|| adapters.get(integration.apply_adapter));
         let verified = match verifier {
-            Some(verifier) => verifier.verify(&request, &target),
+            Some(verifier) => verifier.verify(request, &target),
             None => VerifyOutcome::Indeterminate {
                 observed: ObservedValue::Unsupported {
                     reason: no_adapter_key(integration.verify_adapter),
@@ -599,42 +655,29 @@ impl<'a> DefaultsEngine<'a> {
             },
         };
 
-        let previous = latest
-            .and_then(|snapshot| snapshot.entry(&entry.component, &entry.integration))
-            .cloned();
-        let outcome = match (&entry.action, &verified) {
+        match (action, verified) {
             (PlanAction::Apply { to }, VerifyOutcome::Matches { .. }) => {
                 EntryOutcome::Applied { value: to.clone() }
             }
-            (PlanAction::Apply { to }, VerifyOutcome::Differs { observed })
+            (PlanAction::Apply { to }, VerifyOutcome::Differs { .. })
                 if integration.session_effect != SessionEffect::Immediate =>
             {
-                let _ = observed;
                 EntryOutcome::AppliedNeedsSignOut { value: to.clone() }
             }
             (PlanAction::Apply { .. }, VerifyOutcome::Differs { observed }) => {
-                EntryOutcome::NotVerified {
-                    observed: observed.clone(),
-                }
+                EntryOutcome::NotVerified { observed }
             }
             (PlanAction::Restore { to }, VerifyOutcome::Matches { .. }) => {
                 EntryOutcome::Restored { value: to.clone() }
             }
             (PlanAction::Restore { .. }, VerifyOutcome::Differs { observed }) => {
-                EntryOutcome::NotVerified {
-                    observed: observed.clone(),
-                }
+                EntryOutcome::NotVerified { observed }
             }
             (_, VerifyOutcome::Indeterminate { observed }) => {
-                EntryOutcome::VerificationInconclusive {
-                    observed: observed.clone(),
-                }
+                EntryOutcome::VerificationInconclusive { observed }
             }
             (PlanAction::Skip { .. }, _) => unreachable!("handled above"),
-        };
-
-        let update = self.snapshot_update(entry, integration, &outcome, previous);
-        (outcome, update)
+        }
     }
 
     fn snapshot_update(
@@ -670,6 +713,22 @@ impl<'a> DefaultsEngine<'a> {
             EntryOutcome::AlreadyCorrect => {
                 record.applied_value = Some(integration.target.desired.clone());
                 record.last_verified_value = Some(integration.target.desired.clone());
+            }
+            // A group restored key by key no longer holds one value Better
+            // Manager wrote, whether every key went back or only some did, so it
+            // claims none. The capture stays usable until every key is back.
+            EntryOutcome::PerKey { keys } => {
+                let restored = keys.iter().filter(|key| key.outcome.is_success()).count();
+                if restored == 0 {
+                    return None;
+                }
+                record.applied_value = None;
+                record.last_verified_value = None;
+                record.restore_state = if restored == keys.len() {
+                    RestoreState::AlreadyRestored
+                } else {
+                    RestoreState::Available
+                };
             }
             // A write whose effect could not be confirmed must not update the
             // record of what Better Manager believes it owns, or the next run

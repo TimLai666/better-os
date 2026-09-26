@@ -55,17 +55,20 @@ struct Cli {
 
 impl Cli {
     fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join("better-files.yaml"), MANIFEST).unwrap();
         // The desktop starts out pointing somewhere else, the way a real one
         // would before Better OS is asked to change anything.
-        std::fs::write(
-            directory.path().join("desktop.json"),
+        Self::with(
+            MANIFEST,
             r#"{"XdgDefaultApp/better-files/default-file-manager":
                  {"state":"set","value":{"type":"desktop_entry",
                   "value":"org.gnome.Nautilus.desktop"}}}"#,
         )
-        .unwrap();
+    }
+
+    fn with(manifest: &str, desktop: &str) -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("better-files.yaml"), manifest).unwrap();
+        std::fs::write(directory.path().join("desktop.json"), desktop).unwrap();
         Self { directory }
     }
 
@@ -263,4 +266,62 @@ fn a_session_the_declaration_does_not_support_is_unavailable_rather_than_attempt
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("unavailable (defaults.not_supported_on_this_system)"));
     assert!(cli.desktop().contains("Nautilus"));
+}
+
+/// A handler group whose two types open in two different viewers.
+#[test]
+fn a_mixed_group_is_previewed_type_by_type_and_restored_type_by_type() {
+    let manifest = MANIFEST
+        .replace("id: default-file-manager", "id: image-viewer")
+        .replace("kind: application-handler", "kind: mime-uri-handler-group")
+        .replace("keys: [inode/directory]", "keys: [image/png, image/jpeg]");
+    let cli = Cli::with(
+        &manifest,
+        r#"{"XdgDefaultApp/better-files/image-viewer": {"state": "mixed", "per_key": [
+             {"key": "image/png", "observed": {"state": "set",
+               "value": {"type": "desktop_entry", "value": "org.gnome.eog.desktop"}}},
+             {"key": "image/jpeg", "observed": {"state": "set",
+               "value": {"type": "desktop_entry", "value": "org.gnome.gThumb.desktop"}}}]}}"#,
+    );
+
+    let plan = cli.run(&["plan"]);
+    assert!(
+        plan.contains("Apply plan: 1 of 1 entries would change"),
+        "{plan}"
+    );
+    assert!(plan.contains("  current, per type:"), "{plan}");
+    assert!(
+        plan.contains("    image/png: DesktopEntry(\"org.gnome.eog.desktop\")"),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("    image/jpeg: DesktopEntry(\"org.gnome.gThumb.desktop\")"),
+        "{plan}"
+    );
+
+    cli.run(&["apply"]);
+    assert!(!cli.desktop().contains("org.gnome.eog.desktop"));
+
+    let restore_plan = cli.run(&["plan", "--restore"]);
+    assert!(restore_plan.contains("restore per type"), "{restore_plan}");
+    assert!(
+        restore_plan.contains("  captured previous, per type:"),
+        "{restore_plan}"
+    );
+
+    let restore = cli.run(&["restore"]);
+    assert!(
+        restore.contains("better-files:image-viewer restored per type"),
+        "{restore}"
+    );
+    assert!(
+        restore.contains("    image/png: restored DesktopEntry(\"org.gnome.eog.desktop\")"),
+        "{restore}"
+    );
+    assert!(
+        restore.contains("    image/jpeg: restored DesktopEntry(\"org.gnome.gThumb.desktop\")"),
+        "{restore}"
+    );
+    assert!(cli.desktop().contains("org.gnome.eog.desktop"));
+    assert!(cli.desktop().contains("org.gnome.gThumb.desktop"));
 }

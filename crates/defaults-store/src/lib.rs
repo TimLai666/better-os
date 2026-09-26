@@ -33,7 +33,11 @@ use better_core::manifest::ComponentId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+/// Version 2 lets a previous value be recorded per declared key
+/// ([`ObservedValue::Mixed`]). A version 1 reader cannot parse that value, so
+/// the version is raised to make such a reader report the file as newer rather
+/// than as corrupt. Version 1 files are read unchanged.
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 /// A stable identifier for one snapshot.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -89,7 +93,8 @@ pub enum RestoreState {
 pub struct SnapshotEntry {
     pub component_id: ComponentId,
     pub integration_id: IntegrationId,
-    /// The effective value read before the first Better OS change.
+    /// The effective value read before the first Better OS change. For a
+    /// group whose keys disagreed it holds each key's own value.
     pub previous_value: ObservedValue,
     /// The value Better OS wants this setting to hold.
     pub better_value: DefaultsValue,
@@ -380,12 +385,13 @@ fn decode(bytes: &[u8]) -> Result<Snapshot, Damage> {
     if version > SNAPSHOT_SCHEMA_VERSION {
         return Err(Damage::UnsupportedSchema { version });
     }
-    // Only one schema version has ever been written. Older versions get their
-    // migration arm here, next to the check that refuses newer ones, so a
-    // migration can never be added without also deciding what a newer file
-    // means.
+    // Older versions get their migration arm here, next to the check that
+    // refuses newer ones, so a migration can never be added without also
+    // deciding what a newer file means. Version 1 is a subset of version 2 —
+    // version 2 only added a previous value recorded per key — so it reads as
+    // it is.
     let value = match version {
-        SNAPSHOT_SCHEMA_VERSION => value,
+        1 | SNAPSHOT_SCHEMA_VERSION => value,
         other => return Err(Damage::UnsupportedSchema { version: other }),
     };
     let snapshot: Snapshot = serde_json::from_value(value).map_err(|error| Damage::Unreadable {

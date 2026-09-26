@@ -39,7 +39,8 @@ own client type for a change set is `(sa{smv})` — a path prefix plus relative 
 names. Sending that shape is *accepted* by the service: the call returns a
 change tag and no key moves. Watching what `dconf write` itself sends settles
 it: the blob is `a{smv}` with absolute key paths and no prefix member. The
-encoder in `crates/touchpad-platform/src/gvariant.rs` is pinned byte-for-byte
+encoder, now in `crates/defaults-platform/src/gvariant.rs` and re-exported by
+`touchpad-platform`, is pinned byte-for-byte
 against values GLib produced, including the boundary where framing offsets widen
 from one byte to two, because a hand-rolled GVariant encoder that drifts from
 the specification fails exactly the way the prefix shape did — silently.
@@ -57,11 +58,12 @@ Alternatives rejected:
   format, in a workspace that already has a GVDB reader of its own, is a large
   dependency for a small gain.
 
-**Consequence for Better Defaults.** `defaults-platform`'s `DconfAdapter` can
-now adopt the same path, which would turn its `gnome-keybinding` and
-`gnome-desktop-setting` adapters from "manual action required" into real
-applies. That is a change to Better Defaults' behaviour and its tests, so it is
-recorded here as a follow-up rather than done in passing.
+**Consequence for Better Defaults.** Ticket 57 adopted the same path: the
+writer and the encoder moved down into `defaults-platform` behind its
+`dconf-write` feature, so `defaults-platform`'s `DconfAdapter` now applies its
+`gnome-keybinding` and `gnome-desktop-setting` integrations, verifies them by
+reading the database again, and resets a key the user had never set on
+restore.
 
 ### 2. Slider ranges
 
@@ -155,7 +157,7 @@ test against; Better OS targets Zorin's Wayland session.
   The default suite mutates nothing.
 - A capture taken before the first change is the only thing restore returns to,
   and "nothing was set" survives into it as its own state.
-- Better Defaults gains a viable write path it has not yet adopted.
+- Better Defaults writes GNOME settings through the same path (ticket 57).
 
 ## Still deferred
 
@@ -171,5 +173,3 @@ test against; Better OS targets Zorin's Wayland session.
   `org.betteros.TouchpadAdapter1`, so on a machine with two touchpads both pads
   perform the selected pad's profile. Routing per pad means widening that
   interface, which is an ADR 0012 change.
-- **Whether Better Defaults adopts this write path**, and what its adapters then
-  report for a key the user has never set.
