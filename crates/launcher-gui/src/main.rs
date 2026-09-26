@@ -37,10 +37,12 @@ fn main() {
     // path. It prints nothing unless asked.
     launcher_gui::startup::begin();
 
-    let request = if std::env::args()
-        .skip(1)
-        .any(|argument| argument == "--open")
-    {
+    // Before the bus: `--help` or a mistyped flag must not toggle a launcher
+    // that is already on screen.
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    launcher_gui::command_line::COMMAND_LINE.open_or_exit(&arguments);
+
+    let request = if arguments.iter().any(|argument| argument == "--open") {
         ActivationRequest::Open
     } else {
         ActivationRequest::Toggle

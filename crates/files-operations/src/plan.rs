@@ -123,10 +123,10 @@ impl Plan {
     pub fn count_linked_bytes_once(&mut self) {
         let mut seen = HashSet::new();
         for item in &mut self.items {
-            if let Some(key) = item.hard_link {
-                if !seen.insert(key) {
-                    item.bytes = 0;
-                }
+            if let Some(key) = item.hard_link
+                && !seen.insert(key)
+            {
+                item.bytes = 0;
             }
         }
     }

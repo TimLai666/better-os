@@ -50,26 +50,26 @@ impl ApplicationRecord {
         targets: &[LaunchTarget],
         locale: Option<&Locale>,
     ) -> Result<LaunchPlan, LaunchError> {
-        if self.capabilities.dbus_activatable {
-            if let Some(service) = &self.dbus_service {
-                if let Some(id) = action_id {
-                    if self.action(id).is_none() {
-                        return Err(LaunchError::UnknownAction(id.to_string()));
-                    }
-                }
-                let uris: Vec<String> = targets.iter().map(LaunchTarget::to_uri).collect();
-                let (method, uris) = match (action_id, uris.is_empty()) {
-                    (Some(id), _) => (DBusMethod::ActivateAction(id.to_string()), Vec::new()),
-                    (None, true) => (DBusMethod::Activate, Vec::new()),
-                    (None, false) => (DBusMethod::Open, uris),
-                };
-                return Ok(LaunchPlan::Activation(DBusActivation {
-                    service: service.clone(),
-                    object_path: object_path_for(service),
-                    method,
-                    uris,
-                }));
+        if self.capabilities.dbus_activatable
+            && let Some(service) = &self.dbus_service
+        {
+            if let Some(id) = action_id
+                && self.action(id).is_none()
+            {
+                return Err(LaunchError::UnknownAction(id.to_string()));
             }
+            let uris: Vec<String> = targets.iter().map(LaunchTarget::to_uri).collect();
+            let (method, uris) = match (action_id, uris.is_empty()) {
+                (Some(id), _) => (DBusMethod::ActivateAction(id.to_string()), Vec::new()),
+                (None, true) => (DBusMethod::Activate, Vec::new()),
+                (None, false) => (DBusMethod::Open, uris),
+            };
+            return Ok(LaunchPlan::Activation(DBusActivation {
+                service: service.clone(),
+                object_path: object_path_for(service),
+                method,
+                uris,
+            }));
         }
         Ok(LaunchPlan::Process {
             invocations: self.build_invocations(action_id, targets, locale)?,

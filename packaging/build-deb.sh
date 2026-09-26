@@ -453,10 +453,10 @@ make_package better-manager \
 # apart would let a user hold two halves that disagree.
 #
 # /usr/bin/better-monitor stays the window, because that is what the published
-# v0.1.0 package installed and what the manifest declares. The command line is
-# installed as better-monitor-cli, which its own --help does not yet say. That
-# collision is recorded in docs/tickets/36-component-packaging.md; resolving it
-# means renaming one of the two, which is not a packaging change.
+# v0.1.0 package installed and what the manifest declares. The command line's
+# cargo binary is also called better-monitor, so it is installed as
+# better-monitor-cli, which is the name its --help and its errors print. The
+# window refuses the command line's arguments and names better-monitor-cli.
 PACKAGE_BINARIES=(
     "monitor-gui:usr/bin/better-monitor"
     "better-monitor-service:usr/bin/better-monitor-service"

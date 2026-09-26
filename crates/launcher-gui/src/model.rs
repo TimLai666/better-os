@@ -62,6 +62,34 @@ pub enum Move {
     Last,
 }
 
+/// What a key the overlay owns asks it to do.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KeyAction {
+    /// Close the overlay without launching anything.
+    Close,
+    /// Launch the selected application.
+    Launch,
+    /// Move the selection.
+    Move(Move),
+}
+
+/// The keys the overlay takes before the search row sees them, by GPUI's key
+/// name. Only navigation, launching, and closing are taken; `None` leaves the
+/// key to the search row. Modifiers are not consulted.
+pub fn key_action(key: &str) -> Option<KeyAction> {
+    Some(match key {
+        "escape" => KeyAction::Close,
+        "enter" => KeyAction::Launch,
+        "right" => KeyAction::Move(Move::Next),
+        "left" => KeyAction::Move(Move::Previous),
+        "down" => KeyAction::Move(Move::NextRow),
+        "up" => KeyAction::Move(Move::PreviousRow),
+        "home" => KeyAction::Move(Move::First),
+        "end" => KeyAction::Move(Move::Last),
+        _ => return None,
+    })
+}
+
 /// What activating a row did.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Activation {
@@ -305,6 +333,54 @@ mod tests {
     use launcher_platform::{PlatformError, RecordingStarter};
     use std::path::PathBuf;
     use std::sync::Arc;
+
+    /// The overlay has no titlebar, so Escape is the only way to close it
+    /// without launching something. This is that key path, asserted.
+    #[test]
+    fn escape_closes_the_overlay() {
+        assert_eq!(key_action("escape"), Some(KeyAction::Close));
+    }
+
+    #[test]
+    fn enter_launches_the_selection() {
+        assert_eq!(key_action("enter"), Some(KeyAction::Launch));
+    }
+
+    #[test]
+    fn the_arrow_keys_home_and_end_move_the_selection() {
+        for (key, movement) in [
+            ("right", Move::Next),
+            ("left", Move::Previous),
+            ("down", Move::NextRow),
+            ("up", Move::PreviousRow),
+            ("home", Move::First),
+            ("end", Move::Last),
+        ] {
+            assert_eq!(key_action(key), Some(KeyAction::Move(movement)), "{key}");
+        }
+    }
+
+    /// Everything else belongs to the search row, which is why typing keeps
+    /// working while the arrow keys move through the grid.
+    #[test]
+    fn every_other_key_is_left_to_the_search_row() {
+        for key in [
+            "a",
+            "q",
+            "space",
+            "backspace",
+            "delete",
+            "tab",
+            "pageup",
+            "pagedown",
+            "f1",
+            "Escape",
+            "esc",
+            "",
+        ] {
+            assert_eq!(key_action(key), None, "{key:?}");
+        }
+    }
 
     /// Builds a snapshot from `(desktop id, name, keywords)` triples, through
     /// the real catalog builder and the real index. Nothing here fabricates an

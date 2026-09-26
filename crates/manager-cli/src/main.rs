@@ -23,8 +23,14 @@ use std::path::PathBuf;
 // `version` prints this crate's own `CARGO_PKG_VERSION`, which is the workspace
 // version every Better OS crate inherits. Without it `--version` was an unknown
 // argument and the manager had no way of saying which build it is.
+//
+// `/usr/bin/better-manager` is the window, so this binary is installed as
+// `better-manager-cli`. `bin_name` fixes that name in the usage line and in
+// clap's errors; left to itself clap would print whatever the process was
+// started as, which is `manager-cli` from a build tree.
 #[command(
-    name = "better-manager",
+    name = "better-manager-cli",
+    bin_name = "better-manager-cli",
     version,
     about = "Inspect, plan, and apply Better OS component lifecycle changes"
 )]

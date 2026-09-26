@@ -59,7 +59,7 @@ fn synthetic_processes(count: usize) -> Vec<ProcessFacts> {
             // Every twentieth process has an unreadable descriptor count, so
             // the sort has to handle missing values at scale rather than only
             // in a unit test.
-            if pid % 20 == 0 {
+            if pid.is_multiple_of(20) {
                 process.file_descriptors = Field::PermissionDenied {
                     path: format!("/proc/{pid}/fd"),
                 };

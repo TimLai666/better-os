@@ -416,10 +416,11 @@ impl MimeAppsFile {
                     return false;
                 }
                 self.lines.drain(*index..end);
-                if *fixed_final_newline && *index > 0 {
-                    if let Some(line) = self.lines.get_mut(index - 1) {
-                        line.terminator.clear();
-                    }
+                if *fixed_final_newline
+                    && *index > 0
+                    && let Some(line) = self.lines.get_mut(index - 1)
+                {
+                    line.terminator.clear();
                 }
                 true
             }
