@@ -17,7 +17,7 @@ use app_catalog_core::{
 };
 use app_catalog_platform::{RecordingSpawner, SessionEnvironment};
 use files_core::{DirectoryModel, Entry, EntryKind, HiddenPreference, Location, SortOrder};
-use files_operations::{EngineConfig, JobEngine};
+use files_operations::{ArchiveFormat, EngineConfig, JobEngine};
 use files_platform::{MountTable, ReaderConfig, UserDirectories};
 use storage_core::{DeviceStateKind, RemovalPolicy};
 use storage_service::protocol::{BlockerReport, DeviceReport, StateReport, UnsafeRemovalReport};
@@ -33,7 +33,7 @@ use crate::openwith::{ChooserRequest, DefaultSource, OpenRoute, SessionDefaults,
 use crate::prefs::{FilesPreferences, PreferenceStore};
 use crate::preview::{PreviewPanel, PreviewSlot};
 use crate::reader::FilesReader;
-use crate::session::{DeviceEvent, FilesSession, Notice, SessionSetup};
+use crate::session::{DeviceEvent, FilesSession, Notice, PendingDialog, SessionSetup};
 
 // --- Catalog fixtures ----------------------------------------------------
 
@@ -1765,5 +1765,132 @@ fn the_policy_switch_is_worded_with_the_existing_policy_names() {
             let offered = c.device_policy_switch.replace("{policy}", name);
             assert!(offered.contains(name), "{offered}");
         }
+    }
+}
+
+// =========================================================================
+// Archives (ticket 56)
+// =========================================================================
+
+fn select_named(session: &mut FilesSession, name: &str) {
+    let index = session
+        .pane()
+        .model()
+        .iter_visible()
+        .position(|entry| entry.name == name)
+        .unwrap_or_else(|| panic!("{name} is listed"));
+    session.apply_selection(crate::content::SelectionInput::Click(index), 1);
+}
+
+fn finish_last_job(session: &mut FilesSession) -> files_operations::JobSnapshot {
+    let id = session
+        .engine()
+        .jobs()
+        .last()
+        .expect("a job was submitted")
+        .id;
+    let finished = session
+        .engine()
+        .wait(id, std::time::Duration::from_secs(20))
+        .expect("the job finished");
+    session.reload();
+    settle(session);
+    finished
+}
+
+#[test]
+fn a_selection_is_compressed_in_the_chosen_format_and_extracted_back_beside_it() {
+    let (rig, mut session) = plain();
+    settle(&mut session);
+    let documents = rig.home.join("Documents");
+
+    select_named(&mut session, "notes.txt");
+    let actions = session.archive_actions();
+    assert!(actions.compress);
+    assert!(!actions.extract, "a text file is not an archive");
+
+    session.request_compress();
+    let Some(PendingDialog::Compress(chooser)) = session.dialog.clone() else {
+        panic!("the format chooser opened: {:?}", session.dialog);
+    };
+    assert_eq!(
+        chooser.request.file_name(ArchiveFormat::TarZst),
+        std::ffi::OsString::from("notes.tar.zst")
+    );
+    session.compress(ArchiveFormat::TarZst);
+    assert_eq!(session.dialog, None);
+    let made = finish_last_job(&mut session);
+    assert_eq!(made.state, files_operations::JobState::Completed);
+    assert!(documents.join("notes.tar.zst").is_file());
+
+    select_named(&mut session, "notes.tar.zst");
+    assert!(session.archive_actions().extract);
+    session.extract_selection();
+    let unpacked = finish_last_job(&mut session);
+    assert_eq!(unpacked.state, files_operations::JobState::Completed);
+    assert_eq!(
+        fs::read(documents.join("notes/notes.txt")).unwrap(),
+        b"hello world"
+    );
+}
+
+#[test]
+fn compress_and_extract_can_be_done_without_a_pointer() {
+    use crate::keys::{ChooserKey, Command};
+    let (rig, mut session) = plain();
+    settle(&mut session);
+    let documents = rig.home.join("Documents");
+    select_named(&mut session, "notes.txt");
+
+    // The shortcut opens the chooser on its first format.
+    session.dispatch(Command::Compress, 1, 10);
+    let Some(PendingDialog::Compress(chooser)) = session.dialog.clone() else {
+        panic!("the chooser opened: {:?}", session.dialog);
+    };
+    assert_eq!(chooser.focused(), ArchiveFormat::Zip);
+
+    // Escape closes it and nothing is made.
+    session.chooser_key(ChooserKey::Cancel);
+    assert_eq!(session.dialog, None);
+    assert!(session.engine().jobs().is_empty());
+
+    // Down once is .tar.gz, and Enter makes it.
+    session.dispatch(Command::Compress, 1, 10);
+    session.chooser_key(ChooserKey::Next);
+    session.chooser_key(ChooserKey::Confirm);
+    assert_eq!(session.dialog, None);
+    let made = finish_last_job(&mut session);
+    assert_eq!(made.state, files_operations::JobState::Completed);
+    assert!(documents.join("notes.tar.gz").is_file());
+
+    select_named(&mut session, "notes.tar.gz");
+    session.dispatch(Command::Extract, 1, 10);
+    let unpacked = finish_last_job(&mut session);
+    assert_eq!(unpacked.state, files_operations::JobState::Completed);
+    assert_eq!(
+        fs::read(documents.join("notes/notes.txt")).unwrap(),
+        b"hello world"
+    );
+}
+
+#[test]
+fn extract_on_a_file_that_is_not_an_archive_says_so_and_submits_nothing() {
+    let (_rig, mut session) = plain();
+    settle(&mut session);
+    select_named(&mut session, "photo.png");
+    session.extract_selection();
+    assert_eq!(
+        session.notice,
+        Some(Notice::Command(
+            crate::commands::CommandRefusal::NotAnArchive
+        ))
+    );
+    assert!(session.engine().jobs().is_empty());
+    for c in [&EN_US, &ZH_TW] {
+        assert!(
+            Notice::Command(crate::commands::CommandRefusal::NotAnArchive)
+                .message(c)
+                .contains(".tar.zst")
+        );
     }
 }

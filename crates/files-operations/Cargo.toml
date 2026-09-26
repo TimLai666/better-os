@@ -18,6 +18,13 @@ libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Archive and extract: the zip container, the tar container, and the gzip and
+# zstd streams a tar is compressed with. See the workspace manifest for why
+# these four.
+zip.workspace = true
+tar.workspace = true
+flate2.workspace = true
+ruzstd.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

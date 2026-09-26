@@ -97,7 +97,8 @@ translated string is keyed off the variant rather than matched against English:
 `destination_inside_source`, `symlink_loop`, `name_too_long`, `invalid_name`,
 `device_lost`, `cross_device`, `externally_modified`, `verification_failed`,
 `confirmation_required`, `cancelled`, `interrupted`, `conflict_unresolved`,
-`trash_unavailable`, and a final `io` that keeps the raw errno.
+`trash_unavailable`, `archive_entry_refused`, `archive_limit_exceeded`,
+`archive_unreadable`, and a final `io` that keeps the raw errno.
 
 Classification is by errno, not by `std::io::ErrorKind`: several of the
 interesting ones are still `Uncategorized` on stable Rust.
@@ -159,6 +160,105 @@ wrote, so a record never outlives the data it describes.
   storage are not searched. Restore and permanent delete act on each item in
   the trash it is in, so one selection may span several.
 
+## Archives
+
+Compress and extract are jobs like any other: one item per archive, pause and
+cancel between chunks, retry of a failed item, the same job record and item
+journal, and the same `JobObserver` calls around the run.
+
+| Format | Written as | Read |
+| --- | --- | --- |
+| `.zip` | deflate; UTF-8 names only | stored and deflate entries |
+| `.tar` | GNU tar, long names and non-UTF-8 names kept as bytes | ustar, GNU, and pax, including pre-POSIX tar by name |
+| `.tar.gz`, `.tgz` | gzip at the default level | one or more gzip members |
+| `.tar.zst`, `.tzst` | zstd at the fastest level, roughly `zstd -1` | one or more zstd frames, 100 MiB window at most |
+
+The format of an archive being read comes from its first bytes, and from its
+name only when they say nothing. The name decides the folder it is extracted
+into: `photos.tar.gz` goes into `photos/` beside it.
+
+Every library is pure Rust: `zip` with only its flate2 deflate backend,
+`tar`, `flate2` on `miniz_oxide`, and `ruzstd`, chosen over the `zstd` crate
+because that one compiles the C library.
+
+### Writing an archive
+
+The archive is written under a temporary name beside its destination and
+renamed into place when the stream is complete, the same promise a copied file
+makes. A cancelled or failed archive leaves no file and no temporary. An
+archive already at the destination is a conflict answered like any other: skip,
+rename (`photos (copy).zip`), or overwrite.
+
+Permission bits and modification times go in; a zip stores local time with
+two-second resolution between 1980 and 2107, a tar stores seconds. Symbolic
+links go in as links. A file that changes size or is rewritten while it is
+being read fails the archive with `externally_modified`, because an archive
+header states the size before the content. Hard links are stored as separate
+files. Sockets, fifos, and device nodes are left out and logged.
+
+A zip cannot hold a name that is not UTF-8. Such a name fails the job with
+`archive_entry_refused` and `files.archive.entry.name_not_utf8`, naming the
+entry, rather than being renamed.
+
+### Extracting: an archive is untrusted input
+
+Every entry name is a path the job is being asked to write, so each is checked
+first. An entry that breaks a rule stops the extraction with
+`archive_entry_refused`, which carries the archive, the entry's name as the
+archive spells it, and one of these reasons:
+
+| Reason | Refused entry |
+| --- | --- |
+| `files.archive.entry.absolute_path` | A name starting with `/` |
+| `files.archive.entry.parent_traversal` | A name with a `..` component |
+| `files.archive.entry.unusable_name` | A component that is not a usable filename |
+| `files.archive.entry.through_link` | An entry whose parent directory, as already extracted, is a symbolic link |
+| `files.archive.entry.replaces_existing` | An entry replacing a directory or a link, or a link replacing anything |
+| `files.archive.entry.link_outside` | A symbolic link whose target is absolute or resolves above the folder |
+| `files.archive.entry.hard_link_outside` | A hard link whose target is absolute, climbs with `..`, or passes through a link |
+| `files.archive.entry.hard_link_target_missing` | A hard link whose target is not a regular file the archive already extracted |
+
+A symbolic link's target is resolved the way the kernel would, against the
+links already extracted, and a `..` counts only when it climbs out of a
+directory that exists at that moment. A name that does not exist yet could be
+made a link by a later entry, which would change what the `..` means. Nothing is
+written through a link and no link or directory is replaced, so a link that
+resolved inside when it was checked still does when the extraction ends. A
+regular file that appears twice is the one replacement allowed: the later one
+wins.
+
+Permission bits are carried without set-user-ID, set-group-ID, and sticky
+bits, and ownership is not carried. Device nodes, fifos, and sockets in an
+archive are skipped and logged.
+
+### Limits
+
+| Limit | Default | Constant |
+| --- | --- | --- |
+| Bytes written by one extraction | 64 GiB | `policy::MAX_EXTRACTED_BYTES` |
+| Entries read by one extraction | 1,000,000 | `policy::MAX_EXTRACTED_ENTRIES` |
+
+Both travel in `CopyPolicy::extract_limits`. Bytes are counted as they are
+written, so an entry whose header understates its size is stopped too. A zip
+declares its entry count and sizes up front, and one whose declarations already
+exceed a limit is refused before anything is written. Reaching a limit fails
+the item with `archive_limit_exceeded`, which names the limit and its value.
+
+### What is left behind
+
+Nothing, on every path but a crash. Everything is extracted into a temporary
+directory beside the destination, `.<folder>.betteros-part-<pid>-<n>`, and
+renamed to the folder only once every entry is in. A refused entry, a limit, a
+damaged archive, or a cancel removes the temporary directory. Neither
+operation claims rollback: there is never a partial result for a rollback to
+undo.
+
+Proof: `tests/archives.rs`, 27 tests: the four formats both ways, each rule
+above with a hostile tar or zip assembled in the test, both limits for every
+format, pause, resume, cancel, retry, and a record read back by a later
+process. Unit tests in `extract.rs` cover the name split, link resolution,
+concatenated zstd frames, and format detection.
+
 ## Persistence and recovery
 
 A job is stored as two files: a header, `job-<id>.json`, holding the state,
@@ -211,7 +311,8 @@ open.
 ## No shell strings
 
 There is no `std::process::Command` in `files-operations` or in the trash write
-side, and no way to spawn a process from either. Every operation is a syscall on
+side, and no way to spawn a process from either. Archive and extract are
+libraries in the process, not a call to `tar` or `unzip`. Every operation is a syscall on
 a path, so Issue #6's rule holds by construction. `tests/no_shell_strings.rs`
 scans both crates' sources on every test run and fails on any spawn primitive.
 

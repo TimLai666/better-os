@@ -132,6 +132,14 @@ semver = { version = "1.0", features = ["serde"] }
 thiserror = "2.0"
 notify = "7.0"
 tempfile = "3"
+# Better Files archive and extract (ticket 56). Every one is pure Rust: `zip`
+# keeps only its flate2-backed deflate, and flate2 its default miniz_oxide
+# backend; `ruzstd` is the pure-Rust zstd codec, chosen over the `zstd`
+# binding because that one compiles the C library.
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
+tar = { version = "0.4.46", default-features = false }
+flate2 = "1.1"
+ruzstd = "0.9"
 clap = { version = "4.5", features = ["derive", "env"] }
 gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "88f102d13654fe25aa2fede076274b6b751a3704" }

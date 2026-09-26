@@ -183,6 +183,8 @@ fn every_documented_shortcut_maps_to_its_command() {
         ("escape", Modifiers::NONE, Command::ClearSelection),
         ("up", Modifiers::shift(), Command::ExtendUp),
         ("o", Modifiers::control(), Command::ToggleOperations),
+        ("p", Modifiers::control_shift(), Command::Compress),
+        ("e", Modifiers::control_shift(), Command::Extract),
     ] {
         assert_eq!(
             command_for(key, modifiers, None, content),
@@ -190,6 +192,77 @@ fn every_documented_shortcut_maps_to_its_command() {
             "{key} with {modifiers:?}"
         );
     }
+}
+
+#[test]
+fn compress_and_extract_need_both_modifiers_and_take_nothing_already_bound() {
+    let content = Focus::Content;
+    // Without Shift the letters stay free: Ctrl+P and Ctrl+E mean nothing here.
+    assert_eq!(command_for("p", Modifiers::control(), None, content), None);
+    assert_eq!(command_for("e", Modifiers::control(), None, content), None);
+    // And the shortcuts already taken with Ctrl+Shift keep their meaning.
+    for (key, expected) in [
+        ("c", Command::Copy),
+        ("n", Command::NewFolder),
+        ("o", Command::OpenWith),
+        ("t", Command::RestoreClosedTab),
+    ] {
+        assert_eq!(
+            command_for(key, Modifiers::control_shift(), None, content),
+            Some(expected),
+            "Ctrl+Shift+{key}"
+        );
+    }
+}
+
+#[test]
+fn the_format_chooser_is_driven_from_the_keyboard() {
+    use crate::keys::{ChooserKey, chooser_key_for};
+    for (key, modifiers, expected) in [
+        ("down", Modifiers::NONE, Some(ChooserKey::Next)),
+        ("right", Modifiers::NONE, Some(ChooserKey::Next)),
+        ("tab", Modifiers::NONE, Some(ChooserKey::Next)),
+        ("up", Modifiers::NONE, Some(ChooserKey::Previous)),
+        ("left", Modifiers::NONE, Some(ChooserKey::Previous)),
+        ("tab", Modifiers::shift(), Some(ChooserKey::Previous)),
+        ("enter", Modifiers::NONE, Some(ChooserKey::Confirm)),
+        ("space", Modifiers::NONE, Some(ChooserKey::Confirm)),
+        ("escape", Modifiers::NONE, Some(ChooserKey::Cancel)),
+        // Nothing else reaches the window behind the chooser.
+        ("delete", Modifiers::NONE, None),
+        ("c", Modifiers::control(), None),
+    ] {
+        assert_eq!(
+            chooser_key_for(key, modifiers),
+            expected,
+            "{key} with {modifiers:?}"
+        );
+    }
+}
+
+#[test]
+fn the_chooser_starts_on_zip_and_wraps_both_ways() {
+    use crate::commands::{CompressChooser, CompressRequest};
+    use files_operations::ArchiveFormat;
+    let mut chooser = CompressChooser::new(CompressRequest {
+        parent: LocalPath::new("/home/user").unwrap(),
+        sources: vec![LocalPath::new("/home/user/report.pdf").unwrap()],
+        stem: "report".into(),
+    });
+    assert_eq!(chooser.focused(), ArchiveFormat::ALL[0]);
+    assert_eq!(chooser.focused(), ArchiveFormat::Zip);
+    for expected in ArchiveFormat::ALL.iter().skip(1) {
+        chooser.next();
+        assert_eq!(chooser.focused(), *expected);
+    }
+    chooser.next();
+    assert_eq!(chooser.focused(), ArchiveFormat::Zip, "wraps forwards");
+    chooser.previous();
+    assert_eq!(
+        chooser.focused(),
+        ArchiveFormat::ALL[ArchiveFormat::ALL.len() - 1],
+        "wraps backwards"
+    );
 }
 
 #[test]
@@ -1411,6 +1484,8 @@ fn chrome_labels(c: &'static crate::i18n::Copy) -> Vec<&'static str> {
         c.new_tab,
         c.close_tab,
         c.reopen_closed_tab,
+        c.compress,
+        c.extract,
     ]
 }
 
@@ -1541,6 +1616,8 @@ fn both_languages_define_every_string_and_none_of_them_is_empty() {
             OperationKind::RestoreFromTrash,
             OperationKind::PermanentDelete,
             OperationKind::Checksum,
+            OperationKind::Archive,
+            OperationKind::Extract,
         ] {
             assert!(!crate::i18n::job_kind_label(kind, c).trim().is_empty());
         }

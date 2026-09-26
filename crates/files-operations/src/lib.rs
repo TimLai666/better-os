@@ -34,15 +34,17 @@
 //! which is how Issue #6's "no shell-string concatenation" requirement is met
 //! by construction. `tests/no_shell_strings.rs` checks it on every run.
 //!
-//! Archive and extract are not here. Ticket 33 puts them out of scope and the
-//! engine does not prevent them: an archive job is another [`spec::Operation`]
-//! variant and another arm in [`exec::execute_item`].
+//! Archive and extract are two more [`spec::Operation`] variants, each run as
+//! one item per archive by [`archive`] and [`extract`]. An extraction treats
+//! the archive as untrusted input: [`extract`] says what it refuses and why.
 
+pub mod archive;
 pub mod checksum;
 pub mod conflict;
 pub mod engine;
 pub mod error;
 pub mod exec;
+pub mod extract;
 pub mod fsops;
 pub mod log;
 pub mod plan;
@@ -56,18 +58,18 @@ pub use conflict::{
     Conflict, ConflictDecision, ConflictKind, ConflictPolicy, Resolution, ResolutionScope,
 };
 pub use engine::{EngineConfig, JobEngine, JobEvent, JobHandle, JobId, JobObserver, JobSnapshot};
-pub use error::OperationError;
+pub use error::{ArchiveLimit, OperationError};
 pub use exec::{CopiedInode, ItemOutcome, JobControl, build_plan, preview_bulk_rename};
 pub use log::{LogEvent, LogRecord, MetadataProperty, OperationLog, SkipReason};
 pub use plan::{InodeKey, ItemKind, Plan, PlanItem};
 pub use policy::{
-    CopyPolicy, DestinationDurability, FailurePolicy, FsyncPolicy, MoveStrategy, SparsePolicy,
-    SymlinkPolicy,
+    CopyPolicy, DestinationDurability, ExtractLimits, FailurePolicy, FsyncPolicy, MoveStrategy,
+    SparsePolicy, SymlinkPolicy,
 };
 pub use progress::{Confidence, ItemProgress, Progress, RemainingTime, Throughput};
 pub use spec::{
-    ChecksumAlgorithm, DeleteConfirmation, DeleteTarget, JobSpec, Operation, OperationKind,
-    RenamePattern, TrashItemRef,
+    ArchiveFormat, ChecksumAlgorithm, DeleteConfirmation, DeleteTarget, JobSpec, Operation,
+    OperationKind, RenamePattern, TrashItemRef,
 };
 pub use state::JobState;
 pub use store::{ItemRecord, ItemStatus, JobRecord, JobStore, JournalEntry, Recovery, StoreError};

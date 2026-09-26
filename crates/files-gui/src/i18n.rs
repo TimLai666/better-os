@@ -217,6 +217,8 @@ pub struct Copy {
     pub job_restore: &'static str,
     pub job_permanent_delete: &'static str,
     pub job_checksum: &'static str,
+    pub job_archive: &'static str,
+    pub job_extract: &'static str,
 
     // Commands
     pub new_folder: &'static str,
@@ -235,6 +237,10 @@ pub struct Copy {
     pub dismiss: &'static str,
     pub nothing_selected: &'static str,
     pub not_writable_here: &'static str,
+    pub compress: &'static str,
+    pub compress_title: &'static str,
+    pub extract: &'static str,
+    pub not_an_archive: &'static str,
     pub new_folder_name: &'static str,
     pub new_file_name: &'static str,
     pub rename_to: &'static str,
@@ -491,6 +497,8 @@ pub const EN_US: Copy = Copy {
     job_restore: "Restore",
     job_permanent_delete: "Delete permanently",
     job_checksum: "Checksum",
+    job_archive: "Compress",
+    job_extract: "Extract",
 
     new_folder: "New Folder",
     new_file: "New File",
@@ -508,6 +516,10 @@ pub const EN_US: Copy = Copy {
     dismiss: "Dismiss",
     nothing_selected: "Select something first",
     not_writable_here: "This location cannot be written to",
+    compress: "Compress…",
+    compress_title: "Compress into",
+    extract: "Extract",
+    not_an_archive: "Only .zip, .tar, .tar.gz, and .tar.zst archives can be extracted",
     new_folder_name: "Folder name",
     new_file_name: "File name",
     rename_to: "New name",
@@ -755,6 +767,8 @@ pub const ZH_TW: Copy = Copy {
     job_restore: "還原",
     job_permanent_delete: "永久刪除",
     job_checksum: "計算校驗值",
+    job_archive: "壓縮",
+    job_extract: "解壓縮",
 
     new_folder: "新增資料夾",
     new_file: "新增檔案",
@@ -772,6 +786,10 @@ pub const ZH_TW: Copy = Copy {
     dismiss: "關閉",
     nothing_selected: "請先選取項目",
     not_writable_here: "這個位置無法寫入",
+    compress: "壓縮…",
+    compress_title: "壓縮成",
+    extract: "解壓縮",
+    not_an_archive: "只能解壓縮 .zip、.tar、.tar.gz 和 .tar.zst 壓縮檔",
     new_folder_name: "資料夾名稱",
     new_file_name: "檔案名稱",
     rename_to: "新名稱",
@@ -956,6 +974,8 @@ pub fn job_kind_label(kind: OperationKind, c: &'static Copy) -> &'static str {
         OperationKind::RestoreFromTrash => c.job_restore,
         OperationKind::PermanentDelete => c.job_permanent_delete,
         OperationKind::Checksum => c.job_checksum,
+        OperationKind::Archive => c.job_archive,
+        OperationKind::Extract => c.job_extract,
     }
 }
 

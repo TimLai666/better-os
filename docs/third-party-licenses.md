@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 917.
-- Packages with an SPDX license expression: 915.
+- Resolved Cargo packages: 922.
+- Packages with an SPDX license expression: 920.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `8e56598a0ebb9e9308036c843f3281ad24dcc1e3007a085ce346a6451b33ed38`.
+- `Cargo.lock` SHA-256: `7d896a037089f65430e549c8a5dad72d59c3d9a189f2dcfc137221e48365fb5a`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -25,8 +25,8 @@ source of truth for those packages.
 
 | License expression | Package records |
 | --- | ---: |
-| `MIT OR Apache-2.0` | 401 |
-| `MIT` | 186 |
+| `MIT OR Apache-2.0` | 403 |
+| `MIT` | 189 |
 | `Apache-2.0 OR MIT` | 76 |
 | `GPL-3.0-or-later` | 55 |
 | `MIT/Apache-2.0` | 35 |
@@ -729,6 +729,7 @@ Better OS does not relicense or silently select a different expression.
 | `rustls-webpki` | `0.103.13` | `ISC` | [crates.io](https://crates.io/crates/rustls-webpki/0.103.13) |
 | `rustversion` | `1.0.23` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/rustversion/1.0.23) |
 | `rustybuzz` | `0.20.1` | `MIT` | [crates.io](https://crates.io/crates/rustybuzz/0.20.1) |
+| `ruzstd` | `0.9.0` | `MIT` | [crates.io](https://crates.io/crates/ruzstd/0.9.0) |
 | `ryu` | `1.0.23` | `Apache-2.0 OR BSL-1.0` | [crates.io](https://crates.io/crates/ryu/1.0.23) |
 | `same-file` | `1.0.6` | `Unlicense/MIT` | [crates.io](https://crates.io/crates/same-file/1.0.6) |
 | `schannel` | `0.1.29` | `MIT` | [crates.io](https://crates.io/crates/schannel/0.1.29) |
@@ -819,6 +820,7 @@ Better OS does not relicense or silently select a different expression.
 | `system-configuration-sys` | `0.6.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/system-configuration-sys/0.6.0) |
 | `taffy` | `0.12.2` | `MIT` | [crates.io](https://crates.io/crates/taffy/0.12.2) |
 | `tao-core-video-sys` | `0.2.0` | `MIT` | [crates.io](https://crates.io/crates/tao-core-video-sys/0.2.0) |
+| `tar` | `0.4.46` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/tar/0.4.46) |
 | `tauri-winrt-notification` | `0.7.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/tauri-winrt-notification/0.7.3) |
 | `tempfile` | `3.27.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/tempfile/3.27.0) |
 | `tendril` | `0.4.3` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/tendril/0.4.3) |
@@ -868,6 +870,8 @@ Better OS does not relicense or silently select a different expression.
 | `triomphe` | `0.1.16` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/triomphe/0.1.16) |
 | `try-lock` | `0.2.5` | `MIT` | [crates.io](https://crates.io/crates/try-lock/0.2.5) |
 | `ttf-parser` | `0.25.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/ttf-parser/0.25.1) |
+| `twox-hash` | `2.1.4` | `MIT` | [crates.io](https://crates.io/crates/twox-hash/2.1.4) |
+| `typed-path` | `0.12.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/typed-path/0.12.3) |
 | `typeid` | `1.0.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/typeid/1.0.3) |
 | `typenum` | `1.20.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/typenum/1.20.1) |
 | `uds_windows` | `1.2.1` | `MIT` | [crates.io](https://crates.io/crates/uds_windows/1.2.1) |
@@ -1047,6 +1051,7 @@ Better OS does not relicense or silently select a different expression.
 | `zerotrie` | `0.2.4` | `Unicode-3.0` | [crates.io](https://crates.io/crates/zerotrie/0.2.4) |
 | `zerovec` | `0.11.6` | `Unicode-3.0` | [crates.io](https://crates.io/crates/zerovec/0.11.6) |
 | `zerovec-derive` | `0.11.3` | `Unicode-3.0` | [crates.io](https://crates.io/crates/zerovec-derive/0.11.3) |
+| `zip` | `8.6.0` | `MIT` | [crates.io](https://crates.io/crates/zip/8.6.0) |
 | `zlog` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `zmij` | `1.0.23` | `MIT` | [crates.io](https://crates.io/crates/zmij/1.0.23) |
 | `ztracing` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
