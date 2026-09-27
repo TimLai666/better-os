@@ -14,31 +14,30 @@ targets:
   architectures: [amd64, arm64]
 enhances:
   - udisks2
-# Placeholder checksums until v0.2.8 is published. ADR 0002 records the
-# checksum of a *published* release asset; the v0.2.7 values these variants
-# carried describe 0.2.7's packages, not 0.2.8's. The real values are written
-# back once the release is public and every asset has been re-downloaded and
-# verified.
+# The checksums below belong to the published v0.2.8 release assets. Each one
+# was re-hashed from the package downloaded back from the public release rather
+# than copied from its sidecar, which is what ADR 0002 requires a manifest to
+# record.
 artifacts:
   - release: "22.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.8/better-storage_0.2.8_ubuntu-22.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: c4464e2bd2d796cb173b79af0983e820936884457afca4a02d178ef3e7cc2407
     release_asset: better-storage_0.2.8_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.8/better-storage_0.2.8_ubuntu-22.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: b72af66ac06f697b6955e19b1351ad6e1ae35eb0319f617ef097e101a6d32c49
     release_asset: better-storage_0.2.8_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.8/better-storage_0.2.8_ubuntu-24.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: ea239592c9004d46bf6bc0641a516dca4ff635cd39d207765893f7dbca440d46
     release_asset: better-storage_0.2.8_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.8/better-storage_0.2.8_ubuntu-24.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: e189bf81d72bc45c7ddc818713e501587fb22ee20ece703fdbaebe699fd275d4
     release_asset: better-storage_0.2.8_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
