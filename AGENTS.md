@@ -305,12 +305,10 @@ GUI or dependency compiles when the relevant command was not executed.
   application would have sent to a service. Do not add a third fallback that
   invents a state.
 - A Better Files job that writes to an external device is a tracked operation
-  in the storage service from before its first write to after its last. Two
-  gaps remain. If Better Files exits or crashes mid-job the completion is never
-  sent, and the service keeps the device out of "ready to unplug" until it
-  restarts or the device is replugged; closing that means the service tying an
-  operation to its sender's bus name. And a job started before the window's
-  device link has its first device list is not registered at all.
+  in the storage service from before its first write to after its last, and
+  the service ends every operation a client started when that client leaves the
+  bus. None of it has been exercised with a real USB device or a real crash
+  mid-copy; the proof is a private-bus test and the in-process engine.
 - Better Files does not offer Performance mode: `files_gui::policy::
   OFFER_PERFORMANCE_MODE` is off because the mode changes no mount option or
   cache setting and so makes no write faster. A device already in the mode is
