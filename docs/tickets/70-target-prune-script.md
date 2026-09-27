@@ -25,11 +25,10 @@ using · **Branch:** `ticket-70` · **Blocked by:** none · **Status:** implemen
       `target/`, and refuses a path that is not a cargo target directory
       (no `CACHEDIR.TAG` with cargo's signature).
       *The refusals section of the test.*
-- [ ] `--help` documents every option; `shellcheck` passes; a test drives it
+- [x] `--help` documents every option; `shellcheck` passes; a test drives it
       against a synthetic target directory.
-      *`--help` and the test are done. `shellcheck` has not run: it is not
-      installed on the machine this was built on. The CI `installer` job now
-      runs it on both files.*
+      *`shellcheck` is not installed on the machine this was built on; it
+      passed in the CI `installer` job of run 36300247926 on this branch.*
 
 ## What was built
 
@@ -98,6 +97,7 @@ test.
   list, cargo's newer lock files being removed, and scratch directories being
   treated as profiles, before each fix.
 - `bash -n` on both files: clean.
-- `shellcheck`: not run here; not installed on this machine.
+- `shellcheck`: not installed on this machine; passed in the CI `installer`
+  job of run 36300247926.
 - Dry run on `ticket-64/target` (11 GB): 1 path, the 2 GB debug
   `incremental/`. The main checkout had no `target/` at the time.
