@@ -128,6 +128,14 @@ jobs:
           grep -q 'releases/download/' /tmp/nojq.log
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The build-tree cleanup script needs nothing built either: its test makes
+      # synthetic target directories, so this step runs without cargo.
+      - name: Lint and test the target prune script
+        run: |
+          bash -n packaging/prune-target.sh
+          bash -n packaging/tests/prune-target.test.sh
+          shellcheck packaging/prune-target.sh packaging/tests/prune-target.test.sh
+          bash packaging/tests/prune-target.test.sh
 
   package:
     needs: rust
