@@ -70,7 +70,13 @@ GUI or dependency compiles when the relevant command was not executed.
 - Build each supported Ubuntu release in a compatible base environment. The
   current Zorin 18 host produces `libc6 (>= 2.39)` and must not supply a 22.04
   release artifact.
-- Review the license implications of every copyleft dependency before release.
+- `docs/copyleft-review.md` reviews every copyleft dependency and leaves four
+  decisions to the owner: which FreeType license the Ubuntu 22.04 windows use,
+  shipping the Apache-2.0 text (and the permissive licenses' texts generally),
+  where the dependencies' Corresponding Source lives, and the license of two Zed
+  crates with no license field. Until they are decided, the published packages
+  carry the GPL text and a license inventory and nothing else. Re-run the
+  review when `Cargo.lock` gains a copyleft package.
 - Better Monitor now presents its collectors: `monitor-views` owns grouping and
   the table, apps, and overview models with no GPUI dependency, and
   `monitor-actions-linux` is the only crate that calls `kill(2)` or
@@ -368,13 +374,9 @@ GUI or dependency compiles when the relevant command was not executed.
   an empty state. Better Files is the only component that
   declares a default integration; the other six declare none, which is a
   deferred Issue #10 decision and not an omission this catalog change made.
-- Decide how the build tree is kept from filling the disk. `target/` reached
-  158 GB during the v0.2.4 work and a manual `cargo clean` was what unblocked
-  it. Nothing in the project prunes it, and a release builds the whole workspace
-  twice — debug for the gate, release for the eight packages — so the growth is
-  structural rather than accidental. A periodic cleanup someone actually runs is
-  the remaining candidate answer, and it has not been decided. One `target/`
-  shared between worktrees is not an answer: see the rule under Working rules.
+- `packaging/prune-target.sh` frees build space: it lists what it would remove
+  and removes it only with `--apply`. Run it on a worktree's own `target/` when
+  the disk runs low, and never while cargo is building in that directory.
 - The license inventory check catches a class of merge that is easy to make.
   `docs/third-party-licenses.md` pins the `Cargo.lock` hash, so any commit that
   moves the lockfile and does not regenerate it turns CI red on `main` — which
