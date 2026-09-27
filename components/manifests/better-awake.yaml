@@ -10,31 +10,30 @@ targets:
   distributions: [zorin, ubuntu]
   releases: [22.04, 24.04]
   architectures: [amd64, arm64]
-# Placeholder checksums until v0.2.8 is published. ADR 0002 records the
-# checksum of a *published* release asset; the v0.2.7 values these variants
-# carried describe 0.2.7's packages, not 0.2.8's. The real values are written
-# back once the release is public and every asset has been re-downloaded and
-# verified.
+# The checksums below belong to the published v0.2.8 release assets. Each one
+# was re-hashed from the package downloaded back from the public release rather
+# than copied from its sidecar, which is what ADR 0002 requires a manifest to
+# record.
 artifacts:
   - release: "22.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.8/better-awake_0.2.8_ubuntu-22.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 92442b05cd7502c14a1b182139b801116948ca108b615a34fe2acd6eeab9e054
     release_asset: better-awake_0.2.8_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.8/better-awake_0.2.8_ubuntu-22.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: caea465c0df45021cd524566c8a7a5adae78d7b611b84de114abe051398f854a
     release_asset: better-awake_0.2.8_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.8/better-awake_0.2.8_ubuntu-24.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: fbed49a002db023e7a21885b8e0f871c7319b53e73d4cde9616ef2785116ad78
     release_asset: better-awake_0.2.8_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.8/better-awake_0.2.8_ubuntu-24.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 653d89996ac70689ab93b033063fcd94282a65cb1dce722706cbe6bd88003410
     release_asset: better-awake_0.2.8_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install

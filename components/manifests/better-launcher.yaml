@@ -16,31 +16,30 @@ targets:
 # the replacement themselves.
 enhances:
   - org.gnome.Shell
-# Placeholder checksums until v0.2.8 is published. ADR 0002 records the
-# checksum of a *published* release asset; the v0.2.7 values these variants
-# carried describe 0.2.7's packages, not 0.2.8's. The real values are written
-# back once the release is public and every asset has been re-downloaded and
-# verified.
+# The checksums below belong to the published v0.2.8 release assets. Each one
+# was re-hashed from the package downloaded back from the public release rather
+# than copied from its sidecar, which is what ADR 0002 requires a manifest to
+# record.
 artifacts:
   - release: "22.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.8/better-launcher_0.2.8_ubuntu-22.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: adabcb5877d71f9b30ae1c734e061a52fc6e2f3b64b38447977f38e590097831
     release_asset: better-launcher_0.2.8_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.8/better-launcher_0.2.8_ubuntu-22.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: b26e16e3daa1d8e68ce17e222d902f32122d16e7fad8b9652b72d9b3777b608d
     release_asset: better-launcher_0.2.8_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.8/better-launcher_0.2.8_ubuntu-24.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 5c8108239506756fea0195931a87e0a82d1bf0ff6013e5b10d976173d37f01a0
     release_asset: better-launcher_0.2.8_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.8/better-launcher_0.2.8_ubuntu-24.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 089767aa25e9d8adc38953131d04a6144e87a09bbd85d6ae215c7f430c6186cb
     release_asset: better-launcher_0.2.8_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install

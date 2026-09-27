@@ -212,7 +212,7 @@ commit `3c8f2a08684aacb152229ed0d567274276b1949b` 的 post-merge CI run
 `--path-exclude` 丟掉，卻仍留在 dpkg 的檔案清單裡，所以健康檢查必須讀 dpkg 自己的
 設定才能分辨「被設定成不要裝」與「不見了」。
 
-目前的 release 是
+上一個 release 是
 [`v0.2.7`](https://github.com/TimLai666/better-os/releases/tag/v0.2.7)，由 merge
 commit `adb3f44e26fc6eae7a970b08f4f4100a5634bbfb` 的 post-merge CI run
 [`34039904348`](https://github.com/TimLai666/better-os/actions/runs/34039904348)
@@ -234,6 +234,20 @@ tokio runtime 的執行緒上開自己的連線，於是每個視窗啟動都 pa
 時讓 build 失敗並指出檔案與行號。這是 packaging 層要記住的事實，不只是某個 crate 的
 選擇：只要建置方式維持「一次 build 同時產出服務與視窗」，任何一個 crate 的 feature
 都是全體的 feature。
+
+目前的 release 是
+[`v0.2.8`](https://github.com/TimLai666/better-os/releases/tag/v0.2.8)，由 merge
+commit `6e5737e793d6392ae0d677b92f07b6856ce3f9d5` 的 post-merge CI run
+[`36292358182`](https://github.com/TimLai666/better-os/actions/runs/36292358182)
+產生，同樣是八個套件、32 個 `.deb` 與 32 個 `.deb.sha256`。這是 patch release，
+內容是 ticket 50 到 62，另外加上 Performance mode 暫不提供，以及配合 clippy 1.98
+的修正。
+
+跟 packaging 有關的是命令列的名字。從這一版起，每個視窗都會回答 `--help` 與
+`--version`，遇到不認得的參數就以 exit 2 拒絕。`better-monitor` 視窗會指向
+`better-monitor-cli`，兩個命令列在 `--help` 與錯誤訊息裡印的也是安裝後的名字
+`better-monitor-cli` 與 `better-manager-cli`，不再印成視窗的名字。套件裝到
+`/usr/bin` 的名字沒有變，變的是程式自己說出來的名字終於和套件一致。
 
 `packaging/build-deb.sh` 從 0.2.4 開始會先清掉 `dist/` 裡上一次建置留下的
 `.deb` 與 `.deb.sha256`。`verify-deb.sh` 用不含版號的 glob 挑套件，同一個元件
