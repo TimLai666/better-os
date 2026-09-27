@@ -68,6 +68,26 @@ pub struct EndedSession {
     pub battery_stop_percent: Option<u8>,
 }
 
+/// What one tick did that the clients have to be told about.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TickOutcome {
+    /// Every session the tick ended, each once.
+    pub ended: Vec<EndedSession>,
+    /// Whether the tick changed the sessions the service holds or the rules it
+    /// refused. A rule that took hold is a change with nothing ended. A request
+    /// answered while the tick ran can also read as a change here, which costs
+    /// one extra status push and nothing else.
+    pub changed: bool,
+}
+
+/// The part of the service's state a tick can change and a client shows: the
+/// sessions held and the rules refused.
+#[derive(Eq, PartialEq)]
+struct TickSnapshot {
+    sessions: Vec<SessionId>,
+    refused: Vec<RuleId>,
+}
+
 impl EndedSession {
     /// The `SessionEnded` event that tells the clients.
     pub fn event(&self) -> AwakeEvent {
@@ -677,10 +697,12 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
     /// needs is never read at all.
     ///
     /// Returns every session this tick ended — expired, stopped by low battery,
-    /// or released by a rule that stopped matching. None of them was asked for
-    /// by a client, so the caller tells the clients; the history entry is
-    /// already written.
-    pub async fn tick(&self) -> Vec<EndedSession> {
+    /// or released by a rule that stopped matching — and whether it changed the
+    /// sessions or the refused rules at all, which a rule taking hold does
+    /// without ending anything. None of it was asked for by a client, so the
+    /// caller tells the clients; the history entry is already written.
+    pub async fn tick(&self) -> TickOutcome {
+        let before = self.tick_snapshot().await;
         let now = self.now();
         let mut ended = self
             .apply_transition(Command::Expire, now)
@@ -690,7 +712,32 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
         ended.extend(self.reconcile_rules(now, false).await);
         self.verify_lease().await;
         self.persist().await;
-        ended
+        let changed = !ended.is_empty() || self.tick_snapshot().await != before;
+        TickOutcome { ended, changed }
+    }
+
+    /// Takes each lock on its own, as `status` does, so it never holds both.
+    async fn tick_snapshot(&self) -> TickSnapshot {
+        let mut refused: Vec<RuleId> = self
+            .rules
+            .lock()
+            .await
+            .refused()
+            .iter()
+            .map(|(rule, _)| *rule)
+            .collect();
+        refused.sort_unstable();
+        let mut sessions: Vec<SessionId> = self
+            .inner
+            .lock()
+            .await
+            .state
+            .sessions()
+            .iter()
+            .map(|session| session.id)
+            .collect();
+        sessions.sort_unstable();
+        TickSnapshot { sessions, refused }
     }
 
     /// Reports a battery reading, which ends sessions that watch for it.
@@ -2270,7 +2317,7 @@ mod tests {
 
         fixture.clock.advance(900);
         assert_eq!(
-            fixture.engine.tick().await,
+            fixture.engine.tick().await.ended,
             vec![EndedSession {
                 session: SessionId(session_id),
                 cause: EndCause::Expired,
@@ -2280,7 +2327,7 @@ mod tests {
 
         fixture.clock.advance(60);
         assert!(
-            fixture.engine.tick().await.is_empty(),
+            fixture.engine.tick().await.ended.is_empty(),
             "a session is reported ended once, not on every tick after it"
         );
     }
@@ -2293,7 +2340,7 @@ mod tests {
 
         fixture.set_battery(9);
         fixture.clock.advance(60);
-        let ended = fixture.engine.tick().await;
+        let ended = fixture.engine.tick().await.ended;
 
         assert_eq!(
             ended,
@@ -2314,7 +2361,7 @@ mod tests {
         );
 
         fixture.clock.advance(60);
-        assert!(fixture.engine.tick().await.is_empty());
+        assert!(fixture.engine.tick().await.ended.is_empty());
     }
 
     #[tokio::test]
@@ -2325,7 +2372,7 @@ mod tests {
 
         fixture.set_on_ac(false);
         fixture.clock.advance(60);
-        let ended = fixture.engine.tick().await;
+        let ended = fixture.engine.tick().await.ended;
 
         assert_eq!(
             ended
@@ -2334,6 +2381,60 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(SessionId(session_id), EndCause::TriggerCleared)]
         );
+    }
+
+    #[tokio::test]
+    async fn a_rule_that_starts_on_a_tick_is_reported_as_a_change_and_nothing_after_it_is() {
+        let fixture = fixture().await;
+        fixture.set_on_ac(false);
+        fixture.create_rule(on_ac_rule("Charging")).await;
+        assert!(fixture.engine.status().await.sessions.is_empty());
+
+        fixture.set_on_ac(true);
+        fixture.clock.advance(60);
+        let outcome = fixture.engine.tick().await;
+        assert!(outcome.changed, "a session the rule started is a change");
+        assert!(outcome.ended.is_empty());
+        assert_eq!(fixture.engine.status().await.sessions.len(), 1);
+
+        fixture.clock.advance(60);
+        assert_eq!(
+            fixture.engine.tick().await,
+            TickOutcome::default(),
+            "a tick that leaves everything as it was changes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rule_the_battery_holds_back_on_a_tick_is_reported_as_a_change() {
+        let fixture = fixture().await;
+        fixture.set_on_ac(false);
+        fixture.set_battery(9);
+        fixture.create_rule(on_ac_rule("Charging")).await;
+
+        fixture.set_on_ac(true);
+        fixture.clock.advance(60);
+        let outcome = fixture.engine.tick().await;
+        assert!(outcome.changed, "a newly refused rule is a change");
+        assert!(outcome.ended.is_empty());
+        assert_eq!(fixture.engine.status().await.rule_summary.refused, 1);
+
+        fixture.clock.advance(60);
+        assert!(!fixture.engine.tick().await.changed);
+    }
+
+    #[tokio::test]
+    async fn a_tick_that_ends_a_session_is_a_change() {
+        let fixture = fixture().await;
+        fixture
+            .engine
+            .handle(start(WireEnd::Duration { seconds: 900 }))
+            .await;
+
+        fixture.clock.advance(900);
+        let outcome = fixture.engine.tick().await;
+        assert_eq!(outcome.ended.len(), 1);
+        assert!(outcome.changed);
     }
 
     #[tokio::test]

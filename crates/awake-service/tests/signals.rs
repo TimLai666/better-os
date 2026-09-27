@@ -90,6 +90,14 @@ impl Service {
         .unwrap();
     }
 
+    fn set_on_ac(&self, online: bool) {
+        std::fs::write(
+            self.roots.sys_path("class/power_supply/ACAD/online"),
+            if online { "1\n" } else { "0\n" },
+        )
+        .unwrap();
+    }
+
     fn emitter(&self) -> SignalEmitter<'_> {
         SignalEmitter::new(&self.connection, OBJECT_PATH).unwrap()
     }
@@ -353,4 +361,145 @@ async fn a_shutdown_pushes_every_session_it_ends() {
         })
     );
     assert!(!service.engine.holds_inhibitor().await);
+}
+
+/// A rule that matches while the charger is plugged in.
+fn on_ac_rule() -> AwakeRequest {
+    AwakeRequest::new(RequestBody::CreateRule {
+        rule: Box::new(
+            awake_core::Rule::new(
+                awake_core::RuleId(0),
+                awake_core::Reason::new("Charging").unwrap(),
+                awake_core::Combine::All,
+                [
+                    awake_core::ConditionGroup::one(awake_core::Condition::AcPower {
+                        connected: true,
+                    })
+                    .unwrap(),
+                ],
+            )
+            .unwrap(),
+        ),
+    })
+}
+
+fn status_in(event: Option<AwakeEvent>) -> awake_ipc::StatusDocument {
+    match event.map(|event| event.body) {
+        Some(EventBody::StatusChanged(status)) => *status,
+        other => panic!("expected a status, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_rule_that_starts_on_a_tick_pushes_one_status() {
+    let bus = bus_or_skip!();
+    let service = serve(&bus).await;
+    // The charger is out when the rule is written, so the rule waits for a tick.
+    service.set_on_ac(false);
+    service.engine.handle(on_ac_rule()).await;
+    assert!(service.engine.status().await.sessions.is_empty());
+    let (_listener, mut stream) = events(&bus).await;
+
+    service.set_on_ac(true);
+    service.clock.advance(60);
+    awake_service::service::tick_and_announce(&service.engine, &service.emitter()).await;
+
+    let status = status_in(next_event(&mut stream, ARRIVES).await);
+    assert_eq!(status.sessions.len(), 1);
+    assert_eq!(
+        status.sessions[0].origin,
+        awake_core::SessionOrigin::Trigger
+    );
+    assert_eq!(
+        next_event(&mut stream, QUIET).await,
+        None,
+        "one status for the start"
+    );
+
+    service.clock.advance(60);
+    awake_service::service::tick_and_announce(&service.engine, &service.emitter()).await;
+    assert_eq!(
+        next_event(&mut stream, QUIET).await,
+        None,
+        "a tick that leaves the rule's session as it was pushes nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_rule_the_battery_holds_back_on_a_tick_pushes_one_status() {
+    let bus = bus_or_skip!();
+    let service = serve(&bus).await;
+    service.set_on_ac(false);
+    service.set_battery(9);
+    service.engine.handle(on_ac_rule()).await;
+    assert_eq!(service.engine.status().await.rule_summary.refused, 0);
+    let (_listener, mut stream) = events(&bus).await;
+
+    // The rule now matches, and the battery is below the threshold it carries,
+    // so it is refused rather than started.
+    service.set_on_ac(true);
+    service.clock.advance(60);
+    awake_service::service::tick_and_announce(&service.engine, &service.emitter()).await;
+
+    let status = status_in(next_event(&mut stream, ARRIVES).await);
+    assert!(status.sessions.is_empty());
+    assert_eq!(status.rule_summary.refused, 1);
+    assert_eq!(next_event(&mut stream, QUIET).await, None);
+
+    service.clock.advance(60);
+    awake_service::service::tick_and_announce(&service.engine, &service.emitter()).await;
+    assert_eq!(
+        next_event(&mut stream, QUIET).await,
+        None,
+        "a rule still held back is not a change"
+    );
+}
+
+#[tokio::test]
+async fn a_tick_that_ends_and_starts_sessions_pushes_the_ends_first_and_one_status_after() {
+    let bus = bus_or_skip!();
+    let service = serve(&bus).await;
+    service.set_on_ac(false);
+    service.engine.handle(on_ac_rule()).await;
+    service
+        .engine
+        .handle(AwakeRequest::new(RequestBody::StartSession {
+            reason: "Short build".to_string(),
+            policy: awake_core::SessionPolicy::quick_default(),
+            battery_stop_percent: Some(20),
+            end: WireEnd::Duration { seconds: 900 },
+            security_confirmed: false,
+        }))
+        .await;
+    let manual = service.engine.status().await.sessions[0].session_id;
+    let (_listener, mut stream) = events(&bus).await;
+
+    // On one tick the manual session expires and the rule takes hold.
+    service.set_on_ac(true);
+    service.clock.advance(900);
+    awake_service::service::tick_and_announce(&service.engine, &service.emitter()).await;
+
+    assert_eq!(
+        next_event(&mut stream, ARRIVES)
+            .await
+            .map(|event| event.body),
+        Some(EventBody::SessionEnded {
+            session_id: manual,
+            cause: "expired".to_string(),
+            battery_stop_percent: Some(20),
+            battery_percent: None,
+        })
+    );
+    let status = status_in(next_event(&mut stream, ARRIVES).await);
+    assert_eq!(status.sessions.len(), 1);
+    assert_ne!(status.sessions[0].session_id, manual);
+    assert_eq!(
+        status.sessions[0].origin,
+        awake_core::SessionOrigin::Trigger
+    );
+    assert_eq!(
+        next_event(&mut stream, QUIET).await,
+        None,
+        "one status after the ends, not one per change"
+    );
 }
