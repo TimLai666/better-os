@@ -481,9 +481,11 @@ GUI or dependency compiles when the relevant command was not executed.
   the same rule through `better_ui::command_line`: it answers `--help` and
   `--version`, keeps the flags its desktop entries pass, and refuses the rest
   with exit 2. Better Files also takes the location the desktop hands it.
-- Better Launcher's left and right arrow keys do not move the selection in its
-  grid; up and down do. The key mapping sends them to the selection, so the
-  search field is the likely taker. Nobody has confirmed the cause.
+- Better Launcher takes its grid navigation keys as the search field's own
+  cursor actions (`capture_action` on the overlay root), because gpui dispatches
+  a keymap action before any key listener and gpui-component's single-line
+  input handles left, right, Home, and End itself. If gpui-component rebinds
+  one of those keys, the overlay's dispatch test is what catches it.
 - Reconciliation adopts a host that is **ahead** of the record and blocks on
   every other disagreement. An external `apt` or `install.sh` upgrade is
   supported — it is the only way the manager can be upgraded — so a newer
