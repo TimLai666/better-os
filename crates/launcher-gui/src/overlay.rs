@@ -20,7 +20,9 @@ use app_catalog_platform::SessionEnvironment;
 use better_ui::TileStyle;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{
+    Input, InputEvent, InputState, MoveDown, MoveEnd, MoveHome, MoveLeft, MoveRight, MoveUp,
+};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, Icon, IconName, *};
 use launcher_platform::catalog::{LauncherSnapshot, MetadataWatch, load_snapshot};
@@ -182,13 +184,22 @@ impl LauncherOverlay {
         self.launch_selected(cx);
     }
 
-    /// Handles the keys the overlay owns, before the search row sees them.
+    /// Handles the keys the overlay owns that reach it as key presses.
     ///
-    /// Which key does what is [`key_action`]'s decision, tested in `model.rs`.
-    /// Everything it leaves alone falls through to the search row, which is
-    /// why typing keeps working while the arrow keys move through the grid.
+    /// A key the search row binds to one of its own actions never gets here:
+    /// GPUI runs a key's binding before any key listener, capture phase
+    /// included. Those keys arrive through [`Self::take_key`] from the
+    /// captured action instead. Escape and Enter do get here, because the
+    /// search row's handlers for them pass the event on.
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let movement = match key_action(event.keystroke.key.as_str()) {
+        self.take_key(event.keystroke.key.as_str(), window, cx);
+    }
+
+    /// Does what [`key_action`] says a key means, tested in `model.rs`, and
+    /// stops it there. A key it leaves alone goes on to the search row, which
+    /// is why typing keeps working while the arrow keys move through the grid.
+    fn take_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let movement = match key_action(key) {
             Some(KeyAction::Close) => {
                 cx.emit(OverlayEvent::Closed);
                 cx.stop_propagation();
@@ -379,6 +390,33 @@ impl Render for LauncherOverlay {
             .track_focus(&self.focus)
             .key_context("BetterLauncher")
             .capture_key_down(cx.listener(Self::on_key))
+            // The search row binds the plain navigation keys to its own cursor
+            // actions, and a binding runs before any key listener, so Left,
+            // Right, Home, and End never reached `on_key`. Each action is
+            // taken on its way down to the search row and handed over as the
+            // key that `gpui_component` binds it to. Up and Down are unbound
+            // in a one-line field today and are taken the same way so they do
+            // not depend on that. Shift and Ctrl with these keys are other
+            // actions and stay with the search row for selecting and jumping
+            // words.
+            .capture_action(
+                cx.listener(|this, _: &MoveLeft, window, cx| this.take_key("left", window, cx)),
+            )
+            .capture_action(
+                cx.listener(|this, _: &MoveRight, window, cx| this.take_key("right", window, cx)),
+            )
+            .capture_action(
+                cx.listener(|this, _: &MoveUp, window, cx| this.take_key("up", window, cx)),
+            )
+            .capture_action(
+                cx.listener(|this, _: &MoveDown, window, cx| this.take_key("down", window, cx)),
+            )
+            .capture_action(
+                cx.listener(|this, _: &MoveHome, window, cx| this.take_key("home", window, cx)),
+            )
+            .capture_action(
+                cx.listener(|this, _: &MoveEnd, window, cx| this.take_key("end", window, cx)),
+            )
             .size_full()
             .min_w_0()
             .gap_4()
@@ -408,5 +446,148 @@ impl Render for LauncherOverlay {
                     .child(self.body(cx)),
             )
             .child(self.hints(cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The key path itself, through GPUI's real dispatch.
+    //!
+    //! `key_action` deciding what a key means is not enough: a key only does
+    //! that if it reaches the overlay. The search row's own key bindings run
+    //! before any key listener, so these tests open the overlay in a headless
+    //! window, press keys the way the platform would, and read the selection
+    //! and the query back.
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use gpui::{
+        AnyWindowHandle, AppContext as _, AsyncApp, Bounds, Entity, Keystroke, WindowBounds,
+        WindowOptions, point, px, size,
+    };
+    use gpui_component::Root;
+
+    use super::LauncherOverlay;
+    use crate::i18n::Locale;
+    use crate::model::tests::library;
+
+    /// What the test saw after each step, read out once the application has
+    /// quit so a failed assertion cannot leave a run loop behind.
+    #[derive(Debug, Default)]
+    struct Observed {
+        selections: Vec<(String, Option<usize>)>,
+        query: String,
+        rows: Vec<String>,
+    }
+
+    /// Opens the overlay two tiles wide over the four-application library,
+    /// presses each keystroke in turn, and records the selection after each.
+    fn press(keys: &'static [&'static str], typed: &'static [&'static str]) -> Observed {
+        let observed = Rc::new(RefCell::new(Observed::default()));
+        let out = observed.clone();
+        gpui_platform::headless().run(move |cx| {
+            gpui_component::init(cx);
+            // Wide enough for two tiles and no more, so a row has an end.
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    point(px(0.0), px(0.0)),
+                    size(px(400.0), px(600.0)),
+                ))),
+                ..WindowOptions::default()
+            };
+            let slot: Rc<RefCell<Option<Entity<LauncherOverlay>>>> = Rc::default();
+            let slot_in_window = slot.clone();
+            let window = cx
+                .open_window(options, move |window, cx| {
+                    let overlay = cx.new(|cx| LauncherOverlay::new(Locale::EnUs, window, cx));
+                    *slot_in_window.borrow_mut() = Some(overlay.clone());
+                    cx.new(|cx| Root::new(overlay, window, cx))
+                })
+                .expect("a headless window opens");
+            let overlay = slot.borrow_mut().take().expect("the overlay was built");
+
+            cx.spawn(async move |cx| {
+                // The library replaces whatever the overlay's own background
+                // read finds, and nothing below yields, so it cannot come back.
+                cx.update(|cx| overlay.update(cx, |overlay, cx| overlay.adopt(library(), cx)));
+                // Through the untyped handle: a typed one would hold the root
+                // view while the dispatch redraws it.
+                let window: AnyWindowHandle = window.into();
+                let step = |key: &str, cx: &mut AsyncApp| {
+                    cx.update_window(window, |_, window, cx| {
+                        window.dispatch_keystroke(Keystroke::parse(key).unwrap(), cx);
+                    })
+                    .expect("the window is still open");
+                };
+                for key in keys {
+                    step(key, cx);
+                    let selected = cx.update(|cx| overlay.read(cx).model().selected_index());
+                    out.borrow_mut()
+                        .selections
+                        .push((key.to_string(), selected));
+                }
+                for key in typed {
+                    step(key, cx);
+                }
+                cx.update(|cx| {
+                    let overlay = overlay.read(cx);
+                    let mut out = out.borrow_mut();
+                    out.query = overlay.search.read(cx).value().to_string();
+                    out.rows = overlay
+                        .model()
+                        .rows()
+                        .iter()
+                        .map(|application| application.display_name.clone())
+                        .collect();
+                    cx.quit();
+                });
+            })
+            .detach();
+        });
+        Rc::try_unwrap(observed)
+            .expect("the application has released the observations")
+            .into_inner()
+    }
+
+    #[test]
+    fn every_navigation_key_reaches_the_grid_through_the_focused_search_row() {
+        // Archive Manager  Browser
+        // Calculator       Text Editor
+        let observed = press(
+            &[
+                "right", "right", "down", "left", "left", "up", "end", "home",
+            ],
+            &[],
+        );
+        let expected = [
+            ("right", Some(1)),
+            ("right", Some(1)),
+            ("down", Some(3)),
+            ("left", Some(2)),
+            ("left", Some(2)),
+            ("up", Some(0)),
+            ("end", Some(3)),
+            ("home", Some(0)),
+        ]
+        .map(|(key, index)| (key.to_string(), index));
+        assert_eq!(observed.selections, expected);
+    }
+
+    #[test]
+    fn the_search_row_still_takes_typing_and_modified_arrows_after_the_grid_moves() {
+        // Left and Right belong to the grid; Shift+Left still selects text in
+        // the search row, so typing over the selection replaces it.
+        let observed = press(&[], &["c", "a", "l", "left", "right", "shift-left", "x"]);
+        assert_eq!(observed.query, "cax");
+
+        // The trade: a plain Left moves the grid, not the text cursor, so a
+        // letter typed after it still lands at the end of the query.
+        let observed = press(&[], &["c", "a", "l", "left", "x"]);
+        assert_eq!(observed.query, "calx");
+
+        let observed = press(&[], &["c", "a", "l", "backspace", "l"]);
+        assert_eq!(observed.query, "cal");
+        assert_eq!(observed.rows, vec!["Calculator"]);
     }
 }
