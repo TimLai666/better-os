@@ -57,7 +57,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-version = "0.2.7"
+version = "0.2.8"
 # The oldest Rust that builds the locked dependency graph. `cargo metadata`
 # cannot say this on its own: the highest `rust-version` a locked crate
 # declares is 1.92 (oo7), but Zed's git crates declare none, and gpui at the
