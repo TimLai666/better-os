@@ -104,10 +104,10 @@ GUI or dependency compiles when the relevant command was not executed.
   Better OS component has a time-to-photon figure. And the idle CPU figure is a
   headless one: nothing asks the window to repaint, so it is the launcher's own
   idle cost and not a claim about a launcher on a running desktop.
-- All eight packages are published. `v0.2.7` carries every component
+- All eight packages are published. `v0.2.8` carries every component
   `packaging/build-deb.sh` builds, for Ubuntu 22.04 and 24.04 on amd64 and
   arm64, and every shipped manifest now records the checksum of its own
-  published 0.2.7 asset, verified after re-downloading the public release. No
+  published 0.2.8 asset, verified after re-downloading the public release. No
   first party manifest carries a placeholder checksum any more;
   `components/manifests/better-files-example.yaml` is the one exception and is a
   schema fixture, not a released component. A version bump puts the placeholders
@@ -157,9 +157,9 @@ GUI or dependency compiles when the relevant command was not executed.
   `b5f6e34`, whose embedded catalog carries that release's placeholders, and it
   refreshed from `main`, planned `better-monitor` 0.2.2, and verified the real
   published `.deb` against the fetched checksum. That run has not been repeated
-  since; v0.2.3 through v0.2.7 changed nothing about the mechanism,
+  since; v0.2.3 through v0.2.8 changed nothing about the mechanism,
   so the observation stands for the path and not for any later release's own
-  binary. v0.2.7 is no different: nothing about the mechanism moved.
+  binary.
   Two limits still travel with it.
   Signing is still deferred, so HTTPS plus
   the artifact checksum is the whole integrity story and a rolled-back-then-
@@ -187,7 +187,7 @@ GUI or dependency compiles when the relevant command was not executed.
   `touchpad-core` emits and its benchmark baselines are the figures in
   `docs/touchpad-sensitivity-mapping.md`, but nothing runs those benchmarks —
   the same unenforced-budget gap `better-files.yaml` carries. Its checksums are
-  the published v0.2.7 ones.
+  the published v0.2.8 ones.
 - A package installs its systemd user unit and does not enable it, matching
   `better-manager-daemon`. Nothing in dpkg stops a running Better Awake, Better
   Monitor, or Better Storage user service at removal either; the manifests'
@@ -443,13 +443,13 @@ GUI or dependency compiles when the relevant command was not executed.
   no files is healthy under the current rule and would silently stop testing
   rollback.
 - Neither the container end-to-end check nor the footer has been observed since
-  ticket 47, and neither `v0.2.6` nor `v0.2.7` shipping them changed that. The e2e is CI-only
+  ticket 47, and no release since shipping them changed that. The e2e is CI-only
   from this worktree — no Docker daemon — and the footer's
   `Zorin OS 18 · Ubuntu 24.04 base` line is asserted by test from the real host
   probe's output rather than looked at on a running desktop. A published release
   is not a report from the machine that filed the defect: nobody has yet watched
-  the Zorin 18 host install Better Awake on 0.2.6 or 0.2.7 and keep it, and
-  nobody has watched it upgrade to 0.2.7 and find the update the drift had been
+  the Zorin 18 host install Better Awake on 0.2.6 or later and keep it, and
+  nobody has watched it upgrade past 0.2.6 and find the update the drift had been
   hiding. Ticket 49's self-heal was proved against that machine's real state
   record copied to a scratch path, which is evidence about the record and not
   about the machine.

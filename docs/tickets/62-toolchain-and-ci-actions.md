@@ -2,7 +2,7 @@
 
 **Epic:** Build and release · **User Story:** a contributor who installs the
 Rust version the workspace declares can build it · **Branch:** `ticket-60-62` ·
-**Blocked by:** none · **Status:** merged, not released
+**Blocked by:** none · **Status:** released in v0.2.8
 
 ## What it delivers
 

@@ -108,6 +108,7 @@ privileged mutation out of the GUI and CLI.
 | M61 | tickets 57–58 — Better Defaults writes GNOME settings and keeps mixed handler groups (needs M58) | agent | done | the dconf writer moved into `defaults-platform` and was exercised against a real `dconf-service` on a private bus; the user's real dconf database and `mimeapps.list` were unchanged across the run; snapshot schema 2 reads schema 1 |
 | M62 | tickets 59–62 — Awake notification, window arguments, Escape, Rust 1.95 baseline (needs M58) | agent | done | Awake tests are hermetic and a source check keeps them so; every window answers `--help` and `--version` and refuses the rest with exit 2; Rust 1.92–1.94 were each tried and fail, 1.95 builds; the new `msrv` CI job passed on its first run |
 | M63 | ticket 56 — compress and extract in Better Files (needs M59, M60) | agent | done | zip, tar, tar.gz, and tar.zst through pure-Rust `zip`, `tar`, `flate2`, and `ruzstd`, with the license inventory regenerated in the same commit; round-tripped against GNU tar, UnZip, 7-Zip, and `zstd`. Full gate on `main` from a clean build cache after every merge: fmt, check, clippy `-D warnings` on stable 1.97 and on 1.98, `cargo +1.95 check`, 183 test targets and 2,857 tests with none failing, and the license check |
+| M64 | v0.2.8 public release — tickets 50–62 (needs M59–M63) | agent | done | Workspace 0.2.7 → 0.2.8 with the manifests on placeholders for the release branch; full gate green on the branch, including clippy on 1.98 and `cargo +1.95 check`, 182 test targets and 2,860 tests, and `build-deb.sh --target ubuntu-24.04` plus `verify-deb.sh` over all eight packages. Post-merge CI run [36292358182](https://github.com/TimLai666/better-os/actions/runs/36292358182) on merge commit `6e5737e` green across all seven jobs, msrv included. [`v0.2.8`](https://github.com/TimLai666/better-os/releases/tag/v0.2.8) published with 66 assets. Every package was fetched again with plain `curl`: the 28 manifest URLs resolve, 32 sidecars verify, and 32 downloads are byte-identical to the CI artifacts. The 28 checksums were re-hashed from the downloads, cross-checked by a separate YAML reader, and checked a third time from the main session; 2,860 tests pass against them, and `install.sh --dry-run` resolves v0.2.8. Performance mode is no longer offered in Better Files, by the owner's decision |
 
 Every milestone from M21 onward shares the same base gate: `cargo fmt --all --
 --check`, `cargo check --workspace`, `cargo test --workspace`, and `cargo clippy
@@ -234,8 +235,8 @@ requires.
 
 ## Next Ticket
 
-There is no next ticket. Tickets 50 through 62 are merged into `main` and not
-yet released; the next release is the next verifiable output. Every follow-up
+There is no next ticket. Tickets 50 through 62 are merged and released as
+`v0.2.8`. Every follow-up
 still in `AGENTS.md` is either a decision for the owner or an observation owed
 to someone at a real desktop, and none of them is a ticket until it is decided.
 
@@ -252,8 +253,8 @@ session, and its tests no longer write the developer's real history (59). Every
 window refuses an argument it does not understand (60), Escape on Better
 Launcher is a tested mapping (61), and the workspace declares Rust 1.95 with a
 CI job that holds it to that (62). One decision came out of it rather than
-code: Performance mode makes no write faster yet, so whether to keep offering it
-is the owner's call.
+code: Performance mode made no write faster, so by the owner's decision Better
+Files no longer offers it until the mount-option work exists.
 
 Ticket 49 is merged into `main` and released as `v0.2.7`. It is the fifth round
 of field reports from the same Zorin 18 machine and closes three of them:

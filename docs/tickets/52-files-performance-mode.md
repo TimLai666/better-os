@@ -3,7 +3,7 @@
 **Epic:** Safe direct-removal storage (Issue #5) · **User Story:** a person who
 wants faster writes to one external disk can choose Performance mode knowing
 what they give up · **Branch:** `ticket-50-52` · **Blocked by:** none ·
-**Status:** merged, not released
+**Status:** released in v0.2.8
 
 ## What it delivers
 

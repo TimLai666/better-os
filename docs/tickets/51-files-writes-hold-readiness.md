@@ -3,7 +3,7 @@
 **Epic:** Safe direct-removal storage (Issue #5) · **User Story:** a person
 copying to a USB disk with Better Files is not told the disk is safe to remove
 while the copy is still running · **Branch:** `ticket-50-52` ·
-**Blocked by:** none · **Status:** merged, not released
+**Blocked by:** none · **Status:** released in v0.2.8
 
 ## What it delivers
 

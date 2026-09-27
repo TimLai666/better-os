@@ -2,7 +2,7 @@
 
 **Epic:** Better Files (Issue #6) · **User Story:** a person who opens a folder
 from another application lands in that folder · **Branch:** `ticket-50-52` ·
-**Blocked by:** none · **Status:** merged, not released
+**Blocked by:** none · **Status:** released in v0.2.8
 
 ## What it delivers
 

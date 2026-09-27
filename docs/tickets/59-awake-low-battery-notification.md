@@ -2,7 +2,7 @@
 
 **Epic:** Better Awake (Issue #13) · **User Story:** a person whose keep-awake
 session was stopped by low battery learns it from a desktop notification ·
-**Branch:** `ticket-59` · **Blocked by:** none · **Status:** merged, not released
+**Branch:** `ticket-59` · **Blocked by:** none · **Status:** released in v0.2.8
 
 ## What it delivers
 

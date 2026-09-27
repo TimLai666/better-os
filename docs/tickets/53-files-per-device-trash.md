@@ -2,7 +2,7 @@
 
 **Epic:** Better Files (Issue #6) · **User Story:** a person who trashes a large
 file on a USB disk does not fill their home partition with a copy of it ·
-**Branch:** `ticket-53-55` · **Blocked by:** none · **Status:** merged, not released
+**Branch:** `ticket-53-55` · **Blocked by:** none · **Status:** released in v0.2.8
 
 ## What it delivers
 

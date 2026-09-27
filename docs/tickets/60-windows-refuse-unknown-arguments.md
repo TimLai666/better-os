@@ -3,7 +3,7 @@
 **Epic:** Cross-component polish · **User Story:** a person who types
 `better-monitor --help` in a terminal is told where the command line is instead
 of getting a window · **Branch:** `ticket-60-62` · **Blocked by:** none ·
-**Status:** merged, not released
+**Status:** released in v0.2.8
 
 ## What it delivers
 

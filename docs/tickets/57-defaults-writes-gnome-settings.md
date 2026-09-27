@@ -3,7 +3,7 @@
 **Epic:** Better Defaults (Issue #10) · **User Story:** a person who applies a
 component's GNOME shortcut or setting sees it applied, not "Manual action
 required" · **Branch:** `ticket-57-58` · **Blocked by:** none ·
-**Status:** merged, not released
+**Status:** released in v0.2.8
 
 ## What it delivers
 
