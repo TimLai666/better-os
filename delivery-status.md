@@ -235,12 +235,19 @@ requires.
 
 ## Next Ticket
 
-Tickets 63 through 67 are open and none blocks another: Better Launcher's left
+Tickets 63 through 74 are open. 63 through 67 came from the follow-ups v0.2.8
+left and none blocks another: Better Launcher's left
 and right arrow keys (63), the storage service releasing a disk when the
 application writing to it leaves the bus (64), the Trash view, job numbering, and
 zip reading under bad conditions (65), Better Awake's menu after a rule starts a
 session (66), and a review of the copyleft dependencies (67). Tickets 50 through
-62 are merged and released as `v0.2.8`. Every follow-up
+62 are merged and released as `v0.2.8`. 68 through 74 are the owner's
+decisions of 2026-09-27 turned into work: a repair for a transaction a crash
+interrupted (68, with ADR 0014), unorderable versions shown in doctor (69), a
+build-tree cleanup script (70), removing an XDG association (71), restore naming
+an application that is gone (72), per-pad gesture routing (73, with ADR 0015),
+and Better Awake notifying with no tray (74, blocked by 66). The same day the
+owner decided a Better Files job does not outlive the session (ADR 0016). Every follow-up
 still in `AGENTS.md` is either a decision for the owner or an observation owed
 to someone at a real desktop, and none of them is a ticket until it is decided.
 

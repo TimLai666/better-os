@@ -357,9 +357,9 @@ GUI or dependency compiles when the relevant command was not executed.
   the pure-Rust `ruzstd`, whose only level is its fastest, so those archives are
   larger than `zstd`'s default would make them. Zip reads only stored and
   deflate entries.
-- Decide whether a Better Files job should survive a logout or a reboot, and
-  where the Better Copy boundary sits. Issue #6 defers both; persistence today
-  covers a UI restart only.
+- A Better Files job lives as long as the login session and never resumes on
+  its own (ADR 0016). Better Copy, a service that would run a job with no
+  window open, is a future proposal that needs its own decision.
 - Measure Better Files copy performance against real hardware before claiming
   it. Every published number is a page-cache number from an ext4 temporary
   directory: no spinning disk, no USB device with `fsync` per file, and no

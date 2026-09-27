@@ -304,9 +304,11 @@ who can write to the state directory. The user re-submits.
 A record this build cannot parse, or one claiming a newer schema, is reported as
 damaged and left on disk. It may be a record a newer build wrote.
 
-Ticket 33 scopes persistence to surviving a UI restart. Whether a job should
-survive a logout or a reboot is one of Issue #6's deferred decisions and stays
-open.
+A job does not outlive the login session
+([ADR 0016](decisions/0016-files-job-lifetime.md)). Logging out ends the Better
+Files process and the job with it; nothing resumes it on its own at the next
+login or after a reboot, and the next window reports it as interrupted, as it
+does after a crash.
 
 ## No shell strings
 
