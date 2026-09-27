@@ -99,15 +99,50 @@ impl<C: DeviceControl + 'static> StorageService<C> {
     }
 
     /// Better Files, or a future Better Copy, telling the service a write has
-    /// started. Until the matching completion arrives, the device cannot be
-    /// reported ready.
-    async fn notify_operation_started(&self, notice_json: &str) -> Result<(), fdo::Error> {
+    /// started. Until the matching completion arrives, or the caller leaves
+    /// the bus, the device cannot be reported ready.
+    async fn notify_operation_started(
+        &self,
+        notice_json: &str,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), fdo::Error> {
         let notice = OperationNotice::from_json(notice_json)
             .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
-        let mut coordinator = self.coordinator.lock().await;
-        coordinator
-            .operation_started(&DeviceHandle::new(notice.object_path), notice.operation)
+        let handle = DeviceHandle::new(notice.object_path);
+        let Some(sender) = header.sender().map(|name| name.to_owned()) else {
+            // A peer-to-peer connection has no bus to say when it leaves.
+            let mut coordinator = self.coordinator.lock().await;
+            coordinator
+                .operation_started(&handle, notice.operation)
+                .await;
+            return Ok(());
+        };
+        self.coordinator
+            .lock()
+            .await
+            .operation_started_by(sender.as_str(), &handle, notice.operation)
             .await;
+
+        // The caller may already have gone, and its departure may have been
+        // handled before this call reached the lock. Nothing would end the
+        // operation then, so ask the bus now that it is recorded. A bus that
+        // cannot answer is taken to mean the caller is still there, which is
+        // the answer that never claims a device ready early.
+        let still_here = match fdo::DBusProxy::new(connection).await {
+            Ok(bus) => bus
+                .name_has_owner(sender.as_ref().into())
+                .await
+                .unwrap_or(true),
+            Err(_) => true,
+        };
+        if !still_here {
+            self.coordinator
+                .lock()
+                .await
+                .client_departed(sender.as_str())
+                .await;
+        }
         Ok(())
     }
 
@@ -148,6 +183,45 @@ impl<C: DeviceControl + 'static> StorageService<C> {
     async fn protocol_version(&self) -> u32 {
         PROTOCOL_VERSION
     }
+}
+
+/// Subscribes to connections leaving the bus and returns the task that ends
+/// every operation a departed client started and never completed.
+///
+/// The subscription is in place when this returns, so a service that calls it
+/// before taking its well-known name cannot miss a client's departure. The
+/// returned future is spawned by the caller on its own runtime.
+pub async fn watch_departures<C: DeviceControl + 'static>(
+    connection: &zbus::Connection,
+    coordinator: Arc<Mutex<StorageCoordinator<C>>>,
+) -> zbus::Result<impl std::future::Future<Output = ()> + Send + 'static> {
+    let bus = fdo::DBusProxy::new(connection).await?;
+    // Only a name losing its owner, which is how a connection closing looks.
+    let mut departures = bus.receive_name_owner_changed_with_args(&[(2, "")]).await?;
+    Ok(async move {
+        use zbus::export::futures_core::Stream;
+        while let Some(signal) =
+            std::future::poll_fn(|context| std::pin::Pin::new(&mut departures).poll_next(context))
+                .await
+        {
+            let Ok(args) = signal.args() else {
+                continue;
+            };
+            // A unique name is the connection itself; a well-known name
+            // changing hands says nothing about who started what.
+            let zbus::names::BusName::Unique(name) = args.name() else {
+                continue;
+            };
+            if args.new_owner().is_some() {
+                continue;
+            }
+            coordinator
+                .lock()
+                .await
+                .client_departed(name.as_str())
+                .await;
+        }
+    })
 }
 
 /// Forwards state changes to the bus until the coordinator is dropped.
