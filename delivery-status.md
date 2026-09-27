@@ -235,8 +235,12 @@ requires.
 
 ## Next Ticket
 
-There is no next ticket. Tickets 50 through 62 are merged and released as
-`v0.2.8`. Every follow-up
+Tickets 63 through 67 are open and none blocks another: Better Launcher's left
+and right arrow keys (63), the storage service releasing a disk when the
+application writing to it leaves the bus (64), the Trash view, job numbering, and
+zip reading under bad conditions (65), Better Awake's menu after a rule starts a
+session (66), and a review of the copyleft dependencies (67). Tickets 50 through
+62 are merged and released as `v0.2.8`. Every follow-up
 still in `AGENTS.md` is either a decision for the owner or an observation owed
 to someone at a real desktop, and none of them is a ticket until it is decided.
 
