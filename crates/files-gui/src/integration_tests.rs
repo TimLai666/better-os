@@ -98,7 +98,8 @@ struct FakeLink {
     mode: Mutex<CollectionMode>,
     queued: Mutex<Vec<DeviceNotice>>,
     calls: Mutex<Vec<String>>,
-    mounted: Mutex<Vec<MountedDevice>>,
+    /// `None` until the fake's first device list, as a real link starts.
+    mounted: Mutex<Option<Vec<MountedDevice>>>,
     /// A path whose existence is recorded with every started notice, which is
     /// how a test proves the notice came before the job's first write.
     watched: Mutex<Option<PathBuf>>,
@@ -111,17 +112,30 @@ impl FakeLink {
             mode: Mutex::new(mode),
             queued: Mutex::new(Vec::new()),
             calls: Mutex::new(Vec::new()),
-            mounted: Mutex::new(Vec::new()),
+            mounted: Mutex::new(Some(Vec::new())),
             watched: Mutex::new(None),
             refuse_started: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
     fn mount(&self, object_path: &str, mount_point: &std::path::Path) {
-        self.mounted.lock().unwrap().push(MountedDevice {
-            object_path: object_path.to_string(),
-            mount_point: mount_point.to_path_buf(),
-        });
+        self.mounted
+            .lock()
+            .unwrap()
+            .get_or_insert_with(Vec::new)
+            .push(MountedDevice {
+                object_path: object_path.to_string(),
+                mount_point: mount_point.to_path_buf(),
+            });
+    }
+
+    /// Takes the device list away, as if the link had not had one yet.
+    fn take_inventory(&self) -> Option<Vec<MountedDevice>> {
+        self.mounted.lock().unwrap().take()
+    }
+
+    fn set_inventory(&self, inventory: Option<Vec<MountedDevice>>) {
+        *self.mounted.lock().unwrap() = inventory;
     }
 
     fn watch(&self, path: PathBuf) {
@@ -159,7 +173,7 @@ impl DeviceLink for Arc<FakeLink> {
     fn poll(&self) -> Vec<DeviceNotice> {
         std::mem::take(&mut *self.queued.lock().unwrap())
     }
-    fn mounted_devices(&self) -> Vec<MountedDevice> {
+    fn mounted_devices(&self) -> Option<Vec<MountedDevice>> {
         self.mounted.lock().unwrap().clone()
     }
     fn operation_started(&self, object_path: &str, operation: &str) -> Result<(), String> {
@@ -1423,6 +1437,7 @@ const OTHER_USB: &str = "/org/freedesktop/UDisks2/block_devices/sdc1";
 struct Tracked {
     root: tempfile::TempDir,
     link: Arc<FakeLink>,
+    tracker: Arc<StorageTracker>,
     engine: JobEngine,
 }
 
@@ -1445,9 +1460,14 @@ impl Tracked {
                 store: None,
                 ..EngineConfig::default()
             },
-            tracker,
+            tracker.clone(),
         );
-        Self { root, link, engine }
+        Self {
+            root,
+            link,
+            tracker,
+            engine,
+        }
     }
 
     fn path(&self, relative: &str) -> PathBuf {
@@ -1615,6 +1635,129 @@ fn a_notice_that_fails_is_logged_and_never_fails_the_job() {
             .calls()
             .contains(&format!("completed {USB} {}", operation(id)))
     );
+}
+
+/// Polls the fake link until `wanted` is among its calls.
+fn wait_for_call(link: &FakeLink, wanted: &str) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if link.calls().iter().any(|call| call == wanted) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    false
+}
+
+#[test]
+fn a_job_started_before_the_first_device_list_is_registered_when_it_arrives() {
+    let rig = Tracked::new();
+    let inventory = rig.link.take_inventory();
+
+    // Parked on a conflict, so it is still running when the list arrives.
+    fs::write(rig.path("home/clash.txt"), b"new").unwrap();
+    fs::write(rig.path("usb/clash.txt"), b"old").unwrap();
+    let handle = rig
+        .engine
+        .submit(files_operations::JobSpec::new(
+            files_operations::Operation::Copy {
+                sources: vec![local(rig.path("home/clash.txt"))],
+                destination: local(rig.path("usb")),
+            },
+        ))
+        .unwrap();
+    rig.engine
+        .wait_for(
+            handle.id(),
+            std::time::Duration::from_secs(20),
+            |snapshot| snapshot.state == JobState::WaitingOnConflict,
+        )
+        .expect("the job parked");
+    assert!(
+        rig.link.calls().is_empty(),
+        "nothing is known about devices yet"
+    );
+
+    rig.link.set_inventory(inventory);
+    let op = operation(handle.id());
+    let started = format!("started {USB} {op} written=false");
+    assert!(
+        wait_for_call(&rig.link, &started),
+        "the job was registered once the list arrived: {:?}",
+        rig.link.calls()
+    );
+
+    rig.engine.cancel(handle.id());
+    let cancelled = rig
+        .engine
+        .wait(handle.id(), std::time::Duration::from_secs(20))
+        .unwrap();
+    assert_eq!(cancelled.state, JobState::Cancelled);
+    assert_eq!(
+        rig.link.calls(),
+        vec![started, format!("completed {USB} {op}")]
+    );
+}
+
+#[test]
+fn a_job_is_released_through_the_link_that_announced_it() {
+    // A second window attaches its own link while a job the first window's
+    // link announced is still running. The completion goes where the start
+    // went: the service ties an operation to the connection that started it.
+    let rig = Tracked::new();
+    fs::write(rig.path("home/clash.txt"), b"new").unwrap();
+    fs::write(rig.path("usb/clash.txt"), b"old").unwrap();
+    let handle = rig
+        .engine
+        .submit(files_operations::JobSpec::new(
+            files_operations::Operation::Copy {
+                sources: vec![local(rig.path("home/clash.txt"))],
+                destination: local(rig.path("usb")),
+            },
+        ))
+        .unwrap();
+    rig.engine
+        .wait_for(
+            handle.id(),
+            std::time::Duration::from_secs(20),
+            |snapshot| snapshot.state == JobState::WaitingOnConflict,
+        )
+        .expect("the job parked");
+
+    let second = FakeLink::new(CollectionMode::Service);
+    second.set_inventory(rig.link.mounted_devices());
+    rig.tracker.attach(Arc::new(second.clone()));
+
+    rig.engine.cancel(handle.id());
+    rig.engine
+        .wait(handle.id(), std::time::Duration::from_secs(20))
+        .unwrap();
+    let op = operation(handle.id());
+    assert_eq!(
+        rig.link.calls(),
+        vec![
+            format!("started {USB} {op} written=false"),
+            format!("completed {USB} {op}"),
+        ]
+    );
+    assert!(second.calls().is_empty(), "{:?}", second.calls());
+}
+
+#[test]
+fn a_job_that_ends_before_the_first_device_list_is_never_registered() {
+    let rig = Tracked::new();
+    let inventory = rig.link.take_inventory();
+    fs::write(rig.path("home/a.txt"), b"a").unwrap();
+    let (_, state) = rig.run(files_operations::Operation::Copy {
+        sources: vec![local(rig.path("home/a.txt"))],
+        destination: local(rig.path("usb")),
+    });
+    assert_eq!(state, JobState::Completed);
+
+    // The list arrives after the job is over: there is nothing to hold.
+    rig.link.set_inventory(inventory);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(rig.link.calls().is_empty(), "{:?}", rig.link.calls());
 }
 
 // =========================================================================

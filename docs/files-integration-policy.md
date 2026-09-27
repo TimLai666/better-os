@@ -173,6 +173,16 @@ layer from before its first write until it ends, whatever the outcome.
   seconds. A notice that fails or times out is written to standard error and the
   job goes ahead; the completion is still sent.
 - With no service, the same notices reach the in-process engine.
+- A job that starts before the window's link has its first device list does
+  not wait for one. It is registered when the list arrives, for the devices it
+  writes to then, if it is still running.
+- A job's completion goes through the link that announced it, even after
+  another window has attached a newer one.
+- The service ties each operation to the bus connection that started it. If
+  Better Files exits or crashes mid-job, the service completes that
+  connection's operations itself, flush included, when it leaves the bus, and
+  a completion that arrives for one afterwards is accepted. The in-process
+  engine has no bus and ends with the window.
 
 The operation is named `better-files:<pid>:job-<n>`.
 

@@ -16,7 +16,9 @@
 //!   point is the longest whole-component prefix wins.
 //! - [`StorageTracker`] is the engine's [`JobObserver`]. It runs on the job's
 //!   worker thread, so the filesystem lookups above never happen on the render
-//!   thread, and the job waits for the started notice before it writes.
+//!   thread, and the job waits for the started notice before it writes. A job
+//!   that starts before the link has its first device list does not wait for
+//!   one; a thread of its own registers it when the list arrives.
 //!
 //! `files-operations` knows none of this. It promises the observer's ordering
 //! and nothing about devices, so the job engine has no storage dependency.
@@ -24,10 +26,11 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use files_operations::{JobId, JobObserver, JobSpec, JobState, Operation, TrashItemRef};
 
-use crate::devices::{DeviceLink, MountedDevice};
+use crate::devices::{CollectionMode, DeviceLink, MountedDevice};
 
 /// Resolves symbolic links and `..` in a path that may not exist yet.
 ///
@@ -172,14 +175,36 @@ pub fn operation_id(process: u32, job: JobId) -> String {
     format!("better-files:{process}:{job}")
 }
 
+/// How often a job that started before the link's first device list looks
+/// for it. Only such a job waits — in the first moments after a window opens —
+/// and only until the list arrives, the link gives up, or the job ends.
+const LIST_WAIT: Duration = Duration::from_millis(50);
+
+/// Where one running job stands with the storage layer.
+enum Registration {
+    /// Started before the link had a device list. A waiting thread registers
+    /// it when the list arrives.
+    Waiting,
+    /// Announced to these devices through this link. The completion goes to
+    /// the same devices through the same link: a window that attached a newer
+    /// link since is not where the service heard the start from, and the old
+    /// link stays alive until the job is released.
+    Announced {
+        link: Arc<dyn DeviceLink>,
+        objects: Vec<String>,
+    },
+    /// Finished. Nothing more is sent for it.
+    Ended,
+}
+
 /// The engine's observer: maps each job to devices and tells the link.
 pub struct StorageTracker {
     link: RwLock<Option<Arc<dyn DeviceLink>>>,
     home_trash: Option<PathBuf>,
     process: u32,
-    /// The devices each running job was announced to, so completion goes to
-    /// exactly those even if a mount changed while the job ran.
-    running: Mutex<HashMap<JobId, Vec<String>>>,
+    /// Where each running job stands, so completion goes to exactly the
+    /// devices it was announced to even if a mount changed while it ran.
+    running: Mutex<HashMap<JobId, Arc<Mutex<Registration>>>>,
 }
 
 impl StorageTracker {
@@ -198,8 +223,10 @@ impl StorageTracker {
     }
 
     /// Connects the tracker to the window's link. Until this is called — and
-    /// while the link has no mounted devices — a job is registered nowhere,
-    /// which is correct: there is nothing to hold ready.
+    /// while the link's device list has no mounted device — a job is
+    /// registered nowhere, which is correct: there is nothing to hold ready.
+    /// A job that starts before the link has any list is registered when the
+    /// list arrives, if it is still running.
     pub fn attach(&self, link: Arc<dyn DeviceLink>) {
         *self.link.write().expect("tracker link") = Some(link);
     }
@@ -209,46 +236,126 @@ impl StorageTracker {
     }
 }
 
+/// Tells the link a job is writing to every device in `devices` it touches,
+/// and returns those devices.
+fn announce(
+    link: &dyn DeviceLink,
+    name: &str,
+    operation: &Operation,
+    home_trash: Option<&Path>,
+    devices: &[MountedDevice],
+) -> Vec<String> {
+    if devices.is_empty() {
+        return Vec::new();
+    }
+    let original_of = |item: &TrashItemRef| {
+        files_platform::original_path_of(
+            &files_platform::TrashDirectory::new(&item.trash_root),
+            &item.item,
+        )
+        .ok()
+    };
+    let objects = devices_written(operation, home_trash, &original_of, devices);
+    for object_path in &objects {
+        // A notice that fails is not a reason to stop the user's copy: the
+        // device may simply read as ready early, which is the state this
+        // tracking improves on rather than one it makes worse.
+        if let Err(detail) = link.operation_started(object_path, name) {
+            eprintln!(
+                "better-files: the storage layer was not told that {name} is writing to {object_path}: {detail}"
+            );
+        }
+    }
+    objects
+}
+
+/// Waits on its own thread for the link's first device list, then registers
+/// a job that is still running for the devices it writes to at that moment.
+///
+/// The registration's lock is held while the started notices are sent, so a
+/// job finishing meanwhile sends its completion after them, never before.
+fn register_when_listed(
+    link: Arc<dyn DeviceLink>,
+    registration: Arc<Mutex<Registration>>,
+    name: String,
+    operation: Operation,
+    home_trash: Option<PathBuf>,
+) {
+    loop {
+        if !matches!(
+            *registration.lock().expect("tracker job"),
+            Registration::Waiting
+        ) {
+            return;
+        }
+        if let Some(devices) = link.mounted_devices() {
+            let mut registration = registration.lock().expect("tracker job");
+            if matches!(*registration, Registration::Waiting) {
+                let objects = announce(
+                    link.as_ref(),
+                    &name,
+                    &operation,
+                    home_trash.as_deref(),
+                    &devices,
+                );
+                *registration = Registration::Announced { link, objects };
+            }
+            return;
+        }
+        // No list is coming from a link that has given up.
+        if matches!(link.mode(), CollectionMode::Unavailable { .. }) {
+            return;
+        }
+        std::thread::sleep(LIST_WAIT);
+    }
+}
+
 impl JobObserver for StorageTracker {
     fn starting(&self, id: JobId, spec: &JobSpec) {
         let Some(link) = self.link.read().expect("tracker link").clone() else {
             return;
         };
-        let devices = link.mounted_devices();
-        if devices.is_empty() {
+        let name = self.operation(id);
+        let Some(devices) = link.mounted_devices() else {
+            if matches!(link.mode(), CollectionMode::Unavailable { .. }) {
+                return;
+            }
+            // The link has no device list yet. The job does not wait for
+            // one — it may never come — but it is registered when it does.
+            let registration = Arc::new(Mutex::new(Registration::Waiting));
+            self.running
+                .lock()
+                .expect("tracker jobs")
+                .insert(id, registration.clone());
+            let operation = spec.operation.clone();
+            let home_trash = self.home_trash.clone();
+            if let Err(error) = std::thread::Builder::new()
+                .name("files-storage-wait".to_string())
+                .spawn(move || {
+                    register_when_listed(link, registration, name, operation, home_trash)
+                })
+            {
+                eprintln!(
+                    "better-files: {} will not be registered with the storage layer: {error}",
+                    self.operation(id)
+                );
+            }
             return;
-        }
-        let original_of = |item: &TrashItemRef| {
-            files_platform::original_path_of(
-                &files_platform::TrashDirectory::new(&item.trash_root),
-                &item.item,
-            )
-            .ok()
         };
-        let objects = devices_written(
+        let objects = announce(
+            link.as_ref(),
+            &name,
             &spec.operation,
             self.home_trash.as_deref(),
-            &original_of,
             &devices,
         );
         if objects.is_empty() {
             return;
         }
-        let operation = self.operation(id);
-        for object_path in &objects {
-            // A notice that fails is not a reason to stop the user's copy:
-            // the device may simply read as ready early, which is the state
-            // this ticket improves on rather than one it makes worse.
-            if let Err(detail) = link.operation_started(object_path, &operation) {
-                eprintln!(
-                    "better-files: the storage layer was not told that {operation} is writing to {object_path}: {detail}"
-                );
-            }
-        }
-        self.running
-            .lock()
-            .expect("tracker jobs")
-            .insert(id, objects);
+        self.running.lock().expect("tracker jobs").insert(
+            id,
+            Arc::new(Mutex::new(Registration::Announced { link, objects })),
+        );
     }
 
     fn finished(&self, id: JobId, _spec: &JobSpec, _state: JobState) {
@@ -256,10 +363,15 @@ impl JobObserver for StorageTracker {
         // has stopped writing, and every device it was announced to is
         // released, including one whose started notice failed — the service
         // may have recorded it even though the answer never arrived.
-        let Some(objects) = self.running.lock().expect("tracker jobs").remove(&id) else {
+        let Some(registration) = self.running.lock().expect("tracker jobs").remove(&id) else {
             return;
         };
-        let Some(link) = self.link.read().expect("tracker link").clone() else {
+        // Waits for a registration in progress, so its started notices are
+        // already queued when the completions below are.
+        let Registration::Announced { link, objects } = std::mem::replace(
+            &mut *registration.lock().expect("tracker job"),
+            Registration::Ended,
+        ) else {
             return;
         };
         let operation = self.operation(id);
