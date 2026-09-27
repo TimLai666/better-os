@@ -96,22 +96,25 @@ impl<B: InhibitorBackend + 'static> AwakeDbusService<B> {
     }
 }
 
-/// One service tick, with every session it ended pushed to the clients.
+/// One service tick, with what it changed pushed to the clients.
 ///
-/// A tick is not answering anyone, so without this a session that expired or
-/// hit its battery threshold would end with every open menu still showing it.
-/// Each ended session is announced once, then the status that follows it. A
-/// tick that ended nothing pushes nothing.
+/// A tick is not answering anyone, so without this a session that expired, hit
+/// its battery threshold, or was started by a rule would leave every open menu
+/// showing what was there before. Each ended session is announced once, then
+/// one status for the whole tick. A tick that changed neither the sessions nor
+/// the refused rules pushes nothing.
+///
+/// Returns the sessions the tick ended.
 pub async fn tick_and_announce<B: InhibitorBackend + 'static>(
     engine: &AwakeEngine<B>,
     emitter: &SignalEmitter<'_>,
 ) -> Vec<EndedSession> {
-    let ended = engine.tick().await;
-    if !ended.is_empty() {
-        announce_ended::<B>(emitter, &ended).await;
+    let outcome = engine.tick().await;
+    announce_ended::<B>(emitter, &outcome.ended).await;
+    if outcome.changed {
         announce_status(emitter, engine).await;
     }
-    ended
+    outcome.ended
 }
 
 /// Releases everything and, while the service is still on the bus to say so,
