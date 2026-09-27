@@ -50,7 +50,8 @@ pub enum Notice {
 /// What a keystroke asks the selection to do.
 ///
 /// Rows and columns are separate because the library is a grid: Down means the
-/// next row, not the next application. The column count comes from the
+/// next row, not the next application. Next and Previous stay inside the row,
+/// the way the row moves stay inside the list. The column count comes from the
 /// rendered width, so this enum stays true whatever the window size is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Move {
@@ -267,9 +268,11 @@ impl OverlayModel {
         };
         let last = self.rows().len() - 1;
         let columns = self.columns;
+        let column = current % columns;
         self.selected = match movement {
-            Move::Next => (current + 1).min(last),
-            Move::Previous => current.saturating_sub(1),
+            Move::Next if column + 1 < columns => (current + 1).min(last),
+            Move::Previous if column > 0 => current - 1,
+            Move::Next | Move::Previous => current,
             Move::NextRow => (current + columns).min(last),
             Move::PreviousRow => current.saturating_sub(columns),
             Move::First => 0,
@@ -326,7 +329,7 @@ fn index_of(snapshot: &LauncherSnapshot) -> &SearchIndex {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use app_catalog_core::{CatalogBuilder, DirectoryRank, EntryScope, NoProbe};
     use launcher_core::IndexOptions;
@@ -410,7 +413,7 @@ mod tests {
         }
     }
 
-    fn library() -> LauncherSnapshot {
+    pub(crate) fn library() -> LauncherSnapshot {
         snapshot(&[
             ("archive.desktop", "Archive Manager", "zip;"),
             ("browser.desktop", "Browser", "web;"),
@@ -521,6 +524,44 @@ mod tests {
         assert_eq!(model.selected_index(), Some(3));
         model.move_selection(Move::First);
         assert_eq!(model.selected_index(), Some(0));
+    }
+
+    #[test]
+    fn left_and_right_stop_at_the_ends_of_a_row_the_way_up_and_down_stop_at_the_ends_of_the_list() {
+        let mut model = OverlayModel::new();
+        model.apply_snapshot(library());
+        model.set_columns(2);
+
+        model.move_selection(Move::Next);
+        assert_eq!(model.selected_index(), Some(1));
+        model.move_selection(Move::Next);
+        assert_eq!(
+            model.selected_index(),
+            Some(1),
+            "Right at the end of a row does not wrap onto the next row"
+        );
+
+        model.move_selection(Move::NextRow);
+        model.move_selection(Move::Previous);
+        assert_eq!(model.selected_index(), Some(2));
+        model.move_selection(Move::Previous);
+        assert_eq!(
+            model.selected_index(),
+            Some(2),
+            "Left at the start of a row does not wrap onto the row above"
+        );
+    }
+
+    #[test]
+    fn in_a_one_column_layout_left_and_right_have_nowhere_to_go() {
+        let mut model = OverlayModel::new();
+        model.apply_snapshot(library());
+        model.set_columns(1);
+        model.move_selection(Move::NextRow);
+        model.move_selection(Move::Next);
+        assert_eq!(model.selected_index(), Some(1));
+        model.move_selection(Move::Previous);
+        assert_eq!(model.selected_index(), Some(1));
     }
 
     #[test]
