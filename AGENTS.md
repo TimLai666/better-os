@@ -203,11 +203,12 @@ GUI or dependency compiles when the relevant command was not executed.
   needs a compositor adapter and reports itself unavailable; audio reads ALSA and
   cannot see Bluetooth or network sinks. Both limits are recorded in ADR 0010 and
   in the provider modules. Do not claim full trigger coverage.
-- A Better Awake low-battery stop raises its desktop notification from the
-  tray, so with no tray running a stop is still only in History and on the
-  service's stderr. The notification has been exercised against a fake
-  notification service on a private bus and has not been seen on a GNOME
-  desktop.
+- A Better Awake low-battery stop raises one desktop notification: from the
+  tray when it owns `org.betteros.AwakeTray1`, from the service otherwise. Two
+  one-round-trip races remain, a tray starting or quitting at the moment of the
+  stop, and the service's notification follows the user manager's `LANG`,
+  which can differ from the desktop's. None of it has been seen on a GNOME
+  desktop; the proof is a fake notification service on a private bus.
 - Every Better OS desktop binary links an HTTP client. `gpui-component-assets`
   depends on `zed-reqwest`, which brings hyper and rustls, so "performs no
   network request" is provable for Better OS crates and not for the shipped
@@ -350,14 +351,15 @@ GUI or dependency compiles when the relevant command was not executed.
   What is still open: the volume trash and hard links have been tested on
   temporary directories with a device-number seam, never on a second real
   device, and FAT or exFAT media not at all; the Trash view reads every mounted
-  filesystem's trash, network shares included, so an unreachable server can
-  stall that listing; and two processes submitting a job at the same instant can
-  still pick the same job number.
+  filesystem's trash, but a network or FUSE filesystem only through a probe
+  with a one-second deadline, so such a trash can be missing from one listing.
 - Extraction refuses absolute paths, `..`, and links that leave the target, and
   stops at the size and entry limits in `files-operations`' policy. Those limits
   were proved with small archives and lowered limits, never with a real
-  decompression bomb, and a zip that declares a huge central directory is read
-  whole before the entry count is checked. Compression writes `.tar.zst` with
+  decompression bomb. A zip's declared entry count and central-directory size
+  are checked from its end record before the `zip` crate reads anything; when
+  that record leads nowhere the crate searches for an earlier one and reads its
+  directory unchecked, which only a parser of our own would close. Compression writes `.tar.zst` with
   the pure-Rust `ruzstd`, whose only level is its fastest, so those archives are
   larger than `zstd`'s default would make them. Zip reads only stored and
   deflate entries.
