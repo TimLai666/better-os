@@ -20,6 +20,8 @@
 //! survives from `manager-ipc` is the input discipline: closed enums, no
 //! unknown fields, and a size limit applied to the raw bytes before parsing.
 
+pub mod notification;
+
 use awake_core::{
     ActiveReason, BackendCapabilities, EndCondition, EndConditionError, IndicatorState, PolicyGap,
     ProviderKind, Reason, ReasonError, Remaining, Rule, RuleError, Session, SessionChange,

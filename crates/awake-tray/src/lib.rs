@@ -21,8 +21,8 @@ pub use client::{
 pub use controller::{APPLICATION_BINARY, Activation, TrayController};
 pub use dbusmenu::DbusMenu;
 pub use item::StatusNotifierItem;
-pub use labels::{Labels, Locale};
+pub use labels::{Labels, Locale, LocaleLabels};
 pub use localtime::UtcOffset;
 pub use menu::{Menu, MenuAction, MenuItem, QuickOptions, build as build_menu};
-pub use notify::{DesktopNotifier, NotifyError, handle_event};
+pub use notify::{DesktopNotifier, NotifyError, claim_notifications, handle_event};
 pub use sni::{ITEM_PATH, MENU_PATH, TrayAvailability, register_and_verify};

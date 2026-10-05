@@ -12,7 +12,7 @@ use awake_tray::controller::TrayController;
 use awake_tray::dbusmenu::DbusMenu;
 use awake_tray::item::StatusNotifierItem;
 use awake_tray::labels::Locale;
-use awake_tray::notify::{DesktopNotifier, handle_event};
+use awake_tray::notify::{DesktopNotifier, claim_notifications, handle_event};
 use awake_tray::sni::{ITEM_PATH, MENU_PATH, TrayAvailability, register_and_verify};
 
 #[tokio::main(flavor = "multi_thread")]
@@ -73,16 +73,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Follow the service rather than polling it, so an idle tray costs nothing:
     // no timer, no busy loop, and no countdown recomputed when nobody is
     // looking at the menu.
+    //
+    // The events arrive on the same connection that owns the tray's name, and
+    // the name is taken only once the events are arriving, so the service
+    // leaves the low-battery notification to this tray exactly while this tray
+    // can hear a stop. A tray that cannot follow the service never takes it.
     let updates = controller.clone();
     let watcher = tokio::spawn(async move {
         use zbus::export::futures_core::Stream;
 
-        let Ok(client) = ServiceClient::connect().await else {
+        let Ok(client) = ServiceClient::with_connection(connection.clone()).await else {
             return;
         };
         let Ok(stream) = client.status_updates().await else {
             return;
         };
+        let notifier = claim_notifications(&connection, notifier).await;
         let mut stream = std::pin::pin!(stream);
         while let Some(signal) =
             std::future::poll_fn(|context| stream.as_mut().poll_next(context)).await

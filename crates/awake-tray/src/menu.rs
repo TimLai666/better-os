@@ -10,7 +10,7 @@ use awake_ipc::{
     StatusDocument, WireEnd, WireIndicator, WireRemaining, WireSession, WireSuppression,
 };
 
-use crate::labels::{Labels, Locale};
+use crate::labels::{Labels, Locale, LocaleLabels};
 use crate::localtime::{UtcOffset, clock_time};
 
 /// The lengths offered by Extend session.
