@@ -16,7 +16,9 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use files_operations::policy::{ExtractLimits, MAX_EXTRACTED_BYTES, MAX_EXTRACTED_ENTRIES};
+use files_operations::policy::{
+    ExtractLimits, MAX_EXTRACTED_BYTES, MAX_EXTRACTED_ENTRIES, MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+};
 use files_operations::{
     ArchiveFormat, ArchiveLimit, ConflictKind, ConflictPolicy, CopyPolicy, EngineConfig, JobEngine,
     JobSpec, JobState, JobStore, Operation, OperationError, OperationKind, Resolution,
@@ -705,6 +707,134 @@ fn many_small_entries_that_add_up_past_the_size_limit_are_stopped_too() {
         "files.operation.error.archive_limit_exceeded"
     );
     assert!(entries(&out).is_empty());
+}
+
+// --- What a zip declares at its end ---------------------------------------
+
+/// Where a declared central directory starts: a directory entry's signature
+/// followed by bytes that are not one, so a reader that starts on the
+/// directory fails, and only a refusal made from the declaration alone can
+/// name a limit.
+const NOT_A_DIRECTORY: &[u8] =
+    b"PK\x01\x02 these bytes are where a directory would be, and they are not one";
+
+/// A zip's end-of-central-directory record, with no comment.
+fn end_record(entries: u16, directory_bytes: u32, directory_offset: u32) -> Vec<u8> {
+    let mut record = b"PK\x05\x06".to_vec();
+    record.extend_from_slice(&0u16.to_le_bytes()); // this disk
+    record.extend_from_slice(&0u16.to_le_bytes()); // the disk the directory starts on
+    record.extend_from_slice(&entries.to_le_bytes()); // entries on this disk
+    record.extend_from_slice(&entries.to_le_bytes()); // entries in all
+    record.extend_from_slice(&directory_bytes.to_le_bytes());
+    record.extend_from_slice(&directory_offset.to_le_bytes());
+    record.extend_from_slice(&0u16.to_le_bytes()); // comment length
+    record
+}
+
+/// A ZIP64 end record and its locator, followed by the classic end record
+/// whose saturated fields send a reader to them.
+fn zip64_end(entries: u64, directory_bytes: u64, record_at: u64) -> Vec<u8> {
+    let mut bytes = b"PK\x06\x06".to_vec();
+    bytes.extend_from_slice(&44u64.to_le_bytes()); // the record's size after this field
+    bytes.extend_from_slice(&45u16.to_le_bytes()); // made by
+    bytes.extend_from_slice(&45u16.to_le_bytes()); // needed to extract
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // this disk
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // the disk the directory starts on
+    bytes.extend_from_slice(&entries.to_le_bytes()); // entries on this disk
+    bytes.extend_from_slice(&entries.to_le_bytes()); // entries in all
+    bytes.extend_from_slice(&directory_bytes.to_le_bytes());
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // directory offset
+    bytes.extend_from_slice(b"PK\x06\x07");
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // the disk the ZIP64 record is on
+    bytes.extend_from_slice(&record_at.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // disks in all
+    bytes.extend_from_slice(&end_record(u16::MAX, u32::MAX, u32::MAX));
+    bytes
+}
+
+fn assert_refused_by_its_end_record(
+    root: &Path,
+    zip: &[u8],
+    policy: CopyPolicy,
+    limit: ArchiveLimit,
+    maximum: u64,
+) {
+    let archive = root.join("bomb.zip");
+    fs::write(&archive, zip).unwrap();
+    let out = root.join("out");
+    fs::create_dir(&out).unwrap();
+    let snapshot = run(&engine(), extract_spec(&archive, &out).with_policy(policy));
+    assert_eq!(snapshot.state, JobState::Failed);
+    assert_eq!(
+        snapshot.failures[0].1,
+        OperationError::ArchiveLimitExceeded {
+            path: archive,
+            limit,
+            maximum,
+        },
+        "the declaration is refused before the directory is read"
+    );
+    assert!(entries(&out).is_empty(), "{:?}", entries(&out));
+}
+
+#[test]
+fn a_zip_declaring_more_entries_than_the_limit_is_refused_before_its_directory_is_read() {
+    let root = tempfile::tempdir().unwrap();
+    let mut zip = NOT_A_DIRECTORY.to_vec();
+    zip.extend_from_slice(&end_record(10, NOT_A_DIRECTORY.len() as u32, 0));
+    assert_refused_by_its_end_record(
+        root.path(),
+        &zip,
+        limited(1 << 30, 3),
+        ArchiveLimit::Entries,
+        3,
+    );
+}
+
+#[test]
+fn a_zip64_declaring_billions_of_entries_is_refused_before_its_directory_is_read() {
+    let root = tempfile::tempdir().unwrap();
+    let mut zip = NOT_A_DIRECTORY.to_vec();
+    let record_at = zip.len() as u64;
+    zip.extend_from_slice(&zip64_end(5_000_000_000, 1 << 40, record_at));
+    assert_refused_by_its_end_record(
+        root.path(),
+        &zip,
+        CopyPolicy::default(),
+        ArchiveLimit::Entries,
+        MAX_EXTRACTED_ENTRIES,
+    );
+}
+
+#[test]
+fn a_zip_declaring_a_directory_over_the_fixed_bound_is_refused_before_it_is_read() {
+    let root = tempfile::tempdir().unwrap();
+    let mut zip = NOT_A_DIRECTORY.to_vec();
+    zip.extend_from_slice(&end_record(2, 0xFFFF_FF00, 0));
+    assert_refused_by_its_end_record(
+        root.path(),
+        &zip,
+        CopyPolicy::default(),
+        ArchiveLimit::CentralDirectoryBytes,
+        MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+    );
+
+    // The same bound through a ZIP64 record, whose entry count is modest.
+    let root = tempfile::tempdir().unwrap();
+    let mut zip = NOT_A_DIRECTORY.to_vec();
+    let record_at = zip.len() as u64;
+    zip.extend_from_slice(&zip64_end(
+        2,
+        MAX_ZIP_CENTRAL_DIRECTORY_BYTES + 1,
+        record_at,
+    ));
+    assert_refused_by_its_end_record(
+        root.path(),
+        &zip,
+        CopyPolicy::default(),
+        ArchiveLimit::CentralDirectoryBytes,
+        MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+    );
 }
 
 // --- Jobs -------------------------------------------------------------------
