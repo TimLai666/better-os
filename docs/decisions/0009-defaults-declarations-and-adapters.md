@@ -27,11 +27,19 @@ manual action required for a change.
 group whose keys each read definitely and disagree is now a per-key reading
 rather than unknown: the preview lists each key's current value, apply is
 allowed, the snapshot stores each key's previous value, and restore writes each
-key back to its own value and reports each key's verifying read. A type that
-had no default is still Manual action required on restore, for the reason given
-under Consequences. Snapshots are schema version 2 from this change, because a
-version 1 reader cannot parse a per-key value; version 1 files are read
-unchanged.
+key back to its own value and reports each key's verifying read. Snapshots are
+schema version 2 from this change, because a version 1 reader cannot parse a
+per-key value; version 1 files are read unchanged.
+
+**Ticket 71 removed the one XDG restore that needed manual action.** The owner
+decided on 2026-09-27 that `app-chooser-core` offers a typed "remove this
+association" operation. `AssociationStore::remove_default` takes a `MimeType`,
+removes that type's lines from `[Default Applications]` in the same editor that
+sets a default, leaves every other byte as it was, and writes the same rollback
+record first. The `xdg-default-app` adapter uses it for a clear, so restoring a
+type captured as having no default leaves it with none and is verified by
+reading again like any other restore. This holds for a single type and for each
+type of a group restored type by type.
 
 ## Context
 
@@ -95,7 +103,7 @@ Two adapters ship, and their honest capability differs:
 
 | Adapter | Read | Verify | Apply / restore |
 | --- | --- | --- | --- |
-| `xdg-default-app` | yes, from the user's `mimeapps.list` | yes | yes, one line per declared type |
+| `xdg-default-app` | yes, from the user's `mimeapps.list` | yes | yes, one line per declared type; a type that had no default is cleared |
 | `xdg-effective-default` | yes | yes | refuses — it is read-only, and the schema refuses to accept it as an apply adapter |
 | `gnome-keybinding` | yes, from the user's dconf database | yes | **manual action required** |
 | `gnome-desktop-setting` | yes, from the user's dconf database | yes | **manual action required** |
@@ -132,10 +140,10 @@ gap in the model: an integration whose adapter is absent is skipped with
 - A component can declare an integration of any of the nine kinds today, and the
   status, planning, snapshot, and verification paths all work for it through the
   mock adapter set. Only the change itself waits on a production adapter.
-- Restoring an XDG default that previously had no owner at all reports manual
-  action required, because `app-chooser-core` offers no typed operation for
-  removing an association and a second `mimeapps.list` editor is not acceptable.
-  Restoring to a previous owner, which is the common case, works.
+- Restoring an XDG default that previously had no owner at all removes the
+  type's line through `app-chooser-core`'s typed removal (ticket 71), because a
+  second `mimeapps.list` editor is not acceptable. Restoring to a previous owner
+  writes that owner back.
 - A handler group whose declared types currently disagree reads as unknown
   rather than as one of them, so a mixed state is never flattened and
   overwritten. Per-key capture for that case is not implemented.

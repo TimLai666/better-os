@@ -1,4 +1,5 @@
-//! Writing "Always use for this file type", and taking it back.
+//! Writing "Always use for this file type", removing a type's default, and
+//! taking either back.
 //!
 //! The order of operations is the point of this module. The rollback record is
 //! written and flushed *before* `mimeapps.list` is opened for writing, so a
@@ -15,7 +16,7 @@ use std::path::{Path, PathBuf};
 use app_catalog_core::{ApplicationRecord, DesktopId, MimeType};
 use serde::{Deserialize, Serialize};
 
-use crate::mimeapps::{DEFAULT_APPLICATIONS, DefaultChange, Line, MimeAppsFile};
+use crate::mimeapps::{DEFAULT_APPLICATIONS, DefaultChange, Line, MimeAppsFile, RemovedLine};
 
 /// The rollback record format. A future version is refused rather than
 /// misread.
@@ -61,9 +62,10 @@ pub enum AssociationWarning {
     /// may keep the new default from taking effect. Better OS does not quietly
     /// edit a second line to fix it.
     ListedInRemovedAssociations,
-    /// The file lists this type more than once in `[Default Applications]`. The
-    /// first entry was changed, because that is the one that wins; the rest were
-    /// left alone.
+    /// The file lists this type more than once in `[Default Applications]`.
+    /// Setting a default changed the first entry, because that is the one that
+    /// wins, and left the rest alone. Removing a default removed every entry,
+    /// because a later one left behind would become the default.
     DuplicateDefaultKey,
 }
 
@@ -86,6 +88,8 @@ pub enum PreviousDefault {
         created_group: bool,
         fixed_final_newline: bool,
     },
+    /// Better OS removed these lines; undoing puts them back where they were.
+    Removed { lines: Vec<RemovedLine> },
 }
 
 impl PreviousDefault {
@@ -112,6 +116,7 @@ impl PreviousDefault {
                 created_group,
                 fixed_final_newline,
             },
+            DefaultChange::Removed { lines } => Self::Removed { lines },
         }
     }
 
@@ -138,6 +143,9 @@ impl PreviousDefault {
                 created_group: *created_group,
                 fixed_final_newline: *fixed_final_newline,
             },
+            Self::Removed { lines } => DefaultChange::Removed {
+                lines: lines.clone(),
+            },
         }
     }
 }
@@ -148,7 +156,10 @@ pub struct AssociationRollback {
     pub schema_version: u32,
     pub target: PathBuf,
     pub mime_type: String,
-    pub applied_desktop_id: String,
+    /// The application the change made the default, or nothing for a change
+    /// that removed the type's default.
+    #[serde(default)]
+    pub applied_desktop_id: Option<String>,
     /// Whether the file existed before the change. When it did not, restoring
     /// removes the file Better OS created rather than leaving an empty one.
     pub file_existed: bool,
@@ -158,11 +169,11 @@ pub struct AssociationRollback {
 impl AssociationRollback {
     /// Whether applying this record would change anything.
     pub fn is_noop(&self) -> bool {
-        self.file_existed && matches!(self.previous, PreviousDefault::Unchanged)
+        matches!(self.previous, PreviousDefault::Unchanged)
     }
 }
 
-/// The outcome of an Always Use.
+/// The outcome of an Always Use or a removal.
 #[derive(Clone, Debug)]
 pub struct AssociationOutcome {
     pub rollback: AssociationRollback,
@@ -262,18 +273,52 @@ impl AssociationStore {
         }
 
         let change = file.set_default(mime, desktop_id);
+        self.commit(
+            mime,
+            Some(desktop_id),
+            file_existed,
+            &file,
+            change,
+            warnings,
+        )
+    }
+
+    /// Removes the user's default for `mime`, so the type has no default
+    /// application in this file. Every other line, comment, and group is left
+    /// exactly as it was, and the rollback record is written first, as for
+    /// [`Self::set_default`]. A file that does not exist is not created.
+    pub fn remove_default(&self, mime: &MimeType) -> Result<AssociationOutcome, AssociationError> {
+        let file_existed = self.path.exists();
+        let mut file = self.load()?;
+        let change = file.remove_default(mime);
+        let mut warnings = Vec::new();
+        if matches!(&change, DefaultChange::Removed { lines } if lines.len() > 1) {
+            warnings.push(AssociationWarning::DuplicateDefaultKey);
+        }
+        self.commit(mime, None, file_existed, &file, change, warnings)
+    }
+
+    /// Records a change and then makes it. The record goes to disk first: a
+    /// crash after that is recoverable, and a crash after the mutation with no
+    /// record is not.
+    fn commit(
+        &self,
+        mime: &MimeType,
+        applied: Option<&DesktopId>,
+        file_existed: bool,
+        file: &MimeAppsFile,
+        change: DefaultChange,
+        warnings: Vec<AssociationWarning>,
+    ) -> Result<AssociationOutcome, AssociationError> {
         let changed = !matches!(change, DefaultChange::Unchanged);
         let rollback = AssociationRollback {
             schema_version: ROLLBACK_SCHEMA_VERSION,
             target: self.path.clone(),
             mime_type: mime.as_str().to_string(),
-            applied_desktop_id: desktop_id.as_str().to_string(),
+            applied_desktop_id: applied.map(|id| id.as_str().to_string()),
             file_existed,
             previous: PreviousDefault::from_change(change),
         };
-
-        // The record goes to disk first. A crash after this point is
-        // recoverable; a crash after the mutation with no record is not.
         let rollback_path = self.write_rollback(&rollback)?;
         if changed {
             write_atomically(&self.path, file.render().as_bytes())?;
@@ -293,6 +338,9 @@ impl AssociationStore {
                 found: rollback.schema_version,
             });
         }
+        if matches!(rollback.previous, PreviousDefault::Unchanged) {
+            return Ok(());
+        }
         if !rollback.file_existed {
             // Better OS created the file. Removing it returns the user to
             // having no per-user associations at all, which is where they were.
@@ -306,9 +354,6 @@ impl AssociationStore {
                     });
                 }
             }
-        }
-        if matches!(rollback.previous, PreviousDefault::Unchanged) {
-            return Ok(());
         }
         let text =
             std::fs::read_to_string(&rollback.target).map_err(|source| AssociationError::Read {
@@ -543,7 +588,7 @@ mod tests {
         let stored =
             AssociationStore::read_rollback(&outcome.rollback_path).expect("read rollback record");
         assert_eq!(stored, outcome.rollback);
-        assert_eq!(stored.applied_desktop_id, "gimp.desktop");
+        assert_eq!(stored.applied_desktop_id.as_deref(), Some("gimp.desktop"));
         assert!(stored.file_existed);
         assert!(matches!(stored.previous, PreviousDefault::Line { .. }));
     }
@@ -729,5 +774,141 @@ mod tests {
             store.load(),
             Err(AssociationError::NotUtf8 { .. })
         ));
+    }
+
+    #[test]
+    fn removing_a_default_takes_out_one_line_and_its_rollback_puts_it_back_byte_for_byte() {
+        let fixture = fixture(Some(ORIGINAL));
+        let outcome = fixture
+            .store
+            .remove_default(&mime("text/html"))
+            .expect("remove default");
+        assert!(outcome.changed);
+        assert!(outcome.warnings.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(fixture.store.path()).expect("read back"),
+            ORIGINAL.replace("text/html=firefox.desktop\n", "")
+        );
+        let associations = fixture.store.load().expect("reload").associations();
+        assert!(associations.default_for(&mime("text/html")).is_none());
+        assert_eq!(
+            associations.default_for(&mime("image/png")),
+            Some(&id("eog.desktop"))
+        );
+
+        let stored =
+            AssociationStore::read_rollback(&outcome.rollback_path).expect("read rollback record");
+        assert_eq!(stored, outcome.rollback);
+        assert_eq!(stored.mime_type, "text/html");
+        assert_eq!(stored.applied_desktop_id, None);
+        assert!(matches!(stored.previous, PreviousDefault::Removed { .. }));
+
+        fixture.store.restore(&stored).expect("restore");
+        assert_eq!(
+            std::fs::read_to_string(fixture.store.path()).expect("read back"),
+            ORIGINAL
+        );
+    }
+
+    #[test]
+    fn a_removal_writes_its_rollback_record_before_it_touches_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = dir.path().join("config");
+        std::fs::create_dir_all(&config).expect("config dir");
+        let path = config.join("mimeapps.list");
+        std::fs::write(&path, ORIGINAL).expect("write fixture");
+        let store = AssociationStore::new(path.clone(), dir.path().join("rollback"));
+        // The file's directory refuses the write, so only what happened before
+        // it is left to look at.
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+        let result = store.remove_default(&mime("text/html"));
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        assert!(matches!(result, Err(AssociationError::Write { .. })));
+        assert_eq!(store.rollback_records().expect("list").len(), 1);
+        assert_eq!(std::fs::read_to_string(&path).expect("read back"), ORIGINAL);
+    }
+
+    #[test]
+    fn removing_from_a_file_that_does_not_exist_creates_nothing_and_its_rollback_deletes_nothing() {
+        let fixture = fixture(None);
+        let outcome = fixture
+            .store
+            .remove_default(&mime("text/html"))
+            .expect("remove default");
+        assert!(!outcome.changed);
+        assert!(outcome.rollback.is_noop());
+        assert!(!fixture.store.path().exists());
+
+        // A file somebody writes afterwards is not Better OS's to delete.
+        std::fs::write(fixture.store.path(), ORIGINAL).expect("write");
+        fixture.store.restore(&outcome.rollback).expect("restore");
+        assert_eq!(
+            std::fs::read_to_string(fixture.store.path()).expect("read back"),
+            ORIGINAL
+        );
+    }
+
+    #[test]
+    fn removing_a_repeated_default_is_reported_and_removes_every_copy() {
+        let original = "[Default Applications]\nimage/png=eog.desktop\nimage/png=second.desktop\n";
+        let fixture = fixture(Some(original));
+        let outcome = fixture
+            .store
+            .remove_default(&mime("image/png"))
+            .expect("remove default");
+        assert_eq!(
+            outcome.warnings,
+            vec![AssociationWarning::DuplicateDefaultKey]
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.store.path()).expect("read back"),
+            "[Default Applications]\n"
+        );
+        fixture.store.restore(&outcome.rollback).expect("restore");
+        assert_eq!(
+            std::fs::read_to_string(fixture.store.path()).expect("read back"),
+            original
+        );
+    }
+
+    #[test]
+    fn a_removal_rollback_against_a_file_someone_else_changed_refuses_rather_than_guessing() {
+        let fixture = fixture(Some(ORIGINAL));
+        let outcome = fixture
+            .store
+            .remove_default(&mime("text/html"))
+            .expect("remove default");
+        fixture
+            .store
+            .set_default(&mime("text/html"), &record("other.desktop", "text/html;"))
+            .expect("second change");
+        let error = fixture
+            .store
+            .restore(&outcome.rollback)
+            .expect_err("a stale rollback must refuse");
+        assert!(matches!(error, AssociationError::RollbackStale { .. }));
+        assert!(
+            std::fs::read_to_string(fixture.store.path())
+                .expect("read back")
+                .contains("text/html=other.desktop")
+        );
+    }
+
+    #[test]
+    fn a_rollback_record_written_before_removal_existed_still_reads() {
+        let fixture = fixture(Some(ORIGINAL));
+        let dir = fixture.store.rollback_dir().to_path_buf();
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let path = dir.join("older.json");
+        std::fs::write(
+            &path,
+            r#"{"schema_version":1,"target":"/tmp/x","mime_type":"text/plain","applied_desktop_id":"a.desktop","file_existed":true,"previous":{"kind":"unchanged"}}"#,
+        )
+        .expect("write");
+        let record = AssociationStore::read_rollback(&path).expect("an older record reads");
+        assert_eq!(record.applied_desktop_id.as_deref(), Some("a.desktop"));
     }
 }

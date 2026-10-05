@@ -16,6 +16,12 @@
 //! key wins, the editor changes that first entry and leaves any later duplicate
 //! exactly where the user left it, rather than "tidying up" a file it does not
 //! own.
+//!
+//! Removing a default is the one operation that takes lines out, and it takes
+//! out only the type's own lines in `[Default Applications]`. It removes every
+//! one of them, because leaving a later duplicate would make that duplicate the
+//! default rather than leaving the type with none. The group header, the same
+//! type in any other group, and every other line stay as they were.
 
 use std::collections::BTreeMap;
 
@@ -84,6 +90,16 @@ pub enum DefaultChange {
         /// insertion did not concatenate onto it.
         fixed_final_newline: bool,
     },
+    /// Lines were taken out, each recorded with the index it had before the
+    /// removal, in file order, so an undo puts every byte back where it was.
+    Removed { lines: Vec<RemovedLine> },
+}
+
+/// One line a removal took out of the file.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RemovedLine {
+    pub index: usize,
+    pub line: Line,
 }
 
 /// The associations a file declares, parsed into typed values. Entries this
@@ -366,6 +382,46 @@ impl MimeAppsFile {
         }
     }
 
+    /// Removes the default for `mime`, so the type has no user default at all.
+    ///
+    /// Every `[Default Applications]` line whose key reads as `mime` is taken
+    /// out, matched the way [`Self::associations`] reads keys so that what is
+    /// removed is exactly what a reader would have seen. A file that lists no
+    /// default for the type is [`DefaultChange::Unchanged`].
+    pub fn remove_default(&mut self, mime: &MimeType) -> DefaultChange {
+        let indices = self.default_lines(mime);
+        if indices.is_empty() {
+            return DefaultChange::Unchanged;
+        }
+        let lines = indices
+            .iter()
+            .map(|&index| RemovedLine {
+                index,
+                line: self.lines[index].clone(),
+            })
+            .collect();
+        for index in indices.into_iter().rev() {
+            self.lines.remove(index);
+        }
+        DefaultChange::Removed { lines }
+    }
+
+    /// The index of every `[Default Applications]` line whose key reads as
+    /// `mime`.
+    fn default_lines(&self, mime: &MimeType) -> Vec<usize> {
+        let groups = self.groups();
+        self.lines
+            .iter()
+            .enumerate()
+            .filter(|(index, line)| {
+                groups[*index].as_deref() == Some(DEFAULT_APPLICATIONS)
+                    && line.group_name().is_none()
+                    && line.key().and_then(MimeType::parse).as_ref() == Some(mime)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
     /// Gives the line before `index` a terminator when it has none, so an
     /// insertion does not run onto the end of it. Reports whether it had to.
     fn ensure_final_newline(&mut self, index: usize, terminator: &str) -> bool {
@@ -424,7 +480,40 @@ impl MimeAppsFile {
                 }
                 true
             }
+            DefaultChange::Removed { lines } => self.reinsert(lines),
         }
+    }
+
+    /// Puts removed lines back at their old indices. Refuses, touching nothing,
+    /// when the type has a default again — somebody else chose one since — or
+    /// when a line would no longer land inside `[Default Applications]`.
+    fn reinsert(&mut self, removed: &[RemovedLine]) -> bool {
+        let Some(mime) = removed
+            .first()
+            .and_then(|first| first.line.key())
+            .and_then(MimeType::parse)
+        else {
+            return false;
+        };
+        if !self.default_lines(&mime).is_empty() {
+            return false;
+        }
+        let mut restored = self.clone();
+        for entry in removed {
+            if entry.index > restored.lines.len() {
+                return false;
+            }
+            restored.lines.insert(entry.index, entry.line.clone());
+        }
+        let groups = restored.groups();
+        if removed
+            .iter()
+            .any(|entry| groups[entry.index].as_deref() != Some(DEFAULT_APPLICATIONS))
+        {
+            return false;
+        }
+        *self = restored;
+        true
     }
 }
 
@@ -664,5 +753,133 @@ mod tests {
         file.set_default(&mime("text/plain"), &id("vim.desktop"));
         assert!(!file.undo(&change));
         assert!(file.render().contains("text/plain=vim.desktop"));
+    }
+
+    #[test]
+    fn removing_one_default_removes_exactly_that_line() {
+        let mut file = MimeAppsFile::parse(HAND_EDITED);
+        let change = file.remove_default(&mime("image/png"));
+        assert!(matches!(change, DefaultChange::Removed { .. }));
+        assert_eq!(
+            file.render(),
+            HAND_EDITED.replace("image/png=eog.desktop\n", "")
+        );
+        assert!(
+            file.associations()
+                .default_for(&mime("image/png"))
+                .is_none()
+        );
+        assert!(file.undo(&change));
+        assert_eq!(file.render(), HAND_EDITED);
+    }
+
+    #[test]
+    fn removing_a_type_the_file_does_not_list_as_a_default_changes_nothing() {
+        for (original, type_) in [
+            (HAND_EDITED, "text/x-rust"),
+            ("", "image/png"),
+            // An added association is not a default.
+            ("[Added Associations]\nimage/png=eog.desktop\n", "image/png"),
+        ] {
+            let mut file = MimeAppsFile::parse(original);
+            assert_eq!(file.remove_default(&mime(type_)), DefaultChange::Unchanged);
+            assert_eq!(file.render(), original);
+        }
+    }
+
+    #[test]
+    fn removing_the_last_default_leaves_a_valid_file() {
+        for (original, expected) in [
+            (
+                "[Default Applications]\nimage/png=eog.desktop\n",
+                "[Default Applications]\n",
+            ),
+            (
+                "[Default Applications]\nimage/png=eog.desktop",
+                "[Default Applications]\n",
+            ),
+            (
+                "[Default Applications]\r\nimage/png=eog.desktop\r\n",
+                "[Default Applications]\r\n",
+            ),
+        ] {
+            let mut file = MimeAppsFile::parse(original);
+            let change = file.remove_default(&mime("image/png"));
+            assert_eq!(file.render(), expected);
+            let reread = MimeAppsFile::parse(&file.render());
+            assert!(
+                reread
+                    .associations()
+                    .defaults_for(&mime("image/png"))
+                    .is_empty()
+            );
+            // What is left still takes a new default inside its group.
+            let mut again = reread.clone();
+            again.set_default(&mime("text/plain"), &id("nano.desktop"));
+            assert_eq!(
+                again.associations().default_for(&mime("text/plain")),
+                Some(&id("nano.desktop"))
+            );
+            assert!(file.undo(&change));
+            assert_eq!(file.render(), original);
+        }
+    }
+
+    #[test]
+    fn removing_a_repeated_key_removes_every_line_that_would_otherwise_win() {
+        let original = "[Default Applications]\ntext/plain=first.desktop\n\
+             text/html=firefox.desktop\ntext/plain=second.desktop\n";
+        let mut file = MimeAppsFile::parse(original);
+        let change = file.remove_default(&mime("text/plain"));
+        assert_eq!(
+            file.render(),
+            "[Default Applications]\ntext/html=firefox.desktop\n"
+        );
+        assert!(
+            file.associations()
+                .default_for(&mime("text/plain"))
+                .is_none()
+        );
+        assert!(file.undo(&change));
+        assert_eq!(file.render(), original);
+    }
+
+    #[test]
+    fn removing_matches_the_type_the_way_reading_does() {
+        let mut file = MimeAppsFile::parse("[Default Applications]\nImage/PNG = eog.desktop\n");
+        assert!(
+            file.associations()
+                .default_for(&mime("image/png"))
+                .is_some()
+        );
+        file.remove_default(&mime("image/png"));
+        assert_eq!(file.render(), "[Default Applications]\n");
+    }
+
+    #[test]
+    fn removing_leaves_the_same_type_in_other_groups_alone() {
+        let original = "[Added Associations]\nimage/png=eog.desktop;\n\n\
+             [Default Applications]\nimage/png=eog.desktop\n\n\
+             [Removed Associations]\nimage/png=gimp.desktop;\n";
+        let mut file = MimeAppsFile::parse(original);
+        file.remove_default(&mime("image/png"));
+        assert_eq!(
+            file.render(),
+            "[Added Associations]\nimage/png=eog.desktop;\n\n\
+             [Default Applications]\n\n\
+             [Removed Associations]\nimage/png=gimp.desktop;\n"
+        );
+    }
+
+    #[test]
+    fn undoing_a_removal_after_someone_set_the_type_again_refuses_to_guess() {
+        let mut file = MimeAppsFile::parse("[Default Applications]\nimage/png=eog.desktop\n");
+        let change = file.remove_default(&mime("image/png"));
+        file.set_default(&mime("image/png"), &id("gimp.desktop"));
+        assert!(!file.undo(&change));
+        assert_eq!(
+            file.render(),
+            "[Default Applications]\nimage/png=gimp.desktop\n"
+        );
     }
 }
