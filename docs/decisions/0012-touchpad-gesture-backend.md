@@ -9,6 +9,8 @@ built the adapter. The amendment is at the end of this document, under
 the decision as it stood when it was taken, kept unedited so that a later reader
 can see what was decided before the grant and what changed because of it.
 
+[ADR 0015](0015-touchpad-adapter-reports-the-device.md) widens the exception once more, on 2026-09-27: each gesture signal now names the device node that produced it.
+
 ## Context
 
 Issue #3 requires that the production gesture backend be selected through an

@@ -29,7 +29,7 @@ pub mod value;
 pub use backup::{BACKUP_SCHEMA_VERSION, Backup};
 pub use config::{
     BackendSelection, CONFIG_SCHEMA_VERSION, ClickingConfig, ConfigError, DeviceSelection,
-    PointerConfig, ScrollingConfig, TouchpadConfig,
+    PointerConfig, ScrollingConfig, TouchpadConfig, device_identity,
 };
 pub use health::{HealthCheck, HealthFacts, HealthReport, HealthState};
 pub use plan::{

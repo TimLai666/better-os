@@ -6,7 +6,8 @@
   names exactly these members.
 
   Two shapes are deliberate. The signals carry the compositor's own gesture
-  vocabulary — a phase, a contact count, and the raw deltas — and no verdict,
+  vocabulary — a phase, a contact count, the raw deltas, and the device node
+  the event came from — and no verdict,
   because every threshold lives in `touchpad-gestures`. The methods are the
   shell-owned actions and nothing else: there is no method that takes a
   command, a path, or any free text.
@@ -40,6 +41,10 @@
       so it is 1.0 at the beginning; angle_delta is the turn since the previous
       event, in radians. Accumulating the two relative figures is the client's
       job, because the client is the side that knows what a whole gesture is.
+      device is the device node of the device that produced the event, as the
+      shell names it (for example /dev/input/event5), or the empty string when
+      it names none. It is copied unchanged and is not stable across
+      re-plugging; ADR 0015 records why it is the one device fact reported.
     -->
     <signal name="SwipeGesture">
       <arg type="u" name="phase"/>
@@ -47,6 +52,7 @@
       <arg type="d" name="dx"/>
       <arg type="d" name="dy"/>
       <arg type="t" name="at_ms"/>
+      <arg type="s" name="device"/>
     </signal>
     <signal name="PinchGesture">
       <arg type="u" name="phase"/>
@@ -54,6 +60,7 @@
       <arg type="d" name="scale"/>
       <arg type="d" name="angle_delta"/>
       <arg type="t" name="at_ms"/>
+      <arg type="s" name="device"/>
     </signal>
   </interface>
 </node>

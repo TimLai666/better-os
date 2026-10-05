@@ -17,6 +17,11 @@
  *   - it decides nothing about which gesture means what. It reports what the
  *     compositor saw and does what it is told.
  *
+ * ADR 0015 widened the first bound by one value: each gesture signal carries
+ * the device node of the device that produced the event, read from the event
+ * and copied unchanged. Nothing else about a device is read, nothing is
+ * computed from the node, and nothing about any device is kept.
+ *
  * If this file grows a decision, the exception has been abused. The right
  * answer is to move the decision back into Rust, not to widen the exception.
  *
@@ -48,7 +53,7 @@ const PHASE_END = 2;
 const PHASE_CANCEL = 3;
 
 /** Bumped when the signal or method shapes change in a way a client can see. */
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 
 function wirePhase(phase) {
     switch (phase) {
@@ -63,6 +68,15 @@ function wirePhase(phase) {
     default:
         return null;
     }
+}
+
+/**
+ * The device node of the device that produced this event, exactly as the shell
+ * names it, or '' when it names none. Read from the event, emitted with it,
+ * and kept nowhere: which pad means which gestures is decided in Rust.
+ */
+function deviceNode(event) {
+    return event.get_source_device()?.get_device_node() ?? '';
 }
 
 export default class TouchpadAdapterExtension extends Extension {
@@ -128,12 +142,13 @@ export default class TouchpadAdapterExtension extends Extension {
         if (phase === null)
             return;
         const [dx, dy] = event.get_gesture_motion_delta();
-        this._exported.emit_signal('SwipeGesture', new GLib.Variant('(uuddt)', [
+        this._exported.emit_signal('SwipeGesture', new GLib.Variant('(uuddts)', [
             phase,
             event.get_touchpad_gesture_finger_count(),
             dx,
             dy,
             event.get_time(),
+            deviceNode(event),
         ]));
     }
 
@@ -147,6 +162,7 @@ export default class TouchpadAdapterExtension extends Extension {
             event.get_gesture_pinch_scale(),
             event.get_gesture_pinch_angle_delta(),
             event.get_time(),
+            deviceNode(event),
         ]));
     }
 

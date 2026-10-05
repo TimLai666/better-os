@@ -671,6 +671,7 @@ mod tests {
             dx: -3.5,
             dy: -12.0,
             at_ms: 42,
+            device: None,
         };
         assert_eq!(
             CompositorGesture::from_shell(&swipe),
@@ -689,6 +690,7 @@ mod tests {
             scale: 0.8,
             angle_delta: 0.1,
             at_ms: 7,
+            device: None,
         };
         assert_eq!(
             CompositorGesture::from_shell(&pinch),
@@ -709,6 +711,7 @@ mod tests {
                 dx: 0.0,
                 dy: 0.0,
                 at_ms: 0,
+                device: None,
             }),
             None
         );
@@ -719,6 +722,7 @@ mod tests {
                 dx: 0.0,
                 dy: 0.0,
                 at_ms: 0,
+                device: None,
             }),
             None
         );
