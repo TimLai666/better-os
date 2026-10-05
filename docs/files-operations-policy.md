@@ -123,6 +123,7 @@ persisted record. Only the `Display` rendering is lossy.
 | Case conflict | Classification only: needs a case-insensitive mount |
 | Cross-filesystem move | Forced by policy flag, not by a second mount: the code path is identical, what is simulated is the `EXDEV` that selects it |
 | Trash on another device | Simulated through a device probe that reports which device a path is on, with the device trash really inside a temporary directory. The `.Trash` checks, the 0700 creation, relative records, restore, and purge are real |
+| A share that stops answering | Simulated: a probe that blocks until the test releases it stands in for a `stat` on a dead NFS server. The mount-table rule is tested on a `mountinfo` fixture of every listed filesystem, with real trash directories in a temporary directory |
 
 ## Trash
 
@@ -159,6 +160,22 @@ wrote, so a record never outlives the data it describes.
   interfaces, automount points, package images, and FUSE views of other
   storage are not searched. Restore and permanent delete act on each item in
   the trash it is in, so one selection may span several.
+- **A share that does not answer cannot hold up the Trash view.** The home
+  trash's rows are sent before any device is looked for, and trashes on local
+  disks are read next. The listing thread never touches a network or FUSE
+  filesystem, because a `stat` on an NFS share whose server is gone can wait
+  forever and nothing can interrupt it. Those are `nfs`, `nfs4`, `cifs`,
+  `smb3`, `smbfs`, `9p`, `afs`, `ceph`, `coda`, `davfs`, `glusterfs`,
+  `lustre`, and `ncpfs`, and every FUSE mount (`fuse`, `fuseblk`, and every
+  `fuse.<name>`), since a FUSE mount is answered by a process that stalls
+  whenever its storage does. The list and its reasons are
+  `NETWORK_FILESYSTEMS` in `files-platform/src/trash.rs`. Each such mount
+  gets a probe thread that finds and reads its trash, and the listing waits
+  one second for all of them together. A mount that answered in time is
+  reachable and its items are listed. One that did not is reported as a
+  skipped entry named after its mount point, and while its probe is still
+  stuck it is not probed again, so later openings of the Trash do not wait
+  for it at all.
 
 ## Archives
 
@@ -237,12 +254,38 @@ archive are skipped and logged.
 | --- | --- | --- |
 | Bytes written by one extraction | 64 GiB | `policy::MAX_EXTRACTED_BYTES` |
 | Entries read by one extraction | 1,000,000 | `policy::MAX_EXTRACTED_ENTRIES` |
+| Central directory a zip may declare | 256 MiB | `policy::MAX_ZIP_CENTRAL_DIRECTORY_BYTES` |
 
-Both travel in `CopyPolicy::extract_limits`. Bytes are counted as they are
-written, so an entry whose header understates its size is stopped too. A zip
-declares its entry count and sizes up front, and one whose declarations already
-exceed a limit is refused before anything is written. Reaching a limit fails
-the item with `archive_limit_exceeded`, which names the limit and its value.
+The first two travel in `CopyPolicy::extract_limits`. Bytes are counted as
+they are written, so an entry whose header understates its size is stopped
+too. A zip declares its entry count and sizes up front, and one whose
+declarations already exceed a limit is refused before anything is written.
+Reaching a limit fails the item with `archive_limit_exceeded`, which names the
+archive, the limit, and its value.
+
+The `zip` crate reads a whole central directory into memory before it can
+count the entries in it. So before the crate is called, `files-operations`
+reads the end-of-central-directory record itself, and the ZIP64 record when
+the classic one's fields are saturated and a ZIP64 locator sits right before
+it. Only the last 65,557 bytes of the file are read for this, plus the 56-byte
+ZIP64 record. A zip that declares more entries than the entry limit, or a
+central directory over 256 MiB, is refused there, before its directory is
+read. 256 MiB holds a million entries whose names and extra fields average
+more than 200 bytes, and the bound is fixed rather than a policy field
+because it limits the reader's memory, not what an extraction writes. A zip
+with no end record in its last 65,557 bytes is refused as unreadable
+(`files.archive.error.zip_end_record_missing`), which is also where Info-ZIP's
+`unzip` stops looking. So is one whose ZIP64 locator does not lead to a ZIP64
+record (`files.archive.error.zip64_end_record_unusable`).
+
+One gap remains. When the end record that was checked does not lead to a
+readable directory, the `zip` crate looks further back in the file for an
+earlier end record and reads the directory that one declares. That directory
+was never checked. What it can cost is bounded by the file's own size, because
+the crate checks a ZIP64 entry count against the bytes in front of it, but it
+is not bounded by 256 MiB. The entry limit is applied again to whatever the
+crate opened, so such an archive still extracts nothing past the limit. Closing
+the gap means reading the central directory here instead of in the crate.
 
 ### What is left behind
 
@@ -253,11 +296,16 @@ damaged archive, or a cancel removes the temporary directory. Neither
 operation claims rollback: there is never a partial result for a rollback to
 undo.
 
-Proof: `tests/archives.rs`, 27 tests: the four formats both ways, each rule
+Proof: `tests/archives.rs`, 30 tests: the four formats both ways, each rule
 above with a hostile tar or zip assembled in the test, both limits for every
-format, pause, resume, cancel, retry, and a record read back by a later
-process. Unit tests in `extract.rs` cover the name split, link resolution,
-concatenated zstd frames, and format detection.
+format, zips whose end records declare too many entries or too large a
+directory (classic and ZIP64) in front of bytes that are not a directory,
+pause, resume, cancel, retry, and a record read back by a later process. Unit
+tests in `extract.rs` cover the name split, link resolution, concatenated zstd
+frames, and format detection. Unit tests in `zip_end.rs` cover reading the
+declaration, a comment that contains an end-record signature, a missing end
+record, a locator that leads nowhere, and a ten-gibibyte reader from which
+only the tail is read.
 
 ## Persistence and recovery
 
@@ -283,8 +331,17 @@ count.
   its jobs after the highest number already in it, readable or not, and skips
   a number whose record appeared since. A new process therefore never
   overwrites an earlier one's record, including an interrupted job recovery
-  would report. Two processes submitting at the same instant can still pick
-  the same number.
+  would report.
+- **A job number is claimed before the job is accepted.** The engine creates
+  an empty `job-<id>.claim` with `O_EXCL`, so when two Better Files windows
+  submit at the same instant, exactly one of them gets the number and the
+  other moves on to the next. A record is looked for before the claim and
+  again after it, because the other process may have written its record and
+  dropped its claim in between. The claim is removed once the job's header is
+  on disk. A claim left by a process that died before its first write is never
+  read by recovery and is not reported, and its number is still never handed
+  out again. A store where the claim cannot be created at all cannot hold the
+  record either, so the job runs unclaimed there, as it did before.
 - **The first format migrates on load.** A schema version 1 record, one JSON
   document holding every item, is read as it stands and rewritten as a header
   and a journal.

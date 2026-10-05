@@ -421,3 +421,95 @@ fn a_number_another_process_took_after_this_engine_started_is_skipped() {
         b"{"
     );
 }
+
+fn create_folder(parent: &std::path::Path, name: &str) -> JobSpec {
+    JobSpec::new(Operation::CreateFolder {
+        parent: local(parent),
+        name: name.into(),
+    })
+}
+
+/// Another process has claimed number 1 and not yet written its record: the
+/// moment between choosing a number and the first write, which is where two
+/// processes submitting at the same instant used to collide.
+#[test]
+fn a_number_another_process_claimed_before_its_first_write_is_skipped() {
+    let root = tempfile::tempdir().unwrap();
+    let store = JobStore::new(root.path().join("jobs"));
+    let engine = engine_with(&store);
+    fs::create_dir_all(store.root()).unwrap();
+    fs::write(store.root().join("job-00000000000000000001.claim"), b"").unwrap();
+
+    let handle = engine.submit(create_folder(root.path(), "made")).unwrap();
+    engine.wait(handle.id(), support::LIMIT).unwrap();
+    assert_eq!(handle.id().value(), 2);
+    assert!(
+        !store.root().join("job-00000000000000000001.json").exists(),
+        "the claimed number's record is the other process's to write"
+    );
+}
+
+/// Two engines on one store, both started before either submitted anything,
+/// submitting from several threads at once.
+#[test]
+fn two_engines_on_one_store_never_share_a_job_number() {
+    let root = tempfile::tempdir().unwrap();
+    let store = JobStore::new(root.path().join("jobs"));
+    let engines = [engine_with(&store), engine_with(&store)];
+    let submitted: Vec<(usize, files_operations::JobId)> = std::thread::scope(|scope| {
+        let mut threads = Vec::new();
+        for (which, engine) in engines.iter().enumerate() {
+            for thread in 0..4 {
+                let parent = root.path();
+                threads.push(scope.spawn(move || {
+                    (0..25)
+                        .map(|index| {
+                            let name = format!("{which}-{thread}-{index}");
+                            let handle = engine.submit(create_folder(parent, &name)).unwrap();
+                            (which, handle.id())
+                        })
+                        .collect::<Vec<_>>()
+                }));
+            }
+        }
+        threads
+            .into_iter()
+            .flat_map(|thread| thread.join().unwrap())
+            .collect()
+    });
+    for (which, id) in &submitted {
+        engines[*which].wait(*id, support::LIMIT).unwrap();
+    }
+    let mut ids: Vec<u64> = submitted.iter().map(|(_, id)| id.value()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), submitted.len(), "two jobs shared a number");
+}
+
+/// A process that died between claiming a number and writing its record
+/// leaves only the claim. Recovery has nothing to report about it, and the
+/// number is still not handed out again.
+#[test]
+fn recovery_ignores_a_claim_that_never_became_a_record() {
+    let root = tempfile::tempdir().unwrap();
+    let store = JobStore::new(root.path().join("jobs"));
+    fs::create_dir_all(store.root()).unwrap();
+    fs::write(store.root().join("job-00000000000000000007.claim"), b"").unwrap();
+
+    let recovery = store.recover();
+    assert!(recovery.settled.is_empty());
+    assert!(recovery.interrupted.is_empty());
+    assert!(recovery.damaged.is_empty(), "{:?}", recovery.damaged);
+
+    let engine = engine_with(&store);
+    let handle = engine.submit(create_folder(root.path(), "made")).unwrap();
+    engine.wait(handle.id(), support::LIMIT).unwrap();
+    assert_eq!(handle.id().value(), 8);
+    // The job's own claim is gone once its record is on disk; the dead
+    // process's claim is left as it was.
+    assert!(!store.root().join("job-00000000000000000008.claim").exists());
+    assert!(store.root().join("job-00000000000000000007.claim").exists());
+    let recovery = store.recover();
+    assert_eq!(recovery.settled.len(), 1);
+    assert!(recovery.damaged.is_empty());
+}

@@ -455,6 +455,9 @@ impl JobEngine {
             .expect("engine jobs")
             .insert(id, Arc::clone(&job));
         self.persist(&job);
+        if let Some(store) = &self.inner.store {
+            store.release_claim(id.0);
+        }
         job.publish(JobEvent::Queued(id));
         self.inner.queue.lock().expect("engine queue").push_back(id);
         self.inner.ready.notify_one();
@@ -464,19 +467,24 @@ impl JobEngine {
         })
     }
 
-    /// The next job number whose record is not already on disk.
+    /// The next job number, claimed on disk when the engine has a store.
     ///
     /// The engine starts after the highest number in its store, and a number
-    /// another process used since then is skipped here, so a record left by
-    /// any process — an interrupted job recovery would report — is never
-    /// overwritten. Two processes submitting at the same instant can still
-    /// pick the same number; nothing claims it on disk until the first write.
+    /// another process has claimed or recorded since then is skipped here, so
+    /// a record left by any process — an interrupted job recovery would
+    /// report — is never overwritten, and two processes submitting at the
+    /// same instant never share a number. A store whose claim cannot be
+    /// created at all cannot hold a record either, so the number is used
+    /// unclaimed rather than refusing the job.
     fn next_free_id(&self) -> JobId {
         loop {
             let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
-            match &self.inner.store {
-                Some(store) if store.holds(id) => continue,
-                _ => return JobId(id),
+            let Some(store) = &self.inner.store else {
+                return JobId(id);
+            };
+            match store.claim(id) {
+                Ok(false) => continue,
+                Ok(true) | Err(_) => return JobId(id),
             }
         }
     }

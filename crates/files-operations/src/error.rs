@@ -212,8 +212,12 @@ pub enum OperationError {
 pub enum ArchiveLimit {
     /// [`crate::policy::ExtractLimits::max_bytes`]: bytes actually written.
     UnpackedBytes,
-    /// [`crate::policy::ExtractLimits::max_entries`]: entries read.
+    /// [`crate::policy::ExtractLimits::max_entries`]: entries read, or
+    /// declared by a zip before any is read.
     Entries,
+    /// [`crate::policy::MAX_ZIP_CENTRAL_DIRECTORY_BYTES`]: the size a zip
+    /// declares for its central directory.
+    CentralDirectoryBytes,
 }
 
 impl ArchiveLimit {
@@ -221,6 +225,7 @@ impl ArchiveLimit {
         match self {
             ArchiveLimit::UnpackedBytes => "unpacked_bytes",
             ArchiveLimit::Entries => "entries",
+            ArchiveLimit::CentralDirectoryBytes => "central_directory_bytes",
         }
     }
 }
