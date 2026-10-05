@@ -611,6 +611,8 @@ impl ManagerApp {
             let driver = RealDriver::new(
                 &downloader,
                 &executor,
+                &manager_platform::dpkg::DpkgProbe,
+                &better_core::package_health::SystemHealthProbe,
                 uuid::Uuid::new_v4().to_string(),
                 profile,
             );
@@ -1040,12 +1042,7 @@ impl ManagerApp {
                 c.evidence_externally_upgraded
             }
             Some(other) if other.starts_with("host.state_adopted") => c.evidence_state_adopted,
-            Some(other)
-                if other.starts_with("daemon.error.plan_rejected")
-                    || other == "daemon.plan_rejected" =>
-            {
-                c.evidence_plan_rejected
-            }
+            Some(other) if plan_rejection_is_host_mismatch(other) => c.evidence_plan_rejected,
             Some(other) if other.starts_with("daemon.") => c.evidence_daemon_refused,
             _ => c.none,
         }
@@ -1175,4 +1172,15 @@ fn stored_from_locale(locale: Locale) -> StoredLocale {
         Locale::EnUs => StoredLocale::EnUs,
         Locale::ZhTw => StoredLocale::ZhTw,
     }
+}
+
+/// Whether a refusal key says the plan was built for a different machine.
+///
+/// Only the daemon's release and architecture checks mean that. Any other
+/// refusal — including one the client raised before sending anything — is a
+/// refusal for its own stated reason, and calling it a machine mismatch sends
+/// the person looking for a problem the machine does not have.
+pub(crate) fn plan_rejection_is_host_mismatch(evidence: &str) -> bool {
+    let _ = evidence;
+    todo!("ticket 75: plan_rejection_is_host_mismatch")
 }

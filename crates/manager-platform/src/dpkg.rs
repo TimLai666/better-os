@@ -7,11 +7,30 @@
 
 use std::process::Command;
 
+use better_core::package_health::{HealthProbe, HealthVerdict, InstalledFiles};
+
 use crate::PlatformError;
 
 pub trait PackageStateProbe: Send + Sync {
     /// The installed version of a package, or `None` when it is not installed.
     fn installed_version(&self, package: &str) -> Result<Option<String>, PlatformError>;
+
+    /// The files dpkg recorded for an installed package, with the paths this
+    /// machine's dpkg and apt configuration exclude from unpacking marked as
+    /// excluded — the same reading the privileged service's health check uses.
+    fn installed_files(&self, package: &str) -> Result<InstalledFiles, PlatformError>;
+}
+
+/// Checks an installed package with the shared health rule
+/// (`better_core::package_health::check_installed`), reading dpkg through
+/// `packages` and the filesystem through `health`. Nothing here needs root.
+pub fn verify_package(
+    packages: &dyn PackageStateProbe,
+    health: &dyn HealthProbe,
+    package: &str,
+) -> HealthVerdict {
+    let _ = (packages, health, package);
+    todo!("ticket 75: verify_package")
 }
 
 /// Queries the real dpkg database.
@@ -36,6 +55,11 @@ impl PackageStateProbe for DpkgProbe {
             return Ok(None);
         }
         Ok(parse_status(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    fn installed_files(&self, package: &str) -> Result<InstalledFiles, PlatformError> {
+        let _ = package;
+        todo!("ticket 75: DpkgProbe::installed_files")
     }
 }
 
@@ -81,27 +105,47 @@ pub fn upstream_version(version: &str) -> &str {
     strip_revision(strip_epoch(version))
 }
 
-/// A probe that answers from a fixed list, for tests.
-pub struct FixedPackageStateProbe(pub Vec<(String, String)>);
+/// A probe that answers from fixed lists, for tests.
+pub struct FixedPackageStateProbe {
+    versions: Vec<(String, String)>,
+    files: Vec<(String, InstalledFiles)>,
+}
 
 impl FixedPackageStateProbe {
     pub fn new(entries: &[(&str, &str)]) -> Self {
-        Self(
-            entries
+        Self {
+            versions: entries
                 .iter()
                 .map(|(package, version)| (package.to_string(), version.to_string()))
                 .collect(),
-        )
+            files: Vec::new(),
+        }
+    }
+
+    /// Gives `package` the file list dpkg would report for it. A package with
+    /// no list here answers `installed_files` with an error, the way a dpkg
+    /// that cannot be queried does.
+    pub fn with_files(mut self, package: &str, files: InstalledFiles) -> Self {
+        self.files.push((package.to_string(), files));
+        self
     }
 }
 
 impl PackageStateProbe for FixedPackageStateProbe {
     fn installed_version(&self, package: &str) -> Result<Option<String>, PlatformError> {
         Ok(self
-            .0
+            .versions
             .iter()
             .find(|(known, _)| known == package)
             .map(|(_, version)| version.clone()))
+    }
+
+    fn installed_files(&self, package: &str) -> Result<InstalledFiles, PlatformError> {
+        self.files
+            .iter()
+            .find(|(known, _)| known == package)
+            .map(|(_, files)| files.clone())
+            .ok_or(PlatformError::CapabilityUnavailable("dpkg.file_list"))
     }
 }
 

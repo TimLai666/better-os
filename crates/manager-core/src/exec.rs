@@ -10,10 +10,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use better_core::package_health::HealthProbe;
 use manager_ipc::{
     OutcomeStatus, TransactionOutcome, WireAction, WireArtifact, WirePlan, WireRecovery, WireStep,
 };
 use manager_platform::download::HttpDownloader;
+use manager_platform::dpkg::PackageStateProbe;
 use manager_platform::{DownloadRequest, PlatformError, PrivilegedTransactionExecutor};
 
 use crate::{
@@ -155,6 +157,10 @@ impl StageDriver for MockDriver {
 pub struct RealDriver<'a> {
     downloader: &'a HttpDownloader,
     executor: &'a dyn PrivilegedTransactionExecutor,
+    /// Read-only dpkg queries, for the steps that check a component without
+    /// changing it.
+    packages: &'a dyn PackageStateProbe,
+    health: &'a dyn HealthProbe,
     transaction_id: String,
     profile: SystemProfile,
     /// Set once the transaction has been handed over, so the outcome can be
@@ -166,12 +172,16 @@ impl<'a> RealDriver<'a> {
     pub fn new(
         downloader: &'a HttpDownloader,
         executor: &'a dyn PrivilegedTransactionExecutor,
+        packages: &'a dyn PackageStateProbe,
+        health: &'a dyn HealthProbe,
         transaction_id: impl Into<String>,
         profile: SystemProfile,
     ) -> Self {
         Self {
             downloader,
             executor,
+            packages,
+            health,
             transaction_id: transaction_id.into(),
             profile,
             outcome: None,
@@ -179,7 +189,19 @@ impl<'a> RealDriver<'a> {
     }
 
     /// Translates a plan into the wire contract the daemon revalidates.
-    pub fn wire_plan(&self, plan: &TransactionPlan) -> Result<WirePlan, FailureEvidence> {
+    ///
+    /// `Ok(None)` when no step crosses the privileged boundary — a plan of
+    /// only Verify, Enable, and Disable steps — so nothing is sent at all.
+    pub fn wire_plan(&self, plan: &TransactionPlan) -> Result<Option<WirePlan>, FailureEvidence> {
+        let _ = plan;
+        todo!("ticket 75: wire_plan returns None for a plan with no privileged step")
+    }
+
+    #[allow(dead_code)]
+    fn wire_plan_before_ticket_75(
+        &self,
+        plan: &TransactionPlan,
+    ) -> Result<WirePlan, FailureEvidence> {
         let mut steps = Vec::new();
         for step in plan.steps() {
             let Some(action) = wire_action(step.operation) else {
@@ -278,13 +300,11 @@ impl<'a> RealDriver<'a> {
         progress: &mut dyn FnMut(StageProgress),
     ) -> StageOutcome {
         let wire = match self.wire_plan(plan) {
-            Ok(wire) => wire,
+            Ok(Some(wire)) => wire,
+            // Nothing here needs the privileged boundary.
+            Ok(None) => return StageOutcome::Completed,
             Err(evidence) => return StageOutcome::Failed(evidence),
         };
-        if wire.steps.is_empty() {
-            // Nothing here needs the privileged boundary.
-            return StageOutcome::Completed;
-        }
 
         let component = wire.steps[0].component.clone();
         progress(StageProgress::Applying {
@@ -299,6 +319,18 @@ impl<'a> RealDriver<'a> {
             }
             Err(error) => StageOutcome::Failed(evidence_for(&error)),
         }
+    }
+
+    /// The health stage: the daemon's verdict for what it applied, and the
+    /// shared health rule, read without root, for every Verify step.
+    ///
+    /// A Verify step that the rule finds healthy passes; a failed check fails
+    /// the stage with `health.failed` and the rule's detail; a check that could
+    /// not run fails it with `health.undetermined`. Nothing is reported healthy
+    /// without being checked.
+    fn check_health(&self, plan: &TransactionPlan) -> StageOutcome {
+        let _ = (plan, self.packages, self.health);
+        todo!("ticket 75: check_health")
     }
 
     /// What the daemon reported, once the transaction has been handed over.
@@ -320,11 +352,12 @@ impl StageDriver for RealDriver<'_> {
             OperationStage::Installing => self.apply(plan, progress),
             // The daemon already applied configuration and health-checked what
             // it applied. Repeating either here would be guessing.
-            OperationStage::ApplyingSettings | OperationStage::CheckingHealth => self
+            OperationStage::ApplyingSettings => self
                 .outcome
                 .as_ref()
                 .map(outcome_to_stage)
                 .unwrap_or(StageOutcome::Completed),
+            OperationStage::CheckingHealth => self.check_health(plan),
         }
     }
 
@@ -741,14 +774,21 @@ mod tests {
             std::env::temp_dir().join("better-os-wire-test"),
         ));
         let executor = manager_platform::UnapprovedPrivilegedExecutor;
+        let packages = manager_platform::dpkg::FixedPackageStateProbe::new(&[]);
+        let health = better_core::package_health::FakeHealthProbe::with_files(Vec::new());
         let driver = RealDriver::new(
             &downloader,
             &executor,
+            &packages,
+            &health,
             "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
             crate::SystemProfile::default(),
         );
 
-        let wire = driver.wire_plan(&plan).expect("the plan translates");
+        let wire = driver
+            .wire_plan(&plan)
+            .expect("the plan translates")
+            .expect("an install crosses the privileged boundary");
         // The daemon revalidates this from scratch, so it has to pass the
         // shared contract before it is worth sending.
         wire.validate().unwrap();
@@ -830,9 +870,13 @@ mod tests {
             std::env::temp_dir().join("better-os-cancel-test"),
         ));
         let executor = manager_platform::UnapprovedPrivilegedExecutor;
+        let packages = manager_platform::dpkg::FixedPackageStateProbe::new(&[]);
+        let health = better_core::package_health::FakeHealthProbe::with_files(Vec::new());
         let driver = RealDriver::new(
             &downloader,
             &executor,
+            &packages,
+            &health,
             "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
             crate::SystemProfile::default(),
         );
