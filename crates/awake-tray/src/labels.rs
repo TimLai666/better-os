@@ -5,41 +5,9 @@
 //! rather than from literals scattered through the layout code. Panel menus are
 //! narrow, so the wording here is the short form; the full window may say more.
 
-/// The two locales Phase 1 ships.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Locale {
-    ZhTw,
-    EnUs,
-}
-
-impl Locale {
-    /// Reads the user's locale the way every other POSIX program does.
-    /// Anything that is not Traditional Chinese falls back to `en-US`, which is
-    /// a fallback, not a guess about the user.
-    pub fn from_environment() -> Self {
-        let value = ["LC_ALL", "LC_MESSAGES", "LANG"]
-            .iter()
-            .find_map(|name| std::env::var(name).ok())
-            .unwrap_or_default();
-        Self::from_tag(&value)
-    }
-
-    pub fn from_tag(tag: &str) -> Self {
-        let tag = tag.replace('-', "_").to_ascii_lowercase();
-        if tag.starts_with("zh_tw") || tag.starts_with("zh_hant") || tag.starts_with("zh_hk") {
-            Locale::ZhTw
-        } else {
-            Locale::EnUs
-        }
-    }
-
-    pub fn tag(self) -> &'static str {
-        match self {
-            Locale::ZhTw => "zh-TW",
-            Locale::EnUs => "en-US",
-        }
-    }
-}
+/// The locale rule is shared with the service, which words the low-battery
+/// notification itself when no tray is running.
+pub use awake_ipc::notification::Locale;
 
 /// Every string the tray can show. A struct rather than a lookup by key, so a
 /// missing translation is a compile error instead of a menu entry that silently
@@ -117,15 +85,10 @@ pub struct Labels {
     /// explanation, so it says where it came from rather than inventing one.
     pub tray_session_reason: &'static str,
     pub security_confirmation_needed: &'static str,
-    /// The desktop notification raised when low battery ends a session.
-    /// `{threshold}` is the stop threshold that was crossed.
-    pub low_battery_stop_summary: &'static str,
-    /// `{percent}` is the reading that crossed it.
-    pub low_battery_stop_body: &'static str,
 }
 
 pub const ZH_TW: Labels = Labels {
-    application_name: "保持清醒",
+    application_name: awake_ipc::notification::ZH_TW.application_name,
     inactive_summary: "目前未保持清醒",
     active_summary: "正在保持這台電腦清醒",
     start_a_session: "開始一段工作階段",
@@ -182,12 +145,10 @@ pub const ZH_TW: Labels = Labels {
     active_reasons: "{count} 個進行中的原因",
     tray_session_reason: "從系統匣開始的工作階段",
     security_confirmation_needed: "需要在主視窗確認",
-    low_battery_stop_summary: "電量低於 {threshold}%，已停止保持清醒",
-    low_battery_stop_body: "工作階段在電量剩 {percent}% 時結束。",
 };
 
 pub const EN_US: Labels = Labels {
-    application_name: "Better Awake",
+    application_name: awake_ipc::notification::EN_US.application_name,
     inactive_summary: "Not keeping this computer awake",
     active_summary: "Keeping this computer awake",
     start_a_session: "Start a session",
@@ -244,12 +205,16 @@ pub const EN_US: Labels = Labels {
     active_reasons: "{count} active reasons",
     tray_session_reason: "Started from the tray",
     security_confirmation_needed: "Confirm in the main window",
-    low_battery_stop_summary: "Stopped keeping awake: battery below {threshold}%",
-    low_battery_stop_body: "The session ended at {percent}% battery.",
 };
 
-impl Locale {
-    pub fn labels(self) -> &'static Labels {
+/// The tray's wording for a locale. A trait because [`Locale`] is defined where
+/// the service can share it.
+pub trait LocaleLabels {
+    fn labels(self) -> &'static Labels;
+}
+
+impl LocaleLabels for Locale {
+    fn labels(self) -> &'static Labels {
         match self {
             Locale::ZhTw => &ZH_TW,
             Locale::EnUs => &EN_US,
@@ -260,26 +225,6 @@ impl Locale {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_traditional_chinese_locale_is_recognized_in_every_shape_it_arrives_in() {
-        for tag in [
-            "zh_TW.UTF-8",
-            "zh-TW",
-            "zh_Hant",
-            "zh_HK.UTF-8",
-            "ZH_tw.utf8",
-        ] {
-            assert_eq!(Locale::from_tag(tag), Locale::ZhTw, "{tag}");
-        }
-    }
-
-    #[test]
-    fn anything_else_falls_back_to_english() {
-        for tag in ["en_US.UTF-8", "zh_CN.UTF-8", "", "C", "de_DE"] {
-            assert_eq!(Locale::from_tag(tag), Locale::EnUs, "{tag}");
-        }
-    }
 
     #[test]
     fn the_wording_issue_13_fixes_is_the_wording_that_ships() {

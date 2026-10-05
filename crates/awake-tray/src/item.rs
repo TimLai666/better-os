@@ -12,6 +12,7 @@ use zbus::interface;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 
 use crate::controller::TrayController;
+use crate::labels::LocaleLabels;
 use crate::sni::{MENU_PATH, icon_name, item_status};
 
 pub struct StatusNotifierItem {

@@ -7,6 +7,7 @@
 pub mod backend;
 pub mod engine;
 pub mod logind;
+pub mod notify;
 pub mod rules;
 pub mod service;
 

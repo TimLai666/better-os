@@ -10,6 +10,7 @@
 //! Ticket 26 also puts uninstall behaviour in the manifest rather than in a
 //! maintainer script nobody reads, so the release notes are asserted here too.
 
+use awake_ipc::notification::TRAY_BUS_NAME;
 use awake_service::BUS_NAME;
 use better_core::{
     ComponentCatalog, ComponentIcon, ComponentManifest, ComponentType, RestartScope,
@@ -96,6 +97,18 @@ fn the_bus_name_the_service_owns_is_named_in_the_manifest() {
             .iter()
             .any(|permission| permission.reason.contains(BUS_NAME)),
         "the bus name the service owns must be named in the manifest, not just in code"
+    );
+}
+
+#[test]
+fn the_bus_name_the_tray_owns_is_named_in_the_manifest() {
+    let manifest = manifest();
+    assert!(
+        manifest
+            .permissions
+            .iter()
+            .any(|permission| permission.reason.contains(TRAY_BUS_NAME)),
+        "the bus name the tray owns must be named in the manifest, not just in code"
     );
 }
 

@@ -18,6 +18,7 @@ use zbus::object_server::SignalEmitter;
 
 use crate::backend::InhibitorBackend;
 use crate::engine::{AwakeEngine, EndedSession};
+use crate::notify::{LowBatteryNotifier, LowBatteryStop, tray_is_running};
 
 pub const BUS_NAME: &str = "org.betteros.Awake1";
 pub const OBJECT_PATH: &str = "/org/betteros/Awake1";
@@ -25,11 +26,22 @@ pub const INTERFACE_NAME: &str = "org.betteros.Awake1";
 
 pub struct AwakeDbusService<B: InhibitorBackend + 'static> {
     engine: Arc<AwakeEngine<B>>,
+    notifier: Option<LowBatteryNotifier>,
 }
 
 impl<B: InhibitorBackend + 'static> AwakeDbusService<B> {
     pub fn new(engine: Arc<AwakeEngine<B>>) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            notifier: None,
+        }
+    }
+
+    /// Raises the low-battery notification for a stop found while answering a
+    /// request, when no tray is running to raise it.
+    pub fn with_notifier(mut self, notifier: LowBatteryNotifier) -> Self {
+        self.notifier = Some(notifier);
+        self
     }
 }
 
@@ -71,7 +83,7 @@ impl<B: InhibitorBackend + 'static> AwakeDbusService<B> {
         // A session the service ended by itself while answering is announced
         // first, so a client reads why it ended before the status that no
         // longer lists it.
-        announce_ended::<B>(&emitter, &ended).await;
+        announce_ended::<B>(&emitter, &ended, self.notifier.as_ref()).await;
 
         // A change every client must see, pushed once, carrying the whole
         // state so a client that missed an earlier signal is still correct.
@@ -102,15 +114,17 @@ impl<B: InhibitorBackend + 'static> AwakeDbusService<B> {
 /// its battery threshold, or was started by a rule would leave every open menu
 /// showing what was there before. Each ended session is announced once, then
 /// one status for the whole tick. A tick that changed neither the sessions nor
-/// the refused rules pushes nothing.
+/// the refused rules pushes nothing. A low-battery stop is also raised as a
+/// desktop notification through `notifier` when no tray is running.
 ///
 /// Returns the sessions the tick ended.
 pub async fn tick_and_announce<B: InhibitorBackend + 'static>(
     engine: &AwakeEngine<B>,
     emitter: &SignalEmitter<'_>,
+    notifier: Option<&LowBatteryNotifier>,
 ) -> Vec<EndedSession> {
     let outcome = engine.tick().await;
-    announce_ended::<B>(emitter, &outcome.ended).await;
+    announce_ended::<B>(emitter, &outcome.ended, notifier).await;
     if outcome.changed {
         announce_status(emitter, engine).await;
     }
@@ -125,7 +139,9 @@ pub async fn shutdown_and_announce<B: InhibitorBackend + 'static>(
 ) -> Vec<EndedSession> {
     let ended = engine.shutdown().await;
     if !ended.is_empty() {
-        announce_ended::<B>(emitter, &ended).await;
+        // Shutting down stops no session for low battery, so there is nothing
+        // to notify.
+        announce_ended::<B>(emitter, &ended, None).await;
         announce_status(emitter, engine).await;
     }
     ended
@@ -134,14 +150,33 @@ pub async fn shutdown_and_announce<B: InhibitorBackend + 'static>(
 /// A signal that cannot be sent has no one to report to — the bus is the
 /// channel the report would travel on — so a failure is dropped here, as the
 /// status signal always has been.
+///
+/// A low-battery stop is raised as a notification by the service only when no
+/// tray owns its name. The bus is asked before the signal goes out: a tray that
+/// takes its name in between has already subscribed, so it hears the stop and
+/// notifies too. Two notifications is the better way for that race to end
+/// than none.
 async fn announce_ended<B: InhibitorBackend + 'static>(
     emitter: &SignalEmitter<'_>,
     ended: &[EndedSession],
+    notifier: Option<&LowBatteryNotifier>,
 ) {
+    let stops = LowBatteryStop::among(ended);
+    let notifier = match notifier {
+        Some(notifier) if !stops.is_empty() && !tray_is_running(emitter.connection()).await => {
+            Some(notifier)
+        }
+        _ => None,
+    };
+
     for ended in ended {
         if let Ok(document) = ended.event().to_json() {
             let _ = AwakeDbusService::<B>::status_changed(emitter, &document).await;
         }
+    }
+
+    if let Some(notifier) = notifier {
+        notifier.raise(emitter.connection(), stops);
     }
 }
 
