@@ -17,7 +17,6 @@
 
 pub mod apt;
 pub mod authorize;
-pub mod dpkg_config;
 pub mod executor;
 pub mod health;
 pub mod host;
