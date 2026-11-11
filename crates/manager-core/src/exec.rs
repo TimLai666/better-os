@@ -317,12 +317,14 @@ impl<'a> RealDriver<'a> {
     }
 
     /// The health stage: the daemon's verdict for what it applied, and the
-    /// shared health rule, read without root, for every Verify step.
+    /// shared health rule, read without root, for every step the daemon never
+    /// saw: Verify, Enable, and Disable.
     ///
-    /// A Verify step that the rule finds healthy passes; a failed check fails
-    /// the stage with `health.failed` and the rule's detail; a check that could
-    /// not run fails it with `health.undetermined`. Nothing is reported healthy
-    /// without being checked.
+    /// A finished transaction marks its components healthy and clears their
+    /// failure, so a step nothing checked would turn a failed component into
+    /// a healthy one by being enabled. A step the rule finds healthy passes; a
+    /// failed check fails the stage with `health.failed` and the rule's detail;
+    /// a check that could not run fails it with `health.undetermined`.
     fn check_health(&self, plan: &TransactionPlan) -> StageOutcome {
         if let Some(outcome) = &self.outcome {
             let stage = outcome_to_stage(outcome);
@@ -331,7 +333,7 @@ impl<'a> RealDriver<'a> {
             }
         }
         for step in plan.steps() {
-            if !matches!(step.operation, DesiredOperation::Verify) {
+            if wire_action(step.operation).is_some() {
                 continue;
             }
             let package = step.component.to_string();

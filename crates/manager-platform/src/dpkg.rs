@@ -9,8 +9,8 @@ use std::path::Path;
 use std::process::Command;
 
 use better_core::package_health::{
-    HealthProbe, HealthVerdict, InstalledFiles, PathFilter, check_installed,
-    parse_apt_config_value, parse_conffiles, parse_file_list,
+    HealthProbe, HealthVerdict, InstalledFiles, check_installed, installed_files_from,
+    path_filter_from,
 };
 
 use crate::PlatformError;
@@ -82,22 +82,9 @@ impl PackageStateProbe for DpkgProbe {
         let conffiles = read_only_output("dpkg-query", &["-W", "-f=${Conffiles}", "--", package])
             .ok_or_else(unavailable)?;
 
-        let paths = parse_file_list(&listed);
-        let filter = configured_path_filter();
-        let excluded = if filter.is_empty() {
-            Vec::new()
-        } else {
-            paths
-                .iter()
-                .filter(|path| filter.excludes(path))
-                .cloned()
-                .collect()
-        };
-        Ok(InstalledFiles {
-            paths,
-            conffiles: parse_conffiles(&conffiles),
-            excluded,
-        })
+        let apt_options = read_only_output("apt-config", &["dump", "DPkg::Options"]);
+        let filter = path_filter_from(Path::new("/etc/dpkg"), apt_options.as_deref());
+        Ok(installed_files_from(&listed, &conffiles, &filter))
     }
 }
 
@@ -113,21 +100,6 @@ fn read_only_output(program: &str, arguments: &[&str]) -> Option<String> {
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// The path filters in force on this machine: dpkg's own configuration, plus
-/// whatever apt adds to the dpkg command line. An `apt-config` that cannot be
-/// run contributes nothing, the same reading the daemon's driver makes.
-fn configured_path_filter() -> PathFilter {
-    let mut filter = PathFilter::from_config_dir(Path::new("/etc/dpkg"));
-    if let Some(dumped) = read_only_output("apt-config", &["dump", "DPkg::Options"]) {
-        for line in dumped.lines() {
-            if let Some(option) = parse_apt_config_value(line) {
-                filter.push_option(option);
-            }
-        }
-    }
-    filter
 }
 
 fn is_safe_package_name(package: &str) -> bool {

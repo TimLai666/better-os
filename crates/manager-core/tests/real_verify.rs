@@ -300,8 +300,12 @@ fn an_enable_only_plan_completes_without_reaching_the_executor() {
     let manager = manager();
     let mut state = failed_awake(false);
     let plan = real_plan(&manager, &state, DesiredOperation::Enable);
-    let packages = FixedPackageStateProbe::new(&[]);
-    let health = FakeHealthProbe::empty();
+    let packages = FixedPackageStateProbe::new(&[("better-awake", INSTALLED)])
+        .with_files("better-awake", awake_files());
+    let health = FakeHealthProbe::with_files(vec![
+        path("/usr/bin/better-awake-service"),
+        path("/usr/share/applications/better-awake.desktop"),
+    ]);
     let executor = CountingExecutor::default();
 
     let (progress, _) = run(&manager, &mut state, plan, &packages, &health, &executor);
@@ -314,13 +318,48 @@ fn an_enable_only_plan_completes_without_reaching_the_executor() {
     assert!(state.component(&awake()).unwrap().enabled);
 }
 
+/// Finishing a transaction marks its components healthy and clears their
+/// failure. Enabling a failed component whose files are gone must not be a way
+/// to get that without a check.
+#[test]
+fn enabling_a_failed_component_with_a_missing_file_does_not_make_it_healthy() {
+    let manager = manager();
+    let mut state = failed_awake(false);
+    let plan = real_plan(&manager, &state, DesiredOperation::Enable);
+    let packages = FixedPackageStateProbe::new(&[("better-awake", INSTALLED)])
+        .with_files("better-awake", awake_files());
+    let health = FakeHealthProbe::with_files(vec![path("/usr/bin/better-awake-service")]);
+    let executor = CountingExecutor::default();
+
+    let (progress, _) = run(&manager, &mut state, plan, &packages, &health, &executor);
+
+    assert_eq!(executor.calls(), 0);
+    match progress {
+        OperationProgress::Failed { failure } => {
+            assert_eq!(failure.stage, OperationStage::CheckingHealth);
+            assert_eq!(failure.evidence, "health.failed");
+        }
+        other => panic!("an unchecked enable must not finish, got {other:?}"),
+    }
+    let record = state.component(&awake()).unwrap();
+    assert_ne!(record.health, HealthState::Healthy);
+    assert!(
+        record.failure.is_some(),
+        "the failure must still be recorded"
+    );
+}
+
 #[test]
 fn a_disable_only_plan_completes_without_reaching_the_executor() {
     let manager = manager();
     let mut state = failed_awake(true);
     let plan = real_plan(&manager, &state, DesiredOperation::Disable);
-    let packages = FixedPackageStateProbe::new(&[]);
-    let health = FakeHealthProbe::empty();
+    let packages = FixedPackageStateProbe::new(&[("better-awake", INSTALLED)])
+        .with_files("better-awake", awake_files());
+    let health = FakeHealthProbe::with_files(vec![
+        path("/usr/bin/better-awake-service"),
+        path("/usr/share/applications/better-awake.desktop"),
+    ]);
     let executor = CountingExecutor::default();
 
     let (progress, _) = run(&manager, &mut state, plan, &packages, &health, &executor);
@@ -336,8 +375,12 @@ fn a_disable_only_plan_completes_without_reaching_the_executor() {
 #[test]
 fn a_verify_or_enable_plan_has_no_wire_plan_and_an_install_has_one_step() {
     let manager = manager();
-    let packages = FixedPackageStateProbe::new(&[]);
-    let health = FakeHealthProbe::empty();
+    let packages = FixedPackageStateProbe::new(&[("better-awake", INSTALLED)])
+        .with_files("better-awake", awake_files());
+    let health = FakeHealthProbe::with_files(vec![
+        path("/usr/bin/better-awake-service"),
+        path("/usr/share/applications/better-awake.desktop"),
+    ]);
     let executor = CountingExecutor::default();
     let downloader = HttpDownloader::new(ArtifactCache::new(
         std::env::temp_dir().join("better-os-real-verify-wire-test"),

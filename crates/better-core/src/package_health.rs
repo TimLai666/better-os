@@ -347,6 +347,39 @@ pub fn parse_conffiles(output: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The path filters in force on a machine: dpkg's own configuration under
+/// `config_root`, plus whatever apt adds to the dpkg command line, given as the
+/// output of `apt-config dump DPkg::Options` when that could be run.
+pub fn path_filter_from(config_root: &Path, apt_config_dump: Option<&str>) -> PathFilter {
+    let mut filter = PathFilter::from_config_dir(config_root);
+    for line in apt_config_dump.unwrap_or_default().lines() {
+        if let Some(option) = parse_apt_config_value(line) {
+            filter.push_option(option);
+        }
+    }
+    filter
+}
+
+/// Builds a package's file list from `dpkg-query -L` output and its
+/// `${Conffiles}` field, marking the paths `filter` says dpkg never unpacks.
+pub fn installed_files_from(listed: &str, conffiles: &str, filter: &PathFilter) -> InstalledFiles {
+    let paths = parse_file_list(listed);
+    let excluded = if filter.is_empty() {
+        Vec::new()
+    } else {
+        paths
+            .iter()
+            .filter(|path| filter.excludes(path))
+            .cloned()
+            .collect()
+    };
+    InstalledFiles {
+        paths,
+        conffiles: parse_conffiles(conffiles),
+        excluded,
+    }
+}
+
 /// What the shared rule concluded about one package.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HealthVerdict {

@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use better_core::package_health::{
-    InstalledFiles, PathFilter, parse_apt_config_value, parse_conffiles, parse_file_list,
+    InstalledFiles, PathFilter, installed_files_from, path_filter_from,
 };
 use manager_ipc::{LogEntry, MAX_LOG_OUTPUT_BYTES};
 
@@ -146,15 +146,11 @@ impl AptGetDriver {
     /// contributes nothing rather than failing the query: dpkg's own files are
     /// where a minimized image writes its filters.
     fn path_filter(&self) -> PathFilter {
-        let mut filter = PathFilter::from_config_dir(Path::new("/etc/dpkg"));
-        if let Ok((true, dumped)) = self.query("apt-config", &["dump", "DPkg::Options"]) {
-            for line in dumped.lines() {
-                if let Some(option) = parse_apt_config_value(line) {
-                    filter.push_option(option);
-                }
-            }
-        }
-        filter
+        let dumped = match self.query("apt-config", &["dump", "DPkg::Options"]) {
+            Ok((true, dumped)) => Some(dumped),
+            _ => None,
+        };
+        path_filter_from(Path::new("/etc/dpkg"), dumped.as_deref())
     }
 
     /// Runs a query for its whole output rather than for a log entry.
@@ -263,22 +259,11 @@ impl AptDriver for AptGetDriver {
                 conffiles.trim()
             )));
         }
-        let paths = parse_file_list(&listed);
-        let filter = self.path_filter();
-        let excluded = if filter.is_empty() {
-            Vec::new()
-        } else {
-            paths
-                .iter()
-                .filter(|path| filter.excludes(path))
-                .cloned()
-                .collect()
-        };
-        Ok(InstalledFiles {
-            paths,
-            conffiles: parse_conffiles(&conffiles),
-            excluded,
-        })
+        Ok(installed_files_from(
+            &listed,
+            &conffiles,
+            &self.path_filter(),
+        ))
     }
 }
 
