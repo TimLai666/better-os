@@ -100,8 +100,16 @@ GUI or dependency compiles when the relevant command was not executed.
   metrics; the reasoning is in `docs/monitor-collector-sources.md`.
 - Decide the package signature format before offering a signed distribution
   channel. Checksums are currently the only integrity mechanism.
-- Decide whether the daemon should offer a `dpkg --configure -a` repair action
-  for a transaction interrupted by a crash or power loss.
+- The daemon repairs a dpkg run a crash interrupted (ADR 0014): a method with
+  no argument, its own polkit action, `dpkg --configure -a` and nothing else.
+  It has only ever run against the fake driver. The daemon's systemd sandbox
+  (`ProtectKernelModules`, `DevicePolicy=closed`, and the rest) is inherited by
+  dpkg's maintainer scripts, so a repair after an interrupted kernel upgrade may
+  fail where the same command in a terminal succeeds; ADR 0014 says how to test
+  that in a VM. The failure message names the terminal command.
+- The manager strips a dpkg epoch before it compares versions, so `1:0.2.8`
+  reads as older than `0.3.0` while dpkg orders it the other way. An update
+  planned from such a version would be a downgrade to apt.
 - Better Launcher is measured now: `cargo bench -p launcher-gui --bench
   launcher_suite` runs all five manifest benchmarks and
   `docs/launcher-performance.md` records the numbers and the hardware. Two
@@ -500,8 +508,8 @@ GUI or dependency compiles when the relevant command was not executed.
   from `better-manager-cli reconcile --adopt <id>`, never by editing the state
   file. Both shipped in v0.2.7. Adoption drops the restore snapshot and the recorded artifact, because
   they name a version the machine no longer has; the GUI says so before it acts.
-- A dpkg version that is not a semantic version keeps a package invisible to the
-  manager: ticket 44's host reconciliation adopts only what `semver` can parse,
-  because everything downstream compares versions. A package in that state is
-  neither adopted nor reported. Deciding what to show for it — a state, a
-  finding, or a doctor check — is still open.
+- A package dpkg holds at a version `semver` cannot order (a tilde version
+  such as `0.2.8~rc1`) is never adopted and never planned for. Doctor lists it
+  with dpkg's own version string, and the component page explains it in place
+  of an install button. `better-manager-cli plan` is a simulation and still
+  prints a plan for it; `run` refuses.

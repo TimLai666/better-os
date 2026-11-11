@@ -2,7 +2,7 @@
 
 **Epic:** Better Manager (Issue #8) · **User Story:** a person whose machine lost
 power in the middle of an install can finish it from Better Manager instead of
-a terminal · **Branch:** `ticket-68-69` · **Blocked by:** none · **Status:** implemented, not merged
+a terminal · **Branch:** `ticket-68-69` · **Blocked by:** none · **Status:** merged, not released
 
 ## What it delivers
 

@@ -3,7 +3,7 @@
 **Epic:** Better Manager (Issue #8) · **User Story:** a person whose component
 was installed with a version the manager cannot order sees that it exists and
 why it is not managed · **Branch:** `ticket-68-69` · **Blocked by:** none ·
-**Status:** implemented, not merged
+**Status:** merged, not released
 
 ## What it delivers
 
