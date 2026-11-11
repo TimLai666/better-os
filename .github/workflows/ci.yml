@@ -6,7 +6,7 @@ on:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       RUST_FONTCONFIG_DLOPEN: "1"
     steps:
@@ -35,7 +35,7 @@ jobs:
   # every target with exactly that toolchain, so a dependency bump that needs a
   # newer compiler fails here rather than on a contributor's machine.
   msrv:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       RUST_FONTCONFIG_DLOPEN: "1"
     steps:
@@ -69,7 +69,7 @@ jobs:
   # public API. The half that changes a machine runs in the container e2e
   # below, against the packages that job just built.
   installer:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Install shellcheck
