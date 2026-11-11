@@ -1576,3 +1576,155 @@ mod drift_surface {
         );
     }
 }
+
+/// Ticket 68: an interrupted dpkg run, shown on the Health screen with the one
+/// control that repairs it.
+mod package_system_repair {
+    use super::*;
+    use crate::model::{package_system_notice, repair_result_line};
+    use manager_core::FailureEvidence;
+    use manager_core::repair::{
+        DpkgPackageStatus, InterruptedPackage, PackageSystemState, RepairResult,
+    };
+
+    fn interrupted(omitted: u32) -> PackageSystemState {
+        PackageSystemState {
+            protocol_version: manager_core::repair::PROTOCOL_VERSION,
+            journal_pending: true,
+            packages: vec![InterruptedPackage {
+                package: "better-monitor".to_string(),
+                status: DpkgPackageStatus::HalfConfigured,
+            }],
+            omitted,
+        }
+    }
+
+    #[test]
+    fn a_clean_package_system_draws_no_card() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            assert_eq!(
+                package_system_notice(locale, &PackageSystemState::clean()),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn an_interrupted_package_system_names_each_package_in_dpkgs_words() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let notice = package_system_notice(locale, &interrupted(3))
+                .expect("an interrupted package system must have something to say");
+            assert!(!notice.title.trim().is_empty());
+            assert!(!notice.consequence.trim().is_empty());
+            let lines = notice.lines.join("\n");
+            assert!(lines.contains("better-monitor"), "{lines}");
+            assert!(lines.contains("half-configured"), "{lines}");
+            assert!(lines.contains('3'), "the omitted count is said: {lines}");
+            assert!(!lines.contains('{'), "no placeholder survives: {lines}");
+        }
+    }
+
+    #[test]
+    fn every_repair_result_has_its_own_sentence_in_both_locales() {
+        let results = [
+            RepairResult::Repaired,
+            RepairResult::StillInterrupted,
+            RepairResult::NothingToRepair,
+            RepairResult::Failed {
+                evidence: FailureEvidence::new("daemon.error.repair_failed"),
+            },
+        ];
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let lines = results
+                .iter()
+                .map(|result| repair_result_line(locale, result))
+                .collect::<Vec<_>>();
+            for line in &lines {
+                assert!(!line.trim().is_empty());
+            }
+            for (index, line) in lines.iter().enumerate() {
+                assert!(
+                    !lines[index + 1..].contains(line),
+                    "two results read the same: {line}"
+                );
+            }
+        }
+        assert_ne!(
+            repair_result_line(Locale::EnUs, &RepairResult::Repaired),
+            repair_result_line(Locale::ZhTw, &RepairResult::Repaired)
+        );
+    }
+
+    #[test]
+    fn the_repair_copy_exists_in_both_locales() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let c = copy(locale);
+            for value in [
+                c.package_system_title,
+                c.package_system_journal,
+                c.package_system_blocks,
+                c.repair_package_system,
+                c.repair_needs_password,
+                c.repairing,
+                c.evidence_dpkg_interrupted,
+                c.evidence_package_system_repaired,
+                c.evidence_package_system_still_interrupted,
+                c.evidence_repair_failed,
+            ] {
+                assert!(!value.trim().is_empty());
+            }
+        }
+    }
+
+    /// The window keys these evidence strings to sentences; a key that falls
+    /// through to the generic refusal would hide what happened.
+    #[test]
+    fn the_repair_evidence_keys_are_worded_rather_than_falling_through() {
+        let app = include_str!("app.rs");
+        for (key, field) in [
+            (
+                "daemon.error.dpkg_interrupted",
+                "c.evidence_dpkg_interrupted",
+            ),
+            ("daemon.error.repair_failed", "c.evidence_repair_failed"),
+            (
+                "package_system.repaired",
+                "c.evidence_package_system_repaired",
+            ),
+            (
+                "package_system.still_interrupted",
+                "c.evidence_package_system_still_interrupted",
+            ),
+        ] {
+            let at = app
+                .find(&format!("\"{key}\""))
+                .unwrap_or_else(|| panic!("{key} has no wording"));
+            // From the key to the start of the next match arm.
+            let arm = app[at..].split("Some(").next().unwrap();
+            assert!(arm.contains(field), "{key} must map to {field}: {arm}");
+        }
+    }
+
+    /// A view model cannot prove what a render function does with it. The card
+    /// and its button are what make the repair reachable, and the button must
+    /// go through `manager-core` rather than talking to the service itself.
+    #[test]
+    fn the_health_screen_draws_the_card_and_repairs_through_manager_core() {
+        let page = include_str!("pages_settings.rs");
+        assert!(
+            page.contains("self.package_system_card(cx)"),
+            "the Health screen must draw the package system card"
+        );
+        assert!(page.contains("this.repair_package_system(cx)"));
+
+        let app = include_str!("app.rs");
+        assert!(app.contains("repair::request_repair(&service)"));
+        assert!(app.contains("repair::record_repair(&mut candidate, &report)"));
+        assert!(app.contains("repair::package_system_state(&service)"));
+        // Nothing in the window runs dpkg or reads its record itself.
+        for source in [app, page, include_str!("components.rs")] {
+            assert!(!source.contains("\"dpkg\""));
+            assert!(!source.contains("/var/lib/dpkg"));
+        }
+    }
+}

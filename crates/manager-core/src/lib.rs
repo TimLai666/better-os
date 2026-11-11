@@ -8,6 +8,7 @@
 
 pub mod catalog;
 pub mod exec;
+pub mod repair;
 
 use better_core::{
     Artifact, ComponentCatalog, ComponentId, ComponentManifest, ComponentType, ManifestError,

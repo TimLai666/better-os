@@ -175,7 +175,8 @@ never silently resumes an interrupted APT run.
 ## Deferred
 
 Package signing and its signature format, the public APT repository, release
-channels, running a component's own `--version` as a health probe under dropped
-privileges, and a `dpkg --configure -a` repair action remain undecided. Protocol
-version 1 also leaves Enable, Disable, and Verify outside the privileged
-boundary.
+channels, and running a component's own `--version` as a health probe under
+dropped privileges remain undecided. Protocol version 1 also leaves Enable,
+Disable, and Verify outside the privileged boundary. The `dpkg --configure -a`
+repair action listed here originally was decided in
+[ADR 0014](0014-dpkg-interrupted-repair.md).

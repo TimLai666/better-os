@@ -412,3 +412,62 @@ pub(crate) fn host_line(profile: &SystemProfile, base_word: &str) -> String {
         (None, false) => profile.distribution.clone(),
     }
 }
+
+/// What the Health screen says about a dpkg run a crash interrupted: a title,
+/// one line per thing dpkg left unfinished, and what it costs until repaired.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PackageSystemNotice {
+    pub(crate) title: &'static str,
+    pub(crate) lines: Vec<String>,
+    pub(crate) consequence: &'static str,
+}
+
+/// Builds the notice, or `None` when dpkg has nothing unfinished.
+///
+/// Package names and statuses are dpkg's own words, untranslated: they are
+/// what a person would search for, and what an administrator would type.
+pub(crate) fn package_system_notice(
+    locale: Locale,
+    state: &manager_core::repair::PackageSystemState,
+) -> Option<PackageSystemNotice> {
+    if !state.needs_repair() {
+        return None;
+    }
+    let c = copy(locale);
+    let mut lines = Vec::new();
+    if state.journal_pending {
+        lines.push(c.package_system_journal.to_string());
+    }
+    lines.extend(
+        state
+            .packages
+            .iter()
+            .map(|package| format!("{} ({})", package.package, package.status.as_dpkg())),
+    );
+    if state.omitted > 0 {
+        lines.push(
+            c.package_system_more
+                .replace("{count}", &state.omitted.to_string()),
+        );
+    }
+    Some(PackageSystemNotice {
+        title: c.package_system_title,
+        lines,
+        consequence: c.package_system_blocks,
+    })
+}
+
+/// The sentence the Health screen shows after a repair.
+pub(crate) fn repair_result_line(
+    locale: Locale,
+    result: &manager_core::repair::RepairResult,
+) -> &'static str {
+    use manager_core::repair::RepairResult;
+    let c = copy(locale);
+    match result {
+        RepairResult::Repaired => c.repair_result_repaired,
+        RepairResult::StillInterrupted => c.repair_result_still_interrupted,
+        RepairResult::NothingToRepair => c.repair_result_nothing,
+        RepairResult::Failed { .. } => c.repair_result_failed,
+    }
+}

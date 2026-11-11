@@ -7,6 +7,7 @@ use manager_core::exec::{
     MockDriver, MockRestoreOutcome, RealDriver, RunnerEvent, StageDriver, StageProgress,
     TransactionRunner,
 };
+use manager_core::repair::{self, PackageSystemState, RepairReport, RepairResult};
 use manager_core::{
     DesiredOperation, DiskSpaceCheck, ExecutionMode, InstallProvenance, Manager, ManagerState,
     MockOutcome, OperationProgress, OperationStage, TransactionPlan,
@@ -100,6 +101,17 @@ enum Command {
     },
     Cancel,
     Doctor,
+    /// Finish a package installation a crash or power loss interrupted.
+    ///
+    /// Asks the privileged service what dpkg's own record says and, when dpkg
+    /// left packages unfinished, asks it to run `dpkg --configure -a`. polkit
+    /// asks for an administrator's password first. This command runs nothing
+    /// itself, takes no package name, and passes nothing to dpkg.
+    Repair {
+        /// Only report whether a repair is needed; change nothing.
+        #[arg(long)]
+        check: bool,
+    },
     Activity {
         #[arg(long)]
         clear: bool,
@@ -243,6 +255,92 @@ fn print_catalog_status(status: &CatalogStatus) {
     for rejection in &status.rejections {
         println!("  rejected {rejection}");
     }
+}
+
+/// How dpkg's record reads to a person: one heading line, then each package
+/// dpkg left unfinished in dpkg's own words, then what to do about it.
+fn package_system_lines(state: &PackageSystemState) -> Vec<String> {
+    if !state.needs_repair() {
+        return vec!["package system: nothing unfinished".to_string()];
+    }
+    let mut lines = vec!["package system: interrupted".to_string()];
+    if state.journal_pending {
+        lines.push("  dpkg's journal holds changes it has not finished applying".to_string());
+    }
+    for package in &state.packages {
+        lines.push(format!(
+            "  {} {}",
+            package.package,
+            package.status.as_dpkg()
+        ));
+    }
+    if state.omitted > 0 {
+        lines.push(format!("  and {} more", state.omitted));
+    }
+    lines.push(
+        "  until it is repaired, no package can be installed, updated, or removed".to_string(),
+    );
+    lines.push("  to finish it: better-manager-cli repair".to_string());
+    lines
+}
+
+/// Lines of output kept from each stream of the command the repair ran.
+const REPAIR_TAIL_LINES: usize = 20;
+
+fn tail_lines(text: &str) -> impl Iterator<Item = &str> {
+    let lines = text.lines().collect::<Vec<_>>();
+    let start = lines.len().saturating_sub(REPAIR_TAIL_LINES);
+    lines.into_iter().skip(start)
+}
+
+/// What a repair did: the verdict first, then the command and the tail of what
+/// it printed, then anything dpkg still has unfinished.
+fn repair_report_lines(report: &RepairReport) -> Vec<String> {
+    let mut lines = vec![match &report.result {
+        RepairResult::Repaired => {
+            "repaired: dpkg finished every package it had left unfinished".to_string()
+        }
+        RepairResult::StillInterrupted => {
+            "not fully repaired: dpkg finished and left some packages unfinished".to_string()
+        }
+        RepairResult::NothingToRepair => {
+            "nothing to repair: dpkg has nothing unfinished".to_string()
+        }
+        RepairResult::Failed { evidence } => format!(
+            "repair failed: {}{}",
+            evidence.key,
+            evidence
+                .detail
+                .as_deref()
+                .map(|detail| format!(" ({detail})"))
+                .unwrap_or_default()
+        ),
+    }];
+    for entry in &report.log {
+        lines.push(format!(
+            "ran: {} (exit {})",
+            entry.argv.join(" "),
+            entry.exit_code
+        ));
+        for (label, text) in [
+            ("stdout", &entry.stdout_tail),
+            ("stderr", &entry.stderr_tail),
+        ] {
+            if text.trim().is_empty() {
+                continue;
+            }
+            lines.push(format!("  {label}:"));
+            lines.extend(tail_lines(text).map(|line| format!("    {line}")));
+        }
+    }
+    if let Some(remaining) = report
+        .remaining
+        .as_ref()
+        .filter(|remaining| remaining.needs_repair())
+    {
+        lines.extend(package_system_lines(remaining));
+    }
+    lines
 }
 
 fn load_state(
@@ -650,6 +748,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             store.save(&state)?;
             println!("mock operation cancelled and snapshots restored");
         }
+        Command::Repair { check } => {
+            // A simulated repair would report that the machine changed when
+            // nothing did, so a simulation has no repair to offer.
+            if cli.execution == ExecutionArg::Mock {
+                return Err(Box::new(std::io::Error::other(
+                    "manager.error.repair_needs_real_execution",
+                )));
+            }
+            let service = DbusPrivilegedExecutor::connect()?;
+            let dpkg = repair::package_system_state(&service)?;
+            for line in package_system_lines(&dpkg) {
+                println!("{line}");
+            }
+            if !check && dpkg.needs_repair() {
+                let report = repair::repair_package_system(&mut state, &service);
+                store.save(&state)?;
+                for line in repair_report_lines(&report) {
+                    println!("{line}");
+                }
+            }
+        }
         Command::Doctor => {
             for check in manager.doctor(&state)? {
                 println!("{:?} {:?} {:?}", check.kind, check.status, check.component);
@@ -762,6 +881,93 @@ mod tests {
         assert_eq!(
             host.os_release_path(),
             Some(std::path::Path::new("/etc/os-release"))
+        );
+    }
+
+    fn interrupted() -> manager_core::repair::PackageSystemState {
+        manager_core::repair::PackageSystemState {
+            protocol_version: manager_core::repair::PROTOCOL_VERSION,
+            journal_pending: true,
+            packages: vec![manager_core::repair::InterruptedPackage {
+                package: "better-monitor".to_string(),
+                status: manager_core::repair::DpkgPackageStatus::HalfConfigured,
+            }],
+            omitted: 2,
+        }
+    }
+
+    #[test]
+    fn the_package_system_report_names_each_unfinished_package_as_dpkg_does() {
+        let lines = package_system_lines(&interrupted());
+        assert_eq!(lines[0], "package system: interrupted");
+        assert!(lines.iter().any(|line| line.contains("journal")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("better-monitor") && line.contains("half-configured"))
+        );
+        assert!(lines.iter().any(|line| line.contains("2 more")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("better-manager-cli repair")),
+            "the report says what to do about it: {lines:?}"
+        );
+
+        let clean = package_system_lines(&manager_core::repair::PackageSystemState::clean());
+        assert_eq!(
+            clean,
+            vec!["package system: nothing unfinished".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_repair_report_carries_the_verdict_and_the_tail_of_dpkgs_output() {
+        let report = manager_core::repair::RepairReport {
+            result: manager_core::repair::RepairResult::Failed {
+                evidence: manager_core::FailureEvidence::new("daemon.error.repair_failed"),
+            },
+            log: vec![manager_core::repair::LogEntry {
+                argv: vec![
+                    "dpkg".to_string(),
+                    "--configure".to_string(),
+                    "-a".to_string(),
+                ],
+                exit_code: 1,
+                stdout_tail: (1..=30)
+                    .map(|line| format!("line {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                stderr_tail: "dpkg: error processing package better-monitor".to_string(),
+                started_at_unix: 1,
+                finished_at_unix: 2,
+            }],
+            remaining: Some(interrupted()),
+        };
+        let lines = repair_report_lines(&report);
+        assert_eq!(lines[0], "repair failed: daemon.error.repair_failed");
+        assert!(lines.contains(&"ran: dpkg --configure -a (exit 1)".to_string()));
+        assert!(lines.iter().any(|line| line.contains("line 30")));
+        assert!(
+            !lines.iter().any(|line| line.ends_with("line 1")),
+            "only the tail is printed: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("dpkg: error processing"))
+        );
+        // What is still unfinished is said, not left for the person to guess.
+        assert!(lines.iter().any(|line| line.contains("half-configured")));
+
+        let repaired = manager_core::repair::RepairReport {
+            result: manager_core::repair::RepairResult::Repaired,
+            log: Vec::new(),
+            remaining: Some(manager_core::repair::PackageSystemState::clean()),
+        };
+        assert_eq!(
+            repair_report_lines(&repaired)[0],
+            "repaired: dpkg finished every package it had left unfinished"
         );
     }
 

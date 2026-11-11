@@ -17,7 +17,7 @@ use zbus::zvariant::OwnedFd;
 use zbus::{fdo, interface};
 
 use crate::DaemonError;
-use crate::authorize::Authorizer;
+use crate::authorize::{APPLY_ACTION, Authorizer, REPAIR_ACTION};
 use crate::executor::Executor;
 use crate::store::{ArtifactStore, Journal};
 
@@ -38,8 +38,9 @@ pub struct ManagerService<A: Authorizer + 'static> {
     executor: Arc<Executor>,
     artifacts: Arc<ArtifactStore>,
     journal: Arc<Journal>,
-    /// Only one transaction may run at a time. Two concurrent APT runs would
-    /// fight over the dpkg lock and interleave in the journal.
+    /// Only one transaction or repair may run at a time. Two concurrent dpkg
+    /// runs would fight over the dpkg lock and interleave in the journal, and a
+    /// repair inside a transaction would change packages it is still checking.
     running: Arc<AtomicBool>,
     /// The runtime this daemon owns, captured where it is unambiguous.
     ///
@@ -72,13 +73,39 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         }
     }
 
-    async fn authorize(&self, header: &Header<'_>) -> Result<(), fdo::Error> {
-        match self.authorizer.check(header).await {
+    async fn authorize(&self, header: &Header<'_>, action: &'static str) -> Result<(), fdo::Error> {
+        match self.authorizer.check(header, action).await {
             Ok(true) => Ok(()),
             Ok(false) => Err(refuse(DaemonError::Unauthorized)),
             // A polkit that cannot be reached is not permission to proceed.
             Err(error) => Err(refuse(error)),
         }
+    }
+
+    /// Claims the one running slot, or refuses as busy. The slot is released
+    /// when the returned guard is dropped, including by a panic.
+    fn begin_exclusive(&self) -> Result<RunningGuard, fdo::Error> {
+        self.running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| refuse(DaemonError::Busy))?;
+        Ok(RunningGuard(self.running.clone()))
+    }
+
+    /// The repair after authorization: wait for nothing, take the slot or
+    /// refuse, and run `dpkg --configure -a` off zbus's executor.
+    async fn run_repair(&self) -> Result<String, fdo::Error> {
+        let guard = self.begin_exclusive()?;
+        let executor = self.executor.clone();
+        let outcome = self
+            .runtime
+            .spawn_blocking(move || executor.repair())
+            .await
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        drop(guard);
+        outcome
+            .map_err(refuse)?
+            .to_json()
+            .map_err(|error| refuse(error.into()))
     }
 }
 
@@ -96,7 +123,7 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         expected_sha256: &str,
         artifact: OwnedFd,
     ) -> Result<String, fdo::Error> {
-        self.authorize(&header).await?;
+        self.authorize(&header, APPLY_ACTION).await?;
         let _ = transaction_id;
 
         let artifacts = self.artifacts.clone();
@@ -129,7 +156,7 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         plan_json: &str,
     ) -> Result<String, fdo::Error> {
-        self.authorize(&header).await?;
+        self.authorize(&header, APPLY_ACTION).await?;
 
         if plan_json.len() > MAX_PLAN_BYTES {
             return Err(refuse(DaemonError::Protocol("plan too large".to_string())));
@@ -143,14 +170,7 @@ impl<A: Authorizer + 'static> ManagerService<A> {
             return outcome.to_json().map_err(|error| refuse(error.into()));
         }
 
-        if self
-            .running
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return Err(refuse(DaemonError::Busy));
-        }
-        let guard = RunningGuard(self.running.clone());
+        let guard = self.begin_exclusive()?;
 
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let transaction_id = plan.transaction_id.clone();
@@ -221,7 +241,7 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         #[zbus(header)] header: Header<'_>,
         transaction_id: &str,
     ) -> Result<bool, fdo::Error> {
-        self.authorize(&header).await?;
+        self.authorize(&header, APPLY_ACTION).await?;
         match self.journal.read(transaction_id).map_err(refuse)? {
             None => Ok(true),
             Some(entry) => Ok(!matches!(
@@ -230,6 +250,32 @@ impl<A: Authorizer + 'static> ManagerService<A> {
                     | crate::store::JournalState::Completed
             )),
         }
+    }
+
+    /// What dpkg's own record says about whether its last run finished.
+    /// Ungated, like `GetStatus`: it reads a world-readable record and changes
+    /// nothing. ADR 0014.
+    async fn get_package_system_state(&self) -> Result<String, fdo::Error> {
+        let executor = self.executor.clone();
+        self.runtime
+            .spawn_blocking(move || executor.apt.package_system_state())
+            .await
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?
+            .map_err(refuse)?
+            .to_json()
+            .map_err(|error| refuse(error.into()))
+    }
+
+    /// Runs `dpkg --configure -a` and reports what it did. Takes no argument:
+    /// nothing about the command comes from the caller. Gated by its own
+    /// polkit action, and refused while a transaction runs or when dpkg's
+    /// record shows nothing to repair. ADR 0014.
+    async fn repair_package_system(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+    ) -> Result<String, fdo::Error> {
+        self.authorize(&header, REPAIR_ACTION).await?;
+        self.run_repair().await
     }
 
     #[zbus(signal)]
@@ -305,6 +351,63 @@ mod tests {
             "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
         );
         assert_eq!(plan_transaction_id("not json"), "");
+    }
+
+    /// A repair and a transaction share one running flag. Two dpkg runs at
+    /// once would fight over dpkg's lock, and a repair in the middle of a
+    /// transaction would change packages the transaction is still checking.
+    #[tokio::test]
+    async fn a_repair_waits_its_turn_behind_a_running_transaction() {
+        use crate::apt::FakeAptDriver;
+        use crate::authorize::FakeAuthorizer;
+        use crate::health::FakeHealthProbe;
+        use crate::host::FixedHostProbe;
+        use manager_ipc::{DpkgPackageStatus, InterruptedPackage, PackageSystemState};
+
+        let root = std::env::temp_dir().join(format!(
+            "better-os-service-serialized-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let artifacts = Arc::new(ArtifactStore::new(root.join("archives")));
+        let journal = Arc::new(Journal::new(root.join("state")));
+        let apt = Arc::new(
+            FakeAptDriver::new().with_package_system(PackageSystemState {
+                protocol_version: PROTOCOL_VERSION,
+                journal_pending: false,
+                packages: vec![InterruptedPackage {
+                    package: "better-monitor".to_string(),
+                    status: DpkgPackageStatus::Unpacked,
+                }],
+                omitted: 0,
+            }),
+        );
+        let executor = Arc::new(Executor {
+            apt: apt.clone(),
+            host: Arc::new(FixedHostProbe::ubuntu_2404()),
+            health: Arc::new(FakeHealthProbe::empty()),
+            artifacts: artifacts.clone(),
+            journal: journal.clone(),
+        });
+        let service = ManagerService::new(FakeAuthorizer(true), executor, artifacts, journal);
+
+        // What `ApplyTransaction` holds while a transaction runs.
+        let transaction = service.begin_exclusive().unwrap();
+        let refused = service.run_repair().await.unwrap_err();
+        assert!(
+            matches!(&refused, fdo::Error::LimitsExceeded(message) if message == "daemon.error.busy"),
+            "{refused:?}"
+        );
+        assert!(apt.calls().is_empty(), "dpkg must not have run");
+
+        drop(transaction);
+        let outcome =
+            manager_ipc::RepairOutcome::from_json(&service.run_repair().await.unwrap()).unwrap();
+        assert_eq!(outcome.status, manager_ipc::RepairStatus::Repaired);
+
+        // The repair gave the flag back when it finished.
+        assert!(service.begin_exclusive().is_ok());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

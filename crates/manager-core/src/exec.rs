@@ -358,15 +358,7 @@ fn outcome_to_stage(outcome: &TransactionOutcome) -> StageOutcome {
             Some(WireRecovery::ManualRecoveryRequired) => {
                 StageOutcome::RestoreRequiresManualRecovery
             }
-            // The service reports one string shaped `key:detail`. Recording it
-            // whole left the reason — the half a person can act on — inside a
-            // key that presentation only prefix-matches, so it is split here.
-            _ => StageOutcome::Failed(match error_key.split_once(':') {
-                Some((key, detail)) if !detail.trim().is_empty() => {
-                    FailureEvidence::with_detail(key, detail)
-                }
-                _ => FailureEvidence::new(error_key.clone()),
-            }),
+            _ => StageOutcome::Failed(split_daemon_key(error_key)),
         },
         OutcomeStatus::Cancelled => {
             StageOutcome::Failed(FailureEvidence::new("operation.cancelled"))
@@ -379,8 +371,22 @@ fn outcome_to_stage(outcome: &TransactionOutcome) -> StageOutcome {
     }
 }
 
+/// Splits a daemon error key shaped `key:detail`.
+///
+/// The service reports one string. Recording it whole left the reason, the
+/// half a person can act on, inside a key that presentation only
+/// prefix-matches, so it is split here.
+pub(crate) fn split_daemon_key(error_key: &str) -> FailureEvidence {
+    match error_key.split_once(':') {
+        Some((key, detail)) if !detail.trim().is_empty() => {
+            FailureEvidence::with_detail(key, detail)
+        }
+        _ => FailureEvidence::new(error_key),
+    }
+}
+
 /// Maps a platform failure onto the stable keys a presentation layer localizes.
-fn evidence_for(error: &PlatformError) -> FailureEvidence {
+pub(crate) fn evidence_for(error: &PlatformError) -> FailureEvidence {
     match error {
         PlatformError::ChecksumMismatch { component } => {
             FailureEvidence::with_detail("download.checksum_mismatch", component.to_string())

@@ -550,6 +550,13 @@ grep -q 'org.betteros.manager.apply-transaction' \
     printf 'The polkit policy does not declare the apply action\n' >&2
     exit 1
 }
+# ADR 0014: the repair has its own action. A daemon that asks polkit for an
+# action its policy does not declare is refused every time.
+grep -q 'org.betteros.manager.repair-package-system' \
+    "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
+    printf 'The polkit policy does not declare the repair action\n' >&2
+    exit 1
+}
 
 if ldd "$daemon_extract/usr/libexec/better-manager-daemon" | grep -q 'not found'; then
     printf 'Unresolved dynamic library in %s\n' "$daemon_name" >&2
