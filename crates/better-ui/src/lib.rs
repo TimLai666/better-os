@@ -1,6 +1,7 @@
 //! Shared UI view models. GPUI rendering primitives are added in the GUI slice.
 
 pub mod command_line;
+pub mod fluent;
 
 use better_core::ComponentManifest;
 use gpui::{

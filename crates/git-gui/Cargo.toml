@@ -1,0 +1,30 @@
+[package]
+name = "git-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "git_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "better-git"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+better-ui.workspace = true
+git-core.workspace = true
+git-platform.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
+gpui-platform.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

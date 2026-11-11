@@ -21,6 +21,9 @@ members = [
     "crates/files-preview",
     "crates/files-search",
     "crates/files-gui",
+    "crates/git-core",
+    "crates/git-platform",
+    "crates/git-gui",
     "crates/launcher-core",
     "crates/launcher-platform",
     "crates/launcher-gui",
@@ -88,6 +91,9 @@ files-operations = { path = "crates/files-operations" }
 files-preview = { path = "crates/files-preview" }
 files-search = { path = "crates/files-search" }
 files-gui = { path = "crates/files-gui" }
+git-core = { path = "crates/git-core" }
+git-platform = { path = "crates/git-platform" }
+git-gui = { path = "crates/git-gui" }
 launcher-core = { path = "crates/launcher-core" }
 launcher-platform = { path = "crates/launcher-platform" }
 launcher-gui = { path = "crates/launcher-gui" }
