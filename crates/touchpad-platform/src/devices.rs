@@ -228,12 +228,13 @@ impl Record {
 
     /// The identity a per-device configuration is filed under.
     fn identity(&self) -> String {
-        if !self.unique_id.is_empty() {
-            return format!("uniq:{}", self.unique_id);
-        }
-        format!(
-            "input:{}:{}:{}:{}:{}",
-            self.bus, self.vendor, self.product, self.version, self.name
+        touchpad_core::device_identity(
+            &self.unique_id,
+            &self.bus,
+            &self.vendor,
+            &self.product,
+            &self.version,
+            &self.name,
         )
     }
 }

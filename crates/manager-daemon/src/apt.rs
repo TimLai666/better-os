@@ -11,10 +11,12 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use manager_ipc::{LogEntry, MAX_LOG_OUTPUT_BYTES};
+use better_core::package_health::{
+    InstalledFiles, PathFilter, installed_files_from, path_filter_from,
+};
+use manager_ipc::{LogEntry, MAX_LOG_OUTPUT_BYTES, PackageSystemState};
 
 use crate::DaemonError;
-use crate::dpkg_config::PathFilter;
 
 /// What one `apt-get` or `dpkg` invocation did.
 #[derive(Clone, Debug)]
@@ -64,31 +66,6 @@ pub struct DebFields {
     pub architecture: String,
 }
 
-/// What dpkg's own file database says a package put on disk.
-///
-/// `paths` is everything `dpkg-query -L` listed, directories included, in the
-/// order dpkg reported. `conffiles` is the subset dpkg treats as
-/// administrator-owned configuration, which a machine's owner is allowed to
-/// delete without the package being broken. `excluded` is the subset this
-/// machine's dpkg was configured never to unpack, which is listed all the same.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct InstalledFiles {
-    pub paths: Vec<PathBuf>,
-    pub conffiles: Vec<PathBuf>,
-    pub excluded: Vec<PathBuf>,
-}
-
-impl InstalledFiles {
-    /// Whether this path has to be on disk for the package to be sound.
-    ///
-    /// A conffile need not: dpkg lets a machine's owner delete one. A
-    /// path-excluded file need not: dpkg was told not to install it.
-    pub fn is_required(&self, path: &Path) -> bool {
-        !self.conffiles.iter().any(|known| known == path)
-            && !self.excluded.iter().any(|known| known == path)
-    }
-}
-
 pub trait AptDriver: Send + Sync {
     fn install_local_deb(
         &self,
@@ -104,7 +81,20 @@ pub trait AptDriver: Send + Sync {
     /// installed, which is why the health check may trust it: nothing a
     /// manifest wrote reaches it.
     fn installed_files(&self, package: &str) -> Result<InstalledFiles, DaemonError>;
+    /// What dpkg's own record says about whether its last run finished.
+    fn package_system_state(&self) -> Result<PackageSystemState, DaemonError>;
+    /// Runs `dpkg --configure -a`, the one repair ADR 0014 allows. It takes no
+    /// argument: nothing about the command comes from outside the daemon.
+    fn configure_pending(&self) -> Result<AptRun, DaemonError>;
 }
+
+/// The repair's argument vector after `dpkg`. Fixed here so the command a
+/// person can read in ADR 0014 is the command that runs. The two
+/// `--force-conf*` flags are the ones every install passes through apt, and
+/// keep a changed configuration file from stopping the run at a prompt nobody
+/// can answer.
+pub const CONFIGURE_PENDING_ARGS: [&str; 4] =
+    ["--force-confdef", "--force-confold", "--configure", "-a"];
 
 fn now_unix() -> u64 {
     SystemTime::now()
@@ -169,15 +159,11 @@ impl AptGetDriver {
     /// contributes nothing rather than failing the query: dpkg's own files are
     /// where a minimized image writes its filters.
     fn path_filter(&self) -> PathFilter {
-        let mut filter = PathFilter::from_config_dir(Path::new("/etc/dpkg"));
-        if let Ok((true, dumped)) = self.query("apt-config", &["dump", "DPkg::Options"]) {
-            for line in dumped.lines() {
-                if let Some(option) = parse_apt_config_value(line) {
-                    filter.push_option(option);
-                }
-            }
-        }
-        filter
+        let dumped = match self.query("apt-config", &["dump", "DPkg::Options"]) {
+            Ok((true, dumped)) => Some(dumped),
+            _ => None,
+        };
+        path_filter_from(Path::new("/etc/dpkg"), dumped.as_deref())
     }
 
     /// Runs a query for its whole output rather than for a log entry.
@@ -268,6 +254,14 @@ impl AptDriver for AptGetDriver {
         parse_control_fields(&run.stdout_tail)
     }
 
+    fn package_system_state(&self) -> Result<PackageSystemState, DaemonError> {
+        crate::dpkg_state::read(Path::new(crate::dpkg_state::DPKG_ADMIN_DIR))
+    }
+
+    fn configure_pending(&self) -> Result<AptRun, DaemonError> {
+        self.run("dpkg", &CONFIGURE_PENDING_ARGS)
+    }
+
     fn installed_files(&self, package: &str) -> Result<InstalledFiles, DaemonError> {
         // `dpkg-query -L` rather than `dpkg -L`: same database, same output, and
         // it is the query tool the rest of this driver already uses.
@@ -286,56 +280,12 @@ impl AptDriver for AptGetDriver {
                 conffiles.trim()
             )));
         }
-        let paths = parse_file_list(&listed);
-        let filter = self.path_filter();
-        let excluded = if filter.is_empty() {
-            Vec::new()
-        } else {
-            paths
-                .iter()
-                .filter(|path| filter.excludes(path))
-                .cloned()
-                .collect()
-        };
-        Ok(InstalledFiles {
-            paths,
-            conffiles: parse_conffiles(&conffiles),
-            excluded,
-        })
+        Ok(installed_files_from(
+            &listed,
+            &conffiles,
+            &self.path_filter(),
+        ))
     }
-}
-
-/// The value out of one `apt-config dump` line, which is written
-/// `DPkg::Options:: "--path-exclude=/usr/share/doc/*";`.
-fn parse_apt_config_value(line: &str) -> Option<&str> {
-    let (_, value) = line.trim().split_once(' ')?;
-    let value = value.trim().trim_end_matches(';').trim_matches('"').trim();
-    (!value.is_empty()).then_some(value)
-}
-
-/// Keeps the absolute paths out of a `dpkg-query -L` listing.
-///
-/// dpkg prints one path per line and, for a package involved in a diversion,
-/// explanatory lines that are not paths. Only lines that start at the root are
-/// files this package is answerable for.
-fn parse_file_list(output: &str) -> Vec<PathBuf> {
-    output
-        .lines()
-        .map(str::trim_end)
-        .filter(|line| line.starts_with('/'))
-        .map(PathBuf::from)
-        .collect()
-}
-
-/// Reads the paths out of dpkg's `${Conffiles}` field, which is one
-/// ` /path hash [obsolete]` line per configuration file.
-fn parse_conffiles(output: &str) -> Vec<PathBuf> {
-    output
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .filter(|path| path.starts_with('/'))
-        .map(PathBuf::from)
-        .collect()
 }
 
 fn parse_control_fields(output: &str) -> Result<DebFields, DaemonError> {
@@ -377,6 +327,15 @@ pub struct FakeAptDriver {
     pub failing_remove: Mutex<Vec<String>>,
     pub lock_contention: Mutex<bool>,
     pub calls: Mutex<Vec<String>>,
+    /// What dpkg's record says. `None` makes it unreadable.
+    package_system: Mutex<Option<PackageSystemState>>,
+    /// What a successful repair leaves behind. Clean unless a test says
+    /// otherwise, such as a half-installed package `--configure` cannot finish.
+    after_repair: Mutex<PackageSystemState>,
+    failing_configure: Mutex<bool>,
+    /// How long `dpkg --configure -a` takes, for a repair that outlasts the
+    /// daemon's idle period.
+    configure_duration: Mutex<std::time::Duration>,
 }
 
 impl Default for FakeAptDriver {
@@ -396,7 +355,40 @@ impl FakeAptDriver {
             failing_remove: Mutex::new(Vec::new()),
             lock_contention: Mutex::new(false),
             calls: Mutex::new(Vec::new()),
+            package_system: Mutex::new(Some(PackageSystemState::clean())),
+            after_repair: Mutex::new(PackageSystemState::clean()),
+            failing_configure: Mutex::new(false),
+            configure_duration: Mutex::new(std::time::Duration::ZERO),
         }
+    }
+
+    /// Makes `dpkg --configure -a` take this long.
+    pub fn with_configure_duration(self, duration: std::time::Duration) -> Self {
+        *self.configure_duration.lock().unwrap() = duration;
+        self
+    }
+
+    /// Declares what dpkg's record says, such as a run a crash interrupted.
+    pub fn with_package_system(self, state: PackageSystemState) -> Self {
+        *self.package_system.lock().unwrap() = Some(state);
+        self
+    }
+
+    /// Makes dpkg's record unreadable.
+    pub fn with_unreadable_package_system(self) -> Self {
+        *self.package_system.lock().unwrap() = None;
+        self
+    }
+
+    /// Declares what a repair that exits cleanly leaves unfinished.
+    pub fn with_repair_leaving(self, state: PackageSystemState) -> Self {
+        *self.after_repair.lock().unwrap() = state;
+        self
+    }
+
+    /// Makes `dpkg --configure -a` exit with an error and change nothing.
+    pub fn fail_configure(&self) {
+        *self.failing_configure.lock().unwrap() = true;
     }
 
     pub fn with_installed(self, package: &str, version: &str) -> Self {
@@ -549,6 +541,34 @@ impl AptDriver for FakeAptDriver {
             .ok_or_else(|| DaemonError::PlanRejected("unreadable package".to_string()))
     }
 
+    fn package_system_state(&self) -> Result<PackageSystemState, DaemonError> {
+        self.package_system
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| DaemonError::HostUnreadable("dpkg status file".to_string()))
+    }
+
+    fn configure_pending(&self) -> Result<AptRun, DaemonError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push("configure-pending".to_string());
+        std::thread::sleep(*self.configure_duration.lock().unwrap());
+        let failed = *self.failing_configure.lock().unwrap();
+        if !failed {
+            let after = self.after_repair.lock().unwrap().clone();
+            *self.package_system.lock().unwrap() = Some(after);
+        }
+        let mut argv = vec!["dpkg".to_string()];
+        argv.extend(
+            CONFIGURE_PENDING_ARGS
+                .iter()
+                .map(|argument| argument.to_string()),
+        );
+        Ok(self.run(argv, failed))
+    }
+
     fn installed_files(&self, package: &str) -> Result<InstalledFiles, DaemonError> {
         if self
             .unreadable_files
@@ -594,59 +614,6 @@ mod tests {
     #[test]
     fn a_package_missing_a_control_field_is_refused() {
         assert!(parse_control_fields("Package: better-monitor\nVersion:\n").is_err());
-    }
-
-    #[test]
-    fn a_file_listing_keeps_paths_and_drops_dpkgs_prose() {
-        // The second line is what dpkg prints for a diverted file. It is not a
-        // path this package has to have on disk.
-        let listed = parse_file_list(
-            "/.\n\
-             package diverts others to: /usr/bin/better-awake-service.distrib\n\
-             /usr/bin\n\
-             /usr/bin/better-awake-service\n\
-             /usr/bin/awake-tray\n",
-        );
-        assert_eq!(
-            listed,
-            vec![
-                PathBuf::from("/."),
-                PathBuf::from("/usr/bin"),
-                PathBuf::from("/usr/bin/better-awake-service"),
-                PathBuf::from("/usr/bin/awake-tray"),
-            ]
-        );
-    }
-
-    #[test]
-    fn conffile_paths_are_read_without_their_checksums() {
-        let conffiles = parse_conffiles(
-            " /etc/better-os/awake.conf 3d5e0c2f9a1b4c6d7e8f90a1b2c3d4e5\n\
-             /etc/better-os/old.conf 0123456789abcdef0123456789abcdef obsolete\n",
-        );
-        assert_eq!(
-            conffiles,
-            vec![
-                PathBuf::from("/etc/better-os/awake.conf"),
-                PathBuf::from("/etc/better-os/old.conf"),
-            ]
-        );
-        assert!(parse_conffiles("").is_empty());
-    }
-
-    #[test]
-    fn an_apt_config_line_yields_the_option_apt_would_pass_to_dpkg() {
-        // The shape `apt-config dump` prints, confirmed against apt on the host.
-        assert_eq!(
-            parse_apt_config_value("DPkg::Options:: \"--path-exclude=/usr/share/doc/*\";"),
-            Some("--path-exclude=/usr/share/doc/*")
-        );
-        assert_eq!(
-            parse_apt_config_value("DPkg::Options:: \"--force-confold\";"),
-            Some("--force-confold")
-        );
-        assert_eq!(parse_apt_config_value(""), None);
-        assert_eq!(parse_apt_config_value("DPkg::Options \"\";"), None);
     }
 
     #[test]

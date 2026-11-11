@@ -273,6 +273,104 @@ async fn a_file_operation_blocks_readiness_until_its_completion_is_reported() {
 }
 
 #[tokio::test]
+async fn a_client_that_leaves_the_bus_ends_every_operation_it_started() {
+    let fixture = Fixture::new("departed");
+    let mut harness = harness(
+        &fixture,
+        FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]),
+    );
+    connect_and_mount(&mut harness).await;
+
+    harness.clock.advance(10);
+    for (client, operation) in [(":1.7", "copy-1"), (":1.7", "copy-2"), (":1.8", "copy-3")] {
+        harness
+            .coordinator
+            .operation_started_by(client, &handle(), operation.to_string())
+            .await;
+    }
+    assert_eq!(state(&harness).kind(), DeviceStateKind::Writing);
+    let flushes_before = harness.flush.flushed().len();
+
+    // The first client crashes. Its two operations end, each with the flush
+    // a completion brings; the other client's write still holds the device.
+    harness.clock.advance(10);
+    harness.coordinator.client_departed(":1.7").await;
+    assert_eq!(state(&harness).kind(), DeviceStateKind::Writing);
+    assert_eq!(harness.flush.flushed().len(), flushes_before + 2);
+
+    harness.clock.advance(10);
+    harness.coordinator.client_departed(":1.8").await;
+    assert_eq!(state(&harness).kind(), DeviceStateKind::ReadyToUnplug);
+}
+
+#[tokio::test]
+async fn a_completion_after_the_client_left_is_accepted_and_changes_nothing() {
+    let fixture = Fixture::new("late-completion");
+    let mut harness = harness(
+        &fixture,
+        FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]),
+    );
+    connect_and_mount(&mut harness).await;
+
+    harness.clock.advance(10);
+    harness
+        .coordinator
+        .operation_started_by(":1.7", &handle(), "copy-1".to_string())
+        .await;
+    harness.clock.advance(10);
+    harness.coordinator.client_departed(":1.7").await;
+    assert_eq!(state(&harness).kind(), DeviceStateKind::ReadyToUnplug);
+
+    // The completion was already on its way when the client went.
+    harness.clock.advance(10);
+    harness
+        .coordinator
+        .operation_completed(&handle(), "copy-1".to_string())
+        .await;
+    assert_eq!(state(&harness).kind(), DeviceStateKind::ReadyToUnplug);
+
+    // A client that did complete its operation has nothing left to end.
+    harness
+        .coordinator
+        .operation_started_by(":1.9", &handle(), "copy-2".to_string())
+        .await;
+    harness
+        .coordinator
+        .operation_completed(&handle(), "copy-2".to_string())
+        .await;
+    let flushes = harness.flush.flushed().len();
+    harness.coordinator.client_departed(":1.9").await;
+    harness.coordinator.client_departed(":1.7").await;
+    assert_eq!(harness.flush.flushed().len(), flushes);
+    assert_eq!(state(&harness).kind(), DeviceStateKind::ReadyToUnplug);
+}
+
+#[tokio::test]
+async fn an_operation_started_in_process_is_not_ended_by_any_departure() {
+    let fixture = Fixture::new("in-process");
+    let mut harness = harness(
+        &fixture,
+        FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]),
+    );
+    connect_and_mount(&mut harness).await;
+
+    harness.clock.advance(10);
+    harness
+        .coordinator
+        .operation_started(&handle(), "copy-1".to_string())
+        .await;
+    harness.clock.advance(10);
+    harness.coordinator.client_departed(":1.7").await;
+    assert_eq!(state(&harness).kind(), DeviceStateKind::Writing);
+
+    harness
+        .coordinator
+        .operation_completed(&handle(), "copy-1".to_string())
+        .await;
+    assert_eq!(state(&harness).kind(), DeviceStateKind::ReadyToUnplug);
+}
+
+#[tokio::test]
 async fn unplugging_during_a_write_produces_a_warning_and_a_diagnostic_record() {
     let fixture = Fixture::new("unsafe");
     let mut harness = harness(

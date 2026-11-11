@@ -4,6 +4,8 @@ mod defaults_app;
 mod defaults_model;
 #[cfg(test)]
 mod defaults_tests;
+#[cfg(test)]
+mod evidence_tests;
 mod i18n;
 mod layout;
 mod model;

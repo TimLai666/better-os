@@ -15,7 +15,10 @@ use manager_core::{
 use crate::{
     app::ManagerApp,
     i18n::copy,
-    model::{ActivityFilter, CatalogLine, ComponentInfo, DetailTab, Page, UpdateCheck},
+    model::{
+        ActivityFilter, CatalogLine, ComponentInfo, DetailTab, Page, UpdateCheck,
+        unorderable_detail,
+    },
 };
 
 impl ManagerApp {
@@ -586,6 +589,11 @@ impl ManagerApp {
             );
         };
         let pending = self.is_pending(&component.core_id);
+        // dpkg holds it at a version nothing can order: say so, and offer no
+        // action the planner would refuse (ticket 69).
+        let unorderable = self
+            .unorderable_check(&component.core_id)
+            .and_then(|check| unorderable_detail(self.locale, check));
         let disable_id = component.core_id.clone();
         let verify_id = component.core_id.clone();
         let restore_id = component.core_id.clone();
@@ -772,6 +780,27 @@ impl ManagerApp {
             })
             // A recorded failure belongs on the page that shows the component,
             // not three screens away behind a red tag with no words on it.
+            .when_some(unorderable.clone(), |view, detail| {
+                view.child(
+                    self.surface(
+                        v_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_semibold()
+                                    .child(c.check_unorderable_version),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(detail),
+                            ),
+                        cx,
+                    ),
+                )
+            })
             .when_some(component.failure.clone(), |view, failure| {
                 view.child(self.failure_card(c.last_install_failed.to_string(), &failure, None, cx))
             })
@@ -781,12 +810,13 @@ impl ManagerApp {
                     .gap_3()
                     .flex_wrap()
                     .when(
-                        matches!(
-                            component.state,
-                            ComponentStatus::Available
-                                | ComponentStatus::UpdateAvailable
-                                | ComponentStatus::Disabled
-                        ),
+                        unorderable.is_none()
+                            && matches!(
+                                component.state,
+                                ComponentStatus::Available
+                                    | ComponentStatus::UpdateAvailable
+                                    | ComponentStatus::Disabled
+                            ),
                         |row| row.child(self.component_action_button(&component, cx)),
                     )
                     .when(
@@ -844,7 +874,8 @@ impl ManagerApp {
                     // nothing installed, and offering a health check there is
                     // an action the planner refuses.
                     .when(
-                        component.failure.is_some()
+                        unorderable.is_none()
+                            && component.failure.is_some()
                             && component.installed_version.is_none()
                             && !pending
                             && !matches!(component.state, ComponentStatus::Incompatible),
@@ -1103,7 +1134,7 @@ impl ManagerApp {
         let detail = entry
             .stage
             .map(|stage| self.stage_label(stage))
-            .unwrap_or_else(|| self.evidence_label(entry.evidence.as_deref()));
+            .unwrap_or_else(|| self.evidence_label(entry.evidence.as_deref(), None));
         h_flex()
             .w_full()
             .min_w_0()

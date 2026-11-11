@@ -10,8 +10,9 @@
 use std::sync::Arc;
 
 use manager_ipc::{
-    ExecutionStage, HealthResult, OutcomeStatus, PROTOCOL_VERSION, RollbackRecord, StepReport,
-    TransactionOutcome, WireAction, WireArtifact, WirePlan, WireRecovery, WireStep,
+    ExecutionStage, HealthResult, OutcomeStatus, PROTOCOL_VERSION, RepairOutcome, RepairStatus,
+    RollbackRecord, StepReport, TransactionOutcome, WireAction, WireArtifact, WirePlan,
+    WireRecovery, WireStep,
 };
 
 use crate::apt::AptDriver;
@@ -47,6 +48,12 @@ impl Executor {
         // Everything checkable before touching the host. A refusal here writes
         // no rollback record, because nothing has changed to roll back.
         revalidate::check_plan(plan, &host)?;
+        // apt refuses to run after an interrupted dpkg run. Letting it try
+        // would write a restore point and then fail the rollback for the same
+        // reason, so the plan is refused here, from dpkg's own record.
+        if self.apt.package_system_state()?.needs_repair() {
+            return Err(DaemonError::DpkgInterrupted);
+        }
         self.journal
             .set_state(&plan.transaction_id, JournalState::Validated)?;
 
@@ -171,6 +178,48 @@ impl Executor {
         };
         self.journal.complete(&outcome)?;
         Ok(outcome)
+    }
+
+    /// Finishes an interrupted dpkg run with `dpkg --configure -a`.
+    ///
+    /// Refuses before running anything when dpkg's record cannot be read or
+    /// shows nothing unfinished. Once dpkg has run, the result is an outcome
+    /// rather than an error, so the caller gets the log whatever happened, and
+    /// the verdict comes from reading dpkg's record again rather than from the
+    /// exit code alone: a run that exits 0 can still leave a half-installed
+    /// package behind. ADR 0014.
+    pub fn repair(&self) -> Result<RepairOutcome, DaemonError> {
+        if !self.apt.package_system_state()?.needs_repair() {
+            return Err(DaemonError::NothingToRepair);
+        }
+
+        let run = self.apt.configure_pending()?;
+        let lock_contention = run.is_lock_contention();
+        let succeeded = run.succeeded();
+        let log = vec![run.into_log_entry()];
+        let remaining = self.apt.package_system_state();
+
+        let status = match (&remaining, succeeded) {
+            (_, false) if lock_contention => RepairStatus::Failed {
+                error_key: DaemonError::AptBusy.to_string(),
+            },
+            (_, false) => RepairStatus::Failed {
+                error_key: DaemonError::RepairFailed.to_string(),
+            },
+            (Ok(state), true) if state.needs_repair() => RepairStatus::StillInterrupted,
+            (Ok(_), true) => RepairStatus::Repaired,
+            // dpkg said it finished and its record cannot be read to confirm
+            // it. That is not a repair anybody verified.
+            (Err(error), true) => RepairStatus::Failed {
+                error_key: error.to_string(),
+            },
+        };
+        Ok(RepairOutcome {
+            protocol_version: PROTOCOL_VERSION,
+            status,
+            log,
+            remaining: remaining.ok(),
+        })
     }
 
     fn apply(&self, step: &WireStep) -> Result<crate::apt::AptRun, DaemonError> {
@@ -911,6 +960,167 @@ mod tests {
         assert_eq!(entry.state, JournalState::Completed);
         assert!(entry.outcome.is_some());
         assert!(harness.journal.interrupted().unwrap().is_empty());
+    }
+
+    fn interrupted() -> manager_ipc::PackageSystemState {
+        manager_ipc::PackageSystemState {
+            protocol_version: PROTOCOL_VERSION,
+            journal_pending: true,
+            packages: vec![manager_ipc::InterruptedPackage {
+                package: "better-monitor".to_string(),
+                status: manager_ipc::DpkgPackageStatus::HalfConfigured,
+            }],
+            omitted: 0,
+        }
+    }
+
+    /// apt would refuse anyway, but only after the daemon had written a restore
+    /// point and then failed to roll back for the same reason.
+    #[test]
+    fn a_transaction_is_refused_before_anything_changes_while_dpkg_is_interrupted() {
+        let harness = Harness::new(
+            "dpkg-interrupted",
+            FakeAptDriver::new()
+                .with_deb(MONITOR_DEB, fields("better-monitor"))
+                .with_package_system(interrupted()),
+            vec!["better-monitor"],
+        );
+        let checksum = harness.stage(MONITOR_DEB);
+        let plan = plan(vec![install_step("better-monitor", MONITOR_DEB, checksum)]);
+
+        let error = harness
+            .executor()
+            .execute(&plan, &mut |_, _| {})
+            .unwrap_err();
+
+        assert_eq!(error, DaemonError::DpkgInterrupted);
+        assert_eq!(error.to_string(), "daemon.error.dpkg_interrupted");
+        assert!(harness.apt.calls().is_empty(), "APT must not have run");
+        assert!(
+            harness
+                .journal
+                .read_rollback("better-monitor")
+                .unwrap()
+                .is_none(),
+            "no restore point may be written for a refused plan"
+        );
+    }
+
+    #[test]
+    fn a_repair_runs_dpkg_configure_and_reports_the_package_system_repaired() {
+        let harness = Harness::new(
+            "repair-ok",
+            FakeAptDriver::new().with_package_system(interrupted()),
+            Vec::new(),
+        );
+
+        let outcome = harness.executor().repair().unwrap();
+
+        assert_eq!(outcome.status, manager_ipc::RepairStatus::Repaired);
+        assert_eq!(harness.apt.calls(), vec!["configure-pending".to_string()]);
+        assert_eq!(outcome.log.len(), 1);
+        assert_eq!(
+            outcome.log[0].argv,
+            vec![
+                "dpkg",
+                "--force-confdef",
+                "--force-confold",
+                "--configure",
+                "-a"
+            ]
+        );
+        assert_eq!(
+            outcome.remaining,
+            Some(manager_ipc::PackageSystemState::clean())
+        );
+        assert!(
+            !harness.apt.package_system_state().unwrap().needs_repair(),
+            "the host the fake describes is repaired afterwards"
+        );
+    }
+
+    #[test]
+    fn a_repair_on_a_package_system_that_needs_none_runs_nothing() {
+        let harness = Harness::new("repair-clean", FakeAptDriver::new(), Vec::new());
+
+        let error = harness.executor().repair().unwrap_err();
+
+        assert_eq!(error, DaemonError::NothingToRepair);
+        assert_eq!(error.to_string(), "daemon.error.nothing_to_repair");
+        assert!(harness.apt.calls().is_empty(), "dpkg must not have run");
+    }
+
+    #[test]
+    fn a_repair_that_cannot_read_dpkgs_record_runs_nothing() {
+        let harness = Harness::new(
+            "repair-unreadable",
+            FakeAptDriver::new().with_unreadable_package_system(),
+            Vec::new(),
+        );
+
+        let error = harness.executor().repair().unwrap_err();
+
+        assert!(matches!(error, DaemonError::HostUnreadable(_)), "{error}");
+        assert!(harness.apt.calls().is_empty(), "dpkg must not have run");
+    }
+
+    /// `--configure` cannot finish a half-installed package. Reporting that as
+    /// repaired would send the person back to an install that fails again.
+    #[test]
+    fn a_repair_that_leaves_packages_unfinished_says_what_remains() {
+        let mut remains = manager_ipc::PackageSystemState::clean();
+        remains.packages.push(manager_ipc::InterruptedPackage {
+            package: "better-awake".to_string(),
+            status: manager_ipc::DpkgPackageStatus::HalfInstalled,
+        });
+        let harness = Harness::new(
+            "repair-partial",
+            FakeAptDriver::new()
+                .with_package_system(interrupted())
+                .with_repair_leaving(remains.clone()),
+            Vec::new(),
+        );
+
+        let outcome = harness.executor().repair().unwrap();
+
+        assert_eq!(outcome.status, manager_ipc::RepairStatus::StillInterrupted);
+        assert_eq!(outcome.remaining, Some(remains));
+    }
+
+    #[test]
+    fn a_repair_that_fails_reports_the_failure_and_its_log() {
+        let apt = FakeAptDriver::new().with_package_system(interrupted());
+        apt.fail_configure();
+        let harness = Harness::new("repair-failed", apt, Vec::new());
+
+        let outcome = harness.executor().repair().unwrap();
+
+        assert_eq!(
+            outcome.status,
+            manager_ipc::RepairStatus::Failed {
+                error_key: "daemon.error.repair_failed".to_string()
+            }
+        );
+        assert_ne!(outcome.log[0].exit_code, 0);
+        assert!(!outcome.log[0].stderr_tail.is_empty());
+        assert_eq!(outcome.remaining, Some(interrupted()));
+    }
+
+    #[test]
+    fn a_repair_blocked_by_another_package_manager_is_reported_busy() {
+        let apt = FakeAptDriver::new().with_package_system(interrupted());
+        apt.fail_configure();
+        *apt.lock_contention.lock().unwrap() = true;
+        let harness = Harness::new("repair-busy", apt, Vec::new());
+
+        let outcome = harness.executor().repair().unwrap();
+
+        assert_eq!(
+            outcome.status,
+            manager_ipc::RepairStatus::Failed {
+                error_key: "daemon.error.apt_busy".to_string()
+            }
+        );
     }
 
     #[test]

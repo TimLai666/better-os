@@ -34,6 +34,16 @@
 //! item inside the header — is read as it is and migrated to the two files on
 //! load.
 //!
+//! ## Job numbers
+//!
+//! A number is claimed before a job is accepted, by creating an empty
+//! `job-<id>.claim` with `O_EXCL`, so two engines on one store — two Better
+//! Files windows — never both take it. The claim is removed once the job's
+//! header is on disk, because the header holds the number from then on. A
+//! claim left by a process that died before its first write is never read by
+//! recovery, which reads headers only, and it still keeps its number from
+//! being handed out again.
+//!
 //! ## What recovery does, and what it deliberately does not
 //!
 //! A record found in `Running`, `Paused`, or `WaitingOnConflict` after a
@@ -429,15 +439,61 @@ impl JobStore {
         fs::rename(&temporary, path).map_err(|error| StoreError::io(path, &error))
     }
 
-    /// The highest job number with a header or a journal in the store,
-    /// readable or not. A record this build cannot parse still holds its
-    /// number: it may be a newer build's, and it is reported, not replaced.
+    /// The highest job number with a header, a journal, or a claim in the
+    /// store, readable or not. A record this build cannot parse still holds
+    /// its number: it may be a newer build's, and it is reported, not
+    /// replaced.
     pub fn highest_id(&self) -> Option<u64> {
         fs::read_dir(&self.root)
             .ok()?
             .flatten()
             .filter_map(|entry| record_id(&entry.file_name()))
             .max()
+    }
+
+    /// The empty file that holds a job number from the moment it is chosen
+    /// until the job's record is on disk.
+    fn claim_for(&self, id: u64) -> PathBuf {
+        self.root.join(format!("job-{id:020}.claim"))
+    }
+
+    /// Claims a number for a new job: `Ok(true)` when this call claimed it,
+    /// `Ok(false)` when a record or another claim already holds it.
+    ///
+    /// The claim is created with `O_EXCL`, so of two processes claiming one
+    /// number at the same instant exactly one succeeds. A record is looked for
+    /// before the create and again after it, because the process that held
+    /// the number may have written its record and released its claim in
+    /// between; a claim made then is withdrawn.
+    pub fn claim(&self, id: u64) -> Result<bool, StoreError> {
+        if self.holds(id) {
+            return Ok(false);
+        }
+        fs::create_dir_all(&self.root).map_err(|error| StoreError::io(&self.root, &error))?;
+        let path = self.claim_for(id);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(error) => return Err(StoreError::io(&path, &error)),
+        }
+        if self.holds(id) {
+            let _ = fs::remove_file(&path);
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// Drops the claim on a number whose header is now on disk, where the
+    /// header holds the number instead. A claim whose record could not be
+    /// written stays, and keeps the number from being handed out again.
+    pub fn release_claim(&self, id: u64) {
+        if fs::symlink_metadata(self.path_for(id)).is_ok() {
+            let _ = fs::remove_file(self.claim_for(id));
+        }
     }
 
     /// Whether a record with this number is on disk.
@@ -451,7 +507,7 @@ impl JobStore {
     }
 
     pub fn remove(&self, id: u64) -> Result<(), StoreError> {
-        for path in [self.path_for(id), self.journal_for(id)] {
+        for path in [self.path_for(id), self.journal_for(id), self.claim_for(id)] {
             match fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -546,13 +602,14 @@ impl JobStore {
     }
 }
 
-/// The job number in a header's or a journal's file name.
+/// The job number in a header's, a journal's, or a claim's file name.
 fn record_id(name: &std::ffi::OsStr) -> Option<u64> {
     let name = name.to_str()?;
     let rest = name.strip_prefix("job-")?;
     let digits = rest
         .strip_suffix(".items.jsonl")
-        .or_else(|| rest.strip_suffix(".json"))?;
+        .or_else(|| rest.strip_suffix(".json"))
+        .or_else(|| rest.strip_suffix(".claim"))?;
     if digits.len() != 20 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
@@ -951,5 +1008,30 @@ mod tests {
         store.remove(11).unwrap();
         assert!(!journal_of(&store, 11).exists());
         assert!(matches!(store.read(11), Err(StoreError::Io { .. })));
+    }
+
+    #[test]
+    fn a_number_is_claimed_once_and_a_recorded_number_cannot_be_claimed() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = JobStore::new(directory.path().join("jobs"));
+        assert_eq!(store.claim(1), Ok(true), "the store directory is created");
+        assert_eq!(store.claim(1), Ok(false), "a second claim on it loses");
+        store.write(&record(2, JobState::Completed)).unwrap();
+        assert_eq!(store.claim(2), Ok(false), "a number with a record is taken");
+        assert_eq!(store.claim(3), Ok(true));
+        assert_eq!(store.highest_id(), Some(3), "a claim holds its number");
+
+        // Once the record is written the claim has done its job.
+        store.write(&record(3, JobState::Completed)).unwrap();
+        store.release_claim(3);
+        assert!(!store.claim_for(3).exists());
+        assert_eq!(store.claim(3), Ok(false));
+        // A claim whose record was never written is not released by it.
+        store.release_claim(1);
+        assert!(store.claim_for(1).exists());
+        // Removing a number removes whatever holds it.
+        store.remove(1).unwrap();
+        assert!(!store.claim_for(1).exists());
+        assert_eq!(store.recover().damaged, Vec::new());
     }
 }

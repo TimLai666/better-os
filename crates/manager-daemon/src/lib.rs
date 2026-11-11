@@ -14,10 +14,14 @@
 //! Everything that touches the outside world sits behind a trait so the
 //! transaction logic can be tested without privileges: [`apt::AptDriver`],
 //! [`host::HostProbe`], [`health::HealthProbe`], and [`authorize::Authorizer`].
+//!
+//! Besides transactions, it offers one repair: `dpkg --configure -a` for a dpkg
+//! run a crash interrupted, decided in ADR 0014 and gated by its own polkit
+//! action.
 
 pub mod apt;
 pub mod authorize;
-pub mod dpkg_config;
+pub mod dpkg_state;
 pub mod executor;
 pub mod health;
 pub mod host;
@@ -72,6 +76,15 @@ pub enum DaemonError {
     Storage(String),
     #[error("daemon.error.cancelled")]
     Cancelled,
+    /// dpkg's own record shows a run it did not finish. See ADR 0014.
+    #[error("daemon.error.dpkg_interrupted")]
+    DpkgInterrupted,
+    /// A repair was asked for and dpkg's record shows nothing unfinished.
+    #[error("daemon.error.nothing_to_repair")]
+    NothingToRepair,
+    /// `dpkg --configure -a` exited with an error.
+    #[error("daemon.error.repair_failed")]
+    RepairFailed,
 }
 
 impl From<manager_ipc::IpcError> for DaemonError {

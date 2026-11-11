@@ -54,6 +54,29 @@ pub enum DeviceSelection {
     Device { identity: String },
 }
 
+/// The stable identity of an input device, from the facts the kernel reports
+/// about it.
+///
+/// The device's own `Uniq` when it has one, and otherwise its bus, vendor,
+/// product, version, and name — all of which survive re-plugging, which the
+/// event node does not. `touchpad-platform` reads these from
+/// `/proc/bus/input/devices` and the gesture service reads them from
+/// `/sys/class/input/event<N>/device`; both build the identity here, so the two
+/// cannot file the same pad under two different names.
+pub fn device_identity(
+    unique_id: &str,
+    bus: &str,
+    vendor: &str,
+    product: &str,
+    version: &str,
+    name: &str,
+) -> String {
+    if !unique_id.is_empty() {
+        return format!("uniq:{unique_id}");
+    }
+    format!("input:{bus}:{vendor}:{product}:{version}:{name}")
+}
+
 /// Which backend applies changes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -357,6 +380,32 @@ fn migrate_v1(value: &Value) -> Result<TouchpadConfig, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_device_is_named_by_its_unique_id_and_otherwise_by_what_survives_a_replug() {
+        assert_eq!(
+            device_identity(
+                "a0:b1:c2:d3:e4:f5",
+                "0005",
+                "05ac",
+                "0265",
+                "0001",
+                "Magic Trackpad"
+            ),
+            "uniq:a0:b1:c2:d3:e4:f5"
+        );
+        assert_eq!(
+            device_identity(
+                "",
+                "0018",
+                "06cb",
+                "ce67",
+                "0100",
+                "SynPS/2 Synaptics TouchPad"
+            ),
+            "input:0018:06cb:ce67:0100:SynPS/2 Synaptics TouchPad"
+        );
+    }
 
     #[test]
     fn a_default_configuration_round_trips_through_json() {

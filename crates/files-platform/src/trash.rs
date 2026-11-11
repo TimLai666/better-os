@@ -964,39 +964,113 @@ const NOT_STORAGE: &[&str] = &[
     "tracefs",
 ];
 
-/// Every existing volume trash this user can read, one per volume.
+/// Filesystems whose answers come from another machine, as the kernel names
+/// them in `/proc/self/mountinfo`. A `stat` on one of them waits for its
+/// server, and an NFS mount with the default `hard` option waits for as long as
+/// the server is gone, in a sleep the calling thread cannot be woken from.
+///
+/// `nfs` and `nfs4` are NFS; `cifs`, `smb3`, and `smbfs` are SMB shares, the
+/// last the kernel's older client; `9p` is Plan 9 sharing, which is how
+/// virtual machines and WSL reach their host's files; `afs`, `ceph`, `coda`,
+/// `glusterfs`, `lustre`, and `ncpfs` are network and cluster filesystems; and
+/// `davfs` is WebDAV through davfs2. Every FUSE filesystem is treated the same
+/// way by prefix rather than by name (see [`is_network_or_fuse`]), because a
+/// FUSE mount is answered by a user-space process that can stall however its
+/// storage does — `sshfs` and `rclone` over a network, `ntfs-3g` (`fuseblk`)
+/// on a disk.
+const NETWORK_FILESYSTEMS: &[&str] = &[
+    "9p",
+    "afs",
+    "ceph",
+    "cifs",
+    "coda",
+    "davfs",
+    "glusterfs",
+    "lustre",
+    "ncpfs",
+    "nfs",
+    "nfs4",
+    "smb3",
+    "smbfs",
+];
+
+/// Whether a filesystem can keep a caller waiting on something other than
+/// this machine's own disks: a network filesystem, or any FUSE filesystem
+/// (`fuse`, `fuseblk`, and every `fuse.<name>` subtype).
+fn is_network_or_fuse(filesystem: &str) -> bool {
+    NETWORK_FILESYSTEMS.contains(&filesystem)
+        || filesystem == "fuse"
+        || filesystem == "fuseblk"
+        || filesystem.starts_with("fuse.")
+}
+
+/// Every existing volume trash this user can read on local storage, one per
+/// volume.
 ///
 /// Nothing is created here. A shared `.Trash` that fails its checks is not
 /// read, for the same reason it is not written. A volume mounted twice — a
-/// bind mount — lists once.
+/// bind mount — lists once. A network or FUSE filesystem is not looked at:
+/// asking one about its trash can wait on a server that is gone, so those are
+/// [`network_or_fuse_mounts`], for a caller that can afford to wait on its own
+/// thread.
 pub fn volume_trashes(mounts: &MountTable, uid: u32) -> Vec<TrashDirectory> {
     let mut seen = std::collections::HashSet::new();
     let mut found = Vec::new();
     for mount in mounts.mounts() {
-        if NOT_STORAGE.contains(&mount.filesystem.as_str()) {
+        let filesystem = mount.filesystem.as_str();
+        if NOT_STORAGE.contains(&filesystem) || is_network_or_fuse(filesystem) {
             continue;
         }
-        let topdir = &mount.mount_point;
-        let mut candidates = Vec::with_capacity(2);
-        if shared_trash_status(topdir) == SharedTrash::Usable {
-            candidates.push(topdir.join(".Trash").join(uid.to_string()));
-        }
-        candidates.push(topdir.join(format!(".Trash-{uid}")));
-        for root in candidates {
-            let Ok(metadata) = fs::symlink_metadata(&root) else {
-                continue;
-            };
-            if check_private_directory(&root, &metadata, uid).is_err() {
-                continue;
-            }
-            let trash = TrashDirectory::new(&root);
-            if fs::read_dir(trash.info_dir()).is_err() {
-                continue;
-            }
-            if seen.insert((metadata.dev(), metadata.ino())) {
+        for (trash, identity) in trashes_on_mount(&mount.mount_point, uid) {
+            if seen.insert(identity) {
                 found.push(trash);
             }
         }
+    }
+    found
+}
+
+/// The mount points of every network or FUSE filesystem that could hold a
+/// trash, each once. Nothing on them is touched here.
+pub fn network_or_fuse_mounts(mounts: &MountTable) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = Vec::new();
+    for mount in mounts.mounts() {
+        let filesystem = mount.filesystem.as_str();
+        if !NOT_STORAGE.contains(&filesystem)
+            && is_network_or_fuse(filesystem)
+            && !found.contains(&mount.mount_point)
+        {
+            found.push(mount.mount_point.clone());
+        }
+    }
+    found
+}
+
+/// The existing trashes this user can read on the volume mounted at
+/// `topdir`, each with the device and inode of its root, which tell a volume
+/// seen through two mount points from two volumes.
+///
+/// This reads the volume: on a network or FUSE filesystem, call it from a
+/// thread that may be left waiting.
+pub fn trashes_on_mount(topdir: &Path, uid: u32) -> Vec<(TrashDirectory, (u64, u64))> {
+    let mut candidates = Vec::with_capacity(2);
+    if shared_trash_status(topdir) == SharedTrash::Usable {
+        candidates.push(topdir.join(".Trash").join(uid.to_string()));
+    }
+    candidates.push(topdir.join(format!(".Trash-{uid}")));
+    let mut found = Vec::new();
+    for root in candidates {
+        let Ok(metadata) = fs::symlink_metadata(&root) else {
+            continue;
+        };
+        if check_private_directory(&root, &metadata, uid).is_err() {
+            continue;
+        }
+        let trash = TrashDirectory::new(&root);
+        if fs::read_dir(trash.info_dir()).is_err() {
+            continue;
+        }
+        found.push((trash, (metadata.dev(), metadata.ino())));
     }
     found
 }
@@ -1679,6 +1753,77 @@ mod tests {
         assert_eq!(roots, expected);
         // Listing never creates a trash.
         assert!(!empty.join(format!(".Trash-{uid}")).exists());
+    }
+
+    #[test]
+    fn a_network_or_fuse_mount_is_left_to_a_probe_rather_than_searched() {
+        let root = tempfile::tempdir().unwrap();
+        let uid = uid();
+        let mut mountinfo = String::new();
+        let mut shares = Vec::new();
+        for (index, filesystem) in [
+            "nfs",
+            "nfs4",
+            "cifs",
+            "smb3",
+            "smbfs",
+            "9p",
+            "davfs",
+            "fuse",
+            "fuseblk",
+            "fuse.sshfs",
+        ]
+        .iter()
+        .enumerate()
+        {
+            // Every one of them holds a usable private trash, so leaving one
+            // out can only be the filesystem rule.
+            let share = root.path().join(format!("share-{index}"));
+            fs::create_dir_all(share.join(format!(".Trash-{uid}/info"))).unwrap();
+            mountinfo.push_str(&format!(
+                "{} 0 0:{} / {} rw - {filesystem} server:/export rw\n",
+                index + 1,
+                40 + index,
+                share.display(),
+            ));
+            shares.push(share);
+        }
+        let disk = root.path().join("disk");
+        fs::create_dir_all(disk.join(format!(".Trash-{uid}/info"))).unwrap();
+        mountinfo.push_str(&format!(
+            "90 0 8:2 / {} rw - ext4 /dev/sdc1 rw\n",
+            disk.display()
+        ));
+        // A document portal is not storage at all: neither searched nor
+        // probed.
+        let portal = root.path().join("portal");
+        fs::create_dir_all(portal.join(format!(".Trash-{uid}/info"))).unwrap();
+        mountinfo.push_str(&format!(
+            "91 0 0:90 / {} rw - fuse.portal portal rw\n",
+            portal.display()
+        ));
+        let path = root.path().join("mountinfo");
+        fs::write(&path, mountinfo).unwrap();
+        let table = crate::mounts::read_mount_table(&path);
+
+        let searched: Vec<PathBuf> = volume_trashes(&table, uid)
+            .into_iter()
+            .map(|trash| trash.root().to_path_buf())
+            .collect();
+        assert_eq!(searched, vec![disk.join(format!(".Trash-{uid}"))]);
+
+        let mut probed = network_or_fuse_mounts(&table);
+        probed.sort();
+        shares.sort();
+        assert_eq!(probed, shares);
+
+        // What a probe finds on one of them is the trash a search would have
+        // found there.
+        let found: Vec<PathBuf> = trashes_on_mount(&shares[0], uid)
+            .into_iter()
+            .map(|(trash, _)| trash.root().to_path_buf())
+            .collect();
+        assert_eq!(found, vec![shares[0].join(format!(".Trash-{uid}"))]);
     }
 
     #[test]

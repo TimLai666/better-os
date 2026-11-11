@@ -9,15 +9,17 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 
 use manager_daemon::apt::{DebFields, FakeAptDriver};
-use manager_daemon::authorize::FakeAuthorizer;
+use manager_daemon::authorize::{
+    APPLY_ACTION, Authorizer, FakeActionAuthorizer, FakeAuthorizer, REPAIR_ACTION,
+};
 use manager_daemon::executor::Executor;
 use manager_daemon::health::FakeHealthProbe;
 use manager_daemon::host::FixedHostProbe;
 use manager_daemon::service::{ManagerService, OBJECT_PATH};
 use manager_daemon::store::{ArtifactStore, Journal};
 use manager_ipc::{
-    OutcomeStatus, PROTOCOL_VERSION, TransactionOutcome, WireAction, WireArtifact, WirePlan,
-    WireStep,
+    DpkgPackageStatus, InterruptedPackage, OutcomeStatus, PROTOCOL_VERSION, PackageSystemState,
+    RepairOutcome, RepairStatus, TransactionOutcome, WireAction, WireArtifact, WirePlan, WireStep,
 };
 use sha2::{Digest, Sha256};
 
@@ -116,22 +118,42 @@ fn plan(sha256: String) -> WirePlan {
     }
 }
 
-/// Publishes the service on a private bus and returns a connection to it.
-async fn serve(
-    bus: &PrivateBus,
-    fixture: &Fixture,
-    authorized: bool,
-) -> zbus::Result<zbus::Connection> {
-    let apt = FakeAptDriver::new().with_deb(
+fn monitor_apt() -> FakeAptDriver {
+    FakeAptDriver::new().with_deb(
         MONITOR_DEB,
         DebFields {
             package: "better-monitor".to_string(),
             version: "0.1.0".to_string(),
             architecture: "amd64".to_string(),
         },
-    );
+    )
+}
+
+/// Publishes the service on a private bus and returns a connection to it.
+async fn serve(
+    bus: &PrivateBus,
+    fixture: &Fixture,
+    authorized: bool,
+) -> zbus::Result<zbus::Connection> {
+    serve_with(
+        bus,
+        fixture,
+        FakeAuthorizer(authorized),
+        Arc::new(monitor_apt()),
+    )
+    .await
+}
+
+/// Publishes the service with a chosen authorizer and APT, so a test can grant
+/// one polkit action and not another, and can inspect what APT was asked.
+async fn serve_with<A: Authorizer + 'static>(
+    bus: &PrivateBus,
+    fixture: &Fixture,
+    authorizer: A,
+    apt: Arc<FakeAptDriver>,
+) -> zbus::Result<zbus::Connection> {
     let executor = Arc::new(Executor {
-        apt: Arc::new(apt),
+        apt,
         host: Arc::new(FixedHostProbe::ubuntu_2404()),
         health: Arc::new(FakeHealthProbe::with_files(vec![std::path::PathBuf::from(
             "/usr/bin/better-monitor",
@@ -146,7 +168,7 @@ async fn serve(
         .serve_at(
             OBJECT_PATH,
             ManagerService::new(
-                FakeAuthorizer(authorized),
+                authorizer,
                 executor,
                 fixture.artifacts.clone(),
                 fixture.journal.clone(),
@@ -364,4 +386,160 @@ async fn the_protocol_version_is_readable_before_anything_is_attempted() {
         .unwrap();
 
     assert_eq!(u32::try_from(&version).unwrap(), PROTOCOL_VERSION);
+}
+
+fn interrupted() -> PackageSystemState {
+    PackageSystemState {
+        protocol_version: PROTOCOL_VERSION,
+        journal_pending: true,
+        packages: vec![InterruptedPackage {
+            package: "better-monitor".to_string(),
+            status: DpkgPackageStatus::HalfConfigured,
+        }],
+        omitted: 0,
+    }
+}
+
+/// Reading dpkg's state changes nothing, so it needs no authorization, the
+/// same as `GetStatus`. A caller polkit would refuse still gets the answer.
+#[tokio::test]
+async fn the_package_system_state_is_readable_without_authorization() {
+    let bus = bus_or_skip!();
+    let fixture = Fixture::new("dpkg-state");
+    let apt = Arc::new(monitor_apt().with_package_system(interrupted()));
+    let _service = serve_with(&bus, &fixture, FakeAuthorizer(false), apt.clone())
+        .await
+        .unwrap();
+    let client = client(&bus).await.unwrap();
+
+    let reply: String = call(&client, "GetPackageSystemState", &()).await.unwrap();
+    let state = PackageSystemState::from_json(&reply).unwrap();
+
+    assert_eq!(state, interrupted());
+    assert!(apt.calls().is_empty(), "reading the state ran nothing");
+}
+
+/// The repair asks polkit for its own action. A caller allowed to apply
+/// transactions is not thereby allowed to run `dpkg --configure -a`.
+#[tokio::test]
+async fn a_caller_authorized_only_to_apply_transactions_cannot_repair() {
+    let bus = bus_or_skip!();
+    let fixture = Fixture::new("repair-wrong-action");
+    let apt = Arc::new(monitor_apt().with_package_system(interrupted()));
+    let _service = serve_with(
+        &bus,
+        &fixture,
+        FakeActionAuthorizer(APPLY_ACTION),
+        apt.clone(),
+    )
+    .await
+    .unwrap();
+    let client = client(&bus).await.unwrap();
+
+    let error = call::<_, String>(&client, "RepairPackageSystem", &())
+        .await
+        .expect_err("the apply action must not authorize a repair");
+
+    assert!(
+        error.to_string().contains("daemon.error.unauthorized"),
+        "unexpected error: {error}"
+    );
+    assert!(apt.calls().is_empty(), "dpkg must not have run");
+}
+
+#[tokio::test]
+async fn an_authorized_repair_runs_dpkg_and_reports_its_outcome_and_log() {
+    let bus = bus_or_skip!();
+    let fixture = Fixture::new("repair-ok");
+    let apt = Arc::new(monitor_apt().with_package_system(interrupted()));
+    let _service = serve_with(
+        &bus,
+        &fixture,
+        FakeActionAuthorizer(REPAIR_ACTION),
+        apt.clone(),
+    )
+    .await
+    .unwrap();
+    let client = client(&bus).await.unwrap();
+
+    let reply: String = call(&client, "RepairPackageSystem", &()).await.unwrap();
+    let outcome = RepairOutcome::from_json(&reply).unwrap();
+
+    assert_eq!(outcome.status, RepairStatus::Repaired);
+    assert_eq!(
+        outcome.log[0].argv,
+        vec![
+            "dpkg",
+            "--force-confdef",
+            "--force-confold",
+            "--configure",
+            "-a"
+        ]
+    );
+    assert_eq!(apt.calls(), vec!["configure-pending".to_string()]);
+
+    // The state the daemon now reports agrees with the outcome.
+    let reply: String = call(&client, "GetPackageSystemState", &()).await.unwrap();
+    assert!(
+        !PackageSystemState::from_json(&reply)
+            .unwrap()
+            .needs_repair()
+    );
+}
+
+#[tokio::test]
+async fn a_repair_with_nothing_to_repair_is_refused_and_runs_nothing() {
+    let bus = bus_or_skip!();
+    let fixture = Fixture::new("repair-clean");
+    let apt = Arc::new(monitor_apt());
+    let _service = serve_with(&bus, &fixture, FakeAuthorizer(true), apt.clone())
+        .await
+        .unwrap();
+    let client = client(&bus).await.unwrap();
+
+    let error = call::<_, String>(&client, "RepairPackageSystem", &())
+        .await
+        .expect_err("a clean package system has nothing to repair");
+
+    assert!(
+        error.to_string().contains("daemon.error.nothing_to_repair"),
+        "unexpected error: {error}"
+    );
+    assert!(apt.calls().is_empty(), "dpkg must not have run");
+}
+
+/// The refusal is reported as an outcome under the client's transaction id,
+/// like every other refusal before a change, so the client records why.
+#[tokio::test]
+async fn a_transaction_sent_while_dpkg_is_interrupted_is_refused_before_any_change() {
+    let bus = bus_or_skip!();
+    let fixture = Fixture::new("apply-interrupted");
+    let apt = Arc::new(monitor_apt().with_package_system(interrupted()));
+    let _service = serve_with(&bus, &fixture, FakeAuthorizer(true), apt.clone())
+        .await
+        .unwrap();
+    let client = client(&bus).await.unwrap();
+
+    let reply: String = call(
+        &client,
+        "ApplyTransaction",
+        &(plan("a".repeat(64)).to_json().unwrap(),),
+    )
+    .await
+    .unwrap();
+    let outcome = TransactionOutcome::from_json(&reply).unwrap();
+
+    let OutcomeStatus::Failed {
+        error_key,
+        step_index,
+        recovery,
+    } = &outcome.status
+    else {
+        panic!("expected a refusal, got {:?}", outcome.status);
+    };
+    assert_eq!(error_key, "daemon.error.dpkg_interrupted");
+    assert_eq!(*step_index, None);
+    assert_eq!(*recovery, None, "nothing changed, so nothing recovered");
+    assert_eq!(outcome.transaction_id, TRANSACTION);
+    assert!(apt.calls().is_empty(), "APT must not have run");
 }

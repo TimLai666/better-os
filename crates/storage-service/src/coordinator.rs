@@ -8,13 +8,13 @@
 //! re-derived from nothing.
 //!
 //! There is no polling loop anywhere in here. Work happens when a platform
-//! event arrives, when a client says a file operation finished, or when a
-//! machine asks for a refresh. An idle session with a stick plugged in runs no
-//! timers at all.
+//! event arrives, when a client says a file operation finished or leaves the
+//! bus without saying so, or when a machine asks for a refresh. An idle
+//! session with a stick plugged in runs no timers at all.
 
 use crate::protocol::{DeviceReport, StateReport};
 use crate::store::{PreferenceStore, StoreError};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -98,6 +98,10 @@ pub struct StorageCoordinator<C: DeviceControl> {
     known: BTreeMap<DeviceHandle, PlatformDevice>,
     diagnostics: VecDeque<Diagnostic>,
     updates: broadcast::Sender<DeviceReport>,
+    /// The operations each bus client started and has not completed, by the
+    /// client's unique connection name. Operations started in process have
+    /// no client and are not here.
+    clients: BTreeMap<String, BTreeSet<(DeviceHandle, String)>>,
     /// The runtime this service owns, when it was built inside one.
     ///
     /// zbus runs on its default async-io flavor across this workspace — see
@@ -132,6 +136,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             known: BTreeMap::new(),
             diagnostics: VecDeque::new(),
             updates,
+            clients: BTreeMap::new(),
             runtime: tokio::runtime::Handle::try_current().ok(),
         })
     }
@@ -421,9 +426,42 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         }
     }
 
+    /// A file operation started by a client on the bus, named by its unique
+    /// connection name. The operation ends by itself if that name leaves the
+    /// bus before completing it; see [`Self::client_departed`].
+    pub async fn operation_started_by(
+        &mut self,
+        client: &str,
+        handle: &DeviceHandle,
+        operation: String,
+    ) {
+        self.clients
+            .entry(client.to_string())
+            .or_default()
+            .insert((handle.clone(), operation.clone()));
+        self.operation_started(handle, operation).await;
+    }
+
+    /// A client left the bus. Every operation it started and never completed
+    /// is completed now, flush included, exactly as if it had said so.
+    pub async fn client_departed(&mut self, client: &str) {
+        let Some(operations) = self.clients.remove(client) else {
+            return;
+        };
+        for (handle, operation) in operations {
+            self.operation_completed(&handle, operation).await;
+        }
+    }
+
     /// A file operation finished. The flush that follows is filesystem-scoped
     /// and happens here, once per operation, rather than per written file.
     pub async fn operation_completed(&mut self, handle: &DeviceHandle, operation: String) {
+        let key = (handle.clone(), operation);
+        self.clients.retain(|_, started| {
+            started.remove(&key);
+            !started.is_empty()
+        });
+        let (_, operation) = key;
         let report = self.run_flush(handle).await;
         let now = self.clock.now();
         let Some(report) = report else {

@@ -10,10 +10,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use better_core::package_health::{HealthProbe, HealthVerdict};
 use manager_ipc::{
     OutcomeStatus, TransactionOutcome, WireAction, WireArtifact, WirePlan, WireRecovery, WireStep,
 };
 use manager_platform::download::HttpDownloader;
+use manager_platform::dpkg::PackageStateProbe;
 use manager_platform::{DownloadRequest, PlatformError, PrivilegedTransactionExecutor};
 
 use crate::{
@@ -155,6 +157,10 @@ impl StageDriver for MockDriver {
 pub struct RealDriver<'a> {
     downloader: &'a HttpDownloader,
     executor: &'a dyn PrivilegedTransactionExecutor,
+    /// Read-only dpkg queries, for the steps that check a component without
+    /// changing it.
+    packages: &'a dyn PackageStateProbe,
+    health: &'a dyn HealthProbe,
     transaction_id: String,
     profile: SystemProfile,
     /// Set once the transaction has been handed over, so the outcome can be
@@ -166,12 +172,16 @@ impl<'a> RealDriver<'a> {
     pub fn new(
         downloader: &'a HttpDownloader,
         executor: &'a dyn PrivilegedTransactionExecutor,
+        packages: &'a dyn PackageStateProbe,
+        health: &'a dyn HealthProbe,
         transaction_id: impl Into<String>,
         profile: SystemProfile,
     ) -> Self {
         Self {
             downloader,
             executor,
+            packages,
+            health,
             transaction_id: transaction_id.into(),
             profile,
             outcome: None,
@@ -179,7 +189,10 @@ impl<'a> RealDriver<'a> {
     }
 
     /// Translates a plan into the wire contract the daemon revalidates.
-    pub fn wire_plan(&self, plan: &TransactionPlan) -> Result<WirePlan, FailureEvidence> {
+    ///
+    /// `Ok(None)` when no step crosses the privileged boundary — a plan of
+    /// only Verify, Enable, and Disable steps — so nothing is sent at all.
+    pub fn wire_plan(&self, plan: &TransactionPlan) -> Result<Option<WirePlan>, FailureEvidence> {
         let mut steps = Vec::new();
         for step in plan.steps() {
             let Some(action) = wire_action(step.operation) else {
@@ -201,6 +214,10 @@ impl<'a> RealDriver<'a> {
             });
         }
 
+        if steps.is_empty() {
+            return Ok(None);
+        }
+
         let wire = WirePlan {
             protocol_version: manager_ipc::PROTOCOL_VERSION,
             transaction_id: self.transaction_id.clone(),
@@ -211,7 +228,7 @@ impl<'a> RealDriver<'a> {
         wire.validate().map_err(|error| {
             FailureEvidence::with_detail("daemon.plan_rejected", error.to_string())
         })?;
-        Ok(wire)
+        Ok(Some(wire))
     }
 
     fn download_all(
@@ -278,13 +295,11 @@ impl<'a> RealDriver<'a> {
         progress: &mut dyn FnMut(StageProgress),
     ) -> StageOutcome {
         let wire = match self.wire_plan(plan) {
-            Ok(wire) => wire,
+            Ok(Some(wire)) => wire,
+            // Nothing here needs the privileged boundary.
+            Ok(None) => return StageOutcome::Completed,
             Err(evidence) => return StageOutcome::Failed(evidence),
         };
-        if wire.steps.is_empty() {
-            // Nothing here needs the privileged boundary.
-            return StageOutcome::Completed;
-        }
 
         let component = wire.steps[0].component.clone();
         progress(StageProgress::Applying {
@@ -299,6 +314,46 @@ impl<'a> RealDriver<'a> {
             }
             Err(error) => StageOutcome::Failed(evidence_for(&error)),
         }
+    }
+
+    /// The health stage: the daemon's verdict for what it applied, and the
+    /// shared health rule, read without root, for every step the daemon never
+    /// saw: Verify, Enable, and Disable.
+    ///
+    /// A finished transaction marks its components healthy and clears their
+    /// failure, so a step nothing checked would turn a failed component into
+    /// a healthy one by being enabled. A step the rule finds healthy passes; a
+    /// failed check fails the stage with `health.failed` and the rule's detail;
+    /// a check that could not run fails it with `health.undetermined`.
+    fn check_health(&self, plan: &TransactionPlan) -> StageOutcome {
+        if let Some(outcome) = &self.outcome {
+            let stage = outcome_to_stage(outcome);
+            if !matches!(stage, StageOutcome::Completed) {
+                return stage;
+            }
+        }
+        for step in plan.steps() {
+            if wire_action(step.operation).is_some() {
+                continue;
+            }
+            let package = step.component.to_string();
+            match manager_platform::dpkg::verify_package(self.packages, self.health, &package) {
+                HealthVerdict::Healthy => {}
+                HealthVerdict::Failed(detail) => {
+                    return StageOutcome::Failed(FailureEvidence::with_detail(
+                        "health.failed",
+                        detail,
+                    ));
+                }
+                HealthVerdict::Undetermined(detail) => {
+                    return StageOutcome::Failed(FailureEvidence::with_detail(
+                        "health.undetermined",
+                        detail,
+                    ));
+                }
+            }
+        }
+        StageOutcome::Completed
     }
 
     /// What the daemon reported, once the transaction has been handed over.
@@ -320,11 +375,12 @@ impl StageDriver for RealDriver<'_> {
             OperationStage::Installing => self.apply(plan, progress),
             // The daemon already applied configuration and health-checked what
             // it applied. Repeating either here would be guessing.
-            OperationStage::ApplyingSettings | OperationStage::CheckingHealth => self
+            OperationStage::ApplyingSettings => self
                 .outcome
                 .as_ref()
                 .map(outcome_to_stage)
                 .unwrap_or(StageOutcome::Completed),
+            OperationStage::CheckingHealth => self.check_health(plan),
         }
     }
 
@@ -358,15 +414,7 @@ fn outcome_to_stage(outcome: &TransactionOutcome) -> StageOutcome {
             Some(WireRecovery::ManualRecoveryRequired) => {
                 StageOutcome::RestoreRequiresManualRecovery
             }
-            // The service reports one string shaped `key:detail`. Recording it
-            // whole left the reason — the half a person can act on — inside a
-            // key that presentation only prefix-matches, so it is split here.
-            _ => StageOutcome::Failed(match error_key.split_once(':') {
-                Some((key, detail)) if !detail.trim().is_empty() => {
-                    FailureEvidence::with_detail(key, detail)
-                }
-                _ => FailureEvidence::new(error_key.clone()),
-            }),
+            _ => StageOutcome::Failed(split_daemon_key(error_key)),
         },
         OutcomeStatus::Cancelled => {
             StageOutcome::Failed(FailureEvidence::new("operation.cancelled"))
@@ -379,8 +427,22 @@ fn outcome_to_stage(outcome: &TransactionOutcome) -> StageOutcome {
     }
 }
 
+/// Splits a daemon error key shaped `key:detail`.
+///
+/// The service reports one string. Recording it whole left the reason, the
+/// half a person can act on, inside a key that presentation only
+/// prefix-matches, so it is split here.
+pub(crate) fn split_daemon_key(error_key: &str) -> FailureEvidence {
+    match error_key.split_once(':') {
+        Some((key, detail)) if !detail.trim().is_empty() => {
+            FailureEvidence::with_detail(key, detail)
+        }
+        _ => FailureEvidence::new(error_key),
+    }
+}
+
 /// Maps a platform failure onto the stable keys a presentation layer localizes.
-fn evidence_for(error: &PlatformError) -> FailureEvidence {
+pub(crate) fn evidence_for(error: &PlatformError) -> FailureEvidence {
     match error {
         PlatformError::ChecksumMismatch { component } => {
             FailureEvidence::with_detail("download.checksum_mismatch", component.to_string())
@@ -741,14 +803,21 @@ mod tests {
             std::env::temp_dir().join("better-os-wire-test"),
         ));
         let executor = manager_platform::UnapprovedPrivilegedExecutor;
+        let packages = manager_platform::dpkg::FixedPackageStateProbe::new(&[]);
+        let health = better_core::package_health::FakeHealthProbe::with_files(Vec::new());
         let driver = RealDriver::new(
             &downloader,
             &executor,
+            &packages,
+            &health,
             "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
             crate::SystemProfile::default(),
         );
 
-        let wire = driver.wire_plan(&plan).expect("the plan translates");
+        let wire = driver
+            .wire_plan(&plan)
+            .expect("the plan translates")
+            .expect("an install crosses the privileged boundary");
         // The daemon revalidates this from scratch, so it has to pass the
         // shared contract before it is worth sending.
         wire.validate().unwrap();
@@ -830,9 +899,13 @@ mod tests {
             std::env::temp_dir().join("better-os-cancel-test"),
         ));
         let executor = manager_platform::UnapprovedPrivilegedExecutor;
+        let packages = manager_platform::dpkg::FixedPackageStateProbe::new(&[]);
+        let health = better_core::package_health::FakeHealthProbe::with_files(Vec::new());
         let driver = RealDriver::new(
             &downloader,
             &executor,
+            &packages,
+            &health,
             "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
             crate::SystemProfile::default(),
         );

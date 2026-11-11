@@ -260,8 +260,10 @@ pub trait DeviceLink: Send + Sync {
     fn request_refresh(&self);
     /// Takes whatever has arrived. Never blocks.
     fn poll(&self) -> Vec<DeviceNotice>;
-    /// The devices that are mounted, as the link last saw them.
-    fn mounted_devices(&self) -> Vec<MountedDevice>;
+    /// The devices that are mounted, as the link last saw them. `None` until
+    /// the link has its first device list: nothing being mounted and nothing
+    /// being known yet are different answers to a job that is starting.
+    fn mounted_devices(&self) -> Option<Vec<MountedDevice>>;
     /// Tells the storage layer a Better Files job is about to write to this
     /// device. Blocks until the backend has recorded it, or until the link
     /// stops waiting and says so.
@@ -296,7 +298,7 @@ impl DeviceLink for SharedLink {
     fn poll(&self) -> Vec<DeviceNotice> {
         self.0.poll()
     }
-    fn mounted_devices(&self) -> Vec<MountedDevice> {
+    fn mounted_devices(&self) -> Option<Vec<MountedDevice>> {
         self.0.mounted_devices()
     }
     fn operation_started(&self, object_path: &str, operation: &str) -> Result<(), String> {
@@ -329,8 +331,10 @@ impl DeviceLink for NoDeviceLink {
     fn poll(&self) -> Vec<DeviceNotice> {
         Vec::new()
     }
-    fn mounted_devices(&self) -> Vec<MountedDevice> {
-        Vec::new()
+    // No device list is ever coming, and none is needed to know that
+    // nothing is mounted.
+    fn mounted_devices(&self) -> Option<Vec<MountedDevice>> {
+        Some(Vec::new())
     }
     fn operation_started(&self, _object_path: &str, _operation: &str) -> Result<(), String> {
         Err("no storage link in this build".to_string())

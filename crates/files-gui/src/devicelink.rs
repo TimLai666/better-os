@@ -75,7 +75,8 @@ pub struct StorageLink {
     notices: Mutex<Receiver<DeviceNotice>>,
     mode: Arc<RwLock<CollectionMode>>,
     /// The mounted devices from the last inventory, for the job tracker.
-    mounted: Arc<RwLock<Vec<MountedDevice>>>,
+    /// `None` until the first inventory.
+    mounted: Arc<RwLock<Option<Vec<MountedDevice>>>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -86,7 +87,7 @@ impl StorageLink {
         let (requests, request_rx) = unbounded_channel::<Request>();
         let (notice_tx, notices) = channel::<DeviceNotice>();
         let mode = Arc::new(RwLock::new(CollectionMode::Connecting));
-        let mounted = Arc::new(RwLock::new(Vec::new()));
+        let mounted = Arc::new(RwLock::new(None));
         let stop = Arc::new(AtomicBool::new(false));
 
         let thread_mode = mode.clone();
@@ -163,7 +164,7 @@ impl DeviceLink for StorageLink {
         collected
     }
 
-    fn mounted_devices(&self) -> Vec<MountedDevice> {
+    fn mounted_devices(&self) -> Option<Vec<MountedDevice>> {
         self.mounted.read().expect("mounted lock").clone()
     }
 
@@ -238,7 +239,7 @@ async fn serve(
     mut requests: UnboundedReceiver<Request>,
     notices: Sender<DeviceNotice>,
     mode: Arc<RwLock<CollectionMode>>,
-    mounted: Arc<RwLock<Vec<MountedDevice>>>,
+    mounted: Arc<RwLock<Option<Vec<MountedDevice>>>>,
     stop: Arc<AtomicBool>,
 ) {
     let mut backend = match StorageClient::connect_verified().await {
@@ -318,20 +319,8 @@ async fn serve(
             Backend::Embedded(embedded) => embedded.coordinator.reports(),
         };
 
-        for notice in differences(&previous, &reports) {
-            if notices.send(notice).is_err() {
-                return;
-            }
-        }
-        if reports != previous {
-            *mounted.write().expect("mounted lock") = mounted_from(&reports);
-            if notices
-                .send(DeviceNotice::Inventory(reports.clone()))
-                .is_err()
-            {
-                return;
-            }
-            previous = reports;
+        if !publish_inventory(&mut previous, reports, &mounted, &notices) {
+            return;
         }
 
         // Sleep until the next poll, or until something is asked for. A job
@@ -342,6 +331,36 @@ async fn serve(
             Err(_) => {}
         }
     }
+}
+
+/// Publishes one inventory: the devices that left since the last one, the
+/// mounted devices for the job tracker, and the inventory itself when it
+/// changed. Returns `false` once the window has stopped listening.
+fn publish_inventory(
+    previous: &mut Vec<DeviceReport>,
+    reports: Vec<DeviceReport>,
+    mounted: &RwLock<Option<Vec<MountedDevice>>>,
+    notices: &Sender<DeviceNotice>,
+) -> bool {
+    for notice in differences(previous, &reports) {
+        if notices.send(notice).is_err() {
+            return false;
+        }
+    }
+    let first = mounted.read().expect("mounted lock").is_none();
+    if first || reports != *previous {
+        *mounted.write().expect("mounted lock") = Some(mounted_from(&reports));
+    }
+    if reports != *previous {
+        if notices
+            .send(DeviceNotice::Inventory(reports.clone()))
+            .is_err()
+        {
+            return false;
+        }
+        *previous = reports;
+    }
+    true
 }
 
 /// The mounted devices in an inventory.
@@ -692,6 +711,23 @@ mod tests {
                 mount_point: PathBuf::from("/media/a"),
             }]
         );
+    }
+
+    /// A first inventory with nothing mounted is still a first inventory: a
+    /// job waiting to learn which devices exist learns that none are mounted.
+    #[test]
+    fn an_empty_first_inventory_still_tells_the_tracker_the_list_has_arrived() {
+        let mounted = RwLock::new(None);
+        let (notices, window) = channel();
+        let mut previous = Vec::new();
+        assert!(publish_inventory(
+            &mut previous,
+            Vec::new(),
+            &mounted,
+            &notices
+        ));
+        assert_eq!(*mounted.read().unwrap(), Some(Vec::new()));
+        assert!(window.try_recv().is_err(), "nothing changed for the window");
     }
 
     async fn embedded_with_a_mounted_stick(

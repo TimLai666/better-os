@@ -91,18 +91,6 @@ impl GestureStore {
         Ok(self.load_profiles()?.global)
     }
 
-    /// The profile in force: the selected device's own if it has one, the
-    /// global one otherwise.
-    ///
-    /// This is what the resident pipeline recognizes against, because the
-    /// window edits the profile of the pad it is showing and a daemon that
-    /// performed the global one instead would perform gestures the user is not
-    /// looking at.
-    pub fn load_active_config(&self) -> Result<GestureConfig, GestureStoreError> {
-        let profiles = self.load_profiles()?;
-        Ok(profiles.resolve(profiles.active_device.as_deref()).clone())
-    }
-
     /// Replaces the global profile, leaving every device profile alone.
     pub fn save_config(&self, config: &GestureConfig) -> Result<(), GestureStoreError> {
         let mut profiles = self.load_profiles().unwrap_or_default();
@@ -349,29 +337,6 @@ mod tests {
         // And the gesture state is where it should be: its own two files.
         assert!(store.config_path().exists());
         assert!(store.has_capture());
-    }
-
-    /// The resident pipeline recognizes against the profile the window is
-    /// editing. A pad that has diverged from the global profile must therefore
-    /// read back as itself, and a pad that follows the global one must not
-    /// read back as an empty profile of its own.
-    #[test]
-    fn the_active_configuration_is_the_selected_devices_own_profile() {
-        let (_guard, store) = store();
-        let mut profiles = GestureProfiles::default();
-        profiles.global.enabled = false;
-        profiles.detach("uniq:e3:2a:6d:11:04:9f").enabled = true;
-        profiles.active_device = Some("uniq:e3:2a:6d:11:04:9f".to_string());
-        store.save_profiles(&profiles).unwrap();
-
-        assert!(store.load_active_config().unwrap().enabled);
-        // The global profile is still what a caller with no device means.
-        assert!(!store.load_config().unwrap().enabled);
-
-        // A pad following the global profile gets the global profile.
-        profiles.active_device = None;
-        store.save_profiles(&profiles).unwrap();
-        assert!(!store.load_active_config().unwrap().enabled);
     }
 
     #[test]

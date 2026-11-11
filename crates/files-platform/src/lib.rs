@@ -28,8 +28,8 @@ pub use mime::{GlobMimeDetector, MimeDetector, SharedMimeDetector, detector_from
 pub use mounts::{MountPoint, MountTable, external_devices, read_mount_table};
 pub use trash::{
     DeviceProbe, HostDevices, SharedTrash, TrashDirectory, TrashError, TrashedItem, VolumeTrash,
-    current_uid, ensure_trash, move_to_trash, original_path_of, purge, read_trash, restore,
-    restore_to, trash_root_of, volume_trash, volume_trashes,
+    current_uid, ensure_trash, move_to_trash, network_or_fuse_mounts, original_path_of, purge,
+    read_trash, restore, restore_to, trash_root_of, trashes_on_mount, volume_trash, volume_trashes,
 };
 pub use watch::{DirectoryWatcher, WatchBackend, WatchEvent, refresh_for};
 pub use xdg::{ResolvedDirectory, UserDirectories, UserDirectory};

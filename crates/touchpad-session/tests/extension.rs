@@ -28,6 +28,22 @@ fn read(name: &str) -> String {
         .unwrap_or_else(|error| panic!("{name} could not be read: {error}"))
 }
 
+/// A file with its comment lines removed.
+///
+/// Comments are stripped the same way the equivalent guards in `better-actions`
+/// and `touchpad-session` do it: the header of `extension.js` names every
+/// forbidden thing on purpose, in order to forbid it.
+fn code(name: &str) -> String {
+    read(name)
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !(trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*'))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Every `name="…"` that follows one of these tags. Enough of an XML reader for
 /// a file this shape, and it needs no dependency to be one.
 fn declared(xml: &str, tag: &str) -> Vec<String> {
@@ -62,8 +78,9 @@ fn the_interface_file_declares_exactly_the_members_the_client_calls() {
     assert_eq!(signals, expected);
 }
 
-/// The two signals carry the same five values in the same order, which is what
-/// lets one deserialization read both.
+/// The two signals carry the same six values in the same order, which is what
+/// lets one deserialization read both. The sixth is the device node ADR 0015
+/// allows, and nothing else was added beside it.
 #[test]
 fn both_gesture_signals_have_the_shape_the_client_deserializes() {
     let xml = read("org.betteros.TouchpadAdapter1.xml");
@@ -80,7 +97,7 @@ fn both_gesture_signals_have_the_shape_the_client_deserializes() {
                 &rest[..rest.find('"').expect("a closing quote")]
             })
             .collect();
-        assert_eq!(types, vec!["u", "u", "d", "d", "t"], "{signal}");
+        assert_eq!(types, vec!["u", "u", "d", "d", "t", "s"], "{signal}");
     }
 }
 
@@ -105,17 +122,7 @@ fn the_extension_loads_the_interface_file_that_ships_beside_it() {
 /// review.
 #[test]
 fn the_extension_runs_nothing_and_decides_nothing() {
-    // Comments are stripped first, the same way the equivalent guards in
-    // `better-actions` and `touchpad-session` do it: the header of this file
-    // names every forbidden thing on purpose, in order to forbid it.
-    let extension: String = read("extension.js")
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim_start();
-            !(trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*'))
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let extension = code("extension.js");
     for forbidden in [
         "spawn",
         "GLib.spawn_command_line",
@@ -130,6 +137,84 @@ fn the_extension_runs_nothing_and_decides_nothing() {
             "the extension names {forbidden}, which is outside the bounds ADR 0012 set"
         );
     }
+}
+
+/// The bound ADR 0015 added, asserted rather than trusted.
+///
+/// The extension may report one fact about a device: the device node of the
+/// event's source device, copied as it is. It may read no other fact about the
+/// device, transform or hash nothing, and keep nothing between events.
+#[test]
+fn the_extension_reports_the_device_node_and_nothing_else_about_the_device() {
+    let extension = code("extension.js");
+    for accessor in ["get_source_device()", "get_device_node()"] {
+        assert!(
+            extension.contains(accessor),
+            "the extension does not read {accessor}, so it cannot name the device ADR 0015 allows"
+        );
+    }
+    for forbidden in [
+        // Every other fact a Clutter input device exposes.
+        "get_device_name",
+        "get_vendor_id",
+        "get_product_id",
+        "get_device_type",
+        "get_device_mode",
+        "get_seat",
+        "get_device()",
+        "device_name",
+        "vendor_id",
+        "product_id",
+        // Computing something from the node instead of reporting it.
+        "compute_checksum",
+        "Checksum",
+        "hash",
+        "split(",
+        "replace(",
+        "slice(",
+        "substring",
+        "parseInt",
+        // Keeping it.
+        "new Map",
+        "new Set",
+        "WeakMap",
+    ] {
+        assert!(
+            !extension.contains(forbidden),
+            "the extension names {forbidden}, which is outside the bounds ADR 0015 set"
+        );
+    }
+
+    // And it keeps no state beyond what it kept before the device was named:
+    // the bus export, the bus name, the stage handler, and the suppression
+    // record. A device cache would have to be a new field.
+    let mut fields: Vec<&str> = extension
+        .match_indices("this.")
+        .map(|(index, _)| {
+            let rest = &extension[index + "this.".len()..];
+            let end = rest
+                .find(|character: char| !(character.is_alphanumeric() || character == '_'))
+                .unwrap_or(rest.len());
+            &rest[..end]
+        })
+        .filter(|name| {
+            // A field is something assigned; a method call is not one.
+            let assigned = format!("this.{name} =");
+            extension.contains(&assigned)
+        })
+        .collect();
+    fields.sort_unstable();
+    fields.dedup();
+    assert_eq!(
+        fields,
+        vec![
+            "_capturedId",
+            "_exported",
+            "_nameId",
+            "_suppressed",
+            "_trackerState"
+        ]
+    );
 }
 
 #[test]

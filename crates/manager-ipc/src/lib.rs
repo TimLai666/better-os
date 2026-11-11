@@ -514,6 +514,238 @@ impl TransactionOutcome {
     }
 }
 
+/// Most unfinished packages one [`PackageSystemState`] lists by name. The rest
+/// are counted in `omitted`, so a machine with a thousand of them still fits in
+/// a bounded document and still says how many there were.
+pub const MAX_REPORTED_PACKAGES: usize = 64;
+
+/// Log entries one repair outcome may carry. The repair runs one command.
+pub const MAX_REPAIR_LOG_ENTRIES: usize = 1;
+
+/// Largest accepted package-system state or repair outcome document.
+///
+/// Sized for the worst document the daemon can write: one log entry whose two
+/// output tails are each [`MAX_LOG_OUTPUT_BYTES`] of control characters, which
+/// JSON escapes to six bytes apiece (768 KiB together), plus the longest
+/// remaining state. A limit below that would make the client refuse a real
+/// outcome as too large.
+pub const MAX_REPAIR_BYTES: usize = 1024 * 1024;
+
+/// How dpkg left a package it did not finish. These are the `Status` values
+/// dpkg writes while it is in the middle of an operation; a package at rest is
+/// `installed`, `config-files`, or `not-installed` and is never listed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DpkgPackageStatus {
+    HalfInstalled,
+    Unpacked,
+    HalfConfigured,
+    TriggersAwaited,
+    TriggersPending,
+}
+
+impl DpkgPackageStatus {
+    /// Reads the third word of a `Status:` field. Anything that is not one of
+    /// the unfinished states is `None`.
+    pub fn from_dpkg(status: &str) -> Option<Self> {
+        match status {
+            "half-installed" => Some(Self::HalfInstalled),
+            "unpacked" => Some(Self::Unpacked),
+            "half-configured" => Some(Self::HalfConfigured),
+            "triggers-awaited" => Some(Self::TriggersAwaited),
+            "triggers-pending" => Some(Self::TriggersPending),
+            _ => None,
+        }
+    }
+
+    /// The word dpkg itself uses, for showing a person what dpkg said.
+    pub fn as_dpkg(self) -> &'static str {
+        match self {
+            Self::HalfInstalled => "half-installed",
+            Self::Unpacked => "unpacked",
+            Self::HalfConfigured => "half-configured",
+            Self::TriggersAwaited => "triggers-awaited",
+            Self::TriggersPending => "triggers-pending",
+        }
+    }
+}
+
+/// One package dpkg left mid-operation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InterruptedPackage {
+    pub package: String,
+    pub status: DpkgPackageStatus,
+}
+
+/// What dpkg's own record says about whether its last run finished. See ADR
+/// 0014: the daemon reads `/var/lib/dpkg/status` and `/var/lib/dpkg/updates/`
+/// and never an error message.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageSystemState {
+    pub protocol_version: u32,
+    /// dpkg's journal holds entries it has not folded back into its status
+    /// file, which is the test apt makes before refusing to run.
+    pub journal_pending: bool,
+    /// Unfinished packages, at most [`MAX_REPORTED_PACKAGES`] of them.
+    #[serde(default)]
+    pub packages: Vec<InterruptedPackage>,
+    /// Unfinished packages beyond the ones listed.
+    #[serde(default)]
+    pub omitted: u32,
+}
+
+impl PackageSystemState {
+    /// A package system with nothing unfinished.
+    pub fn clean() -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            journal_pending: false,
+            packages: Vec::new(),
+            omitted: 0,
+        }
+    }
+
+    /// Whether `dpkg --configure -a` has anything to finish.
+    pub fn needs_repair(&self) -> bool {
+        self.journal_pending || !self.packages.is_empty() || self.omitted > 0
+    }
+
+    pub fn from_json(document: &str) -> Result<Self, IpcError> {
+        let state: Self = parse_bounded(document, MAX_REPAIR_BYTES)?;
+        state.validate()?;
+        Ok(state)
+    }
+
+    pub fn to_json(&self) -> Result<String, IpcError> {
+        to_json(self)
+    }
+
+    pub fn validate(&self) -> Result<(), IpcError> {
+        check_protocol_version(self.protocol_version)?;
+        if self.packages.len() > MAX_REPORTED_PACKAGES {
+            return Err(IpcError::TooManyPackages {
+                found: self.packages.len(),
+                limit: MAX_REPORTED_PACKAGES,
+            });
+        }
+        for package in &self.packages {
+            validate_package_name(&package.package)?;
+        }
+        Ok(())
+    }
+}
+
+/// How a repair ended.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+// Adjacently tagged, so `deny_unknown_fields` holds for the unit variants as
+// well: an internally tagged unit variant ignores any field beside its tag.
+#[serde(
+    rename_all = "snake_case",
+    tag = "state",
+    content = "detail",
+    deny_unknown_fields
+)]
+pub enum RepairStatus {
+    /// dpkg finished and its record shows nothing unfinished.
+    Repaired,
+    /// dpkg exited cleanly and its record still shows unfinished packages,
+    /// such as a half-installed one `--configure` cannot finish.
+    StillInterrupted,
+    /// dpkg did not finish. The key is a stable `daemon.error.*` machine key.
+    Failed { error_key: String },
+}
+
+/// What `RepairPackageSystem` did, reported the way a transaction step is: a
+/// verdict and the log of the command that produced it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepairOutcome {
+    pub protocol_version: u32,
+    pub status: RepairStatus,
+    #[serde(default)]
+    pub log: Vec<LogEntry>,
+    /// dpkg's record as read after the run. Absent when it could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<PackageSystemState>,
+}
+
+impl RepairOutcome {
+    pub fn from_json(document: &str) -> Result<Self, IpcError> {
+        let outcome: Self = parse_bounded(document, MAX_REPAIR_BYTES)?;
+        check_protocol_version(outcome.protocol_version)?;
+        if outcome.log.len() > MAX_REPAIR_LOG_ENTRIES {
+            return Err(IpcError::TooManyLogEntries {
+                found: outcome.log.len(),
+                limit: MAX_REPAIR_LOG_ENTRIES,
+            });
+        }
+        if let Some(remaining) = &outcome.remaining {
+            remaining.validate()?;
+        }
+        Ok(outcome)
+    }
+
+    pub fn to_json(&self) -> Result<String, IpcError> {
+        to_json(self)
+    }
+}
+
+fn parse_bounded<T: serde::de::DeserializeOwned>(
+    document: &str,
+    limit: usize,
+) -> Result<T, IpcError> {
+    if document.len() > limit {
+        return Err(IpcError::PayloadTooLarge {
+            bytes: document.len(),
+            limit,
+        });
+    }
+    serde_json::from_str(document).map_err(|error| IpcError::Malformed {
+        detail: error.to_string(),
+    })
+}
+
+fn to_json<T: Serialize>(value: &T) -> Result<String, IpcError> {
+    serde_json::to_string(value).map_err(|error| IpcError::Malformed {
+        detail: error.to_string(),
+    })
+}
+
+fn check_protocol_version(found: u32) -> Result<(), IpcError> {
+    if found == PROTOCOL_VERSION {
+        Ok(())
+    } else {
+        Err(IpcError::ProtocolVersion {
+            found,
+            expected: PROTOCOL_VERSION,
+        })
+    }
+}
+
+/// A Debian package name as dpkg accepts one: lowercase letters, digits, and
+/// `+`, `-`, `.`, starting with a letter or digit.
+fn validate_package_name(value: &str) -> Result<(), IpcError> {
+    let well_formed = value.len() >= 2
+        && value.len() <= 128
+        && value.starts_with(|character: char| {
+            character.is_ascii_lowercase() || character.is_ascii_digit()
+        })
+        && value.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '+' | '-' | '.')
+        });
+    if well_formed {
+        Ok(())
+    } else {
+        Err(IpcError::InvalidPackageName {
+            package: value.to_string(),
+        })
+    }
+}
+
 /// Protocol-level rejections.
 ///
 /// Every message is a stable machine key. Presentation layers own the localized
@@ -564,6 +796,12 @@ pub enum IpcError {
         expected: String,
         found: String,
     },
+    #[error("ipc.error.invalid_package_name:{package}")]
+    InvalidPackageName { package: String },
+    #[error("ipc.error.too_many_packages:{found}:{limit}")]
+    TooManyPackages { found: usize, limit: usize },
+    #[error("ipc.error.too_many_log_entries:{found}:{limit}")]
+    TooManyLogEntries { found: usize, limit: usize },
 }
 
 #[cfg(test)]
@@ -896,8 +1134,350 @@ mod tests {
         assert!(outcome.rollback_records.is_empty());
     }
 
+    fn interrupted_state() -> PackageSystemState {
+        PackageSystemState {
+            protocol_version: PROTOCOL_VERSION,
+            journal_pending: true,
+            packages: vec![
+                InterruptedPackage {
+                    package: "better-monitor".to_string(),
+                    status: DpkgPackageStatus::HalfConfigured,
+                },
+                InterruptedPackage {
+                    package: "libc6".to_string(),
+                    status: DpkgPackageStatus::Unpacked,
+                },
+            ],
+            omitted: 0,
+        }
+    }
+
+    #[test]
+    fn a_package_system_state_survives_a_json_round_trip() {
+        let document = interrupted_state().to_json().unwrap();
+        assert_eq!(
+            PackageSystemState::from_json(&document).unwrap(),
+            interrupted_state()
+        );
+    }
+
+    #[test]
+    fn a_repair_outcome_survives_a_json_round_trip() {
+        let outcome = RepairOutcome {
+            protocol_version: PROTOCOL_VERSION,
+            status: RepairStatus::Failed {
+                error_key: "daemon.error.repair_failed".to_string(),
+            },
+            log: vec![LogEntry {
+                argv: vec![
+                    "dpkg".to_string(),
+                    "--configure".to_string(),
+                    "-a".to_string(),
+                ],
+                exit_code: 1,
+                stdout_tail: String::new(),
+                stderr_tail: "dpkg: error processing package better-monitor".to_string(),
+                started_at_unix: 1,
+                finished_at_unix: 2,
+            }],
+            remaining: Some(interrupted_state()),
+        };
+        let document = outcome.to_json().unwrap();
+        assert_eq!(RepairOutcome::from_json(&document).unwrap(), outcome);
+
+        // A repair that finished carries nothing that remains.
+        let repaired = RepairOutcome {
+            protocol_version: PROTOCOL_VERSION,
+            status: RepairStatus::Repaired,
+            log: Vec::new(),
+            remaining: Some(PackageSystemState::clean()),
+        };
+        let document = repaired.to_json().unwrap();
+        assert_eq!(RepairOutcome::from_json(&document).unwrap(), repaired);
+    }
+
+    #[test]
+    fn a_clean_package_system_needs_no_repair_and_any_unfinished_sign_does() {
+        assert!(!PackageSystemState::clean().needs_repair());
+        assert!(interrupted_state().needs_repair());
+
+        let mut journal_only = PackageSystemState::clean();
+        journal_only.journal_pending = true;
+        assert!(journal_only.needs_repair());
+
+        let mut omitted_only = PackageSystemState::clean();
+        omitted_only.omitted = 3;
+        assert!(omitted_only.needs_repair());
+    }
+
+    #[test]
+    fn only_dpkgs_unfinished_states_are_read_as_interrupted() {
+        for (word, status) in [
+            ("half-installed", DpkgPackageStatus::HalfInstalled),
+            ("unpacked", DpkgPackageStatus::Unpacked),
+            ("half-configured", DpkgPackageStatus::HalfConfigured),
+            ("triggers-awaited", DpkgPackageStatus::TriggersAwaited),
+            ("triggers-pending", DpkgPackageStatus::TriggersPending),
+        ] {
+            assert_eq!(DpkgPackageStatus::from_dpkg(word), Some(status));
+            assert_eq!(status.as_dpkg(), word);
+        }
+        for at_rest in ["installed", "config-files", "not-installed", "", "Unpacked"] {
+            assert_eq!(DpkgPackageStatus::from_dpkg(at_rest), None, "{at_rest}");
+        }
+    }
+
+    /// The largest repair outcome the daemon can produce: one log entry whose
+    /// two tails are each a full truncated tail of control characters, which
+    /// JSON writes as six bytes apiece, and the longest remaining state.
+    #[test]
+    fn the_largest_repair_outcome_the_daemon_can_produce_is_accepted() {
+        let tail = format!("[truncated]\n{}", "\u{1}".repeat(MAX_LOG_OUTPUT_BYTES));
+        let outcome = RepairOutcome {
+            protocol_version: PROTOCOL_VERSION,
+            status: RepairStatus::Failed {
+                error_key: "daemon.error.repair_failed".to_string(),
+            },
+            log: vec![LogEntry {
+                argv: vec!["dpkg".to_string(); 5],
+                exit_code: 1,
+                stdout_tail: tail.clone(),
+                stderr_tail: tail,
+                started_at_unix: u64::MAX,
+                finished_at_unix: u64::MAX,
+            }],
+            remaining: Some(PackageSystemState {
+                protocol_version: PROTOCOL_VERSION,
+                journal_pending: true,
+                packages: (0..MAX_REPORTED_PACKAGES)
+                    .map(|index| InterruptedPackage {
+                        package: format!("{index:0>128}"),
+                        status: DpkgPackageStatus::TriggersAwaited,
+                    })
+                    .collect(),
+                omitted: u32::MAX,
+            }),
+        };
+        let document = outcome.to_json().unwrap();
+        assert!(document.len() > 6 * 2 * MAX_LOG_OUTPUT_BYTES);
+        assert_eq!(RepairOutcome::from_json(&document).unwrap(), outcome);
+    }
+
+    /// A repair runs one command, so an outcome carrying more than one log
+    /// entry did not come from this daemon.
+    #[test]
+    fn a_repair_outcome_with_more_than_one_log_entry_is_refused() {
+        let entry = LogEntry {
+            argv: vec!["dpkg".to_string()],
+            exit_code: 0,
+            stdout_tail: String::new(),
+            stderr_tail: String::new(),
+            started_at_unix: 1,
+            finished_at_unix: 2,
+        };
+        let outcome = RepairOutcome {
+            protocol_version: PROTOCOL_VERSION,
+            status: RepairStatus::Repaired,
+            log: vec![entry.clone(), entry],
+            remaining: None,
+        };
+        assert!(matches!(
+            RepairOutcome::from_json(&outcome.to_json().unwrap()),
+            Err(IpcError::TooManyLogEntries { .. })
+        ));
+    }
+
+    #[test]
+    fn an_unknown_field_inside_a_repair_status_is_refused() {
+        let document = r#"{
+            "protocol_version": 1,
+            "status": { "state": "repaired", "also_run": "dpkg --purge -a" },
+            "log": []
+        }"#;
+        assert!(matches!(
+            RepairOutcome::from_json(document),
+            Err(IpcError::Malformed { .. })
+        ));
+        let document = r#"{
+            "protocol_version": 1,
+            "status": { "state": "failed", "detail": { "error_key": "daemon.error.repair_failed", "x": 1 } },
+            "log": []
+        }"#;
+        assert!(matches!(
+            RepairOutcome::from_json(document),
+            Err(IpcError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn an_oversized_package_system_document_is_refused_before_parsing() {
+        let document = " ".repeat(MAX_REPAIR_BYTES + 1);
+        assert!(matches!(
+            PackageSystemState::from_json(&document),
+            Err(IpcError::PayloadTooLarge { .. })
+        ));
+        assert!(matches!(
+            RepairOutcome::from_json(&document),
+            Err(IpcError::PayloadTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn an_unknown_field_in_a_package_system_document_is_refused() {
+        let state = r#"{
+            "protocol_version": 1,
+            "journal_pending": false,
+            "packages": [],
+            "omitted": 0,
+            "run": "dpkg --purge -a"
+        }"#;
+        assert!(matches!(
+            PackageSystemState::from_json(state),
+            Err(IpcError::Malformed { .. })
+        ));
+
+        let outcome = r#"{
+            "protocol_version": 1,
+            "status": { "state": "repaired" },
+            "log": [],
+            "argv": ["dpkg", "--purge", "-a"]
+        }"#;
+        assert!(matches!(
+            RepairOutcome::from_json(outcome),
+            Err(IpcError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn a_status_dpkg_never_leaves_mid_run_is_refused() {
+        let document = r#"{
+            "protocol_version": 1,
+            "journal_pending": false,
+            "packages": [{ "package": "better-monitor", "status": "installed" }],
+            "omitted": 0
+        }"#;
+        assert!(matches!(
+            PackageSystemState::from_json(document),
+            Err(IpcError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn another_protocol_version_is_refused_for_package_system_documents() {
+        let mut state = interrupted_state();
+        state.protocol_version = PROTOCOL_VERSION + 1;
+        assert!(matches!(
+            PackageSystemState::from_json(&state.to_json().unwrap()),
+            Err(IpcError::ProtocolVersion { .. })
+        ));
+
+        let outcome = RepairOutcome {
+            protocol_version: PROTOCOL_VERSION + 1,
+            status: RepairStatus::Repaired,
+            log: Vec::new(),
+            remaining: None,
+        };
+        assert!(matches!(
+            RepairOutcome::from_json(&outcome.to_json().unwrap()),
+            Err(IpcError::ProtocolVersion { .. })
+        ));
+    }
+
+    #[test]
+    fn a_package_name_dpkg_would_not_accept_is_refused() {
+        for package in [
+            "",
+            "b",
+            "Better-Monitor",
+            "better monitor",
+            "-better",
+            "better/../bash",
+            "better;reboot",
+            &"a".repeat(129),
+        ] {
+            let mut state = interrupted_state();
+            state.packages[0].package = package.to_string();
+            assert!(
+                matches!(
+                    PackageSystemState::from_json(&state.to_json().unwrap()),
+                    Err(IpcError::InvalidPackageName { .. })
+                ),
+                "{package} should be refused"
+            );
+        }
+        // The ones dpkg does accept, including the characters Debian allows.
+        for package in ["libc6", "g++", "libstdc++6", "python3.12", "better-monitor"] {
+            let mut state = interrupted_state();
+            state.packages[0].package = package.to_string();
+            state.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn more_listed_packages_than_the_limit_are_refused() {
+        let mut state = interrupted_state();
+        state.packages = (0..=MAX_REPORTED_PACKAGES)
+            .map(|index| InterruptedPackage {
+                package: format!("package{index}"),
+                status: DpkgPackageStatus::Unpacked,
+            })
+            .collect();
+        assert!(matches!(
+            PackageSystemState::from_json(&state.to_json().unwrap()),
+            Err(IpcError::TooManyPackages { .. })
+        ));
+    }
+
+    #[test]
+    fn a_repair_outcome_is_checked_down_to_what_remains() {
+        let mut remaining = interrupted_state();
+        remaining.packages[0].package = "not a package".to_string();
+        let outcome = RepairOutcome {
+            protocol_version: PROTOCOL_VERSION,
+            status: RepairStatus::StillInterrupted,
+            log: Vec::new(),
+            remaining: Some(remaining),
+        };
+        assert!(matches!(
+            RepairOutcome::from_json(&outcome.to_json().unwrap()),
+            Err(IpcError::InvalidPackageName { .. })
+        ));
+    }
+
+    /// The repair is its own method, not a plan step. A plan that tries to
+    /// carry one is refused like any other unknown action.
+    #[test]
+    fn a_repair_cannot_be_smuggled_into_a_transaction_plan() {
+        let document = r#"{
+            "protocol_version": 1,
+            "transaction_id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "target_release": "24.04",
+            "target_architecture": "amd64",
+            "steps": [{ "component": "better-monitor", "action": "repair" }]
+        }"#;
+        assert!(matches!(
+            WirePlan::from_json(document),
+            Err(IpcError::Malformed { .. })
+        ));
+    }
+
     #[test]
     fn errors_expose_stable_machine_keys() {
+        assert_eq!(
+            IpcError::InvalidPackageName {
+                package: "Bad".to_string()
+            }
+            .to_string(),
+            "ipc.error.invalid_package_name:Bad"
+        );
+        assert_eq!(
+            IpcError::TooManyPackages {
+                found: 65,
+                limit: 64
+            }
+            .to_string(),
+            "ipc.error.too_many_packages:65:64"
+        );
         assert_eq!(
             IpcError::ProtocolVersion {
                 found: 2,

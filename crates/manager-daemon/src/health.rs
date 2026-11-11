@@ -12,83 +12,12 @@
 //! rolled back. `better-storage` has the same shape. dpkg knows what each
 //! package put on disk; this asks it.
 
-use std::path::{Path, PathBuf};
-
+use better_core::package_health::{HealthVerdict, check_installed};
 use manager_ipc::{HealthResult, WireAction};
 
 use crate::apt::AptDriver;
 
-/// What the filesystem says about one path dpkg listed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PathState {
-    /// Nothing is there.
-    Missing,
-    /// A directory, which several packages may share and which is not evidence
-    /// about this one.
-    Directory,
-    /// A file, a symlink, or anything else that exists at that path.
-    Present,
-}
-
-pub trait HealthProbe: Send + Sync {
-    /// What is at this path, without following symlinks: a link that exists is
-    /// present whether or not its target does, because the link is the file the
-    /// package installed.
-    fn inspect(&self, path: &Path) -> PathState;
-}
-
-pub struct SystemHealthProbe;
-
-impl HealthProbe for SystemHealthProbe {
-    fn inspect(&self, path: &Path) -> PathState {
-        match std::fs::symlink_metadata(path) {
-            Err(_) => PathState::Missing,
-            Ok(metadata) if metadata.is_dir() => PathState::Directory,
-            Ok(_) => PathState::Present,
-        }
-    }
-}
-
-/// A probe that answers from a fixed list, for tests. Paths in the list are
-/// present, paths in `directories` are directories, and anything else is
-/// missing.
-pub struct FakeHealthProbe {
-    pub present: Vec<PathBuf>,
-    pub directories: Vec<PathBuf>,
-}
-
-impl FakeHealthProbe {
-    pub fn with_files(paths: Vec<PathBuf>) -> Self {
-        Self {
-            present: paths,
-            directories: Vec::new(),
-        }
-    }
-
-    pub fn empty() -> Self {
-        Self {
-            present: Vec::new(),
-            directories: Vec::new(),
-        }
-    }
-
-    pub fn with_directories(mut self, paths: Vec<PathBuf>) -> Self {
-        self.directories = paths;
-        self
-    }
-}
-
-impl HealthProbe for FakeHealthProbe {
-    fn inspect(&self, path: &Path) -> PathState {
-        if self.directories.iter().any(|known| known == path) {
-            PathState::Directory
-        } else if self.present.iter().any(|known| known == path) {
-            PathState::Present
-        } else {
-            PathState::Missing
-        }
-    }
-}
+pub use better_core::package_health::{FakeHealthProbe, HealthProbe, PathState, SystemHealthProbe};
 
 /// Confirms a step did what it said.
 ///
@@ -102,7 +31,7 @@ impl HealthProbe for FakeHealthProbe {
 /// - conffiles, because a machine's owner is allowed to delete one and dpkg
 ///   does not consider the package broken when they have;
 /// - paths this machine's dpkg was configured never to unpack, which it lists
-///   all the same — see [`crate::dpkg_config`].
+///   all the same — see [`better_core::package_health::PathFilter`].
 ///
 /// A package that lists no files of its own is healthy on the same rule — every
 /// file it listed is there — which is the honest answer for a metapackage.
@@ -115,48 +44,32 @@ pub fn check(
     apt: &dyn AptDriver,
     probe: &dyn HealthProbe,
 ) -> HealthResult {
-    let installed = match apt.installed_version(component) {
-        Ok(installed) => installed,
-        Err(error) => {
-            return HealthResult::Undetermined(format!("dpkg query failed: {error}"));
-        }
-    };
+    let installed = apt
+        .installed_version(component)
+        .map_err(|error| error.to_string());
 
     match action {
         WireAction::Remove => match installed {
-            None => HealthResult::Healthy,
-            Some(version) => {
+            Err(error) => HealthResult::Undetermined(format!("dpkg query failed: {error}")),
+            Ok(None) => HealthResult::Healthy,
+            Ok(Some(version)) => {
                 HealthResult::Failed(format!("{component} is still installed at {version}"))
             }
         },
         WireAction::Install | WireAction::Update | WireAction::Restore => {
-            let Some(version) = installed else {
-                return HealthResult::Failed(format!("{component} is not installed"));
-            };
-            let files = match apt.installed_files(component) {
-                Ok(files) => files,
-                Err(error) => {
-                    return HealthResult::Undetermined(format!(
-                        "the dpkg file list for {component} could not be read: {error}"
-                    ));
-                }
-            };
-            for path in &files.paths {
-                if !files.is_required(path) {
-                    continue;
-                }
-                match probe.inspect(path) {
-                    PathState::Present | PathState::Directory => {}
-                    PathState::Missing => {
-                        return HealthResult::Failed(format!(
-                            "{component} reports version {version} but {} is missing, \
-                             though dpkg lists it as installed",
-                            path.display()
-                        ));
-                    }
-                }
+            match check_installed(
+                component,
+                installed,
+                || {
+                    apt.installed_files(component)
+                        .map_err(|error| error.to_string())
+                },
+                probe,
+            ) {
+                HealthVerdict::Healthy => HealthResult::Healthy,
+                HealthVerdict::Failed(reason) => HealthResult::Failed(reason),
+                HealthVerdict::Undetermined(reason) => HealthResult::Undetermined(reason),
             }
-            HealthResult::Healthy
         }
     }
 }
@@ -165,6 +78,7 @@ pub fn check(
 mod tests {
     use super::*;
     use crate::apt::{DebFields, FakeAptDriver};
+    use std::path::PathBuf;
 
     /// The real shape of `better-awake`: three binaries, none of them named
     /// after the package, plus data files. Under the old rule every install of
@@ -338,27 +252,5 @@ mod tests {
             check("better-monitor", WireAction::Remove, &still_there, &probe),
             HealthResult::Failed(_)
         ));
-    }
-
-    #[test]
-    fn the_probe_reads_the_link_and_not_what_it_points_at() {
-        let root = std::env::temp_dir().join(format!(
-            "better-os-health-probe-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let file = root.join("file");
-        std::fs::write(&file, b"x").unwrap();
-        let dangling = root.join("dangling");
-        std::os::unix::fs::symlink(root.join("no-such-target"), &dangling).unwrap();
-
-        let probe = SystemHealthProbe;
-        assert_eq!(probe.inspect(&root), PathState::Directory);
-        assert_eq!(probe.inspect(&file), PathState::Present);
-        assert_eq!(probe.inspect(&dangling), PathState::Present);
-        assert_eq!(probe.inspect(&root.join("absent")), PathState::Missing);
-
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }
