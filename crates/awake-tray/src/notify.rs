@@ -10,16 +10,24 @@
 //! service, or it refuses or never answers, the tray writes that to stderr and
 //! carries on following the service: the session has already ended and been
 //! recorded in History either way.
+//!
+//! Exactly one process raises it. A tray that will notify owns
+//! [`TRAY_BUS_NAME`] on the session bus, and the service raises the
+//! notification itself only when nobody owns that name.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use awake_ipc::StatusDocument;
+use awake_ipc::notification::{
+    DEFAULT_EXPIRY, LOW_BATTERY_ICON, TRAY_BUS_NAME, low_battery_notification,
+};
 use thiserror::Error;
+use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::zvariant::Value;
 
 use crate::client::{LowBatteryStop, ServiceEvent, service_event};
-use crate::labels::{Labels, Locale};
+use crate::labels::Locale;
 
 #[zbus::proxy(
     interface = "org.freedesktop.Notifications",
@@ -48,13 +56,6 @@ trait Notifications {
 /// service that never answers must not be able to stop the menu updating.
 pub const NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A standard icon name from the freedesktop Icon Naming Specification, so
-/// the notification has an icon without Better Awake shipping artwork for it.
-const LOW_BATTERY_ICON: &str = "battery-caution";
-
-/// Let the notification service apply its own default lifetime.
-const DEFAULT_EXPIRY: i32 = -1;
-
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
 pub enum NotifyError {
     /// No notification service, or it refused the call.
@@ -64,29 +65,9 @@ pub enum NotifyError {
     TimedOut,
 }
 
-/// What the notification says.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Notification {
-    pub summary: String,
-    pub body: String,
-}
-
-/// The wording for one low-battery stop, naming the threshold that was
-/// crossed and the reading that crossed it.
-pub fn low_battery_notification(labels: &Labels, stop: &LowBatteryStop) -> Notification {
-    Notification {
-        summary: labels
-            .low_battery_stop_summary
-            .replace("{threshold}", &stop.threshold_percent.to_string()),
-        body: labels
-            .low_battery_stop_body
-            .replace("{percent}", &stop.percent.to_string()),
-    }
-}
-
 pub struct DesktopNotifier {
     proxy: NotificationsProxy<'static>,
-    labels: &'static Labels,
+    locale: Locale,
     timeout: Duration,
 }
 
@@ -125,7 +106,7 @@ impl DesktopNotifier {
             .map_err(|error| NotifyError::Call(error.to_string()))?;
         Ok(Self {
             proxy,
-            labels: locale.labels(),
+            locale,
             timeout: NOTIFY_TIMEOUT,
         })
     }
@@ -138,10 +119,11 @@ impl DesktopNotifier {
     /// Raises the notification for one low-battery stop. Returns the id the
     /// notification service gave it.
     pub async fn low_battery_stop(&self, stop: &LowBatteryStop) -> Result<u32, NotifyError> {
-        let notification = low_battery_notification(self.labels, stop);
+        let notification =
+            low_battery_notification(self.locale, stop.threshold_percent, stop.percent);
         let hints = HashMap::new();
         let call = self.proxy.notify(
-            self.labels.application_name,
+            notification.application_name,
             0,
             LOW_BATTERY_ICON,
             &notification.summary,
@@ -154,6 +136,47 @@ impl DesktopNotifier {
             Ok(Ok(id)) => Ok(id),
             Ok(Err(error)) => Err(NotifyError::Call(error.to_string())),
             Err(_) => Err(NotifyError::TimedOut),
+        }
+    }
+}
+
+/// Takes over the low-battery notification from the service, by owning
+/// [`TRAY_BUS_NAME`] on `connection`. Returns the notifier this tray will
+/// notify with, or `None` when it will not notify.
+///
+/// Call it only once the tray is receiving the service's events on
+/// `connection`: from the moment the name is owned the service stops notifying,
+/// so a tray that owned it before it could hear a stop would let one pass with
+/// no notification at all. The name goes when the connection does, so a tray
+/// that quits or crashes hands the notification back without saying so.
+///
+/// A tray with no notifier does not take the name, and neither does a second
+/// tray while a first one holds it; two trays notifying would be two
+/// notifications for one stop. The name is asked for without replacing or
+/// queueing, so the first tray keeps it until it goes.
+pub async fn claim_notifications(
+    connection: &zbus::Connection,
+    notifier: Option<DesktopNotifier>,
+) -> Option<DesktopNotifier> {
+    let notifier = notifier?;
+    match connection
+        .request_name_with_flags(TRAY_BUS_NAME, RequestNameFlags::DoNotQueue.into())
+        .await
+    {
+        Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => Some(notifier),
+        Ok(reply) => {
+            eprintln!(
+                "better-awake-tray: another tray already raises the low-battery notification \
+                 ({reply:?}), so this one will not"
+            );
+            None
+        }
+        Err(error) => {
+            eprintln!(
+                "better-awake-tray: another tray already raises the low-battery notification, \
+                 or the name could not be taken ({error}), so this one will not"
+            );
+            None
         }
     }
 }
@@ -194,48 +217,5 @@ pub async fn handle_event(
             eprintln!("better-awake-tray: ignoring an event the service sent: {error}");
             None
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const STOP: LowBatteryStop = LowBatteryStop {
-        session_id: 4,
-        threshold_percent: 25,
-        percent: 24,
-    };
-
-    #[test]
-    fn the_notification_names_the_threshold_and_the_reading_in_both_locales() {
-        for locale in [Locale::ZhTw, Locale::EnUs] {
-            let notification = low_battery_notification(locale.labels(), &STOP);
-            assert!(
-                notification.summary.contains("25%"),
-                "{}: {}",
-                locale.tag(),
-                notification.summary
-            );
-            assert!(
-                notification.body.contains("24%"),
-                "{}: {}",
-                locale.tag(),
-                notification.body
-            );
-            assert!(
-                !notification.summary.contains('{') && !notification.body.contains('{'),
-                "{}: a placeholder was left unfilled",
-                locale.tag()
-            );
-        }
-    }
-
-    #[test]
-    fn the_zh_tw_wording_is_translated_rather_than_copied() {
-        assert_ne!(
-            low_battery_notification(Locale::ZhTw.labels(), &STOP),
-            low_battery_notification(Locale::EnUs.labels(), &STOP)
-        );
     }
 }

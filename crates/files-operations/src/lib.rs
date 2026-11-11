@@ -53,6 +53,7 @@ pub mod progress;
 pub mod spec;
 pub mod state;
 pub mod store;
+pub mod zip_end;
 
 pub use conflict::{
     Conflict, ConflictDecision, ConflictKind, ConflictPolicy, Resolution, ResolutionScope,

@@ -70,7 +70,13 @@ GUI or dependency compiles when the relevant command was not executed.
 - Build each supported Ubuntu release in a compatible base environment. The
   current Zorin 18 host produces `libc6 (>= 2.39)` and must not supply a 22.04
   release artifact.
-- Review the license implications of every copyleft dependency before release.
+- `docs/copyleft-review.md` reviews every copyleft dependency and leaves four
+  decisions to the owner: which FreeType license the Ubuntu 22.04 windows use,
+  shipping the Apache-2.0 text (and the permissive licenses' texts generally),
+  where the dependencies' Corresponding Source lives, and the license of two Zed
+  crates with no license field. Until they are decided, the published packages
+  carry the GPL text and a license inventory and nothing else. Re-run the
+  review when `Cargo.lock` gains a copyleft package.
 - Better Monitor now presents its collectors: `monitor-views` owns grouping and
   the table, apps, and overview models with no GPUI dependency, and
   `monitor-actions-linux` is the only crate that calls `kill(2)` or
@@ -197,11 +203,12 @@ GUI or dependency compiles when the relevant command was not executed.
   needs a compositor adapter and reports itself unavailable; audio reads ALSA and
   cannot see Bluetooth or network sinks. Both limits are recorded in ADR 0010 and
   in the provider modules. Do not claim full trigger coverage.
-- A Better Awake low-battery stop raises its desktop notification from the
-  tray, so with no tray running a stop is still only in History and on the
-  service's stderr. The notification has been exercised against a fake
-  notification service on a private bus and has not been seen on a GNOME
-  desktop.
+- A Better Awake low-battery stop raises one desktop notification: from the
+  tray when it owns `org.betteros.AwakeTray1`, from the service otherwise. Two
+  one-round-trip races remain, a tray starting or quitting at the moment of the
+  stop, and the service's notification follows the user manager's `LANG`,
+  which can differ from the desktop's. None of it has been seen on a GNOME
+  desktop; the proof is a fake notification service on a private bus.
 - Every Better OS desktop binary links an HTTP client. `gpui-component-assets`
   depends on `zed-reqwest`, which brings hyper and rustls, so "performs no
   network request" is provable for Better OS crates and not for the shipped
@@ -263,13 +270,12 @@ GUI or dependency compiles when the relevant command was not executed.
   which half is which and why. `gestures.json` is schema version 2 and migrates
   version 1 on read; the capture beside it is still one file for the machine
   rather than one per profile, so a restore puts the capture back into whichever
-  profile is in force. And nothing routes a recognized gesture to the profile of
-  the pad that produced it. `better-touchpad-gestured` recognizes against the
-  profile in force — the selected pad's own, or the global one — rather than
-  always the global one, but `org.betteros.TouchpadAdapter1` reports no device
-  identity, so on a machine with two touchpads both pads perform the selected
-  pad's profile. Routing per pad needs the adapter interface to name the device
-  first, which is an ADR 0012 change rather than a GUI one.
+  profile is in force. Each gesture is routed to the profile of the pad that
+  made it (ADR 0015): the adapter reports the event's device node and the
+  service resolves it to the stored identity, with an unknown device using the
+  global profile. No gesture from a real touchpad has been observed, so which
+  device Mutter reports as an event's source is still read from its source code
+  rather than seen.
 - The custom-shortcut collision check reads only what a dconf database holds,
   which is what the user has changed. GNOME's compiled-in defaults are in no
   database and the shell exposes nothing to ask, so the screen says "nothing you
@@ -305,12 +311,10 @@ GUI or dependency compiles when the relevant command was not executed.
   application would have sent to a service. Do not add a third fallback that
   invents a state.
 - A Better Files job that writes to an external device is a tracked operation
-  in the storage service from before its first write to after its last. Two
-  gaps remain. If Better Files exits or crashes mid-job the completion is never
-  sent, and the service keeps the device out of "ready to unplug" until it
-  restarts or the device is replugged; closing that means the service tying an
-  operation to its sender's bus name. And a job started before the window's
-  device link has its first device list is not registered at all.
+  in the storage service from before its first write to after its last, and
+  the service ends every operation a client started when that client leaves the
+  bus. None of it has been exercised with a real USB device or a real crash
+  mid-copy; the proof is a private-bus test and the in-process engine.
 - Better Files does not offer Performance mode: `files_gui::policy::
   OFFER_PERFORMANCE_MODE` is off because the mode changes no mount option or
   cache setting and so makes no write faster. A device already in the mode is
@@ -346,14 +350,15 @@ GUI or dependency compiles when the relevant command was not executed.
   What is still open: the volume trash and hard links have been tested on
   temporary directories with a device-number seam, never on a second real
   device, and FAT or exFAT media not at all; the Trash view reads every mounted
-  filesystem's trash, network shares included, so an unreachable server can
-  stall that listing; and two processes submitting a job at the same instant can
-  still pick the same job number.
+  filesystem's trash, but a network or FUSE filesystem only through a probe
+  with a one-second deadline, so such a trash can be missing from one listing.
 - Extraction refuses absolute paths, `..`, and links that leave the target, and
   stops at the size and entry limits in `files-operations`' policy. Those limits
   were proved with small archives and lowered limits, never with a real
-  decompression bomb, and a zip that declares a huge central directory is read
-  whole before the entry count is checked. Compression writes `.tar.zst` with
+  decompression bomb. A zip's declared entry count and central-directory size
+  are checked from its end record before the `zip` crate reads anything; when
+  that record leads nowhere the crate searches for an earlier one and reads its
+  directory unchecked, which only a parser of our own would close. Compression writes `.tar.zst` with
   the pure-Rust `ruzstd`, whose only level is its fastest, so those archives are
   larger than `zstd`'s default would make them. Zip reads only stored and
   deflate entries.
@@ -370,13 +375,9 @@ GUI or dependency compiles when the relevant command was not executed.
   an empty state. Better Files is the only component that
   declares a default integration; the other six declare none, which is a
   deferred Issue #10 decision and not an omission this catalog change made.
-- Decide how the build tree is kept from filling the disk. `target/` reached
-  158 GB during the v0.2.4 work and a manual `cargo clean` was what unblocked
-  it. Nothing in the project prunes it, and a release builds the whole workspace
-  twice — debug for the gate, release for the eight packages — so the growth is
-  structural rather than accidental. A periodic cleanup someone actually runs is
-  the remaining candidate answer, and it has not been decided. One `target/`
-  shared between worktrees is not an answer: see the rule under Working rules.
+- `packaging/prune-target.sh` frees build space: it lists what it would remove
+  and removes it only with `--apply`. Run it on a worktree's own `target/` when
+  the disk runs low, and never while cargo is building in that directory.
 - The license inventory check catches a class of merge that is easy to make.
   `docs/third-party-licenses.md` pins the `Cargo.lock` hash, so any commit that
   moves the lockfile and does not regenerate it turns CI red on `main` — which
@@ -481,9 +482,11 @@ GUI or dependency compiles when the relevant command was not executed.
   the same rule through `better_ui::command_line`: it answers `--help` and
   `--version`, keeps the flags its desktop entries pass, and refuses the rest
   with exit 2. Better Files also takes the location the desktop hands it.
-- Better Launcher's left and right arrow keys do not move the selection in its
-  grid; up and down do. The key mapping sends them to the selection, so the
-  search field is the likely taker. Nobody has confirmed the cause.
+- Better Launcher takes its grid navigation keys as the search field's own
+  cursor actions (`capture_action` on the overlay root), because gpui dispatches
+  a keymap action before any key listener and gpui-component's single-line
+  input handles left, right, Home, and End itself. If gpui-component rebinds
+  one of those keys, the overlay's dispatch test is what catches it.
 - Reconciliation adopts a host that is **ahead** of the record and blocks on
   every other disagreement. An external `apt` or `install.sh` upgrade is
   supported — it is the only way the manager can be upgraded — so a newer

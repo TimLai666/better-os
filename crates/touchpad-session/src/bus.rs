@@ -24,8 +24,8 @@ use tokio::runtime::Runtime;
 use zbus::Connection;
 
 use crate::gnome::{
-    BUS_NAME, INTERFACE_NAME, OBJECT_PATH, ShellBridge, ShellCapabilities, ShellError, ShellEvents,
-    ShellGestureEvent, ShellRequest,
+    BUS_NAME, INTERFACE_NAME, InputDeviceNode, OBJECT_PATH, ShellBridge, ShellCapabilities,
+    ShellError, ShellEvents, ShellGestureEvent, ShellRequest,
 };
 
 fn unreachable(error: impl std::fmt::Display) -> ShellError {
@@ -234,14 +234,32 @@ impl ShellEvents for SessionBusShellEvents {
             let message = self.next_message()?;
             let header = message.header();
             let member = header.member()?.to_string();
-            let Ok((phase, fingers, first, second, at_ms)) =
-                message.body().deserialize::<(u32, u32, f64, f64, u64)>()
-            else {
-                // A signal whose body is not the shape the interface declares
-                // did not come from an extension this build understands.
-                // Dropping it is better than inventing a gesture out of it.
-                continue;
-            };
+            let body = message.body();
+            let (phase, fingers, first, second, at_ms, device) =
+                match body.deserialize::<(u32, u32, f64, f64, u64, String)>() {
+                    Ok((phase, fingers, first, second, at_ms, node)) => (
+                        phase,
+                        fingers,
+                        first,
+                        second,
+                        at_ms,
+                        InputDeviceNode::from_wire(&node),
+                    ),
+                    // Protocol 1 had no device argument. GNOME Shell keeps
+                    // running the extension it loaded until the next login, so
+                    // after an upgrade this shape still arrives, and it is read
+                    // as a gesture from an unknown device.
+                    Err(_) => match body.deserialize::<(u32, u32, f64, f64, u64)>() {
+                        Ok((phase, fingers, first, second, at_ms)) => {
+                            (phase, fingers, first, second, at_ms, None)
+                        }
+                        // A signal whose body is neither shape the interface
+                        // has declared did not come from an extension this
+                        // build understands. Dropping it is better than
+                        // inventing a gesture out of it.
+                        Err(_) => continue,
+                    },
+                };
             let event = match member.as_str() {
                 "SwipeGesture" => ShellGestureEvent::Swipe {
                     phase,
@@ -249,6 +267,7 @@ impl ShellEvents for SessionBusShellEvents {
                     dx: first,
                     dy: second,
                     at_ms,
+                    device,
                 },
                 "PinchGesture" => ShellGestureEvent::Pinch {
                     phase,
@@ -256,6 +275,7 @@ impl ShellEvents for SessionBusShellEvents {
                     scale: first,
                     angle_delta: second,
                     at_ms,
+                    device,
                 },
                 _ => continue,
             };

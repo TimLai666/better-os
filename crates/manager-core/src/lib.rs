@@ -2348,7 +2348,7 @@ impl Manager {
                         Some(step.component.clone()),
                         Some(step.operation),
                         Some(OperationStage::CheckingHealth),
-                        Some("mock_health_check_passed".to_string()),
+                        Some("health_check_passed".to_string()),
                     );
                 }
                 _ => {

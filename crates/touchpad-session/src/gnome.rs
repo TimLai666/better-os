@@ -144,6 +144,50 @@ impl ShellCapabilities {
     }
 }
 
+/// The kernel input device a gesture came from, as GNOME Shell named it.
+///
+/// ADR 0015 lets the extension copy `Clutter.InputDevice.get_device_node()`
+/// onto each gesture signal unchanged. This is that value, read into a number
+/// at the boundary so nothing above it handles the string. The node names one
+/// device *now* and is not stable across re-plugging, so it is never stored:
+/// the service turns it into the stable identity a profile is filed under.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct InputDeviceNode(u32);
+
+impl InputDeviceNode {
+    const PREFIX: &'static str = "/dev/input/event";
+
+    pub const fn new(number: u32) -> Self {
+        Self(number)
+    }
+
+    /// The node the wire carried, or `None` for an unknown device.
+    ///
+    /// The extension sends the empty string when the shell named no node.
+    /// Anything that is not exactly `/dev/input/event` and a number in the
+    /// kernel's own spelling — no sign, no leading zero, no trailing text — is
+    /// unknown too, because it could not have come from the kernel.
+    pub fn from_wire(value: &str) -> Option<Self> {
+        let digits = value.strip_prefix(Self::PREFIX)?;
+        let canonical = !digits.is_empty()
+            && digits.bytes().all(|byte| byte.is_ascii_digit())
+            && (digits == "0" || !digits.starts_with('0'));
+        if !canonical {
+            return None;
+        }
+        digits.parse().ok().map(Self)
+    }
+
+    /// The handler name the kernel uses under `/sys/class/input`.
+    pub fn handler(self) -> String {
+        format!("event{}", self.0)
+    }
+
+    pub fn wire(self) -> String {
+        format!("{}{}", Self::PREFIX, self.0)
+    }
+}
+
 /// One gesture signal, exactly as it arrived on the wire.
 ///
 /// Untranslated on purpose. Turning these numbers into something a recognizer
@@ -160,6 +204,8 @@ pub enum ShellGestureEvent {
         dx: f64,
         dy: f64,
         at_ms: u64,
+        /// The device that produced it, or `None` when it is unknown.
+        device: Option<InputDeviceNode>,
     },
     Pinch {
         phase: u32,
@@ -169,6 +215,7 @@ pub enum ShellGestureEvent {
         /// The turn since the previous event, in radians.
         angle_delta: f64,
         at_ms: u64,
+        device: Option<InputDeviceNode>,
     },
 }
 
@@ -188,6 +235,12 @@ impl ShellGestureEvent {
     pub fn at_ms(&self) -> u64 {
         match self {
             Self::Swipe { at_ms, .. } | Self::Pinch { at_ms, .. } => *at_ms,
+        }
+    }
+
+    pub fn device(&self) -> Option<InputDeviceNode> {
+        match self {
+            Self::Swipe { device, .. } | Self::Pinch { device, .. } => *device,
         }
     }
 }
@@ -400,7 +453,7 @@ impl FakeShellBridge {
     /// continuous progress yes.
     pub fn gnome_46_capabilities() -> ShellCapabilities {
         ShellCapabilities {
-            protocol_version: 1,
+            protocol_version: 2,
             shell_version: "46.0".to_string(),
             finger_count: true,
             thumb_detection: false,
@@ -614,6 +667,58 @@ mod tests {
             ShellCapabilities::from_json("not a document"),
             Err(ShellError::Capabilities(_))
         ));
+    }
+
+    /// ADR 0015: the extension copies the shell's device node onto the wire
+    /// unchanged, so this is where it becomes a typed value. Anything that is
+    /// not exactly the shape the kernel gives a node is an unknown device.
+    #[test]
+    fn a_device_node_is_read_only_in_the_shape_the_kernel_gives_it() {
+        let node = InputDeviceNode::from_wire("/dev/input/event5").expect("a node");
+        assert_eq!(node, InputDeviceNode::new(5));
+        assert_eq!(node.handler(), "event5");
+        assert_eq!(node.wire(), "/dev/input/event5");
+        assert_eq!(
+            InputDeviceNode::from_wire("/dev/input/event4294967295"),
+            Some(InputDeviceNode::new(u32::MAX))
+        );
+
+        for unknown in [
+            "",
+            "/dev/input/event",
+            "/dev/input/event05",
+            "/dev/input/event5 ",
+            "/dev/input/event-1",
+            "/dev/input/event4294967296",
+            "/dev/input/mouse0",
+            "/dev/input/../input/event5",
+            "event5",
+            "SynPS/2 Synaptics TouchPad",
+        ] {
+            assert_eq!(InputDeviceNode::from_wire(unknown), None, "{unknown:?}");
+        }
+    }
+
+    #[test]
+    fn a_gesture_event_carries_the_device_that_made_it() {
+        let swipe = ShellGestureEvent::Swipe {
+            phase: 0,
+            fingers: 4,
+            dx: 0.0,
+            dy: 0.0,
+            at_ms: 0,
+            device: Some(InputDeviceNode::new(7)),
+        };
+        assert_eq!(swipe.device(), Some(InputDeviceNode::new(7)));
+        let pinch = ShellGestureEvent::Pinch {
+            phase: 0,
+            fingers: 4,
+            scale: 1.0,
+            angle_delta: 0.0,
+            at_ms: 0,
+            device: None,
+        };
+        assert_eq!(pinch.device(), None);
     }
 
     #[test]

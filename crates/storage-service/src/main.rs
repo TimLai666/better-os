@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use storage_platform::{LinuxFlush, LinuxWriteback, ProcOpenUse, Roots, UDisks2};
 use storage_service::coordinator::Clock;
-use storage_service::service::{BUS_NAME, OBJECT_PATH, publish_updates};
+use storage_service::service::{BUS_NAME, OBJECT_PATH, publish_updates, watch_departures};
 use storage_service::{PreferenceStore, StorageCoordinator, StorageService};
 use tokio::sync::Mutex;
 
@@ -34,12 +34,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     coordinator.lock().await.refresh_inventory().await?;
 
     let connection = zbus::connection::Builder::session()?
-        .name(BUS_NAME)?
         .serve_at(OBJECT_PATH, StorageService::new(coordinator.clone()))?
         .build()
         .await?;
 
     tokio::spawn(publish_updates::<UDisks2>(connection.clone(), updates));
+    // Departures are watched before the name is taken, so no client can start
+    // an operation and leave before the service is listening for it.
+    tokio::spawn(watch_departures(&connection, coordinator.clone()).await?);
+    connection.request_name(BUS_NAME).await?;
 
     let pump = coordinator.clone();
     tokio::spawn(async move {

@@ -154,6 +154,17 @@ pub const MAX_EXTRACTED_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 /// inodes and directory scans that no byte limit sees.
 pub const MAX_EXTRACTED_ENTRIES: u64 = 1_000_000;
 
+/// The largest central directory a zip may declare before it is read: 256 MiB.
+///
+/// The zip reader holds every directory entry in memory while an archive is
+/// open, and it reads the whole directory before a single entry can be
+/// counted. A directory entry is 46 bytes plus its name, extra field, and
+/// comment, so a million entries — [`MAX_EXTRACTED_ENTRIES`] — with names and
+/// fields averaging more than 200 bytes still fit. Fixed rather than carried
+/// in [`ExtractLimits`], because it bounds the reader's memory, not what the
+/// extraction writes.
+pub const MAX_ZIP_CENTRAL_DIRECTORY_BYTES: u64 = 256 * 1024 * 1024;
+
 /// The ceilings one extraction is held to.
 ///
 /// The defaults are [`MAX_EXTRACTED_BYTES`] and [`MAX_EXTRACTED_ENTRIES`].

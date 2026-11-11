@@ -12,7 +12,7 @@ use awake_ipc::{AwakeRequest, RequestBody, StatusDocument, WireEnd, WireIndicato
 use tokio::sync::{Mutex, Notify};
 
 use crate::client::{ClientError, ServiceClient, menu_request, start_request};
-use crate::labels::Locale;
+use crate::labels::{Locale, LocaleLabels};
 use crate::localtime::UtcOffset;
 use crate::menu::{Menu, MenuAction, OverrideConfirmation, QuickOptions, build};
 use crate::sni::{ITEM_PATH, MENU_PATH, icon_name, item_status};

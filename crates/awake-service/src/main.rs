@@ -7,6 +7,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use awake_ipc::notification::Locale;
+use awake_service::notify::LowBatteryNotifier;
 use awake_service::service::{shutdown_and_announce, tick_and_announce};
 use awake_service::{
     AwakeDbusService, AwakeEngine, BUS_NAME, LogindBackend, OBJECT_PATH, SystemClock,
@@ -42,10 +44,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Raises the low-battery notification when no tray is running to. Spawns
+    // through this runtime, because a stop found inside a D-Bus handler is not
+    // on a tokio task.
+    let notifier = LowBatteryNotifier::new(
+        tokio::runtime::Handle::current(),
+        Locale::from_environment(),
+    );
+
     let connection = zbus::connection::Builder::session()?.build().await?;
     connection
         .object_server()
-        .at(OBJECT_PATH, AwakeDbusService::new(engine.clone()))
+        .at(
+            OBJECT_PATH,
+            AwakeDbusService::new(engine.clone()).with_notifier(notifier.clone()),
+        )
         .await?;
     connection.request_name(BUS_NAME).await?;
 
@@ -58,11 +71,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             interval.tick().await;
 
             // Every session a tick ends is pushed to the clients as
-            // `SessionEnded`, and the tray raises the desktop notification for
-            // a low-battery stop. The stop is also said on stderr, so it is
-            // never silent when no tray is running — which is exactly when a
-            // user would otherwise have no idea why their session ended.
-            for ended in tick_and_announce(&ticking, &tick_emitter).await {
+            // `SessionEnded`. A low-battery stop is raised as a desktop
+            // notification by the tray, or by the service when no tray is
+            // running, and is also said on stderr.
+            for ended in tick_and_announce(&ticking, &tick_emitter, Some(&notifier)).await {
                 if let Some(stop) = ended.battery_stop() {
                     eprintln!(
                         "better-awake-service: session {} ended because the battery reached {}%",

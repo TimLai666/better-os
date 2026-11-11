@@ -11,8 +11,9 @@ use std::sync::Arc;
 use storage_core::{DeviceStateKind, PERFORMANCE_RISK_KEYS, RemovalPolicy};
 use storage_platform::fake::{FakeDeviceControl, FakeFlush, FakeOpenUse, FakeWriteback, usb_stick};
 use storage_service::coordinator::Clock;
+use storage_service::protocol::OperationNotice;
 use storage_service::protocol::{DeviceListDocument, EjectReport, SetPolicyRequest};
-use storage_service::service::{OBJECT_PATH, StorageService, publish_updates};
+use storage_service::service::{OBJECT_PATH, StorageService, publish_updates, watch_departures};
 use storage_service::{PreferenceStore, StorageCoordinator};
 use tokio::sync::Mutex;
 
@@ -114,6 +115,7 @@ async fn serve(
         connection.clone(),
         updates,
     ));
+    tokio::spawn(watch_departures(&connection, coordinator.clone()).await?);
     Ok((connection, coordinator))
 }
 
@@ -286,4 +288,57 @@ async fn the_protocol_version_is_readable_as_a_property() {
         .unwrap();
     let version: u32 = value.try_into().unwrap();
     assert_eq!(version, storage_service::PROTOCOL_VERSION);
+}
+
+async fn kind_of(coordinator: &Mutex<StorageCoordinator<FakeDeviceControl>>) -> DeviceStateKind {
+    coordinator.lock().await.reports()[0].state.kind()
+}
+
+/// Waits for the device to reach `wanted`, which it does on its own once the
+/// bus has told the service a client left.
+async fn becomes(
+    coordinator: &Mutex<StorageCoordinator<FakeDeviceControl>>,
+    wanted: DeviceStateKind,
+) -> DeviceStateKind {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let kind = kind_of(coordinator).await;
+        if kind == wanted || tokio::time::Instant::now() >= deadline {
+            return kind;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_client_that_disconnects_mid_write_does_not_hold_the_device_forever() {
+    let bus = bus_or_skip!();
+    let fixture = Fixture::new("departed");
+    let (_service, coordinator) = serve(&bus, &fixture).await.unwrap();
+
+    let files = client(&bus).await.unwrap();
+    let _: String = call(&files, "Mount", &(OBJECT)).await.unwrap();
+    assert_eq!(kind_of(&coordinator).await, DeviceStateKind::ReadyToUnplug);
+    let notice = OperationNotice::new(OBJECT, "better-files:42:job-1")
+        .to_json()
+        .unwrap();
+    let () = call(&files, "NotifyOperationStarted", &(notice.as_str()))
+        .await
+        .unwrap();
+    assert_eq!(kind_of(&coordinator).await, DeviceStateKind::Writing);
+
+    // Better Files crashes: its connection closes without a completion.
+    files.close().await.unwrap();
+    assert_eq!(
+        becomes(&coordinator, DeviceStateKind::ReadyToUnplug).await,
+        DeviceStateKind::ReadyToUnplug
+    );
+
+    // The completion a restarted Better Files, or a slow message, still
+    // sends for it is accepted and leaves the device ready.
+    let late = client(&bus).await.unwrap();
+    let completed: zbus::Result<()> =
+        call(&late, "NotifyOperationCompleted", &(notice.as_str())).await;
+    assert!(completed.is_ok(), "{completed:?}");
+    assert_eq!(kind_of(&coordinator).await, DeviceStateKind::ReadyToUnplug);
 }

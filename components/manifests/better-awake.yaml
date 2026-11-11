@@ -53,7 +53,7 @@ benchmarks:
     maximum_regression_percent: 1
 permissions:
   - name: session-bus-name
-    reason: owns org.betteros.Awake1 so the tray and the settings window talk to one service
+    reason: owns org.betteros.Awake1 so the tray and the settings window talk to one service, and the tray owns org.betteros.AwakeTray1 while it raises the low-battery notification so the service raises it only when no tray is running
   - name: logind-inhibitor
     reason: holds systemd-logind sleep and idle locks; display-blank and automatic-lock have no logind lock and are reported unmet rather than faked
   - name: status-notifier-item

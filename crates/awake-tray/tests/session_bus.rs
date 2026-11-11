@@ -16,13 +16,14 @@ use awake_ipc::{
     AwakeEvent, AwakeRequest, EventBody, RequestBody, StatusDocument, WireEnd, WireIndicator,
 };
 use awake_service::backend::{FakeInhibitorBackend, FixedClock};
+use awake_service::notify::LowBatteryNotifier;
 use awake_service::{AwakeDbusService, AwakeEngine, OBJECT_PATH};
 use awake_tray::client::{LowBatteryStop, ServiceClient};
 use awake_tray::controller::TrayController;
 use awake_tray::dbusmenu::DbusMenu;
 use awake_tray::item::StatusNotifierItem;
-use awake_tray::labels::Locale;
-use awake_tray::notify::{DesktopNotifier, NotifyError, handle_event};
+use awake_tray::labels::{Locale, LocaleLabels};
+use awake_tray::notify::{DesktopNotifier, NotifyError, claim_notifications, handle_event};
 use awake_tray::sni::{ITEM_PATH, MENU_PATH, TrayAvailability, register_and_verify};
 use serde::Deserialize;
 use zbus::zvariant::{OwnedValue, Type};
@@ -131,9 +132,29 @@ async fn serve_watcher(
 }
 
 struct Service {
-    _connection: zbus::Connection,
-    _directory: tempfile::TempDir,
+    connection: zbus::Connection,
+    directory: tempfile::TempDir,
     engine: Arc<AwakeEngine<FakeInhibitorBackend>>,
+    notifier: LowBatteryNotifier,
+    clock: Arc<FixedClock>,
+}
+
+impl Service {
+    /// Puts a battery at `percent` in the service's own `/sys` tree.
+    fn set_battery(&self, percent: u8) {
+        let battery = self.directory.path().join("sys/class/power_supply/BAT1");
+        std::fs::create_dir_all(&battery).unwrap();
+        std::fs::write(battery.join("type"), "Battery\n").unwrap();
+        std::fs::write(battery.join("capacity"), format!("{percent}\n")).unwrap();
+    }
+
+    /// One tick through the path the service binary runs.
+    async fn tick(&self) {
+        let emitter =
+            zbus::object_server::SignalEmitter::new(&self.connection, OBJECT_PATH).unwrap();
+        awake_service::service::tick_and_announce(&self.engine, &emitter, Some(&self.notifier))
+            .await;
+    }
 }
 
 async fn serve_service(bus: &PrivateBus) -> zbus::Result<Service> {
@@ -141,26 +162,36 @@ async fn serve_service(bus: &PrivateBus) -> zbus::Result<Service> {
     // read, are in this directory, so no test touches the developer's own
     // History, rules, or battery.
     let directory = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FixedClock::at(NOW));
     let engine = Arc::new(
         AwakeEngine::start_in(
             FakeInhibitorBackend::logind_shaped(),
             directory.path(),
-            Arc::new(FixedClock::at(NOW)),
+            clock.clone(),
         )
         .await,
     );
+    // The service's own notifier is pointed at the fake notification service,
+    // like the tray's, so neither can reach the desktop's.
+    let notifier = LowBatteryNotifier::new(tokio::runtime::Handle::current(), Locale::EnUs)
+        .with_destination(NOTIFICATIONS_NAME.to_string());
 
     let address: zbus::Address = bus.address.parse()?;
     let connection = zbus::connection::Builder::address(address)?
         .name(SERVICE_NAME)?
-        .serve_at(OBJECT_PATH, AwakeDbusService::new(engine.clone()))?
+        .serve_at(
+            OBJECT_PATH,
+            AwakeDbusService::new(engine.clone()).with_notifier(notifier.clone()),
+        )?
         .build()
         .await?;
 
     Ok(Service {
-        _connection: connection,
-        _directory: directory,
+        connection,
+        directory,
         engine,
+        notifier,
+        clock,
     })
 }
 
@@ -231,7 +262,7 @@ async fn the_test_service_keeps_its_history_in_its_own_directory() {
 
     assert!(
         service
-            ._directory
+            .directory
             .path()
             .join(awake_store::history::HISTORY_FILE_NAME)
             .exists(),
@@ -561,6 +592,7 @@ const NOTIFICATIONS_NAME: &str = "org.betteros.NotificationsTest";
 /// One `Notify` call as the fake received it.
 #[derive(Clone, Debug)]
 struct Raised {
+    sender: String,
     signature: String,
     app_name: String,
     replaces_id: u32,
@@ -607,6 +639,10 @@ impl FakeNotifications {
         }
         let mut raised = self.raised.lock().unwrap();
         raised.push(Raised {
+            sender: header
+                .sender()
+                .map(|sender| sender.to_string())
+                .unwrap_or_default(),
             signature: header.signature().to_string_no_parens(),
             app_name,
             replaces_id,
@@ -872,4 +908,129 @@ async fn a_notification_daemon_that_never_answers_is_given_up_on() {
     .await
     .expect("the notifier must give up rather than hold the tray's event loop");
     assert_eq!(outcome, Err(NotifyError::TimedOut));
+}
+
+// ---- Exactly one notification, whether or not a tray is running -----------
+
+/// A tray's event loop as `main.rs` runs it: subscribe to the service, then
+/// claim the notifications, then handle every event. Returns the tray's
+/// connection, which owns the tray's name for as long as it is kept.
+async fn follow_as_a_tray(bus: &PrivateBus) -> zbus::Connection {
+    use zbus::export::futures_core::Stream;
+
+    let connection = bus.connect().await.unwrap();
+    let client = ServiceClient::with_destination(connection.clone(), SERVICE_NAME.to_string())
+        .await
+        .unwrap();
+    let stream = client.status_updates().await.unwrap();
+    let notifier = DesktopNotifier::with_destination(
+        &connection,
+        NOTIFICATIONS_NAME.to_string(),
+        Locale::EnUs,
+    )
+    .await
+    .unwrap();
+    let notifier = claim_notifications(&connection, Some(notifier))
+        .await
+        .expect("the only tray on the bus gets the name");
+    tokio::spawn(async move {
+        let mut stream = std::pin::pin!(stream);
+        while let Some(signal) =
+            std::future::poll_fn(|context| stream.as_mut().poll_next(context)).await
+        {
+            let Ok(args) = signal.args() else { continue };
+            handle_event(args.event_json(), Some(&notifier)).await;
+        }
+    });
+    connection
+}
+
+async fn settle(raised: &Arc<Mutex<Vec<Raised>>>, expected: usize) -> Vec<Raised> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while raised.lock().unwrap().len() < expected && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    raised.lock().unwrap().clone()
+}
+
+#[tokio::test]
+async fn with_a_tray_running_only_the_tray_raises_the_low_battery_notification() {
+    let bus = bus_or_skip!();
+    let (_daemon, raised) = serve_notifications(&bus, Behaviour::Accept).await;
+    let service = serve_service(&bus).await.unwrap();
+    let tray = follow_as_a_tray(&bus).await;
+
+    service.set_battery(80);
+    service.engine.handle(start(WireEnd::Indefinite)).await;
+    service.set_battery(9);
+    service.clock.advance(60);
+    service.tick().await;
+
+    let raised = settle(&raised, 1).await;
+    assert_eq!(raised.len(), 1, "exactly one notification for one stop");
+    assert_eq!(
+        raised[0].sender,
+        tray.unique_name().unwrap().to_string(),
+        "the tray raised it, not the service"
+    );
+    assert!(raised[0].summary.contains("20%"));
+    assert!(raised[0].body.contains("9%"));
+}
+
+#[tokio::test]
+async fn without_a_tray_the_service_raises_the_low_battery_notification() {
+    let bus = bus_or_skip!();
+    let (_daemon, raised) = serve_notifications(&bus, Behaviour::Accept).await;
+    let service = serve_service(&bus).await.unwrap();
+
+    service.set_battery(80);
+    service.engine.handle(start(WireEnd::Indefinite)).await;
+    service.set_battery(9);
+    service.clock.advance(60);
+    service.tick().await;
+
+    let raised = settle(&raised, 1).await;
+    assert_eq!(raised.len(), 1, "exactly one notification for one stop");
+    assert_eq!(
+        raised[0].sender,
+        service.connection.unique_name().unwrap().to_string()
+    );
+    // Worded the same way the tray words it.
+    assert_eq!(raised[0].app_name, Locale::EnUs.labels().application_name);
+}
+
+#[tokio::test]
+async fn a_second_tray_leaves_the_notifications_to_the_first() {
+    let bus = bus_or_skip!();
+    let first = bus.connect().await.unwrap();
+    let second = bus.connect().await.unwrap();
+
+    assert!(
+        claim_notifications(&first, Some(notifier(&bus, Locale::EnUs).await))
+            .await
+            .is_some()
+    );
+    assert!(
+        claim_notifications(&second, Some(notifier(&bus, Locale::EnUs).await))
+            .await
+            .is_none(),
+        "two trays notifying would be two notifications for one stop"
+    );
+}
+
+#[tokio::test]
+async fn a_tray_with_no_notifier_does_not_claim_the_notifications() {
+    let bus = bus_or_skip!();
+    let tray = bus.connect().await.unwrap();
+
+    assert!(claim_notifications(&tray, None).await.is_none());
+    let bus_proxy = zbus::fdo::DBusProxy::new(&tray).await.unwrap();
+    assert!(
+        !bus_proxy
+            .name_has_owner(awake_ipc::notification::TRAY_BUS_NAME.try_into().unwrap())
+            .await
+            .unwrap(),
+        "a tray that cannot notify must leave the service to do it"
+    );
 }

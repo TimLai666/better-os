@@ -645,7 +645,11 @@ impl ManagerApp {
                         .child(div().text_lg().font_semibold().child(title)),
                 )
                 .child(self.key_value_row(c.failed_stage, self.stage_label(failure.stage), cx))
-                .child(self.key_value_row(c.failure_evidence, self.evidence_label(Some(key)), cx))
+                .child(self.key_value_row(
+                    c.failure_evidence,
+                    self.evidence_label(Some(key), detail),
+                    cx,
+                ))
                 // The machine detail is what the service actually said — "plan
                 // targets release 24.04 but this host is 18" beats a localized
                 // sentence when the user reports a failure, so it is shown,

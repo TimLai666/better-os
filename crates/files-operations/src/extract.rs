@@ -35,7 +35,11 @@
 //! read. The bytes are counted as they are written, so an entry whose header
 //! understates its size is stopped too; a zip, whose sizes are declared up
 //! front, is also refused before anything is written when its declarations
-//! already exceed the limit.
+//! already exceed the limit. A zip's entry count and the size of its central
+//! directory are read from its end record first ([`crate::zip_end`]), and one
+//! declaring more entries than the limit or a directory over
+//! [`crate::policy::MAX_ZIP_CENTRAL_DIRECTORY_BYTES`] is refused before the
+//! directory is read.
 //!
 //! Everything is extracted into a temporary directory beside the destination
 //! and renamed to the archive's folder only once every entry is in. A refused
@@ -63,8 +67,9 @@ use crate::exec::{ItemOutcome, JobControl, Settled, settle_destination};
 use crate::fsops;
 use crate::log::LogEvent;
 use crate::plan::PlanItem;
-use crate::policy::{CopyPolicy, ExtractLimits};
+use crate::policy::{CopyPolicy, ExtractLimits, MAX_ZIP_CENTRAL_DIRECTORY_BYTES};
 use crate::spec::{ArchiveFormat, is_usable_name};
+use crate::zip_end;
 
 /// The reason keys an [`OperationError::ArchiveEntryRefused`] carries.
 pub mod reason {
@@ -644,13 +649,45 @@ impl Unpacker<'_> {
 
     fn zip<R: Read + Seek>(
         &mut self,
-        reader: R,
+        mut reader: R,
         control: &mut dyn JobControl,
     ) -> Result<(), OperationError> {
+        // The `zip` crate reads the whole central directory into memory
+        // before it can count it, so the count and the directory's size are
+        // taken from the end record first, and an archive declaring too much
+        // is refused before its directory is read.
+        let declared = match zip_end::read_declaration(&mut reader) {
+            Ok(Ok(declared)) => declared,
+            Ok(Err(reason)) => {
+                return Err(OperationError::ArchiveUnreadable {
+                    path: self.archive.to_path_buf(),
+                    reason: reason.to_string(),
+                });
+            }
+            Err(error) => return Err(self.read_error(&error)),
+        };
+        if declared.entries > self.limits.max_entries {
+            return Err(OperationError::ArchiveLimitExceeded {
+                path: self.archive.to_path_buf(),
+                limit: ArchiveLimit::Entries,
+                maximum: self.limits.max_entries,
+            });
+        }
+        if declared.directory_bytes > MAX_ZIP_CENTRAL_DIRECTORY_BYTES {
+            return Err(OperationError::ArchiveLimitExceeded {
+                path: self.archive.to_path_buf(),
+                limit: ArchiveLimit::CentralDirectoryBytes,
+                maximum: MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+            });
+        }
+
         let mut archive = zip::ZipArchive::new(reader).map_err(|error| self.zip_error(error))?;
-        // A zip declares its entries and their sizes up front, so an archive
-        // that says it is too big is refused before anything is written. What
-        // is written is still counted, because a declaration can lie.
+        // The directory itself is counted again, because the `zip` crate
+        // looks for an earlier end record on its own when the last one does
+        // not lead to a directory. Its entries' sizes are declared up front
+        // too, so an archive that says it unpacks too big is refused before
+        // anything is written. What is written is still counted, because a
+        // declaration can lie.
         if archive.len() as u64 > self.limits.max_entries {
             return Err(OperationError::ArchiveLimitExceeded {
                 path: self.archive.to_path_buf(),

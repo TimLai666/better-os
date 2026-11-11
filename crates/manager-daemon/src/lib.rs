@@ -21,7 +21,6 @@
 
 pub mod apt;
 pub mod authorize;
-pub mod dpkg_config;
 pub mod dpkg_state;
 pub mod executor;
 pub mod health;

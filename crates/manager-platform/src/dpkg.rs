@@ -5,13 +5,46 @@
 //! not the ability to look. Asking the host directly is what lets the manager
 //! notice that its own records have drifted instead of trusting them forever.
 
+use std::path::Path;
 use std::process::Command;
+
+use better_core::package_health::{
+    HealthProbe, HealthVerdict, InstalledFiles, check_installed, installed_files_from,
+    path_filter_from,
+};
 
 use crate::PlatformError;
 
 pub trait PackageStateProbe: Send + Sync {
     /// The installed version of a package, or `None` when it is not installed.
     fn installed_version(&self, package: &str) -> Result<Option<String>, PlatformError>;
+
+    /// The files dpkg recorded for an installed package, with the paths this
+    /// machine's dpkg and apt configuration exclude from unpacking marked as
+    /// excluded — the same reading the privileged service's health check uses.
+    fn installed_files(&self, package: &str) -> Result<InstalledFiles, PlatformError>;
+}
+
+/// Checks an installed package with the shared health rule
+/// (`better_core::package_health::check_installed`), reading dpkg through
+/// `packages` and the filesystem through `health`. Nothing here needs root.
+pub fn verify_package(
+    packages: &dyn PackageStateProbe,
+    health: &dyn HealthProbe,
+    package: &str,
+) -> HealthVerdict {
+    check_installed(
+        package,
+        packages
+            .installed_version(package)
+            .map_err(|error| error.to_string()),
+        || {
+            packages
+                .installed_files(package)
+                .map_err(|error| error.to_string())
+        },
+        health,
+    )
 }
 
 /// Queries the real dpkg database.
@@ -37,6 +70,36 @@ impl PackageStateProbe for DpkgProbe {
         }
         Ok(parse_status(&String::from_utf8_lossy(&output.stdout)))
     }
+
+    fn installed_files(&self, package: &str) -> Result<InstalledFiles, PlatformError> {
+        // The same name check as `installed_version`, before anything runs.
+        if !is_safe_package_name(package) {
+            return Err(PlatformError::CapabilityUnavailable("dpkg.package_name"));
+        }
+        let unavailable = || PlatformError::CapabilityUnavailable("dpkg.file_list");
+        let listed =
+            read_only_output("dpkg-query", &["-L", "--", package]).ok_or_else(unavailable)?;
+        let conffiles = read_only_output("dpkg-query", &["-W", "-f=${Conffiles}", "--", package])
+            .ok_or_else(unavailable)?;
+
+        let apt_options = read_only_output("apt-config", &["dump", "DPkg::Options"]);
+        let filter = path_filter_from(Path::new("/etc/dpkg"), apt_options.as_deref());
+        Ok(installed_files_from(&listed, &conffiles, &filter))
+    }
+}
+
+/// Runs a read-only query and returns its stdout, or `None` when it cannot be
+/// run or exits non-zero. Nothing goes through a shell.
+fn read_only_output(program: &str, arguments: &[&str]) -> Option<String> {
+    let output = Command::new(program)
+        .args(arguments)
+        .env("LC_ALL", "C")
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn is_safe_package_name(package: &str) -> bool {
@@ -81,27 +144,47 @@ pub fn upstream_version(version: &str) -> &str {
     strip_revision(strip_epoch(version))
 }
 
-/// A probe that answers from a fixed list, for tests.
-pub struct FixedPackageStateProbe(pub Vec<(String, String)>);
+/// A probe that answers from fixed lists, for tests.
+pub struct FixedPackageStateProbe {
+    versions: Vec<(String, String)>,
+    files: Vec<(String, InstalledFiles)>,
+}
 
 impl FixedPackageStateProbe {
     pub fn new(entries: &[(&str, &str)]) -> Self {
-        Self(
-            entries
+        Self {
+            versions: entries
                 .iter()
                 .map(|(package, version)| (package.to_string(), version.to_string()))
                 .collect(),
-        )
+            files: Vec::new(),
+        }
+    }
+
+    /// Gives `package` the file list dpkg would report for it. A package with
+    /// no list here answers `installed_files` with an error, the way a dpkg
+    /// that cannot be queried does.
+    pub fn with_files(mut self, package: &str, files: InstalledFiles) -> Self {
+        self.files.push((package.to_string(), files));
+        self
     }
 }
 
 impl PackageStateProbe for FixedPackageStateProbe {
     fn installed_version(&self, package: &str) -> Result<Option<String>, PlatformError> {
         Ok(self
-            .0
+            .versions
             .iter()
             .find(|(known, _)| known == package)
             .map(|(_, version)| version.clone()))
+    }
+
+    fn installed_files(&self, package: &str) -> Result<InstalledFiles, PlatformError> {
+        self.files
+            .iter()
+            .find(|(known, _)| known == package)
+            .map(|(_, files)| files.clone())
+            .ok_or(PlatformError::CapabilityUnavailable("dpkg.file_list"))
     }
 }
 

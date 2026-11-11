@@ -12,7 +12,9 @@
 use std::process::ExitCode;
 
 use touchpad_core::TouchpadStore;
-use touchpad_gesture_service::{GesturePipeline, StopReason, safe_mode_enabled};
+use touchpad_gesture_service::{
+    GesturePipeline, StopReason, SysfsDeviceIdentities, safe_mode_enabled,
+};
 use touchpad_gestures::{GestureStore, SuppressionEvent};
 use touchpad_session::{
     GnomeShellAdapter, LauncherActivationAdapter, RoutingAdapter, SessionBusShell,
@@ -39,8 +41,8 @@ fn main() -> ExitCode {
         }
     }
 
-    let config = match gestures.load_active_config() {
-        Ok(config) => config,
+    let profiles = match gestures.load_profiles() {
+        Ok(profiles) => profiles,
         // A configuration that will not parse is not a first run, and starting
         // from defaults would recognize gestures the user never configured.
         Err(error) => {
@@ -48,7 +50,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if !config.enabled || config.active().is_empty() {
+    let listening = std::iter::once(&profiles.global)
+        .chain(profiles.devices.values())
+        .any(|profile| !profile.active().is_empty());
+    if !listening {
         eprintln!("no gesture is configured, so there is nothing to listen for");
         return ExitCode::SUCCESS;
     }
@@ -91,7 +96,12 @@ fn main() -> ExitCode {
         }
     };
 
-    let mut pipeline = GesturePipeline::new(config, gestures, Box::new(routing));
+    let mut pipeline = GesturePipeline::with_profiles(
+        profiles,
+        gestures,
+        Box::new(routing),
+        Box::new(SysfsDeviceIdentities::system()),
+    );
     let state = pipeline.verify();
     eprintln!("gestures verified: {state:?}");
     let suppression = pipeline.suppress_built_in_gestures();
