@@ -22,7 +22,18 @@ jobs:
       - name: Third-party license inventory is current
         run: bash packaging/generate-third-party-notices.sh --check
       - name: Install GPUI Linux dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+        # The runners have lost name resolution for the Ubuntu mirrors for minutes
+        # at a time, which failed this step and so the whole run. `apt-get update`
+        # exits 0 with stale lists in that state, so the retry is around both.
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed; waiting before the next" >&2
+            sleep 60
+          done
+          exit 1
       - run: cargo fmt --all -- --check
       - run: cargo check --workspace
       - run: cargo build --workspace
@@ -57,7 +68,18 @@ jobs:
           toolchain: ${{ steps.declared.outputs.version }}
       - uses: Swatinem/rust-cache@v2
       - name: Install GPUI Linux dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+        # The runners have lost name resolution for the Ubuntu mirrors for minutes
+        # at a time, which failed this step and so the whole run. `apt-get update`
+        # exits 0 with stale lists in that state, so the retry is around both.
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed; waiting before the next" >&2
+            sleep 60
+          done
+          exit 1
       - name: The declared Rust version builds the workspace
         run: |
           rustc --version
@@ -176,7 +198,18 @@ jobs:
       # Keep release target artifacts isolated by Ubuntu release. Proc-macro
       # shared objects are linked against the runner's glibc.
       - name: Install GPUI and packaging dependencies
-        run: sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+        # The runners have lost name resolution for the Ubuntu mirrors for minutes
+        # at a time, which failed this step and so the whole run. `apt-get update`
+        # exits 0 with stale lists in that state, so the retry is around both.
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed; waiting before the next" >&2
+            sleep 60
+          done
+          exit 1
       - name: Build Debian packages
         run: bash packaging/build-deb.sh --output-dir "dist/${{ matrix.target }}" --target "${{ matrix.asset_target }}"
       # The matrix is per release and architecture; this is the per-component
