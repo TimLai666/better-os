@@ -2546,6 +2546,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "git-gui"
+version = "0.2.9"
+dependencies = [
+ "better-ui",
+ "git-core",
+ "git-platform",
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "gpui_platform",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "git-platform"
 version = "0.2.9"
 dependencies = [

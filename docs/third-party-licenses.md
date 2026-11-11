@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 924.
-- Packages with an SPDX license expression: 922.
+- Resolved Cargo packages: 925.
+- Packages with an SPDX license expression: 923.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `b0c6afcf9bd910de95dde6f40ee4d5a1bfe55153a35fb323958120dbef75b948`.
+- `Cargo.lock` SHA-256: `5d91d007f6127322473f54ed3586da70e038789180c41f37e589ad4e3453f264`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 403 |
 | `MIT` | 189 |
 | `Apache-2.0 OR MIT` | 76 |
-| `GPL-3.0-or-later` | 57 |
+| `GPL-3.0-or-later` | 58 |
 | `MIT/Apache-2.0` | 35 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -100,6 +100,7 @@ Better OS does not relicense or silently select a different expression.
 | `files-preview` | `0.2.9` | `GPL-3.0-or-later` | workspace |
 | `files-search` | `0.2.9` | `GPL-3.0-or-later` | workspace |
 | `git-core` | `0.2.9` | `GPL-3.0-or-later` | workspace |
+| `git-gui` | `0.2.9` | `GPL-3.0-or-later` | workspace |
 | `git-platform` | `0.2.9` | `GPL-3.0-or-later` | workspace |
 | `launcher-core` | `0.2.9` | `GPL-3.0-or-later` | workspace |
 | `launcher-gui` | `0.2.9` | `GPL-3.0-or-later` | workspace |
@@ -393,6 +394,7 @@ Better OS does not relicense or silently select a different expression.
 | `gif` | `0.14.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gif/0.14.2) |
 | `gimli` | `0.32.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gimli/0.32.3) |
 | `git-core` | `0.2.9` | `GPL-3.0-or-later` | workspace |
+| `git-gui` | `0.2.9` | `GPL-3.0-or-later` | workspace |
 | `git-platform` | `0.2.9` | `GPL-3.0-or-later` | workspace |
 | `gl_generator` | `0.14.0` | `Apache-2.0` | [crates.io](https://crates.io/crates/gl_generator/0.14.0) |
 | `glob` | `0.3.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/glob/0.3.4) |
