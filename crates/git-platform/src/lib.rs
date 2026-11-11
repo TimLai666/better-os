@@ -7,6 +7,15 @@
 //! own configuration, credential helper, and SSH keys are left as they are:
 //! this crate adds no sign-in of its own.
 //!
+//! Opening a folder must not run what the folder brings with it. A repository
+//! copied from elsewhere carries its own `.git/config` and hooks, so every
+//! command turns off `core.fsmonitor`, every command except `commit` turns off
+//! hooks, and `diff` is run with `--no-textconv` and `--no-ext-diff`. One gap
+//! is left and known: a `filter.<name>.clean` command named by the
+//! repository's attributes still runs when git reads a working-tree file.
+//! The `GIT_DIR` family of variables is dropped so `-C` alone names the
+//! repository.
+//!
 //! The parsing lives in `git-core`. This crate only decides which command to
 //! run and hands the bytes over.
 
@@ -92,10 +101,51 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    run_git_with(repository, args, stdin, Hooks::Off)
+}
+
+/// Whether the repository's hooks may run for a command.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Hooks {
+    Off,
+    /// For `commit`, where the person expects their hooks.
+    On,
+}
+
+/// Variables that would point git at another repository than `-C` names.
+const REPOSITORY_VARIABLES: [&str; 7] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+];
+
+fn run_git_with<I, S>(
+    repository: &Path,
+    args: I,
+    stdin: Option<&[u8]>,
+    hooks: Hooks,
+) -> Result<Captured, GitError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     // `--literal-pathspecs` stops a file name such as `*.txt` or `a[1].txt`
     // from matching other paths as a pattern.
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .arg("--literal-pathspecs")
+        .args(["-c", "core.fsmonitor=false"]);
+    if hooks == Hooks::Off {
+        command.args(["-c", "core.hooksPath=/dev/null"]);
+    }
+    for variable in REPOSITORY_VARIABLES {
+        command.env_remove(variable);
+    }
+    let mut child = command
         .arg("-C")
         .arg(repository)
         .args(args)
@@ -200,15 +250,23 @@ fn has_commit(repository: &Path) -> Result<bool, GitError> {
 ///   converted through a string, and always after `--`.
 impl Git for SystemGit {
     /// `git -C <path> rev-parse --show-toplevel`. A path that is not in a
-    /// working tree (git exits 128) is `NotARepository(path)`. A path that
-    /// does not exist is `NotARepository(path)` too.
+    /// working tree (git exits 128 and says so) is `NotARepository(path)`; any
+    /// other exit 128 is `Failed` with git's message. A path that does not
+    /// exist is `NotARepository(path)` too.
     fn repository_root(&self, path: &Path) -> Result<PathBuf, GitError> {
         if !path.exists() {
             return Err(GitError::NotARepository(path.to_path_buf()));
         }
         let captured = run_git(path, ["rev-parse", "--show-toplevel"], None)?;
         if captured.status.code() == Some(128) {
-            return Err(GitError::NotARepository(path.to_path_buf()));
+            // 128 is every fatal error. Only "not a git repository" means
+            // what it says; a repository git refuses for its owner
+            // (`safe.directory`) keeps git's own explanation.
+            let stderr = String::from_utf8_lossy(&captured.stderr);
+            if stderr.contains("not a git repository") {
+                return Err(GitError::NotARepository(path.to_path_buf()));
+            }
+            return Err(failed(&captured));
         }
         let stdout = ensure_success(captured)?;
         let root = stdout.strip_suffix(b"\n").unwrap_or(&stdout);
@@ -232,10 +290,10 @@ impl Git for SystemGit {
         parse_status(&ensure_success(captured)?).map_err(unreadable)
     }
 
-    /// `git diff --no-color --no-ext-diff [--cached] -- <path>`, parsed by
+    /// `git diff --no-color --no-ext-diff --no-textconv [--cached] -- <path>`, parsed by
     /// `git_core::parse_diff`. An untracked file has no diff from git, so for
     /// `Unstaged` on an untracked path this shows the whole file as added:
-    /// `git diff --no-color --no-ext-diff --no-index -- /dev/null <path>`,
+    /// `git diff --no-color --no-ext-diff --no-textconv --no-index -- /dev/null <path>`,
     /// whose exit code 1 means "differences found" and is not a failure.
     fn diff(&self, repository: &Path, path: &Path, side: DiffSide) -> Result<FileDiff, GitError> {
         let untracked = side == DiffSide::Unstaged && !is_tracked(repository, path)?;
@@ -244,6 +302,7 @@ impl Git for SystemGit {
                 "diff",
                 "--no-color",
                 "--no-ext-diff",
+                "--no-textconv",
                 "--no-index",
                 "--",
                 "/dev/null",
@@ -251,11 +310,17 @@ impl Git for SystemGit {
             args.push(path.as_os_str().to_owned());
             let captured = run_git(repository, args, None)?;
             match captured.status.code() {
+                // Exit 1 with nothing printed is an error git reported on
+                // stderr, as it does for an untracked folder that is a
+                // repository of its own.
+                Some(1) if captured.stdout.is_empty() && !captured.stderr.is_empty() => {
+                    return Err(failed(&captured));
+                }
                 Some(0) | Some(1) => captured.stdout,
                 _ => return Err(failed(&captured)),
             }
         } else {
-            let mut args = os_args(&["diff", "--no-color", "--no-ext-diff"]);
+            let mut args = os_args(&["diff", "--no-color", "--no-ext-diff", "--no-textconv"]);
             if side == DiffSide::Staged {
                 args.push(OsString::from("--cached"));
             }
@@ -310,10 +375,11 @@ impl Git for SystemGit {
             text.push_str(description);
         }
         text.push('\n');
-        ensure_success(run_git(
+        ensure_success(run_git_with(
             repository,
             ["commit", "-F", "-"],
             Some(text.as_bytes()),
+            Hooks::On,
         )?)
         .map(|_| ())
     }

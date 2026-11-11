@@ -149,3 +149,48 @@ ticket is the first usable slice. Tickets 78 and 79 follow it.
   still to be checked against the WinUI source.
 - Packaging (a desktop entry for `io.betteros.Git`, a manifest, `.deb`) is out
   of this ticket.
+
+### Independent review, and what it changed
+
+A reviewer who saw only the ticket and the diff ran the product's exact `git`
+commands against a repository whose own configuration named programs to run.
+
+Fixed, each with a test that fails without the fix:
+
+- **Opening a repository ran what the repository configured.** `status`,
+  `diff`, `add`, and `restore` started its `core.fsmonitor` program, its
+  `post-index-change` hook, and its diff `textconv` command. Every command now
+  turns `core.fsmonitor` off, every command except `commit` turns hooks off,
+  and `diff` runs with `--no-textconv`.
+- A file that changed type (a file that became a symlink) had no readable
+  diff: git prints two diffs for the one path and the parser refused the
+  second header.
+- Pressing Commit while another repository was opening lost the commit and
+  left the Commit button disabled in the new repository. Commit is now
+  withheld while an open is waiting or running.
+- An untracked folder that is a repository of its own showed "no changes";
+  it now shows git's error.
+- A repository git refuses for its owner (`safe.directory`) was called "not a
+  repository"; it now shows git's explanation.
+- `GIT_DIR` and its relatives in the environment redirected every command to
+  another repository; they are removed.
+
+Left open, for the next Better Git ticket:
+
+- A `filter.<name>.clean` command named by the repository's attributes still
+  runs when git reads a working-tree file. git has no switch for it. The
+  choices are a "trust this repository" question before the first read, or
+  accepting it in an ADR.
+- The summary and description stay editable while a commit runs, and what is
+  typed then is cleared when the commit lands.
+- Two quick clicks on one checkbox queue the same action twice instead of
+  toggling back.
+- A diff has no size limit: selecting a very large file reads all of it into
+  memory, and each render walks every line to find the widest.
+- Two windows saving the recent list at once can lose one window's entry.
+- Whether a commit message over 64 KB can deadlock against a hook that prints
+  as much before git reads stdin was not tested.
+- The parser samples are written by hand in git's format, not recorded from a
+  run, except for the cases the platform tests take from a real `git`.
+- The fixes above were verified by the author of the fixes and have not had a
+  second independent review.

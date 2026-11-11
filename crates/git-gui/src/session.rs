@@ -398,6 +398,8 @@ pub struct GitSession {
     problem: Option<Problem>,
     queue: VecDeque<Request>,
     in_flight: bool,
+    /// True while the request that is running opens a repository.
+    opening: bool,
     committing: bool,
 }
 
@@ -420,6 +422,7 @@ impl GitSession {
             problem: None,
             queue: VecDeque::new(),
             in_flight: false,
+            opening: false,
             committing: false,
         }
     }
@@ -543,12 +546,19 @@ impl GitSession {
     }
 
     /// Commit is offered with something staged and a summary that is not
-    /// blank, and not while a commit is already running.
+    /// blank, and not while a commit is already running. It is also withheld
+    /// while another repository is being opened: that open drops whatever is
+    /// queued for this one, and a commit must never vanish without a word.
     pub fn can_commit(&self) -> bool {
         self.repository.is_some()
             && self.has_staged()
             && !self.summary.trim().is_empty()
             && !self.committing
+            && !self.opening
+            && !self
+                .queue
+                .iter()
+                .any(|request| matches!(request, Request::Open { .. }))
     }
 
     /// What the diff pane shows.
@@ -778,12 +788,14 @@ impl GitSession {
         }
         let request = self.queue.pop_front()?;
         self.in_flight = true;
+        self.opening = matches!(request, Request::Open { .. });
         Some(request)
     }
 
     /// Takes in the answer to the request [`Self::next_request`] handed out.
     pub fn apply(&mut self, outcome: Outcome) {
         self.in_flight = false;
+        self.opening = false;
         if matches!(
             outcome.kind,
             OutcomeKind::Committed | OutcomeKind::CommitFailed
@@ -802,6 +814,9 @@ impl GitSession {
                     self.selection = None;
                     self.diff = None;
                     self.clear_form();
+                    // A commit queued for the old repository is dropped just
+                    // below, so its answer will never come to clear this.
+                    self.committing = false;
                     // Anything queued was for the repository that was open.
                     self.queue
                         .retain(|request| matches!(request, Request::Open { .. }));

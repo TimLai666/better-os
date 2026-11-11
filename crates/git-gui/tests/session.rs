@@ -321,3 +321,49 @@ fn git_missing_is_reported_not_a_crash() {
         Some(&Problem::Git(GitError::NotInstalled))
     );
 }
+
+#[test]
+fn commit_is_withheld_while_another_repository_is_opening() {
+    let sandbox = sandbox();
+    write(&sandbox, "a.txt", "one\n");
+    git(&sandbox, &["add", "a.txt"]);
+    let other = sandbox.tmp.path().join("other");
+    fs::create_dir_all(&other).unwrap();
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&other)
+            .args(["init", "-q", "-b", "main"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(other.join("b.txt"), "two\n").unwrap();
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&other)
+            .args(["add", "b.txt"])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let mut session = session(&sandbox);
+    session.summary = "commit in the first repository".to_string();
+    assert!(session.can_commit());
+
+    session.open(&other);
+    assert!(!session.can_commit(), "an open is waiting");
+    session.commit();
+    session.run_pending();
+
+    // Nothing was committed anywhere, and the second repository can commit.
+    assert!(
+        git_output(&sandbox, &["rev-parse", "--verify", "-q", "HEAD"])
+            .stdout
+            .is_empty()
+    );
+    session.summary = "commit in the second repository".to_string();
+    assert!(session.can_commit());
+}

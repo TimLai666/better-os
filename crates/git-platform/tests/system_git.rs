@@ -843,3 +843,167 @@ fn unborn_repository_commit_creates_the_first_commit() {
     );
     assert!(status.changes.is_empty());
 }
+
+// --- a repository someone else configured ---------------------------------------
+
+/// Sets up a repository whose own configuration names programs to run, each
+/// of which leaves a marker file, and returns the folder the markers go in.
+fn booby_trap(sandbox: &Sandbox) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let markers = sandbox.home.join("markers");
+    let hooks = sandbox.home.join("hooks");
+    fs::create_dir_all(&markers).expect("create marker folder");
+    fs::create_dir_all(&hooks).expect("create hooks folder");
+    let script = |name: &str| {
+        let path = sandbox.home.join(format!("{name}.sh"));
+        let body = format!(
+            "#!/bin/sh\ntouch '{}'\ncat 2>/dev/null\nexit 0\n",
+            markers.join(name).display()
+        );
+        fs::write(&path, body).expect("write script");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod script");
+        path
+    };
+    let fsmonitor = script("fsmonitor");
+    let textconv = script("textconv");
+    let hook = hooks.join("post-index-change");
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\ntouch '{}'\n",
+            markers.join("post-index-change").display()
+        ),
+    )
+    .expect("write hook");
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("chmod hook");
+
+    commit_standard_baseline(sandbox);
+    write(sandbox, ".gitattributes", b"*.txt diff=trap\n");
+    git(
+        sandbox,
+        &["config", "core.fsmonitor", fsmonitor.to_str().unwrap()],
+    );
+    git(
+        sandbox,
+        &["config", "diff.trap.textconv", textconv.to_str().unwrap()],
+    );
+    git(
+        sandbox,
+        &["config", "core.hooksPath", hooks.to_str().unwrap()],
+    );
+    // Setting the configuration above ran nothing yet; start from no markers.
+    for entry in fs::read_dir(&markers).expect("read markers") {
+        fs::remove_file(entry.expect("marker entry").path()).expect("remove marker");
+    }
+    markers
+}
+
+fn markers_in(folder: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(folder)
+        .expect("read markers")
+        .map(|entry| {
+            entry
+                .expect("marker entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn looking_at_a_repository_runs_none_of_its_configured_programs() {
+    let sandbox = sandbox();
+    let markers = booby_trap(&sandbox);
+    write(&sandbox, "modify.txt", b"changed\n");
+    write(&sandbox, "new.txt", b"new\n");
+
+    SystemGit
+        .repository_root(&sandbox.repo)
+        .expect("repository root");
+    SystemGit.status(&sandbox.repo).expect("status");
+    SystemGit
+        .diff(&sandbox.repo, Path::new("modify.txt"), DiffSide::Unstaged)
+        .expect("diff of a tracked file");
+    SystemGit
+        .diff(&sandbox.repo, Path::new("new.txt"), DiffSide::Unstaged)
+        .expect("diff of an untracked file");
+    SystemGit
+        .stage(&sandbox.repo, &[PathBuf::from("modify.txt")])
+        .expect("stage");
+    SystemGit
+        .diff(&sandbox.repo, Path::new("modify.txt"), DiffSide::Staged)
+        .expect("staged diff");
+    SystemGit
+        .unstage(&sandbox.repo, &[PathBuf::from("modify.txt")])
+        .expect("unstage");
+
+    assert_eq!(markers_in(&markers), Vec::<String>::new());
+}
+
+#[test]
+fn a_file_that_became_a_symlink_has_a_readable_diff() {
+    let sandbox = sandbox();
+    commit_standard_baseline(&sandbox);
+    fs::remove_file(sandbox.repo.join("modify.txt")).expect("remove file");
+    std::os::unix::fs::symlink("elsewhere", sandbox.repo.join("modify.txt")).expect("symlink");
+
+    let diff = diff_of(&sandbox, "modify.txt", DiffSide::Unstaged);
+    let lines = lines_of(&diff);
+    assert!(
+        lines.contains(&(DiffLineKind::Added, "elsewhere".to_string())),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|(kind, _)| *kind == DiffLineKind::Removed),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn an_untracked_folder_that_is_its_own_repository_reports_gits_error() {
+    let sandbox = sandbox();
+    commit_standard_baseline(&sandbox);
+    let nested = sandbox.repo.join("nested");
+    fs::create_dir_all(&nested).expect("create nested folder");
+    let mut init = git_command(&sandbox, &["init", "-q", "-b", "main"]);
+    init.current_dir(&nested);
+    assert!(init.status().expect("run git init").success());
+    fs::write(nested.join("inner.txt"), b"inner\n").expect("write inner file");
+
+    let result = SystemGit.diff(&sandbox.repo, Path::new("nested/"), DiffSide::Unstaged);
+    assert!(matches!(result, Err(GitError::Failed { .. })), "{result:?}");
+}
+
+#[test]
+fn a_repository_git_refuses_for_its_owner_keeps_gits_explanation() {
+    let sandbox = sandbox();
+    // SAFETY: `SERIAL` is held, as for every test in this file.
+    unsafe { std::env::set_var("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1") };
+    let result = SystemGit.repository_root(&sandbox.repo);
+    unsafe { std::env::remove_var("GIT_TEST_ASSUME_DIFFERENT_OWNER") };
+
+    match result {
+        Err(GitError::Failed { message, .. }) => {
+            assert!(message.contains("dubious ownership"), "{message}");
+        }
+        other => panic!("expected Failed with git's message, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_git_dir_in_the_environment_does_not_redirect_the_repository() {
+    let sandbox = sandbox();
+    commit_standard_baseline(&sandbox);
+    write(&sandbox, "modify.txt", b"changed\n");
+    // SAFETY: `SERIAL` is held, as for every test in this file.
+    unsafe { std::env::set_var("GIT_DIR", sandbox.plain.join("no-such.git")) };
+    let result = SystemGit.status(&sandbox.repo);
+    unsafe { std::env::remove_var("GIT_DIR") };
+
+    let status = result.expect("status reads the repository `-C` names");
+    assert_eq!(status.changes.len(), 1);
+}

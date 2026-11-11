@@ -54,6 +54,8 @@ pub enum FileDiff {
 ///   before it and is not a line of its own.
 /// - A line `Binary files ... differ` anywhere before a hunk yields
 ///   `FileDiff::Binary`.
+/// - A second `diff --git` header after a hunk ends that hunk; the hunks of
+///   both diffs are returned in order. git prints a type change this way.
 /// - Empty input is `FileDiff::Text { hunks: vec![] }`.
 /// - Bytes that are not UTF-8 are decoded lossily; they never fail the parse.
 /// - A hunk header that cannot be read fails with `Malformed`.
@@ -76,6 +78,14 @@ pub fn parse_diff(output: &[u8]) -> Result<FileDiff, ParseError> {
                 header,
                 lines: Vec::new(),
             });
+            continue;
+        }
+
+        // A change of type (a file that became a symlink) is printed as two
+        // diffs for the one path: a deletion, then an addition. No line of a
+        // hunk can start with `d`, so this is the next diff's header.
+        if hunk.is_some() && raw.starts_with(b"diff --git ") {
+            hunks.extend(hunk.take());
             continue;
         }
 

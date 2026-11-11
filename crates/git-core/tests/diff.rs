@@ -211,3 +211,19 @@ fn mode_change_only_is_text_with_no_hunks() {
     let output = b"diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n";
     assert_eq!(parse_diff(output), Ok(FileDiff::Text { hunks: vec![] }));
 }
+
+#[test]
+fn a_type_change_is_two_diffs_and_both_hunks_are_read() {
+    // What git prints for a file that became a symlink: a deletion and an
+    // addition of the same path, one after the other.
+    let output = b"diff --git a/f b/f\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/f\n+++ /dev/null\n@@ -1 +0,0 @@\n-content\ndiff --git a/f b/f\nnew file mode 120000\nindex 0000000..2222222\n--- /dev/null\n+++ b/f\n@@ -0,0 +1 @@\n+target\n\\ No newline at end of file\n";
+    let hunks = text_hunks(output);
+    assert_eq!(hunks.len(), 2);
+    assert_eq!(
+        hunks[0].lines,
+        vec![line(DiffLineKind::Removed, "content", Some(1), None)]
+    );
+    let mut added = line(DiffLineKind::Added, "target", None, Some(1));
+    added.no_newline_at_end = true;
+    assert_eq!(hunks[1].lines, vec![added]);
+}
