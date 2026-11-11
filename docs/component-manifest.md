@@ -55,6 +55,19 @@ the catalog alone. Nothing in the schema requires that; a check name is a
 declaration either way. It is worth copying because
 `crates/touchpad-platform/tests/manifest.rs` can then fail when the two drift.
 
+`better-git.yaml` joined with ticket 78 and is in the position the four above
+were in before v0.2.0: the package matrix builds and verifies `better-git`, no
+release publishes it yet, so its checksums are placeholders and it is validated
+on every test run rather than offered for installation. It is also the first
+manifest whose `component_type` is a compromise. Better Git is a standalone
+application that replaces and enhances nothing, the schema has no type for
+that, and a released Better Manager refuses a type it does not know, so it
+declares `enhancement` with neither `replaces` nor `enhances` and the `generic`
+icon. The validator puts no requirement on `enhances` for an enhancement;
+`better-awake.yaml` already declares none. A standalone type is a schema change
+for its own ticket. `crates/git-gui/tests/manifest.rs` holds these choices and
+checks that the desktop entry is named after the window's `app_id`.
+
 `better-files.yaml` is the first shipped manifest to declare
 `default_integrations`, so it is also the worked example of what the group is
 for: three declarations, each naming the exact keys it writes, and `restore_policy`

@@ -130,6 +130,16 @@ GUI or dependency compiles when the relevant command was not executed.
   built — write the real values back only after the new release is public and
   its assets have been downloaded again, and correct the comment above each
   block at the same time rather than leaving it describing the release before.
+- Better Git is the ninth package (ticket 78) and no release has published it
+  yet, so the next release carries 36 `.deb` files, 36 `.deb.sha256` sidecars,
+  `LICENSE`, and `third-party-licenses.md`: 74 assets, not v0.2.8's 66. Its
+  manifest declares `component_type: enhancement` with nothing in `replaces` or
+  `enhances` and `icon: generic`, because both sets are closed and a released
+  Better Manager refuses a value it does not know; a standalone type is a schema
+  change for its own ticket. The desktop entry is
+  `io.betteros.Git.desktop`, named after the window's `app_id` as
+  `better_ui::window_options` requires; `verify-deb.sh` and
+  `crates/git-gui/tests/manifest.rs` both hold the two together.
 - `packaging/build-deb.sh` clears `dist/` of the previous build's `.deb` and
   `.deb.sha256` before it builds, and must keep doing so. `verify-deb.sh` picks
   each package with a version-agnostic glob and fails when that glob matches
@@ -162,7 +172,7 @@ GUI or dependency compiles when the relevant command was not executed.
   the `better-manager` shipped in a release always carries the pre-release
   placeholder checksums for that release. That is now a fallback rather than the
   only path: ticket 41 and [ADR 0013](docs/decisions/0013-remote-catalog-refresh.md)
-  made the catalog refreshable, so a manager fetches the seven manifest files
+  made the catalog refreshable, so a manager fetches the eight manifest files
   from `main` over HTTPS, validates them with the same validator the compiled-in
   ones get, caches the result in the state directory, and shows the built-in
   catalog with a visible "may be outdated" state when it cannot. The placeholder
@@ -380,11 +390,11 @@ GUI or dependency compiles when the relevant command was not executed.
   it. Every published number is a page-cache number from an ext4 temporary
   directory: no spinning disk, no USB device with `fsync` per file, and no
   network share has been measured.
-- The built-in catalog now carries all seven released component manifests, so
+- The built-in catalog now carries all eight component manifests, so
   `better-manager list` offers the whole suite and `better-manager defaults
   inspect` reports Better Files' declared file-manager integration rather than
   an empty state. Better Files is the only component that
-  declares a default integration; the other six declare none, which is a
+  declares a default integration; the other seven declare none, which is a
   deferred Issue #10 decision and not an omission this catalog change made.
 - `packaging/prune-target.sh` frees build space: it lists what it would remove
   and removes it only with `--apply`. Run it on a worktree's own `target/` when
@@ -408,7 +418,7 @@ GUI or dependency compiles when the relevant command was not executed.
   host is `zorin` and not the Ubuntu base its release number comes from. That
   went public in v0.2.5 and it is a contract change for manifests, not only an
   internal one: `targets.distributions` is compared against the real ID, so a
-  third-party manifest listing only `ubuntu` is refused on Zorin. All seven
+  third-party manifest listing only `ubuntu` is refused on Zorin. All eight
   first-party manifests list both. The release axis is unaffected — 22.04 and
   24.04 still resolve through `UBUNTU_CODENAME` — and a file with no `ID` at all
   falls back to `ubuntu`, which is the only remaining thing to say about a host

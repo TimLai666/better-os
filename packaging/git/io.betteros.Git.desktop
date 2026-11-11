@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Better Git
+Name[zh_TW]=Better Git
+GenericName=Git Client
+GenericName[zh_TW]=Git 用戶端
+Comment=Review what changed in a Git repository and commit it, without a terminal
+Comment[zh_TW]=不用終端機，查看 Git 儲存庫的變更並提交
+Exec=better-git
+Icon=better-git
+Terminal=false
+StartupNotify=true
+# This file's name is the window's Wayland app_id (crates/git-gui/src/app.rs),
+# which is how the shell matches the window to this entry. StartupWMClass says
+# the same for X11.
+StartupWMClass=io.betteros.Git
+Categories=Development;RevisionControl;
+Keywords=git;repository;commit;diff;version control;
+Keywords[zh_TW]=git;儲存庫;提交;差異;版本控制;

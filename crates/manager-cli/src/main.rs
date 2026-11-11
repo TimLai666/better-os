@@ -910,6 +910,7 @@ mod tests {
             "better-monitor",
             "better-launcher",
             "better-files",
+            "better-git",
             "better-touchpad",
             "better-awake",
             "better-storage",

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Better Git">
+<!-- Better OS application icon. Original geometric mark, drawn for this
+     project; no third-party artwork. The family is one rounded square in the
+     Better OS primary, one accent element in the Better OS tertiary, and one
+     glyph that has to stay legible at 16 pixels. -->
+  <title>Better Git</title>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1f2937"/>
+  <!-- A history line with a branch leaving it; the branch tip is the accent. -->
+  <path d="M22 14v36M22 38c0-9 20-7 20-16" fill="none" stroke="#f4f7fb" stroke-width="5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="22" cy="46" r="5.5" fill="#f4f7fb"/>
+  <circle cx="42" cy="19" r="6.5" fill="#4f6df5"/>
+</svg>

@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 /// built from. The file name is also the identity check: a document served as
 /// `better-monitor.yaml` that declares another component is refused, so one
 /// replaced file cannot introduce a component under a name nobody asked for.
-const BUILT_IN: [(&str, &str); 7] = [
+const BUILT_IN: [(&str, &str); 8] = [
     (
         "better-manager.yaml",
         include_str!("../../../components/manifests/better-manager.yaml"),
@@ -44,6 +44,10 @@ const BUILT_IN: [(&str, &str); 7] = [
     (
         "better-files.yaml",
         include_str!("../../../components/manifests/better-files.yaml"),
+    ),
+    (
+        "better-git.yaml",
+        include_str!("../../../components/manifests/better-git.yaml"),
     ),
     (
         "better-touchpad.yaml",
@@ -551,7 +555,7 @@ mod tests {
             outcome.catalog.get(&monitor).unwrap().version,
             built_in_version
         );
-        // A partial refresh is still worth caching: six of the seven are newer.
+        // A partial refresh is still worth caching: all but one are newer.
         assert!(outcome.cache.is_some());
     }
 

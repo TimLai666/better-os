@@ -249,7 +249,7 @@ mod tests {
         assert_eq!(loaded.absence, None);
         let read_back = loaded.cache.expect("the cache is there");
         assert_eq!(read_back, written);
-        assert_eq!(read_back.catalog().unwrap().manifests().count(), 7);
+        assert_eq!(read_back.catalog().unwrap().manifests().count(), 8);
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -264,7 +264,7 @@ mod tests {
             catalog_at_start(JsonCatalogStore::at_path(store.path()).load().cache);
         assert_eq!(status.source, CatalogSource::Cache);
         assert_eq!(status.fetched_at_unix_seconds, Some(1_700_000_000));
-        assert_eq!(catalog.manifests().count(), 7);
+        assert_eq!(catalog.manifests().count(), 8);
         fs::remove_dir_all(directory).unwrap();
     }
 

@@ -27,4 +27,5 @@ gpui-component-assets.workspace = true
 gpui-platform.workspace = true
 
 [dev-dependencies]
+better-core.workspace = true
 tempfile.workspace = true
