@@ -397,6 +397,8 @@ fn advance_until_done(
         Some((downloader, executor)) => Box::new(RealDriver::new(
             downloader,
             executor,
+            &manager_platform::dpkg::DpkgProbe,
+            &better_core::package_health::SystemHealthProbe,
             uuid::Uuid::new_v4().to_string(),
             manager.profile().clone(),
         )),

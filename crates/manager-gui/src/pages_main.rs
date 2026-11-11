@@ -1103,7 +1103,7 @@ impl ManagerApp {
         let detail = entry
             .stage
             .map(|stage| self.stage_label(stage))
-            .unwrap_or_else(|| self.evidence_label(entry.evidence.as_deref()));
+            .unwrap_or_else(|| self.evidence_label(entry.evidence.as_deref(), None));
         h_flex()
             .w_full()
             .min_w_0()

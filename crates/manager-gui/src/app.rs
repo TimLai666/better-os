@@ -611,6 +611,8 @@ impl ManagerApp {
             let driver = RealDriver::new(
                 &downloader,
                 &executor,
+                &manager_platform::dpkg::DpkgProbe,
+                &better_core::package_health::SystemHealthProbe,
                 uuid::Uuid::new_v4().to_string(),
                 profile,
             );
@@ -1011,7 +1013,11 @@ impl ManagerApp {
         }
     }
 
-    pub(crate) fn evidence_label(&self, evidence: Option<&str>) -> &'static str {
+    pub(crate) fn evidence_label(
+        &self,
+        evidence: Option<&str>,
+        detail: Option<&str>,
+    ) -> &'static str {
         let c = copy(self.locale);
         match evidence {
             Some("mock_failure_at_downloading") => c.downloading,
@@ -1019,7 +1025,9 @@ impl ManagerApp {
             Some("mock_failure_at_applying_settings") => c.applying_settings,
             Some("mock_failure_at_checking_health") => c.checking_works,
             Some("mock_restore_recheck_failed") => c.restore_recheck_failed,
-            Some("mock_restore_rechecked") | Some("mock_health_check_passed") => c.passed,
+            Some("mock_restore_rechecked")
+            | Some("mock_health_check_passed")
+            | Some("health_check_passed") => c.passed,
             Some("mock_operation_finished") => c.finished,
             Some("mock_operation_cancelled") | Some("operation.cancelled") => c.cancel,
             // Real execution reports what actually went wrong.
@@ -1032,18 +1040,18 @@ impl ManagerApp {
             Some("restore.artifact_missing") => c.evidence_restore_artifact_missing,
             Some(other) if other.starts_with("daemon.error.apt_busy") => c.evidence_apt_busy,
             Some(other) if other.starts_with("daemon.error.apt_failed") => c.evidence_apt_failed,
-            Some(other) if other.starts_with("daemon.error.health_failed") => {
+            Some(other)
+                if other.starts_with("daemon.error.health_failed") || other == "health.failed" =>
+            {
                 c.evidence_health_failed
             }
+            Some("health.undetermined") => c.evidence_health_undetermined,
             Some(other) if other.starts_with("daemon.error.state_drift") => c.evidence_state_drift,
             Some(other) if other.starts_with("host.externally_upgraded") => {
                 c.evidence_externally_upgraded
             }
             Some(other) if other.starts_with("host.state_adopted") => c.evidence_state_adopted,
-            Some(other)
-                if other.starts_with("daemon.error.plan_rejected")
-                    || other == "daemon.plan_rejected" =>
-            {
+            Some(other) if plan_rejection_is_host_mismatch(other, detail) => {
                 c.evidence_plan_rejected
             }
             Some(other) if other.starts_with("daemon.") => c.evidence_daemon_refused,
@@ -1175,4 +1183,25 @@ fn stored_from_locale(locale: Locale) -> StoredLocale {
         Locale::EnUs => StoredLocale::EnUs,
         Locale::ZhTw => StoredLocale::ZhTw,
     }
+}
+
+/// Whether a refusal key says the plan was built for a different machine.
+///
+/// Only the daemon's release and architecture checks mean that. Any other
+/// refusal — including one the client raised before sending anything — is a
+/// refusal for its own stated reason, and calling it a machine mismatch sends
+/// the person looking for a problem the machine does not have.
+pub(crate) fn plan_rejection_is_host_mismatch(evidence: &str, detail: Option<&str>) -> bool {
+    // A failure record keeps the service's words apart from the key; an older
+    // record and an activity entry carry them after a colon in the key itself.
+    let (key, detail) = match detail {
+        Some(detail) => (evidence, detail),
+        None => match evidence.split_once(':') {
+            Some(parts) => parts,
+            None => return false,
+        },
+    };
+    key == "daemon.error.plan_rejected"
+        && (detail.starts_with("plan targets release ")
+            || detail.starts_with("plan targets architecture "))
 }
