@@ -121,7 +121,7 @@ impl FakeExtension {
 
     async fn capabilities(&self) -> String {
         // Word for word what the GJS extension reports on GNOME 46.
-        r#"{"protocol_version":1,"shell_version":"46.0","finger_count":true,
+        r#"{"protocol_version":2,"shell_version":"46.0","finger_count":true,
             "thumb_detection":false,"continuous_progress":true,
             "gesture_kinds":["swipe","pinch"],
             "actions":["overview","show-desktop","switch-workspace"],
@@ -139,6 +139,7 @@ impl FakeExtension {
         dx: f64,
         dy: f64,
         at_ms: u64,
+        device: &str,
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
@@ -149,6 +150,7 @@ impl FakeExtension {
         scale: f64,
         angle_delta: f64,
         at_ms: u64,
+        device: &str,
     ) -> zbus::Result<()>;
 }
 
@@ -208,7 +210,13 @@ impl Extension {
         SignalEmitter::new(&self.connection, OBJECT_PATH).expect("an emitter")
     }
 
+    /// A swipe from a device the shell could not name, which is what most of
+    /// these tests need: with one pad there is nothing to route.
     fn swipe(&self, phase: u32, fingers: u32, dx: f64, dy: f64, at_ms: u64) {
+        self.swipe_on("", phase, fingers, dx, dy, at_ms);
+    }
+
+    fn swipe_on(&self, device: &str, phase: u32, fingers: u32, dx: f64, dy: f64, at_ms: u64) {
         self.runtime
             .block_on(FakeExtension::swipe_gesture(
                 &self.emitter(),
@@ -217,8 +225,24 @@ impl Extension {
                 dx,
                 dy,
                 at_ms,
+                device,
             ))
             .expect("a swipe signal");
+    }
+
+    /// A swipe exactly as a protocol 1 extension emitted it: five arguments
+    /// and no device. A shell keeps running the old extension until the next
+    /// login, so the service has to read this shape too.
+    fn protocol_1_swipe(&self, phase: u32, fingers: u32, dx: f64, dy: f64, at_ms: u64) {
+        self.runtime
+            .block_on(self.connection.emit_signal(
+                None::<&str>,
+                OBJECT_PATH,
+                "org.betteros.TouchpadAdapter1",
+                "SwipeGesture",
+                &(phase, fingers, dx, dy, at_ms),
+            ))
+            .expect("a protocol 1 swipe signal");
     }
 
     fn pinch(&self, phase: u32, fingers: u32, scale: f64, angle: f64, at_ms: u64) {
@@ -230,6 +254,7 @@ impl Extension {
                 scale,
                 angle,
                 at_ms,
+                "",
             ))
             .expect("a pinch signal");
     }
@@ -638,6 +663,117 @@ fn a_signal_this_build_cannot_read_is_dropped_rather_than_turned_into_a_gesture(
             .calls()
             .iter()
             .all(|call| call.starts_with("SuppressBuiltInGestures")),
+        "{:?}",
+        extension.calls()
+    );
+}
+
+// ── Which pad ───────────────────────────────────────────────────────────────
+
+/// One device under a temporary `/sys`, laid out the way the kernel does it.
+fn plug(sys: &std::path::Path, handler: &str, uniq: &str, name: &str) {
+    let device = sys.join("class/input").join(handler).join("device");
+    std::fs::create_dir_all(device.join("id")).expect("a device directory");
+    std::fs::write(device.join("name"), format!("{name}\n")).expect("a name");
+    std::fs::write(device.join("uniq"), format!("{uniq}\n")).expect("a uniq");
+    for (file, value) in [
+        ("bustype", "0005"),
+        ("vendor", "05ac"),
+        ("product", "0265"),
+        ("version", "0001"),
+    ] {
+        std::fs::write(device.join("id").join(file), format!("{value}\n")).expect("an id");
+    }
+}
+
+/// The device argument crosses the real bus and picks the pad's own profile.
+#[test]
+fn the_device_named_on_the_wire_picks_that_pads_own_profile() {
+    let bus = bus_or_skip!();
+    let extension = Extension::serve(&bus, false);
+    let fixture = Fixture::new();
+    let mut listening = events(&bus);
+
+    let sys = fixture.root.path().join("sys");
+    plug(&sys, "event7", "a0:b1:c2:d3:e4:f5", "Magic Trackpad");
+
+    let mut setup = adapter(&bus);
+    let global = fixture.applied_preset(&mut setup);
+    let mut trackpad = global.clone();
+    // The trackpad's own profile turns the overview gesture off, so the same
+    // swipe does something on the global profile and nothing on this one.
+    trackpad
+        .get_mut(&touchpad_gestures::GestureId::new("overview").unwrap())
+        .expect("the preset's overview gesture")
+        .enabled = false;
+    let mut profiles = touchpad_gestures::GestureProfiles::global_only(global);
+    profiles
+        .devices
+        .insert("uniq:a0:b1:c2:d3:e4:f5".to_string(), trackpad);
+
+    let mut pipeline = GesturePipeline::with_profiles(
+        profiles,
+        fixture.store(),
+        Box::new(adapter(&bus)),
+        Box::new(touchpad_gesture_service::SysfsDeviceIdentities::at(&sys)),
+    );
+
+    // The trackpad first: its profile has no overview gesture.
+    extension.swipe_on("/dev/input/event7", 0, 4, 0.0, 0.0, 0);
+    for step in 1..=8 {
+        let phase = if step == 8 { 2 } else { 1 };
+        extension.swipe_on(
+            "/dev/input/event7",
+            phase,
+            4,
+            0.0,
+            -WHOLE_SWIPE / 8.0,
+            step * 16,
+        );
+    }
+    // Then a pad the shell could not name, on the global profile.
+    swipe(&extension, 0.0, -WHOLE_SWIPE, 2_000, 8);
+    pipeline.run(&mut listening);
+
+    assert_eq!(
+        extension
+            .calls()
+            .iter()
+            .filter(|call| *call == "ShowOverview")
+            .count(),
+        1,
+        "{:?}",
+        extension.calls()
+    );
+    let completed: Vec<Option<String>> = pipeline
+        .performed()
+        .iter()
+        .filter(|one| one.outcome == InvocationOutcome::Invoked)
+        .map(|one| one.profile.clone())
+        .collect();
+    assert_eq!(completed, vec![None]);
+}
+
+#[test]
+fn a_protocol_1_extension_still_works_on_the_global_profile() {
+    let bus = bus_or_skip!();
+    let extension = Extension::serve(&bus, false);
+    let fixture = Fixture::new();
+    let mut listening = events(&bus);
+
+    let mut setup = adapter(&bus);
+    let config = fixture.applied_preset(&mut setup);
+    let mut pipeline = GesturePipeline::new(config, fixture.store(), Box::new(adapter(&bus)));
+
+    extension.protocol_1_swipe(0, 4, 0.0, 0.0, 0);
+    for step in 1..=8 {
+        let phase = if step == 8 { 2 } else { 1 };
+        extension.protocol_1_swipe(phase, 4, 0.0, -WHOLE_SWIPE / 8.0, step * 16);
+    }
+    pipeline.run(&mut listening);
+
+    assert!(
+        extension.calls().contains(&"ShowOverview".to_string()),
         "{:?}",
         extension.calls()
     );
