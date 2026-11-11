@@ -1,0 +1,63 @@
+//! A unified diff for one file, read into hunks and lines.
+
+use crate::ParseError;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiffLineKind {
+    Context,
+    Added,
+    Removed,
+}
+
+/// One line of a hunk, without its leading ` `, `+`, or `-`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    /// The line's bytes decoded lossily, without the trailing newline.
+    pub text: String,
+    /// Line number in the old file, for context and removed lines.
+    pub old_line: Option<u32>,
+    /// Line number in the new file, for context and added lines.
+    pub new_line: Option<u32>,
+    /// True when git followed this line with `\ No newline at end of file`.
+    pub no_newline_at_end: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Hunk {
+    /// The `@@ -a,b +c,d @@` header line as git printed it.
+    pub header: String,
+    pub lines: Vec<DiffLine>,
+}
+
+/// What one file's diff holds.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FileDiff {
+    /// A text diff. No hunks means the content did not change (a mode change,
+    /// or an empty new file).
+    Text { hunks: Vec<Hunk> },
+    /// git reported `Binary files ... differ`.
+    Binary,
+}
+
+/// Reads the output of `git diff --no-color --no-ext-diff` (or the same with
+/// `--cached`) for exactly one path.
+///
+/// Expected results:
+/// - Lines before the first `@@` (the `diff --git`, `index`, `---`, `+++`,
+///   mode, and rename headers) are skipped.
+/// - Each `@@ -a[,b] +c[,d] @@` starts a hunk; a missing count is 1. Lines in
+///   the hunk get `old_line` and `new_line` counted from `a` and `c`.
+/// - A line starting with ` ` is context, `+` added, `-` removed. The prefix
+///   is not part of `text`.
+/// - `\ No newline at end of file` sets `no_newline_at_end` on the line
+///   before it and is not a line of its own.
+/// - A line `Binary files ... differ` anywhere before a hunk yields
+///   `FileDiff::Binary`.
+/// - Empty input is `FileDiff::Text { hunks: vec![] }`.
+/// - Bytes that are not UTF-8 are decoded lossily; they never fail the parse.
+/// - A hunk header that cannot be read fails with `Malformed`.
+pub fn parse_diff(output: &[u8]) -> Result<FileDiff, ParseError> {
+    let _ = output;
+    todo!("ticket 77: parse_diff")
+}
