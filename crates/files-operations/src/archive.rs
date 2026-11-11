@@ -281,7 +281,7 @@ impl EntryWriter<'_> {
                     let options = SimpleFileOptions::default()
                         .unix_permissions(metadata.mode())
                         .last_modified_time(dos_time(metadata.mtime()));
-                    zip.add_directory(name, options).map_err(&zip_error)?;
+                    zip.add_directory(name, options).map_err(zip_error)?;
                 }
                 ItemKind::Symlink => {
                     let target = fs::read_link(&item.source)
@@ -293,7 +293,7 @@ impl EntryWriter<'_> {
                         .map_err(|error| OperationError::from_io(&item.source, &error))?;
                     let options =
                         SimpleFileOptions::default().last_modified_time(dos_time(metadata.mtime()));
-                    zip.add_symlink(name, target, options).map_err(&zip_error)?;
+                    zip.add_symlink(name, target, options).map_err(zip_error)?;
                 }
                 ItemKind::File => {
                     let (mut source, metadata) = self.open(&item.source)?;
@@ -301,7 +301,7 @@ impl EntryWriter<'_> {
                         .compression_method(zip::CompressionMethod::Deflated)
                         .unix_permissions(metadata.mode())
                         .last_modified_time(dos_time(metadata.mtime()));
-                    zip.start_file(name, options).map_err(&zip_error)?;
+                    zip.start_file(name, options).map_err(zip_error)?;
                     let expected = metadata.len();
                     let mut read_total = 0u64;
                     let mut limited = (&mut source).take(expected);
@@ -321,7 +321,7 @@ impl EntryWriter<'_> {
                 }
             }
         }
-        let buffered = zip.finish().map_err(&zip_error)?;
+        let buffered = zip.finish().map_err(zip_error)?;
         buffered
             .into_inner()
             .map_err(|error| self.write_error(error.error()))
