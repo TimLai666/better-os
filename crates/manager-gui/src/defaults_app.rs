@@ -18,7 +18,8 @@ use better_core::defaults::IntegrationId;
 use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
 use defaults_core::{
     AdapterMode, AdapterSession, ComponentReadiness, Confirmations, DefaultsEngine,
-    DefaultsOutcome, DefaultsPlan, DefaultsReport, PlanKind, Selection, SystemContext,
+    DefaultsOutcome, DefaultsPlan, DefaultsReport, PlanKind, RestoreChoice, Selection,
+    SystemContext,
 };
 use defaults_store::{SnapshotHistory, SnapshotStore};
 use gpui::{AppContext as _, Context, Task};
@@ -50,7 +51,8 @@ pub(crate) enum DefaultsJob {
     Plan {
         kind: PlanKind,
         selection: Selection,
-        confirmed: Vec<(ComponentId, IntegrationId)>,
+        /// What the person decided on the review screen so far.
+        decisions: Confirmations,
     },
     Run(ApprovedPlan),
 }
@@ -112,7 +114,7 @@ impl ManagerApp {
             DefaultsJob::Plan {
                 kind,
                 selection,
-                confirmed: Vec::new(),
+                decisions: Confirmations::none(),
             },
             cx,
         );
@@ -142,7 +144,32 @@ impl ManagerApp {
             return;
         };
         review.toggle_confirmation(component, integration);
-        let confirmed = review.confirmed_entries();
+        self.replan_defaults_review(cx);
+    }
+
+    /// Chooses what a restore puts back instead of an application that is no
+    /// longer installed, or takes that choice back. The plan is built again,
+    /// because what a restore writes is decided while it is built.
+    pub(crate) fn choose_defaults_restore(
+        &mut self,
+        component: &ComponentId,
+        integration: &IntegrationId,
+        key: Option<&str>,
+        choice: RestoreChoice,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(review) = self.defaults.review.as_mut() else {
+            return;
+        };
+        review.choose_restore(component, integration, key, choice);
+        self.replan_defaults_review(cx);
+    }
+
+    fn replan_defaults_review(&mut self, cx: &mut Context<Self>) {
+        let Some(review) = self.defaults.review.as_ref() else {
+            return;
+        };
+        let decisions = review.decisions();
         let Some((kind, selection)) = self.defaults.scope.clone() else {
             return;
         };
@@ -150,7 +177,7 @@ impl ManagerApp {
             DefaultsJob::Plan {
                 kind,
                 selection,
-                confirmed,
+                decisions,
             },
             cx,
         );
@@ -326,17 +353,11 @@ pub(crate) fn run_job(inputs: &DefaultsInputs, job: DefaultsJob) -> DefaultsEven
         DefaultsJob::Plan {
             kind,
             selection,
-            confirmed,
+            decisions: confirmations,
         } => {
             let Ok(history) = store.history() else {
                 return DefaultsEvent::Failed;
             };
-            let confirmations = confirmed.into_iter().fold(
-                Confirmations::none(),
-                |confirmations, (component, integration)| {
-                    confirmations.with(component, integration)
-                },
-            );
             let plan = match kind {
                 PlanKind::Apply => {
                     engine.plan_apply(&selection, session.adapters(), &history, &confirmations)

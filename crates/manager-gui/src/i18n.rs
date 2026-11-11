@@ -421,6 +421,14 @@ pub(crate) struct Copy {
     pub(crate) skip_changed_externally: &'static str,
     pub(crate) skip_conflict: &'static str,
 
+    // Defaults: restoring an application that is no longer installed
+    pub(crate) previous_application_missing: &'static str,
+    pub(crate) chosen_application_missing: &'static str,
+    pub(crate) restore_instead: &'static str,
+    pub(crate) clear_default: &'static str,
+    pub(crate) no_alternative_application: &'static str,
+    pub(crate) label_separator: &'static str,
+
     // Defaults: what each entry did
     pub(crate) defaults_results_title: &'static str,
     pub(crate) defaults_results_subtitle: &'static str,
@@ -796,6 +804,13 @@ static EN: Copy = Copy {
     skip_changed_externally: "Changed by another program; confirm it to replace",
     skip_conflict: "Another installed component owns this setting",
 
+    previous_application_missing: "The previous application is no longer installed",
+    chosen_application_missing: "The application you chose instead is no longer installed",
+    restore_instead: "Put this back instead",
+    clear_default: "Leave without a default",
+    no_alternative_application: "No installed application opens this type",
+    label_separator: ": ",
+
     defaults_results_title: "What changed",
     defaults_results_subtitle: "Each setting was read back after it was written.",
     result_applied: "Now the default",
@@ -1169,6 +1184,13 @@ static ZH_TW: Copy = Copy {
     skip_value_unknown: "目前的值無法明確讀取",
     skip_changed_externally: "已由其他程式變更，確認後才會取代",
     skip_conflict: "這項設定由其他已安裝的元件擁有",
+
+    previous_application_missing: "原本的應用程式已經不在這台電腦上",
+    chosen_application_missing: "你改選的應用程式已經不在這台電腦上",
+    restore_instead: "改為恢復成",
+    clear_default: "不設定預設應用程式",
+    no_alternative_application: "沒有已安裝的應用程式能開啟這種檔案",
+    label_separator: "：",
 
     defaults_results_title: "變更結果",
     defaults_results_subtitle: "每一項設定在寫入後都重新讀取確認過。",

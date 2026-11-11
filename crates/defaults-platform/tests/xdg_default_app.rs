@@ -206,26 +206,34 @@ fn restoring_the_captured_value_puts_the_previous_owner_back() {
 }
 
 #[test]
-fn restoring_a_setting_that_held_nothing_asks_for_manual_action_rather_than_inventing_one() {
+fn restoring_a_setting_that_held_nothing_removes_the_line_and_nothing_else() {
     let fixture = Fixture::new(Some(HAND_EDITED));
     let component = ComponentId::new("better-files").unwrap();
-    let integration = integration(&["application/zip"]);
+    let integration = integration(&["application/zip", "application/x-tar"]);
     let request = AdapterRequest::new(&component, &integration);
     let mut adapter = fixture.adapter();
 
     adapter.apply(&request);
-    let outcome = adapter.restore(&request, &ObservedValue::Unset);
-
-    assert!(matches!(
-        &outcome,
-        WriteOutcome::ManualActionRequired { reason, .. }
-            if reason == "xdg.clearing_a_default_is_not_supported"
-    ));
-    // The association Better OS wrote is still there rather than half removed.
     assert!(
         fixture
             .contents()
             .contains("application/zip=io.betteros.Files.desktop")
+    );
+    let outcome = adapter.restore(&request, &ObservedValue::Unset);
+
+    assert_eq!(outcome, WriteOutcome::Written);
+    assert_eq!(adapter.read(&request), ObservedValue::Unset);
+    assert!(matches!(
+        adapter.verify(&request, &ObservedValue::Unset),
+        VerifyOutcome::Matches { .. }
+    ));
+    // Every byte the user wrote is where it was, and nothing Better OS wrote is
+    // left behind.
+    assert_eq!(fixture.contents(), HAND_EDITED);
+    // Clearing what is already clear writes nothing.
+    assert_eq!(
+        adapter.restore(&request, &ObservedValue::Unset),
+        WriteOutcome::AlreadyCorrect
     );
 }
 

@@ -224,3 +224,72 @@ fn an_unreadable_entry_is_reported_rather_than_dropped_silently() {
         );
     }
 }
+
+/// Runs discovery on another thread and fails rather than hangs when it does
+/// not come back.
+fn discover_within(directories: ApplicationDirectories) -> app_catalog_core::Catalog {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(discover(&directories, &NoProbe));
+    });
+    receiver
+        .recv_timeout(Duration::from_secs(10))
+        .expect("discovery must not block on an entry that is not a regular file")
+}
+
+#[test]
+fn an_entry_that_is_a_fifo_is_reported_rather_than_read() {
+    let root = tempfile::tempdir().expect("temporary root");
+    let system = root.path().join("system/applications");
+    write(&system.join("readable.desktop"), &entry("Readable", ""));
+    let fifo = system.join("pipe.desktop");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo runs");
+    assert!(made.success());
+
+    let catalog = discover_within(directories(&[(system, EntryScope::System)]));
+
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog.rejected().len(), 1);
+    assert_eq!(catalog.rejected()[0].path, fifo);
+    assert!(
+        catalog.rejected()[0]
+            .error
+            .to_string()
+            .starts_with("catalog.error.unreadable:")
+    );
+}
+
+#[test]
+fn an_entry_linked_to_an_endless_device_is_reported_rather_than_read() {
+    let root = tempfile::tempdir().expect("temporary root");
+    let system = root.path().join("system/applications");
+    write(&system.join("readable.desktop"), &entry("Readable", ""));
+    let zero = system.join("zero.desktop");
+    std::os::unix::fs::symlink("/dev/zero", &zero).expect("symlink");
+
+    let catalog = discover_within(directories(&[(system, EntryScope::System)]));
+
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog.rejected().len(), 1);
+    assert_eq!(catalog.rejected()[0].path, zero);
+}
+
+#[test]
+fn an_oversized_entry_is_rejected_after_reading_only_past_the_limit() {
+    let root = tempfile::tempdir().expect("temporary root");
+    let system = root.path().join("system/applications");
+    let mut huge = entry("Huge", "");
+    huge.push_str(&"#".repeat(app_catalog_core::error::MAX_ENTRY_BYTES * 4));
+    write(&system.join("huge.desktop"), &huge);
+
+    let catalog = discover_within(directories(&[(system, EntryScope::System)]));
+
+    assert!(catalog.is_empty());
+    assert_eq!(
+        catalog.rejected()[0].error,
+        app_catalog_core::EntryError::EntryTooLarge(app_catalog_core::error::MAX_ENTRY_BYTES + 1)
+    );
+}

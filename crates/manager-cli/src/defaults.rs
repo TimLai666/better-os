@@ -12,8 +12,9 @@ use clap::{Args, Subcommand};
 use defaults_core::{
     AdapterMode, AdapterSession, AggregateState, ComponentReadiness, Confirmations, DefaultsEngine,
     DefaultsOutcome, DefaultsPlan, DefaultsReport, EntryOutcome, IntegrationState, PlanAction,
-    PlanKind, Selection, SystemContext,
+    PlanKind, PlanWarning, RestoreChoice, Selection, SkipReason, SystemContext,
 };
+use defaults_platform::{ApplicationChoice, DesktopId, MimeType};
 use defaults_store::SnapshotStore;
 use manager_core::{ExecutionMode, HealthState, ManagerState};
 
@@ -53,6 +54,26 @@ pub struct DefaultsOptions {
     /// `component:integration`. Repeatable, and required per entry.
     #[arg(long = "confirm-external")]
     pub confirm_external: Vec<String>,
+    /// What to restore instead of an application that is no longer installed.
+    ///
+    /// `component:integration=DESKTOP_ID` restores that installed application,
+    /// and `component:integration=none` leaves the type without a default. For
+    /// one type of a group restored type by type, name the type:
+    /// `component:integration:TYPE=...`, for example
+    /// `better-files:image-viewer:image/png=org.gnome.Loupe.desktop`.
+    /// Repeatable, once per place.
+    ///
+    /// Only `plan --restore` and `restore` take it. It is refused when it is
+    /// not in that form, when the type is not a MIME type or the target is not
+    /// a desktop ID or `none`, when the same place is given twice, and, after
+    /// planning, when it matches no application the plan reports as no longer
+    /// installed or names one that is not installed or does not open the type.
+    /// A refused restore changes nothing.
+    #[arg(
+        long = "restore-to",
+        value_name = "COMPONENT:INTEGRATION[:TYPE]=DESKTOP_ID|none"
+    )]
+    pub restore_to: Vec<String>,
 }
 
 pub fn run(
@@ -97,7 +118,16 @@ pub fn run(
                 .collect::<Result<Vec<_>, _>>()?,
         )
     };
-    let confirmations = parse_confirmations(&options.confirm_external)?;
+    let confirmations = parse_confirmations(&options.confirm_external, &options.restore_to)?;
+    let restoring = matches!(
+        command,
+        DefaultsCommand::Restore | DefaultsCommand::Plan { restore: true }
+    );
+    if !restoring && !options.restore_to.is_empty() {
+        return Err(Box::new(std::io::Error::other(
+            "--restore-to is only for `plan --restore` and `restore`",
+        )));
+    }
     let store = SnapshotStore::at_path(
         options
             .snapshot_dir
@@ -123,6 +153,7 @@ pub fn run(
                 engine.plan_apply(&selection, session.adapters(), &history, &confirmations)
             };
             print_plan(&plan);
+            refuse_unmatched_restore_choices(&plan, &confirmations)?;
         }
         DefaultsCommand::Apply | DefaultsCommand::Restore => {
             let history = store.history()?;
@@ -133,6 +164,7 @@ pub fn run(
                 _ => engine.plan_restore(&selection, session.adapters(), &history, &confirmations),
             };
             print_plan(&plan);
+            refuse_unmatched_restore_choices(&plan, &confirmations)?;
             let outcome = engine.execute(&plan, session.adapters_mut(), &store)?;
             print_outcome(&outcome);
         }
@@ -167,7 +199,10 @@ fn readiness(state: &ManagerState, component: &ComponentId) -> ComponentReadines
     }
 }
 
-fn parse_confirmations(values: &[String]) -> Result<Confirmations, Box<dyn Error>> {
+fn parse_confirmations(
+    values: &[String],
+    restore_to: &[String],
+) -> Result<Confirmations, Box<dyn Error>> {
     let mut confirmations = Confirmations::none();
     for value in values {
         let (component, integration) = value.split_once(':').ok_or_else(|| {
@@ -178,7 +213,148 @@ fn parse_confirmations(values: &[String]) -> Result<Confirmations, Box<dyn Error
             better_core::IntegrationId::new(integration)?,
         );
     }
+    let mut places = Vec::new();
+    for value in restore_to {
+        let refuse = |why: &str| -> Box<dyn Error> {
+            Box::new(std::io::Error::other(format!(
+                "--restore-to {value}: {why}; expected \
+                 component:integration[:type]=DESKTOP_ID or ...=none"
+            )))
+        };
+        let (place, target) = value.split_once('=').ok_or_else(|| refuse("no `=`"))?;
+        let mut parts = place.splitn(3, ':');
+        let (Some(component), Some(integration)) = (parts.next(), parts.next()) else {
+            return Err(refuse("no `component:integration`"));
+        };
+        let key = match parts.next() {
+            None => None,
+            Some(key) => Some(
+                MimeType::parse(key)
+                    .filter(|mime| mime.as_str() == key)
+                    .ok_or_else(|| refuse("the type is not a MIME type"))?
+                    .as_str()
+                    .to_string(),
+            ),
+        };
+        let choice = match target {
+            "none" => RestoreChoice::ClearDefault,
+            desktop_id => RestoreChoice::Application(
+                DesktopId::new(desktop_id)
+                    .map_err(|_| refuse("not a desktop ID or `none`"))?
+                    .as_str()
+                    .to_string(),
+            ),
+        };
+        let component = ComponentId::new(component).map_err(|error| refuse(&error.to_string()))?;
+        let integration = better_core::IntegrationId::new(integration)
+            .map_err(|error| refuse(&error.to_string()))?;
+        let place = (component.clone(), integration.clone(), key.clone());
+        if places.contains(&place) {
+            return Err(refuse("this place is chosen more than once"));
+        }
+        places.push(place);
+        confirmations = confirmations.with_restore_choice(component, integration, key, choice);
+    }
     Ok(confirmations)
+}
+
+/// Every `--restore-to` the plan did not take, named as `component:integration`
+/// or `component:integration:type`. A choice is taken when the plan carries it
+/// for an application that is no longer installed; one for an entry that is
+/// not missing anything, for a component or type the plan does not have, or
+/// that names an application that does not open the type, is not.
+fn unmatched_restore_choices(plan: &DefaultsPlan, confirmations: &Confirmations) -> Vec<String> {
+    confirmations
+        .restore_choices()
+        .filter(|(component, integration, key, _)| {
+            !plan.entries.iter().any(|entry| {
+                &entry.component == *component
+                    && &entry.integration == *integration
+                    && entry.warnings.iter().any(|warning| {
+                        matches!(
+                            warning,
+                            PlanWarning::PreviousApplicationMissing { key: taken, chosen: Some(_), .. }
+                                if taken.as_deref() == *key
+                        )
+                    })
+            })
+        })
+        .map(|(component, integration, key, _)| match key {
+            Some(key) => format!("{component}:{integration}:{key}"),
+            None => format!("{component}:{integration}"),
+        })
+        .collect()
+}
+
+/// Stops the command, before anything is written, when a `--restore-to` was
+/// not taken, naming each one.
+fn refuse_unmatched_restore_choices(
+    plan: &DefaultsPlan,
+    confirmations: &Confirmations,
+) -> Result<(), Box<dyn Error>> {
+    let unmatched = unmatched_restore_choices(plan, confirmations);
+    if unmatched.is_empty() {
+        return Ok(());
+    }
+    for place in &unmatched {
+        eprintln!(
+            "--restore-to {place} was not used: nothing there is an application that is no \
+             longer installed, or the choice is not installed or does not open the type"
+        );
+    }
+    Err(Box::new(std::io::Error::other(format!(
+        "{} --restore-to choice(s) not used; nothing was changed",
+        unmatched.len()
+    ))))
+}
+
+/// What the CLI says when a restore puts the person's choice in place of an
+/// application that is no longer installed.
+fn chosen_instead_line(key: Option<&str>, desktop_id: &str, choice: &RestoreChoice) -> String {
+    let label = key.map(|key| format!("{key}: ")).unwrap_or_default();
+    let instead = match choice {
+        RestoreChoice::Application(chosen) => format!("restoring {chosen} instead"),
+        RestoreChoice::ClearDefault => "clearing the default instead".to_string(),
+    };
+    format!("  {label}the previous application is no longer installed: {desktop_id}; {instead}")
+}
+
+/// What the CLI says about an application a restore cannot put back because
+/// it is no longer installed: which one, that nothing is written for it, and
+/// the two ways forward. `key` names the type of a group restored type by
+/// type.
+fn missing_application_lines(
+    component: &ComponentId,
+    integration: &better_core::IntegrationId,
+    key: Option<&str>,
+    desktop_id: &str,
+    alternatives: &[ApplicationChoice],
+) -> Vec<String> {
+    let (label, place) = match key {
+        Some(key) => (
+            format!("{key}: "),
+            format!("{component}:{integration}:{key}"),
+        ),
+        None => (String::new(), format!("{component}:{integration}")),
+    };
+    let mut lines = vec![format!(
+        "  {label}the previous application is no longer installed: {desktop_id}; \
+         nothing is written for it"
+    )];
+    if alternatives.is_empty() {
+        lines.push("    no installed application declares this type".to_string());
+    } else {
+        lines.push(format!(
+            "    choose another with --restore-to {place}=<desktop id>, one of:"
+        ));
+        for choice in alternatives {
+            lines.push(format!("      {} ({})", choice.desktop_id, choice.name));
+        }
+    }
+    lines.push(format!(
+        "    or clear the default with --restore-to {place}=none"
+    ));
+    lines
 }
 
 fn print_report(report: &DefaultsReport) {
@@ -257,9 +433,30 @@ fn print_plan(plan: &DefaultsPlan) {
                 "restore per type, each to its captured value".to_string()
             }
             PlanAction::Restore { to } => format!("restore {to:?}"),
+            PlanAction::Skip {
+                reason: SkipReason::PreviousApplicationMissing { desktop_id, .. },
+            } => format!("skip: the previous application is no longer installed ({desktop_id})"),
             PlanAction::Skip { reason } => format!("skip {reason:?}"),
         };
         println!("{}:{} {action}", entry.component, entry.integration);
+        if let PlanAction::Skip {
+            reason:
+                SkipReason::PreviousApplicationMissing {
+                    desktop_id,
+                    alternatives,
+                },
+        } = &entry.action
+        {
+            for line in missing_application_lines(
+                &entry.component,
+                &entry.integration,
+                None,
+                desktop_id,
+                alternatives,
+            ) {
+                println!("{line}");
+            }
+        }
         if !print_per_type("  ", "current", &entry.current) {
             println!("  current: {:?}", entry.current);
         }
@@ -277,7 +474,31 @@ fn print_plan(plan: &DefaultsPlan) {
             );
         }
         for warning in &entry.warnings {
-            println!("  warning: {warning:?}");
+            match warning {
+                PlanWarning::PreviousApplicationMissing {
+                    key,
+                    desktop_id,
+                    alternatives,
+                    chosen,
+                } => {
+                    let lines = match chosen {
+                        Some(choice) => {
+                            vec![chosen_instead_line(key.as_deref(), desktop_id, choice)]
+                        }
+                        None => missing_application_lines(
+                            &entry.component,
+                            &entry.integration,
+                            key.as_deref(),
+                            desktop_id,
+                            alternatives,
+                        ),
+                    };
+                    for line in lines {
+                        println!("{line}");
+                    }
+                }
+                other => println!("  warning: {other:?}"),
+            }
         }
     }
     if plan.kind == PlanKind::Apply && plan.is_empty() {
@@ -305,6 +526,24 @@ fn print_outcome(outcome: &DefaultsOutcome) {
             result.integration,
             outcome_line(&result.outcome)
         );
+        if let EntryOutcome::Skipped {
+            reason:
+                SkipReason::PreviousApplicationMissing {
+                    desktop_id,
+                    alternatives,
+                },
+        } = &result.outcome
+        {
+            for line in missing_application_lines(
+                &result.component,
+                &result.integration,
+                None,
+                desktop_id,
+                alternatives,
+            ) {
+                println!("{line}");
+            }
+        }
         if let EntryOutcome::PerKey { keys } = &result.outcome {
             for key in keys {
                 let line = match &key.outcome {
@@ -314,6 +553,24 @@ fn print_outcome(outcome: &DefaultsOutcome) {
                     other => outcome_line(other),
                 };
                 println!("    {}: {line}", key.key);
+                if let EntryOutcome::Skipped {
+                    reason:
+                        SkipReason::PreviousApplicationMissing {
+                            desktop_id,
+                            alternatives,
+                        },
+                } = &key.outcome
+                {
+                    for line in missing_application_lines(
+                        &result.component,
+                        &result.integration,
+                        Some(&key.key),
+                        desktop_id,
+                        alternatives,
+                    ) {
+                        println!("  {line}");
+                    }
+                }
             }
         }
     }
@@ -354,6 +611,16 @@ fn outcome_line(outcome: &EntryOutcome) -> String {
         EntryOutcome::VerificationInconclusive { observed } => {
             format!("could not verify: the setting reads {observed:?}")
         }
+        EntryOutcome::Skipped {
+            reason: SkipReason::PreviousApplicationMissing { desktop_id, .. },
+        } => {
+            format!("not restored: the previous application is no longer installed ({desktop_id})")
+        }
+        EntryOutcome::Skipped {
+            reason: SkipReason::ChosenApplicationMissing { desktop_id, .. },
+        } => format!(
+            "not restored: the application chosen instead is no longer installed ({desktop_id})"
+        ),
         EntryOutcome::Skipped { reason } => format!("skipped {reason:?}"),
         EntryOutcome::ManualActionRequired { reason, detail } => format!(
             "manual action required: {reason}{}",
@@ -374,5 +641,259 @@ fn outcome_line(outcome: &EntryOutcome) -> String {
             keys.iter().filter(|key| key.outcome.is_success()).count(),
             keys.len()
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use defaults_core::{RestoreChoice, SkipReason};
+    use defaults_platform::ApplicationChoice;
+
+    fn alternatives() -> Vec<ApplicationChoice> {
+        vec![
+            ApplicationChoice {
+                desktop_id: "org.gnome.Loupe.desktop".to_string(),
+                name: "Image Viewer".to_string(),
+            },
+            ApplicationChoice {
+                desktop_id: "org.gnome.gThumb.desktop".to_string(),
+                name: "gThumb".to_string(),
+            },
+        ]
+    }
+
+    fn component() -> ComponentId {
+        ComponentId::new("better-files").unwrap()
+    }
+
+    fn integration() -> better_core::IntegrationId {
+        better_core::IntegrationId::new("image-viewer").unwrap()
+    }
+
+    #[test]
+    fn a_missing_application_is_named_and_the_alternatives_are_offered() {
+        let lines = missing_application_lines(
+            &component(),
+            &integration(),
+            None,
+            "org.gnome.eog.desktop",
+            &alternatives(),
+        );
+        let text = lines.join("\n");
+        assert!(
+            text.contains("the previous application is no longer installed: org.gnome.eog.desktop"),
+            "{text}"
+        );
+        assert!(text.contains("nothing is written for it"), "{text}");
+        assert!(
+            text.contains("--restore-to better-files:image-viewer=<desktop id>"),
+            "{text}"
+        );
+        assert!(
+            text.contains("org.gnome.Loupe.desktop (Image Viewer)"),
+            "{text}"
+        );
+        assert!(text.contains("org.gnome.gThumb.desktop (gThumb)"), "{text}");
+        assert!(
+            text.contains("--restore-to better-files:image-viewer=none"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_missing_type_in_a_group_is_offered_by_its_own_name() {
+        let text = missing_application_lines(
+            &component(),
+            &integration(),
+            Some("image/png"),
+            "org.gnome.eog.desktop",
+            &[],
+        )
+        .join("\n");
+        assert!(
+            text.contains("image/png: the previous application"),
+            "{text}"
+        );
+        assert!(
+            text.contains("--restore-to better-files:image-viewer:image/png=none"),
+            "{text}"
+        );
+        assert!(
+            text.contains("no installed application declares this type"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_choice_made_instead_is_said_in_words() {
+        assert_eq!(
+            chosen_instead_line(
+                Some("image/png"),
+                "org.gnome.eog.desktop",
+                &RestoreChoice::Application("org.gnome.Loupe.desktop".to_string()),
+            ),
+            "  image/png: the previous application is no longer installed: \
+             org.gnome.eog.desktop; restoring org.gnome.Loupe.desktop instead"
+        );
+        assert!(
+            chosen_instead_line(None, "a.desktop", &RestoreChoice::ClearDefault)
+                .ends_with("a.desktop; clearing the default instead")
+        );
+    }
+
+    #[test]
+    fn the_skip_reason_is_named_rather_than_printed_as_debug() {
+        let line = outcome_line(&EntryOutcome::Skipped {
+            reason: SkipReason::PreviousApplicationMissing {
+                desktop_id: "org.gnome.eog.desktop".to_string(),
+                alternatives: alternatives(),
+            },
+        });
+        assert_eq!(
+            line,
+            "not restored: the previous application is no longer installed \
+             (org.gnome.eog.desktop)"
+        );
+    }
+
+    #[test]
+    fn restore_choices_parse_for_an_entry_and_for_one_type() {
+        let confirmations = parse_confirmations(
+            &[],
+            &[
+                "better-files:image-viewer=org.gnome.Loupe.desktop".to_string(),
+                "better-files:image-viewer:image/png=none".to_string(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            confirmations.restore_choice(&component(), &integration(), None),
+            Some(&RestoreChoice::Application(
+                "org.gnome.Loupe.desktop".to_string()
+            ))
+        );
+        assert_eq!(
+            confirmations.restore_choice(&component(), &integration(), Some("image/png")),
+            Some(&RestoreChoice::ClearDefault)
+        );
+        for bad in [
+            "better-files=none",
+            "better-files:image-viewer",
+            "better-files:image-viewer=",
+            "better-files:image-viewer:=none",
+            "better-files:image-viewer:not-a-type=none",
+            "better-files:image-viewer=c=d",
+            "better-files:image-viewer=not a desktop id",
+            "better-files:image-viewer=org.gnome.Loupe",
+            "Not A Component:image-viewer=none",
+        ] {
+            assert!(
+                parse_confirmations(&[], &[bad.to_string()]).is_err(),
+                "{bad} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn the_same_place_chosen_twice_is_refused() {
+        let error = parse_confirmations(
+            &[],
+            &[
+                "better-files:image-viewer=org.gnome.Loupe.desktop".to_string(),
+                "better-files:image-viewer=none".to_string(),
+            ],
+        )
+        .expect_err("two choices for one place are refused");
+        assert!(error.to_string().contains("more than once"), "{error}");
+        // The same entry as a whole and one of its types are different places.
+        assert!(
+            parse_confirmations(
+                &[],
+                &[
+                    "better-files:image-viewer=none".to_string(),
+                    "better-files:image-viewer:image/png=none".to_string(),
+                ],
+            )
+            .is_ok()
+        );
+    }
+
+    fn restore_plan(entries: Vec<defaults_core::PlanEntry>) -> DefaultsPlan {
+        DefaultsPlan::new(PlanKind::Restore, entries, Vec::new())
+    }
+
+    fn plan_entry(action: PlanAction, warnings: Vec<PlanWarning>) -> defaults_core::PlanEntry {
+        defaults_core::PlanEntry {
+            component: component(),
+            integration: integration(),
+            kind: better_core::IntegrationKind::ApplicationHandler,
+            adapter: better_core::AdapterId::XdgDefaultApp,
+            action,
+            current: ObservedValue::Unset,
+            desired: better_core::DefaultsValue::DesktopEntry("io.betteros.Files.desktop".into()),
+            captured_previous: None,
+            session_effect: better_core::SessionEffect::Immediate,
+            requires_confirmation: false,
+            confirmed: false,
+            warnings,
+        }
+    }
+
+    #[test]
+    fn a_choice_the_plan_did_not_take_is_listed() {
+        let confirmations = parse_confirmations(
+            &[],
+            &[
+                "better-files:image-viewer=org.gnome.Loupe.desktop".to_string(),
+                "better-files:image-viewer:image/png=none".to_string(),
+                "better-monitor:nothing=none".to_string(),
+            ],
+        )
+        .unwrap();
+        // The entry as a whole took its choice; the type and the unknown
+        // component matched nothing that is missing.
+        let plan = restore_plan(vec![plan_entry(
+            PlanAction::Restore {
+                to: ObservedValue::Set {
+                    value: better_core::DefaultsValue::DesktopEntry(
+                        "org.gnome.Loupe.desktop".into(),
+                    ),
+                },
+            },
+            vec![PlanWarning::PreviousApplicationMissing {
+                key: None,
+                desktop_id: "org.gnome.eog.desktop".into(),
+                alternatives: alternatives(),
+                chosen: Some(RestoreChoice::Application("org.gnome.Loupe.desktop".into())),
+            }],
+        )]);
+        assert_eq!(
+            unmatched_restore_choices(&plan, &confirmations),
+            vec![
+                "better-files:image-viewer:image/png".to_string(),
+                "better-monitor:nothing".to_string(),
+            ]
+        );
+
+        // A rejected choice leaves the entry skipped, and it is listed too.
+        let rejected = restore_plan(vec![plan_entry(
+            PlanAction::Skip {
+                reason: SkipReason::PreviousApplicationMissing {
+                    desktop_id: "org.gnome.eog.desktop".into(),
+                    alternatives: alternatives(),
+                },
+            },
+            Vec::new(),
+        )]);
+        let only_entry = parse_confirmations(
+            &[],
+            &["better-files:image-viewer=org.gnome.Loupe.desktop".to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            unmatched_restore_choices(&rejected, &only_entry),
+            vec!["better-files:image-viewer".to_string()]
+        );
     }
 }

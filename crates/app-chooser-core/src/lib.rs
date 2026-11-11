@@ -12,7 +12,8 @@
 //! - How is "Always use for this file type" written down without damaging
 //!   anything else the user has configured? [`AssociationStore`] edits exactly
 //!   one line of the user's `mimeapps.list` and writes a rollback record before
-//!   it touches the file at all.
+//!   it touches the file at all. Removing a type's default goes through the
+//!   same store, the same record, and the same editor.
 //!
 //! Two rules run through the whole crate:
 //!
@@ -46,6 +47,7 @@ pub use executable::{
 pub use mime::{MimeGraph, MimeResolution};
 pub use mimeapps::{
     ADDED_ASSOCIATIONS, DEFAULT_APPLICATIONS, MimeAppsFile, MimeAssociations, REMOVED_ASSOCIATIONS,
+    RemovedLine,
 };
 pub use ranking::{
     ChooserRequest, ChooserSections, Compatibility, RankedApplication, UsageHistory, rank,

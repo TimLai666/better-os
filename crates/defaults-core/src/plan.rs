@@ -10,6 +10,7 @@ use better_core::defaults::{
     SessionEffect,
 };
 use better_core::manifest::ComponentId;
+use defaults_platform::ApplicationChoice;
 use serde::{Deserialize, Serialize};
 
 pub const PLAN_SCHEMA_VERSION: u32 = 1;
@@ -69,6 +70,21 @@ pub enum SkipReason {
     Conflict {
         claimant: ComponentId,
     },
+    /// The captured desktop entry is not in the application catalog any more,
+    /// so writing it back would point the setting at nothing. Nothing is
+    /// written; `alternatives` are the installed applications for the same
+    /// types, and a [`RestoreChoice`] picks one of them or clears the default.
+    PreviousApplicationMissing {
+        desktop_id: String,
+        alternatives: Vec<ApplicationChoice>,
+    },
+    /// The application the person chose instead of a missing one was itself
+    /// uninstalled before the restore ran. Nothing is written; `alternatives`
+    /// are what is installed for the same types now.
+    ChosenApplicationMissing {
+        desktop_id: String,
+        alternatives: Vec<ApplicationChoice>,
+    },
 }
 
 /// Something the reviewer needs to know about an entry that will be changed.
@@ -85,6 +101,18 @@ pub enum PlanWarning {
     /// overwrite anyway.
     OverwritesExternalChange {
         current: ObservedValue,
+    },
+    /// A captured owner is no longer installed. `key` names the type when the
+    /// entry is a group restored type by type, and is `None` for the entry as a
+    /// whole. With `chosen` set, the restore writes that choice instead. Without
+    /// it, a type of a group is reported and not written while the rest of the
+    /// group is restored; an entry as a whole is skipped instead, with
+    /// [`SkipReason::PreviousApplicationMissing`], and carries no warning.
+    PreviousApplicationMissing {
+        key: Option<String>,
+        desktop_id: String,
+        alternatives: Vec<ApplicationChoice>,
+        chosen: Option<RestoreChoice>,
     },
 }
 
@@ -167,11 +195,27 @@ impl DefaultsPlan {
     }
 }
 
-/// The entries the user has explicitly agreed to overwrite despite an external
-/// change. Nothing else can lift that hold.
+/// What to restore instead of an application that is no longer installed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "choice", content = "desktop_id", rename_all = "snake_case")]
+pub enum RestoreChoice {
+    /// Make this installed application the default instead.
+    Application(String),
+    /// Leave the type with no default at all.
+    ClearDefault,
+}
+
+/// What the user decided about individual entries.
+///
+/// Two decisions live here, and nothing else can make either one: agreeing to
+/// overwrite an entry that changed outside Better Manager, and choosing what to
+/// restore instead of an application that is no longer installed. A restore
+/// choice names the entry, and the type when the entry is a group restored type
+/// by type.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Confirmations {
     entries: Vec<(ComponentId, IntegrationId)>,
+    restore_choices: Vec<(ComponentId, IntegrationId, Option<String>, RestoreChoice)>,
 }
 
 impl Confirmations {
@@ -188,6 +232,48 @@ impl Confirmations {
         self.entries
             .iter()
             .any(|(left, right)| left == component && right == integration)
+    }
+
+    /// Restores `choice` in place of an application that is no longer
+    /// installed. `key` is the type for a group restored type by type, and
+    /// `None` for the entry as a whole. A later choice for the same place
+    /// replaces an earlier one.
+    pub fn with_restore_choice(
+        mut self,
+        component: ComponentId,
+        integration: IntegrationId,
+        key: Option<String>,
+        choice: RestoreChoice,
+    ) -> Self {
+        self.restore_choices
+            .retain(|(c, i, k, _)| !(c == &component && i == &integration && k == &key));
+        self.restore_choices
+            .push((component, integration, key, choice));
+        self
+    }
+
+    /// Every restore choice, in the order it was given: the component, the
+    /// integration, the type when there is one, and the choice.
+    pub fn restore_choices(
+        &self,
+    ) -> impl Iterator<Item = (&ComponentId, &IntegrationId, Option<&str>, &RestoreChoice)> {
+        self.restore_choices
+            .iter()
+            .map(|(component, integration, key, choice)| {
+                (component, integration, key.as_deref(), choice)
+            })
+    }
+
+    pub fn restore_choice(
+        &self,
+        component: &ComponentId,
+        integration: &IntegrationId,
+        key: Option<&str>,
+    ) -> Option<&RestoreChoice> {
+        self.restore_choices
+            .iter()
+            .find(|(c, i, k, _)| c == component && i == integration && k.as_deref() == key)
+            .map(|(_, _, _, choice)| choice)
     }
 }
 

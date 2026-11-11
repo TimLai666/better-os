@@ -8,6 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use app_catalog_core::error::MAX_ENTRY_BYTES;
 use app_catalog_core::{
     Catalog, CatalogBuilder, DesktopId, DirectoryRank, EntryError, EntryScope, ExecutableProbe,
 };
@@ -172,15 +173,40 @@ fn scan_directory(
                 continue;
             }
         };
-        match fs::read(&path) {
+        match read_entry(&path) {
             Ok(bytes) => builder.add_entry(desktop_id, path, rank, &bytes),
-            Err(error) => builder.reject(
-                path,
-                Some(desktop_id),
-                EntryError::Unreadable(error.kind().to_string()),
-            ),
+            Err(reason) => builder.reject(path, Some(desktop_id), EntryError::Unreadable(reason)),
         }
     }
+}
+
+/// Reads at most one byte more than an entry may hold, from a regular file
+/// only. A FIFO would block the scan forever and a link to a device such as
+/// `/dev/zero` would never end, so anything that is not a regular file after
+/// following links is refused before it is opened, and the opened handle is
+/// checked again. The extra byte is what lets the parser report an oversized
+/// entry as too large rather than truncated.
+fn read_entry(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+
+    let not_regular = || "not a regular file".to_string();
+    let metadata = fs::metadata(path).map_err(|error| error.kind().to_string())?;
+    if !metadata.is_file() {
+        return Err(not_regular());
+    }
+    let file = fs::File::open(path).map_err(|error| error.kind().to_string())?;
+    if !file
+        .metadata()
+        .map_err(|error| error.kind().to_string())?
+        .is_file()
+    {
+        return Err(not_regular());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_ENTRY_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.kind().to_string())?;
+    Ok(bytes)
 }
 
 #[cfg(test)]
