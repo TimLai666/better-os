@@ -2,7 +2,7 @@
 
 **Epic:** Better Touchpad (Issue #3) · **User Story:** a person with a laptop
 touchpad and an external one gets each pad's own gestures · **Branch:**
-`ticket-73` · **Blocked by:** none · **Status:** implemented, not merged
+`ticket-73` · **Blocked by:** none · **Status:** merged, not released
 
 ## What it delivers
 

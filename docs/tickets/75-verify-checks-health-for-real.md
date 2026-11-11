@@ -2,7 +2,7 @@
 
 **Epic:** Better Manager (Issue #8) · **User Story:** a person whose component
 is marked as failed can press 重新檢查 and get a real answer · **Branch:**
-`ticket-75` · **Blocked by:** none · **Status:** implemented, not merged
+`ticket-75` · **Blocked by:** none · **Status:** merged, not released
 
 ## What the machine reported
 

@@ -423,9 +423,11 @@ GUI or dependency compiles when the relevant command was not executed.
   drops a file at unpack and leaves it in the package's file list, and
   `dpkg --verify` calls it `missing` as well, so no dpkg query can tell that
   absence from a broken package — only dpkg's configuration can.
-  `manager-daemon/src/dpkg_config.rs` reads `/etc/dpkg/dpkg.cfg.d/*` and
+  `better-core/src/package_health.rs` reads `/etc/dpkg/dpkg.cfg.d/*` and
   `/etc/dpkg/dpkg.cfg`, plus `apt-config dump DPkg::Options`, because the daemon
-  installs through `apt-get`. This matters on every minimized image, the
+  installs through `apt-get`. The daemon's health check and the client's verify
+  (`manager-platform`'s `verify_package`) both go through that module; do not
+  write the rule a second time. This matters on every minimized image, the
   `ubuntu:24.04` container the end-to-end check runs in included: it excludes
   `/usr/share/doc/*`, and every Better OS package installs
   `THIRD-PARTY-LICENSES.md` there. A health check that ignored those filters
