@@ -19,8 +19,9 @@ use better_core::defaults::{
 };
 use better_core::{ComponentIcon, ComponentId};
 use defaults_core::{
-    AggregateState, DefaultsOutcome, DefaultsPlan, DefaultsReport, EntryOutcome, IntegrationState,
-    IntegrationStatus, PlanAction, PlanEntry, PlanKind, PlanWarning, SkipReason,
+    AggregateState, ApplicationChoice, Confirmations, DefaultsOutcome, DefaultsPlan,
+    DefaultsReport, EntryOutcome, IntegrationState, IntegrationStatus, PlanAction, PlanEntry,
+    PlanKind, PlanWarning, RestoreChoice, SkipReason,
 };
 use defaults_store::SnapshotHistory;
 
@@ -358,6 +359,7 @@ pub(crate) fn skip_reason_label(locale: Locale, reason: &SkipReason) -> &'static
         SkipReason::EffectiveValueUnknown { .. } => c.skip_value_unknown,
         SkipReason::ChangedExternallyWithoutConfirmation { .. } => c.skip_changed_externally,
         SkipReason::Conflict { .. } => c.skip_conflict,
+        SkipReason::PreviousApplicationMissing { .. } => c.previous_application_missing,
     }
 }
 
@@ -368,6 +370,7 @@ pub(crate) fn warning_label(locale: Locale, warning: &PlanWarning) -> &'static s
         PlanWarning::NeedsRestart => c.effect_restart,
         PlanWarning::PreviousValueIndeterminate => c.previous_value_indeterminate,
         PlanWarning::OverwritesExternalChange { .. } => c.overwrites_external_change,
+        PlanWarning::PreviousApplicationMissing { .. } => c.previous_application_missing,
     }
 }
 
@@ -396,10 +399,22 @@ pub(crate) enum RestoreClass {
     NothingCaptured,
     ManualAction,
     NotApplicable,
+    /// The application the restore would put back is no longer installed, for
+    /// the entry or for one of its types, and nothing was chosen instead.
+    PreviousApplicationMissing,
 }
 
 impl RestoreClass {
     pub(crate) fn of(entry: &PlanEntry) -> Self {
+        let unresolved = entry.warnings.iter().any(|warning| {
+            matches!(
+                warning,
+                PlanWarning::PreviousApplicationMissing { chosen: None, .. }
+            )
+        });
+        if unresolved {
+            return Self::PreviousApplicationMissing;
+        }
         match &entry.action {
             PlanAction::Restore { .. } => Self::Safe,
             PlanAction::Apply { .. } => Self::Safe,
@@ -410,6 +425,7 @@ impl RestoreClass {
                 SkipReason::NoProductionAdapter { .. } | SkipReason::RequiresAdministrator => {
                     Self::ManualAction
                 }
+                SkipReason::PreviousApplicationMissing { .. } => Self::PreviousApplicationMissing,
                 _ => Self::NotApplicable,
             },
         }
@@ -424,6 +440,7 @@ impl RestoreClass {
             Self::NothingCaptured => c.skip_nothing_captured,
             Self::ManualAction => c.manual_action_required,
             Self::NotApplicable => c.skip_not_applicable,
+            Self::PreviousApplicationMissing => c.previous_application_missing,
         }
     }
 }
@@ -505,7 +522,32 @@ pub(crate) struct ReviewEntry {
     /// until this exact entry is confirmed.
     pub(crate) requires_confirmation: bool,
     pub(crate) confirmed: bool,
+    /// Every application this restore cannot put back because it is no longer
+    /// installed: one for the entry, or one per type of a group.
+    pub(crate) missing: Vec<MissingApplication>,
 }
+
+/// An application a restore cannot put back, with what can be done instead.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MissingApplication {
+    /// The type, for a group restored type by type.
+    pub(crate) key: Option<String>,
+    /// Names the missing application, and the type when there is one.
+    pub(crate) headline: String,
+    /// Every installed application for the type, then leaving it without a
+    /// default. Clearing is always offered.
+    pub(crate) options: Vec<RestoreOption>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RestoreOption {
+    pub(crate) label: String,
+    pub(crate) choice: RestoreChoice,
+    pub(crate) chosen: bool,
+}
+
+/// Where a restore choice applies: the entry, and the type within a group.
+type ChoiceKey = (ComponentId, IntegrationId, Option<String>);
 
 impl ReviewEntry {
     pub(crate) fn element_id(&self, prefix: &str) -> String {
@@ -522,6 +564,7 @@ pub(crate) struct ReviewModel {
     names: BTreeMap<ComponentId, String>,
     selected: BTreeSet<ComponentId>,
     confirmed: BTreeSet<(ComponentId, IntegrationId)>,
+    restore_choices: BTreeMap<ChoiceKey, RestoreChoice>,
 }
 
 impl ReviewModel {
@@ -550,6 +593,7 @@ impl ReviewModel {
             names,
             selected,
             confirmed: BTreeSet::new(),
+            restore_choices: BTreeMap::new(),
         }
     }
 
@@ -564,6 +608,7 @@ impl ReviewModel {
             names: self.names.clone(),
             selected: self.selected.clone(),
             confirmed: self.confirmed.clone(),
+            restore_choices: self.restore_choices.clone(),
         };
         rebuilt
             .selected
@@ -580,6 +625,47 @@ impl ReviewModel {
     /// back is decided while the plan is built.
     pub(crate) fn confirmed_entries(&self) -> Vec<(ComponentId, IntegrationId)> {
         self.confirmed.iter().cloned().collect()
+    }
+
+    /// Everything the user decided on this screen, in the form planning takes:
+    /// each confirmed external change and each restore choice.
+    pub(crate) fn decisions(&self) -> Confirmations {
+        let confirmations = self.confirmed_entries().into_iter().fold(
+            Confirmations::none(),
+            |confirmations, (component, integration)| confirmations.with(component, integration),
+        );
+        self.restore_choices.iter().fold(
+            confirmations,
+            |confirmations, ((component, integration, key), choice)| {
+                confirmations.with_restore_choice(
+                    component.clone(),
+                    integration.clone(),
+                    key.clone(),
+                    choice.clone(),
+                )
+            },
+        )
+    }
+
+    /// Chooses what to restore instead of an application that is no longer
+    /// installed. Choosing what is already chosen takes the choice back.
+    pub(crate) fn choose_restore(
+        &mut self,
+        component: &ComponentId,
+        integration: &IntegrationId,
+        key: Option<&str>,
+        choice: RestoreChoice,
+    ) {
+        let place = (
+            component.clone(),
+            integration.clone(),
+            key.map(str::to_string),
+        );
+        if self.restore_choices.get(&place) == Some(&choice) {
+            self.restore_choices.remove(&place);
+        } else {
+            self.restore_choices.insert(place, choice);
+        }
     }
 
     pub(crate) fn is_selected(&self, component: &ComponentId) -> bool {
@@ -677,9 +763,94 @@ impl ReviewModel {
                 PlanAction::Skip { reason } => Some(reason.clone()),
                 _ => None,
             },
-            warnings: entry.warnings.clone(),
+            warnings: entry
+                .warnings
+                .iter()
+                .filter(|warning| {
+                    !matches!(warning, PlanWarning::PreviousApplicationMissing { .. })
+                })
+                .cloned()
+                .collect(),
             requires_confirmation: entry.requires_confirmation,
             confirmed: entry.confirmed,
+            missing: self.missing(entry),
+        }
+    }
+
+    /// The missing applications an entry reports, from its skip reason when the
+    /// whole entry is held back and from its warnings otherwise.
+    fn missing(&self, entry: &PlanEntry) -> Vec<MissingApplication> {
+        let mut missing = Vec::new();
+        if let PlanAction::Skip {
+            reason:
+                SkipReason::PreviousApplicationMissing {
+                    desktop_id,
+                    alternatives,
+                },
+        } = &entry.action
+        {
+            missing.push(self.missing_application(entry, None, desktop_id, alternatives));
+        }
+        for warning in &entry.warnings {
+            if let PlanWarning::PreviousApplicationMissing {
+                key,
+                desktop_id,
+                alternatives,
+                ..
+            } = warning
+            {
+                missing.push(self.missing_application(
+                    entry,
+                    key.as_deref(),
+                    desktop_id,
+                    alternatives,
+                ));
+            }
+        }
+        missing
+    }
+
+    fn missing_application(
+        &self,
+        entry: &PlanEntry,
+        key: Option<&str>,
+        desktop_id: &str,
+        alternatives: &[ApplicationChoice],
+    ) -> MissingApplication {
+        let c = copy(self.locale);
+        let chosen = self.restore_choices.get(&(
+            entry.component.clone(),
+            entry.integration.clone(),
+            key.map(str::to_string),
+        ));
+        let prefix = key
+            .map(|key| format!("{key}{}", c.label_separator))
+            .unwrap_or_default();
+        let options = alternatives
+            .iter()
+            .map(|alternative| {
+                (
+                    alternative.name.clone(),
+                    RestoreChoice::Application(alternative.desktop_id.clone()),
+                )
+            })
+            .chain(std::iter::once((
+                c.clear_default.to_string(),
+                RestoreChoice::ClearDefault,
+            )))
+            .map(|(label, choice)| RestoreOption {
+                chosen: chosen == Some(&choice),
+                label,
+                choice,
+            })
+            .collect();
+        MissingApplication {
+            key: key.map(str::to_string),
+            headline: format!(
+                "{prefix}{}{}{desktop_id}",
+                c.previous_application_missing, c.label_separator
+            ),
+            options,
         }
     }
 
@@ -700,9 +871,9 @@ impl ReviewModel {
         for entry in self.selected_entries() {
             match &entry.action {
                 PlanAction::Skip { reason } => match reason {
-                    SkipReason::NoProductionAdapter { .. } | SkipReason::RequiresAdministrator => {
-                        summary.manual_actions += 1
-                    }
+                    SkipReason::NoProductionAdapter { .. }
+                    | SkipReason::RequiresAdministrator
+                    | SkipReason::PreviousApplicationMissing { .. } => summary.manual_actions += 1,
                     SkipReason::ChangedExternallyWithoutConfirmation { .. } => {
                         summary.awaiting_confirmation += 1
                     }
@@ -834,6 +1005,13 @@ fn outcome_parts(
             c.result_inconclusive,
             ResultTone::Warning,
             Some(observed_label(locale, observed)),
+        ),
+        EntryOutcome::Skipped {
+            reason: SkipReason::PreviousApplicationMissing { desktop_id, .. },
+        } => (
+            c.previous_application_missing,
+            ResultTone::Warning,
+            Some(desktop_id.clone()),
         ),
         EntryOutcome::Skipped { reason } => (
             c.result_skipped,

@@ -10,10 +10,11 @@ use better_core::defaults::{
     DefaultsValue, IntegrationId, IntegrationKind, ObservedValue, SessionEffect,
 };
 use better_core::{ComponentIcon, ComponentId};
+use defaults_core::ApplicationChoice;
 use defaults_core::{
     AggregateState, ComponentDefaults, DefaultsOutcome, DefaultsPlan, DefaultsReport, EntryOutcome,
-    EntryResult, IntegrationState, IntegrationStatus, PlanAction, PlanEntry, PlanKind, PlanWarning,
-    SkipReason,
+    EntryResult, IntegrationState, IntegrationStatus, KeyOutcome, PlanAction, PlanEntry, PlanKind,
+    PlanWarning, RestoreChoice, SkipReason,
 };
 use defaults_store::{RestoreState, Snapshot, SnapshotEntry, SnapshotStore, SystemIdentity};
 
@@ -1146,7 +1147,7 @@ fn the_defaults_actions_wrap_at_every_supported_scale() {
 mod through_the_engine {
     use super::*;
     use better_core::ComponentManifest;
-    use defaults_core::{AdapterMode, ComponentReadiness, Selection, SystemContext};
+    use defaults_core::{AdapterMode, ComponentReadiness, Confirmations, Selection, SystemContext};
 
     use crate::defaults_app::{DefaultsEvent, DefaultsInputs, DefaultsJob, run_job};
 
@@ -1210,7 +1211,7 @@ mod through_the_engine {
             DefaultsJob::Plan {
                 kind: PlanKind::Apply,
                 selection: Selection::All,
-                confirmed: Vec::new(),
+                decisions: Confirmations::none(),
             },
         ) {
             DefaultsEvent::Planned(plan) => *plan,
@@ -1256,7 +1257,7 @@ mod through_the_engine {
             DefaultsJob::Plan {
                 kind: PlanKind::Apply,
                 selection: Selection::All,
-                confirmed: Vec::new(),
+                decisions: Confirmations::none(),
             },
         ) {
             DefaultsEvent::Planned(plan) => *plan,
@@ -1272,7 +1273,7 @@ mod through_the_engine {
             DefaultsJob::Plan {
                 kind: PlanKind::Restore,
                 selection: Selection::All,
-                confirmed: Vec::new(),
+                decisions: Confirmations::none(),
             },
         ) {
             DefaultsEvent::Planned(plan) => *plan,
@@ -1298,4 +1299,295 @@ mod through_the_engine {
             );
         }
     }
+}
+
+fn alternatives() -> Vec<ApplicationChoice> {
+    vec![
+        ApplicationChoice {
+            desktop_id: "org.gnome.Loupe.desktop".to_string(),
+            name: "Image Viewer".to_string(),
+        },
+        ApplicationChoice {
+            desktop_id: "org.gnome.gThumb.desktop".to_string(),
+            name: "gThumb".to_string(),
+        },
+    ]
+}
+
+fn missing_eog() -> SkipReason {
+    SkipReason::PreviousApplicationMissing {
+        desktop_id: "org.gnome.eog.desktop".to_string(),
+        alternatives: alternatives(),
+    }
+}
+
+#[test]
+fn a_missing_previous_application_is_its_own_restore_class_in_both_locales() {
+    let skipped = entry(
+        "better-files",
+        "image-viewer",
+        PlanAction::Skip {
+            reason: missing_eog(),
+        },
+    );
+    assert_eq!(
+        RestoreClass::of(&skipped),
+        RestoreClass::PreviousApplicationMissing
+    );
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let label = RestoreClass::PreviousApplicationMissing.label(locale);
+        assert!(!label.trim().is_empty());
+        for other in [
+            RestoreClass::Safe,
+            RestoreClass::AlreadyRestored,
+            RestoreClass::ChangedExternally,
+            RestoreClass::NothingCaptured,
+            RestoreClass::ManualAction,
+            RestoreClass::NotApplicable,
+        ] {
+            assert_ne!(label, other.label(locale), "{locale:?}");
+        }
+        assert_eq!(skip_reason_label(locale, &missing_eog()), label);
+    }
+}
+
+#[test]
+fn the_review_names_the_missing_application_and_offers_the_others_or_no_default() {
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let c = copy(locale);
+        let review = ReviewModel::new(
+            locale,
+            DefaultsPlan::new(
+                PlanKind::Restore,
+                vec![
+                    skipping("better-files", "image-viewer", missing_eog()),
+                    entry(
+                        "better-files",
+                        "file-manager",
+                        PlanAction::Restore {
+                            to: observed("org.gnome.Nautilus.desktop"),
+                        },
+                    ),
+                ],
+                Vec::new(),
+            ),
+            &|component| component.to_string(),
+        );
+        let entry = &review.components()[0].entries[0];
+        assert_eq!(entry.missing.len(), 1);
+        let missing = &entry.missing[0];
+        assert_eq!(missing.key, None);
+        assert!(
+            missing.headline.contains(c.previous_application_missing),
+            "{}",
+            missing.headline
+        );
+        assert!(missing.headline.contains("org.gnome.eog.desktop"));
+        let labels: Vec<&str> = missing
+            .options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["Image Viewer", "gThumb", c.clear_default]);
+        assert_eq!(
+            missing.options[2].choice,
+            RestoreChoice::ClearDefault,
+            "clearing is always offered"
+        );
+        assert!(missing.options.iter().all(|option| !option.chosen));
+        // Nothing is restored for it, and the summary of the selected component
+        // counts it as something for the person to act on.
+        assert!(!entry.changes_something);
+        assert_eq!(review.summary().manual_actions, 1);
+    }
+}
+
+#[test]
+fn choosing_instead_is_kept_per_entry_and_per_type_and_becomes_the_plan_decision() {
+    let mut review = review_of(
+        PlanKind::Restore,
+        vec![skipping("better-files", "image-viewer", missing_eog())],
+    );
+    let loupe = RestoreChoice::Application("org.gnome.Loupe.desktop".to_string());
+    review.choose_restore(
+        &component("better-files"),
+        &integration("image-viewer"),
+        None,
+        loupe.clone(),
+    );
+    review.choose_restore(
+        &component("better-files"),
+        &integration("image-viewer"),
+        Some("image/png"),
+        RestoreChoice::ClearDefault,
+    );
+    let decisions = review.decisions();
+    assert_eq!(
+        decisions.restore_choice(
+            &component("better-files"),
+            &integration("image-viewer"),
+            None
+        ),
+        Some(&loupe)
+    );
+    assert_eq!(
+        decisions.restore_choice(
+            &component("better-files"),
+            &integration("image-viewer"),
+            Some("image/png")
+        ),
+        Some(&RestoreChoice::ClearDefault)
+    );
+    let entry = &review.components()[0].entries[0];
+    assert!(entry.missing[0].options[0].chosen);
+    assert!(!entry.missing[0].options[1].chosen);
+
+    // Choosing the same thing again takes the choice back.
+    review.choose_restore(
+        &component("better-files"),
+        &integration("image-viewer"),
+        None,
+        loupe,
+    );
+    assert_eq!(
+        review.decisions().restore_choice(
+            &component("better-files"),
+            &integration("image-viewer"),
+            None
+        ),
+        None
+    );
+}
+
+#[test]
+fn a_group_with_one_missing_type_shows_that_type_and_is_not_called_safe() {
+    let mut group = entry(
+        "better-files",
+        "image-viewer",
+        PlanAction::Restore {
+            to: per_type(&[
+                ("image/png", observed("org.gnome.eog.desktop")),
+                ("image/jpeg", observed("org.gnome.gThumb.desktop")),
+            ]),
+        },
+    );
+    group
+        .warnings
+        .push(PlanWarning::PreviousApplicationMissing {
+            key: Some("image/png".to_string()),
+            desktop_id: "org.gnome.eog.desktop".to_string(),
+            alternatives: alternatives(),
+            chosen: None,
+        });
+    assert_eq!(
+        RestoreClass::of(&group),
+        RestoreClass::PreviousApplicationMissing
+    );
+    let review = review_of(PlanKind::Restore, vec![group.clone()]);
+    let shown = &review.components()[0].entries[0];
+    assert!(shown.changes_something, "the other type is still restored");
+    assert_eq!(shown.missing.len(), 1);
+    assert_eq!(shown.missing[0].key.as_deref(), Some("image/png"));
+    assert!(shown.missing[0].headline.starts_with("image/png"));
+    assert!(
+        shown.warnings.is_empty(),
+        "the missing type is shown once, as its own row"
+    );
+
+    // Once a choice is in the plan the type is safe to restore again.
+    group.warnings = vec![PlanWarning::PreviousApplicationMissing {
+        key: Some("image/png".to_string()),
+        desktop_id: "org.gnome.eog.desktop".to_string(),
+        alternatives: alternatives(),
+        chosen: Some(RestoreChoice::ClearDefault),
+    }];
+    assert_eq!(RestoreClass::of(&group), RestoreClass::Safe);
+}
+
+#[test]
+fn a_missing_application_result_says_so_with_its_name_in_both_locales() {
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let c = copy(locale);
+        let run = |outcome: EntryOutcome| DefaultsOutcome {
+            kind: PlanKind::Restore,
+            results: vec![EntryResult {
+                component: component("better-files"),
+                integration: integration("image-viewer"),
+                outcome,
+            }],
+            baseline_snapshot: None,
+            recorded_snapshot: None,
+        };
+        let single = run(EntryOutcome::Skipped {
+            reason: missing_eog(),
+        });
+        let row = &result_rows(locale, &single, &|component| component.to_string())[0];
+        assert_eq!(row.label, c.previous_application_missing);
+        assert_eq!(row.tone, ResultTone::Warning);
+        assert_eq!(row.detail.as_deref(), Some("org.gnome.eog.desktop"));
+
+        let group = run(EntryOutcome::PerKey {
+            keys: vec![
+                KeyOutcome {
+                    key: "image/png".to_string(),
+                    outcome: EntryOutcome::Skipped {
+                        reason: missing_eog(),
+                    },
+                },
+                KeyOutcome {
+                    key: "image/jpeg".to_string(),
+                    outcome: EntryOutcome::Restored {
+                        value: observed("org.gnome.gThumb.desktop"),
+                    },
+                },
+            ],
+        });
+        let row = &result_rows(locale, &group, &|component| component.to_string())[0];
+        assert_eq!(row.label, c.result_partial);
+        assert_eq!(row.tone, ResultTone::Warning);
+        let detail = row.detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains(&format!(
+                "image/png: {} (org.gnome.eog.desktop)",
+                c.previous_application_missing
+            )),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("image/jpeg: org.gnome.gThumb.desktop"),
+            "{detail}"
+        );
+    }
+}
+
+#[test]
+fn the_missing_application_words_exist_in_both_locales() {
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let c = copy(locale);
+        for text in [
+            c.previous_application_missing,
+            c.restore_instead,
+            c.clear_default,
+            c.no_alternative_application,
+        ] {
+            assert!(!text.trim().is_empty(), "{locale:?} is missing copy");
+        }
+        assert!(
+            !warning_label(
+                locale,
+                &PlanWarning::PreviousApplicationMissing {
+                    key: None,
+                    desktop_id: "a.desktop".to_string(),
+                    alternatives: Vec::new(),
+                    chosen: None,
+                }
+            )
+            .trim()
+            .is_empty()
+        );
+    }
+    assert_ne!(
+        copy(Locale::EnUs).clear_default,
+        copy(Locale::ZhTw).clear_default
+    );
 }
