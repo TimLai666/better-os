@@ -15,7 +15,7 @@ use manager_core::{
 };
 use manager_platform::catalog_fetch::HttpManifestFetcher;
 use manager_platform::download::{ArtifactCache, HttpDownloader};
-use manager_platform::dpkg::DpkgProbe;
+use manager_platform::dpkg::{DpkgProbe, PackageStateProbe};
 use manager_platform::host::ClientPlatform;
 use manager_platform::privileged::DbusPrivilegedExecutor;
 use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, start_catalog};
@@ -258,6 +258,23 @@ fn print_catalog_status(status: &CatalogStatus) {
     }
 }
 
+/// Plans one operation. A real run asks dpkg first, so a package it holds at a
+/// version nothing can order is refused before a plan exists (ticket 69); a
+/// simulation plans from its own state and never reads the host.
+fn plan_for(
+    manager: &Manager,
+    state: &ManagerState,
+    id: &ComponentId,
+    operation: DesiredOperation,
+    mode: ExecutionMode,
+    probe: &dyn PackageStateProbe,
+) -> Result<TransactionPlan, manager_core::ManagerError> {
+    match mode {
+        ExecutionMode::Mock => manager.plan_in_mode(state, id, operation, mode),
+        ExecutionMode::Real => manager.plan_on_host(state, id, operation, mode, probe),
+    }
+}
+
 /// One doctor check: its kind, status, and component on one line, as the
 /// command has always printed them, and for a package dpkg holds at a version
 /// the manager cannot order, the version and what to do about it.
@@ -356,6 +373,14 @@ fn repair_report_lines(report: &RepairReport) -> Vec<String> {
             lines.push(format!("  {label}:"));
             lines.extend(tail_lines(text).map(|line| format!("    {line}")));
         }
+    }
+    if matches!(report.result, RepairResult::Failed { .. }) {
+        // The service runs dpkg inside its systemd sandbox, and a kernel or
+        // initramfs hook can fail there and nowhere else (ADR 0014).
+        lines.push(
+            "  if it keeps failing, run the same command from a terminal: sudo dpkg --configure -a"
+                .to_string(),
+        );
     }
     if let Some(remaining) = report
         .remaining
@@ -663,8 +688,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             fail_at,
         } => {
             let mode = execution_mode(cli.execution, fail_at.is_some(), false)?;
-            let plan =
-                manager.plan_in_mode(&state, &ComponentId::new(id)?, operation.into(), mode)?;
+            let plan = plan_for(
+                &manager,
+                &state,
+                &ComponentId::new(id)?,
+                operation.into(),
+                mode,
+                &DpkgProbe,
+            )?;
             run_plan(
                 &manager,
                 &mut state,
@@ -697,11 +728,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             restore_outcome,
         } => {
             let mode = execution_mode(cli.execution, fail_at.is_some(), restore_outcome.is_some())?;
-            let plan = manager.plan_in_mode(
+            let plan = plan_for(
+                &manager,
                 &state,
                 &ComponentId::new(id)?,
                 DesiredOperation::Restore,
                 mode,
+                &DpkgProbe,
             )?;
             run_plan(
                 &manager,
@@ -927,6 +960,49 @@ mod tests {
         }
     }
 
+    /// Ticket 69: a real run asks dpkg before planning and refuses a package
+    /// it holds at a version nothing can order; a simulation does not ask.
+    #[test]
+    fn a_real_run_refuses_to_plan_a_package_dpkg_holds_at_an_unorderable_version() {
+        let manager = Manager::new(
+            manager_core::catalog::built_in_catalog(),
+            manager_platform::SystemProfile::default(),
+        );
+        let state = ManagerState::default();
+        let monitor = ComponentId::new("better-monitor").unwrap();
+        let probe =
+            manager_platform::dpkg::FixedPackageStateProbe::new(&[("better-monitor", "0.2.8~rc1")]);
+
+        let refused = plan_for(
+            &manager,
+            &state,
+            &monitor,
+            DesiredOperation::Install,
+            ExecutionMode::Real,
+            &probe,
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(manager_core::ManagerError::HostVersionUnreadable(_))
+            ),
+            "{refused:?}"
+        );
+
+        // The demo plans from its fabricated state and never reads the host.
+        assert!(
+            plan_for(
+                &manager,
+                &state,
+                &monitor,
+                DesiredOperation::Install,
+                ExecutionMode::Mock,
+                &probe,
+            )
+            .is_ok()
+        );
+    }
+
     /// Ticket 69: an unorderable package is listed with dpkg's own version and
     /// what to do about it, not only as a kind and a status.
     #[test]
@@ -1011,6 +1087,14 @@ mod tests {
         };
         let lines = repair_report_lines(&report);
         assert_eq!(lines[0], "repair failed: daemon.error.repair_failed");
+        // The daemon's sandbox can be why dpkg failed (ADR 0014), so the way
+        // to try without it is said.
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("sudo dpkg --configure -a")),
+            "{lines:?}"
+        );
         assert!(lines.contains(&"ran: dpkg --configure -a (exit 1)".to_string()));
         assert!(lines.iter().any(|line| line.contains("line 30")));
         assert!(

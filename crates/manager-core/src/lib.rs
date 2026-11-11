@@ -1260,6 +1260,41 @@ impl Manager {
         self.plan_in_mode(state, id, operation, ExecutionMode::Mock)
     }
 
+    /// [`plan_in_mode`](Self::plan_in_mode), refused when dpkg holds a
+    /// component the plan would change at a version nothing can order.
+    ///
+    /// Such a package has no record, so the planner on its own would offer to
+    /// install it, and the privileged service would then refuse the plan as
+    /// drift. Ticket 69 says it is not managed at all, so the refusal happens
+    /// here, before a plan exists. Only components the record does not carry
+    /// are checked: a recorded one with an unorderable host version is
+    /// already blocked by its drift finding.
+    pub fn plan_on_host(
+        &self,
+        state: &ManagerState,
+        id: &ComponentId,
+        operation: DesiredOperation,
+        mode: ExecutionMode,
+        probe: &dyn PackageStateProbe,
+    ) -> Result<TransactionPlan, ManagerError> {
+        let plan = self.plan_in_mode(state, id, operation, mode)?;
+        for step in plan.steps() {
+            let recorded = state
+                .component(&step.component)
+                .and_then(|record| record.installed_version.as_deref());
+            let host = probe
+                .installed_version(step.component.as_str())
+                .map_err(|_| ManagerError::HostUnreadable(step.component.clone()))?;
+            if matches!(
+                HostComparison::of(recorded, host.as_deref()),
+                HostComparison::Unorderable { .. }
+            ) {
+                return Err(ManagerError::HostVersionUnreadable(step.component.clone()));
+            }
+        }
+        Ok(plan)
+    }
+
     pub fn plan_in_mode(
         &self,
         state: &ManagerState,

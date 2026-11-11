@@ -1760,6 +1760,57 @@ mod unorderable_host_versions {
 
         assert_eq!(state, before, "the record is exactly what it was");
         assert!(state.component(&id("better-monitor")).is_none());
+
+        // Planning against the host refuses it, with the error that already
+        // means "dpkg holds a version this crate cannot order".
+        for operation in [DesiredOperation::Install, DesiredOperation::Update] {
+            let refused = manager().plan_on_host(
+                &state,
+                &id("better-monitor"),
+                operation,
+                ExecutionMode::Real,
+                &probe,
+            );
+            assert!(refused.is_err(), "{operation:?} must not be planned");
+        }
+        assert!(matches!(
+            manager().plan_on_host(
+                &state,
+                &id("better-monitor"),
+                DesiredOperation::Install,
+                ExecutionMode::Real,
+                &probe,
+            ),
+            Err(ManagerError::HostVersionUnreadable(_))
+        ));
+        assert_eq!(state, before, "planning changed nothing either");
+    }
+
+    /// The host check is the only difference from `plan_in_mode`: a package
+    /// dpkg does not have, or holds at an orderable version, plans as before.
+    #[test]
+    fn planning_on_the_host_plans_what_dpkg_does_not_block() {
+        let state = ManagerState::default();
+        let plan = manager()
+            .plan_on_host(
+                &state,
+                &id("better-monitor"),
+                DesiredOperation::Install,
+                ExecutionMode::Real,
+                &FixedPackageStateProbe::new(&[]),
+            )
+            .unwrap();
+        assert_eq!(
+            plan,
+            manager()
+                .plan_in_mode(
+                    &state,
+                    &id("better-monitor"),
+                    DesiredOperation::Install,
+                    ExecutionMode::Real
+                )
+                .unwrap()
+        );
     }
 
     /// A recorded package whose host version became unorderable keeps the

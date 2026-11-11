@@ -58,8 +58,12 @@ older than this decision gets D-Bus's unknown-method error, and reports it as a
 daemon refusal rather than as a repair that ran.
 
 `RepairOutcome` is reported the way a transaction step is: a status and the log
-entries of the command it ran, each with its argument vector, exit code, and the
-tail of its output, capped at the same 64 KiB per stream. Its status is one of
+entry of the command it ran, with its argument vector, exit code, and the tail
+of its output, capped at the same 64 KiB per stream. An outcome carries at most
+one log entry, because the repair runs one command. Both documents are limited
+to 1 MiB, which covers the worst outcome the daemon can write: two full tails of
+control characters, which JSON escapes to six bytes each, plus the longest
+remaining state. Its status is one of
 `repaired`, `still_interrupted`, or `failed` with a stable error key. It also
 carries dpkg's state as the daemon read it after the run.
 
@@ -157,6 +161,9 @@ decides what to do next.
 - The daemon's D-Bus surface grows by two methods and its policy file by one
   action. `packaging/verify-deb.sh` fails a daemon package whose policy does not
   declare the new action.
+- The daemon no longer exits on a fixed timer from startup. It exits once 120
+  seconds have passed with no transaction or repair running, so a repair or an
+  install that takes longer than that still reaches its caller.
 - A repair is not written to the transaction journal. dpkg's own record is the
   durable state here: a repair that is itself interrupted leaves dpkg
   interrupted, and the next `GetPackageSystemState` reports exactly that.
@@ -176,6 +183,21 @@ progress under another frontend, such as unattended-upgrades in the middle of
 a run. Both leave the same record. In that case a repair fails on dpkg's lock
 and reports `apt_busy`, and a transaction is refused as `dpkg_interrupted`
 until the other run finishes. Neither changes anything.
+
+The repair runs inside the daemon's systemd unit and inherits its hardening,
+which ADR 0007 decided and this decision does not change: `ProtectKernelModules`,
+`ProtectKernelTunables`, `ProtectHome`, and `DevicePolicy=closed`, among others.
+The most common interrupted run is a kernel or initramfs upgrade, and its
+maintainer scripts call `depmod`, `update-initramfs`, and `grub-probe`. With
+`/usr/lib/modules` made inaccessible and block devices closed, those can fail
+inside the sandbox when they would succeed from a terminal. This has not been
+verified. The way to verify it is a virtual machine, never a host: leave a
+`linux-image` package unpacked and unconfigured, then run
+`systemd-run --wait --pipe` with the unit's hardening properties set by `-p` on
+`dpkg --configure -a`, and compare it with the same command run outside the
+sandbox. Until that is done, a failed repair tells the person they can run
+`sudo dpkg --configure -a` from a terminal instead, in the command line and in
+the window, in both languages.
 
 `half-installed` is reported but `dpkg --configure -a` does not fix it; that
 package needs to be reinstalled or removed, which this decision does not offer.

@@ -86,14 +86,33 @@ errors, `manager-cli`: 2, `manager-gui`: 3).
   `reconcile_with_host` and not in `doctor_checks`, which runs on every frame;
   the doctor row draws the label and the sentence.
 
+### Review fix: nothing is planned
+
+The first version only reported the package. The planner reads the record and
+not the host, so `Manager::plan(..., Install)` still produced a plan for it, and
+the window offered Install. `Manager::plan_on_host` now plans as `plan_in_mode`
+does and then checks every step against dpkg: a component the record does not
+carry and dpkg holds at an unorderable version is refused with the existing
+`ManagerError::HostVersionUnreadable`. `better-manager-cli run` and `restore`
+plan through it in real execution, and the window's one planning path for a
+component operation, `ManagerApp::plan_operation`, does too. A demo plans from
+its own state as before.
+
+The window offers no action the planner would refuse: a component card's main
+button opens the component page instead of installing, and the page shows the
+finding's sentence and drops the Install and Try again buttons. Tests:
+`nothing_is_adopted_planned_or_changed_for_an_unorderable_package` now plans
+Install and Update and asserts both are refused and the state unchanged;
+`planning_on_the_host_plans_what_dpkg_does_not_block`;
+`a_real_run_refuses_to_plan_a_package_dpkg_holds_at_an_unorderable_version` in
+`manager-cli`; `the_window_neither_plans_nor_offers_an_unorderable_package` in
+`manager-gui`. Each failed before the fix, to compile in `manager-core` and
+`manager-cli` and on the missing planning path in `manager-gui`.
+
 ### Not done, and why
 
-- The Components screen still offers Install for such a component, because the
-  planner sees no record. The privileged service then refuses the plan with
-  `daemon.error.state_drift` before changing anything, so the "not managed"
-  promise holds on the host, but the screen offers an action that will be
-  refused. Hiding it needs the planner to know about the host, which this
-  ticket did not change.
+- `better-manager-cli plan` is a dry run in simulation mode, as before, so it
+  still prints a plan for such a package. `run` refuses it.
 - Stripping the epoch means the manager orders `1:0.2.8` below a catalog
   `0.3.0`, while dpkg orders it above. That was ticket 44's choice and it is
   unchanged here; an update planned from such a version would reach apt as a

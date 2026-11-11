@@ -158,6 +158,38 @@ and methods (`manager-ipc`: 7 errors, `manager-daemon`: 28, `manager-platform`:
   screen draws the card and repairs through `manager-core`, and no window
   source runs dpkg or reads its files.
 
+### Review fixes
+
+- `dpkg_state::read` reads the status file as bytes and decodes it lossily. A
+  real status file can hold a maintainer name or description that is not UTF-8,
+  and reading it as text made every transaction and repair on that machine fail
+  with `host_unreadable`. Test:
+  `a_status_file_with_bytes_that_are_not_utf8_is_still_read`.
+- `MAX_REPAIR_BYTES` is 1 MiB instead of 512 KiB, and an outcome may carry one
+  log entry. The old limit was smaller than two full output tails of control
+  characters once JSON escaped them. Tests:
+  `the_largest_repair_outcome_the_daemon_can_produce_is_accepted`,
+  `a_repair_outcome_with_more_than_one_log_entry_is_refused`.
+- `RepairStatus` refuses unknown fields. It is adjacently tagged now
+  (`{"state": "failed", "detail": {"error_key": ...}}`), because serde ignores
+  extra fields beside the tag of an internally tagged unit variant. Test:
+  `an_unknown_field_inside_a_repair_status_is_refused`.
+- The daemon used to exit 120 seconds after it started, whatever it was doing.
+  A fake `dpkg --configure -a` that takes four times a shortened idle period
+  showed the timer ending mid-repair. `service::wait_until_idle` now waits while
+  a transaction or repair holds the running flag and starts the idle period again
+  once it is released; `main.rs` uses it. Tests:
+  `the_idle_timer_waits_for_a_repair_that_outlasts_it`,
+  `the_idle_timer_ends_after_the_idle_period_when_nothing_runs`.
+- A failed repair now tells the person they can run `sudo dpkg --configure -a`
+  from a terminal, in `better-manager-cli repair` and on the Health card, in
+  both languages.
+
+Each fix's test failed before the fix: the non-UTF-8 test panicked on
+`HostUnreadable`, the three `manager-ipc` tests failed on the old limit and the
+ignored field, the idle test saw the timer finish first, and the CLI and window
+tests found no terminal command.
+
 ### Not done, and why
 
 - Nothing here was run against a real dpkg. The daemon's real reader and the
@@ -169,5 +201,20 @@ and methods (`manager-ipc`: 7 errors, `manager-daemon`: 28, `manager-platform`:
 - A transaction left in the daemon's journal as executing by the crash is not
   touched by a repair; the daemon still prints its startup message about it.
 - `half-installed` is reported and not fixed, as ADR 0014 says.
+- The repair inherits the daemon unit's hardening (`ProtectKernelModules`,
+  `ProtectKernelTunables`, `ProtectHome`, `DevicePolicy=closed`). A kernel or
+  initramfs upgrade, the most common interrupted run, calls `depmod`,
+  `update-initramfs`, and `grub-probe`, and those may fail inside the sandbox.
+  Not verified. To verify: in a virtual machine, leave a `linux-image` package
+  unpacked, run `dpkg --configure -a` under `systemd-run --wait --pipe` with the
+  unit's properties passed by `-p`, and compare with an unsandboxed run. The
+  unit is unchanged, because its hardening is ADR 0007's decision.
+- `AptRun::is_lock_contention` recognizes "Could not get lock" and the two
+  frontend-lock messages. What dpkg prints when it cannot take its status
+  database lock has not been checked against a real dpkg, so a repair blocked
+  that way may be reported as `repair_failed` rather than `apt_busy`. No string
+  was added from memory.
+- `StageArtifact` does not hold the running flag, so the idle timer does not
+  wait for a slow artifact copy; it does wait for the transaction that follows.
 - `packaging/e2e/50-better-os-e2e.rules` grants the e2e user only
   `apply-transaction`, so the container check cannot exercise the repair yet.

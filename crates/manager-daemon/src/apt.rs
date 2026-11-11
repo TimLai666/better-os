@@ -404,6 +404,9 @@ pub struct FakeAptDriver {
     /// otherwise, such as a half-installed package `--configure` cannot finish.
     after_repair: Mutex<PackageSystemState>,
     failing_configure: Mutex<bool>,
+    /// How long `dpkg --configure -a` takes, for a repair that outlasts the
+    /// daemon's idle period.
+    configure_duration: Mutex<std::time::Duration>,
 }
 
 impl Default for FakeAptDriver {
@@ -426,7 +429,14 @@ impl FakeAptDriver {
             package_system: Mutex::new(Some(PackageSystemState::clean())),
             after_repair: Mutex::new(PackageSystemState::clean()),
             failing_configure: Mutex::new(false),
+            configure_duration: Mutex::new(std::time::Duration::ZERO),
         }
+    }
+
+    /// Makes `dpkg --configure -a` take this long.
+    pub fn with_configure_duration(self, duration: std::time::Duration) -> Self {
+        *self.configure_duration.lock().unwrap() = duration;
+        self
     }
 
     /// Declares what dpkg's record says, such as a run a crash interrupted.
@@ -615,6 +625,7 @@ impl AptDriver for FakeAptDriver {
             .lock()
             .unwrap()
             .push("configure-pending".to_string());
+        std::thread::sleep(*self.configure_duration.lock().unwrap());
         let failed = *self.failing_configure.lock().unwrap();
         if !failed {
             let after = self.after_repair.lock().unwrap().clone();

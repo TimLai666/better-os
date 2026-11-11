@@ -519,8 +519,17 @@ impl TransactionOutcome {
 /// a bounded document and still says how many there were.
 pub const MAX_REPORTED_PACKAGES: usize = 64;
 
+/// Log entries one repair outcome may carry. The repair runs one command.
+pub const MAX_REPAIR_LOG_ENTRIES: usize = 1;
+
 /// Largest accepted package-system state or repair outcome document.
-pub const MAX_REPAIR_BYTES: usize = 512 * 1024;
+///
+/// Sized for the worst document the daemon can write: one log entry whose two
+/// output tails are each [`MAX_LOG_OUTPUT_BYTES`] of control characters, which
+/// JSON escapes to six bytes apiece (768 KiB together), plus the longest
+/// remaining state. A limit below that would make the client refuse a real
+/// outcome as too large.
+pub const MAX_REPAIR_BYTES: usize = 1024 * 1024;
 
 /// How dpkg left a package it did not finish. These are the `Status` values
 /// dpkg writes while it is in the middle of an operation; a package at rest is
@@ -630,7 +639,14 @@ impl PackageSystemState {
 
 /// How a repair ended.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "state")]
+// Adjacently tagged, so `deny_unknown_fields` holds for the unit variants as
+// well: an internally tagged unit variant ignores any field beside its tag.
+#[serde(
+    rename_all = "snake_case",
+    tag = "state",
+    content = "detail",
+    deny_unknown_fields
+)]
 pub enum RepairStatus {
     /// dpkg finished and its record shows nothing unfinished.
     Repaired,
@@ -659,6 +675,12 @@ impl RepairOutcome {
     pub fn from_json(document: &str) -> Result<Self, IpcError> {
         let outcome: Self = parse_bounded(document, MAX_REPAIR_BYTES)?;
         check_protocol_version(outcome.protocol_version)?;
+        if outcome.log.len() > MAX_REPAIR_LOG_ENTRIES {
+            return Err(IpcError::TooManyLogEntries {
+                found: outcome.log.len(),
+                limit: MAX_REPAIR_LOG_ENTRIES,
+            });
+        }
         if let Some(remaining) = &outcome.remaining {
             remaining.validate()?;
         }
@@ -778,6 +800,8 @@ pub enum IpcError {
     InvalidPackageName { package: String },
     #[error("ipc.error.too_many_packages:{found}:{limit}")]
     TooManyPackages { found: usize, limit: usize },
+    #[error("ipc.error.too_many_log_entries:{found}:{limit}")]
+    TooManyLogEntries { found: usize, limit: usize },
 }
 
 #[cfg(test)]
@@ -1201,6 +1225,88 @@ mod tests {
         for at_rest in ["installed", "config-files", "not-installed", "", "Unpacked"] {
             assert_eq!(DpkgPackageStatus::from_dpkg(at_rest), None, "{at_rest}");
         }
+    }
+
+    /// The largest repair outcome the daemon can produce: one log entry whose
+    /// two tails are each a full truncated tail of control characters, which
+    /// JSON writes as six bytes apiece, and the longest remaining state.
+    #[test]
+    fn the_largest_repair_outcome_the_daemon_can_produce_is_accepted() {
+        let tail = format!("[truncated]\n{}", "\u{1}".repeat(MAX_LOG_OUTPUT_BYTES));
+        let outcome = RepairOutcome {
+            protocol_version: PROTOCOL_VERSION,
+            status: RepairStatus::Failed {
+                error_key: "daemon.error.repair_failed".to_string(),
+            },
+            log: vec![LogEntry {
+                argv: vec!["dpkg".to_string(); 5],
+                exit_code: 1,
+                stdout_tail: tail.clone(),
+                stderr_tail: tail,
+                started_at_unix: u64::MAX,
+                finished_at_unix: u64::MAX,
+            }],
+            remaining: Some(PackageSystemState {
+                protocol_version: PROTOCOL_VERSION,
+                journal_pending: true,
+                packages: (0..MAX_REPORTED_PACKAGES)
+                    .map(|index| InterruptedPackage {
+                        package: format!("{index:0>128}"),
+                        status: DpkgPackageStatus::TriggersAwaited,
+                    })
+                    .collect(),
+                omitted: u32::MAX,
+            }),
+        };
+        let document = outcome.to_json().unwrap();
+        assert!(document.len() > 6 * 2 * MAX_LOG_OUTPUT_BYTES);
+        assert_eq!(RepairOutcome::from_json(&document).unwrap(), outcome);
+    }
+
+    /// A repair runs one command, so an outcome carrying more than one log
+    /// entry did not come from this daemon.
+    #[test]
+    fn a_repair_outcome_with_more_than_one_log_entry_is_refused() {
+        let entry = LogEntry {
+            argv: vec!["dpkg".to_string()],
+            exit_code: 0,
+            stdout_tail: String::new(),
+            stderr_tail: String::new(),
+            started_at_unix: 1,
+            finished_at_unix: 2,
+        };
+        let outcome = RepairOutcome {
+            protocol_version: PROTOCOL_VERSION,
+            status: RepairStatus::Repaired,
+            log: vec![entry.clone(), entry],
+            remaining: None,
+        };
+        assert!(matches!(
+            RepairOutcome::from_json(&outcome.to_json().unwrap()),
+            Err(IpcError::TooManyLogEntries { .. })
+        ));
+    }
+
+    #[test]
+    fn an_unknown_field_inside_a_repair_status_is_refused() {
+        let document = r#"{
+            "protocol_version": 1,
+            "status": { "state": "repaired", "also_run": "dpkg --purge -a" },
+            "log": []
+        }"#;
+        assert!(matches!(
+            RepairOutcome::from_json(document),
+            Err(IpcError::Malformed { .. })
+        ));
+        let document = r#"{
+            "protocol_version": 1,
+            "status": { "state": "failed", "detail": { "error_key": "daemon.error.repair_failed", "x": 1 } },
+            "log": []
+        }"#;
+        assert!(matches!(
+            RepairOutcome::from_json(document),
+            Err(IpcError::Malformed { .. })
+        ));
     }
 
     #[test]

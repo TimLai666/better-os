@@ -633,7 +633,7 @@ static EN: Copy = Copy {
     repair_result_repaired: "Repaired. dpkg finished every package it had left unfinished.",
     repair_result_still_interrupted: "dpkg finished, but some packages are still unfinished and need to be reinstalled or removed.",
     repair_result_nothing: "Nothing needed repairing.",
-    repair_result_failed: "The repair did not finish.",
+    repair_result_failed: "The repair did not finish. If it keeps failing, run sudo dpkg --configure -a in a terminal.",
     demo_mode_banner: "Demo mode: nothing on this machine will be changed",
     downloading_progress: "Downloading",
 
@@ -1006,7 +1006,7 @@ static ZH_TW: Copy = Copy {
     repair_result_repaired: "已修復，dpkg 完成了所有中斷的套件。",
     repair_result_still_interrupted: "dpkg 已執行完，但仍有套件沒有完成，需要重新安裝或移除。",
     repair_result_nothing: "沒有需要修復的項目。",
-    repair_result_failed: "修復沒有完成。",
+    repair_result_failed: "修復沒有完成。如果一直失敗，請在終端機執行 sudo dpkg --configure -a。",
     demo_mode_banner: "示範模式：不會變更這台機器上的任何東西",
     downloading_progress: "下載中",
 

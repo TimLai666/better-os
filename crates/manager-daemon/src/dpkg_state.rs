@@ -26,9 +26,12 @@ pub const DPKG_ADMIN_DIR: &str = "/var/lib/dpkg";
 /// daemon that cannot read dpkg's record has no business saying nothing is
 /// wrong with it. A missing `updates/` directory holds no journal entries.
 pub fn read(admin_dir: &Path) -> Result<PackageSystemState, DaemonError> {
-    let status = fs::read_to_string(admin_dir.join("status"))
+    let status = fs::read(admin_dir.join("status"))
         .map_err(|error| DaemonError::HostUnreadable(format!("dpkg status file: {error}")))?;
-    let (packages, omitted) = unfinished_packages(&status);
+    // The file is not promised to be UTF-8: a maintainer's name or a
+    // description can be in any encoding. The two fields read here are ASCII
+    // in every valid stanza, so a lossy decode loses nothing they carry.
+    let (packages, omitted) = unfinished_packages(&String::from_utf8_lossy(&status));
     Ok(PackageSystemState {
         protocol_version: PROTOCOL_VERSION,
         journal_pending: journal_pending(&admin_dir.join("updates"))?,
@@ -226,6 +229,31 @@ Status: install ok triggers-awaited\n";
         let state = read(&root).unwrap();
         assert!(!state.journal_pending);
         assert_eq!(state.packages.len(), 5);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A maintainer's name or a description in Latin-1 is ordinary in a real
+    /// status file. Refusing the whole file for it would refuse every
+    /// transaction on that machine, which apt itself does not do.
+    #[test]
+    fn a_status_file_with_bytes_that_are_not_utf8_is_still_read() {
+        let root = scratch("latin1");
+        let mut status = b"Package: libfoo\nStatus: install ok installed\nMaintainer: Ren\xe9 \xff\n Description: caf\xe9\n\n".to_vec();
+        status.extend_from_slice(
+            b"Package: tzdata\nStatus: install ok unpacked\nDescription: \xfe\n",
+        );
+        fs::write(root.join("status"), status).unwrap();
+
+        let state = read(&root).unwrap();
+
+        assert_eq!(
+            state.packages,
+            vec![InterruptedPackage {
+                package: "tzdata".to_string(),
+                status: DpkgPackageStatus::Unpacked,
+            }]
+        );
+        state.validate().unwrap();
         let _ = fs::remove_dir_all(&root);
     }
 

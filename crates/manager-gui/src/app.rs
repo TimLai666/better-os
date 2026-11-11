@@ -642,10 +642,7 @@ impl ManagerApp {
         operation: DesiredOperation,
         cx: &mut Context<Self>,
     ) {
-        match self
-            .manager
-            .plan_in_mode(&self.state, id, operation, self.execution)
-        {
+        match self.plan_operation(id, operation) {
             Ok(plan) => {
                 self.pending_plan = Some(plan);
                 self.planning_error = None;
@@ -653,6 +650,39 @@ impl ManagerApp {
             }
             Err(_) => self.show_planning_error(Page::Components, cx),
         }
+    }
+
+    /// The one planning path for an operation on one component.
+    ///
+    /// A real window asks dpkg first, so a package it holds at a version
+    /// nothing can order is refused before a plan exists (ticket 69). A demo
+    /// plans from its fabricated state and never reads the host.
+    fn plan_operation(
+        &self,
+        id: &ComponentId,
+        operation: DesiredOperation,
+    ) -> Result<TransactionPlan, manager_core::ManagerError> {
+        match self.execution {
+            ExecutionMode::Mock => {
+                self.manager
+                    .plan_in_mode(&self.state, id, operation, ExecutionMode::Mock)
+            }
+            ExecutionMode::Real => self.manager.plan_on_host(
+                &self.state,
+                id,
+                operation,
+                ExecutionMode::Real,
+                &DpkgProbe,
+            ),
+        }
+    }
+
+    /// The doctor finding for a component dpkg holds at a version nothing can
+    /// order, from the last reconciliation.
+    pub(crate) fn unorderable_check(&self, id: &ComponentId) -> Option<&DoctorCheck> {
+        self.unorderable
+            .iter()
+            .find(|check| check.component.as_ref() == Some(id))
     }
 
     pub(crate) fn begin_install(&mut self, cx: &mut Context<Self>) {
@@ -850,10 +880,7 @@ impl ManagerApp {
         operation: DesiredOperation,
         cx: &mut Context<Self>,
     ) {
-        match self
-            .manager
-            .plan_in_mode(&self.state, &component, operation, self.execution)
-        {
+        match self.plan_operation(&component, operation) {
             Ok(plan) => {
                 self.pending_plan = Some(plan);
                 self.planning_error = None;

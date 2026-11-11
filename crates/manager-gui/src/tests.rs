@@ -1655,6 +1655,21 @@ mod package_system_repair {
         );
     }
 
+    /// The daemon's sandbox can be why dpkg failed (ADR 0014). A failed repair
+    /// says how to run the same command from a terminal instead.
+    #[test]
+    fn a_failed_repair_names_the_terminal_command_in_both_locales() {
+        let failed = RepairResult::Failed {
+            evidence: FailureEvidence::new("daemon.error.repair_failed"),
+        };
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            assert!(
+                repair_result_line(locale, &failed).contains("sudo dpkg --configure -a"),
+                "{locale:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_repair_copy_exists_in_both_locales() {
         for locale in [Locale::EnUs, Locale::ZhTw] {
@@ -1801,5 +1816,46 @@ mod unorderable_host_versions {
             page.contains("DoctorCheckKind::UnorderableHostVersion => c.check_unorderable_version")
         );
         assert!(page.contains("unorderable_detail(self.locale, check)"));
+    }
+
+    /// Nothing is planned for such a package: the window plans a real
+    /// operation through `plan_on_host`, which refuses it, and no screen
+    /// offers Install for it. The component page says why instead.
+    #[test]
+    fn the_window_neither_plans_nor_offers_an_unorderable_package() {
+        let app = include_str!("app.rs");
+        assert!(
+            !app.contains(".plan_in_mode(&self.state, id, operation, self.execution)")
+                && !app
+                    .contains(".plan_in_mode(&self.state, &component, operation, self.execution)"),
+            "a component operation is planned without asking dpkg"
+        );
+        let plan = app
+            .split("fn plan_operation(")
+            .nth(1)
+            .expect("one planning path for component operations")
+            .split("\n    }\n")
+            .next()
+            .unwrap();
+        assert!(plan.contains(".plan_on_host("), "{plan}");
+        assert!(plan.contains("&DpkgProbe"), "{plan}");
+
+        let card = include_str!("components.rs");
+        let button = card
+            .split("fn component_action_button(")
+            .nth(1)
+            .unwrap()
+            .split("match component.state")
+            .next()
+            .unwrap();
+        assert!(
+            button.contains("self.unorderable_check(&component.core_id)"),
+            "{button}"
+        );
+
+        let detail = include_str!("pages_main.rs");
+        assert!(detail.contains(".unorderable_check(&component.core_id)"));
+        assert!(detail.contains("unorderable.is_none()"));
+        assert!(detail.contains("unorderable_detail(self.locale, check)"));
     }
 }

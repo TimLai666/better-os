@@ -82,6 +82,12 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         }
     }
 
+    /// The flag that is set while a transaction or a repair runs, for the
+    /// idle timer in `main.rs` to read.
+    pub fn activity(&self) -> Arc<AtomicBool> {
+        self.running.clone()
+    }
+
     /// Claims the one running slot, or refuses as busy. The slot is released
     /// when the returned guard is dropped, including by a panic.
     fn begin_exclusive(&self) -> Result<RunningGuard, fdo::Error> {
@@ -299,6 +305,27 @@ impl<A: Authorizer + 'static> ManagerService<A> {
     }
 }
 
+/// Returns once the daemon may exit: `idle` has passed with no transaction or
+/// repair running.
+///
+/// A fixed sleep from startup used to end the process at 120 seconds whatever
+/// it was doing, and a repair or a long install could take longer than that;
+/// the caller then got a dropped connection instead of its outcome. While
+/// something runs the timer waits, and once it finishes the idle period starts
+/// again, so the caller has time to ask what happened.
+pub async fn wait_until_idle(running: Arc<AtomicBool>, idle: std::time::Duration) {
+    let poll = idle.min(std::time::Duration::from_secs(1));
+    loop {
+        tokio::time::sleep(idle).await;
+        if !running.load(Ordering::SeqCst) {
+            return;
+        }
+        while running.load(Ordering::SeqCst) {
+            tokio::time::sleep(poll).await;
+        }
+    }
+}
+
 /// Releases the single-transaction flag even if the work panicked.
 struct RunningGuard(Arc<AtomicBool>);
 
@@ -408,6 +435,90 @@ mod tests {
         // The repair gave the flag back when it finished.
         assert!(service.begin_exclusive().is_ok());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The daemon exits after an idle period. A repair that runs past that
+    /// period must still reach its caller, so the timer waits for it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_idle_timer_waits_for_a_repair_that_outlasts_it() {
+        use crate::apt::FakeAptDriver;
+        use crate::authorize::FakeAuthorizer;
+        use crate::health::FakeHealthProbe;
+        use crate::host::FixedHostProbe;
+        use manager_ipc::{DpkgPackageStatus, InterruptedPackage, PackageSystemState};
+        use std::time::Duration;
+
+        let root =
+            std::env::temp_dir().join(format!("better-os-service-idle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let artifacts = Arc::new(ArtifactStore::new(root.join("archives")));
+        let journal = Arc::new(Journal::new(root.join("state")));
+        let apt = Arc::new(
+            FakeAptDriver::new()
+                .with_package_system(PackageSystemState {
+                    protocol_version: PROTOCOL_VERSION,
+                    journal_pending: true,
+                    packages: vec![InterruptedPackage {
+                        package: "linux-image-6.8.0-31-generic".to_string(),
+                        status: DpkgPackageStatus::HalfConfigured,
+                    }],
+                    omitted: 0,
+                })
+                // Four times the idle period below.
+                .with_configure_duration(Duration::from_millis(400)),
+        );
+        let executor = Arc::new(Executor {
+            apt: apt.clone(),
+            host: Arc::new(FixedHostProbe::ubuntu_2404()),
+            health: Arc::new(FakeHealthProbe::empty()),
+            artifacts: artifacts.clone(),
+            journal: journal.clone(),
+        });
+        let service = Arc::new(ManagerService::new(
+            FakeAuthorizer(true),
+            executor,
+            artifacts,
+            journal,
+        ));
+
+        let repairing = {
+            let service = service.clone();
+            tokio::spawn(async move { service.run_repair().await })
+        };
+        // Let the repair claim the running slot before the timer starts.
+        while !service.activity().load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let idle = tokio::spawn(wait_until_idle(
+            service.activity(),
+            Duration::from_millis(100),
+        ));
+
+        let first = tokio::select! {
+            _ = idle => "idle",
+            _ = tokio::time::sleep(Duration::from_millis(300)) => "still waiting",
+        };
+        assert_eq!(first, "still waiting", "the daemon would exit mid-repair");
+
+        let outcome = repairing.await.unwrap().unwrap();
+        assert_eq!(
+            manager_ipc::RepairOutcome::from_json(&outcome)
+                .unwrap()
+                .status,
+            manager_ipc::RepairStatus::Repaired
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn the_idle_timer_ends_after_the_idle_period_when_nothing_runs() {
+        let running = Arc::new(AtomicBool::new(false));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            wait_until_idle(running, std::time::Duration::from_millis(50)),
+        )
+        .await
+        .expect("an idle daemon exits");
     }
 
     #[test]
