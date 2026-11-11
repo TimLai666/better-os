@@ -13,6 +13,8 @@ dconf-write = ["dep:zbus", "dep:tokio"]
 
 [dependencies]
 app-catalog-core.workspace = true
+# Loading the shared application catalog a restore checks against.
+app-catalog-platform.workspace = true
 app-chooser-core.workspace = true
 better-core.workspace = true
 serde.workspace = true

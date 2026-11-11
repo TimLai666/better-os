@@ -3,11 +3,13 @@
 //!
 //! A restore puts back a captured desktop entry. When that application has been
 //! uninstalled since, writing its ID would point the type at nothing, so the
-//! engine asks here first. The answer comes from `app-catalog-core`'s one
-//! catalog; nothing in this crate parses a `.desktop` file or walks an
-//! application directory.
+//! engine asks here first. The answer comes from the one shared catalog:
+//! `app-catalog-platform` finds and reads the application directories, and
+//! `app-catalog-core` parses the entries. Nothing in this crate parses a
+//! `.desktop` file or walks an application directory itself.
 
 use app_catalog_core::{Catalog, DesktopEnvironments, DesktopId, Locale, MimeType};
+use app_catalog_platform::{HostProbe, SessionEnvironment, load_catalog};
 use serde::{Deserialize, Serialize};
 
 /// One installed application a person can choose instead of one that is gone.
@@ -48,6 +50,15 @@ impl ApplicationCatalog {
             environments,
             locale,
         }
+    }
+
+    /// The catalog this session's application directories hold right now:
+    /// `$XDG_DATA_HOME/applications` and each `$XDG_DATA_DIRS` entry, read the
+    /// way every other Better OS surface reads them.
+    pub fn for_session() -> Self {
+        let session = SessionEnvironment::from_env();
+        let catalog = load_catalog(&session, &HostProbe::from_env());
+        Self::new(catalog, session.environments, session.locale)
     }
 }
 

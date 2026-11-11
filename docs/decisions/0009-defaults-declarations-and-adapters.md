@@ -41,6 +41,20 @@ type captured as having no default leaves it with none and is verified by
 reading again like any other restore. This holds for a single type and for each
 type of a group restored type by type.
 
+**Ticket 72 decided what restore does when the previous application has been
+uninstalled.** The owner decided on 2026-09-27 that restore consults the shared
+application catalog. The production adapter set carries the catalog this
+session's application directories hold, loaded through `app-catalog-platform`
+when the session opens, and the engine looks every captured desktop entry up in
+it both while planning and again just before writing. An entry the catalog no
+longer holds is its own reported class, `PreviousApplicationMissing`, naming
+the application and the installed alternatives for the same types, and nothing
+is written for it. In a group restored type by type, that type is reported and
+the others are restored. The person can choose one of the alternatives or leave
+the type without a default, which is ticket 71's removal; the choice travels
+with the entry confirmations and is planned again. A simulated desktop carries
+no catalog and checks nothing.
+
 ## Context
 
 Issue #10 lists seven decisions that must not be made silently, and ticket 27
@@ -160,11 +174,6 @@ These cannot be decided yet and are not decided here:
   is a question about the review screen, so it belongs with ticket 28. The model
   supports either: an integration may name several keys, and a component may
   declare several integrations.
-- **What happens when the previous application has been uninstalled.** Restore
-  currently writes the captured desktop entry whether or not it is still
-  installed, and the verifying read reports what the system then says. Deciding
-  properly needs the shared application catalog consulted at restore time, which
-  is a behavior change, not a detail.
 - **Whether a new baseline can be promoted automatically.** Today a new baseline
   is only ever created by an explicit apply of an integration nothing was
   captured for. Automatic promotion would let Better OS decide that somebody

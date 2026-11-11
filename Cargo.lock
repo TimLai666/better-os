@@ -1637,6 +1637,7 @@ name = "defaults-platform"
 version = "0.2.8"
 dependencies = [
  "app-catalog-core",
+ "app-catalog-platform",
  "app-chooser-core",
  "better-core",
  "serde",

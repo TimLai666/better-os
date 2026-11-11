@@ -12,7 +12,9 @@ use std::io;
 use std::path::PathBuf;
 
 use better_core::defaults::AdapterId;
-use defaults_platform::{AdapterSet, DconfAdapter, MockDesktop, XdgDefaultAppAdapter};
+use defaults_platform::{
+    AdapterSet, ApplicationCatalog, DconfAdapter, MockDesktop, XdgDefaultAppAdapter,
+};
 use thiserror::Error;
 
 /// Whether a run changes the desktop or a simulation of it.
@@ -110,7 +112,9 @@ impl AdapterSession {
 /// Every other integration kind has no adapter at all, which is how the planner
 /// reports manual action required instead of guessing a command. The two GNOME
 /// adapters read the user's dconf database and write through the session's
-/// dconf service, which they reach only when a change is actually made.
+/// dconf service, which they reach only when a change is actually made. A
+/// restore checks every captured desktop entry against the applications this
+/// session has installed, read when the session opens.
 fn production_adapters() -> Result<AdapterSet, AdapterSessionError> {
     let writable = XdgDefaultAppAdapter::for_user()
         .map_err(|error| AdapterSessionError::DefaultApplications(error.to_string()))?;
@@ -122,7 +126,8 @@ fn production_adapters() -> Result<AdapterSet, AdapterSessionError> {
         .with(Box::new(DconfAdapter::for_user(AdapterId::GnomeKeybinding)))
         .with(Box::new(DconfAdapter::for_user(
             AdapterId::GnomeDesktopSetting,
-        ))))
+        )))
+        .with_applications(Box::new(ApplicationCatalog::for_session())))
 }
 
 /// Where a simulated desktop is kept when a caller wants one that survives.

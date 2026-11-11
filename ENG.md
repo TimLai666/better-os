@@ -42,7 +42,8 @@ app-catalog-core ──> app-catalog-platform      one desktop-entry scanner, sh
         ├──> app-chooser-core ──> app-chooser-gui      MIME ranking, AppSelection
         ├──> launcher-core ──────> launcher-platform ──> launcher-gui
         │       index, matching, deterministic ranking
-        └──> files-core ─────────> files-gui           Applications location
+        ├──> files-core ─────────> files-gui           Applications location
+        └──> defaults-platform                          restore checks what is installed
 
 storage-core ──> storage-platform ──> storage-service ──> files-gui
    device identity, Direct Removal policy, state machine, typed device states
@@ -95,7 +96,8 @@ suite, not only the two that exist today.
 
 - **One catalog, no second scanner.** `app-catalog-core` and
   `app-catalog-platform` are the only place a `.desktop` file is parsed. The
-  chooser, the launcher index, and the Applications location consume records.
+  chooser, the launcher index, the Applications location, and Better Defaults'
+  restore consume records.
   Desktop entries are untrusted input and are validated before any consumer sees
   them, the same way `better-core` treats a component manifest.
 - **Launching never builds a shell string.** Every component that starts an
