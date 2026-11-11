@@ -23,10 +23,10 @@ use crate::{
     app::ManagerApp,
     defaults_app::now_seconds,
     defaults_model::{
-        DefaultsRow, DefaultsSummary, PrimaryAction, ResultTone, ReviewComponent, ReviewEntry,
-        SecondaryAction, aggregate_label, component_rows, integration_state_label, kind_label,
-        outcome_headline, relative_time, result_rows, session_effect_label, skip_reason_label,
-        warning_label,
+        DefaultsRow, DefaultsSummary, MissingApplication, PrimaryAction, ResultTone,
+        ReviewComponent, ReviewEntry, SecondaryAction, aggregate_label, component_rows,
+        integration_state_label, kind_label, outcome_headline, relative_time, result_rows,
+        session_effect_label, skip_reason_label, warning_label,
     },
     i18n::copy,
     model::Page,
@@ -804,6 +804,16 @@ impl ManagerApp {
                     })
                     .collect::<Vec<_>>(),
             )
+            .children(
+                entry
+                    .missing
+                    .iter()
+                    .enumerate()
+                    .map(|(index, missing)| {
+                        self.defaults_missing_application(entry, index, missing, cx)
+                    })
+                    .collect::<Vec<_>>(),
+            )
             .when(entry.requires_confirmation, |view| {
                 view.child(
                     Checkbox::new(SharedString::from(entry.element_id("defaults-confirm")))
@@ -814,6 +824,85 @@ impl ManagerApp {
                         })),
                 )
             })
+            .into_any_element()
+    }
+
+    /// One application a restore cannot put back: which one, and a button for
+    /// each installed application that opens the type plus one that leaves it
+    /// without a default. The chosen one is drawn as the primary button, and
+    /// pressing it again takes the choice back.
+    fn defaults_missing_application(
+        &self,
+        entry: &ReviewEntry,
+        index: usize,
+        missing: &MissingApplication,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = copy(self.locale);
+        let busy = self.defaults.busy;
+        let buttons = missing
+            .options
+            .iter()
+            .enumerate()
+            .map(|(position, option)| {
+                let component = entry.component.clone();
+                let integration = entry.integration.clone();
+                let key = missing.key.clone();
+                let choice = option.choice.clone();
+                Button::new(SharedString::from(format!(
+                    "{}-{index}-{position}",
+                    entry.element_id("defaults-restore-instead")
+                )))
+                .label(option.label.clone())
+                .when(option.chosen, |button| button.primary())
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.choose_defaults_restore(
+                        &component,
+                        &integration,
+                        key.as_deref(),
+                        choice.clone(),
+                        cx,
+                    );
+                }))
+                .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        // The last option is always clearing, so fewer than two means no
+        // installed application opens the type.
+        let no_alternative = missing.options.len() < 2;
+        v_flex()
+            .w_full()
+            .min_w_0()
+            .gap_1()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().warning)
+                    .child(missing.headline.clone()),
+            )
+            .when(no_alternative, |view| {
+                view.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(c.no_alternative_application),
+                )
+            })
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(c.restore_instead),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_2()
+                    .flex_wrap()
+                    .children(buttons),
+            )
             .into_any_element()
     }
 

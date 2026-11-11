@@ -325,3 +325,50 @@ fn a_mixed_group_is_previewed_type_by_type_and_restored_type_by_type() {
     assert!(cli.desktop().contains("org.gnome.eog.desktop"));
     assert!(cli.desktop().contains("org.gnome.gThumb.desktop"));
 }
+
+/// A `--restore-to` the plan cannot use stops the command before it writes.
+#[test]
+fn a_restore_choice_that_matches_nothing_fails_and_changes_nothing() {
+    let cli = Cli::new();
+    cli.run(&["apply"]);
+    let before = cli.desktop();
+    let run = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_manager-cli"))
+            .env("XDG_CURRENT_DESKTOP", "GNOME")
+            .args(["--execution", "mock"])
+            .args(["--state-path", &cli.path("state.json")])
+            .arg("defaults")
+            .args(["--manifest", &cli.path("better-files.yaml")])
+            .args(["--snapshot-dir", &cli.path("snapshots")])
+            .args(["--mock-desktop", &cli.path("desktop.json")])
+            .args(arguments)
+            .output()
+            .expect("the manager binary runs")
+    };
+
+    // Nautilus is not missing here, so the choice has nothing to replace.
+    let restore = run(&[
+        "--restore-to",
+        "better-files:default-file-manager=none",
+        "restore",
+    ]);
+    assert!(!restore.status.success());
+    let stderr = String::from_utf8_lossy(&restore.stderr);
+    assert!(
+        stderr.contains("--restore-to better-files:default-file-manager was not used"),
+        "{stderr}"
+    );
+    assert_eq!(cli.desktop(), before, "nothing was restored");
+
+    let apply = run(&[
+        "--restore-to",
+        "better-files:default-file-manager=none",
+        "apply",
+    ]);
+    assert!(!apply.status.success());
+    assert!(String::from_utf8_lossy(&apply.stderr).contains("only for"));
+
+    let help = run(&["--help"]);
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(help.contains("--restore-to"), "{help}");
+}

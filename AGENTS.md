@@ -306,11 +306,12 @@ GUI or dependency compiles when the relevant command was not executed.
   The model and the mock backend carry all three; making them live is one table
   row in `touchpad-platform`'s GNOME backend when a GNOME that has the key is a
   supported target.
-- Decide what restore should do when the previously selected application has
-  been uninstalled. Restore writes the captured desktop entry either way and
-  reports what the verifying read then saw, so the Defaults review screen has no
-  "previous target no longer exists" class to show. Deciding needs the shared
-  application catalog consulted at restore time.
+- Restore checks the shared application catalog and writes nothing for an
+  application that is gone; the person chooses another or clears the default.
+  Two limits: an entry whose `TryExec` program is missing still counts as
+  installed, and the catalog is read from the process's own `XDG_DATA_DIRS`, so
+  a manager started without the Flatpak paths reports Flatpak applications as
+  gone. The choice buttons in the window have not been looked at.
 - Better Files reads device state from `org.betteros.Storage1` through
   `storage_service::StorageClient`, and runs the same `storage-core` state
   machine in its own process when that service is absent. The window says which
@@ -346,10 +347,12 @@ GUI or dependency compiles when the relevant command was not executed.
   their manifests name, and neither has a stored baseline or a CI job that runs
   the harness and compares against the declared maximum regression. A budget
   nobody checks is documentation, not a gate.
-- Decide whether `app-chooser-core` should offer a typed "remove this
-  association" operation. Without one, restoring an XDG default that previously
-  had no owner reports Manual action required rather than clearing the line, and
-  no second `mimeapps.list` editor may be written.
+- `app-chooser-core` writes `mimeapps.list` without guarding against another
+  program changing it between the read and the rename. The rename also replaces
+  a symbolic link with a regular file and replaces a file the person made
+  read-only. Setting a default always worked this way, and removing one now
+  takes the same path. Undoing a removal refuses when it cannot put the line
+  back cleanly; no screen offers that undo yet.
 - Better Files runs its operations as durable jobs now: `files-operations` owns
   copy, move, duplicate, rename, bulk rename, trash, restore, permanent delete,
   checksum, compress, and extract, and a job survives every handle to it being

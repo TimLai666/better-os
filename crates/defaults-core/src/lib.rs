@@ -26,10 +26,14 @@ pub mod plan;
 pub mod status;
 
 pub use adapters::{AdapterMode, AdapterSession, AdapterSessionError};
+/// The installed application a restore offers instead of one that is gone. It
+/// is named here so a surface that shows it need not depend on the adapters.
+pub use defaults_platform::ApplicationChoice;
 pub use engine::DefaultsEngine;
 pub use plan::{
     Confirmations, DefaultsOutcome, DefaultsPlan, EntryOutcome, EntryResult, KeyOutcome,
-    PLAN_SCHEMA_VERSION, PlanAction, PlanEntry, PlanKind, PlanWarning, Selection, SkipReason,
+    PLAN_SCHEMA_VERSION, PlanAction, PlanEntry, PlanKind, PlanWarning, RestoreChoice, Selection,
+    SkipReason,
 };
 pub use status::{
     AggregateState, ComponentDefaults, ComponentReadiness, DefaultsReport, IntegrationState,

@@ -60,3 +60,35 @@ This direction and direction 3 pull apart: a Debian-based distribution keeps
 `.deb` and can keep GNOME, while Omarchy needs pacman and Hyprland. The ADR
 that replaces "not a distribution fork" has to say which comes first and
 whether both are goals.
+
+## 5. Better Patch: known Linux desktop faults, found and fixed
+
+Proposed by the owner on 2026-11-11 after two faults on one machine in one
+evening, both reproduced and both fixed there.
+
+- Every label in an Electron application was blank. The user's fontconfig
+  cache was corrupt: every font query answered with one file and an unknown
+  style. `fc-cache -f` rebuilt it and the text came back.
+- The cursor was half size over an Electron 32 window on a display scaled to
+  200%. On native Wayland that Electron does not scale its cursor, and
+  `XCURSOR_SIZE` changes nothing. Running the application through XWayland
+  fixed it with the picture still sharp. For a Flatpak that is a per-user
+  override: `--nosocket=fallback-x11 --socket=x11` and
+  `ELECTRON_OZONE_PLATFORM_HINT=x11`; `--socket=x11` alone leaves `DISPLAY`
+  empty while `fallback-x11` is granted. Two limits: it was verified on a
+  Flatpak only, and the override should stop applying once the application
+  ships an Electron that scales its cursor.
+
+The idea is a component that carries a list of known faults. Each entry can
+detect its fault on this machine, say what is wrong in plain words, apply its
+fix, check that the fix worked, and undo it. Open before planning:
+
+- Whether this is a new component or a part of Better Defaults, whose engine
+  already previews, applies, verifies, and restores.
+- The rule for an entry. A fix is typed code in the repository with a test,
+  never a script fetched or supplied at run time, and never a privileged
+  change outside the daemon.
+- What counts as worth an entry: a fault someone reproduced and a fix someone
+  verified, starting with the two above.
+- How entries stay correct across distributions and desktops once Omarchy is
+  supported.

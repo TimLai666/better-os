@@ -18,6 +18,7 @@
 //! - Verification is a second read, never an assumption. [`DefaultsAdapter::
 //!   verify`] re-reads through the declared verify adapter and compares.
 
+pub mod applications;
 pub mod dconf;
 #[cfg(feature = "dconf-write")]
 pub mod dconf_writer;
@@ -34,6 +35,12 @@ use better_core::defaults::{
 use better_core::manifest::ComponentId;
 use serde::{Deserialize, Serialize};
 
+/// The catalog's own validation for the two identifiers a person can type
+/// when choosing what a restore writes.
+pub use app_catalog_core::{DesktopId, MimeType};
+pub use applications::{
+    ApplicationCatalog, ApplicationChoice, InstalledApplications, LazyApplications,
+};
 pub use dconf::DconfAdapter;
 pub use mock::{InMemoryAdapter, MockBehavior, MockDesktop};
 pub use xdg::XdgDefaultAppAdapter;
@@ -262,14 +269,18 @@ pub fn collapse(per_key: Vec<KeyObservation>) -> ObservedValue {
     ObservedValue::Mixed { per_key }
 }
 
-/// The adapters available to a run.
+/// The adapters available to a run, and the application catalog a restore
+/// checks a captured desktop entry against.
 ///
 /// A missing entry is not an error here. It is the fact that an integration
 /// kind has no production adapter, which the planner turns into manual action
-/// required rather than a guessed command.
+/// required rather than a guessed command. A set with no catalog checks
+/// nothing, which is what a simulated desktop wants: its applications are not
+/// the machine's.
 #[derive(Default)]
 pub struct AdapterSet {
     adapters: BTreeMap<AdapterId, Box<dyn DefaultsAdapter>>,
+    applications: Option<Box<dyn InstalledApplications>>,
 }
 
 impl AdapterSet {
@@ -300,6 +311,16 @@ impl AdapterSet {
 
     pub fn ids(&self) -> impl Iterator<Item = AdapterId> + '_ {
         self.adapters.keys().copied()
+    }
+
+    /// The same set, checking restores against `applications`.
+    pub fn with_applications(mut self, applications: Box<dyn InstalledApplications>) -> Self {
+        self.applications = Some(applications);
+        self
+    }
+
+    pub fn applications(&self) -> Option<&dyn InstalledApplications> {
+        self.applications.as_deref()
     }
 
     /// An adapter for every declared id, mutating nothing outside its own

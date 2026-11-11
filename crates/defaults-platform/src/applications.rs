@@ -1,0 +1,219 @@
+//! What the shared application catalog says is installed, as a restore needs
+//! it.
+//!
+//! A restore puts back a captured desktop entry. When that application has been
+//! uninstalled since, writing its ID would point the type at nothing, so the
+//! engine asks here first. The answer comes from the one shared catalog:
+//! `app-catalog-platform` finds and reads the application directories, and
+//! `app-catalog-core` parses the entries. Nothing in this crate parses a
+//! `.desktop` file or walks an application directory itself.
+
+use app_catalog_core::{Catalog, DesktopEnvironments, DesktopId, Locale, MimeType};
+use app_catalog_platform::{HostProbe, SessionEnvironment, load_catalog};
+use serde::{Deserialize, Serialize};
+
+/// One installed application a person can choose instead of one that is gone.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationChoice {
+    pub desktop_id: String,
+    pub name: String,
+}
+
+/// The installed applications a restore checks against.
+pub trait InstalledApplications {
+    /// Whether the catalog holds an application with this desktop ID. An ID
+    /// that is not a valid desktop ID is never installed.
+    fn is_installed(&self, desktop_id: &str) -> bool;
+
+    /// The applications that declare every one of `types`, in the order a
+    /// person would look for them. A type that is not a MIME type has none.
+    fn for_types(&self, types: &[String]) -> Vec<ApplicationChoice>;
+}
+
+/// The shared catalog, with the session details that decide which of its
+/// records a person would be offered.
+#[derive(Clone, Debug)]
+pub struct ApplicationCatalog {
+    catalog: Catalog,
+    environments: DesktopEnvironments,
+    locale: Option<Locale>,
+}
+
+impl ApplicationCatalog {
+    pub fn new(
+        catalog: Catalog,
+        environments: DesktopEnvironments,
+        locale: Option<Locale>,
+    ) -> Self {
+        Self {
+            catalog,
+            environments,
+            locale,
+        }
+    }
+
+    /// The catalog this session's application directories hold right now:
+    /// `$XDG_DATA_HOME/applications` and each `$XDG_DATA_DIRS` entry, read the
+    /// way every other Better OS surface reads them.
+    pub fn for_session() -> Self {
+        let session = SessionEnvironment::from_env();
+        let catalog = load_catalog(&session, &HostProbe::from_env());
+        Self::new(catalog, session.environments, session.locale)
+    }
+}
+
+impl InstalledApplications for ApplicationCatalog {
+    fn is_installed(&self, desktop_id: &str) -> bool {
+        DesktopId::new(desktop_id).is_ok_and(|id| self.catalog.get(&id).is_some())
+    }
+
+    fn for_types(&self, types: &[String]) -> Vec<ApplicationChoice> {
+        let Some(types) = types
+            .iter()
+            .map(|value| MimeType::parse(value))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Vec::new();
+        };
+        if types.is_empty() {
+            return Vec::new();
+        }
+        self.catalog
+            .sorted_by_name(self.locale.as_ref(), &self.environments)
+            .into_iter()
+            .filter(|record| types.iter().all(|mime| record.supports_mime_type(mime)))
+            .map(|record| ApplicationChoice {
+                desktop_id: record.desktop_id.as_str().to_string(),
+                name: record.display_name(self.locale.as_ref()).to_string(),
+            })
+            .collect()
+    }
+}
+
+/// A catalog that is not read until something asks about it.
+///
+/// Reading the application directories is the slow, untrusted part, and only a
+/// restore needs it. Status, apply, and verify never ask, so with this in the
+/// adapter set they never read a directory at all.
+pub struct LazyApplications<F> {
+    catalog: std::cell::LazyCell<ApplicationCatalog, F>,
+}
+
+impl<F: FnOnce() -> ApplicationCatalog> LazyApplications<F> {
+    pub fn new(load: F) -> Self {
+        Self {
+            catalog: std::cell::LazyCell::new(load),
+        }
+    }
+}
+
+impl<F: FnOnce() -> ApplicationCatalog> InstalledApplications for LazyApplications<F> {
+    fn is_installed(&self, desktop_id: &str) -> bool {
+        self.catalog.is_installed(desktop_id)
+    }
+
+    fn for_types(&self, types: &[String]) -> Vec<ApplicationChoice> {
+        self.catalog.for_types(types)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use app_catalog_core::{CatalogBuilder, DirectoryRank, EntryScope};
+    use std::path::PathBuf;
+
+    fn catalog(entries: &[(&str, &str)]) -> ApplicationCatalog {
+        let mut builder = CatalogBuilder::default();
+        let rank = DirectoryRank {
+            rank: 0,
+            scope: EntryScope::System,
+        };
+        for (id, body) in entries {
+            builder.add_entry(
+                DesktopId::new(*id).unwrap(),
+                PathBuf::from(format!("/fixture/applications/{id}")),
+                &rank,
+                body.as_bytes(),
+            );
+        }
+        ApplicationCatalog::new(builder.build(), DesktopEnvironments::parse("GNOME"), None)
+    }
+
+    fn entry(name: &str, types: &str, extra: &str) -> String {
+        format!(
+            "[Desktop Entry]\nType=Application\nName={name}\nExec=app %U\nMimeType={types}\n{extra}"
+        )
+    }
+
+    #[test]
+    fn an_application_the_catalog_holds_is_installed_whether_or_not_it_is_shown() {
+        let loupe = entry("Image Viewer", "image/png;", "");
+        let helper = entry("Helper", "image/png;", "NoDisplay=true\n");
+        let catalog = catalog(&[
+            ("org.gnome.Loupe.desktop", &loupe),
+            ("helper.desktop", &helper),
+        ]);
+        assert!(catalog.is_installed("org.gnome.Loupe.desktop"));
+        assert!(catalog.is_installed("helper.desktop"));
+        assert!(!catalog.is_installed("org.gnome.eog.desktop"));
+        assert!(!catalog.is_installed("not a desktop id"));
+    }
+
+    #[test]
+    fn the_offer_is_what_declares_every_type_sorted_by_name_and_shown() {
+        let both = entry("Zoom Viewer", "image/png;image/jpeg;", "");
+        let png = entry("PNG Only", "image/png;", "");
+        let first = entry("Another Viewer", "image/png;image/jpeg;", "");
+        let hidden = entry("Background", "image/png;image/jpeg;", "NoDisplay=true\n");
+        let catalog = catalog(&[
+            ("zoom.desktop", &both),
+            ("png.desktop", &png),
+            ("another.desktop", &first),
+            ("background.desktop", &hidden),
+        ]);
+        let ids = |types: &[&str]| -> Vec<String> {
+            catalog
+                .for_types(
+                    &types
+                        .iter()
+                        .map(|value| value.to_string())
+                        .collect::<Vec<_>>(),
+                )
+                .into_iter()
+                .map(|choice| choice.desktop_id)
+                .collect()
+        };
+        assert_eq!(
+            ids(&["image/png", "image/jpeg"]),
+            vec!["another.desktop", "zoom.desktop"]
+        );
+        assert_eq!(
+            ids(&["image/png"]),
+            vec!["another.desktop", "png.desktop", "zoom.desktop"]
+        );
+        assert!(ids(&["not a type"]).is_empty());
+        assert!(ids(&[]).is_empty());
+        assert_eq!(
+            catalog.for_types(&["image/png".to_string()])[0].name,
+            "Another Viewer"
+        );
+    }
+
+    #[test]
+    fn a_lazy_catalog_is_loaded_on_the_first_question_and_only_once() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let loads = Rc::new(Cell::new(0));
+        let counted = loads.clone();
+        let lazy = LazyApplications::new(move || {
+            counted.set(counted.get() + 1);
+            catalog(&[("editor.desktop", &entry("Editor", "text/plain;", ""))])
+        });
+        assert_eq!(loads.get(), 0, "building the set reads nothing");
+        assert!(lazy.is_installed("editor.desktop"));
+        assert_eq!(lazy.for_types(&["text/plain".to_string()]).len(), 1);
+        assert_eq!(loads.get(), 1);
+    }
+}

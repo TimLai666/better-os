@@ -215,7 +215,7 @@ fn restore_puts_each_type_back_to_its_own_previous_owner() {
 }
 
 #[test]
-fn a_type_that_had_no_owner_needs_manual_action_and_the_rest_are_still_restored() {
+fn a_type_that_had_no_owner_is_cleared_and_the_rest_are_restored() {
     let mut desktop = Desktop::new(TWO_VIEWERS, &["image/png", "image/webp"]);
     assert_eq!(
         desktop.status().current,
@@ -228,32 +228,66 @@ fn a_type_that_had_no_owner_needs_manual_action_and_the_rest_are_still_restored(
     assert!(desktop.run(false).results[0].outcome.is_success());
     let restored = desktop.run(true);
 
-    let EntryOutcome::PerKey { keys } = &restored.results[0].outcome else {
-        panic!(
-            "expected a per-type result, got {:?}",
-            restored.results[0].outcome
-        );
-    };
-    assert_eq!(keys.len(), 2);
-    assert_eq!(keys[0].key, "image/png");
-    assert_eq!(keys[0].outcome, EntryOutcome::Restored { value: set(EOG) });
-    assert_eq!(keys[1].key, "image/webp");
-    assert!(matches!(
-        &keys[1].outcome,
-        EntryOutcome::ManualActionRequired { reason, .. }
-            if reason == "xdg.clearing_a_default_is_not_supported"
-    ));
-    assert!(!restored.results[0].outcome.is_success());
-    assert!(!restored.has_failures(), "manual action is not a failure");
-    assert!(desktop.file().contains("image/png=org.gnome.eog.desktop"));
+    assert_eq!(
+        restored.results[0].outcome,
+        EntryOutcome::PerKey {
+            keys: vec![
+                KeyOutcome {
+                    key: "image/png".to_string(),
+                    outcome: EntryOutcome::Restored { value: set(EOG) },
+                },
+                KeyOutcome {
+                    key: "image/webp".to_string(),
+                    outcome: EntryOutcome::Restored {
+                        value: ObservedValue::Unset
+                    },
+                },
+            ]
+        }
+    );
+    assert!(restored.results[0].outcome.is_success());
+    assert_eq!(desktop.file(), TWO_VIEWERS, "every byte is back");
+    assert_eq!(
+        desktop.plan(true).entries[0].action,
+        PlanAction::Skip {
+            reason: SkipReason::AlreadyRestored
+        }
+    );
+    assert_eq!(desktop.status().state, IntegrationState::NotDefault);
+}
+
+#[test]
+fn restoring_a_single_type_that_had_no_owner_clears_it_and_reports_restored() {
+    let mut desktop = Desktop::new(TWO_VIEWERS, &["inode/directory"]);
+    assert_eq!(desktop.status().current, ObservedValue::Unset);
+
+    assert!(desktop.run(false).results[0].outcome.is_success());
     assert!(
         desktop
             .file()
-            .contains("image/webp=io.betteros.Files.desktop")
+            .contains("inode/directory=io.betteros.Files.desktop")
+    );
+    assert_eq!(
+        desktop.plan(true).entries[0].action,
+        PlanAction::Restore {
+            to: ObservedValue::Unset
+        }
     );
 
-    // Better Manager no longer claims the group, so the type still pointing at
-    // Better Files is not read as somebody else's change.
+    let restored = desktop.run(true);
+    assert_eq!(
+        restored.results[0].outcome,
+        EntryOutcome::Restored {
+            value: ObservedValue::Unset
+        }
+    );
+    assert_eq!(desktop.file(), TWO_VIEWERS, "every byte is back");
+    let history = desktop.store.history().unwrap();
+    let record = history
+        .latest_entry(&component("better-files"), &integration_id("image-viewer"))
+        .unwrap();
+    assert_eq!(record.restore_state, RestoreState::AlreadyRestored);
+    assert_eq!(record.last_verified_value, None);
     assert_eq!(desktop.status().state, IntegrationState::NotDefault);
 }
 

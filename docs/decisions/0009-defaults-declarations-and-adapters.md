@@ -27,11 +27,33 @@ manual action required for a change.
 group whose keys each read definitely and disagree is now a per-key reading
 rather than unknown: the preview lists each key's current value, apply is
 allowed, the snapshot stores each key's previous value, and restore writes each
-key back to its own value and reports each key's verifying read. A type that
-had no default is still Manual action required on restore, for the reason given
-under Consequences. Snapshots are schema version 2 from this change, because a
-version 1 reader cannot parse a per-key value; version 1 files are read
-unchanged.
+key back to its own value and reports each key's verifying read. Snapshots are
+schema version 2 from this change, because a version 1 reader cannot parse a
+per-key value; version 1 files are read unchanged.
+
+**Ticket 71 removed the one XDG restore that needed manual action.** The owner
+decided on 2026-09-27 that `app-chooser-core` offers a typed "remove this
+association" operation. `AssociationStore::remove_default` takes a `MimeType`,
+removes that type's lines from `[Default Applications]` in the same editor that
+sets a default, leaves every other byte as it was, and writes the same rollback
+record first. The `xdg-default-app` adapter uses it for a clear, so restoring a
+type captured as having no default leaves it with none and is verified by
+reading again like any other restore. This holds for a single type and for each
+type of a group restored type by type.
+
+**Ticket 72 decided what restore does when the previous application has been
+uninstalled.** The owner decided on 2026-09-27 that restore consults the shared
+application catalog. The production adapter set carries the catalog this
+session's application directories hold, loaded through `app-catalog-platform`
+when the session opens, and the engine looks every captured desktop entry up in
+it both while planning and again just before writing. An entry the catalog no
+longer holds is its own reported class, `PreviousApplicationMissing`, naming
+the application and the installed alternatives for the same types, and nothing
+is written for it. In a group restored type by type, that type is reported and
+the others are restored. The person can choose one of the alternatives or leave
+the type without a default, which is ticket 71's removal; the choice travels
+with the entry confirmations and is planned again. A simulated desktop carries
+no catalog and checks nothing.
 
 ## Context
 
@@ -95,7 +117,7 @@ Two adapters ship, and their honest capability differs:
 
 | Adapter | Read | Verify | Apply / restore |
 | --- | --- | --- | --- |
-| `xdg-default-app` | yes, from the user's `mimeapps.list` | yes | yes, one line per declared type |
+| `xdg-default-app` | yes, from the user's `mimeapps.list` | yes | yes, one line per declared type; a type that had no default is cleared |
 | `xdg-effective-default` | yes | yes | refuses — it is read-only, and the schema refuses to accept it as an apply adapter |
 | `gnome-keybinding` | yes, from the user's dconf database | yes | **manual action required** |
 | `gnome-desktop-setting` | yes, from the user's dconf database | yes | **manual action required** |
@@ -132,10 +154,10 @@ gap in the model: an integration whose adapter is absent is skipped with
 - A component can declare an integration of any of the nine kinds today, and the
   status, planning, snapshot, and verification paths all work for it through the
   mock adapter set. Only the change itself waits on a production adapter.
-- Restoring an XDG default that previously had no owner at all reports manual
-  action required, because `app-chooser-core` offers no typed operation for
-  removing an association and a second `mimeapps.list` editor is not acceptable.
-  Restoring to a previous owner, which is the common case, works.
+- Restoring an XDG default that previously had no owner at all removes the
+  type's line through `app-chooser-core`'s typed removal (ticket 71), because a
+  second `mimeapps.list` editor is not acceptable. Restoring to a previous owner
+  writes that owner back.
 - A handler group whose declared types currently disagree reads as unknown
   rather than as one of them, so a mixed state is never flattened and
   overwritten. Per-key capture for that case is not implemented.
@@ -152,11 +174,6 @@ These cannot be decided yet and are not decided here:
   is a question about the review screen, so it belongs with ticket 28. The model
   supports either: an integration may name several keys, and a component may
   declare several integrations.
-- **What happens when the previous application has been uninstalled.** Restore
-  currently writes the captured desktop entry whether or not it is still
-  installed, and the verifying read reports what the system then says. Deciding
-  properly needs the shared application catalog consulted at restore time, which
-  is a behavior change, not a detail.
 - **Whether a new baseline can be promoted automatically.** Today a new baseline
   is only ever created by an explicit apply of an integration nothing was
   captured for. Automatic promotion would let Better OS decide that somebody

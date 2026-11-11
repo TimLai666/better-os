@@ -7,11 +7,11 @@
 //! touches anything. Reusing it is not a convenience: a second editor would be
 //! a second set of rules about a file the user owns.
 //!
-//! One limitation is deliberate and reported rather than worked around. Putting
-//! a default back is writing a previous owner; putting *no default* back means
-//! deleting the line, which the association store does not offer as a typed
-//! operation. Restoring an integration that had no default before returns
-//! manual action required instead of leaving a value Better OS invented.
+//! Putting a default back is writing the previous owner. Putting *no default*
+//! back is the association store's typed removal, which takes the type's own
+//! line out of `[Default Applications]` and leaves every other byte alone, so
+//! restoring an integration that had no default before leaves it with none
+//! rather than with a value Better OS invented.
 
 use app_catalog_core::{DesktopId, MimeType};
 use app_chooser_core::AssociationStore;
@@ -99,18 +99,13 @@ impl DefaultsAdapter for XdgDefaultAppAdapter {
                 "this adapter only reports the effective default",
             );
         }
+        // `None` clears the type's default rather than writing one.
         let desktop_id = match value {
-            WriteValue::Clear => {
-                return WriteOutcome::manual(
-                    "xdg.clearing_a_default_is_not_supported",
-                    "there was no previous default to write back; remove the association in \
-                     Settings to return to having none",
-                );
-            }
+            WriteValue::Clear => None,
             WriteValue::Set {
                 value: DefaultsValue::DesktopEntry(id),
             } => match DesktopId::new(id.clone()) {
-                Ok(desktop_id) => desktop_id,
+                Ok(desktop_id) => Some(desktop_id),
                 Err(error) => {
                     return WriteOutcome::failed(
                         "xdg.invalid_desktop_id",
@@ -134,7 +129,11 @@ impl DefaultsAdapter for XdgDefaultAppAdapter {
                     format!("{key}; {changed} of {index} earlier keys were written"),
                 );
             };
-            match self.store.set_default_id(&mime, &desktop_id, Vec::new()) {
+            let result = match &desktop_id {
+                Some(desktop_id) => self.store.set_default_id(&mime, desktop_id, Vec::new()),
+                None => self.store.remove_default(&mime),
+            };
+            match result {
                 Ok(outcome) if outcome.changed => changed += 1,
                 Ok(_) => {}
                 Err(error) => {
