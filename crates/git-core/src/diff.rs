@@ -58,6 +58,106 @@ pub enum FileDiff {
 /// - Bytes that are not UTF-8 are decoded lossily; they never fail the parse.
 /// - A hunk header that cannot be read fails with `Malformed`.
 pub fn parse_diff(output: &[u8]) -> Result<FileDiff, ParseError> {
-    let _ = output;
-    todo!("ticket 77: parse_diff")
+    let mut lines: Vec<&[u8]> = output.split(|&byte| byte == b'\n').collect();
+    if lines.last().is_some_and(|last| last.is_empty()) {
+        lines.pop();
+    }
+
+    let mut hunks = Vec::new();
+    let mut hunk: Option<Hunk> = None;
+    let (mut old_no, mut new_no) = (0u32, 0u32);
+
+    for raw in lines {
+        if raw.starts_with(b"@@") {
+            hunks.extend(hunk.take());
+            let header = String::from_utf8_lossy(raw).into_owned();
+            (old_no, new_no) = parse_hunk_header(&header)?;
+            hunk = Some(Hunk {
+                header,
+                lines: Vec::new(),
+            });
+            continue;
+        }
+
+        let Some(current) = hunk.as_mut() else {
+            // Before the first hunk: file headers, which are skipped, or the
+            // notice that a binary file differs.
+            if raw.starts_with(b"Binary files ") && raw.ends_with(b" differ") {
+                return Ok(FileDiff::Binary);
+            }
+            continue;
+        };
+
+        if raw.starts_with(b"\\") {
+            if let Some(last) = current.lines.last_mut() {
+                last.no_newline_at_end = true;
+            }
+            continue;
+        }
+
+        let (kind, body) = match raw.first().copied() {
+            Some(b'+') => (DiffLineKind::Added, &raw[1..]),
+            Some(b'-') => (DiffLineKind::Removed, &raw[1..]),
+            Some(b' ') => (DiffLineKind::Context, &raw[1..]),
+            None => (DiffLineKind::Context, raw),
+            Some(_) => return Err(malformed("unexpected line inside a hunk")),
+        };
+        let (old_line, new_line) = match kind {
+            DiffLineKind::Context => {
+                let numbers = (Some(old_no), Some(new_no));
+                old_no = old_no.saturating_add(1);
+                new_no = new_no.saturating_add(1);
+                numbers
+            }
+            DiffLineKind::Removed => {
+                let number = (Some(old_no), None);
+                old_no = old_no.saturating_add(1);
+                number
+            }
+            DiffLineKind::Added => {
+                let number = (None, Some(new_no));
+                new_no = new_no.saturating_add(1);
+                number
+            }
+        };
+        current.lines.push(DiffLine {
+            kind,
+            text: String::from_utf8_lossy(body).into_owned(),
+            old_line,
+            new_line,
+            no_newline_at_end: false,
+        });
+    }
+
+    hunks.extend(hunk.take());
+    Ok(FileDiff::Text { hunks })
+}
+
+fn malformed(detail: impl Into<String>) -> ParseError {
+    ParseError::Malformed(detail.into())
+}
+
+/// Reads `@@ -a[,b] +c[,d] @@` and returns the first line numbers `(a, c)`.
+/// A missing count means one line and is not checked further.
+fn parse_hunk_header(header: &str) -> Result<(u32, u32), ParseError> {
+    let rest = header.strip_prefix("@@ -").ok_or_else(bad_hunk_header)?;
+    let (old_part, rest) = rest.split_once(" +").ok_or_else(bad_hunk_header)?;
+    let (new_part, _) = rest.split_once(" @@").ok_or_else(bad_hunk_header)?;
+    let old_start = range_start(old_part).ok_or_else(bad_hunk_header)?;
+    let new_start = range_start(new_part).ok_or_else(bad_hunk_header)?;
+    Ok((old_start, new_start))
+}
+
+fn bad_hunk_header() -> ParseError {
+    malformed("hunk header is not `@@ -a[,b] +c[,d] @@`")
+}
+
+/// Reads `a` or `a,b` and returns `a`.
+fn range_start(part: &str) -> Option<u32> {
+    let mut fields = part.splitn(2, ',');
+    let start: u32 = fields.next()?.parse().ok()?;
+    if let Some(count) = fields.next() {
+        let _: u32 = count.parse().ok()?;
+    }
+    Some(start)
 }

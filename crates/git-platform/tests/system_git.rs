@@ -196,7 +196,8 @@ fn commit_count(sandbox: &Sandbox) -> usize {
 fn last_commit(sandbox: &Sandbox, format: &str) -> String {
     let format_arg = format!("--format={format}");
     let text = git(sandbox, &["log", "-1", format_arg.as_str()]);
-    text.strip_suffix('\n').unwrap_or(&text).to_string()
+    // git ends a stored message with a newline and `log` adds its own.
+    text.trim_end_matches('\n').to_string()
 }
 
 // --- repository_root ----------------------------------------------------------
@@ -578,8 +579,8 @@ fn unstage_takes_the_file_out_of_the_index_and_keeps_its_content() {
     assert_eq!(
         by_path(status_of(&sandbox).changes),
         vec![
-            change("modify.txt", None, Some(ChangeKind::Modified)),
             untracked("added.txt"),
+            change("modify.txt", None, Some(ChangeKind::Modified)),
         ]
     );
     assert_eq!(
