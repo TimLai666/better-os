@@ -402,6 +402,7 @@ pub(crate) struct Copy {
 
     // Defaults: restoring an application that is no longer installed
     pub(crate) previous_application_missing: &'static str,
+    pub(crate) chosen_application_missing: &'static str,
     pub(crate) restore_instead: &'static str,
     pub(crate) clear_default: &'static str,
     pub(crate) no_alternative_application: &'static str,
@@ -765,6 +766,7 @@ static EN: Copy = Copy {
     skip_conflict: "Another installed component owns this setting",
 
     previous_application_missing: "The previous application is no longer installed",
+    chosen_application_missing: "The application you chose instead is no longer installed",
     restore_instead: "Put this back instead",
     clear_default: "Leave without a default",
     no_alternative_application: "No installed application opens this type",
@@ -1127,6 +1129,7 @@ static ZH_TW: Copy = Copy {
     skip_conflict: "這項設定由其他已安裝的元件擁有",
 
     previous_application_missing: "原本的應用程式已經不在這台電腦上",
+    chosen_application_missing: "你改選的應用程式已經不在這台電腦上",
     restore_instead: "改為恢復成",
     clear_default: "不設定預設應用程式",
     no_alternative_application: "沒有已安裝的應用程式能開啟這種檔案",

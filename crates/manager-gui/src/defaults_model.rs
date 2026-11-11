@@ -360,6 +360,7 @@ pub(crate) fn skip_reason_label(locale: Locale, reason: &SkipReason) -> &'static
         SkipReason::ChangedExternallyWithoutConfirmation { .. } => c.skip_changed_externally,
         SkipReason::Conflict { .. } => c.skip_conflict,
         SkipReason::PreviousApplicationMissing { .. } => c.previous_application_missing,
+        SkipReason::ChosenApplicationMissing { .. } => c.chosen_application_missing,
     }
 }
 
@@ -1010,6 +1011,13 @@ fn outcome_parts(
             reason: SkipReason::PreviousApplicationMissing { desktop_id, .. },
         } => (
             c.previous_application_missing,
+            ResultTone::Warning,
+            Some(desktop_id.clone()),
+        ),
+        EntryOutcome::Skipped {
+            reason: SkipReason::ChosenApplicationMissing { desktop_id, .. },
+        } => (
+            c.chosen_application_missing,
             ResultTone::Warning,
             Some(desktop_id.clone()),
         ),

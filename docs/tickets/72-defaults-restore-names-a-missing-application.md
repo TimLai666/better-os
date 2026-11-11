@@ -41,12 +41,22 @@ uses, and nothing here parses a desktop entry. An application with
 alternatives.
 
 `AdapterSet::with_applications` attaches a catalog, and the production
-adapter set in `defaults-core/src/adapters.rs` attaches the session's. A
-simulated desktop attaches none and checks nothing, because its applications
+adapter set in `defaults-core/src/adapters.rs` attaches the session's inside
+`LazyApplications`, which reads the directories the first time a restore asks
+and never otherwise: status, apply, and verify ask the catalog nothing, and a
+test counts that. A simulated desktop attaches none and checks nothing, because its applications
 are not the machine's. `defaults-platform` now depends on
 `app-catalog-platform`; that is the one new line in `Cargo.lock`, no external
 package was added, and `cargo tree` shows no GPUI in `defaults-platform` or
 `manager-cli`.
+
+Loading the catalog in every defaults command that restores made discovery's
+reads part of this feature, so `app-catalog-platform`'s discovery now reads an
+entry only when it is a regular file after following links, checks the opened
+handle again, and reads at most one byte past the entry size limit. A FIFO or a
+link to `/dev/zero` named `*.desktop` is reported as unreadable instead of
+blocking the scan or filling memory, and an oversized entry is reported too
+large without being read whole.
 
 ### Restore looks first
 
@@ -58,15 +68,18 @@ restored type by type, the missing type keeps its captured value and gets a
 `PlanWarning::PreviousApplicationMissing`, the other types are restored, and
 the missing one is reported per type. The engine checks again just before it
 writes, so an application uninstalled between the review and the run is still
-not written back.
+not written back. When the application that went missing in between is the one
+the person chose instead, the result is `ChosenApplicationMissing`, not the
+previous application's class.
 
 ### Choosing instead
 
 `RestoreChoice` is either another installed application or `ClearDefault`.
 It is carried in `Confirmations`, next to the existing external-change
 confirmations, for the entry or for one type of a group, and the plan is built
-again with it. A choice naming an application the catalog does not hold is
-ignored. Once a choice is in the plan, the entry still carries the warning
+again with it. A choice must be one of the alternatives, the installed
+applications that open every one of the types; any other choice is ignored and
+the entry stays reported as missing. Once a choice is in the plan, the entry still carries the warning
 with the missing application and what was chosen, so the review keeps
 showing both. Clearing is ticket 71's removal.
 
@@ -76,7 +89,13 @@ showing both. Clearing is ticket 71's removal.
   application is no longer installed: <id>; nothing is written for it", the
   alternatives, and the exact `--restore-to component:integration[:type]=<id>`
   and `=none` to use. A choice already made is printed as "restoring <id>
-  instead" or "clearing the default instead".
+  instead" or "clearing the default instead". `--restore-to` is checked: the
+  type must be a MIME type, the target a desktop ID or `none`, and a place may
+  be given once. After planning, every choice the plan did not take is named,
+  for example one for an entry whose application is still installed, and the
+  command exits non-zero before anything is written. It is refused outright on
+  any command other than `plan --restore` and `restore`. `--help` spells out the
+  form and these errors.
 - GUI: the decisions live in `defaults_model`, which has no GPUI dependency.
   The restore class is its own `PreviousApplicationMissing`, also when only
   one type of a group is affected. Each missing application is a row that
@@ -106,4 +125,14 @@ showing both. Clearing is ticket 71's removal.
 - Each defaults job in the window opens a new adapter session, so each plan
   reads the application directories again. On a machine with a few hundred
   entries that has not been timed.
+
+### Known and not handled
+
+- An application whose `TryExec` program is missing still counts as installed,
+  because the catalog holds it, although it is not offered as an alternative.
+- `for_session` reads this process's own `XDG_DATA_DIRS`. A manager started
+  without the Flatpak export directories in it reports a Flatpak application as
+  no longer installed when it is.
+- The `mimeapps.list` write limits recorded in ticket 71 apply to every write
+  restore makes.
 

@@ -78,6 +78,13 @@ pub enum SkipReason {
         desktop_id: String,
         alternatives: Vec<ApplicationChoice>,
     },
+    /// The application the person chose instead of a missing one was itself
+    /// uninstalled before the restore ran. Nothing is written; `alternatives`
+    /// are what is installed for the same types now.
+    ChosenApplicationMissing {
+        desktop_id: String,
+        alternatives: Vec<ApplicationChoice>,
+    },
 }
 
 /// Something the reviewer needs to know about an entry that will be changed.
@@ -243,6 +250,18 @@ impl Confirmations {
         self.restore_choices
             .push((component, integration, key, choice));
         self
+    }
+
+    /// Every restore choice, in the order it was given: the component, the
+    /// integration, the type when there is one, and the choice.
+    pub fn restore_choices(
+        &self,
+    ) -> impl Iterator<Item = (&ComponentId, &IntegrationId, Option<&str>, &RestoreChoice)> {
+        self.restore_choices
+            .iter()
+            .map(|(component, integration, key, choice)| {
+                (component, integration, key.as_deref(), choice)
+            })
     }
 
     pub fn restore_choice(

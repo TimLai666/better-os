@@ -12,7 +12,8 @@ use better_core::defaults::{
 };
 use better_core::manifest::{ComponentCatalog, ComponentId, ComponentManifest};
 use defaults_platform::{
-    AdapterRequest, AdapterSet, InstalledApplications, VerifyOutcome, WriteOutcome,
+    AdapterRequest, AdapterSet, ApplicationChoice, InstalledApplications, VerifyOutcome,
+    WriteOutcome,
 };
 use defaults_store::{
     RestoreState, Snapshot, SnapshotEntry, SnapshotError, SnapshotHistory, SnapshotStore,
@@ -595,6 +596,12 @@ impl<'a> DefaultsEngine<'a> {
                             &PlanAction::Restore {
                                 to: captured.observed.clone(),
                             },
+                            entry
+                                .captured_previous
+                                .as_ref()
+                                .and_then(ObservedValue::per_key)
+                                .and_then(|keys| keys.iter().find(|key| key.key == captured.key))
+                                .map(|key| &key.observed),
                             integration,
                             &request,
                             adapters,
@@ -618,7 +625,13 @@ impl<'a> DefaultsEngine<'a> {
         }
 
         let request = AdapterRequest::new(&entry.component, integration);
-        let outcome = self.change_and_verify(&entry.action, integration, &request, adapters);
+        let outcome = self.change_and_verify(
+            &entry.action,
+            entry.captured_previous.as_ref(),
+            integration,
+            &request,
+            adapters,
+        );
         let update = self.snapshot_update(entry, integration, &outcome, previous);
         (outcome, update)
     }
@@ -628,6 +641,7 @@ impl<'a> DefaultsEngine<'a> {
     fn change_and_verify(
         &self,
         action: &PlanAction,
+        captured: Option<&ObservedValue>,
         integration: &DefaultIntegration,
         request: &AdapterRequest<'_>,
         adapters: &mut AdapterSet,
@@ -643,15 +657,26 @@ impl<'a> DefaultsEngine<'a> {
         };
 
         // The catalog is read again at the moment of writing: an application
-        // uninstalled after the review is still not written back.
+        // uninstalled after the review is still not written back. Whether it
+        // was the captured owner or the person's choice instead decides which
+        // of the two is reported.
         if let PlanAction::Restore { to } = action
             && let Some(installed) = adapters.applications()
             && let Some(desktop_id) = missing_entry(installed, to)
         {
+            let alternatives = installed.for_types(request.keys());
+            let was_captured = captured.is_some_and(|captured| captured == to);
             return EntryOutcome::Skipped {
-                reason: SkipReason::PreviousApplicationMissing {
-                    desktop_id,
-                    alternatives: installed.for_types(request.keys()),
+                reason: if was_captured {
+                    SkipReason::PreviousApplicationMissing {
+                        desktop_id,
+                        alternatives,
+                    }
+                } else {
+                    SkipReason::ChosenApplicationMissing {
+                        desktop_id,
+                        alternatives,
+                    }
                 },
             };
         }
@@ -850,11 +875,12 @@ fn resolve_restore(
                 let choice = confirmations
                     .restore_choice(component, &integration.id, Some(key.key.as_str()))
                     .cloned();
-                let replacement = chosen(installed, choice.as_ref());
+                let alternatives = installed.for_types(std::slice::from_ref(&key.key));
+                let replacement = chosen(&alternatives, choice.as_ref());
                 warnings.push(PlanWarning::PreviousApplicationMissing {
                     key: Some(key.key.clone()),
                     desktop_id,
-                    alternatives: installed.for_types(std::slice::from_ref(&key.key)),
+                    alternatives,
                     chosen: replacement.is_some().then_some(choice).flatten(),
                 });
                 match replacement {
@@ -873,7 +899,7 @@ fn resolve_restore(
     };
     let alternatives = installed.for_types(&integration.target.keys);
     let choice = confirmations.restore_choice(component, &integration.id, None);
-    match chosen(installed, choice) {
+    match chosen(&alternatives, choice) {
         Some(to) => {
             warnings.push(PlanWarning::PreviousApplicationMissing {
                 key: None,
@@ -903,14 +929,19 @@ fn missing_entry(
     }
 }
 
-/// What a restore choice writes. A choice naming an application the catalog
-/// does not hold is no choice at all.
+/// What a restore choice writes. A choice must be one of `alternatives`, the
+/// installed applications that open every one of the types; anything else is
+/// no choice at all.
 fn chosen(
-    installed: &dyn InstalledApplications,
+    alternatives: &[ApplicationChoice],
     choice: Option<&RestoreChoice>,
 ) -> Option<ObservedValue> {
     match choice? {
-        RestoreChoice::Application(desktop_id) if installed.is_installed(desktop_id) => {
+        RestoreChoice::Application(desktop_id)
+            if alternatives
+                .iter()
+                .any(|alternative| &alternative.desktop_id == desktop_id) =>
+        {
             Some(ObservedValue::Set {
                 value: DefaultsValue::DesktopEntry(desktop_id.clone()),
             })

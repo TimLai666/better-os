@@ -42,8 +42,12 @@ like any other file. The same type in `[Added Associations]` or
 
 The change is a new `DefaultChange::Removed { lines }`, each line kept with its
 old index and its own terminator. Undo puts them back byte for byte, and refuses
-without touching anything when the type has a default again or a line would no
-longer land inside `[Default Applications]`.
+without touching anything when the type has a default again, when a line would
+no longer land inside `[Default Applications]`, or when a missing newline would
+join two lines into one: the line before the insertion point has none (another
+editor saved the file without its final newline), or the reinserted line had
+none and would no longer be the last line (somebody appended after it). Undo
+never adds a newline of its own.
 
 ### The same store, record, and order as setting one
 
@@ -92,4 +96,12 @@ result for each type that had no owner.
   removal compare parsed types. Setting a type the file spells `Image/PNG` adds
   a second line instead of replacing the first. That predates this ticket and
   is left as it was.
+
+### Known and not handled
+
+- A write is not protected against another program changing `mimeapps.list`
+  between the read and the rename. The rename also replaces a symbolic link
+  named `mimeapps.list` with a regular file, and replaces a read-only file.
+  Setting a default always worked this way; removal goes through the same
+  path, so it inherits all three.
 

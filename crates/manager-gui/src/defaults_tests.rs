@@ -1591,3 +1591,33 @@ fn the_missing_application_words_exist_in_both_locales() {
         copy(Locale::ZhTw).clear_default
     );
 }
+
+#[test]
+fn a_chosen_application_that_went_missing_is_not_called_the_previous_one() {
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let c = copy(locale);
+        let reason = SkipReason::ChosenApplicationMissing {
+            desktop_id: "org.gnome.Loupe.desktop".to_string(),
+            alternatives: Vec::new(),
+        };
+        assert_eq!(
+            skip_reason_label(locale, &reason),
+            c.chosen_application_missing
+        );
+        assert_ne!(c.chosen_application_missing, c.previous_application_missing);
+        let outcome = DefaultsOutcome {
+            kind: PlanKind::Restore,
+            results: vec![EntryResult {
+                component: component("better-files"),
+                integration: integration("image-viewer"),
+                outcome: EntryOutcome::Skipped { reason },
+            }],
+            baseline_snapshot: None,
+            recorded_snapshot: None,
+        };
+        let row = &result_rows(locale, &outcome, &|component| component.to_string())[0];
+        assert_eq!(row.label, c.chosen_application_missing);
+        assert_eq!(row.tone, ResultTone::Warning);
+        assert_eq!(row.detail.as_deref(), Some("org.gnome.Loupe.desktop"));
+    }
+}

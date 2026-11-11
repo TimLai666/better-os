@@ -90,6 +90,33 @@ impl InstalledApplications for ApplicationCatalog {
     }
 }
 
+/// A catalog that is not read until something asks about it.
+///
+/// Reading the application directories is the slow, untrusted part, and only a
+/// restore needs it. Status, apply, and verify never ask, so with this in the
+/// adapter set they never read a directory at all.
+pub struct LazyApplications<F> {
+    catalog: std::cell::LazyCell<ApplicationCatalog, F>,
+}
+
+impl<F: FnOnce() -> ApplicationCatalog> LazyApplications<F> {
+    pub fn new(load: F) -> Self {
+        Self {
+            catalog: std::cell::LazyCell::new(load),
+        }
+    }
+}
+
+impl<F: FnOnce() -> ApplicationCatalog> InstalledApplications for LazyApplications<F> {
+    fn is_installed(&self, desktop_id: &str) -> bool {
+        self.catalog.is_installed(desktop_id)
+    }
+
+    fn for_types(&self, types: &[String]) -> Vec<ApplicationChoice> {
+        self.catalog.for_types(types)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,5 +198,22 @@ mod tests {
             catalog.for_types(&["image/png".to_string()])[0].name,
             "Another Viewer"
         );
+    }
+
+    #[test]
+    fn a_lazy_catalog_is_loaded_on_the_first_question_and_only_once() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let loads = Rc::new(Cell::new(0));
+        let counted = loads.clone();
+        let lazy = LazyApplications::new(move || {
+            counted.set(counted.get() + 1);
+            catalog(&[("editor.desktop", &entry("Editor", "text/plain;", ""))])
+        });
+        assert_eq!(loads.get(), 0, "building the set reads nothing");
+        assert!(lazy.is_installed("editor.desktop"));
+        assert_eq!(lazy.for_types(&["text/plain".to_string()]).len(), 1);
+        assert_eq!(loads.get(), 1);
     }
 }

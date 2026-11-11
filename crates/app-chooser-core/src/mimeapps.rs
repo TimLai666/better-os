@@ -485,8 +485,9 @@ impl MimeAppsFile {
     }
 
     /// Puts removed lines back at their old indices. Refuses, touching nothing,
-    /// when the type has a default again — somebody else chose one since — or
-    /// when a line would no longer land inside `[Default Applications]`.
+    /// when the type has a default again — somebody else chose one since — when
+    /// a line would no longer land inside `[Default Applications]`, or when a
+    /// missing newline would join a reinserted line to its neighbour.
     fn reinsert(&mut self, removed: &[RemovedLine]) -> bool {
         let Some(mime) = removed
             .first()
@@ -501,6 +502,15 @@ impl MimeAppsFile {
         let mut restored = self.clone();
         for entry in removed {
             if entry.index > restored.lines.len() {
+                return false;
+            }
+            // A line with no newline before the insertion point, or a reinserted
+            // line with no newline that would no longer be last, would join two
+            // lines into one. That is somebody else's edit; nothing is guessed.
+            let joins_previous =
+                entry.index > 0 && restored.lines[entry.index - 1].terminator.is_empty();
+            let joins_next = entry.line.terminator.is_empty() && entry.index < restored.lines.len();
+            if joins_previous || joins_next {
                 return false;
             }
             restored.lines.insert(entry.index, entry.line.clone());
@@ -881,5 +891,28 @@ mod tests {
             file.render(),
             "[Default Applications]\nimage/png=gimp.desktop\n"
         );
+    }
+
+    #[test]
+    fn undoing_a_removal_refuses_when_a_line_without_a_newline_would_join_another() {
+        // The removed line was the last one and had no newline, and somebody
+        // appended a default after it.
+        let mut file = MimeAppsFile::parse("[Default Applications]\nimage/png=eog.desktop");
+        let change = file.remove_default(&mime("image/png"));
+        let appended = format!("{}text/plain=vim.desktop\n", file.render());
+        let mut file = MimeAppsFile::parse(&appended);
+        assert!(!file.undo(&change));
+        assert_eq!(file.render(), appended);
+
+        // Another editor saved the file without its final newline, so the line
+        // before the insertion point has none.
+        let mut file = MimeAppsFile::parse(
+            "[Default Applications]\ntext/html=firefox.desktop\nimage/png=eog.desktop\n",
+        );
+        let change = file.remove_default(&mime("image/png"));
+        let resaved = "[Default Applications]\ntext/html=firefox.desktop";
+        let mut file = MimeAppsFile::parse(resaved);
+        assert!(!file.undo(&change));
+        assert_eq!(file.render(), resaved);
     }
 }

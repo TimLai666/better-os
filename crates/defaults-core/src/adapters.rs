@@ -13,7 +13,8 @@ use std::path::PathBuf;
 
 use better_core::defaults::AdapterId;
 use defaults_platform::{
-    AdapterSet, ApplicationCatalog, DconfAdapter, MockDesktop, XdgDefaultAppAdapter,
+    AdapterSet, ApplicationCatalog, DconfAdapter, LazyApplications, MockDesktop,
+    XdgDefaultAppAdapter,
 };
 use thiserror::Error;
 
@@ -114,7 +115,8 @@ impl AdapterSession {
 /// adapters read the user's dconf database and write through the session's
 /// dconf service, which they reach only when a change is actually made. A
 /// restore checks every captured desktop entry against the applications this
-/// session has installed, read when the session opens.
+/// session has installed, read the first time a restore asks and not before,
+/// so status, apply, and verify never read an application directory.
 fn production_adapters() -> Result<AdapterSet, AdapterSessionError> {
     let writable = XdgDefaultAppAdapter::for_user()
         .map_err(|error| AdapterSessionError::DefaultApplications(error.to_string()))?;
@@ -127,7 +129,9 @@ fn production_adapters() -> Result<AdapterSet, AdapterSessionError> {
         .with(Box::new(DconfAdapter::for_user(
             AdapterId::GnomeDesktopSetting,
         )))
-        .with_applications(Box::new(ApplicationCatalog::for_session())))
+        .with_applications(Box::new(LazyApplications::new(
+            ApplicationCatalog::for_session,
+        ))))
 }
 
 /// Where a simulated desktop is kept when a caller wants one that survives.

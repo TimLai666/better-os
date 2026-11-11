@@ -6,7 +6,7 @@
 
 mod common;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use app_chooser_core::AssociationStore;
@@ -30,17 +30,21 @@ const GTHUMB: &str = "org.gnome.gThumb.desktop";
 /// An installed application: desktop ID, name, and the types it declares.
 type App = (&'static str, &'static str, Vec<&'static str>);
 
-/// A catalog the test edits while the engine holds it.
+/// A catalog the test edits while the engine holds it, counting how often it
+/// is asked anything.
 #[derive(Clone, Default)]
-struct Installed(Rc<RefCell<Vec<App>>>);
+struct Installed(Rc<RefCell<Vec<App>>>, Rc<Cell<usize>>);
 
 impl Installed {
     fn new(apps: &[(&'static str, &'static str, &[&'static str])]) -> Self {
-        Self(Rc::new(RefCell::new(
-            apps.iter()
-                .map(|(id, name, types)| (*id, *name, types.to_vec()))
-                .collect(),
-        )))
+        Self(
+            Rc::new(RefCell::new(
+                apps.iter()
+                    .map(|(id, name, types)| (*id, *name, types.to_vec()))
+                    .collect(),
+            )),
+            Rc::default(),
+        )
     }
 
     fn uninstall(&self, id: &str) {
@@ -48,14 +52,20 @@ impl Installed {
             .borrow_mut()
             .retain(|(installed, _, _)| *installed != id);
     }
+
+    fn asked(&self) -> usize {
+        self.1.get()
+    }
 }
 
 impl InstalledApplications for Installed {
     fn is_installed(&self, desktop_id: &str) -> bool {
+        self.1.set(self.1.get() + 1);
         self.0.borrow().iter().any(|(id, _, _)| *id == desktop_id)
     }
 
     fn for_types(&self, types: &[String]) -> Vec<ApplicationChoice> {
+        self.1.set(self.1.get() + 1);
         self.0
             .borrow()
             .iter()
@@ -438,4 +448,85 @@ fn a_group_restored_type_by_type_reports_the_missing_type_and_restores_the_rest(
         "[Default Applications]\nimage/jpeg=org.gnome.gThumb.desktop\n"
     );
     assert_eq!(desktop.restore_state(), RestoreState::AlreadyRestored);
+}
+
+#[test]
+fn only_a_restore_asks_the_catalog_anything() {
+    let installed = file_managers();
+    let mut desktop = Desktop::new(ONE_MANAGER, &["inode/directory"], &installed);
+    let history = desktop.store.history().unwrap();
+    engine(&desktop.catalog).inspect(&Selection::All, &desktop.adapters, &history);
+    desktop.run(false, &Confirmations::none());
+    engine(&desktop.catalog)
+        .verify(&Selection::All, &desktop.adapters, &desktop.store)
+        .unwrap();
+    assert_eq!(
+        installed.asked(),
+        0,
+        "status, apply, and verify read no catalog"
+    );
+
+    desktop.plan(true, &Confirmations::none());
+    assert!(installed.asked() > 0);
+}
+
+#[test]
+fn a_choice_that_does_not_open_the_type_is_not_taken() {
+    let installed = Installed::new(&[
+        (FILES, "Better Files", &["inode/directory"]),
+        (NAUTILUS, "Files", &["inode/directory"]),
+        (
+            "org.gnome.TextEditor.desktop",
+            "Text Editor",
+            &["text/plain"],
+        ),
+    ]);
+    let mut desktop = Desktop::new(ONE_MANAGER, &["inode/directory"], &installed);
+    desktop.run(false, &Confirmations::none());
+    installed.uninstall(NAUTILUS);
+
+    let editor = Confirmations::none().with_restore_choice(
+        component("better-files"),
+        integration_id("handler"),
+        None,
+        RestoreChoice::Application("org.gnome.TextEditor.desktop".to_string()),
+    );
+    assert!(matches!(
+        desktop.plan(true, &editor).entries[0].action,
+        PlanAction::Skip {
+            reason: SkipReason::PreviousApplicationMissing { .. }
+        }
+    ));
+}
+
+#[test]
+fn a_chosen_application_uninstalled_before_the_run_is_reported_as_the_choice() {
+    let installed = file_managers();
+    let mut desktop = Desktop::new(ONE_MANAGER, &["inode/directory"], &installed);
+    desktop.run(false, &Confirmations::none());
+    installed.uninstall(NAUTILUS);
+
+    let chosen = Confirmations::none().with_restore_choice(
+        component("better-files"),
+        integration_id("handler"),
+        None,
+        RestoreChoice::Application(DOLPHIN.to_string()),
+    );
+    let plan = desktop.plan(true, &chosen);
+    installed.uninstall(DOLPHIN);
+    let outcome = desktop.execute(&plan);
+    assert_eq!(
+        outcome.results[0].outcome,
+        EntryOutcome::Skipped {
+            reason: SkipReason::ChosenApplicationMissing {
+                desktop_id: DOLPHIN.to_string(),
+                alternatives: vec![choice(FILES, "Better Files")],
+            }
+        }
+    );
+    assert!(
+        desktop
+            .file()
+            .contains("inode/directory=io.betteros.Files.desktop")
+    );
 }

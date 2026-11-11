@@ -35,7 +35,12 @@ use better_core::defaults::{
 use better_core::manifest::ComponentId;
 use serde::{Deserialize, Serialize};
 
-pub use applications::{ApplicationCatalog, ApplicationChoice, InstalledApplications};
+/// The catalog's own validation for the two identifiers a person can type
+/// when choosing what a restore writes.
+pub use app_catalog_core::{DesktopId, MimeType};
+pub use applications::{
+    ApplicationCatalog, ApplicationChoice, InstalledApplications, LazyApplications,
+};
 pub use dconf::DconfAdapter;
 pub use mock::{InMemoryAdapter, MockBehavior, MockDesktop};
 pub use xdg::XdgDefaultAppAdapter;
