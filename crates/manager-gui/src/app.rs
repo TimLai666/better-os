@@ -1021,7 +1021,9 @@ impl ManagerApp {
             Some("mock_failure_at_applying_settings") => c.applying_settings,
             Some("mock_failure_at_checking_health") => c.checking_works,
             Some("mock_restore_recheck_failed") => c.restore_recheck_failed,
-            Some("mock_restore_rechecked") | Some("mock_health_check_passed") => c.passed,
+            Some("mock_restore_rechecked")
+            | Some("mock_health_check_passed")
+            | Some("health_check_passed") => c.passed,
             Some("mock_operation_finished") => c.finished,
             Some("mock_operation_cancelled") | Some("operation.cancelled") => c.cancel,
             // Real execution reports what actually went wrong.
@@ -1034,9 +1036,12 @@ impl ManagerApp {
             Some("restore.artifact_missing") => c.evidence_restore_artifact_missing,
             Some(other) if other.starts_with("daemon.error.apt_busy") => c.evidence_apt_busy,
             Some(other) if other.starts_with("daemon.error.apt_failed") => c.evidence_apt_failed,
-            Some(other) if other.starts_with("daemon.error.health_failed") => {
+            Some(other)
+                if other.starts_with("daemon.error.health_failed") || other == "health.failed" =>
+            {
                 c.evidence_health_failed
             }
+            Some("health.undetermined") => c.evidence_health_undetermined,
             Some(other) if other.starts_with("daemon.error.state_drift") => c.evidence_state_drift,
             Some(other) if other.starts_with("host.externally_upgraded") => {
                 c.evidence_externally_upgraded
@@ -1181,6 +1186,10 @@ fn stored_from_locale(locale: Locale) -> StoredLocale {
 /// refusal for its own stated reason, and calling it a machine mismatch sends
 /// the person looking for a problem the machine does not have.
 pub(crate) fn plan_rejection_is_host_mismatch(evidence: &str) -> bool {
-    let _ = evidence;
-    todo!("ticket 75: plan_rejection_is_host_mismatch")
+    evidence
+        .strip_prefix("daemon.error.plan_rejected:")
+        .is_some_and(|detail| {
+            detail.starts_with("plan targets release ")
+                || detail.starts_with("plan targets architecture ")
+        })
 }

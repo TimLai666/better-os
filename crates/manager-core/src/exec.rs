@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use better_core::package_health::HealthProbe;
+use better_core::package_health::{HealthProbe, HealthVerdict};
 use manager_ipc::{
     OutcomeStatus, TransactionOutcome, WireAction, WireArtifact, WirePlan, WireRecovery, WireStep,
 };
@@ -193,15 +193,6 @@ impl<'a> RealDriver<'a> {
     /// `Ok(None)` when no step crosses the privileged boundary — a plan of
     /// only Verify, Enable, and Disable steps — so nothing is sent at all.
     pub fn wire_plan(&self, plan: &TransactionPlan) -> Result<Option<WirePlan>, FailureEvidence> {
-        let _ = plan;
-        todo!("ticket 75: wire_plan returns None for a plan with no privileged step")
-    }
-
-    #[allow(dead_code)]
-    fn wire_plan_before_ticket_75(
-        &self,
-        plan: &TransactionPlan,
-    ) -> Result<WirePlan, FailureEvidence> {
         let mut steps = Vec::new();
         for step in plan.steps() {
             let Some(action) = wire_action(step.operation) else {
@@ -223,6 +214,10 @@ impl<'a> RealDriver<'a> {
             });
         }
 
+        if steps.is_empty() {
+            return Ok(None);
+        }
+
         let wire = WirePlan {
             protocol_version: manager_ipc::PROTOCOL_VERSION,
             transaction_id: self.transaction_id.clone(),
@@ -233,7 +228,7 @@ impl<'a> RealDriver<'a> {
         wire.validate().map_err(|error| {
             FailureEvidence::with_detail("daemon.plan_rejected", error.to_string())
         })?;
-        Ok(wire)
+        Ok(Some(wire))
     }
 
     fn download_all(
@@ -329,8 +324,34 @@ impl<'a> RealDriver<'a> {
     /// not run fails it with `health.undetermined`. Nothing is reported healthy
     /// without being checked.
     fn check_health(&self, plan: &TransactionPlan) -> StageOutcome {
-        let _ = (plan, self.packages, self.health);
-        todo!("ticket 75: check_health")
+        if let Some(outcome) = &self.outcome {
+            let stage = outcome_to_stage(outcome);
+            if !matches!(stage, StageOutcome::Completed) {
+                return stage;
+            }
+        }
+        for step in plan.steps() {
+            if !matches!(step.operation, DesiredOperation::Verify) {
+                continue;
+            }
+            let package = step.component.to_string();
+            match manager_platform::dpkg::verify_package(self.packages, self.health, &package) {
+                HealthVerdict::Healthy => {}
+                HealthVerdict::Failed(detail) => {
+                    return StageOutcome::Failed(FailureEvidence::with_detail(
+                        "health.failed",
+                        detail,
+                    ));
+                }
+                HealthVerdict::Undetermined(detail) => {
+                    return StageOutcome::Failed(FailureEvidence::with_detail(
+                        "health.undetermined",
+                        detail,
+                    ));
+                }
+            }
+        }
+        StageOutcome::Completed
     }
 
     /// What the daemon reported, once the transaction has been handed over.

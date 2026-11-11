@@ -5,9 +5,13 @@
 //! not the ability to look. Asking the host directly is what lets the manager
 //! notice that its own records have drifted instead of trusting them forever.
 
+use std::path::Path;
 use std::process::Command;
 
-use better_core::package_health::{HealthProbe, HealthVerdict, InstalledFiles};
+use better_core::package_health::{
+    HealthProbe, HealthVerdict, InstalledFiles, PathFilter, check_installed,
+    parse_apt_config_value, parse_conffiles, parse_file_list,
+};
 
 use crate::PlatformError;
 
@@ -29,8 +33,18 @@ pub fn verify_package(
     health: &dyn HealthProbe,
     package: &str,
 ) -> HealthVerdict {
-    let _ = (packages, health, package);
-    todo!("ticket 75: verify_package")
+    check_installed(
+        package,
+        packages
+            .installed_version(package)
+            .map_err(|error| error.to_string()),
+        || {
+            packages
+                .installed_files(package)
+                .map_err(|error| error.to_string())
+        },
+        health,
+    )
 }
 
 /// Queries the real dpkg database.
@@ -58,9 +72,62 @@ impl PackageStateProbe for DpkgProbe {
     }
 
     fn installed_files(&self, package: &str) -> Result<InstalledFiles, PlatformError> {
-        let _ = package;
-        todo!("ticket 75: DpkgProbe::installed_files")
+        // The same name check as `installed_version`, before anything runs.
+        if !is_safe_package_name(package) {
+            return Err(PlatformError::CapabilityUnavailable("dpkg.package_name"));
+        }
+        let unavailable = || PlatformError::CapabilityUnavailable("dpkg.file_list");
+        let listed =
+            read_only_output("dpkg-query", &["-L", "--", package]).ok_or_else(unavailable)?;
+        let conffiles = read_only_output("dpkg-query", &["-W", "-f=${Conffiles}", "--", package])
+            .ok_or_else(unavailable)?;
+
+        let paths = parse_file_list(&listed);
+        let filter = configured_path_filter();
+        let excluded = if filter.is_empty() {
+            Vec::new()
+        } else {
+            paths
+                .iter()
+                .filter(|path| filter.excludes(path))
+                .cloned()
+                .collect()
+        };
+        Ok(InstalledFiles {
+            paths,
+            conffiles: parse_conffiles(&conffiles),
+            excluded,
+        })
     }
+}
+
+/// Runs a read-only query and returns its stdout, or `None` when it cannot be
+/// run or exits non-zero. Nothing goes through a shell.
+fn read_only_output(program: &str, arguments: &[&str]) -> Option<String> {
+    let output = Command::new(program)
+        .args(arguments)
+        .env("LC_ALL", "C")
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The path filters in force on this machine: dpkg's own configuration, plus
+/// whatever apt adds to the dpkg command line. An `apt-config` that cannot be
+/// run contributes nothing, the same reading the daemon's driver makes.
+fn configured_path_filter() -> PathFilter {
+    let mut filter = PathFilter::from_config_dir(Path::new("/etc/dpkg"));
+    if let Some(dumped) = read_only_output("apt-config", &["dump", "DPkg::Options"]) {
+        for line in dumped.lines() {
+            if let Some(option) = parse_apt_config_value(line) {
+                filter.push_option(option);
+            }
+        }
+    }
+    filter
 }
 
 fn is_safe_package_name(package: &str) -> bool {
