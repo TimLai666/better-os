@@ -270,13 +270,12 @@ GUI or dependency compiles when the relevant command was not executed.
   which half is which and why. `gestures.json` is schema version 2 and migrates
   version 1 on read; the capture beside it is still one file for the machine
   rather than one per profile, so a restore puts the capture back into whichever
-  profile is in force. And nothing routes a recognized gesture to the profile of
-  the pad that produced it. `better-touchpad-gestured` recognizes against the
-  profile in force — the selected pad's own, or the global one — rather than
-  always the global one, but `org.betteros.TouchpadAdapter1` reports no device
-  identity, so on a machine with two touchpads both pads perform the selected
-  pad's profile. Routing per pad needs the adapter interface to name the device
-  first, which is an ADR 0012 change rather than a GUI one.
+  profile is in force. Each gesture is routed to the profile of the pad that
+  made it (ADR 0015): the adapter reports the event's device node and the
+  service resolves it to the stored identity, with an unknown device using the
+  global profile. No gesture from a real touchpad has been observed, so which
+  device Mutter reports as an event's source is still read from its source code
+  rather than seen.
 - The custom-shortcut collision check reads only what a dconf database holds,
   which is what the user has changed. GNOME's compiled-in defaults are in no
   database and the shell exposes nothing to ask, so the screen says "nothing you
