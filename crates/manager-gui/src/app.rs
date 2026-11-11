@@ -116,6 +116,10 @@ pub(crate) struct ManagerApp {
     /// one click does. The confirmation lives here rather than in a modal
     /// because the sentence a person needs is already on the card they clicked.
     pub(crate) adopt_confirm: Option<ComponentId>,
+    /// Better OS packages dpkg holds at a version nothing can order, found
+    /// when the window last reconciled. Shown by the doctor, managed by
+    /// nothing (ticket 69).
+    pub(crate) unorderable: Vec<DoctorCheck>,
     /// What the privileged service last said about dpkg's own record. `None`
     /// until it has been asked, and in a demo window, which never asks.
     pub(crate) package_system: Option<PackageSystemState>,
@@ -208,6 +212,7 @@ impl ManagerApp {
             running: None,
             cancel: None,
             adopt_confirm: None,
+            unorderable: Vec::new(),
             package_system: None,
             package_system_task: None,
             repair_task: None,
@@ -242,6 +247,12 @@ impl ManagerApp {
         {
             self.commit_state(candidate);
         }
+        // Read-only, like the reconciliation above, and asked here once rather
+        // than on every frame the Health screen draws.
+        self.unorderable = self
+            .manager
+            .unorderable_host_checks(&self.state, &DpkgProbe)
+            .unwrap_or_default();
     }
 
     /// Asks for confirmation before adopting what the machine has, or takes
@@ -1071,7 +1082,9 @@ impl ManagerApp {
     }
 
     pub(crate) fn doctor_checks(&self) -> Vec<DoctorCheck> {
-        self.manager.doctor(&self.state).unwrap_or_default()
+        let mut checks = self.manager.doctor(&self.state).unwrap_or_default();
+        checks.extend(self.unorderable.iter().cloned());
+        checks
     }
 
     pub(crate) fn activity_matches(&self, entry: &ActivityRecord) -> bool {

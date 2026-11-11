@@ -1728,3 +1728,78 @@ mod package_system_repair {
         }
     }
 }
+
+/// Ticket 69: a package dpkg holds at a version the manager cannot order is a
+/// doctor finding on the Health screen too.
+mod unorderable_host_versions {
+    use super::*;
+    use crate::model::unorderable_detail;
+    use manager_core::{DoctorCheck, DoctorCheckKind, DoctorCheckStatus};
+
+    fn check() -> DoctorCheck {
+        DoctorCheck {
+            kind: DoctorCheckKind::UnorderableHostVersion,
+            status: DoctorCheckStatus::Warning,
+            component: Some(ComponentId::new("better-monitor").unwrap()),
+            host_version: Some("1:0.2.8~rc1-1".to_string()),
+        }
+    }
+
+    #[test]
+    fn the_finding_names_dpkgs_version_and_what_to_do_in_both_locales() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let detail = unorderable_detail(locale, &check())
+                .expect("an unorderable package has something to say");
+            assert!(detail.contains("1:0.2.8~rc1-1"), "{detail}");
+            assert!(detail.contains("apt remove better-monitor"), "{detail}");
+            assert!(!detail.contains('{'), "{detail}");
+            assert!(!copy(locale).check_unorderable_version.trim().is_empty());
+        }
+        assert_ne!(
+            unorderable_detail(Locale::EnUs, &check()),
+            unorderable_detail(Locale::ZhTw, &check())
+        );
+    }
+
+    #[test]
+    fn other_checks_carry_no_such_detail() {
+        let mut other = check();
+        other.kind = DoctorCheckKind::HostReconciliation;
+        assert_eq!(unorderable_detail(Locale::EnUs, &other), None);
+    }
+
+    /// dpkg is asked once, when the window reconciles, not on every frame the
+    /// Health screen draws; and a demo window, which skips reconciling, never
+    /// asks at all.
+    #[test]
+    fn the_window_asks_dpkg_when_it_reconciles_and_lists_the_findings() {
+        let app = include_str!("app.rs");
+        let reconcile = app
+            .split("fn reconcile_with_host(&mut self)")
+            .nth(1)
+            .expect("reconciliation exists");
+        let reconcile = reconcile.split("\n    }\n").next().unwrap();
+        assert!(
+            reconcile.contains(".unorderable_host_checks(&self.state, &DpkgProbe)"),
+            "{reconcile}"
+        );
+        let doctor = app
+            .split("fn doctor_checks(&self)")
+            .nth(1)
+            .unwrap()
+            .split("\n    }\n")
+            .next()
+            .unwrap();
+        assert!(
+            doctor.contains("self.unorderable.iter().cloned()"),
+            "{doctor}"
+        );
+        assert!(!doctor.contains("DpkgProbe"), "{doctor}");
+
+        let page = include_str!("pages_settings.rs");
+        assert!(
+            page.contains("DoctorCheckKind::UnorderableHostVersion => c.check_unorderable_version")
+        );
+        assert!(page.contains("unorderable_detail(self.locale, check)"));
+    }
+}

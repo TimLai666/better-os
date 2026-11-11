@@ -9,8 +9,9 @@ use manager_core::exec::{
 };
 use manager_core::repair::{self, PackageSystemState, RepairReport, RepairResult};
 use manager_core::{
-    DesiredOperation, DiskSpaceCheck, ExecutionMode, InstallProvenance, Manager, ManagerState,
-    MockOutcome, OperationProgress, OperationStage, TransactionPlan,
+    DesiredOperation, DiskSpaceCheck, DoctorCheck, DoctorCheckKind, ExecutionMode,
+    InstallProvenance, Manager, ManagerState, MockOutcome, OperationProgress, OperationStage,
+    TransactionPlan,
 };
 use manager_platform::catalog_fetch::HttpManifestFetcher;
 use manager_platform::download::{ArtifactCache, HttpDownloader};
@@ -255,6 +256,29 @@ fn print_catalog_status(status: &CatalogStatus) {
     for rejection in &status.rejections {
         println!("  rejected {rejection}");
     }
+}
+
+/// One doctor check: its kind, status, and component on one line, as the
+/// command has always printed them, and for a package dpkg holds at a version
+/// the manager cannot order, the version and what to do about it.
+fn doctor_lines(check: &DoctorCheck) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{:?} {:?} {:?}",
+        check.kind, check.status, check.component
+    )];
+    if let (DoctorCheckKind::UnorderableHostVersion, Some(component), Some(version)) =
+        (check.kind, &check.component, &check.host_version)
+    {
+        lines.push(format!(
+            "  {component} is installed at {version}, a version Better Manager cannot compare, \
+             so it is not managed: nothing is installed, updated, or removed for it"
+        ));
+        lines.push(format!(
+            "  to manage it here: remove it with `sudo apt remove {component}`, \
+             then install it from Better Manager"
+        ));
+    }
+    lines
 }
 
 /// How dpkg's record reads to a person: one heading line, then each package
@@ -770,8 +794,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Command::Doctor => {
-            for check in manager.doctor(&state)? {
-                println!("{:?} {:?} {:?}", check.kind, check.status, check.component);
+            let mut checks = manager.doctor(&state)?;
+            // A simulation's state is a fabrication, so dpkg is not asked.
+            if cli.execution == ExecutionArg::Real {
+                checks.extend(manager.unorderable_host_checks(&state, &DpkgProbe)?);
+            }
+            for check in &checks {
+                for line in doctor_lines(check) {
+                    println!("{line}");
+                }
             }
         }
         Command::Catalog { command } => match command {
@@ -894,6 +925,40 @@ mod tests {
             }],
             omitted: 2,
         }
+    }
+
+    /// Ticket 69: an unorderable package is listed with dpkg's own version and
+    /// what to do about it, not only as a kind and a status.
+    #[test]
+    fn an_unorderable_package_is_listed_with_its_version_and_what_to_do() {
+        let check = manager_core::DoctorCheck {
+            kind: manager_core::DoctorCheckKind::UnorderableHostVersion,
+            status: manager_core::DoctorCheckStatus::Warning,
+            component: Some(ComponentId::new("better-monitor").unwrap()),
+            host_version: Some("1:0.2.8~rc1-1".to_string()),
+        };
+        let lines = doctor_lines(&check);
+        assert_eq!(
+            lines[0],
+            "UnorderableHostVersion Warning Some(ComponentId(\"better-monitor\"))"
+        );
+        let rest = lines[1..].join("\n");
+        assert!(rest.contains("better-monitor"), "{rest}");
+        assert!(rest.contains("1:0.2.8~rc1-1"), "{rest}");
+        assert!(rest.contains("not managed"), "{rest}");
+        assert!(rest.contains("apt remove better-monitor"), "{rest}");
+
+        // Every other check keeps its one line.
+        let other = manager_core::DoctorCheck {
+            kind: manager_core::DoctorCheckKind::Catalog,
+            status: manager_core::DoctorCheckStatus::Passed,
+            component: None,
+            host_version: None,
+        };
+        assert_eq!(
+            doctor_lines(&other),
+            vec!["Catalog Passed None".to_string()]
+        );
     }
 
     #[test]

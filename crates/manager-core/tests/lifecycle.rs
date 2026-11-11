@@ -1686,3 +1686,112 @@ mod host_self_heal {
         );
     }
 }
+
+/// Ticket 69: a Better OS package dpkg holds at a version `semver` cannot
+/// order is shown as a doctor finding, and nothing else happens to it.
+mod unorderable_host_versions {
+    use super::*;
+    use manager_core::{DoctorCheck, DoctorCheckStatus};
+
+    fn manager() -> Manager {
+        Manager::new(catalog(), SystemProfile::default())
+    }
+
+    fn findings(state: &ManagerState, host: &str) -> Vec<DoctorCheck> {
+        manager()
+            .unorderable_host_checks(
+                state,
+                &FixedPackageStateProbe::new(&[("better-monitor", host)]),
+            )
+            .unwrap()
+    }
+
+    /// The cases the ticket names, split by what the manager can actually
+    /// order. An epoch and a Debian revision are stripped before comparing
+    /// (`manager_platform::dpkg::upstream_version`), so `1:0.2.8` and
+    /// `0.2.8-1ubuntu1` both reduce to `0.2.8` and are adopted, as ticket 44
+    /// does. A tilde stays in the upstream part and `semver` refuses it, so
+    /// that package is the one nothing can order.
+    #[test]
+    fn epoch_and_revision_are_adopted_and_a_tilde_is_reported() {
+        for (host, adopted) in [
+            ("1:0.2.8", Some("0.2.8")),
+            ("0.2.8-1ubuntu1", Some("0.2.8")),
+            ("0.2.8~rc1", None),
+            ("1:0.2.8~rc1-1ubuntu1", None),
+            ("0.2", None),
+        ] {
+            let mut state = ManagerState::default();
+            let probe = FixedPackageStateProbe::new(&[("better-monitor", host)]);
+            let drift = manager().reconcile(&mut state, &probe).unwrap();
+            assert!(drift.is_empty(), "{host}: no blocking drift is invented");
+
+            let recorded = state
+                .component(&id("better-monitor"))
+                .and_then(|record| record.installed_version.clone());
+            assert_eq!(recorded.as_deref(), adopted, "{host}");
+
+            let checks = findings(&state, host);
+            match adopted {
+                Some(_) => assert!(checks.is_empty(), "{host} is orderable: {checks:?}"),
+                None => assert_eq!(
+                    checks,
+                    vec![DoctorCheck {
+                        kind: DoctorCheckKind::UnorderableHostVersion,
+                        status: DoctorCheckStatus::Warning,
+                        component: Some(id("better-monitor")),
+                        // As dpkg reports it, epoch and revision included.
+                        host_version: Some(host.to_string()),
+                    }],
+                    "{host}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn nothing_is_adopted_planned_or_changed_for_an_unorderable_package() {
+        let mut state = ManagerState::default();
+        let probe = FixedPackageStateProbe::new(&[("better-monitor", "0.2.8~rc1")]);
+        let before = state.clone();
+
+        manager().reconcile(&mut state, &probe).unwrap();
+        manager().unorderable_host_checks(&state, &probe).unwrap();
+
+        assert_eq!(state, before, "the record is exactly what it was");
+        assert!(state.component(&id("better-monitor")).is_none());
+    }
+
+    /// A recorded package whose host version became unorderable keeps the
+    /// blocking drift finding it already had; this check covers only the
+    /// unrecorded case and does not list it a second time.
+    #[test]
+    fn a_recorded_package_keeps_its_drift_finding_and_is_not_listed_again() {
+        let mut state = ManagerState::default();
+        state.set_installed(id("better-monitor"), "0.0.1", true);
+        let probe = FixedPackageStateProbe::new(&[("better-monitor", "0.2.8~rc1")]);
+
+        let drift = manager().reconcile(&mut state, &probe).unwrap();
+
+        assert_eq!(drift.len(), 1);
+        assert!(matches!(drift[0].drift, DriftKind::VersionMismatch { .. }));
+        assert!(
+            manager()
+                .unorderable_host_checks(&state, &probe)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn an_absent_or_orderable_package_produces_no_finding() {
+        let state = ManagerState::default();
+        assert!(
+            manager()
+                .unorderable_host_checks(&state, &FixedPackageStateProbe::new(&[]))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(findings(&state, "0.2.8").is_empty());
+    }
+}

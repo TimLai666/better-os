@@ -12,7 +12,7 @@ use manager_core::{DoctorCheck, DoctorCheckKind, DoctorCheckStatus, ReleaseChann
 use crate::{
     app::ManagerApp,
     i18n::{Locale, copy},
-    model::{AboutInfo, Page, package_system_notice, repair_result_line},
+    model::{AboutInfo, Page, package_system_notice, repair_result_line, unorderable_detail},
 };
 
 impl ManagerApp {
@@ -277,7 +277,9 @@ impl ManagerApp {
             DoctorCheckKind::ComponentHealth => c.component_health_checks,
             DoctorCheckKind::RestoreData => c.restore_available,
             DoctorCheckKind::HostReconciliation => c.check_host_reconciliation,
+            DoctorCheckKind::UnorderableHostVersion => c.check_unorderable_version,
         };
+        let detail = unorderable_detail(self.locale, check);
         let status = self.pill(Self::doctor_pill(c, check.status), cx);
         h_flex()
             .w_full()
@@ -300,7 +302,15 @@ impl ManagerApp {
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .child(self.component_name_for_core(check.component.as_ref())),
-                    ),
+                    )
+                    .when_some(detail, |view, detail| {
+                        view.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(detail),
+                        )
+                    }),
             )
             .child(status)
             .into_any_element()

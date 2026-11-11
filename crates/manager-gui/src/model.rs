@@ -413,6 +413,26 @@ pub(crate) fn host_line(profile: &SystemProfile, base_word: &str) -> String {
     }
 }
 
+/// The sentence under an unorderable-version doctor finding: which version
+/// dpkg reports, that the component is therefore not managed, and how to
+/// bring it under management. `None` for every other kind of check.
+pub(crate) fn unorderable_detail(
+    locale: Locale,
+    check: &manager_core::DoctorCheck,
+) -> Option<String> {
+    if check.kind != manager_core::DoctorCheckKind::UnorderableHostVersion {
+        return None;
+    }
+    let component = check.component.as_ref()?;
+    let version = check.host_version.as_deref()?;
+    Some(
+        copy(locale)
+            .unorderable_version_detail
+            .replace("{component}", component.as_str())
+            .replace("{version}", version),
+    )
+}
+
 /// What the Health screen says about a dpkg run a crash interrupted: a title,
 /// one line per thing dpkg left unfinished, and what it costs until repaired.
 #[derive(Clone, Debug, PartialEq, Eq)]
