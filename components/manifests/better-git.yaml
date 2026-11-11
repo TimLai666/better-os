@@ -1,0 +1,71 @@
+schema_version: 2
+id: better-git
+display_name: Better Git
+# Enhancement is the closest existing type, not an exact one. Better Git is a
+# standalone application: it replaces nothing and changes no other part of the
+# system, so it declares neither `replaces` nor `enhances`. The schema has no
+# standalone type, and a released Better Manager refuses a manifest with a type
+# it does not know, so adding one is a schema change for its own ticket.
+component_type: enhancement
+version: 0.2.9
+summary: Review what changed in a Git repository and commit it, without a terminal.
+# The icon set is closed in the same way and has no Git mark; generic is the
+# value a component without a dedicated icon takes.
+icon: generic
+restart: application
+targets:
+  distributions: [zorin, ubuntu]
+  releases: [22.04, 24.04]
+  architectures: [amd64, arm64]
+# Placeholder checksums until v0.2.9 is published. ADR 0002 records the
+# checksum of a *published* release asset, and no release carries Better Git
+# yet. The real values are written back once the release is public and every
+# asset has been re-downloaded and verified.
+artifacts:
+  - release: "22.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.9/better-git_0.2.9_ubuntu-22.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-git_0.2.9_ubuntu-22.04_amd64.deb
+  - release: "22.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.9/better-git_0.2.9_ubuntu-22.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-git_0.2.9_ubuntu-22.04_arm64.deb
+  - release: "24.04"
+    architecture: amd64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.9/better-git_0.2.9_ubuntu-24.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-git_0.2.9_ubuntu-24.04_amd64.deb
+  - release: "24.04"
+    architecture: arm64
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.9/better-git_0.2.9_ubuntu-24.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-git_0.2.9_ubuntu-24.04_arm64.deb
+lifecycle:
+  install: plan-local-apt-install
+  enable: plan-enable
+  disable: plan-disable
+  remove: plan-remove
+  rollback: plan-rollback
+health_checks:
+  - git-desktop-entry-check
+  - git-executable-check
+# No privileged part: Better Git never talks to better-manager-daemon, and
+# every entry below is something the person's own session already allows.
+permissions:
+  - name: desktop-session
+    reason: needs a graphical session, Wayland or X11
+  - name: run-system-git
+    reason: runs the system git with an argument vector and no shell, so the person's own configuration, credential helper, and SSH keys apply
+  - name: repository-read-write
+    reason: reads and stages files only in repositories the person opens, and commits there when asked
+paths:
+  - /usr/bin/better-git
+  - /usr/share/applications/io.betteros.Git.desktop
+  - /usr/share/icons/hicolor/scalable/apps/better-git.svg
+  - ~/.local/state/better-os/git-recent.json
+release_notes:
+  - Open a repository, see each changed file and its diff, stage or unstage it, and commit with a summary and description.
+  - Every operation is the system git, which the package depends on. Better Git keeps no copy of your credentials and links no Git library.
+  - Removing the component removes the package, its desktop entry, and its icon. The list of recently opened repositories is left in place.

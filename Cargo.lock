@@ -2549,6 +2549,7 @@ dependencies = [
 name = "git-gui"
 version = "0.2.9"
 dependencies = [
+ "better-core",
  "better-ui",
  "git-core",
  "git-platform",

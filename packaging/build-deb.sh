@@ -108,6 +108,7 @@ cargo build --release \
     -p monitor-cli \
     -p launcher-gui \
     -p files-gui \
+    -p git-gui \
     -p touchpad-gui \
     -p touchpad-gesture-service \
     -p awake-service \
@@ -495,6 +496,19 @@ PACKAGE_RECOMMENDS="udisks2"
 make_package better-files \
     'Better OS file manager' \
     'A file manager whose operations are durable jobs and whose devices say when they are safe to unplug.'
+
+PACKAGE_BINARIES=("better-git:usr/bin/better-git")
+PACKAGE_DATA=(
+    "packaging/git/io.betteros.Git.desktop:usr/share/applications/io.betteros.Git.desktop"
+    "packaging/icons/better-git.svg:usr/share/icons/hicolor/scalable/apps/better-git.svg"
+)
+# git is a Depends and not a Recommends: every operation the window offers is
+# the system git run with an argument vector, so without it the window can
+# open a path and do nothing else.
+PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS" "git")
+make_package better-git \
+    'Better OS Git client' \
+    'Review what changed in a Git repository and commit it, through the system git.'
 
 # The safe-mode entry point ships in the same package as the window it recovers
 # from. A recovery path in a package a user has to install separately, after

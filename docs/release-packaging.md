@@ -111,9 +111,10 @@ fixture 對照表、以及對真實 public API 的 `--dry-run`；package job 用
 ## 與目前專案狀態的關係
 
 repository 現在提供 `packaging/build-deb.sh` 與 `packaging/verify-deb.sh`，可以在
-目前 host architecture 產生並檢查帶有 target-specific filename 的八個 `.deb`：
+目前 host architecture 產生並檢查帶有 target-specific filename 的九個 `.deb`：
 `better-manager`、`better-manager-daemon`、`better-monitor`（視窗、session
 service、command line 與 systemd user unit）、`better-launcher`、`better-files`、
+`better-git`（視窗、desktop entry 與圖示，`Depends` 含 `git`）、
 `better-touchpad`（含 safe-mode desktop entry）、`better-awake`（service、tray、
 settings 視窗、user unit 與兩個 desktop entries）、`better-storage`（service、
 doctor、user unit 與 session D-Bus activation file）。套件只安裝 systemd user
@@ -122,6 +123,11 @@ unit，不啟用它；啟用是 Better Manager 的 enable 步驟，與 `better-m
 job 的隔離目錄，但 asset target 仍是 `ubuntu-22.04` 或 `ubuntu-24.04`，因此
 兩種架構的檔名都符合同一套 release 命名規則。`better-files-example` 只作為
 schema fixture，不列入正式 release matrix。
+
+`better-git` 是第九個套件，從 ticket 78 起由 `build-deb.sh` 建置、`verify-deb.sh`
+檢查，但還沒有任何 release 發佈過它。下一個 release 因此會有九個套件、36 個
+`.deb` 與 36 個 `.deb.sha256`，加上 `LICENSE` 與 `third-party-licenses.md` 共 74
+個 assets。以下各 release 的數字描述的是當時發佈的內容，不隨之改寫。
 
 第一個 release 發布於
 [`v0.1.0`](https://github.com/TimLai666/better-os/releases/tag/v0.1.0)，由
@@ -256,7 +262,7 @@ match 到兩個檔案就直接失敗，所以升版後留在 `dist/` 的舊套�
 sidecar，`dist/` 底下的暫存子目錄屬於其他工具，不動。
 
 每次 release 都是所有 asset 從公開 release 重新下載、逐一驗證 checksum 之後，
-才把數值寫回七份 component manifest。升版當下 manifest 內的 checksum 描述的是
+才把數值寫回八份 component manifest。升版當下 manifest 內的 checksum 描述的是
 上一個 release 的檔案，因此 release branch 上會先換回 placeholder，等新 release
 公開後再寫入真值。
 

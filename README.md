@@ -32,8 +32,8 @@ What it does, in order:
 - Prints the one command that needs root, then asks for sudo once and runs it:
   a single `apt-get install` of the two verified `.deb` files.
 - Installs nothing else. Better Launcher, Better Monitor, Better Files, Better
-  Touchpad, Better Awake, and Better Storage are installed from inside Better
-  Manager, which is the point of installing it first.
+  Git, Better Touchpad, Better Awake, and Better Storage are installed from
+  inside Better Manager, which is the point of installing it first.
 
 Running it again on an unchanged release reports the machine as current and
 asks for nothing. `--dry-run` prints every one of the steps above and changes

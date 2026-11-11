@@ -42,6 +42,9 @@ required_executables() {
         better-files)
             printf '%s\n' usr/bin/better-files
             ;;
+        better-git)
+            printf '%s\n' usr/bin/better-git
+            ;;
         better-touchpad)
             printf '%s\n' \
                 usr/bin/better-touchpad \
@@ -82,6 +85,11 @@ required_data_files() {
             printf '%s\n' \
                 usr/share/applications/io.betteros.Files.desktop \
                 usr/share/icons/hicolor/scalable/apps/better-files.svg
+            ;;
+        better-git)
+            printf '%s\n' \
+                usr/share/applications/io.betteros.Git.desktop \
+                usr/share/icons/hicolor/scalable/apps/better-git.svg
             ;;
         better-touchpad)
             printf '%s\n' \
@@ -181,6 +189,7 @@ for package_name in \
     better-monitor \
     better-launcher \
     better-files \
+    better-git \
     better-touchpad \
     better-awake; do
     if [[ -n "$RELEASE_TARGET" ]]; then
@@ -312,6 +321,26 @@ for package_name in \
                 printf 'The Better Files desktop entry does not run the packaged binary\n' >&2
                 exit 1
             }
+            ;;
+        better-git)
+            grep -q '^Exec=better-git$' \
+                "$extract_dir/usr/share/applications/io.betteros.Git.desktop" || {
+                printf 'The Better Git desktop entry does not run the packaged window\n' >&2
+                exit 1
+            }
+            # The entry's file name is the window's Wayland app_id; this line
+            # says the same for X11.
+            grep -q '^StartupWMClass=io.betteros.Git$' \
+                "$extract_dir/usr/share/applications/io.betteros.Git.desktop" || {
+                printf 'The Better Git desktop entry does not name the window app_id\n' >&2
+                exit 1
+            }
+            # Every operation is the system git; a package that let it be
+            # missing would install a window that can do nothing.
+            if ! printf '%s\n' "$depends" | grep -Eq '(^|,)[[:space:]]*git([[:space:]]|,|$)'; then
+                printf 'Better Git does not depend on git: %s\n' "$depends" >&2
+                exit 1
+            fi
             ;;
         better-touchpad)
             # The recovery entry point has to work when the configuration is
