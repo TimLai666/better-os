@@ -75,8 +75,9 @@ pub struct SystemGit;
 
 /// Expected results, for every method:
 /// - `git` cannot be started → `GitError::NotInstalled`.
-/// - git exits non-zero → `GitError::Failed` with its trimmed stderr, except
-///   where a method below says otherwise.
+/// - git exits non-zero → `GitError::Failed` with its trimmed stderr, or its
+///   trimmed stdout when stderr is empty (`git commit` reports "nothing to
+///   commit" on stdout), except where a method below says otherwise.
 /// - Arguments are passed as a vector; paths are passed as `OsStr`, never
 ///   converted through a string, and always after `--`.
 impl Git for SystemGit {
