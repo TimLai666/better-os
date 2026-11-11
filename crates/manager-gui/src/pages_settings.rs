@@ -12,7 +12,7 @@ use manager_core::{DoctorCheck, DoctorCheckKind, DoctorCheckStatus, ReleaseChann
 use crate::{
     app::ManagerApp,
     i18n::{Locale, copy},
-    model::{AboutInfo, Page},
+    model::{AboutInfo, Page, package_system_notice, repair_result_line, unorderable_detail},
 };
 
 impl ManagerApp {
@@ -36,6 +36,9 @@ impl ManagerApp {
             .gap_5()
             .child(self.page_heading(c.health_title, c.health_subtitle, false, compact))
             .when_some(self.error_banner(cx), |view, error| view.child(error))
+            // An interrupted dpkg run is why every install would fail, so it
+            // goes above the checks rather than among them.
+            .when_some(self.package_system_card(cx), |view, card| view.child(card))
             .child(
                 h_flex()
                     .w_full()
@@ -172,6 +175,86 @@ impl ManagerApp {
             .into_any_element()
     }
 
+    /// What dpkg left unfinished, and the one control that finishes it.
+    ///
+    /// Drawn while the privileged service reports an interrupted run, and after
+    /// a repair to say how it ended. The heading and lines are status; the
+    /// button is the only thing on the card that does anything, and it asks
+    /// `manager-core`, which asks the service. Nothing here runs dpkg.
+    pub(crate) fn package_system_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let c = copy(self.locale);
+        let notice = self
+            .package_system
+            .as_ref()
+            .and_then(|state| package_system_notice(self.locale, state));
+        let result = self
+            .repair_result
+            .as_ref()
+            .map(|result| repair_result_line(self.locale, result));
+        if notice.is_none() && result.is_none() {
+            return None;
+        }
+        let repairing = self.repair_task.is_some();
+        let busy = repairing || self.running.is_some();
+        Some(
+            self.surface(
+                v_flex()
+                    .gap_2()
+                    .when_some(notice, |view, notice| {
+                        view.child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .flex_wrap()
+                                .child(
+                                    Icon::new(IconName::TriangleAlert)
+                                        .small()
+                                        .text_color(cx.theme().yellow),
+                                )
+                                .child(div().text_lg().font_semibold().child(notice.title)),
+                        )
+                        .children(notice.lines.into_iter().map(|line| {
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(line)
+                        }))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(notice.consequence),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(c.repair_needs_password),
+                        )
+                        .child(
+                            h_flex().child(
+                                Button::new("package-system-repair")
+                                    .primary()
+                                    .label(if repairing {
+                                        c.repairing
+                                    } else {
+                                        c.repair_package_system
+                                    })
+                                    .disabled(busy)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.repair_package_system(cx);
+                                    })),
+                            ),
+                        )
+                    })
+                    .when_some(result, |view, result| {
+                        view.child(div().text_sm().child(result))
+                    }),
+                cx,
+            ),
+        )
+    }
+
     /// How one doctor check result reads. It reports what a check found, so it
     /// is a pill: nothing about it can be clicked.
     pub(crate) fn doctor_pill(
@@ -194,7 +277,9 @@ impl ManagerApp {
             DoctorCheckKind::ComponentHealth => c.component_health_checks,
             DoctorCheckKind::RestoreData => c.restore_available,
             DoctorCheckKind::HostReconciliation => c.check_host_reconciliation,
+            DoctorCheckKind::UnorderableHostVersion => c.check_unorderable_version,
         };
+        let detail = unorderable_detail(self.locale, check);
         let status = self.pill(Self::doctor_pill(c, check.status), cx);
         h_flex()
             .w_full()
@@ -217,7 +302,15 @@ impl ManagerApp {
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .child(self.component_name_for_core(check.component.as_ref())),
-                    ),
+                    )
+                    .when_some(detail, |view, detail| {
+                        view.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(detail),
+                        )
+                    }),
             )
             .child(status)
             .into_any_element()

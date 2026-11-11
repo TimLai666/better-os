@@ -18,7 +18,9 @@ pub mod privileged;
 use std::path::PathBuf;
 
 use better_core::ComponentId;
-use manager_ipc::{ExecutionStage, TransactionOutcome, WirePlan};
+use manager_ipc::{
+    ExecutionStage, PackageSystemState, RepairOutcome, TransactionOutcome, WirePlan,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -157,6 +159,21 @@ pub trait PrivilegedTransactionExecutor: Send + Sync {
     ) -> Result<TransactionOutcome, PlatformError>;
 }
 
+/// The privileged repair of a dpkg run a crash interrupted (ADR 0014).
+///
+/// Separate from [`PrivilegedTransactionExecutor`] because a repair is not a
+/// transaction: it names no component and carries no plan. The same rule holds
+/// for it, though: only something holding a connection to the privileged
+/// service may implement it with anything other than a refusal.
+pub trait PackageSystemRepair: Send + Sync {
+    /// What dpkg's own record says, as the privileged service read it.
+    fn package_system_state(&self) -> Result<PackageSystemState, PlatformError>;
+
+    /// Asks the privileged service to run `dpkg --configure -a`. polkit asks
+    /// the person for an administrator's password first.
+    fn repair_package_system(&self) -> Result<RepairOutcome, PlatformError>;
+}
+
 #[derive(Debug, Error)]
 pub enum PlatformError {
     #[error("platform.error.capability_unavailable:{0}")]
@@ -259,6 +276,16 @@ impl PrivilegedTransactionExecutor for UnapprovedPrivilegedExecutor {
     }
 }
 
+impl PackageSystemRepair for UnapprovedPrivilegedExecutor {
+    fn package_system_state(&self) -> Result<PackageSystemState, PlatformError> {
+        Err(PlatformError::PrivilegedExecutionNotApproved)
+    }
+
+    fn repair_package_system(&self) -> Result<RepairOutcome, PlatformError> {
+        Err(PlatformError::PrivilegedExecutionNotApproved)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +365,17 @@ mod tests {
         };
         assert!(matches!(
             UnapprovedPrivilegedExecutor.execute_plan(&plan, &mut |_, _| {}),
+            Err(PlatformError::PrivilegedExecutionNotApproved)
+        ));
+        // The repair of an interrupted dpkg run (ADR 0014) is held to the same
+        // rule, and so is reading the state it repairs: without a connection
+        // there is no daemon to have read it.
+        assert!(matches!(
+            UnapprovedPrivilegedExecutor.repair_package_system(),
+            Err(PlatformError::PrivilegedExecutionNotApproved)
+        ));
+        assert!(matches!(
+            UnapprovedPrivilegedExecutor.package_system_state(),
             Err(PlatformError::PrivilegedExecutionNotApproved)
         ));
         assert!(matches!(

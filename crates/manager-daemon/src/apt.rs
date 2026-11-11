@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use better_core::package_health::{
     InstalledFiles, PathFilter, installed_files_from, path_filter_from,
 };
-use manager_ipc::{LogEntry, MAX_LOG_OUTPUT_BYTES};
+use manager_ipc::{LogEntry, MAX_LOG_OUTPUT_BYTES, PackageSystemState};
 
 use crate::DaemonError;
 
@@ -81,7 +81,20 @@ pub trait AptDriver: Send + Sync {
     /// installed, which is why the health check may trust it: nothing a
     /// manifest wrote reaches it.
     fn installed_files(&self, package: &str) -> Result<InstalledFiles, DaemonError>;
+    /// What dpkg's own record says about whether its last run finished.
+    fn package_system_state(&self) -> Result<PackageSystemState, DaemonError>;
+    /// Runs `dpkg --configure -a`, the one repair ADR 0014 allows. It takes no
+    /// argument: nothing about the command comes from outside the daemon.
+    fn configure_pending(&self) -> Result<AptRun, DaemonError>;
 }
+
+/// The repair's argument vector after `dpkg`. Fixed here so the command a
+/// person can read in ADR 0014 is the command that runs. The two
+/// `--force-conf*` flags are the ones every install passes through apt, and
+/// keep a changed configuration file from stopping the run at a prompt nobody
+/// can answer.
+pub const CONFIGURE_PENDING_ARGS: [&str; 4] =
+    ["--force-confdef", "--force-confold", "--configure", "-a"];
 
 fn now_unix() -> u64 {
     SystemTime::now()
@@ -241,6 +254,14 @@ impl AptDriver for AptGetDriver {
         parse_control_fields(&run.stdout_tail)
     }
 
+    fn package_system_state(&self) -> Result<PackageSystemState, DaemonError> {
+        crate::dpkg_state::read(Path::new(crate::dpkg_state::DPKG_ADMIN_DIR))
+    }
+
+    fn configure_pending(&self) -> Result<AptRun, DaemonError> {
+        self.run("dpkg", &CONFIGURE_PENDING_ARGS)
+    }
+
     fn installed_files(&self, package: &str) -> Result<InstalledFiles, DaemonError> {
         // `dpkg-query -L` rather than `dpkg -L`: same database, same output, and
         // it is the query tool the rest of this driver already uses.
@@ -306,6 +327,15 @@ pub struct FakeAptDriver {
     pub failing_remove: Mutex<Vec<String>>,
     pub lock_contention: Mutex<bool>,
     pub calls: Mutex<Vec<String>>,
+    /// What dpkg's record says. `None` makes it unreadable.
+    package_system: Mutex<Option<PackageSystemState>>,
+    /// What a successful repair leaves behind. Clean unless a test says
+    /// otherwise, such as a half-installed package `--configure` cannot finish.
+    after_repair: Mutex<PackageSystemState>,
+    failing_configure: Mutex<bool>,
+    /// How long `dpkg --configure -a` takes, for a repair that outlasts the
+    /// daemon's idle period.
+    configure_duration: Mutex<std::time::Duration>,
 }
 
 impl Default for FakeAptDriver {
@@ -325,7 +355,40 @@ impl FakeAptDriver {
             failing_remove: Mutex::new(Vec::new()),
             lock_contention: Mutex::new(false),
             calls: Mutex::new(Vec::new()),
+            package_system: Mutex::new(Some(PackageSystemState::clean())),
+            after_repair: Mutex::new(PackageSystemState::clean()),
+            failing_configure: Mutex::new(false),
+            configure_duration: Mutex::new(std::time::Duration::ZERO),
         }
+    }
+
+    /// Makes `dpkg --configure -a` take this long.
+    pub fn with_configure_duration(self, duration: std::time::Duration) -> Self {
+        *self.configure_duration.lock().unwrap() = duration;
+        self
+    }
+
+    /// Declares what dpkg's record says, such as a run a crash interrupted.
+    pub fn with_package_system(self, state: PackageSystemState) -> Self {
+        *self.package_system.lock().unwrap() = Some(state);
+        self
+    }
+
+    /// Makes dpkg's record unreadable.
+    pub fn with_unreadable_package_system(self) -> Self {
+        *self.package_system.lock().unwrap() = None;
+        self
+    }
+
+    /// Declares what a repair that exits cleanly leaves unfinished.
+    pub fn with_repair_leaving(self, state: PackageSystemState) -> Self {
+        *self.after_repair.lock().unwrap() = state;
+        self
+    }
+
+    /// Makes `dpkg --configure -a` exit with an error and change nothing.
+    pub fn fail_configure(&self) {
+        *self.failing_configure.lock().unwrap() = true;
     }
 
     pub fn with_installed(self, package: &str, version: &str) -> Self {
@@ -476,6 +539,34 @@ impl AptDriver for FakeAptDriver {
             .get(&filename)
             .cloned()
             .ok_or_else(|| DaemonError::PlanRejected("unreadable package".to_string()))
+    }
+
+    fn package_system_state(&self) -> Result<PackageSystemState, DaemonError> {
+        self.package_system
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| DaemonError::HostUnreadable("dpkg status file".to_string()))
+    }
+
+    fn configure_pending(&self) -> Result<AptRun, DaemonError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push("configure-pending".to_string());
+        std::thread::sleep(*self.configure_duration.lock().unwrap());
+        let failed = *self.failing_configure.lock().unwrap();
+        if !failed {
+            let after = self.after_repair.lock().unwrap().clone();
+            *self.package_system.lock().unwrap() = Some(after);
+        }
+        let mut argv = vec!["dpkg".to_string()];
+        argv.extend(
+            CONFIGURE_PENDING_ARGS
+                .iter()
+                .map(|argument| argument.to_string()),
+        );
+        Ok(self.run(argv, failed))
     }
 
     fn installed_files(&self, package: &str) -> Result<InstalledFiles, DaemonError> {

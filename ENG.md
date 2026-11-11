@@ -380,7 +380,7 @@ suite, not only the two that exist today.
 | Manager store | schema preservation, atomic JSON writes, stale writers, restart resume |
 | Manager platform | profile reporting, unavailable values, checksum-named artifact cache, dpkg version parsing, no mutation without an authorized privileged connection |
 | Manager IPC | wire contract round-trips and every rejection case |
-| Manager daemon | plan revalidation, artifact staging, APT driver, health checks, rollback outcomes, D-Bus surface over a private session bus |
+| Manager daemon | plan revalidation, artifact staging, APT driver, health checks, rollback outcomes, interrupted-dpkg detection from dpkg's record and its repair under its own polkit action, D-Bus surface over a private session bus |
 | Monitor contracts | metric identity validation, the five distinct observation states, capability resolution, report storage, incident creation, export redaction boundary and coverage |
 | Monitor collectors | CPU time categories with guest folding, load, frequency, temperature support state, memory and swap breakdown, paging units, PSI presence and absence, process identity and CPU deltas across PID reuse, command-line privacy, block-device filtering and sector units, interface counters and link attributes, truncated and malformed input, measured overhead |
 | GUI | workspace build and launch smoke test on a Linux desktop, manifest-driven presentation, appearance default and migration |

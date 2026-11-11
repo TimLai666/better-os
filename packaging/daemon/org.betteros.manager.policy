@@ -19,4 +19,20 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
+
+  <!-- ADR 0014. dpkg configure -a finishes every package dpkg left unfinished,
+       including packages Better OS did not install, and runs their maintainer
+       scripts as root. Every session authenticates every time; nothing is
+       kept between repairs. -->
+  <action id="org.betteros.manager.repair-package-system">
+    <description>Finish a package installation that was interrupted</description>
+    <description xml:lang="zh_TW">完成被中斷的套件安裝</description>
+    <message>Authentication is required to finish an interrupted package installation</message>
+    <message xml:lang="zh_TW">完成被中斷的套件安裝需要驗證身分</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
 </policyconfig>

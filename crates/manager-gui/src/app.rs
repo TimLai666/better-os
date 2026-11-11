@@ -5,6 +5,7 @@ use gpui_component::{Theme, ThemeMode};
 use manager_core::ExecutionMode;
 use manager_core::catalog::{CatalogStatus, RefreshOutcome, now_unix_seconds};
 use manager_core::exec::{CancelToken, RealDriver, RunnerEvent, StageProgress, TransactionRunner};
+use manager_core::repair::{self, PackageSystemState, RepairResult};
 use manager_core::{
     ActivityKind, ActivityRecord, ComponentFilterPreference, ComponentStatus, DesiredOperation,
     DiskSpaceCheck, DoctorCheck, HealthState, Manager, ManagerSettings, ManagerState, MockOutcome,
@@ -115,6 +116,19 @@ pub(crate) struct ManagerApp {
     /// one click does. The confirmation lives here rather than in a modal
     /// because the sentence a person needs is already on the card they clicked.
     pub(crate) adopt_confirm: Option<ComponentId>,
+    /// Better OS packages dpkg holds at a version nothing can order, found
+    /// when the window last reconciled. Shown by the doctor, managed by
+    /// nothing (ticket 69).
+    pub(crate) unorderable: Vec<DoctorCheck>,
+    /// What the privileged service last said about dpkg's own record. `None`
+    /// until it has been asked, and in a demo window, which never asks.
+    pub(crate) package_system: Option<PackageSystemState>,
+    /// The running question to the privileged service about dpkg's record.
+    pub(crate) package_system_task: Option<Task<()>>,
+    /// Set while a repair is waiting on the password prompt or on dpkg.
+    pub(crate) repair_task: Option<Task<()>>,
+    /// How the last repair this window asked for ended.
+    pub(crate) repair_result: Option<RepairResult>,
     pub(crate) _subscriptions: Vec<Subscription>,
 }
 
@@ -198,6 +212,11 @@ impl ManagerApp {
             running: None,
             cancel: None,
             adopt_confirm: None,
+            unorderable: Vec::new(),
+            package_system: None,
+            package_system_task: None,
+            repair_task: None,
+            repair_result: None,
             _subscriptions: vec![subscription],
         };
         app.reconcile_with_host();
@@ -228,6 +247,12 @@ impl ManagerApp {
         {
             self.commit_state(candidate);
         }
+        // Read-only, like the reconciliation above, and asked here once rather
+        // than on every frame the Health screen draws.
+        self.unorderable = self
+            .manager
+            .unorderable_host_checks(&self.state, &DpkgProbe)
+            .unwrap_or_default();
     }
 
     /// Asks for confirmation before adopting what the machine has, or takes
@@ -462,7 +487,78 @@ impl ManagerApp {
     }
 
     pub(crate) fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
+        // The Health screen is where an interrupted dpkg run is shown, so it
+        // asks the privileged service each time it is opened rather than at
+        // launch: opening the window should not start a root process.
+        if matches!(page, Page::Health | Page::DoctorResults) {
+            self.check_package_system(cx);
+        }
         self.page = page;
+        cx.notify();
+    }
+
+    /// Asks the privileged service what dpkg's own record says, off the UI
+    /// thread. A demo window never asks. A service that cannot be reached
+    /// leaves the last answer in place rather than inventing a clean one.
+    pub(crate) fn check_package_system(&mut self, cx: &mut Context<Self>) {
+        if self.is_demo() || self.package_system_task.is_some() {
+            return;
+        }
+        self.package_system_task = Some(cx.spawn(async move |this, cx| {
+            let answer = cx
+                .background_spawn(async move {
+                    let service = DbusPrivilegedExecutor::connect().ok()?;
+                    repair::package_system_state(&service).ok()
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.package_system_task = None;
+                if answer.is_some() {
+                    app.package_system = answer;
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Asks the privileged service to finish an interrupted dpkg run.
+    ///
+    /// `manager-core` asks and words the result; the service decides whether a
+    /// repair is needed and runs it. The request runs off the UI thread because
+    /// polkit's password prompt holds it for as long as the person takes. The
+    /// result is recorded against the state the window has when it lands, not
+    /// the state it had when the button was pressed.
+    pub(crate) fn repair_package_system(&mut self, cx: &mut Context<Self>) {
+        if self.is_demo() || self.repair_task.is_some() || self.running.is_some() {
+            return;
+        }
+        self.repair_result = None;
+        self.repair_task = Some(cx.spawn(async move |this, cx| {
+            let report = cx
+                .background_spawn(async move {
+                    match DbusPrivilegedExecutor::connect() {
+                        Ok(service) => repair::request_repair(&service),
+                        Err(error) => repair::unreachable(&error),
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| app.finish_repair(report, cx));
+        }));
+        cx.notify();
+    }
+
+    fn finish_repair(&mut self, report: repair::RepairReport, cx: &mut Context<Self>) {
+        self.repair_task = None;
+        let mut candidate = self.state.clone();
+        repair::record_repair(&mut candidate, &report);
+        self.commit_state(candidate);
+        if let Some(remaining) = report.remaining {
+            self.package_system = Some(remaining);
+        }
+        self.repair_result = Some(report.result);
+        // Finishing dpkg's work can move a component's installed version, and
+        // dpkg is where the manager reads that.
+        self.reconcile_with_host();
         cx.notify();
     }
 
@@ -546,10 +642,7 @@ impl ManagerApp {
         operation: DesiredOperation,
         cx: &mut Context<Self>,
     ) {
-        match self
-            .manager
-            .plan_in_mode(&self.state, id, operation, self.execution)
-        {
+        match self.plan_operation(id, operation) {
             Ok(plan) => {
                 self.pending_plan = Some(plan);
                 self.planning_error = None;
@@ -557,6 +650,39 @@ impl ManagerApp {
             }
             Err(_) => self.show_planning_error(Page::Components, cx),
         }
+    }
+
+    /// The one planning path for an operation on one component.
+    ///
+    /// A real window asks dpkg first, so a package it holds at a version
+    /// nothing can order is refused before a plan exists (ticket 69). A demo
+    /// plans from its fabricated state and never reads the host.
+    fn plan_operation(
+        &self,
+        id: &ComponentId,
+        operation: DesiredOperation,
+    ) -> Result<TransactionPlan, manager_core::ManagerError> {
+        match self.execution {
+            ExecutionMode::Mock => {
+                self.manager
+                    .plan_in_mode(&self.state, id, operation, ExecutionMode::Mock)
+            }
+            ExecutionMode::Real => self.manager.plan_on_host(
+                &self.state,
+                id,
+                operation,
+                ExecutionMode::Real,
+                &DpkgProbe,
+            ),
+        }
+    }
+
+    /// The doctor finding for a component dpkg holds at a version nothing can
+    /// order, from the last reconciliation.
+    pub(crate) fn unorderable_check(&self, id: &ComponentId) -> Option<&DoctorCheck> {
+        self.unorderable
+            .iter()
+            .find(|check| check.component.as_ref() == Some(id))
     }
 
     pub(crate) fn begin_install(&mut self, cx: &mut Context<Self>) {
@@ -685,7 +811,12 @@ impl ManagerApp {
                         },
                         cx,
                     ),
-                    OperationProgress::Failed { .. } => self.navigate(Page::Restore, cx),
+                    OperationProgress::Failed { .. } => {
+                        // A failure is the moment a person needs to know if
+                        // dpkg is the reason, before they try again.
+                        self.check_package_system(cx);
+                        self.navigate(Page::Restore, cx);
+                    }
                     OperationProgress::InProgress { .. } => cx.notify(),
                 }
             }
@@ -751,10 +882,7 @@ impl ManagerApp {
         operation: DesiredOperation,
         cx: &mut Context<Self>,
     ) {
-        match self
-            .manager
-            .plan_in_mode(&self.state, &component, operation, self.execution)
-        {
+        match self.plan_operation(&component, operation) {
             Ok(plan) => {
                 self.pending_plan = Some(plan);
                 self.planning_error = None;
@@ -983,7 +1111,9 @@ impl ManagerApp {
     }
 
     pub(crate) fn doctor_checks(&self) -> Vec<DoctorCheck> {
-        self.manager.doctor(&self.state).unwrap_or_default()
+        let mut checks = self.manager.doctor(&self.state).unwrap_or_default();
+        checks.extend(self.unorderable.iter().cloned());
+        checks
     }
 
     pub(crate) fn activity_matches(&self, entry: &ActivityRecord) -> bool {
@@ -1047,6 +1177,15 @@ impl ManagerApp {
             }
             Some("health.undetermined") => c.evidence_health_undetermined,
             Some(other) if other.starts_with("daemon.error.state_drift") => c.evidence_state_drift,
+            Some(other) if other.starts_with("daemon.error.dpkg_interrupted") => {
+                c.evidence_dpkg_interrupted
+            }
+            Some(other) if other.starts_with("daemon.error.repair_failed") => {
+                c.evidence_repair_failed
+            }
+            Some("package_system.repaired") => c.evidence_package_system_repaired,
+            Some("package_system.still_interrupted") => c.evidence_package_system_still_interrupted,
+            Some("package_system.nothing_to_repair") => c.repair_result_nothing,
             Some(other) if other.starts_with("host.externally_upgraded") => {
                 c.evidence_externally_upgraded
             }

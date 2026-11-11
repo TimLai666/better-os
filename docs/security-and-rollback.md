@@ -8,7 +8,10 @@
 - A plan states whether it is a simulation or a real transaction, and a real
   one must name the artifact of every step that installs something.
 - Only `manager-daemon` changes the system, and only for a caller polkit
-  authorized for `org.betteros.manager.apply-transaction`.
+  authorized for `org.betteros.manager.apply-transaction`, or, for the one
+  repair of an interrupted dpkg run, for
+  `org.betteros.manager.repair-package-system` (ADR 0014). The repair runs a
+  fixed `dpkg --configure -a` and takes nothing from the caller.
 - Monitor exports redact inventory values marked sensitive.
 
 ## The privileged boundary

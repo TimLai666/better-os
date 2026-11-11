@@ -1576,3 +1576,286 @@ mod drift_surface {
         );
     }
 }
+
+/// Ticket 68: an interrupted dpkg run, shown on the Health screen with the one
+/// control that repairs it.
+mod package_system_repair {
+    use super::*;
+    use crate::model::{package_system_notice, repair_result_line};
+    use manager_core::FailureEvidence;
+    use manager_core::repair::{
+        DpkgPackageStatus, InterruptedPackage, PackageSystemState, RepairResult,
+    };
+
+    fn interrupted(omitted: u32) -> PackageSystemState {
+        PackageSystemState {
+            protocol_version: manager_core::repair::PROTOCOL_VERSION,
+            journal_pending: true,
+            packages: vec![InterruptedPackage {
+                package: "better-monitor".to_string(),
+                status: DpkgPackageStatus::HalfConfigured,
+            }],
+            omitted,
+        }
+    }
+
+    #[test]
+    fn a_clean_package_system_draws_no_card() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            assert_eq!(
+                package_system_notice(locale, &PackageSystemState::clean()),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn an_interrupted_package_system_names_each_package_in_dpkgs_words() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let notice = package_system_notice(locale, &interrupted(3))
+                .expect("an interrupted package system must have something to say");
+            assert!(!notice.title.trim().is_empty());
+            assert!(!notice.consequence.trim().is_empty());
+            let lines = notice.lines.join("\n");
+            assert!(lines.contains("better-monitor"), "{lines}");
+            assert!(lines.contains("half-configured"), "{lines}");
+            assert!(lines.contains('3'), "the omitted count is said: {lines}");
+            assert!(!lines.contains('{'), "no placeholder survives: {lines}");
+        }
+    }
+
+    #[test]
+    fn every_repair_result_has_its_own_sentence_in_both_locales() {
+        let results = [
+            RepairResult::Repaired,
+            RepairResult::StillInterrupted,
+            RepairResult::NothingToRepair,
+            RepairResult::Failed {
+                evidence: FailureEvidence::new("daemon.error.repair_failed"),
+            },
+        ];
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let lines = results
+                .iter()
+                .map(|result| repair_result_line(locale, result))
+                .collect::<Vec<_>>();
+            for line in &lines {
+                assert!(!line.trim().is_empty());
+            }
+            for (index, line) in lines.iter().enumerate() {
+                assert!(
+                    !lines[index + 1..].contains(line),
+                    "two results read the same: {line}"
+                );
+            }
+        }
+        assert_ne!(
+            repair_result_line(Locale::EnUs, &RepairResult::Repaired),
+            repair_result_line(Locale::ZhTw, &RepairResult::Repaired)
+        );
+    }
+
+    /// The daemon's sandbox can be why dpkg failed (ADR 0014). A failed repair
+    /// says how to run the same command from a terminal instead.
+    #[test]
+    fn a_failed_repair_names_the_terminal_command_in_both_locales() {
+        let failed = RepairResult::Failed {
+            evidence: FailureEvidence::new("daemon.error.repair_failed"),
+        };
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            assert!(
+                repair_result_line(locale, &failed).contains("sudo dpkg --configure -a"),
+                "{locale:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_repair_copy_exists_in_both_locales() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let c = copy(locale);
+            for value in [
+                c.package_system_title,
+                c.package_system_journal,
+                c.package_system_blocks,
+                c.repair_package_system,
+                c.repair_needs_password,
+                c.repairing,
+                c.evidence_dpkg_interrupted,
+                c.evidence_package_system_repaired,
+                c.evidence_package_system_still_interrupted,
+                c.evidence_repair_failed,
+            ] {
+                assert!(!value.trim().is_empty());
+            }
+        }
+    }
+
+    /// The window keys these evidence strings to sentences; a key that falls
+    /// through to the generic refusal would hide what happened.
+    #[test]
+    fn the_repair_evidence_keys_are_worded_rather_than_falling_through() {
+        let app = include_str!("app.rs");
+        for (key, field) in [
+            (
+                "daemon.error.dpkg_interrupted",
+                "c.evidence_dpkg_interrupted",
+            ),
+            ("daemon.error.repair_failed", "c.evidence_repair_failed"),
+            (
+                "package_system.repaired",
+                "c.evidence_package_system_repaired",
+            ),
+            (
+                "package_system.still_interrupted",
+                "c.evidence_package_system_still_interrupted",
+            ),
+        ] {
+            let at = app
+                .find(&format!("\"{key}\""))
+                .unwrap_or_else(|| panic!("{key} has no wording"));
+            // From the key to the start of the next match arm.
+            let arm = app[at..].split("Some(").next().unwrap();
+            assert!(arm.contains(field), "{key} must map to {field}: {arm}");
+        }
+    }
+
+    /// A view model cannot prove what a render function does with it. The card
+    /// and its button are what make the repair reachable, and the button must
+    /// go through `manager-core` rather than talking to the service itself.
+    #[test]
+    fn the_health_screen_draws_the_card_and_repairs_through_manager_core() {
+        let page = include_str!("pages_settings.rs");
+        assert!(
+            page.contains("self.package_system_card(cx)"),
+            "the Health screen must draw the package system card"
+        );
+        assert!(page.contains("this.repair_package_system(cx)"));
+
+        let app = include_str!("app.rs");
+        assert!(app.contains("repair::request_repair(&service)"));
+        assert!(app.contains("repair::record_repair(&mut candidate, &report)"));
+        assert!(app.contains("repair::package_system_state(&service)"));
+        // Nothing in the window runs dpkg or reads its record itself.
+        for source in [app, page, include_str!("components.rs")] {
+            assert!(!source.contains("\"dpkg\""));
+            assert!(!source.contains("/var/lib/dpkg"));
+        }
+    }
+}
+
+/// Ticket 69: a package dpkg holds at a version the manager cannot order is a
+/// doctor finding on the Health screen too.
+mod unorderable_host_versions {
+    use super::*;
+    use crate::model::unorderable_detail;
+    use manager_core::{DoctorCheck, DoctorCheckKind, DoctorCheckStatus};
+
+    fn check() -> DoctorCheck {
+        DoctorCheck {
+            kind: DoctorCheckKind::UnorderableHostVersion,
+            status: DoctorCheckStatus::Warning,
+            component: Some(ComponentId::new("better-monitor").unwrap()),
+            host_version: Some("1:0.2.8~rc1-1".to_string()),
+        }
+    }
+
+    #[test]
+    fn the_finding_names_dpkgs_version_and_what_to_do_in_both_locales() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let detail = unorderable_detail(locale, &check())
+                .expect("an unorderable package has something to say");
+            assert!(detail.contains("1:0.2.8~rc1-1"), "{detail}");
+            assert!(detail.contains("apt remove better-monitor"), "{detail}");
+            assert!(!detail.contains('{'), "{detail}");
+            assert!(!copy(locale).check_unorderable_version.trim().is_empty());
+        }
+        assert_ne!(
+            unorderable_detail(Locale::EnUs, &check()),
+            unorderable_detail(Locale::ZhTw, &check())
+        );
+    }
+
+    #[test]
+    fn other_checks_carry_no_such_detail() {
+        let mut other = check();
+        other.kind = DoctorCheckKind::HostReconciliation;
+        assert_eq!(unorderable_detail(Locale::EnUs, &other), None);
+    }
+
+    /// dpkg is asked once, when the window reconciles, not on every frame the
+    /// Health screen draws; and a demo window, which skips reconciling, never
+    /// asks at all.
+    #[test]
+    fn the_window_asks_dpkg_when_it_reconciles_and_lists_the_findings() {
+        let app = include_str!("app.rs");
+        let reconcile = app
+            .split("fn reconcile_with_host(&mut self)")
+            .nth(1)
+            .expect("reconciliation exists");
+        let reconcile = reconcile.split("\n    }\n").next().unwrap();
+        assert!(
+            reconcile.contains(".unorderable_host_checks(&self.state, &DpkgProbe)"),
+            "{reconcile}"
+        );
+        let doctor = app
+            .split("fn doctor_checks(&self)")
+            .nth(1)
+            .unwrap()
+            .split("\n    }\n")
+            .next()
+            .unwrap();
+        assert!(
+            doctor.contains("self.unorderable.iter().cloned()"),
+            "{doctor}"
+        );
+        assert!(!doctor.contains("DpkgProbe"), "{doctor}");
+
+        let page = include_str!("pages_settings.rs");
+        assert!(
+            page.contains("DoctorCheckKind::UnorderableHostVersion => c.check_unorderable_version")
+        );
+        assert!(page.contains("unorderable_detail(self.locale, check)"));
+    }
+
+    /// Nothing is planned for such a package: the window plans a real
+    /// operation through `plan_on_host`, which refuses it, and no screen
+    /// offers Install for it. The component page says why instead.
+    #[test]
+    fn the_window_neither_plans_nor_offers_an_unorderable_package() {
+        let app = include_str!("app.rs");
+        assert!(
+            !app.contains(".plan_in_mode(&self.state, id, operation, self.execution)")
+                && !app
+                    .contains(".plan_in_mode(&self.state, &component, operation, self.execution)"),
+            "a component operation is planned without asking dpkg"
+        );
+        let plan = app
+            .split("fn plan_operation(")
+            .nth(1)
+            .expect("one planning path for component operations")
+            .split("\n    }\n")
+            .next()
+            .unwrap();
+        assert!(plan.contains(".plan_on_host("), "{plan}");
+        assert!(plan.contains("&DpkgProbe"), "{plan}");
+
+        let card = include_str!("components.rs");
+        let button = card
+            .split("fn component_action_button(")
+            .nth(1)
+            .unwrap()
+            .split("match component.state")
+            .next()
+            .unwrap();
+        assert!(
+            button.contains("self.unorderable_check(&component.core_id)"),
+            "{button}"
+        );
+
+        let detail = include_str!("pages_main.rs");
+        assert!(detail.contains(".unorderable_check(&component.core_id)"));
+        assert!(detail.contains("unorderable.is_none()"));
+        assert!(detail.contains("unorderable_detail(self.locale, check)"));
+    }
+}

@@ -345,6 +345,15 @@ impl ManagerApp {
     ) -> Button {
         let c = copy(self.locale);
         let id = component.core_id.clone();
+        // Not managed (ticket 69): the card opens the page that says why,
+        // rather than offering an install the planner refuses.
+        if self.unorderable_check(&component.core_id).is_some() {
+            return Button::new(component.element_id("details"))
+                .label(c.details)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_component(&id, cx);
+                }));
+        }
         if self.is_pending(&component.core_id) {
             return Button::new(component.element_id("review"))
                 .label(c.review_changes)

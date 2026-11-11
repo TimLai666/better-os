@@ -8,6 +8,7 @@
 
 pub mod catalog;
 pub mod exec;
+pub mod repair;
 
 use better_core::{
     Artifact, ComponentCatalog, ComponentId, ComponentManifest, ComponentType, ManifestError,
@@ -843,9 +844,11 @@ pub struct DriftFinding {
 /// set of cases rather than a chain of conditions spread through the loop.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum HostComparison {
-    /// Neither side has it, or dpkg has a version nothing can order and the
-    /// record has nothing to compare it against. Left alone.
+    /// Neither side has it. Left alone.
     Absent,
+    /// Nothing is recorded and dpkg holds a version `semver` cannot parse.
+    /// Left alone like `Absent`, and reported by the doctor (ticket 69).
+    Unorderable { host: String },
     /// Both agree on the version.
     Agreed,
     /// Nothing is recorded and dpkg holds an orderable version: adopt it.
@@ -865,7 +868,9 @@ impl HostComparison {
                 Ok(_) => Self::Adoptable {
                     host: upstream_version(host).to_string(),
                 },
-                Err(_) => Self::Absent,
+                Err(_) => Self::Unorderable {
+                    host: host.to_string(),
+                },
             },
             (Some(_), None) => Self::Drifted(DriftKind::MissingOnHost),
             (Some(recorded), Some(host)) => {
@@ -968,6 +973,9 @@ pub enum DoctorCheckKind {
     RestoreData,
     /// Whether the host still agrees with what was recorded.
     HostReconciliation,
+    /// dpkg holds this component, nothing records it, and its version cannot
+    /// be ordered, so the manager does not manage it (ticket 69).
+    UnorderableHostVersion,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -982,6 +990,8 @@ pub struct DoctorCheck {
     pub kind: DoctorCheckKind,
     pub status: DoctorCheckStatus,
     pub component: Option<ComponentId>,
+    /// The version exactly as dpkg reports it, for a check about one.
+    pub host_version: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -1248,6 +1258,41 @@ impl Manager {
         operation: DesiredOperation,
     ) -> Result<TransactionPlan, ManagerError> {
         self.plan_in_mode(state, id, operation, ExecutionMode::Mock)
+    }
+
+    /// [`plan_in_mode`](Self::plan_in_mode), refused when dpkg holds a
+    /// component the plan would change at a version nothing can order.
+    ///
+    /// Such a package has no record, so the planner on its own would offer to
+    /// install it, and the privileged service would then refuse the plan as
+    /// drift. Ticket 69 says it is not managed at all, so the refusal happens
+    /// here, before a plan exists. Only components the record does not carry
+    /// are checked: a recorded one with an unorderable host version is
+    /// already blocked by its drift finding.
+    pub fn plan_on_host(
+        &self,
+        state: &ManagerState,
+        id: &ComponentId,
+        operation: DesiredOperation,
+        mode: ExecutionMode,
+        probe: &dyn PackageStateProbe,
+    ) -> Result<TransactionPlan, ManagerError> {
+        let plan = self.plan_in_mode(state, id, operation, mode)?;
+        for step in plan.steps() {
+            let recorded = state
+                .component(&step.component)
+                .and_then(|record| record.installed_version.as_deref());
+            let host = probe
+                .installed_version(step.component.as_str())
+                .map_err(|_| ManagerError::HostUnreadable(step.component.clone()))?;
+            if matches!(
+                HostComparison::of(recorded, host.as_deref()),
+                HostComparison::Unorderable { .. }
+            ) {
+                return Err(ManagerError::HostVersionUnreadable(step.component.clone()));
+            }
+        }
+        Ok(plan)
     }
 
     pub fn plan_in_mode(
@@ -1610,7 +1655,10 @@ impl Manager {
                     );
                     changed += 1;
                 }
-                HostComparison::Absent | HostComparison::Agreed | HostComparison::Drifted(_) => {}
+                HostComparison::Absent
+                | HostComparison::Unorderable { .. }
+                | HostComparison::Agreed
+                | HostComparison::Drifted(_) => {}
             }
 
             if let Some(record) = state.components.get_mut(&manifest) {
@@ -1703,12 +1751,50 @@ impl Manager {
         })
     }
 
+    /// The Better OS packages dpkg holds that nothing records and whose
+    /// version `semver` cannot parse, as doctor findings.
+    ///
+    /// Reconciliation leaves such a package alone, because every path that
+    /// plans or compares would be reasoning about a string it cannot order.
+    /// This is where it is seen instead: one warning per package, carrying the
+    /// version exactly as dpkg reports it. It reads the state and the host and
+    /// changes neither. A package that *is* recorded is not listed here; its
+    /// unorderable host version is already a blocking drift finding.
+    pub fn unorderable_host_checks(
+        &self,
+        state: &ManagerState,
+        probe: &dyn PackageStateProbe,
+    ) -> Result<Vec<DoctorCheck>, ManagerError> {
+        self.validate_state(state)?;
+        let mut checks = Vec::new();
+        for manifest in self.manifests() {
+            let recorded = state
+                .component(&manifest.id)
+                .and_then(|record| record.installed_version.as_deref());
+            let host = probe
+                .installed_version(manifest.id.as_str())
+                .map_err(|_| ManagerError::HostUnreadable(manifest.id.clone()))?;
+            if let HostComparison::Unorderable { host } =
+                HostComparison::of(recorded, host.as_deref())
+            {
+                checks.push(DoctorCheck {
+                    kind: DoctorCheckKind::UnorderableHostVersion,
+                    status: DoctorCheckStatus::Warning,
+                    component: Some(manifest.id.clone()),
+                    host_version: Some(host),
+                });
+            }
+        }
+        Ok(checks)
+    }
+
     pub fn doctor(&self, state: &ManagerState) -> Result<Vec<DoctorCheck>, ManagerError> {
         self.validate_state(state)?;
         let mut checks = vec![DoctorCheck {
             kind: DoctorCheckKind::Catalog,
             status: DoctorCheckStatus::Passed,
             component: None,
+            host_version: None,
         }];
         for manifest in self.manifests() {
             let compatibility = if self.is_compatible(manifest) {
@@ -1723,12 +1809,14 @@ impl Manager {
                     kind: DoctorCheckKind::HostReconciliation,
                     status: DoctorCheckStatus::Failed,
                     component: Some(manifest.id.clone()),
+                    host_version: None,
                 });
             }
             checks.push(DoctorCheck {
                 kind: DoctorCheckKind::Compatibility,
                 status: compatibility,
                 component: Some(manifest.id.clone()),
+                host_version: None,
             });
             let health = match self.status(state, &manifest.id) {
                 Ok(ComponentStatus::Failed) | Ok(ComponentStatus::RestoreAvailable) => {
@@ -1743,6 +1831,7 @@ impl Manager {
                 kind: DoctorCheckKind::ComponentHealth,
                 status: health,
                 component: Some(manifest.id.clone()),
+                host_version: None,
             });
             if state
                 .component(&manifest.id)
@@ -1753,6 +1842,7 @@ impl Manager {
                     kind: DoctorCheckKind::RestoreData,
                     status: DoctorCheckStatus::Passed,
                     component: Some(manifest.id.clone()),
+                    host_version: None,
                 });
             }
         }

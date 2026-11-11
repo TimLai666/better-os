@@ -7,10 +7,12 @@
 
 use std::path::Path;
 
-use manager_ipc::{ExecutionStage, TransactionOutcome, WirePlan};
+use manager_ipc::{
+    ExecutionStage, PackageSystemState, RepairOutcome, TransactionOutcome, WirePlan,
+};
 use zbus::blocking::{Connection, Proxy};
 
-use crate::{PlatformError, PrivilegedTransactionExecutor};
+use crate::{PackageSystemRepair, PlatformError, PrivilegedTransactionExecutor};
 
 const BUS_NAME: &str = "org.betteros.Manager1";
 const OBJECT_PATH: &str = "/org/betteros/Manager1";
@@ -152,6 +154,28 @@ impl PrivilegedTransactionExecutor for DbusPrivilegedExecutor {
     }
 }
 
+impl PackageSystemRepair for DbusPrivilegedExecutor {
+    fn package_system_state(&self) -> Result<PackageSystemState, PlatformError> {
+        let document: String = self
+            .proxy()?
+            .call("GetPackageSystemState", &())
+            .map_err(translate)?;
+        PackageSystemState::from_json(&document)
+            .map_err(|error| PlatformError::DaemonRefused(error.to_string()))
+    }
+
+    fn repair_package_system(&self) -> Result<RepairOutcome, PlatformError> {
+        // The method takes nothing. Which command runs is the daemon's decision
+        // and is fixed there; ADR 0014.
+        let document: String = self
+            .proxy()?
+            .call("RepairPackageSystem", &())
+            .map_err(translate)?;
+        RepairOutcome::from_json(&document)
+            .map_err(|error| PlatformError::DaemonRefused(error.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +191,37 @@ mod tests {
             "org.freedesktop.DBus.Error.ServiceUnknown: no such service".to_string(),
         ));
         assert!(matches!(absent, PlatformError::DaemonUnavailable(_)));
+    }
+
+    /// A daemon older than ADR 0014 has no repair method. That is a refusal
+    /// to report, not a repair that ran or a daemon that is missing.
+    #[test]
+    fn a_daemon_without_the_repair_method_is_reported_as_a_refusal() {
+        let refused = translate(zbus::Error::MethodError(
+            "org.freedesktop.DBus.Error.UnknownMethod"
+                .try_into()
+                .unwrap(),
+            Some("Unknown method 'RepairPackageSystem'".to_string()),
+            zbus::message::Message::method_call("/", "Ping")
+                .unwrap()
+                .build(&())
+                .unwrap(),
+        ));
+        assert!(
+            matches!(&refused, PlatformError::DaemonRefused(detail) if detail.contains("UnknownMethod")),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_repair_refusal_keeps_the_daemons_key() {
+        let refused = translate(zbus::Error::Failure(
+            "daemon.error.nothing_to_repair".to_string(),
+        ));
+        assert_eq!(
+            refused.to_string(),
+            "platform.error.daemon_refused:daemon.error.nothing_to_repair"
+        );
     }
 
     #[test]
