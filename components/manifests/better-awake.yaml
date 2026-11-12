@@ -76,6 +76,13 @@ paths:
   # One icon for both entries: the tray autostart entry names the same theme
   # name the settings window does.
   - /usr/share/icons/hicolor/scalable/apps/better-awake.svg
+  - /usr/share/dbus-1/services/org.betteros.Awake1.service
+  - /usr/share/icons/hicolor/scalable/status/better-awake-inactive-symbolic.svg
+  - /usr/share/icons/hicolor/scalable/status/better-awake-active-symbolic.svg
+  - /usr/share/icons/hicolor/scalable/status/better-awake-active-trigger-symbolic.svg
+  - /usr/share/icons/hicolor/scalable/status/better-awake-paused-symbolic.svg
+  - /usr/share/icons/hicolor/scalable/status/better-awake-attention-symbolic.svg
+  - /usr/share/icons/hicolor/scalable/status/better-awake-unavailable-symbolic.svg
   - ~/.local/state/better-awake/awake-rules.json
   - ~/.local/state/better-awake/awake-history.json
   - ~/.local/state/better-awake/awake-service-state.json

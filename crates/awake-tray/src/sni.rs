@@ -142,15 +142,18 @@ pub async fn register_and_verify(
 
 /// The icon name for one state. Distinct names, not a shared icon recolored:
 /// Issue #13 forbids leaning on color alone, and an icon theme is free to make
-/// these look however it likes as long as they differ.
+/// these look however it likes as long as they differ. They are symbolic
+/// icons, which the package installs under `hicolor/scalable/status`, so the
+/// panel draws them in its own foreground color; a name with no installed icon
+/// is what showed a generic placeholder in the owner's taskbar.
 pub fn icon_name(indicator: WireIndicator) -> &'static str {
     match indicator {
-        WireIndicator::Inactive => "better-awake-inactive",
-        WireIndicator::ActiveManual => "better-awake-active",
-        WireIndicator::ActiveTrigger => "better-awake-active-trigger",
-        WireIndicator::PausedRules => "better-awake-paused",
-        WireIndicator::AttentionRequired => "better-awake-attention",
-        WireIndicator::Unavailable => "better-awake-unavailable",
+        WireIndicator::Inactive => "better-awake-inactive-symbolic",
+        WireIndicator::ActiveManual => "better-awake-active-symbolic",
+        WireIndicator::ActiveTrigger => "better-awake-active-trigger-symbolic",
+        WireIndicator::PausedRules => "better-awake-paused-symbolic",
+        WireIndicator::AttentionRequired => "better-awake-attention-symbolic",
+        WireIndicator::Unavailable => "better-awake-unavailable-symbolic",
     }
 }
 
