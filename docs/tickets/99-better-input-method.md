@@ -27,8 +27,8 @@ separately from the source.
   English, entirely on the machine. Candidate models: Whisper (MIT) and
   MediaTek's Breeze-ASR (Taiwanese Mandarin, check its licence), on the NPU
   when ticket 98's numbers say so, on the CPU otherwise.
-- The owner's voice key. On the ASUS Vivobook S 14 M5406WA the key shared
-  with F10 (without Fn) arrives on the "Asus WMI hotkeys" device as an
+- The owner's voice key. On the ASUS Vivobook S 14 M5406WA the voice key
+  is Fn+F10 (the keyboard sends plain F1–F12 without Fn). It arrives on the "Asus WMI hotkeys" device as an
   unknown key: the kernel logs `asus_wmi: Unknown key code 0xe7` and reports
   `KEY_UNKNOWN` with that scan code (read 2026-11-13). A hwdb remap cannot
   reach it, because `sparse_keymap` only remaps codes already in its table, so
