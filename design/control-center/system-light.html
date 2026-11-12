@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-Hant-TW" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Better Manager 系統（淺色）</title>
+<style>
+:root{--font:system-ui,"Inter","Segoe UI","Noto Sans CJK TC","Noto Sans TC",sans-serif}
+html[data-theme=light]{--bg:#f3f3f3;--card:rgba(255,255,255,.7);--card-solid:#fbfbfb;--ctl:rgba(255,255,255,.7);--ctl-hover:rgba(249,249,249,.5);--text:rgba(0,0,0,.894);--text2:rgba(0,0,0,.62);--text3:rgba(0,0,0,.36);--accent:#005fb8;--on-accent:#fff;--subtle:rgba(0,0,0,.037);--stroke:rgba(0,0,0,.06);--cstroke:rgba(0,0,0,.0578);--strong:rgba(0,0,0,.45);--crit:#c42b1c;--ok:#0f7b0f;--warn:#9d5d00;--critbg:#fde7e9;--okbg:#dff6dd;--warnbg:#fff4ce;--infobg:rgba(246,246,246,.5);--flyout:#f9f9f9;--knob:#fff;--track:rgba(0,0,0,.45);--elev:rgba(0,0,0,.16)}
+html[data-theme=dark]{--bg:#202020;--card:rgba(255,255,255,.05);--card-solid:#2b2b2b;--ctl:rgba(255,255,255,.06);--ctl-hover:rgba(255,255,255,.08);--text:#fff;--text2:rgba(255,255,255,.77);--text3:rgba(255,255,255,.36);--accent:#60cdff;--on-accent:#000;--subtle:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.07);--cstroke:rgba(0,0,0,.1);--strong:rgba(255,255,255,.55);--crit:#ff99a4;--ok:#6ccb5f;--warn:#fce100;--critbg:#442726;--okbg:#393d1b;--warnbg:#433519;--infobg:rgba(255,255,255,.03);--flyout:#2c2c2c;--knob:#000;--track:rgba(255,255,255,.55);--elev:rgba(0,0,0,.4)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:400 14px/20px var(--font);-webkit-font-smoothing:antialiased}
+.win{min-height:100vh;display:flex;flex-direction:column}
+.tb{height:32px;display:flex;align-items:center;gap:8px;padding:0 0 0 8px;flex:none}
+.tb .back{width:40px;height:32px;display:grid;place-items:center;border-radius:4px;color:var(--text)}
+.tb .back:hover{background:var(--subtle)}
+.tb .appname{font-size:12px;line-height:16px;color:var(--text)}
+.tb .caps{margin-left:auto;display:flex}
+.tb .caps span{width:46px;height:32px;display:grid;place-items:center;color:var(--text2)}
+.body{flex:1;display:flex;min-height:0}
+nav{width:320px;flex:none;padding:4px 4px 8px;display:flex;flex-direction:column;gap:4px}
+.search{margin:4px 12px 12px;height:32px;border-radius:4px;background:var(--ctl);border:1px solid var(--stroke);border-bottom-color:var(--strong);display:flex;align-items:center;padding:0 10px;gap:8px;color:var(--text2)}
+.search span{flex:1}
+.nav-item{position:relative;height:36px;display:flex;align-items:center;gap:16px;padding:0 12px 0 16px;border-radius:4px;margin:0 4px;color:var(--text)}
+.nav-item:hover{background:var(--subtle)}
+.nav-item.sel{background:var(--subtle)}
+.nav-item.sel::before{content:"";position:absolute;left:0;top:10px;width:3px;height:16px;border-radius:2px;background:var(--accent)}
+.nav-item .badge{margin-left:auto;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--accent);color:var(--on-accent);font-size:11px;line-height:16px;text-align:center;font-weight:600}
+.nav-item .dot{margin-left:auto;width:6px;height:6px;border-radius:3px;background:var(--accent)}
+.nav-spacer{flex:1}
+main{flex:1;min-width:0;overflow:auto;padding:0 24px 40px 32px}
+.content{max-width:1000px}
+h1{font:600 28px/36px var(--font);margin:10px 0 24px}
+.crumb{font:600 28px/36px var(--font);margin:10px 0 24px;display:flex;align-items:center;gap:12px}
+.crumb .prev{color:var(--text2)}
+.group-h{font:600 14px/20px var(--font);margin:24px 0 8px}
+.cards{display:flex;flex-direction:column;gap:4px}
+.card{background:var(--card);border:1px solid var(--cstroke);border-radius:4px;min-height:68px;display:flex;align-items:center;gap:16px;padding:12px 16px}
+.card.click:hover{background:var(--ctl-hover)}
+.card .lead{color:var(--text);flex:none;display:grid;place-items:center;width:20px}
+.card .txt{flex:1;min-width:0}
+.card .h{font-weight:400}
+.card .d{font-size:12px;line-height:16px;color:var(--text2)}
+.card .d.warn{color:var(--warn);display:flex;align-items:center;gap:4px}
+.card .trail{flex:none;display:flex;align-items:center;gap:12px;color:var(--text2)}
+.exp{background:var(--card);border:1px solid var(--cstroke);border-radius:4px}
+.exp>.card{border:0;background:transparent}
+.exp .row{border-top:1px solid var(--cstroke);padding:10px 16px 10px 52px;display:flex;align-items:center;gap:16px;min-height:48px}
+.exp .row .k{flex:1}
+.exp .row .v{color:var(--text2)}
+.btn{height:32px;padding:0 12px;border-radius:4px;border:1px solid var(--stroke);background:var(--ctl);color:var(--text);font:400 14px/20px var(--font);display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.btn.accent{background:var(--accent);color:var(--on-accent);border-color:transparent}
+.btn.split{padding:0}
+.btn.split span{padding:0 12px;height:100%;display:flex;align-items:center}
+.btn.split span+span{border-left:1px solid rgba(255,255,255,.3);padding:0 8px}
+html[data-theme=dark] .btn.split span+span{border-left-color:rgba(0,0,0,.25)}
+.combo{height:32px;min-width:200px;padding:0 10px 0 11px;border-radius:4px;border:1px solid var(--stroke);background:var(--ctl);display:inline-flex;align-items:center;justify-content:space-between;gap:12px;color:var(--text)}
+.tog{display:inline-flex;align-items:center;gap:12px;color:var(--text)}
+.sw{width:40px;height:20px;border-radius:10px;border:1px solid var(--track);position:relative;background:transparent}
+.sw::after{content:"";position:absolute;width:12px;height:12px;border-radius:6px;top:3px;left:3px;background:var(--text2)}
+.sw.on{background:var(--accent);border-color:var(--accent)}
+.sw.on::after{left:23px;background:var(--knob)}
+.slider{display:flex;align-items:center;gap:12px}
+.slider .track{width:200px;height:4px;border-radius:2px;background:var(--track);position:relative}
+.slider .fill{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--accent)}
+.slider .thumb{position:absolute;top:-8px;width:20px;height:20px;border-radius:10px;background:var(--card-solid);border:1px solid var(--stroke);box-shadow:0 1px 2px var(--elev);margin-left:-10px}
+.slider .thumb::after{content:"";position:absolute;inset:4px;border-radius:6px;background:var(--accent)}
+.slider .val{min-width:44px;text-align:right;color:var(--text2)}
+.radios{display:flex;gap:24px}
+.radio{display:flex;align-items:center;gap:8px;color:var(--text)}
+.radio i{width:20px;height:20px;border-radius:10px;border:1px solid var(--strong);display:inline-block;position:relative}
+.radio.on i{border:0;background:var(--accent)}
+.radio.on i::after{content:"";position:absolute;inset:5px;border-radius:5px;background:var(--knob)}
+.banner{display:flex;align-items:center;gap:20px;background:var(--card);border:1px solid var(--cstroke);border-radius:4px;padding:20px 24px}
+.banner .dev{width:88px;height:56px;border-radius:4px;border:2px solid var(--text2);position:relative;flex:none}
+.banner .dev::after{content:"";position:absolute;left:-10px;right:-10px;bottom:-8px;height:6px;border-radius:0 0 4px 4px;background:var(--text2)}
+.banner .name{font:600 20px/28px var(--font)}
+.banner .meta{font-size:12px;line-height:16px;color:var(--text2)}
+.banner .bat{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--text2)}
+.status-ic{flex:none;width:20px;height:20px;border-radius:10px;display:grid;place-items:center;font:700 12px/1 var(--font)}
+.status-ic.warn{background:var(--warn);color:var(--bg)}
+.status-ic.info{background:var(--accent);color:var(--on-accent)}
+.status-ic.ok{background:var(--ok);color:var(--bg)}
+.infobar{display:flex;align-items:flex-start;gap:12px;border:1px solid var(--cstroke);border-radius:4px;padding:14px 16px;background:var(--infobg);margin-bottom:8px}
+.infobar.warn{background:var(--warnbg)}
+.infobar .t{font-weight:600;margin-right:8px}
+.list .li{height:48px;display:flex;align-items:center;gap:12px;padding:0 16px;border-top:1px solid var(--cstroke)}
+.list .li:first-child{border-top:0}
+.list .li .c{font-size:12px;line-height:16px;color:var(--text2)}
+.selbar{display:flex;gap:4px;margin:-8px 0 16px}
+.selbar span{height:32px;padding:0 12px;display:flex;align-items:center;position:relative;color:var(--text2);border-radius:4px}
+.selbar span.on{color:var(--text)}
+.selbar span.on::after{content:"";position:absolute;left:50%;margin-left:-8px;bottom:0;width:16px;height:3px;border-radius:2px;background:var(--accent)}
+.big{font:600 20px/28px var(--font)}
+.cap{font-size:12px;line-height:16px;color:var(--text2)}
+.note{max-width:1000px;margin-top:32px;font-size:12px;line-height:16px;color:var(--text3)}
+.sev-warn{color:var(--warn)} .sev-ok{color:var(--ok)}
+@media (max-width:1000px){nav{width:48px}nav .lbl,nav .search span,nav .badge{display:none}.search{margin:4px 4px 12px;padding:0;justify-content:center;border:0;background:transparent}.nav-item{padding:0;justify-content:center;margin:0}.nav-item .dot{position:absolute;right:8px;top:8px}main{padding:0 16px 40px}}
+</style>
+</head>
+<body>
+<div class="win">
+<div class="tb"><span class="back" title="上一頁"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></span><span class="appname">Better Manager</span><span class="caps"><span><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/></svg></span><span><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1"/></svg></span><span><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></span></span></div>
+<div class="body">
+<nav aria-label="導覽"><div class="search"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><span>尋找設定</span></div><div class="nav-item"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg><span class="lbl">首頁</span></div><div class="nav-item sel"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"/></svg><span class="lbl">系統</span></div><div class="nav-item"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 6H2M22 18H2M6 2v20M18 2v20"/></svg><span class="lbl">觸控板</span></div><div class="nav-item"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg><span class="lbl">保持清醒</span><span class="dot" title="正在保持清醒"></span></div><div class="nav-item"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg><span class="lbl">應用程式</span><span class="badge">2</span></div><div class="nav-item"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/></svg><span class="lbl">預設應用程式</span></div><div class="nav-item"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/></svg><span class="lbl">修正</span></div><div class="nav-spacer"></div><div class="nav-item"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="lbl">設定</span></div></nav>
+<main><div class="content">
+
+<h1>系統</h1>
+<div class="group-h">電源</div>
+<div class="cards">
+<div class="card"><span class="lead"><svg class="ic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg></span><div class="txt"><div class="h">電源模式</div><div class="d">在電池續航力和效能之間取捨。</div></div><div class="trail"><span class="combo">平衡<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span></div></div>
+<div class="card"><span class="lead"><svg class="ic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="16" height="10" rx="2"/><path d="M22 11v2M6 11v2M10 11v2M14 11v2"/></svg></span><div class="txt"><div class="h">電池充電上限</div><div class="d">長時間接著電源時，充到較低的電量可以延長電池壽命。</div></div><div class="trail"><span class="combo">充到 100%（不限制）<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span></div></div>
+<div class="exp">
+<div class="card"><span class="lead"><svg class="ic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="16" height="10" rx="2"/><path d="M22 11v2M6 11v2M10 11v2M14 11v2"/></svg></span><div class="txt"><div class="h">電池</div><div class="d">100% · 已充滿</div></div><div class="trail"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></div></div>
+<div class="row"><span class="k">電池健康度</span><span class="v">目前可充到出廠容量的 87%</span></div>
+<div class="row"><span class="k">型號</span><span class="v">A32-K55</span></div>
+</div>
+</div>
+<div class="group-h">顯示</div>
+<div class="cards">
+<div class="card"><span class="lead"><svg class="ic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span><div class="txt"><div class="h">螢幕亮度</div><div class="d">調整內建螢幕的亮度。</div></div><div class="trail"><span class="slider"><span class="track"><span class="fill" style="width:55%"></span><span class="thumb" style="left:55%"></span></span><span class="val">55</span></span></div></div>
+<div class="card"><span class="lead"><svg class="ic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/></svg></span><div class="txt"><div class="h">鍵盤背光</div><div class="d">3 段亮度，0 是關閉。</div></div><div class="trail"><span class="slider"><span class="track"><span class="fill" style="width:100%"></span><span class="thumb" style="left:100%"></span></span><span class="val">第 3 段</span></span></div></div>
+</div>
+<div class="group-h">散熱</div>
+<div class="cards">
+<div class="card"><span class="lead"><svg class="ic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.83 12.83a2 2 0 1 0 2.83-2.83"/><path d="M12 12c0-4 1-8 5-8 2 0 3 2 2 4l-7 4"/><path d="M12 12c4 0 8 1 8 5 0 2-2 3-4 2l-4-7"/><path d="M12 12c0 4-1 8-5 8-2 0-3-2-2-4l7-4"/><path d="M12 12c-4 0-8-1-8-5 0-2 2-3 4-2l4 7"/></svg></span><div class="txt"><div class="h">風扇模式</div><div class="d">自動會依溫度調整。全速只適合短時間散熱，會比較吵。</div></div><div class="trail"><span class="radios"><span class="radio on"><i></i>自動</span><span class="radio"><i></i>全速</span></span></div></div>
+<div class="exp">
+<div class="card"><span class="lead"><svg class="ic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/></svg></span><div class="txt"><div class="h">溫度與風扇</div><div class="d">處理器 54 °C · 風扇 3,000 RPM</div></div><div class="trail"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></div></div>
+<div class="row"><span class="k">處理器</span><span class="v">54 °C</span></div>
+<div class="row"><span class="k">主機板</span><span class="v">50 °C</span></div>
+<div class="row"><span class="k">無線網路</span><span class="v">52 °C</span></div>
+<div class="row"><span class="k">顯示晶片</span><span class="v">49 °C</span></div>
+<div class="row"><span class="k">固態硬碟</span><span class="v">40 °C</span></div>
+<div class="row"><span class="k">處理器風扇</span><span class="v">3,000 RPM</span></div>
+</div>
+</div>
+<div class="group-h">關於這台電腦</div>
+<div class="cards">
+<div class="card click"><span class="lead"><svg class="ic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg></span><div class="txt"><div class="h">裝置規格</div><div class="d">ASUS Vivobook S 14 M5406WA · Zorin OS 18 · Ubuntu 24.04 基礎 · amd64</div></div><div class="trail"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></div></div>
+</div>
+
+</div>
+<p class="note">設計稿：控制項外觀依 DESIGN.md 與 better_ui::fluent（ticket 80），文案與行為依 design/control-center-spec.md。數值取自擁有者的 ASUS Vivobook S 14 M5406WA 於 2026-11-12 的唯讀讀數，更新數量與活動紀錄是示意資料。另一個外觀：system-dark.html。</p>
+</main>
+</div>
+</div>
+</body>
+</html>
