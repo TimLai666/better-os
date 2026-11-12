@@ -28,6 +28,12 @@ updated, verified, and rolled back through shared manager operations.
   unreleased build directly on the host or touch host system paths, package
   state, or privileged services.
 - Keep manager CLI and GUI on the same `manager-core` planning API.
+- Every Better OS background service runs because it was installed, with
+  nothing for the person to type (owner, 2026-11-12 and 2026-11-13). A new
+  service, tray, or hook is enabled and started by the install step, comes
+  back at login, can be started on demand by D-Bus activation where a client
+  asks for it, and is stopped and removed by uninstalling. A component whose
+  service needs a manual command is not done.
 - A component's systemd **user** units are managed by `manager-core`, never by
   a window or a command directly. `RealDriver` takes the controller through
   `with_user_units`; a driver built without one manages no units. Enabling,
