@@ -36,7 +36,11 @@ updated, verified, and rolled back through shared manager operations.
   Better Manager (it stays off, across logins, until enabled again) and
   uninstalling it; the record decides, so a unit someone stopped by hand is
   started again by Better Manager. A component whose service needs a manual
-  command is not done.
+  command is not done. Uninstalling removes everything the component added:
+  its services and their enablement, autostart entries, D-Bus activation
+  files, udev rules and sleep hooks, GNOME extensions it enabled, keybindings
+  and defaults it set (restored to what they were), and its caches. Nothing
+  it installed outlives it.
 - A component's systemd **user** units are managed by `manager-core`, never by
   a window or a command directly. `RealDriver` takes the controller through
   `with_user_units`; a driver built without one manages no units. Enabling,
