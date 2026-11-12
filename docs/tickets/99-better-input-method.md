@@ -27,6 +27,19 @@ separately from the source.
   English, entirely on the machine. Candidate models: Whisper (MIT) and
   MediaTek's Breeze-ASR (Taiwanese Mandarin, check its licence), on the NPU
   when ticket 98's numbers say so, on the CPU otherwise.
+- The owner's voice key. On the ASUS Vivobook S 14 M5406WA the key shared
+  with F10 (without Fn) arrives on the "Asus WMI hotkeys" device as an
+  unknown key: the kernel logs `asus_wmi: Unknown key code 0xe7` and reports
+  `KEY_UNKNOWN` with that scan code (read 2026-11-13). A hwdb remap cannot
+  reach it, because `sparse_keymap` only remaps codes already in its table, so
+  Better Input listens for that scan code on that device itself, and the
+  design also proposes the one-line upstream patch that maps 0xe7 in
+  `asus-nb-wmi` to `KEY_VOICECOMMAND`. Press once to start dictation, again to
+  stop; holding it to talk is a setting.
+- The speech model is Taiwanese Mandarin: MediaTek's Breeze-ASR-26
+  (Apache-2.0, fine-tuned from Whisper large-v2, about 1.5B parameters, read
+  2026-11-13), the one place in this ticket where the NPU is expected to pay
+  off; ticket 98 measures it.
 - How it is installed and configured by Better Manager: the IBus engine set
   as the input source, the mixed-language mode on by default, ibus-chewing
   restored on removal.
