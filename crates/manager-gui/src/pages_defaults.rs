@@ -12,7 +12,6 @@ use gpui_component::{
     ActiveTheme, Icon, IconName,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
-    sidebar::SidebarMenuItem,
     *,
 };
 
@@ -33,16 +32,6 @@ use crate::{
 };
 
 impl ManagerApp {
-    pub(crate) fn defaults_nav_item(&self, cx: &mut Context<Self>) -> SidebarMenuItem {
-        let c = copy(self.locale);
-        SidebarMenuItem::new(c.defaults)
-            .icon(IconName::Star)
-            .active(self.page_is_active(&Page::Defaults))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.open_defaults(cx);
-            }))
-    }
-
     /// The rows the Defaults screen and the component detail both read.
     fn defaults_rows(&self) -> Vec<DefaultsRow> {
         let Some(report) = self.defaults.report.as_ref() else {

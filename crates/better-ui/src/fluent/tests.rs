@@ -2,18 +2,26 @@
 //! rules, sorting, and the value models. Each WinUI rule a test asserts names
 //! the source file it was read from.
 
+use super::auto_suggest::{SuggestOutcome, list_open, suggest_key};
+use super::badge::{InfoBadge, MAX_SHOWN_COUNT};
 use super::breadcrumb::{clicked, fold};
 use super::button::{ButtonKind, colors};
-use super::chrome::{CLOSE_RED, CaptionButton, caption_buttons, caption_colors};
+use super::chrome::{
+    CLOSE_RED, CaptionButton, back_tooltip, caption_buttons, caption_colors, is_back_shortcut,
+};
 use super::command_bar::fit_count;
 use super::dialog::{DefaultButton, DialogButtons, DialogResult};
+use super::hyperlink::link_color;
 use super::info_bar::{ErrorReport, Severity, severity_look};
 use super::list::{
     ListItem, SortState, TILE_BODY_HEIGHT, TILE_BODY_WIDTH, TILE_HEIGHT, TILE_ICON, TILE_WIDTH,
     compare_cells, list_step, move_item, row_fill, row_icon_size, sorted_order,
 };
 use super::menu::{EntryShape, MenuAction, MenuOpen, MenuPath};
-use super::navigation::{NavEntry, NavItem, item_fill, nav_step, pane_width, toggle_tooltip};
+use super::navigation::{
+    NavEntry, NavItem, SearchSlot, content_offset, floats_over_content, item_fill, nav_step,
+    pane_width, search_slot, toggle_tooltip,
+};
 use super::progress::{fraction, indeterminate_arc, indeterminate_segment};
 use super::selection::{ComboOutcome, SliderModel, combo_key};
 use super::settings_card::card_fill;
@@ -241,6 +249,9 @@ fn the_type_ramp_is_five_sizes_and_never_below_twelve() {
 #[test]
 fn no_control_draws_text_outside_the_ramp() {
     let sources = [
+        include_str!("auto_suggest.rs"),
+        include_str!("badge.rs"),
+        include_str!("hyperlink.rs"),
         include_str!("breadcrumb.rs"),
         include_str!("button.rs"),
         include_str!("chrome.rs"),
@@ -1131,4 +1142,148 @@ fn multi_line_text_box_grows_by_a_body_line_per_row() {
     assert_eq!(multi_line_height(1), gpui::px(32.0));
     assert_eq!(multi_line_height(0), gpui::px(32.0));
     assert_eq!(multi_line_height(3), gpui::px(72.0));
+}
+
+#[test]
+fn a_badge_counts_what_is_waiting_and_is_absent_for_nothing() {
+    assert_eq!(InfoBadge::count(0), None);
+    assert_eq!(InfoBadge::count(2), Some(InfoBadge::Count(2)));
+    assert_eq!(InfoBadge::Count(2).text().as_deref(), Some("2"));
+    assert_eq!(
+        InfoBadge::Count(MAX_SHOWN_COUNT).text().as_deref(),
+        Some("99")
+    );
+    assert_eq!(InfoBadge::Count(100).text().as_deref(), Some("99+"));
+    assert_eq!(InfoBadge::Dot.text(), None);
+    let item = NavItem::new("Apps", gpui_component::IconName::Inbox).badge(InfoBadge::count(3));
+    assert_eq!(item.badge, Some(InfoBadge::Count(3)));
+}
+
+/// `AutoSuggestBox`: Down and Up walk the list and past either end back to
+/// the text; Enter takes the highlight or submits the text; Escape closes.
+#[test]
+fn the_suggestion_list_follows_the_auto_suggest_keys() {
+    assert_eq!(
+        suggest_key(true, None, 3, Key::Down),
+        SuggestOutcome::Highlight(Some(0))
+    );
+    assert_eq!(
+        suggest_key(true, Some(1), 3, Key::Down),
+        SuggestOutcome::Highlight(Some(2))
+    );
+    assert_eq!(
+        suggest_key(true, Some(2), 3, Key::Down),
+        SuggestOutcome::Highlight(None)
+    );
+    assert_eq!(
+        suggest_key(true, None, 3, Key::Up),
+        SuggestOutcome::Highlight(Some(2))
+    );
+    assert_eq!(
+        suggest_key(true, Some(0), 3, Key::Up),
+        SuggestOutcome::Highlight(None)
+    );
+    assert_eq!(
+        suggest_key(true, Some(1), 3, Key::Enter),
+        SuggestOutcome::Choose(1)
+    );
+    assert_eq!(
+        suggest_key(true, None, 3, Key::Enter),
+        SuggestOutcome::Submit
+    );
+    // A highlight left over from a closed list, or past a list that shrank,
+    // is not a choice.
+    assert_eq!(
+        suggest_key(false, Some(1), 3, Key::Enter),
+        SuggestOutcome::Submit
+    );
+    assert_eq!(
+        suggest_key(true, Some(5), 3, Key::Enter),
+        SuggestOutcome::Submit
+    );
+    assert_eq!(
+        suggest_key(true, None, 3, Key::Escape),
+        SuggestOutcome::Close
+    );
+    assert_eq!(
+        suggest_key(false, None, 3, Key::Escape),
+        SuggestOutcome::Ignored
+    );
+    assert_eq!(
+        suggest_key(false, None, 3, Key::Down),
+        SuggestOutcome::Ignored
+    );
+    assert_eq!(
+        suggest_key(true, None, 0, Key::Down),
+        SuggestOutcome::Ignored
+    );
+    assert_eq!(
+        suggest_key(true, None, 3, Key::Left),
+        SuggestOutcome::Ignored
+    );
+}
+
+#[test]
+fn the_suggestion_list_opens_for_text_and_stays_shut_after_escape() {
+    assert!(list_open(true, "cha", None));
+    assert!(!list_open(false, "cha", None));
+    assert!(!list_open(true, "", None));
+    assert!(!list_open(true, "   ", None));
+    assert!(!list_open(true, "cha", Some("cha")));
+    assert!(list_open(true, "char", Some("cha")));
+}
+
+#[test]
+fn the_pane_search_is_a_field_open_and_a_button_compact() {
+    assert_eq!(search_slot(false, false), SearchSlot::None);
+    assert_eq!(search_slot(false, true), SearchSlot::None);
+    assert_eq!(search_slot(true, false), SearchSlot::Field);
+    assert_eq!(search_slot(true, true), SearchSlot::Button);
+}
+
+/// A narrow window's open pane floats: the content stays 48px in, and the
+/// pane is never gone.
+#[test]
+fn an_open_pane_in_a_narrow_window_floats_over_the_content() {
+    assert!(floats_over_content(false, true));
+    assert!(!floats_over_content(true, true));
+    assert!(!floats_over_content(false, false));
+    assert_eq!(content_offset(false, true), px(48.0));
+    assert_eq!(content_offset(true, true), px(48.0));
+    assert_eq!(content_offset(false, false), px(320.0));
+    assert_eq!(content_offset(true, false), px(48.0));
+}
+
+#[test]
+fn back_is_alt_left_and_says_so_in_both_languages() {
+    assert!(is_back_shortcut("left", false, true, false, false));
+    assert!(!is_back_shortcut("left", false, false, false, false));
+    assert!(!is_back_shortcut("left", true, true, false, false));
+    assert!(!is_back_shortcut("left", false, true, true, false));
+    assert!(!is_back_shortcut("right", false, true, false, false));
+    assert_eq!(back_tooltip(Locale::English), "Back");
+    assert_eq!(back_tooltip(Locale::TraditionalChinese), "返回");
+}
+
+#[test]
+fn a_link_is_accent_text_and_disabled_text_when_disabled() {
+    for p in [&LIGHT, &DARK] {
+        assert_eq!(link_color(Interaction::Rest, p), p.accent_text);
+        assert_eq!(link_color(Interaction::PointerOver, p), p.accent_text);
+        assert_eq!(link_color(Interaction::Disabled, p), p.text_disabled);
+        assert!(link_color(Interaction::Pressed, p).a < 1.0);
+    }
+}
+
+/// A status glyph in a list row takes the color an info bar gives the same
+/// severity's icon, never a fill.
+#[test]
+fn a_status_glyph_is_the_severity_color() {
+    use super::list::status_glyph_color;
+    for p in [&LIGHT, &DARK] {
+        assert_eq!(status_glyph_color(Severity::Success, p), p.success);
+        assert_eq!(status_glyph_color(Severity::Warning, p), p.caution);
+        assert_eq!(status_glyph_color(Severity::Error, p), p.critical);
+        assert_eq!(status_glyph_color(Severity::Informational, p), p.accent);
+    }
 }

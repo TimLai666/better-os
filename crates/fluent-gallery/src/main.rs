@@ -10,6 +10,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use better_ui::command_line::{WindowCommandLine, WindowOption};
+use better_ui::fluent::auto_suggest::{AutoSuggestBox, Suggestion};
+use better_ui::fluent::badge::{Badge, InfoBadge};
 use better_ui::fluent::breadcrumb::BreadcrumbBar;
 use better_ui::fluent::button::{Button, SplitButton};
 use better_ui::fluent::chrome::{CaptionButton, TitleBar};
@@ -17,7 +19,9 @@ use better_ui::fluent::command_bar::{Command, CommandBar};
 use better_ui::fluent::dialog::{
     ContentDialog, DefaultButton, DialogButtons, DialogResult, Flyout, tooltip_inline,
 };
+use better_ui::fluent::hyperlink::HyperlinkButton;
 use better_ui::fluent::info_bar::{ErrorBar, ErrorReport, InfoBar, Severity};
+use better_ui::fluent::list::ListRow;
 use better_ui::fluent::list::{Column, DetailsTable, ListItem, ListView, SortState};
 use better_ui::fluent::menu::{
     ContextMenu, MenuEntry, MenuItem, MenuOpen, MenuPanel, new_state, open_menu,
@@ -25,7 +29,7 @@ use better_ui::fluent::menu::{
 use better_ui::fluent::navigation::{NavEntry, NavItem, NavigationView};
 use better_ui::fluent::progress::{Progress, ProgressBar, ProgressRing, ProgressStatus};
 use better_ui::fluent::selection::{ComboBox, ComboItem, Slider, SliderModel};
-use better_ui::fluent::settings_card::{SettingsCard, SettingsExpander, SettingsRow};
+use better_ui::fluent::settings_card::{DeviceBanner, SettingsCard, SettingsExpander, SettingsRow};
 use better_ui::fluent::tabs::{SelectorBar, SelectorItem, Tab, TabView, after_close};
 use better_ui::fluent::text_box::{NumberBox, NumberModel, TextBox};
 use better_ui::fluent::toggle::{CheckBox, CheckState, RadioButtons, RadioOption, ToggleSwitch};
@@ -222,6 +226,13 @@ struct Gallery {
     info_open: [bool; 4],
     demo_nav: Option<usize>,
     demo_compact: bool,
+    /// The search pane demo: its selection, compact state, and whether it
+    /// floats over its content as a narrow window's does.
+    search_nav: Option<usize>,
+    search_compact: bool,
+    search_overlay: bool,
+    suggest_input: Entity<InputState>,
+    pane_search_input: Entity<InputState>,
     context_menu: Entity<MenuOpen>,
     context_at: Point<Pixels>,
     last_action: SharedString,
@@ -282,6 +293,11 @@ impl Gallery {
             info_open: [true; 4],
             demo_nav: Some(1),
             demo_compact: false,
+            search_nav: Some(0),
+            search_compact: false,
+            search_overlay: true,
+            suggest_input: input(pick("Find a setting", "尋找設定"), "", window, cx),
+            pane_search_input: input(pick("Find a setting", "尋找設定"), "", window, cx),
             context_menu: new_state(cx),
             context_at: Point::default(),
             last_action: "".into(),
@@ -481,6 +497,20 @@ impl Gallery {
             },
             Button::standard("standard-live", cancel)
                 .on_click(Self::note(cx, "standard"))
+                .into_any_element(),
+        ));
+        rows.push(matrix(
+            self.t("Hyperlink", "超連結按鈕"),
+            p,
+            |s| {
+                HyperlinkButton::new(sid("link", s), self.t("Source code", "專案原始碼"))
+                    .external(true)
+                    .shown(s)
+                    .into_any_element()
+            },
+            HyperlinkButton::new("link-live", self.t("Source code", "專案原始碼"))
+                .external(true)
+                .on_click(Self::note(cx, "hyperlink"))
                 .into_any_element(),
         ));
         rows.push(matrix(
@@ -1256,7 +1286,7 @@ impl Gallery {
         rows
     }
 
-    fn collections_page(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn collections_page_base(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let items = vec![
             ListItem::new(self.t("Rest", "一般"))
                 .icon(IconName::Folder)
@@ -1422,6 +1452,70 @@ impl Gallery {
         ]
     }
 
+    /// Fixture settings for the auto-suggest demos, matched by the start of
+    /// any word, as the control center's search does.
+    fn suggestions_for(&self, query: &str) -> Vec<(usize, Suggestion)> {
+        let all = [
+            (
+                self.t("Battery charge limit", "電池充電上限"),
+                self.t("System › Power", "系統 › 電源"),
+            ),
+            (
+                self.t("Power mode", "電源模式"),
+                self.t("System › Power", "系統 › 電源"),
+            ),
+            (
+                self.t("Brightness", "螢幕亮度"),
+                self.t("System › Display", "系統 › 顯示"),
+            ),
+            (self.t("Appearance", "外觀"), self.t("Settings", "設定")),
+            (self.t("Language", "語言"), self.t("Settings", "設定")),
+        ];
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        all.iter()
+            .enumerate()
+            .filter(|(_, (title, _))| {
+                let title = title.to_lowercase();
+                title
+                    .split_whitespace()
+                    .any(|word| word.starts_with(&query))
+                    || (!title.is_ascii() && title.contains(&query))
+            })
+            .map(|(index, (title, caption))| (index, Suggestion::new(*title).caption(*caption)))
+            .collect()
+    }
+
+    fn suggest_box(
+        &self,
+        id: &'static str,
+        state: &Entity<InputState>,
+        width: Option<Pixels>,
+        cx: &Context<Self>,
+    ) -> AutoSuggestBox {
+        let query = state.read(cx).value().to_string();
+        let found = self.suggestions_for(&query);
+        let picked: Vec<usize> = found.iter().map(|(index, _)| *index).collect();
+        let empty = if self.zh {
+            format!("找不到符合「{query}」的設定。")
+        } else {
+            format!("No settings match \"{query}\".")
+        };
+        let mut field = AutoSuggestBox::new(id, state)
+            .suggestions(found.into_iter().map(|(_, s)| s).collect())
+            .empty_text(empty)
+            .on_choose(Self::act_with(cx, move |this, index: usize, _, _| {
+                this.last_action = format!("chose suggestion {}", picked[index]).into();
+            }))
+            .on_submit(Self::note(cx, "submitted the text"));
+        if let Some(width) = width {
+            field = field.width(width);
+        }
+        field
+    }
+
     fn navigation_page(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let footer = || vec![NavItem::new(self.t("Settings", "設定"), IconName::Settings)];
         let frame = |compact: bool| {
@@ -1529,7 +1623,141 @@ impl Gallery {
                 bar
             }
         };
+        let badged = || {
+            vec![
+                NavItem::new(self.t("Home", "首頁"), IconName::LayoutDashboard).entry(),
+                NavItem::new(self.t("Keep awake", "保持清醒"), IconName::Sun)
+                    .badge(Some(InfoBadge::Dot))
+                    .entry(),
+                NavItem::new(self.t("Apps", "應用程式"), IconName::Inbox)
+                    .badge(InfoBadge::count(2))
+                    .entry(),
+                NavItem::new(self.t("Fixes", "修正"), IconName::TriangleAlert)
+                    .badge(InfoBadge::count(120))
+                    .entry(),
+            ]
+        };
+        let search_demo = |compact: bool, id: &'static str| {
+            frame(compact).child(
+                NavigationView::new(id, badged(), Some(0))
+                    .footer(footer())
+                    .compact(compact)
+                    .locale(self.locale())
+                    .search(
+                        div().child(label(
+                            self.t("Find a setting", "尋找設定"),
+                            BODY,
+                            p.text_secondary,
+                        )),
+                        self.t("Find a setting", "尋找設定"),
+                    )
+                    .content(div().p(spacing::LG).child(label(
+                        self.t("Content", "內容"),
+                        BODY,
+                        p.text_secondary,
+                    ))),
+            )
+        };
+        let search_live = div()
+            .w(px(720.0))
+            .h(px(420.0))
+            .rounded(radius::SM)
+            .border_1()
+            .border_color(p.card_stroke)
+            .overflow_hidden()
+            .child(
+                NavigationView::new("nav-search-live", badged(), self.search_nav)
+                    .footer(footer())
+                    .compact(self.search_compact)
+                    .overlay(self.search_overlay)
+                    .locale(self.locale())
+                    .search(
+                        self.suggest_box("pane-suggest", &self.pane_search_input, None, cx),
+                        self.t("Find a setting", "尋找設定"),
+                    )
+                    .on_search_open(Self::act(cx, |this, window, cx| {
+                        let input = this.pane_search_input.clone();
+                        input.update(cx, |input, cx| input.focus(window, cx));
+                    }))
+                    .on_select(Self::act_with(cx, |this, index, _, _| {
+                        this.search_nav = Some(index)
+                    }))
+                    .on_toggle(Self::act_with(cx, |this, compact, _, _| {
+                        this.search_compact = compact
+                    }))
+                    .content(
+                        div()
+                            .p(spacing::LG)
+                            .flex()
+                            .flex_col()
+                            .gap(spacing::SM)
+                            .child(label(
+                                self.t(
+                                    "☰ opens the pane over this content; a press outside closes it.",
+                                    "☰ 會把窗格展開在內容上方，按一下外面就收合。",
+                                ),
+                                BODY,
+                                p.text_secondary,
+                            ))
+                            .child(
+                                ToggleSwitch::new("overlay-switch", self.search_overlay)
+                                    .header(self.t("Open over the content", "展開時蓋在內容上"))
+                                    .locale(self.locale())
+                                    .on_change(Self::act_with(cx, |this, on, _, _| {
+                                        this.search_overlay = on
+                                    })),
+                            )
+                            .child(label(
+                                self.last_action.clone(),
+                                CAPTION,
+                                p.text_secondary,
+                            )),
+                    ),
+            );
         vec![
+            section(
+                self.t(
+                    "Navigation view with search and badges",
+                    "導覽檢視：搜尋與徽章",
+                ),
+                p,
+                vec![
+                    line(
+                        self.t("Open and compact", "展開與精簡"),
+                        p,
+                        div()
+                            .flex()
+                            .gap(spacing::LG)
+                            .child(search_demo(false, "nav-search-open"))
+                            .child(search_demo(true, "nav-search-compact")),
+                    ),
+                    line(
+                        self.t(
+                            "Live (type, ↑↓, Enter, Esc)",
+                            "實際操作（輸入、↑↓、Enter、Esc）",
+                        ),
+                        p,
+                        search_live,
+                    ),
+                    line(
+                        self.t("Info badge", "資訊徽章"),
+                        p,
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(spacing::LG)
+                            .child(Badge::new(InfoBadge::Dot))
+                            .child(Badge::new(InfoBadge::Count(2)))
+                            .child(Badge::new(InfoBadge::Count(42)))
+                            .child(Badge::new(InfoBadge::Count(120))),
+                    ),
+                    line(
+                        self.t("Auto-suggest box", "自動建議方塊"),
+                        p,
+                        self.suggest_box("suggest-live", &self.suggest_input, Some(px(320.0)), cx),
+                    ),
+                ],
+            ),
             section(
                 self.t("Navigation view", "導覽檢視"),
                 p,
@@ -1668,7 +1896,122 @@ impl Gallery {
         ]
     }
 
+    /// The settings cards, then the status card and the device banner the
+    /// control center's Home is built from.
     fn settings_page(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut sections = self.settings_page_base(p, cx);
+        let status = |severity: Severity, id: &'static str, header: &'static str| {
+            SettingsCard::new(id, header)
+                .status(severity)
+                .description(self.t("A card that reports a state", "回報狀態的卡片"))
+                .into_any_element()
+        };
+        sections.push(section(
+            self.t("Status cards and the device banner", "狀態卡片與裝置橫幅"),
+            p,
+            vec![
+                line(
+                    self.t("Status card", "狀態卡片"),
+                    p,
+                    div()
+                        .w(px(640.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .child(status(
+                            Severity::Success,
+                            "status-success",
+                            self.t("Everything's fine", "一切正常"),
+                        ))
+                        .child(status(
+                            Severity::Informational,
+                            "status-info",
+                            self.t("Informational", "資訊"),
+                        ))
+                        .child(status(
+                            Severity::Warning,
+                            "status-warning",
+                            self.t("Warning", "警告"),
+                        ))
+                        .child(status(
+                            Severity::Error,
+                            "status-error",
+                            self.t("Error", "錯誤"),
+                        )),
+                ),
+                line(
+                    self.t("Device banner", "裝置橫幅"),
+                    p,
+                    div().w(px(640.0)).child(
+                        DeviceBanner::new(IconName::PanelBottom, "ASUS Vivobook S 14 M5406WA")
+                            .caption("Zorin OS 18.1 · Better OS 0.2.11")
+                            .trailing(label(
+                                self.t("87% · Charging", "87% · 充電中"),
+                                BODY,
+                                p.text_secondary,
+                            )),
+                    ),
+                ),
+            ],
+        ));
+        sections
+    }
+
+    /// The lists and tables, then rows with a status glyph, as an activity
+    /// log draws them.
+    fn collections_page(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut sections = self.collections_page_base(p, cx);
+        sections.push(section(
+            self.t("Rows with a status glyph", "帶狀態圖示的列"),
+            p,
+            vec![line(
+                self.t("Activity", "活動紀錄"),
+                p,
+                div()
+                    .w(px(480.0))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        ListRow::new(
+                            "status-row-ok",
+                            self.t("Better Files · Update", "Better Files · 更新"),
+                        )
+                        .status_glyph(IconName::CircleCheck, Severity::Success)
+                        .caption(self.t("Passed · 1 day ago", "通過 · 1 天前")),
+                    )
+                    .child(
+                        ListRow::new(
+                            "status-row-warn",
+                            self.t("Better Monitor · Check", "Better Monitor · 系統檢查"),
+                        )
+                        .status_glyph(IconName::TriangleAlert, Severity::Warning)
+                        .caption(self.t(
+                            "Service not running · 2 h ago",
+                            "背景服務沒有在執行 · 2 小時前",
+                        )),
+                    )
+                    .child(
+                        ListRow::new(
+                            "status-row-fail",
+                            self.t("Better Awake · Install", "Better Awake · 安裝"),
+                        )
+                        .status_glyph(IconName::CircleX, Severity::Error)
+                        .caption(self.t("Installing files · 21 min ago", "安裝檔案 · 21 分鐘前")),
+                    )
+                    .child(
+                        ListRow::new(
+                            "status-row-info",
+                            self.t("Better Manager · Check", "Better Manager · 系統檢查"),
+                        )
+                        .status_glyph(IconName::Info, Severity::Informational)
+                        .caption(self.t("Just now", "剛剛")),
+                    ),
+            )],
+        ));
+        sections
+    }
+
+    fn settings_page_base(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let combo = ComboBox::new(
             "settings-combo",
             vec![
@@ -1812,6 +2155,11 @@ impl Gallery {
             p,
             vec![
                 line(self.t("Active", "作用中"), p, frame(bar())),
+                line(
+                    self.t("Back button", "返回按鈕"),
+                    p,
+                    frame(bar().back(self.locale(), |_, _| {})),
+                ),
                 line(
                     self.t("Minimize, pointer over", "最小化（指標停留）"),
                     p,

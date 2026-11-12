@@ -14,7 +14,13 @@ Comment[zh_TW]=在同一個視窗安裝、更新、驗證並還原每一個 Bett
 Exec=better-manager
 Icon=better-manager
 Terminal=false
-StartupNotify=true
+# No startup notification. The window owns io.betteros.Manager, and a second
+# launch hands its page to the window already open and exits without drawing
+# anything, so a notification started for it would never be completed and the
+# desktop would show a busy pointer until it timed out. GPUI gives an open
+# window no way to use a token handed to it later, so the token could not be
+# passed on either. The shortcut entries ADR 0017 keeps say the same.
+StartupNotify=false
 # One main category on purpose. PackageManager is the additional category that
 # says what this window is for, and Settings is the main one it travels with:
 # Better Manager is where the other Better OS components are installed and

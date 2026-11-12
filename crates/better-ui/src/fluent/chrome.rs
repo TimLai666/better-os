@@ -12,6 +12,13 @@
 //!
 //! Dragging, double-click to maximize, and the right-click window menu go to
 //! the compositor through the same calls gpui-component's own titlebar uses.
+//!
+//! A window with page history puts a back button at the bar's leading edge,
+//! where Windows 11 Settings has it (WinUI's `NavigationView` back button,
+//! drawn in the titlebar since Windows 11): a 40 by 32 subtle button with a
+//! 16px arrow, the icon and title moving 8px after it. It is there only while
+//! there is somewhere to go back to. Alt+Left and the mouse's back button do
+//! the same; [`is_back_shortcut`] is the key rule.
 
 use gpui::{
     AnyElement, App, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
@@ -20,7 +27,25 @@ use gpui::{
 };
 use gpui_component::{Icon, IconName, InteractiveElementExt as _};
 
-use super::{CAPTION, Interaction, Palette, ShownState, hex, palette, text, with_alpha};
+use super::words::Locale;
+use super::{CAPTION, Handler, Interaction, Palette, ShownState, hex, palette, text, with_alpha};
+
+/// The back button's width.
+pub const BACK_BUTTON_WIDTH: Pixels = px(40.0);
+
+/// The back button's tooltip.
+pub fn back_tooltip(locale: Locale) -> &'static str {
+    match locale {
+        Locale::English => "Back",
+        Locale::TraditionalChinese => "返回",
+    }
+}
+
+/// Whether a key press means "go back": Alt+Left, as in every Windows
+/// application with page history. Any other modifier with it does not.
+pub fn is_back_shortcut(key: &str, control: bool, alt: bool, shift: bool, platform: bool) -> bool {
+    key == "left" && alt && !control && !shift && !platform
+}
 
 /// The bar's height.
 pub const TITLE_BAR_HEIGHT: Pixels = px(32.0);
@@ -78,6 +103,8 @@ pub struct TitleBar {
     /// A dialog's bar: the close button alone, and no maximize on a double
     /// click, as a Windows 11 dialog window has.
     dialog: bool,
+    /// The back button's handler and tooltip, while there is history.
+    back: Option<(Handler, SharedString)>,
 }
 
 /// The caption buttons a bar shows, left to right.
@@ -102,7 +129,19 @@ impl TitleBar {
             shown: None,
             inactive: false,
             dialog: false,
+            back: None,
         }
+    }
+
+    /// A back button at the leading edge. Pass it only while the window has
+    /// somewhere to go back to; without it the bar has none.
+    pub fn back(
+        mut self,
+        locale: Locale,
+        handler: impl Fn(&mut gpui::Window, &mut App) + 'static,
+    ) -> Self {
+        self.back = Some((std::rc::Rc::new(handler), back_tooltip(locale).into()));
+        self
     }
 
     /// The bar of a dialog window: close only.
@@ -214,6 +253,35 @@ impl RenderOnce for TitleBar {
         let up = drag.clone();
         let out = drag.clone();
         let moving = drag.clone();
+        let has_back = self.back.is_some();
+        let back = self.back.map(|(handler, tooltip)| {
+            let hover = p.subtle_fill;
+            let pressed = p.subtle_fill_tertiary;
+            let pressed_text = p.text_secondary;
+            div()
+                .id("fluent-title-back")
+                .ml(px(4.0))
+                .w(BACK_BUTTON_WIDTH)
+                .h_full()
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .rounded(super::radius::SM)
+                .text_color(title_color)
+                .hover(move |s| s.bg(hover))
+                .active(move |s| s.bg(pressed).text_color(pressed_text))
+                .child(Icon::new(IconName::ArrowLeft).size(super::size::ICON))
+                .tooltip(super::dialog::tooltip_builder(tooltip))
+                .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                })
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    handler(window, cx);
+                })
+        });
         div()
             .id("fluent-title-bar")
             .flex()
@@ -222,6 +290,7 @@ impl RenderOnce for TitleBar {
             .h(TITLE_BAR_HEIGHT)
             .w_full()
             .bg(p.window_background)
+            .children(back)
             .child(
                 div()
                     .id("fluent-title-drag")
@@ -230,7 +299,7 @@ impl RenderOnce for TitleBar {
                     .min_w_0()
                     .h_full()
                     .items_center()
-                    .pl(px(16.0))
+                    .pl(if has_back { px(8.0) } else { px(16.0) })
                     .gap(px(16.0))
                     .window_control_area(WindowControlArea::Drag)
                     .when(!self.dialog, |bar| {

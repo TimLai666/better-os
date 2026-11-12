@@ -428,6 +428,11 @@ pub struct ActivityRecord {
     pub operation: Option<DesiredOperation>,
     pub stage: Option<OperationStage>,
     pub evidence: Option<String>,
+    /// When the entry was recorded, in seconds since the Unix epoch. Entries
+    /// written before this field existed have none, and an older manager
+    /// reading a newer file ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_at_unix_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -745,6 +750,7 @@ impl ManagerState {
             operation,
             stage,
             evidence,
+            recorded_at_unix_seconds: Some(catalog::now_unix_seconds()),
         });
     }
 }
@@ -2639,5 +2645,145 @@ mod tests {
             StateValidationError::UnsupportedSchemaVersion(2).to_string(),
             "manager.state.unsupported_schema:2"
         );
+    }
+}
+
+/// Reading dpkg's own record without privilege, by the same rule
+/// `manager-daemon`'s `dpkg_state` applies before it offers a repair: a
+/// numbered entry in dpkg's journal (`updates/`), or a package whose status
+/// is one of dpkg's unfinished states. Both files are world-readable, so a
+/// window can say "a package installation was interrupted" without starting
+/// the privileged service; the repair itself still goes through it.
+pub mod dpkg_record {
+    use std::path::Path;
+
+    use crate::repair::{
+        DpkgPackageStatus, InterruptedPackage, PROTOCOL_VERSION, PackageSystemState,
+    };
+
+    /// Where dpkg keeps its record.
+    pub const DPKG_ADMIN_DIR: &str = "/var/lib/dpkg";
+
+    /// The most unfinished packages listed by name, as the service reports.
+    const MAX_LISTED: usize = 64;
+
+    /// What dpkg's record says, or `None` when its status file cannot be read
+    /// (a machine without dpkg): nothing is claimed about a record that was
+    /// not read.
+    pub fn read(admin_dir: &Path) -> Option<PackageSystemState> {
+        let status = std::fs::read(admin_dir.join("status")).ok()?;
+        let (packages, omitted) = unfinished(&String::from_utf8_lossy(&status));
+        Some(PackageSystemState {
+            protocol_version: PROTOCOL_VERSION,
+            journal_pending: journal_pending(&admin_dir.join("updates")),
+            packages,
+            omitted,
+        })
+    }
+
+    fn unfinished(status: &str) -> (Vec<InterruptedPackage>, u32) {
+        let mut packages = Vec::new();
+        let mut omitted = 0_u32;
+        for stanza in status.split("\n\n") {
+            let mut name = None;
+            let mut state = None;
+            for line in stanza.lines() {
+                if let Some(value) = line.strip_prefix("Package:") {
+                    name = Some(value.trim());
+                } else if let Some(value) = line.strip_prefix("Status:") {
+                    state = value
+                        .split_whitespace()
+                        .nth(2)
+                        .and_then(DpkgPackageStatus::from_dpkg);
+                }
+            }
+            let (Some(name), Some(state)) = (name, state) else {
+                continue;
+            };
+            if packages.len() < MAX_LISTED {
+                packages.push(InterruptedPackage {
+                    package: name.to_string(),
+                    status: state,
+                });
+            } else {
+                omitted = omitted.saturating_add(1);
+            }
+        }
+        (packages, omitted)
+    }
+
+    /// A numbered file in `updates/` is a journal entry dpkg has not folded
+    /// back into its status file. Anything else there (a `tmp.i`) is not.
+    fn journal_pending(updates: &Path) -> bool {
+        std::fs::read_dir(updates).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_digit())
+            })
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn scratch(label: &str) -> std::path::PathBuf {
+            let root = std::env::temp_dir().join(format!(
+                "better-os-dpkg-record-{label}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            root
+        }
+
+        fn admin(label: &str, status: &str, updates: &[&str]) -> std::path::PathBuf {
+            let dir = scratch(label);
+            std::fs::write(dir.join("status"), status).unwrap();
+            std::fs::create_dir(dir.join("updates")).unwrap();
+            for name in updates {
+                std::fs::write(dir.join("updates").join(name), "").unwrap();
+            }
+            dir
+        }
+
+        const AT_REST: &str = "Package: libc6\nStatus: install ok installed\n\n\
+            Package: old-thing\nStatus: deinstall ok config-files\n";
+
+        #[test]
+        fn a_record_at_rest_needs_no_repair() {
+            let dir = admin("rest", AT_REST, &["tmp.i"]);
+            let state = read(&dir).unwrap();
+            assert!(!state.needs_repair(), "{state:?}");
+        }
+
+        #[test]
+        fn a_numbered_journal_entry_needs_repair() {
+            let dir = admin("journal", AT_REST, &["0001"]);
+            let state = read(&dir).unwrap();
+            assert!(state.journal_pending);
+            assert!(state.needs_repair());
+        }
+
+        #[test]
+        fn an_unfinished_package_needs_repair_and_is_named() {
+            let dir = admin(
+                "unfinished",
+                "Package: better-monitor\nStatus: install ok half-configured\n\n\
+                 Package: man-db\nStatus: install ok triggers-pending\n",
+                &[],
+            );
+            let state = read(&dir).unwrap();
+            assert!(state.needs_repair());
+            let names: Vec<&str> = state.packages.iter().map(|p| p.package.as_str()).collect();
+            assert_eq!(names, ["better-monitor", "man-db"]);
+        }
+
+        #[test]
+        fn no_status_file_claims_nothing() {
+            let dir = scratch("missing");
+            assert!(read(&dir).is_none());
+        }
     }
 }

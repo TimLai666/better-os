@@ -4187,6 +4187,7 @@ dependencies = [
  "smol",
  "tempfile",
  "uuid",
+ "zbus",
 ]
 
 [[package]]

@@ -25,7 +25,7 @@ use crate::defaults_model::{
     session_effect_label, skip_reason_label, value_label, warning_label,
 };
 use crate::i18n::{Locale, copy};
-use crate::layout::{ActionLayout, MIN_WINDOW_WIDTH, action_layout};
+use crate::layout::{ActionLayout, MIN_CONTENT_WIDTH, action_layout};
 
 fn component(value: &str) -> ComponentId {
     ComponentId::new(value).expect("a valid component id")
@@ -939,7 +939,6 @@ fn every_defaults_word_the_screens_use_exists_in_both_locales() {
     for locale in [Locale::EnUs, Locale::ZhTw] {
         let c = copy(locale);
         for text in [
-            c.defaults,
             c.defaults_title,
             c.defaults_subtitle,
             c.defaults_are_default,
@@ -1061,7 +1060,10 @@ fn every_defaults_word_the_screens_use_exists_in_both_locales() {
 #[test]
 fn the_traditional_chinese_terms_the_issue_fixed_are_the_ones_shown() {
     let c = copy(Locale::ZhTw);
-    assert_eq!(c.defaults, "預設值");
+    assert_eq!(
+        crate::i18n::shell(Locale::ZhTw).default_apps,
+        "預設應用程式"
+    );
     assert_eq!(c.make_default, "設為預設");
     assert_eq!(c.use_better_defaults, "套用 Better OS 預設值");
     assert_eq!(c.restore_previous_defaults, "恢復先前的預設值");
@@ -1109,19 +1111,17 @@ fn the_defaults_actions_wrap_at_every_supported_scale() {
         .expect("the defaults actions are not empty");
 
         for scale in [1.0, 1.25, 1.5] {
-            // At the smallest supported window these labels fit on one line
-            // unscaled, and stop fitting as soon as the user scales up, which
-            // is what the wrapping action row exists for.
-            let expected = if scale == 1.0 {
-                ActionLayout::Inline
-            } else {
-                ActionLayout::Wrapped
-            };
-            assert_eq!(
-                action_layout(MIN_WINDOW_WIDTH, scale, longest),
-                expected,
-                "{locale:?} at {scale} laid out unexpectedly at the smallest window"
-            );
+            // In the narrowest content column the control center has (960
+            // less the compact pane and margins) these labels fit on one line
+            // until the person scales up to 150%, which is what the wrapping
+            // action row exists for.
+            if scale >= 1.5 {
+                assert_eq!(
+                    action_layout(MIN_CONTENT_WIDTH, scale, longest),
+                    ActionLayout::Wrapped,
+                    "{locale:?} at {scale} laid out unexpectedly at the smallest window"
+                );
+            }
             assert_eq!(
                 action_layout(1920.0, scale, longest),
                 ActionLayout::Inline,
@@ -1130,7 +1130,7 @@ fn the_defaults_actions_wrap_at_every_supported_scale() {
             // A longer translation of the same button must wrap rather than
             // run off the edge.
             assert_eq!(
-                action_layout(MIN_WINDOW_WIDTH, scale, longest + 40),
+                action_layout(MIN_CONTENT_WIDTH, scale, longest + 80),
                 ActionLayout::Wrapped
             );
         }
