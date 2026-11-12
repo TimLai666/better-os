@@ -2,7 +2,7 @@ schema_version: 2
 id: better-launcher
 display_name: Better Launcher
 component_type: enhancement
-version: 0.2.9
+version: 0.2.10
 summary: One overlay with the search row on top and the whole application library below it.
 icon: launcher
 restart: application
@@ -16,31 +16,32 @@ targets:
 # the replacement themselves.
 enhances:
   - org.gnome.Shell
-# The checksums below belong to the published v0.2.9 release assets. Each one
-# was re-hashed from the package downloaded back from the public release rather
-# than copied from its sidecar, which is what ADR 0002 requires a manifest to
-# record.
+# Placeholder checksums until v0.2.10 is published. ADR 0002 records the
+# checksum of a *published* release asset; the v0.2.9 values these variants
+# carried describe 0.2.9's packages, not 0.2.10's. The real values are written
+# back once the release is public and every asset has been re-downloaded and
+# verified.
 artifacts:
   - release: "22.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.9/better-launcher_0.2.9_ubuntu-22.04_amd64.deb
-    sha256: 7c44723fa0d1c3006da7bb8711de45536bb0d3b9b51f5838f8a0ba47952ab3c6
-    release_asset: better-launcher_0.2.9_ubuntu-22.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.10/better-launcher_0.2.10_ubuntu-22.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-launcher_0.2.10_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.9/better-launcher_0.2.9_ubuntu-22.04_arm64.deb
-    sha256: 70d5e3d27016bc27ee854c4a8c61b5504e775a0bb332f1e7c2349290744b6297
-    release_asset: better-launcher_0.2.9_ubuntu-22.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.10/better-launcher_0.2.10_ubuntu-22.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-launcher_0.2.10_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.9/better-launcher_0.2.9_ubuntu-24.04_amd64.deb
-    sha256: 6343b62cde3f35a2a52edc8688da4cc5c673a5f0e5c987b9b386f0e194531214
-    release_asset: better-launcher_0.2.9_ubuntu-24.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.10/better-launcher_0.2.10_ubuntu-24.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-launcher_0.2.10_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.9/better-launcher_0.2.9_ubuntu-24.04_arm64.deb
-    sha256: e33f8c4947dd276960dc7b7374ce2b53eb76ad654ff496f9b8ce9cafacf998e3
-    release_asset: better-launcher_0.2.9_ubuntu-24.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.10/better-launcher_0.2.10_ubuntu-24.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-launcher_0.2.10_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable
