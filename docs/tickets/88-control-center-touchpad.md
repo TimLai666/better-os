@@ -50,3 +50,20 @@ Spec section 5, and the Better Touchpad rows of section 12, every one of them.
 Sub-pages are not deep-linkable (`--page touchpad` opens Pointer). Today's
 `better-touchpad --page gestures` has no caller in the repository; ticket 91
 drops it.
+
+## Found on the owner's machine (2026-11-13)
+
+Installed and enabled through Better Manager 0.2.10, the gestures still did
+nothing: `better-touchpad-gestures.service` started and exited at once with
+"no gesture is configured, so there is nothing to listen for", and the GNOME
+Shell extension `touchpad-adapter@betteros.org` was installed but not enabled.
+The owner also has `x11gestures@joseexposito.github.io` enabled. The owner's
+rule is that installing makes it work, so this ticket also covers:
+
+- Installing or enabling Better Touchpad enables the extension (through the
+  same reviewed-defaults engine, restored on removal) and applies a default
+  gesture profile, so one login after install is enough.
+- A gesture tool that would compete (x11gestures, touchegg, fusuma) is
+  detected and named, with the choice to turn it off.
+- The Touchpad page lets each gesture be tried on the spot and says whether it
+  reached the desktop.
