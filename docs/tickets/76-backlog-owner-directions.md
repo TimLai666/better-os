@@ -25,6 +25,8 @@ chrome follow it on GNOME.
 
 ## 3. A Better OS distribution built on Debian
 
+The owner confirmed on 2026-11-12 that this stays the long-term goal.
+
 The long-term goal is a Linux distribution of its own, based on Debian and no
 longer dependent on Zorin or Ubuntu. `AGENTS.md` currently says Better OS is
 not a distribution fork, so this needs an ADR that replaces that statement.
