@@ -32,8 +32,11 @@ updated, verified, and rolled back through shared manager operations.
   nothing for the person to type (owner, 2026-11-12 and 2026-11-13). A new
   service, tray, or hook is enabled and started by the install step, comes
   back at login, can be started on demand by D-Bus activation where a client
-  asks for it, and is stopped and removed by uninstalling. A component whose
-  service needs a manual command is not done.
+  asks for it. The only things that stop it are disabling the component in
+  Better Manager (it stays off, across logins, until enabled again) and
+  uninstalling it; the record decides, so a unit someone stopped by hand is
+  started again by Better Manager. A component whose service needs a manual
+  command is not done.
 - A component's systemd **user** units are managed by `manager-core`, never by
   a window or a command directly. `RealDriver` takes the controller through
   `with_user_units`; a driver built without one manages no units. Enabling,
