@@ -1,6 +1,6 @@
 # Ticket 83 — Better Manager as the control center: design
 
-**Blocked by:** 80 · **Status:** done, awaiting the owner's review
+**Blocked by:** 80 · **Status:** done, approved by the owner on 2026-11-12
 
 ## Why
 
