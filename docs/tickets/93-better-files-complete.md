@@ -26,7 +26,15 @@ owner added on 2026-11-12:
 - Clash dialog keeps folio's four answers, Keep both, Skip, Replace, Merge.
   Replace and Merge never delete: what they displace goes to the trash.
 - Sort order, hidden-file visibility, view, zoom, and the last folder are
-  remembered (folio forgets them).
+  remembered (folio forgets them). They live in one file of Better Files' own
+  under the XDG state directory: one default for every folder, plus an
+  override for a folder the person changed, keyed by its path. Nothing is ever
+  written into the folders themselves (no `.DS_Store`, no `.directory`), and
+  an override for a folder that no longer exists is dropped.
+- Trash is the freedesktop.org one every Linux file manager shares
+  (`~/.local/share/Trash`, and `.Trash-<uid>` at the top of a removable
+  drive), so what Better Files trashes shows up in Nautilus and the other way
+  round.
 - The five things folio planned and never built: type-to-filter inside a
   folder, archive contents in the preview, syntax-highlighted code preview,
   search inside a PDF, and Office documents previewed by converting to PDF
