@@ -17,6 +17,20 @@
 //! skipping headers and separators and stopping at the ends; Home and End
 //! jump; Enter or Space selects. In the compact pane each item names itself
 //! in a tooltip.
+//!
+//! A search box can sit above the items (`AutoSuggestBox` in WinUI's
+//! `NavigationView.AutoSuggestBox` slot): 16px in from either side of the
+//! open pane in a 40px row (`NavigationViewAutoSuggestBoxMargin`,
+//! `NavigationViewAutoSuggestAreaHeight`). In the compact pane it becomes a
+//! search icon button (`NavigationViewPaneSearchButtonStyle`) that opens the
+//! pane, so the search is never out of reach. An item can carry an
+//! [`InfoBadge`] at its trailing edge, or over its icon when the pane is
+//! compact.
+//!
+//! In a narrow window the pane opens over the content instead of pushing it
+//! aside, as WinUI's compact display mode does: the content keeps its 48px
+//! offset, the open pane floats on the flyout fill with a shadow, and a press
+//! outside it closes it.
 
 use std::rc::Rc;
 
@@ -26,13 +40,14 @@ use gpui::{
 };
 use gpui_component::{Icon, IconName};
 
-use super::ValueHandler;
+use super::badge::{Badge, InfoBadge};
 use super::button::{Button, ButtonKind};
 use super::words::Locale;
 use super::{
     BODY, BODY_STRONG, Interaction, Key, Palette, ShownState, keyed_focus, palette, radius,
     shows_focus, size, step_index, text, with_alpha, with_focus_ring,
 };
+use super::{Handler, ValueHandler};
 
 /// One line of the pane.
 #[derive(Clone)]
@@ -50,6 +65,8 @@ pub struct NavItem {
     pub icon: IconName,
     pub disabled: bool,
     pub shown: ShownState,
+    /// A count or a dot at the item's trailing edge.
+    pub badge: Option<InfoBadge>,
 }
 
 impl NavItem {
@@ -59,7 +76,13 @@ impl NavItem {
             icon,
             disabled: false,
             shown: ShownState::Live,
+            badge: None,
         }
+    }
+
+    pub fn badge(mut self, badge: Option<InfoBadge>) -> Self {
+        self.badge = badge;
+        self
     }
 
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -126,6 +149,42 @@ pub fn toggle_tooltip(locale: Locale, compact: bool) -> &'static str {
     }
 }
 
+/// What the pane draws in its search row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchSlot {
+    /// No search box was given.
+    None,
+    /// The field itself, in the open pane.
+    Field,
+    /// A search icon button, in the compact pane.
+    Button,
+}
+
+/// Which search row a pane draws.
+pub fn search_slot(has_search: bool, compact: bool) -> SearchSlot {
+    match (has_search, compact) {
+        (false, _) => SearchSlot::None,
+        (true, false) => SearchSlot::Field,
+        (true, true) => SearchSlot::Button,
+    }
+}
+
+/// Whether an open pane floats over the content rather than pushing it:
+/// only in a window the pane would otherwise crowd, and only while open.
+pub fn floats_over_content(compact: bool, overlay: bool) -> bool {
+    overlay && !compact
+}
+
+/// The width the content's leading edge sits at: the pane's, or the compact
+/// pane's when an open pane floats over the content.
+pub fn content_offset(compact: bool, overlay: bool) -> Pixels {
+    if floats_over_content(compact, overlay) {
+        size::ICON_PANE_WIDTH
+    } else {
+        pane_width(compact)
+    }
+}
+
 /// The keyboard position in a pane, kept across frames.
 #[derive(Default)]
 struct Cursor(Option<usize>);
@@ -143,9 +202,12 @@ pub struct NavigationView {
     title: Option<SharedString>,
     locale: Locale,
     content: Option<AnyElement>,
+    search: Option<(AnyElement, SharedString)>,
+    overlay: bool,
     shown: ShownState,
     on_select: Option<IndexHandler>,
     on_toggle: Option<ValueHandler<bool>>,
+    on_search_open: Option<Handler>,
 }
 
 impl NavigationView {
@@ -160,10 +222,35 @@ impl NavigationView {
             title: None,
             locale: Locale::English,
             content: None,
+            search: None,
+            overlay: false,
             shown: ShownState::Live,
             on_select: None,
             on_toggle: None,
+            on_search_open: None,
         }
+    }
+
+    /// A search box above the items, usually an
+    /// [`AutoSuggestBox`](super::auto_suggest::AutoSuggestBox). `label` names
+    /// the compact pane's search button in its tooltip.
+    pub fn search(mut self, field: impl IntoElement, label: impl Into<SharedString>) -> Self {
+        self.search = Some((field.into_any_element(), label.into()));
+        self
+    }
+
+    /// Opens the pane over the content rather than beside it. A window sets
+    /// this when it is too narrow for an open pane and its content.
+    pub fn overlay(mut self, overlay: bool) -> Self {
+        self.overlay = overlay;
+        self
+    }
+
+    /// Called after the compact pane's search button has opened the pane, so
+    /// the window can put the keyboard in the field.
+    pub fn on_search_open(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_search_open = Some(Rc::new(handler));
+        self
     }
 
     /// Items pinned to the bottom of the pane, such as Settings.
@@ -270,6 +357,25 @@ fn item_row(
                 .truncate()
                 .child(item.label.clone()),
         )
+        .children(
+            item.badge
+                .map(|badge| div().mr(px(12.0)).flex_none().child(Badge::new(badge))),
+        )
+    })
+    .when(c.compact, |row| {
+        // Over the icon's top trailing corner, so the compact pane still
+        // says which page has something waiting.
+        row.children(item.badge.map(|badge| {
+            let (top, left) = match badge {
+                InfoBadge::Dot => (px(7.0), px(27.0)),
+                InfoBadge::Count(_) => (px(2.0), px(22.0)),
+            };
+            div()
+                .absolute()
+                .top(top)
+                .left(left)
+                .child(Badge::new(badge))
+        }))
     });
     if selected {
         row = row.child(
@@ -361,6 +467,47 @@ impl RenderOnce for NavigationView {
                 }))
             });
 
+        let floating = floats_over_content(compact, self.overlay);
+        let search_row = match (search_slot(self.search.is_some(), compact), self.search) {
+            (SearchSlot::Field, Some((field, _))) => Some(
+                div()
+                    .h(px(40.0))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .px(px(16.0))
+                    .child(div().flex_1().min_w_0().child(field))
+                    .into_any_element(),
+            ),
+            (SearchSlot::Button, Some((_, label))) => {
+                let mut button =
+                    Button::new(super::child_id(&self.id, "search"), ButtonKind::Subtle)
+                        .icon(IconName::Search)
+                        .tooltip(label);
+                let toggle = self.on_toggle.clone();
+                let open = self.on_search_open.clone();
+                button = button.on_click(move |window, cx| {
+                    if let Some(toggle) = toggle.as_ref() {
+                        toggle(false, window, cx);
+                    }
+                    if let Some(open) = open.as_ref() {
+                        open(window, cx);
+                    }
+                });
+                Some(
+                    div()
+                        .h(px(40.0))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .px(px(4.0))
+                        .child(div().w(px(40.0)).flex().justify_center().child(button))
+                        .into_any_element(),
+                )
+            }
+            _ => None,
+        };
+
         let mut list = div().flex().flex_col().flex_1().min_h_0();
         for (index, entry) in self.entries.iter().enumerate() {
             list = list.child(match entry {
@@ -401,7 +548,7 @@ impl RenderOnce for NavigationView {
         let handler = self.on_select.clone();
         let key_cursor = cursor.clone();
         let selected = self.selected;
-        let pane = div()
+        let mut pane = div()
             .id(self.id.clone())
             .w(pane_width(compact))
             .h_full()
@@ -410,10 +557,35 @@ impl RenderOnce for NavigationView {
             .flex_none()
             .overflow_hidden()
             .child(top)
+            .children(search_row)
             .child(list)
-            .child(footer)
+            .child(footer);
+        if floating {
+            // Open over the content: the flyout fill, an edge, and the
+            // shadow WinUI gives an overlay pane (`PaneOverlayShadowDepth`).
+            pane = pane
+                .absolute()
+                .top_0()
+                .left_0()
+                .bottom_0()
+                .bg(p.flyout)
+                .border_r_1()
+                .border_color(p.flyout_stroke)
+                .rounded_r(radius::MD)
+                .shadow_lg();
+            if let Some(toggle) = self.on_toggle.clone() {
+                pane = pane.on_mouse_down_out(move |_, window, cx| toggle(true, window, cx));
+            }
+        }
+        let pane_focus = focus.clone();
+        let pane = pane
             .track_focus(&focus.tab_index(0).tab_stop(self.shown.is_live()))
             .on_key_down(move |event, window, cx| {
+                // Only the pane's own keys: a key typed into the search box
+                // inside it bubbles here too, and a space there is a space.
+                if !pane_focus.is_focused(window) {
+                    return;
+                }
                 let Some(key) = Key::from_keystroke(&event.keystroke) else {
                     return;
                 };
@@ -446,11 +618,19 @@ impl RenderOnce for NavigationView {
             .overflow_hidden()
             .children(self.content);
         div()
+            .relative()
             .flex()
             .size_full()
             .min_h_0()
             .bg(p.window_background)
-            .child(pane)
-            .child(content)
+            .map(|root| {
+                if floating {
+                    root.child(div().w(content_offset(compact, true)).flex_none())
+                        .child(content)
+                        .child(pane)
+                } else {
+                    root.child(pane).child(content)
+                }
+            })
     }
 }

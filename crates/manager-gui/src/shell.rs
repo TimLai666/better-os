@@ -1,220 +1,199 @@
+//! The control center's window around every page: the titlebar with its
+//! back button, and the navigation pane with "Find a setting" (spec section
+//! 1). The decisions — which pane item is selected, how wide the pane is,
+//! what the search finds, what each badge says — are made in `navigation`,
+//! `search`, and `pages`; this file only draws them.
+
+use better_ui::fluent::auto_suggest::{AutoSuggestBox, Suggestion};
+use better_ui::fluent::badge::InfoBadge;
+use better_ui::fluent::chrome::TitleBar;
+use better_ui::fluent::navigation::{NavItem, NavigationView};
+use better_ui::fluent::text_box::TextBox;
+use better_ui::fluent::{BODY, TITLE, label, palette, palette_for, spacing};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{
-    ActiveTheme, Icon, IconName,
-    button::{Button, ButtonVariants},
-    input::Input,
-    sidebar::{
-        Sidebar, SidebarCollapsible, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu,
-        SidebarMenuItem,
-    },
-    *,
-};
+use gpui_component::{Icon, IconName};
 
 use crate::{
     app::ManagerApp,
-    i18n::copy,
-    model::{MANAGER_VERSION, Page, host_line},
+    i18n::shell,
+    navigation::{Route, is_narrow, pane_layout},
+    pages::{self, NavBadge},
+    search::{self, SearchEntry},
 };
 
+/// The width of the search box in the open pane: the pane less 16px on each
+/// side (`NavigationViewAutoSuggestBoxMargin`).
+const SEARCH_WIDTH: f32 = 288.0;
+
+/// The pane icon for each item (spec section 1's table). Lucide has no house
+/// or touchpad glyph, so Home and Touchpad use the nearest two.
+pub(crate) fn route_icon(route: Route) -> IconName {
+    match route {
+        Route::Home => IconName::LayoutDashboard,
+        Route::System => IconName::Cpu,
+        Route::Touchpad => IconName::Frame,
+        Route::KeepAwake => IconName::Sun,
+        Route::Apps => IconName::Inbox,
+        Route::DefaultApps => IconName::Star,
+        Route::Fixes => IconName::TriangleAlert,
+        Route::Settings => IconName::Settings,
+    }
+}
+
+fn info_badge(badge: Option<NavBadge>) -> Option<InfoBadge> {
+    match badge? {
+        NavBadge::Dot => Some(InfoBadge::Dot),
+        NavBadge::Count(count) => InfoBadge::count(count),
+    }
+}
+
 impl ManagerApp {
-    fn nav_item(
+    /// A kit handler that runs `f` on this window's state.
+    pub(crate) fn act(
+        cx: &Context<Self>,
+        f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> impl Fn(&mut Window, &mut App) + 'static {
+        let weak = cx.entity().downgrade();
+        move |window, cx| {
+            let _ = weak.update(cx, |this, cx| f(this, window, cx));
+        }
+    }
+
+    /// A kit handler told a value, that runs `f` on this window's state.
+    pub(crate) fn act_with<T: 'static>(
+        cx: &Context<Self>,
+        f: impl Fn(&mut Self, T, &mut Window, &mut Context<Self>) + 'static,
+    ) -> impl Fn(T, &mut Window, &mut App) + 'static {
+        let weak = cx.entity().downgrade();
+        move |value, window, cx| {
+            let _ = weak.update(cx, |this, cx| f(this, value, window, cx));
+        }
+    }
+
+    /// The window's titlebar: `Better Manager` in both languages (audit
+    /// M12), and a back button while there is somewhere to go back to.
+    pub(crate) fn title_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let mut bar = TitleBar::new(shell(self.locale).window_title).icon(
+            Icon::new(IconName::GalleryVerticalEnd)
+                .size(px(16.0))
+                .text_color(p.accent),
+        );
+        if crate::navigation::shows_back(&self.history, &self.page, self.transaction_running()) {
+            bar = bar.back(
+                self.locale.words(),
+                Self::act(cx, |this, _, cx| this.go_back(cx)),
+            );
+        }
+        bar.into_any_element()
+    }
+
+    /// What the pane's search box finds for the text it holds now.
+    fn search_results(&self, cx: &App) -> (String, Vec<SearchEntry>) {
+        let query = self.nav_search.read(cx).value().to_string();
+        let index = self.search_index();
+        let found = search::find(&index, &query).into_iter().cloned().collect();
+        (query, found)
+    }
+
+    fn search_box(&self, cx: &mut Context<Self>) -> AutoSuggestBox {
+        let s = shell(self.locale);
+        let (query, found) = self.search_results(cx);
+        let suggestions = found
+            .iter()
+            .map(|entry| Suggestion::new(entry.header).caption(entry.location()))
+            .collect();
+        let chosen = found.clone();
+        let first = found.first().cloned();
+        AutoSuggestBox::new("find-a-setting", &self.nav_search)
+            .width(px(SEARCH_WIDTH))
+            .suggestions(suggestions)
+            .empty_text(s.search_no_result.replace("{query}", query.trim()))
+            .on_choose(Self::act_with(cx, move |this, index: usize, window, cx| {
+                if let Some(entry) = chosen.get(index) {
+                    this.open_search_result(entry, window, cx);
+                }
+            }))
+            .on_submit(Self::act(cx, move |this, window, cx| {
+                // Enter with nothing highlighted opens the best match.
+                if let Some(entry) = first.as_ref() {
+                    this.open_search_result(entry, window, cx);
+                }
+            }))
+    }
+
+    /// The pane and the page beside it.
+    pub(crate) fn navigation(
         &self,
-        label: &'static str,
-        icon: IconName,
-        page: Page,
-        suffix: Option<String>,
+        content: AnyElement,
+        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> SidebarMenuItem {
-        let item = SidebarMenuItem::new(label)
-            .icon(icon)
-            .active(self.page_is_active(&page));
-        let item = match suffix {
-            Some(suffix) => item.suffix(move |_, _| div().text_xs().child(suffix.clone())),
-            None => item,
+    ) -> AnyElement {
+        let s = shell(self.locale);
+        let width = f32::from(window.viewport_size().width);
+        let narrow = is_narrow(width);
+        let layout = pane_layout(width, self.wide_collapsed, self.narrow_open);
+        let snapshot = self.snapshot();
+        let item = |route: Route| {
+            NavItem::new(pages::title(route, self.locale), route_icon(route))
+                .badge(info_badge((pages::module(route).badge)(&snapshot)))
         };
-        item.on_click(cx.listener(move |this, _, _, cx| {
-            this.navigate(page.clone(), cx);
-        }))
-    }
-
-    pub(crate) fn sidebar(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale);
-        let profile = self.manager.profile();
-        let profile_label = host_line(profile, c.ubuntu_base);
-        let architecture = profile.architecture.clone();
-        let menu = SidebarMenu::new().children([
-            self.nav_item(
-                c.overview,
-                IconName::LayoutDashboard,
-                Page::Overview,
-                None,
-                cx,
-            ),
-            self.nav_item(c.components, IconName::Inbox, Page::Components, None, cx),
-            self.defaults_nav_item(cx),
-            self.nav_item(
-                c.updates,
-                IconName::ArrowDown,
-                Page::Updates,
-                Some(self.update_plan_count().to_string()),
-                cx,
-            ),
-            self.nav_item(c.health, IconName::CircleCheck, Page::Health, None, cx),
-            self.nav_item(c.activity, IconName::Inspector, Page::Activity, None, cx),
-            self.nav_item(c.settings, IconName::Settings, Page::Settings, None, cx),
-        ]);
-
-        Sidebar::new("manager-sidebar")
-            .collapsible(SidebarCollapsible::Icon)
-            .collapsed(compact)
-            .w(px(248.0))
-            .header(
-                SidebarHeader::new()
-                    .child(
-                        div()
-                            .size_8()
-                            .flex_shrink_0()
-                            .rounded(cx.theme().radius)
-                            .bg(cx.theme().primary)
-                            .text_color(cx.theme().primary_foreground)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(Icon::new(IconName::GalleryVerticalEnd)),
-                    )
-                    .when(!compact, |header| {
-                        header.child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .child(div().font_semibold().child(c.brand_name))
-                                // The version sits here rather than in the
-                                // titlebar: the titlebar is shared chrome every
-                                // Better OS window draws the same way, and this
-                                // line is already the one that says which
-                                // application this is.
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!("{} {}", c.manager, MANAGER_VERSION)),
-                                ),
-                        )
-                    }),
-            )
-            .child(SidebarGroup::new(c.navigation).child(menu))
-            .footer(
-                SidebarFooter::new().child(
-                    h_flex()
-                        .min_w_0()
-                        .items_center()
-                        .gap_2()
-                        .child(Icon::new(IconName::Settings).small())
-                        .when(!compact, |row| {
-                            row.child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    // The host line is the longest string in
-                                    // the sidebar and a derivative makes it
-                                    // longer still, so it truncates rather than
-                                    // pushing the footer wider than the rail.
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_sm()
-                                            .font_semibold()
-                                            .child(profile_label),
-                                    )
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(architecture),
-                                    ),
-                            )
-                        }),
-                ),
-            )
+        let entries = Route::PANE
+            .iter()
+            .map(|route| item(*route).entry())
+            .collect();
+        let selected = Route::of(&self.page).pane_index();
+        let field = self.search_box(cx);
+        let nav_search = self.nav_search.clone();
+        NavigationView::new("control-center-nav", entries, Some(selected))
+            .footer(vec![item(Route::Settings)])
+            .compact(layout.compact)
+            .overlay(layout.overlay)
+            .locale(self.locale.words())
+            .search(field, s.search_placeholder)
+            .on_search_open(move |window, cx| {
+                nav_search.update(cx, |input, cx| input.focus(window, cx));
+            })
+            .on_select(Self::act_with(cx, |this, index: usize, _, cx| {
+                if let Some(route) = Route::from_pane_index(index) {
+                    let page = crate::navigation::landing(route, this.transaction_running());
+                    this.navigate(page, cx);
+                }
+            }))
+            .on_toggle(Self::act_with(cx, move |this, compact: bool, _, cx| {
+                this.set_pane_compact(compact, narrow, cx);
+            }))
+            .content(content)
             .into_any_element()
     }
 
-    pub(crate) fn top_bar(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale);
-        h_flex()
-            .w_full()
-            .min_h(px(64.0))
-            .px_5()
-            .py_3()
-            .gap_3()
-            .items_center()
-            .justify_between()
-            .flex_wrap()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
-            .child(
-                div()
-                    .min_w_0()
-                    .text_lg()
-                    .font_semibold()
-                    .child(format!("{} {}", c.brand_name, c.manager)),
-            )
-            .child(
-                h_flex()
-                    .min_w_0()
-                    .gap_3()
-                    .items_center()
-                    .flex_wrap()
-                    .when(!compact, |row| {
-                        row.child(
-                            div().w(px(320.0)).max_w_full().child(
-                                Input::new(&self.search)
-                                    .cleanable(true)
-                                    .prefix(Icon::new(IconName::Search).small()),
-                            ),
-                        )
-                    })
-                    .child(
-                        Button::new("update-all")
-                            .primary()
-                            .label(c.update_all)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.prepare_update_all(cx);
-                            })),
-                    ),
-            )
-            .into_any_element()
-    }
-
+    /// The heading today's Better Manager screens draw at their top, in the
+    /// kit's Title and secondary Body. A screen with a component list gets
+    /// the component search under it, at every width (audit M5).
     pub(crate) fn page_heading(
         &self,
         title: &'static str,
         subtitle: &'static str,
         show_search: bool,
-        compact: bool,
+        _compact: bool,
     ) -> AnyElement {
-        v_flex()
+        let p = palette_for(self.dark);
+        div()
             .w_full()
             .min_w_0()
-            .gap_1()
-            .child(div().text_2xl().font_bold().child(title))
-            .child(
-                div()
-                    .min_w_0()
-                    .text_sm()
-                    .text_color(rgb(0x667085))
-                    .child(subtitle),
-            )
-            .when(show_search && compact, |view| {
+            .flex()
+            .flex_col()
+            .gap(spacing::XS)
+            .child(label(title, TITLE, p.text_primary))
+            .child(label(subtitle, BODY, p.text_secondary).whitespace_normal())
+            .when(show_search, |view| {
                 view.child(
-                    div().w_full().pt_3().child(
-                        Input::new(&self.search)
-                            .cleanable(true)
-                            .prefix(Icon::new(IconName::Search).small()),
-                    ),
+                    div()
+                        .w_full()
+                        .max_w(px(360.0))
+                        .pt(spacing::MD)
+                        .child(TextBox::search("component-search", &self.search)),
                 )
             })
             .into_any_element()

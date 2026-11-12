@@ -85,34 +85,6 @@ pub(crate) const MANAGER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// did nothing would be worse than one that does not pretend.
 pub(crate) const PROJECT_REPOSITORY: &str = "https://github.com/TimLai666/better-os";
 
-/// What the About section states about this build and this machine.
-///
-/// The platform line is the profile the manager actually planned from, so on a
-/// host the client could not identify it reads `unknown`, which is what the
-/// window knows.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AboutInfo {
-    pub(crate) name: String,
-    pub(crate) version: &'static str,
-    pub(crate) platform: String,
-    pub(crate) repository: &'static str,
-}
-
-impl AboutInfo {
-    pub(crate) fn present(locale: Locale, profile: &manager_platform::SystemProfile) -> Self {
-        let c = copy(locale);
-        Self {
-            name: format!("{} {}", c.brand_name, c.manager),
-            version: MANAGER_VERSION,
-            platform: format!(
-                "{} {} · {}",
-                profile.distribution, profile.release, profile.architecture
-            ),
-            repository: PROJECT_REPOSITORY,
-        }
-    }
-}
-
 /// What the manual "Check for updates" button has to say.
 ///
 /// The check is a catalog refresh followed by a recount, so its result can only
@@ -177,8 +149,14 @@ impl UpdateCheck {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Page {
-    FirstRun,
-    Overview,
+    /// The page the control center opens on (spec section 3).
+    Home,
+    /// Pages later tickets build: System (86), Touchpad (88), Keep awake
+    /// (87), and Fixes (90).
+    System,
+    Touchpad,
+    KeepAwake,
+    Fixes,
     Components,
     ComponentDetail(ComponentId),
     Defaults,
@@ -388,6 +366,7 @@ impl ComponentInfo {
 
 /// The release and distribution a profile carries when the host could not be
 /// identified at all. `SystemProfile::unidentified` writes it.
+#[cfg_attr(not(test), allow(dead_code))]
 const UNKNOWN: &str = "unknown";
 
 /// The one line the window footer shows about the machine.
@@ -398,6 +377,9 @@ const UNKNOWN: &str = "unknown";
 /// This keeps them apart. The host's own name and badge come first, the Ubuntu
 /// base it is built on second, and a plain Ubuntu machine has only one fact to
 /// show and shows it alone.
+// System › About this PC shows this line (ticket 86); until then only the
+// tests read it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn host_line(profile: &SystemProfile, base_word: &str) -> String {
     let base_is_known = profile.release != UNKNOWN;
     match (&profile.distribution_label, base_is_known) {

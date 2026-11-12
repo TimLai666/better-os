@@ -18,6 +18,10 @@ use app_catalog_core::{
 use app_catalog_platform::{LaunchOutcome, Launcher, SystemSpawner};
 
 /// Writes a program that records each argument it received on its own line.
+/// Writes the recorder script. Entries run it as `/bin/sh <script>`, never as
+/// the program itself: while another test thread forks, the child can still
+/// hold the just-written file open, and exec'ing a file open for writing fails
+/// with ETXTBSY ("executable file busy"). The shell only reads it.
 fn write_recorder(path: &Path, output: &Path) {
     let script = format!(
         "#!/bin/sh\n: > '{output}'\nfor argument in \"$@\"; do\n  printf '%s\\n' \"$argument\" >> '{output}'\ndone\n",
@@ -53,7 +57,7 @@ fn a_launched_process_receives_the_exact_argument_vector() {
 
     let entry_path = root.path().join("recorder.desktop");
     let entry = format!(
-        "[Desktop Entry]\nType=Application\nName=Recorder\nExec={} --open %F\n",
+        "[Desktop Entry]\nType=Application\nName=Recorder\nExec=/bin/sh {} --open %F\n",
         recorder.display()
     );
     fs::write(&entry_path, &entry).expect("fixture entry");
@@ -108,7 +112,7 @@ fn a_single_file_entry_really_starts_one_process_per_file() {
     write_recorder(&recorder, &output);
 
     let entry = format!(
-        "[Desktop Entry]\nType=Application\nName=Recorder\nExec={} %f\n",
+        "[Desktop Entry]\nType=Application\nName=Recorder\nExec=/bin/sh {} %f\n",
         recorder.display()
     );
     let file = DesktopFile::parse(&entry).expect("parsed entry");

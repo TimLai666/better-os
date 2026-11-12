@@ -2,18 +2,26 @@
 //! rules, sorting, and the value models. Each WinUI rule a test asserts names
 //! the source file it was read from.
 
+use super::auto_suggest::{SuggestOutcome, list_open, suggest_key};
+use super::badge::{InfoBadge, MAX_SHOWN_COUNT};
 use super::breadcrumb::{clicked, fold};
 use super::button::{ButtonKind, colors};
-use super::chrome::{CLOSE_RED, CaptionButton, caption_buttons, caption_colors};
+use super::chrome::{
+    CLOSE_RED, CaptionButton, back_tooltip, caption_buttons, caption_colors, is_back_shortcut,
+};
 use super::command_bar::fit_count;
 use super::dialog::{DefaultButton, DialogButtons, DialogResult};
+use super::hyperlink::link_color;
 use super::info_bar::{ErrorReport, Severity, severity_look};
 use super::list::{
     ListItem, SortState, TILE_BODY_HEIGHT, TILE_BODY_WIDTH, TILE_HEIGHT, TILE_ICON, TILE_WIDTH,
     compare_cells, list_step, move_item, row_fill, row_icon_size, sorted_order,
 };
 use super::menu::{EntryShape, MenuAction, MenuOpen, MenuPath};
-use super::navigation::{NavEntry, NavItem, item_fill, nav_step, pane_width, toggle_tooltip};
+use super::navigation::{
+    NavEntry, NavItem, SearchSlot, content_offset, floats_over_content, item_fill, nav_step,
+    pane_width, search_slot, toggle_tooltip,
+};
 use super::progress::{fraction, indeterminate_arc, indeterminate_segment};
 use super::selection::{ComboOutcome, SliderModel, combo_key};
 use super::settings_card::card_fill;
@@ -241,6 +249,9 @@ fn the_type_ramp_is_five_sizes_and_never_below_twelve() {
 #[test]
 fn no_control_draws_text_outside_the_ramp() {
     let sources = [
+        include_str!("auto_suggest.rs"),
+        include_str!("badge.rs"),
+        include_str!("hyperlink.rs"),
         include_str!("breadcrumb.rs"),
         include_str!("button.rs"),
         include_str!("chrome.rs"),
@@ -982,4 +993,290 @@ fn a_tile_keeps_its_size_while_a_dragged_tile_is_over_it() {
         before.contains(".border_1()"),
         "the edge is reserved at rest"
     );
+}
+
+// Charts (`chart.rs`). WinUI has no chart; the rules are Task Manager's.
+
+#[test]
+fn a_chart_grows_in_from_the_right_and_leaves_a_gap_where_a_reading_is_missing() {
+    use super::chart::runs;
+    // Four readings in a chart that holds five: the first sits one step in
+    // from the left and the newest at the right edge.
+    let drawn = runs(&[Some(0.0), Some(50.0), None, Some(100.0)], 5, 100.0);
+    assert_eq!(drawn.len(), 2, "the missing reading splits the line");
+    assert_eq!(drawn[0], vec![(0.25, 0.0), (0.5, 0.5)]);
+    assert_eq!(drawn[1], vec![(1.0, 1.0)]);
+}
+
+#[test]
+fn a_chart_keeps_only_the_newest_readings_and_clamps_to_its_axis() {
+    use super::chart::runs;
+    let values: Vec<Option<f64>> = (0..10).map(|v| Some(v as f64 * 30.0)).collect();
+    let drawn = runs(&values, 3, 100.0);
+    assert_eq!(drawn.len(), 1);
+    // 210, 240, 270 against a top of 100 are all drawn at the top.
+    assert_eq!(drawn[0], vec![(0.0, 1.0), (0.5, 1.0), (1.0, 1.0)]);
+    assert!(runs(&[None, None], 60, 1.0).is_empty());
+    assert!(runs(&[Some(f64::NAN)], 60, 1.0).is_empty());
+    // A zero or broken axis is treated as 1 rather than dividing by zero.
+    assert_eq!(runs(&[Some(0.5)], 2, 0.0)[0], vec![(1.0, 0.5)]);
+}
+
+#[test]
+fn a_self_scaling_axis_tops_out_at_a_round_number() {
+    use super::chart::{ChartHue, ChartSeries, nice_maximum, peak};
+    assert_eq!(nice_maximum(3.1, 1.0), 5.0);
+    assert_eq!(nice_maximum(1_100.0, 1.0), 2_000.0);
+    assert_eq!(nice_maximum(9_000.0, 1.0), 10_000.0);
+    assert_eq!(nice_maximum(0.0, 1024.0), 1024.0);
+    assert_eq!(nice_maximum(f64::NAN, 10.0), 10.0);
+    assert_eq!(nice_maximum(100.0, 1.0), 100.0);
+    let series = vec![
+        ChartSeries::new(vec![Some(1.0), None, Some(7.0)], ChartHue::Green),
+        ChartSeries::new(vec![Some(3.0)], ChartHue::Green),
+    ];
+    assert_eq!(peak(&series), Some(7.0));
+    assert_eq!(peak(&[ChartSeries::new(vec![None], ChartHue::Blue)]), None);
+}
+
+#[test]
+fn chart_colors_differ_per_resource_and_per_appearance() {
+    use super::chart::ChartHue;
+    let hues = [
+        ChartHue::Blue,
+        ChartHue::Purple,
+        ChartHue::Green,
+        ChartHue::Orange,
+        ChartHue::Teal,
+    ];
+    for dark in [false, true] {
+        for (i, a) in hues.iter().enumerate() {
+            for b in &hues[i + 1..] {
+                assert_ne!(a.color(dark), b.color(dark));
+            }
+            assert_ne!(
+                a.color(dark),
+                palette_for(dark).accent,
+                "data is not the accent"
+            );
+            assert!(a.area(dark).a < 0.3, "the area is a tint");
+        }
+    }
+    assert_ne!(ChartHue::Blue.color(false), ChartHue::Blue.color(true));
+}
+
+#[test]
+fn a_composition_never_adds_up_to_more_than_the_whole() {
+    use super::chart::composition;
+    assert_eq!(composition(&[0.5, 0.25]), vec![0.5, 0.25]);
+    assert_eq!(composition(&[0.75, 0.5, 0.1]), vec![0.75, 0.25, 0.0]);
+    assert_eq!(composition(&[-1.0, f32::NAN, 2.0]), vec![0.0, 0.0, 1.0]);
+}
+
+// The details table's rich cells and keyboard (`list.rs`).
+
+#[test]
+fn a_table_cell_carries_its_tone_indent_and_expander() {
+    use super::list::{CellTone, TableCell, tone_color};
+    let cell = TableCell::new("Files")
+        .strong()
+        .indent(1)
+        .expander(true)
+        .tone(CellTone::Secondary);
+    assert!(cell.strong);
+    assert_eq!(cell.indent, 1);
+    assert_eq!(cell.expander, Some(true));
+    let plain: TableCell = "12%".into();
+    assert_eq!(plain.tone, CellTone::Primary);
+    assert_eq!(plain.expander, None);
+    for dark in [false, true] {
+        let p = palette_for(dark);
+        assert_eq!(tone_color(CellTone::Primary, p), p.text_primary);
+        assert_eq!(tone_color(CellTone::Secondary, p), p.text_secondary);
+        assert_eq!(tone_color(CellTone::Caution, p), p.caution);
+        assert_eq!(tone_color(CellTone::Critical, p), p.critical);
+    }
+}
+
+#[test]
+fn table_rows_move_with_the_arrows_and_stop_at_the_ends() {
+    use super::list::table_step;
+    assert_eq!(table_step(None, 3, Key::Down), Some(0));
+    assert_eq!(table_step(Some(0), 3, Key::Down), Some(1));
+    assert_eq!(
+        table_step(Some(2), 3, Key::Down),
+        None,
+        "it stops at the end"
+    );
+    assert_eq!(table_step(Some(0), 3, Key::Up), None);
+    assert_eq!(table_step(Some(1), 3, Key::End), Some(2));
+    assert_eq!(table_step(Some(2), 3, Key::Home), Some(0));
+    assert_eq!(table_step(Some(1), 3, Key::Enter), None);
+    assert_eq!(table_step(None, 0, Key::Down), None);
+}
+
+#[test]
+fn the_menu_key_opens_a_rows_menu_under_that_row() {
+    use super::list::menu_anchor;
+    let viewport = gpui::Bounds::new(
+        gpui::point(px(300.0), px(200.0)),
+        gpui::size(px(800.0), px(360.0)),
+    );
+    // The third row (36px each), unscrolled: under its bottom edge.
+    assert_eq!(
+        menu_anchor(viewport, px(0.0), 2),
+        gpui::point(px(348.0), px(308.0))
+    );
+    // Scrolled down by two rows, the same row is two rows higher.
+    assert_eq!(
+        menu_anchor(viewport, px(-72.0), 2),
+        gpui::point(px(348.0), px(236.0))
+    );
+    // A row scrolled out of view keeps the menu inside the table.
+    assert_eq!(menu_anchor(viewport, px(-720.0), 2).y, px(200.0));
+    assert_eq!(menu_anchor(viewport, px(0.0), 40).y, px(560.0));
+}
+
+#[test]
+fn a_badge_counts_what_is_waiting_and_is_absent_for_nothing() {
+    assert_eq!(InfoBadge::count(0), None);
+    assert_eq!(InfoBadge::count(2), Some(InfoBadge::Count(2)));
+    assert_eq!(InfoBadge::Count(2).text().as_deref(), Some("2"));
+    assert_eq!(
+        InfoBadge::Count(MAX_SHOWN_COUNT).text().as_deref(),
+        Some("99")
+    );
+    assert_eq!(InfoBadge::Count(100).text().as_deref(), Some("99+"));
+    assert_eq!(InfoBadge::Dot.text(), None);
+    let item = NavItem::new("Apps", gpui_component::IconName::Inbox).badge(InfoBadge::count(3));
+    assert_eq!(item.badge, Some(InfoBadge::Count(3)));
+}
+
+/// `AutoSuggestBox`: Down and Up walk the list and past either end back to
+/// the text; Enter takes the highlight or submits the text; Escape closes.
+#[test]
+fn the_suggestion_list_follows_the_auto_suggest_keys() {
+    assert_eq!(
+        suggest_key(true, None, 3, Key::Down),
+        SuggestOutcome::Highlight(Some(0))
+    );
+    assert_eq!(
+        suggest_key(true, Some(1), 3, Key::Down),
+        SuggestOutcome::Highlight(Some(2))
+    );
+    assert_eq!(
+        suggest_key(true, Some(2), 3, Key::Down),
+        SuggestOutcome::Highlight(None)
+    );
+    assert_eq!(
+        suggest_key(true, None, 3, Key::Up),
+        SuggestOutcome::Highlight(Some(2))
+    );
+    assert_eq!(
+        suggest_key(true, Some(0), 3, Key::Up),
+        SuggestOutcome::Highlight(None)
+    );
+    assert_eq!(
+        suggest_key(true, Some(1), 3, Key::Enter),
+        SuggestOutcome::Choose(1)
+    );
+    assert_eq!(
+        suggest_key(true, None, 3, Key::Enter),
+        SuggestOutcome::Submit
+    );
+    // A highlight left over from a closed list, or past a list that shrank,
+    // is not a choice.
+    assert_eq!(
+        suggest_key(false, Some(1), 3, Key::Enter),
+        SuggestOutcome::Submit
+    );
+    assert_eq!(
+        suggest_key(true, Some(5), 3, Key::Enter),
+        SuggestOutcome::Submit
+    );
+    assert_eq!(
+        suggest_key(true, None, 3, Key::Escape),
+        SuggestOutcome::Close
+    );
+    assert_eq!(
+        suggest_key(false, None, 3, Key::Escape),
+        SuggestOutcome::Ignored
+    );
+    assert_eq!(
+        suggest_key(false, None, 3, Key::Down),
+        SuggestOutcome::Ignored
+    );
+    assert_eq!(
+        suggest_key(true, None, 0, Key::Down),
+        SuggestOutcome::Ignored
+    );
+    assert_eq!(
+        suggest_key(true, None, 3, Key::Left),
+        SuggestOutcome::Ignored
+    );
+}
+
+#[test]
+fn the_suggestion_list_opens_for_text_and_stays_shut_after_escape() {
+    assert!(list_open(true, "cha", None));
+    assert!(!list_open(false, "cha", None));
+    assert!(!list_open(true, "", None));
+    assert!(!list_open(true, "   ", None));
+    assert!(!list_open(true, "cha", Some("cha")));
+    assert!(list_open(true, "char", Some("cha")));
+}
+
+#[test]
+fn the_pane_search_is_a_field_open_and_a_button_compact() {
+    assert_eq!(search_slot(false, false), SearchSlot::None);
+    assert_eq!(search_slot(false, true), SearchSlot::None);
+    assert_eq!(search_slot(true, false), SearchSlot::Field);
+    assert_eq!(search_slot(true, true), SearchSlot::Button);
+}
+
+/// A narrow window's open pane floats: the content stays 48px in, and the
+/// pane is never gone.
+#[test]
+fn an_open_pane_in_a_narrow_window_floats_over_the_content() {
+    assert!(floats_over_content(false, true));
+    assert!(!floats_over_content(true, true));
+    assert!(!floats_over_content(false, false));
+    assert_eq!(content_offset(false, true), px(48.0));
+    assert_eq!(content_offset(true, true), px(48.0));
+    assert_eq!(content_offset(false, false), px(320.0));
+    assert_eq!(content_offset(true, false), px(48.0));
+}
+
+#[test]
+fn back_is_alt_left_and_says_so_in_both_languages() {
+    assert!(is_back_shortcut("left", false, true, false, false));
+    assert!(!is_back_shortcut("left", false, false, false, false));
+    assert!(!is_back_shortcut("left", true, true, false, false));
+    assert!(!is_back_shortcut("left", false, true, true, false));
+    assert!(!is_back_shortcut("right", false, true, false, false));
+    assert_eq!(back_tooltip(Locale::English), "Back");
+    assert_eq!(back_tooltip(Locale::TraditionalChinese), "返回");
+}
+
+#[test]
+fn a_link_is_accent_text_and_disabled_text_when_disabled() {
+    for p in [&LIGHT, &DARK] {
+        assert_eq!(link_color(Interaction::Rest, p), p.accent_text);
+        assert_eq!(link_color(Interaction::PointerOver, p), p.accent_text);
+        assert_eq!(link_color(Interaction::Disabled, p), p.text_disabled);
+        assert!(link_color(Interaction::Pressed, p).a < 1.0);
+    }
+}
+
+/// A status glyph in a list row takes the color an info bar gives the same
+/// severity's icon, never a fill.
+#[test]
+fn a_status_glyph_is_the_severity_color() {
+    use super::list::status_glyph_color;
+    for p in [&LIGHT, &DARK] {
+        assert_eq!(status_glyph_color(Severity::Success, p), p.success);
+        assert_eq!(status_glyph_color(Severity::Warning, p), p.caution);
+        assert_eq!(status_glyph_color(Severity::Error, p), p.critical);
+        assert_eq!(status_glyph_color(Severity::Informational, p), p.accent);
+    }
 }

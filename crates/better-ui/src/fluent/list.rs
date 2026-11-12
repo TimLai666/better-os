@@ -280,6 +280,15 @@ pub enum Leading {
     Glyph(IconName),
     /// An application's own icon, at the row's icon size.
     App(AppIcon),
+    /// A 16px glyph in a status color, for a row that reports how something
+    /// went (an activity log).
+    Status(IconName, super::info_bar::Severity),
+}
+
+/// The color a status glyph is drawn in: the severity's own color, which is
+/// the color an info bar gives its icon.
+pub fn status_glyph_color(severity: super::info_bar::Severity, p: &Palette) -> Rgba {
+    super::info_bar::severity_look(severity, p).1
 }
 
 /// The size an application icon is drawn at in a row: 24px beside one line,
@@ -352,6 +361,12 @@ impl ListRow {
 
     pub fn app_icon(mut self, icon: AppIcon) -> Self {
         self.leading = Some(Leading::App(icon));
+        self
+    }
+
+    /// A glyph in a status color at the leading edge.
+    pub fn status_glyph(mut self, icon: IconName, severity: super::info_bar::Severity) -> Self {
+        self.leading = Some(Leading::Status(icon, severity));
         self
     }
 
@@ -460,6 +475,14 @@ impl RenderOnce for ListRow {
                 .text_color(caption_color)
                 .into_any_element(),
             Leading::App(icon) => app_icon(&icon, row_icon_size(two_line), p),
+            Leading::Status(icon, severity) => Icon::new(icon)
+                .size(size::ICON)
+                .text_color(if disabled {
+                    p.text_disabled
+                } else {
+                    status_glyph_color(severity, p)
+                })
+                .into_any_element(),
         });
         row = row
             .children(leading.map(|leading| div().flex_none().child(leading)))
@@ -843,6 +866,9 @@ pub struct Column {
     pub sortable: bool,
     /// Numbers read best aligned to the end.
     pub align_end: bool,
+    /// Said when the pointer rests on the header, for a column whose short
+    /// title needs explaining.
+    pub tooltip: Option<SharedString>,
 }
 
 impl Column {
@@ -852,6 +878,7 @@ impl Column {
             width: None,
             sortable: true,
             align_end: false,
+            tooltip: None,
         }
     }
 
@@ -869,40 +896,195 @@ impl Column {
         self.sortable = sortable;
         self
     }
+
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
 }
 
-/// A details table: column headers that sort, and rows of text cells with
-/// the list's selection fill and bar.
+/// How a cell's text is colored. Status tones always travel with words, never
+/// alone.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub enum CellTone {
+    #[default]
+    Primary,
+    /// A value that is not a reading (`Not collected`), or metadata.
+    Secondary,
+    Caution,
+    Critical,
+}
+
+/// One cell of a [`DetailsTable`]: text, and how it is drawn.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TableCell {
+    pub text: SharedString,
+    pub tone: CellTone,
+    /// Body Strong, for a row's name.
+    pub strong: bool,
+    /// Levels of indentation, 16px each, for the children of a group.
+    pub indent: u8,
+    /// `Some(expanded)` draws a chevron before the text, for a row that
+    /// opens to show its children.
+    pub expander: Option<bool>,
+    /// Said when the pointer rests on the cell.
+    pub tooltip: Option<SharedString>,
+}
+
+impl TableCell {
+    pub fn new(text: impl Into<SharedString>) -> Self {
+        Self {
+            text: text.into(),
+            ..Self::default()
+        }
+    }
+
+    pub fn tone(mut self, tone: CellTone) -> Self {
+        self.tone = tone;
+        self
+    }
+
+    pub fn strong(mut self) -> Self {
+        self.strong = true;
+        self
+    }
+
+    pub fn indent(mut self, levels: u8) -> Self {
+        self.indent = levels;
+        self
+    }
+
+    pub fn expander(mut self, expanded: bool) -> Self {
+        self.expander = Some(expanded);
+        self
+    }
+
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+}
+
+impl From<SharedString> for TableCell {
+    fn from(text: SharedString) -> Self {
+        TableCell::new(text)
+    }
+}
+
+impl From<&'static str> for TableCell {
+    fn from(text: &'static str) -> Self {
+        TableCell::new(text)
+    }
+}
+
+impl From<String> for TableCell {
+    fn from(text: String) -> Self {
+        TableCell::new(text)
+    }
+}
+
+/// The row a key moves a table's selection to, by position on screen.
+/// `None` when the key does not move it.
+pub fn table_step(selected_position: Option<usize>, rows: usize, key: Key) -> Option<usize> {
+    match key {
+        Key::Up | Key::Down | Key::Home | Key::End => {
+            step_index(selected_position, rows, key, false, |_| false)
+        }
+        _ => None,
+    }
+}
+
+/// How far in from a row's leading edge a keyboard-opened menu appears.
+const MENU_INSET: Pixels = px(48.0);
+
+/// Where the Menu key opens a row's context menu: under the row at
+/// `position`, given the rows' viewport and how far it is scrolled
+/// (`scroll_y` is zero or negative, as GPUI reports it). A row scrolled out
+/// of view puts the menu at the nearest edge of the viewport.
+pub fn menu_anchor(
+    viewport: gpui::Bounds<Pixels>,
+    scroll_y: Pixels,
+    position: usize,
+) -> gpui::Point<Pixels> {
+    let below_row = viewport.origin.y + scroll_y + size::ROW_HEIGHT * (position as f32 + 1.0);
+    let y = below_row.clamp(viewport.origin.y, viewport.bottom());
+    gpui::point(viewport.origin.x + MENU_INSET, y)
+}
+
+type ContextHandler = Rc<dyn Fn(usize, gpui::Point<Pixels>, &mut Window, &mut App)>;
+
+/// A details table: column headers that sort, and rows of cells with the
+/// list's selection fill and bar.
+///
+/// By default the table sorts its own rows by their text and draws all of
+/// them. A window whose rows come from a model it sorts itself calls
+/// [`DetailsTable::presorted`], and one with more rows than fit calls
+/// [`DetailsTable::fill`], which lets the table take the height it is given
+/// and draws only the rows in view, scrolling the rest.
+///
+/// Keyboard: each sortable header is a tab stop that sorts on Enter or Space;
+/// the rows are one tab stop where Up, Down, Home, and End move the selection
+/// and Enter invokes the selected row. A right click, or the Menu key or
+/// Shift+F10 on the selected row, asks for its context menu.
 #[derive(IntoElement)]
 pub struct DetailsTable {
     id: ElementId,
     columns: Vec<Column>,
-    rows: Vec<Vec<SharedString>>,
+    rows: Vec<Vec<TableCell>>,
     sort: Option<SortState>,
+    presorted: bool,
+    fill: bool,
     selected: Option<usize>,
+    empty: Option<SharedString>,
     on_sort: Option<ValueHandler<SortState>>,
     on_select: Option<IndexHandler>,
+    on_invoke: Option<IndexHandler>,
+    on_context_menu: Option<ContextHandler>,
 }
 
 impl DetailsTable {
-    pub fn new(
+    pub fn new<C: Into<TableCell>>(
         id: impl Into<ElementId>,
         columns: Vec<Column>,
-        rows: Vec<Vec<SharedString>>,
+        rows: Vec<Vec<C>>,
     ) -> Self {
         Self {
             id: id.into(),
             columns,
-            rows,
+            rows: rows
+                .into_iter()
+                .map(|row| row.into_iter().map(Into::into).collect())
+                .collect(),
             sort: None,
+            presorted: false,
+            fill: false,
             selected: None,
+            empty: None,
             on_sort: None,
             on_select: None,
+            on_invoke: None,
+            on_context_menu: None,
         }
     }
 
+    /// The sort the headers show. Without [`DetailsTable::presorted`] the
+    /// table also orders its rows by it.
     pub fn sort(mut self, sort: Option<SortState>) -> Self {
         self.sort = sort;
+        self
+    }
+
+    /// The rows are already in the order to draw them; the headers still show
+    /// the sort and report clicks.
+    pub fn presorted(mut self) -> Self {
+        self.presorted = true;
+        self
+    }
+
+    /// Take the height the parent gives, draw only the rows in view, and
+    /// scroll the rest under a header that stays put.
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
         self
     }
 
@@ -913,6 +1095,12 @@ impl DetailsTable {
         self
     }
 
+    /// What to say when there are no rows.
+    pub fn empty(mut self, message: impl Into<SharedString>) -> Self {
+        self.empty = Some(message.into());
+        self
+    }
+
     pub fn on_sort(mut self, handler: impl Fn(SortState, &mut Window, &mut App) + 'static) -> Self {
         self.on_sort = Some(Rc::new(handler));
         self
@@ -920,6 +1108,23 @@ impl DetailsTable {
 
     pub fn on_select(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_select = Some(Rc::new(handler));
+        self
+    }
+
+    /// A double click, or Enter on the selected row.
+    pub fn on_invoke(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
+        self.on_invoke = Some(Rc::new(handler));
+        self
+    }
+
+    /// A right click on a row, with the pointer's window position, or the
+    /// Menu key on the selected row, with the row's position. The row is
+    /// selected first.
+    pub fn on_context_menu(
+        mut self,
+        handler: impl Fn(usize, gpui::Point<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_context_menu = Some(Rc::new(handler));
         self
     }
 }
@@ -937,18 +1142,146 @@ fn cell(column: &Column) -> gpui::Div {
     }
 }
 
+/// The text color of a cell's tone.
+pub fn tone_color(tone: CellTone, p: &Palette) -> Rgba {
+    match tone {
+        CellTone::Primary => p.text_primary,
+        CellTone::Secondary => p.text_secondary,
+        CellTone::Caution => p.caution,
+        CellTone::Critical => p.critical,
+    }
+}
+
+struct RowParts {
+    columns: Rc<Vec<Column>>,
+    rows: Rc<Vec<Vec<TableCell>>>,
+    order: Rc<Vec<usize>>,
+    selected: Option<usize>,
+    ring: bool,
+    focus: gpui::FocusHandle,
+    on_select: Option<IndexHandler>,
+    on_invoke: Option<IndexHandler>,
+    on_context_menu: Option<ContextHandler>,
+}
+
+fn table_row(position: usize, parts: &RowParts, p: &Palette) -> gpui::AnyElement {
+    let row_index = parts.order[position];
+    let selected = parts.selected == Some(row_index);
+    let fill = row_fill(selected, Interaction::Rest, p);
+    let hover = row_fill(selected, Interaction::PointerOver, p);
+    let pressed = row_fill(selected, Interaction::Pressed, p);
+    let mut row = div()
+        .id(ElementId::named_usize("table-row", row_index))
+        .relative()
+        .flex()
+        .flex_none()
+        .w_full()
+        .h(size::ROW_HEIGHT)
+        .rounded(radius::SM)
+        .bg(fill)
+        .hover(move |s| s.bg(hover))
+        .active(move |s| s.bg(pressed));
+    if selected {
+        row = row.child(
+            div()
+                .absolute()
+                .left_0()
+                .top_0()
+                .bottom_0()
+                .flex()
+                .items_center()
+                .child(selection_bar(p, false)),
+        );
+    }
+    for (index, column) in parts.columns.iter().enumerate() {
+        let value = parts.rows[row_index]
+            .get(index)
+            .cloned()
+            .unwrap_or_default();
+        let color = tone_color(value.tone, p);
+        let mut content = cell(column).gap(px(4.0));
+        if value.indent > 0 {
+            content = content.pl(px(12.0 + 16.0 * value.indent as f32));
+        }
+        if let Some(expanded) = value.expander {
+            content = content.child(
+                Icon::new(if expanded {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .size(px(12.0))
+                .flex_none()
+                .text_color(p.text_secondary),
+            );
+        }
+        let label = text(div(), if value.strong { BODY_STRONG } else { BODY })
+            .text_color(color)
+            .min_w_0()
+            .truncate()
+            .child(value.text.clone());
+        let label = match value.tooltip.clone() {
+            Some(tip) => div()
+                .id(ElementId::named_usize("cell-tip", row_index * 64 + index))
+                .min_w_0()
+                .flex()
+                .child(label)
+                .tooltip(super::dialog::tooltip_builder(tip))
+                .into_any_element(),
+            None => label.into_any_element(),
+        };
+        row = row.child(content.child(label));
+    }
+    {
+        let select = parts.on_select.clone();
+        let invoke = parts.on_invoke.clone();
+        let focus = parts.focus.clone();
+        row = row.on_click(move |event, window, cx| {
+            if event.is_keyboard() {
+                return;
+            }
+            focus.focus(window, cx);
+            if event.click_count() >= 2 {
+                if let Some(invoke) = invoke.as_ref() {
+                    invoke(row_index, window, cx);
+                }
+            } else if let Some(select) = select.as_ref() {
+                select(row_index, window, cx);
+            }
+        });
+    }
+    if let Some(menu) = parts.on_context_menu.clone() {
+        let select = parts.on_select.clone();
+        let focus = parts.focus.clone();
+        row = row.on_mouse_down(gpui::MouseButton::Right, move |event, window, cx| {
+            cx.stop_propagation();
+            focus.focus(window, cx);
+            if let Some(select) = select.as_ref() {
+                select(row_index, window, cx);
+            }
+            menu(row_index, event.position, window, cx);
+        });
+    }
+    with_focus_ring(row, parts.ring && selected, radius::SM, p).into_any_element()
+}
+
 impl RenderOnce for DetailsTable {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
         let mut header = div()
             .flex()
+            .flex_none()
             .h(size::CONTROL_HEIGHT)
             .border_b_1()
             .border_color(p.divider);
         for (index, column) in self.columns.iter().enumerate() {
             let sorted = self.sort.filter(|sort| sort.column == index);
             let id = ElementId::named_usize("header", index);
-            let header_focus = keyed_focus(id.clone(), window, cx);
+            let header_focus = keyed_focus(
+                ElementId::named_usize(SharedString::from(format!("{}-header", self.id)), index),
+                window,
+                cx,
+            );
             let ring = shows_focus(&header_focus, ShownState::Live, window);
             let hover = p.subtle_fill;
             let pressed = p.subtle_fill_tertiary;
@@ -960,6 +1293,7 @@ impl RenderOnce for DetailsTable {
                 .child(
                     text(div(), BODY_STRONG)
                         .text_color(p.text_secondary)
+                        .min_w_0()
                         .truncate()
                         .child(column.title.clone()),
                 )
@@ -970,8 +1304,12 @@ impl RenderOnce for DetailsTable {
                         IconName::ChevronDown
                     })
                     .size(px(12.0))
+                    .flex_none()
                     .text_color(p.text_secondary)
                 }));
+            if let Some(tip) = column.tooltip.clone() {
+                head = head.tooltip(super::dialog::tooltip_builder(tip));
+            }
             if column.sortable
                 && let Some(handler) = self.on_sort.clone()
             {
@@ -997,56 +1335,142 @@ impl RenderOnce for DetailsTable {
             header = header.child(with_focus_ring(head, ring, radius::SM, p));
         }
 
-        let order = sorted_order(&self.rows, self.sort);
-        let mut body = div().flex().flex_col();
-        for (position, &row_index) in order.iter().enumerate() {
-            let selected = self.selected == Some(row_index);
-            let fill = row_fill(selected, Interaction::Rest, p);
-            let hover = row_fill(selected, Interaction::PointerOver, p);
-            let pressed = row_fill(selected, Interaction::Pressed, p);
-            let mut row = div()
-                .id(ElementId::named_usize("table-row", position))
-                .relative()
+        let order: Vec<usize> = if self.presorted {
+            (0..self.rows.len()).collect()
+        } else {
+            let texts: Vec<Vec<SharedString>> = self
+                .rows
+                .iter()
+                .map(|row| row.iter().map(|cell| cell.text.clone()).collect())
+                .collect();
+            sorted_order(&texts, self.sort)
+        };
+        let focus = keyed_focus(super::child_id(&self.id, "rows"), window, cx);
+        let ring = shows_focus(&focus, ShownState::Live, window);
+        let scroll = window
+            .use_keyed_state(super::child_id(&self.id, "scroll"), cx, |_, _| {
+                gpui::UniformListScrollHandle::new()
+            })
+            .read(cx)
+            .clone();
+        let rows_handle = window
+            .use_keyed_state(super::child_id(&self.id, "rows-handle"), cx, |_, _| {
+                gpui::ScrollHandle::new()
+            })
+            .read(cx)
+            .clone();
+        let count = order.len();
+        let parts = Rc::new(RowParts {
+            columns: Rc::new(self.columns.clone()),
+            rows: Rc::new(self.rows),
+            order: Rc::new(order),
+            selected: self.selected,
+            ring,
+            focus: focus.clone(),
+            on_select: self.on_select.clone(),
+            on_invoke: self.on_invoke.clone(),
+            on_context_menu: self.on_context_menu.clone(),
+        });
+
+        let body: gpui::AnyElement = if count == 0 {
+            text(div(), BODY)
+                .p(px(12.0))
+                .text_color(p.text_secondary)
+                .child(self.empty.clone().unwrap_or_default())
+                .into_any_element()
+        } else if self.fill {
+            let row_parts = parts.clone();
+            gpui::uniform_list(
+                super::child_id(&self.id, "list"),
+                count,
+                move |range, _window, cx| {
+                    let p = palette(cx);
+                    range
+                        .map(|position| table_row(position, &row_parts, p))
+                        .collect::<Vec<_>>()
+                },
+            )
+            .track_scroll(&scroll)
+            .flex_1()
+            .min_h_0()
+            .into_any_element()
+        } else {
+            let mut body = div()
+                .id(super::child_id(&self.id, "body"))
                 .flex()
-                .h(size::ROW_HEIGHT)
-                .rounded(radius::SM)
-                .bg(fill)
-                .hover(move |s| s.bg(hover))
-                .active(move |s| s.bg(pressed));
-            if selected {
-                row = row.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top_0()
-                        .bottom_0()
-                        .flex()
-                        .items_center()
-                        .child(selection_bar(p, false)),
-                );
+                .flex_col()
+                .track_scroll(&rows_handle);
+            for position in 0..count {
+                body = body.child(table_row(position, &parts, p));
             }
-            for (index, column) in self.columns.iter().enumerate() {
-                let value = self.rows[row_index].get(index).cloned().unwrap_or_default();
-                row = row.child(
-                    cell(column).child(
-                        text(div(), BODY)
-                            .text_color(p.text_primary)
-                            .truncate()
-                            .child(value),
-                    ),
-                );
-            }
-            if let Some(select) = self.on_select.clone() {
-                row = row.on_click(move |_, window, cx| select(row_index, window, cx));
-            }
-            body = body.child(row);
-        }
+            body.into_any_element()
+        };
+
+        let key_parts = parts.clone();
+        let key_scroll = scroll.clone();
+        let key_rows = rows_handle.clone();
+        let fill = self.fill;
+        let rows = div()
+            .id(super::child_id(&self.id, "rows"))
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .when(self.fill, |rows| rows.flex_1())
+            .child(body)
+            .track_focus(&focus.tab_index(0).tab_stop(count > 0))
+            .on_key_down(move |event, window, cx| {
+                let Some(key) = Key::from_keystroke(&event.keystroke) else {
+                    return;
+                };
+                let parts = &key_parts;
+                let position = parts
+                    .selected
+                    .and_then(|selected| parts.order.iter().position(|row| *row == selected));
+                let menu_key = event.keystroke.key == "menu"
+                    || (event.keystroke.key == "f10" && event.keystroke.modifiers.shift);
+                if menu_key {
+                    if let (Some(position), Some(menu)) = (position, parts.on_context_menu.as_ref())
+                    {
+                        cx.stop_propagation();
+                        // Beside the selected row, as a right click on it
+                        // would put the menu.
+                        let at = if fill {
+                            let state = key_scroll.0.borrow();
+                            menu_anchor(
+                                state.base_handle.bounds(),
+                                state.base_handle.offset().y,
+                                position,
+                            )
+                        } else {
+                            match key_rows.bounds_for_item(position) {
+                                Some(row) => gpui::point(row.origin.x + MENU_INSET, row.bottom()),
+                                None => menu_anchor(key_rows.bounds(), px(0.0), position),
+                            }
+                        };
+                        menu(parts.order[position], at, window, cx);
+                    }
+                } else if key == Key::Enter {
+                    if let (Some(row), Some(invoke)) = (parts.selected, parts.on_invoke.as_ref()) {
+                        cx.stop_propagation();
+                        invoke(row, window, cx);
+                    }
+                } else if let Some(next) = table_step(position, parts.order.len(), key)
+                    && let Some(select) = parts.on_select.as_ref()
+                {
+                    cx.stop_propagation();
+                    key_scroll.scroll_to_item(next, gpui::ScrollStrategy::Center);
+                    select(parts.order[next], window, cx);
+                }
+            });
+
         div()
             .id(self.id)
             .flex()
             .flex_col()
             .w_full()
+            .min_w_0()
+            .when(self.fill, |table| table.h_full().min_h_0())
             .child(header)
-            .child(body)
+            .child(rows)
     }
 }

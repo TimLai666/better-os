@@ -80,15 +80,6 @@ pub(crate) struct DefaultsInputs {
 }
 
 impl ManagerApp {
-    /// Opens the Defaults section, reading the current settings if this window
-    /// has not read them yet.
-    pub(crate) fn open_defaults(&mut self, cx: &mut Context<Self>) {
-        self.navigate(Page::Defaults, cx);
-        if self.defaults.report.is_none() && !self.defaults.busy {
-            self.refresh_defaults(cx);
-        }
-    }
-
     /// Reads what every declared integration currently says.
     pub(crate) fn refresh_defaults(&mut self, cx: &mut Context<Self>) {
         self.start_defaults_job(DefaultsJob::Inspect, cx);

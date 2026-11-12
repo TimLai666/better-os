@@ -1,1141 +1,1800 @@
-//! Every page the window can show.
+//! The live pages: Overview, Processes, Details, Performance, Startup apps,
+//! Services, and Settings.
 //!
-//! The pages read models and draw them. None of them decides what a number
-//! means, and none of them can render a missing reading as a zero, because
-//! every value goes through the cell helpers in `tables`.
+//! The pages read models and draw them. What a number means, what a row
+//! says, and which words describe the machine are decided in `charts`,
+//! `tables`, `startup`, and `i18n`, none of which knows about GPUI.
 
+use better_ui::fluent::chart::{
+    ChartHue, ChartSeries, CompositionBar, LineChart, nice_maximum, peak,
+};
+use better_ui::fluent::info_bar::{InfoBar, Severity};
+use better_ui::fluent::list::{CellTone, Column, DetailsTable, SortState, TableCell};
+use better_ui::fluent::selection::{ComboBox, ComboItem};
+use better_ui::fluent::settings_card::{SettingsCard, SettingsExpander, SettingsRow, card_fill};
+use better_ui::fluent::tabs::{SelectorBar, SelectorItem};
+use better_ui::fluent::theme::Appearance;
+use better_ui::fluent::toggle::ToggleSwitch;
+use better_ui::fluent::{
+    BODY, BODY_STRONG, CAPTION, Interaction, Palette, SUBTITLE, label, palette, radius, spacing,
+    text, with_alpha,
+};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{
-    ActiveTheme, Icon, IconName,
-    button::{Button, ButtonVariants},
-    switch::Switch,
-    table::DataTable,
-    *,
-};
-use monitor_core::{
-    ActionRefusal, CollectorHealth, CollectorReport, EntityKind, MetricId, ProcessAction,
-};
-use monitor_views::format::{
-    Cell, bytes, bytes_per_second, cell, count, duration, percent, ratio_percent,
-};
-use monitor_views::overview::{ResourceSummary, ResourceVerdict, ThrottlingState};
-use monitor_views::{Field, ProcessFacts, field};
+use gpui_component::{Icon, IconName};
+use monitor_core::CollectorHealth;
+use monitor_views::overview::ResourceVerdict;
+use monitor_views::{ProcessColumn, SortDirection};
 
-use crate::app::{ActionReport, MonitorApp, Page};
-use crate::i18n::{Copy, copy};
-use crate::tables::{cell_element, confidence_label, evidence_label};
+use crate::app::{MenuTarget, MonitorApp, Page, Resource};
+use crate::charts::{AdapterKind, CAPACITY, SeriesKey};
+use crate::i18n::{self, Copy, copy};
+use crate::layout::card_columns;
+use crate::shell::{card, grid, note_card, section_title, stat_or_missing};
+use crate::tables::{
+    AppColumn, AppLine, AppSelection, app_cells, app_lines, app_row, byte_axis, bytes,
+    detail_columns, detail_width, numeric, process_cell, rate, share,
+};
 
-fn metric(raw: &str) -> MetricId {
-    MetricId::new(raw).expect("a page metric id must be well formed")
+/// The tint a status word is drawn in, always beside the word.
+fn verdict_color(verdict: &ResourceVerdict, p: &Palette) -> Rgba {
+    match verdict {
+        ResourceVerdict::Saturated { .. } | ResourceVerdict::CollectorFailed { .. } => p.critical,
+        ResourceVerdict::UnderPressure { .. } => p.caution,
+        _ => p.text_secondary,
+    }
+}
+
+fn hertz(value: f64) -> String {
+    format!("{:.2} GHz", value / 1e9)
 }
 
 impl MonitorApp {
-    pub(crate) fn render_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        match self.page {
-            Page::Overview => self.overview_page(cx),
-            Page::Apps => self.apps_page(cx),
-            Page::Processes => self.processes_page(cx),
-            Page::Cpu => self.cpu_page(cx),
-            Page::Memory => self.memory_page(cx),
-            Page::Storage => self.storage_page(cx),
-            Page::Network => self.network_page(cx),
-            Page::Gpu => {
-                self.unsupported_page(copy(self.locale).gpu, copy(self.locale).gpu_unsupported, cx)
-            }
-            Page::Energy => self.unsupported_page(
-                copy(self.locale).energy,
-                copy(self.locale).energy_unsupported,
-                cx,
-            ),
-            Page::History => self.history_page(cx),
-            Page::Incidents => self.incidents_page(cx),
-            Page::Inventory => self.inventory_page(cx),
-            Page::Diagnostics => self.diagnostics_page(cx),
-            Page::Settings => self.settings_page(cx),
-        }
-    }
-
-    fn verdict_label(&self, verdict: &ResourceVerdict, c: &'static Copy) -> &'static str {
-        match verdict {
-            ResourceVerdict::Nominal => c.verdict_nominal,
-            ResourceVerdict::BusyWithoutContention => c.verdict_busy,
-            ResourceVerdict::UnderPressure { .. } => c.verdict_pressure,
-            ResourceVerdict::Saturated { .. } => c.verdict_saturated,
-            ResourceVerdict::CollectorFailed { .. } => c.verdict_collector_failed,
-            ResourceVerdict::Unsupported { .. } => c.verdict_unsupported,
-            ResourceVerdict::Unobserved { .. } => c.verdict_unobserved,
-        }
-    }
-
-    /// One resource card: the verdict first, then the readings behind it.
-    ///
-    /// The verdict is the headline because "busy" and "waiting" look identical
-    /// in a utilization number and are the two things a user most needs kept
-    /// apart.
-    fn resource_card(
-        &self,
-        title: &'static str,
-        summary: &ResourceSummary,
+    pub(crate) fn render_page(
+        &mut self,
+        available: f32,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        match self.page {
+            Page::Overview => self.overview_page(available, cx),
+            Page::Processes => self.processes_page(cx),
+            Page::Details => self.details_page(cx),
+            Page::Performance => self.performance_page(available, cx),
+            Page::Startup => self.startup_page(cx),
+            Page::Services => self.services_page(cx),
+            Page::History => self.history_page(available, cx),
+            Page::Events => self.events_page(cx),
+            Page::SystemInfo => self.system_info_page(cx),
+            Page::Settings => self.settings_page(window, cx),
+        }
+    }
+
+    // Overview.
+
+    fn overview_page(&mut self, available: f32, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
         let c = copy(self.locale);
-        let accent = match &summary.verdict {
-            ResourceVerdict::Saturated { .. } | ResourceVerdict::CollectorFailed { .. } => {
-                cx.theme().danger
-            }
-            ResourceVerdict::UnderPressure { .. } => cx.theme().warning,
-            ResourceVerdict::BusyWithoutContention => cx.theme().primary,
-            _ => cx.theme().muted_foreground,
+        let top = self.apps.top_by_cpu(5);
+        let busiest = top
+            .first()
+            .filter(|row| row.cpu_utilization.total >= 0.05)
+            .map(|row| row.group.display_name.clone());
+        let (tone, headline, detail) = i18n::health_sentence(
+            &self.overview,
+            &self.readings,
+            busiest.as_deref(),
+            self.locale,
+        );
+        let tone_color = match tone {
+            i18n::Tone::Good => p.success,
+            i18n::Tone::Busy => p.accent,
+            i18n::Tone::Strained => p.caution,
+            i18n::Tone::Unknown => p.text_secondary,
         };
-        let verdict = self.verdict_label(&summary.verdict, c);
-        let detail = match &summary.verdict {
-            ResourceVerdict::CollectorFailed { detail }
-            | ResourceVerdict::Unsupported { detail }
-            | ResourceVerdict::Unobserved { detail } => Some(detail.clone()),
-            _ => None,
-        };
-        let body = v_flex()
-            .min_w_0()
-            .gap_3()
-            .child(
-                h_flex()
-                    .min_w_0()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .flex_wrap()
-                    .child(div().font_semibold().child(title))
-                    .child(
-                        div()
-                            .px_2()
-                            .py_0p5()
-                            .rounded(cx.theme().radius)
-                            .border_1()
-                            .border_color(accent)
-                            .text_color(accent)
-                            .text_xs()
-                            .child(verdict),
-                    ),
-            )
-            .when_some(detail, |element, detail| {
-                element.child(
+        let sentence = card(p).child(
+            div()
+                .flex()
+                .items_start()
+                .gap(spacing::MD)
+                .child(
                     div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(detail),
+                        .mt(px(6.0))
+                        .size(px(12.0))
+                        .flex_none()
+                        .rounded_full()
+                        .bg(tone_color),
                 )
-            })
-            .child(
-                h_flex()
-                    .min_w_0()
-                    .gap_4()
-                    .flex_wrap()
-                    .child(self.stat(
-                        c.utilization,
-                        cell_element(cell(&summary.utilization, |v| ratio_percent(*v)), c, cx),
-                        cx,
-                    ))
-                    .child(self.stat(
-                        c.pressure_some,
-                        cell_element(cell(&summary.pressure_some, |v| percent(*v)), c, cx),
-                        cx,
-                    ))
-                    .child(self.stat(
-                        c.pressure_full,
-                        cell_element(cell(&summary.pressure_full, |v| percent(*v)), c, cx),
-                        cx,
-                    )),
-            );
-        div()
-            .min_w(px(300.0))
-            .flex_1()
-            .child(self.surface(body, cx))
-            .into_any_element()
-    }
-
-    fn overview_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale);
-        let throttling = match &self.overview.throttling {
-            ThrottlingState::NotThrottled => c.throttling_none.to_string(),
-            ThrottlingState::ClockHeldDown {
-                current_hz,
-                maximum_hz,
-            } => format!(
-                "{} ({:.2} / {:.2} GHz)",
-                c.throttling_clock,
-                current_hz / 1e9,
-                maximum_hz / 1e9
-            ),
-            ThrottlingState::NotObservable { .. } => c.throttling_unobservable.to_string(),
-        };
-
-        let top_apps = {
-            let apps = self.apps.read(cx).delegate();
-            apps.model
-                .top_by_cpu(5)
-                .into_iter()
-                .map(|row| {
-                    (
-                        row.group.display_name.clone(),
-                        row.cpu_utilization,
-                        row.group.members.len(),
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-
-        v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_4()
-            .child(self.page_heading(c.overview, c.overview_subtitle))
-            .child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_4()
-                    .flex_wrap()
-                    .child(self.resource_card(c.cpu, &self.overview.cpu, cx))
-                    .child(self.resource_card(c.memory, &self.overview.memory.resource, cx))
-                    .child(self.resource_card(c.storage, &self.overview.io, cx)),
-            )
-            .child(
-                self.surface(
-                    h_flex()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
                         .min_w_0()
-                        .gap_4()
-                        .flex_wrap()
-                        .child(self.stat(
-                            c.load_average,
-                            cell_element(
-                                cell(&self.overview.load_average_1m, |v| format!("{v:.2}")),
-                                c,
-                                cx,
-                            ),
-                            cx,
-                        ))
-                        .child(self.stat(
-                            c.logical_cpus,
-                            cell_element(cell(&self.overview.logical_cpus, |v| count(*v)), c, cx),
-                            cx,
-                        ))
-                        .child(self.stat(
-                            c.running_processes,
-                            cell_element(cell(&self.overview.process_count, |v| count(*v)), c, cx),
-                            cx,
-                        ))
-                        .child(self.stat(
-                            c.throttling,
-                            div().text_sm().child(throttling).into_any_element(),
-                            cx,
-                        )),
-                    cx,
+                        .gap(px(4.0))
+                        .child(label(headline, SUBTITLE, p.text_primary))
+                        .children(detail.map(|detail| label(detail, BODY, p.text_secondary))),
                 ),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_4()
-                    .flex_wrap()
-                    .child(
-                        div().min_w(px(300.0)).flex_1().child(
-                            self.surface(
-                                v_flex()
-                                    .min_w_0()
-                                    .gap_2()
-                                    .child(div().font_semibold().child(c.storage))
-                                    .child(
-                                        self.stat(
-                                            c.read_throughput,
-                                            div()
-                                                .child(bytes_per_second(
-                                                    self.overview.storage.read.total,
-                                                ))
-                                                .into_any_element(),
-                                            cx,
-                                        ),
-                                    )
-                                    .child(
-                                        self.stat(
-                                            c.write_throughput,
-                                            div()
-                                                .child(bytes_per_second(
-                                                    self.overview.storage.write.total,
-                                                ))
-                                                .into_any_element(),
-                                            cx,
-                                        ),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(match &self.overview.storage.busiest {
-                                                Some(device) => {
-                                                    format!("{}: {device}", c.busiest_device)
-                                                }
-                                                None => c.no_devices.to_string(),
-                                            }),
-                                    ),
-                                cx,
-                            ),
-                        ),
-                    )
-                    .child(
-                        div().min_w(px(300.0)).flex_1().child(
-                            self.surface(
-                                v_flex()
-                                    .min_w_0()
-                                    .gap_2()
-                                    .child(div().font_semibold().child(c.network))
-                                    .child(
-                                        self.stat(
-                                            c.received,
-                                            div()
-                                                .child(bytes_per_second(
-                                                    self.overview.network.read.total,
-                                                ))
-                                                .into_any_element(),
-                                            cx,
-                                        ),
-                                    )
-                                    .child(
-                                        self.stat(
-                                            c.sent,
-                                            div()
-                                                .child(bytes_per_second(
-                                                    self.overview.network.write.total,
-                                                ))
-                                                .into_any_element(),
-                                            cx,
-                                        ),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(match &self.overview.network.busiest {
-                                                Some(interface) => {
-                                                    format!("{}: {interface}", c.busiest_device)
-                                                }
-                                                None => c.no_devices.to_string(),
-                                            }),
-                                    ),
-                                cx,
-                            ),
-                        ),
-                    ),
-            )
-            .child(
-                self.surface(
-                    v_flex()
-                        .min_w_0()
-                        .gap_2()
-                        .child(div().font_semibold().child(c.top_applications))
-                        .children(top_apps.into_iter().map(|(name, cpu, members)| {
-                            h_flex()
-                                .min_w_0()
-                                .justify_between()
-                                .gap_3()
-                                .py_1()
-                                .child(div().truncate().child(name))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!("{members} {}", c.process_count)),
-                                )
-                                .child(div().child(if cpu.is_unavailable() {
-                                    c.nothing_measured.to_string()
-                                } else {
-                                    ratio_percent(cpu.total)
-                                }))
-                        })),
-                    cx,
-                ),
-            )
-            .child(self.collector_health_card(cx))
-            .into_any_element()
-    }
+        );
 
-    /// Which collectors are working, and the coverage of the last round.
-    fn collector_health_card(&self, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale);
-        let coverage = self.overview.coverage;
-        let rows = self
-            .overview
-            .collectors
+        let cards = vec![
+            self.cpu_card(cx),
+            self.memory_card(cx),
+            self.disk_card(cx),
+            self.network_card(cx),
+            self.gpu_card(cx),
+            self.battery_card(cx),
+        ];
+
+        let processors = self.processors();
+        let rows: Vec<Vec<TableCell>> = top
             .iter()
-            .map(|status| {
-                let (label, color) = match &status.health {
-                    CollectorHealth::Healthy => (c.health_healthy, cx.theme().success),
-                    CollectorHealth::Degraded { .. } => (c.health_degraded, cx.theme().warning),
-                    CollectorHealth::Failed { .. } => (c.health_failed, cx.theme().danger),
-                    CollectorHealth::Unsupported(_) => {
-                        (c.health_unsupported, cx.theme().muted_foreground)
-                    }
-                };
-                h_flex()
-                    .min_w_0()
-                    .justify_between()
-                    .gap_3()
-                    .py_0p5()
-                    .child(div().truncate().text_sm().child(status.collector.clone()))
-                    .child(div().text_xs().text_color(color).child(label))
-                    .when_some(status.detail(), |element, detail| {
-                        element.child(
-                            div()
-                                .max_w(px(320.0))
-                                .truncate()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(detail),
-                        )
-                    })
+            .map(|row| {
+                vec![
+                    TableCell::new(row.group.display_name.clone()),
+                    crate::tables::cpu_aggregate(&row.cpu_utilization, c, processors),
+                    crate::tables::aggregate(&row.memory_resident, c, bytes),
+                ]
             })
-            .collect::<Vec<_>>();
-
-        self.surface(
-            v_flex()
-                .min_w_0()
-                .gap_2()
-                .child(
-                    h_flex()
-                        .min_w_0()
-                        .justify_between()
-                        .child(div().font_semibold().child(c.observation_health))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(c.collector),
-                        ),
+            .collect();
+        let using_most = card(p)
+            .child(label(c.using_the_most, BODY_STRONG, p.text_primary))
+            .child(
+                DetailsTable::new(
+                    "top-apps",
+                    vec![
+                        Column::new(c.column_name).sortable(false),
+                        Column::new(c.column_cpu)
+                            .width(px(96.0))
+                            .align_end()
+                            .sortable(false),
+                        Column::new(c.column_memory)
+                            .width(px(120.0))
+                            .align_end()
+                            .sortable(false),
+                    ],
+                    rows,
                 )
-                .children(rows)
-                .child(
-                    h_flex()
-                        .min_w_0()
-                        .gap_4()
-                        .flex_wrap()
-                        .pt_2()
-                        .child(
-                            div()
-                                .text_xs()
-                                .child(format!("{}: {}", c.coverage_value, coverage.value)),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .child(format!("{}: {}", c.coverage_stale, coverage.stale)),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .child(format!("{}: {}", c.coverage_unknown, coverage.unknown)),
-                        )
-                        .child(div().text_xs().child(format!(
-                            "{}: {}",
-                            c.coverage_unsupported, coverage.unsupported
-                        )))
-                        .child(div().text_xs().child(format!(
-                            "{}: {}",
-                            c.coverage_denied, coverage.permission_denied
-                        ))),
-                ),
+                .presorted()
+                .empty(c.waiting_for_first_reading),
+            );
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::LG)
+            .child(sentence)
+            .child(grid(card_columns(available), cards))
+            .child(using_most)
+            .into_any_element()
+    }
+
+    /// A card on the Overview: its name and status, the figure, a sparkline,
+    /// and one line of detail. The whole card opens the resource's page.
+    #[allow(clippy::too_many_arguments)]
+    fn resource_card(
+        &self,
+        id: &'static str,
+        title: &'static str,
+        icon: IconName,
+        status: Option<(String, Rgba)>,
+        figure: Option<String>,
+        chart: Option<(Vec<ChartSeries>, f64)>,
+        detail: String,
+        resource: Resource,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        let rest = card_fill(true, Interaction::Rest, p);
+        let hover = card_fill(true, Interaction::PointerOver, p);
+        let pressed = card_fill(true, Interaction::Pressed, p);
+        let open = Self::act(cx, move |this, _, cx| {
+            this.show_resource(resource.clone(), cx)
+        });
+        let chart = match chart {
+            Some((series, maximum)) => LineChart::sparkline(id, series, CAPACITY, maximum)
+                .height(px(48.0))
+                .into_any_element(),
+            None => div()
+                .h(px(48.0))
+                .flex()
+                .items_center()
+                .child(label(c.no_chart, CAPTION, p.text_secondary))
+                .into_any_element(),
+        };
+        div()
+            .id(id)
+            .flex()
+            .flex_col()
+            .gap(spacing::SM)
+            .p(spacing::LG)
+            .min_w_0()
+            .h_full()
+            .rounded(radius::SM)
+            .border_1()
+            .border_color(p.card_stroke)
+            .bg(rest)
+            .hover(move |s| s.bg(hover))
+            .active(move |s| s.bg(pressed))
+            .cursor_pointer()
+            .on_click(move |_, window, cx| open(window, cx))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(spacing::SM)
+                    .min_w_0()
+                    .child(Icon::new(icon).size(px(16.0)).text_color(p.text_secondary))
+                    .child(label(title, BODY_STRONG, p.text_primary).flex_1().min_w_0())
+                    .children(status.map(|(word, color)| {
+                        text(div(), CAPTION)
+                            .flex_none()
+                            .text_color(color)
+                            .child(word)
+                    })),
+            )
+            .child(match figure {
+                Some(figure) => label(figure, SUBTITLE, p.text_primary),
+                None => label(c.not_available, SUBTITLE, p.text_secondary),
+            })
+            .child(chart)
+            .child(label(detail, CAPTION, p.text_secondary).truncate())
+            .into_any_element()
+    }
+
+    fn cpu_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        let cpu = &self.readings.cpu;
+        let verdict = &self.overview.cpu.verdict;
+        let detail = match (cpu.speed_hz, cpu.logical) {
+            (Some(speed), Some(logical)) => format!(
+                "{} · {}",
+                hertz(speed),
+                i18n::logical_processors(logical, self.locale)
+            ),
+            (Some(speed), None) => hertz(speed),
+            (None, Some(logical)) => i18n::logical_processors(logical, self.locale),
+            (None, None) => c.not_available.to_string(),
+        };
+        self.resource_card(
+            "card-cpu",
+            c.cpu,
+            IconName::Cpu,
+            Some((
+                i18n::verdict_word(verdict, self.locale).to_string(),
+                verdict_color(verdict, p),
+            )),
+            cpu.utilization.map(share),
+            self.readings.has_cpu.then(|| {
+                (
+                    vec![ChartSeries::new(
+                        self.live.values(&SeriesKey::Cpu),
+                        ChartHue::Blue,
+                    )],
+                    100.0,
+                )
+            }),
+            detail,
+            Resource::Cpu,
             cx,
         )
     }
 
-    fn apps_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn memory_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
         let c = copy(self.locale);
-        v_flex()
-            .w_full()
-            .h_full()
-            .min_w_0()
-            .gap_3()
-            .child(self.page_heading(c.apps, c.apps_subtitle))
-            .child(
-                div().flex_1().min_h(px(320.0)).child(
-                    DataTable::new(&self.apps)
-                        .bordered(true)
-                        .stripe(true)
-                        .small(),
-                ),
-            )
-            .child(self.process_detail(cx))
-            .into_any_element()
+        let memory = &self.readings.memory;
+        let verdict = &self.overview.memory.resource.verdict;
+        let detail = match (memory.in_use(), memory.total) {
+            (Some(used), Some(total)) => {
+                i18n::of_total(&bytes(used as f64), &bytes(total as f64), self.locale)
+            }
+            _ => c.not_available.to_string(),
+        };
+        self.resource_card(
+            "card-memory",
+            c.memory,
+            IconName::MemoryStick,
+            Some((
+                i18n::verdict_word(verdict, self.locale).to_string(),
+                verdict_color(verdict, p),
+            )),
+            memory.in_use_fraction().map(share),
+            self.readings.has_memory.then(|| {
+                (
+                    vec![ChartSeries::new(
+                        self.live.values(&SeriesKey::Memory),
+                        ChartHue::Purple,
+                    )],
+                    memory.total.unwrap_or(1) as f64,
+                )
+            }),
+            detail,
+            Resource::Memory,
+            cx,
+        )
     }
+
+    fn disk_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        let verdict = &self.overview.io.verdict;
+        let (read, write) = self.readings.disk_total();
+        let detail = i18n::read_write(read.map(rate), write.map(rate), self.locale);
+        let first = self.readings.disks.first().map(|disk| disk.name.clone());
+        let chart = first.clone().map(|name| {
+            (
+                vec![ChartSeries::new(
+                    self.live.values(&SeriesKey::DiskActive(name)),
+                    ChartHue::Green,
+                )],
+                100.0,
+            )
+        });
+        self.resource_card(
+            "card-disk",
+            c.disk,
+            IconName::HardDrive,
+            Some((
+                i18n::verdict_word(verdict, self.locale).to_string(),
+                verdict_color(verdict, p),
+            )),
+            self.readings
+                .busiest_disk_active()
+                .map(|active| i18n::active_share(&share(active), self.locale)),
+            chart,
+            detail,
+            first.map(Resource::Disk).unwrap_or(Resource::Cpu),
+            cx,
+        )
+    }
+
+    fn network_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale);
+        let (receive, send) = self.readings.network_total();
+        let adapter = self
+            .readings
+            .adapters
+            .iter()
+            .find(|adapter| adapter.connected == Some(true))
+            .or(self.readings.adapters.first());
+        let chart = adapter.map(|adapter| {
+            let series = vec![
+                ChartSeries::new(
+                    self.live.values(&SeriesKey::Receive(adapter.name.clone())),
+                    ChartHue::Orange,
+                ),
+                ChartSeries::new(
+                    self.live.values(&SeriesKey::Send(adapter.name.clone())),
+                    ChartHue::Orange,
+                ),
+            ];
+            let top = byte_axis(peak(&series).unwrap_or(0.0), 1024.0);
+            (series, top)
+        });
+        let figure = match (receive, send) {
+            (Some(r), Some(s)) => Some(rate(r + s)),
+            (one, other) => one.or(other).map(rate),
+        };
+        let detail = i18n::receive_send(receive.map(rate), send.map(rate), self.locale);
+        let status = adapter.map(|adapter| {
+            let p = palette(cx);
+            (
+                i18n::adapter_status(adapter.connected, self.locale).to_string(),
+                p.text_secondary,
+            )
+        });
+        self.resource_card(
+            "card-network",
+            c.network,
+            IconName::Network,
+            status,
+            figure,
+            chart,
+            detail,
+            adapter
+                .map(|adapter| Resource::Adapter(adapter.name.clone()))
+                .unwrap_or(Resource::Cpu),
+            cx,
+        )
+    }
+
+    fn gpu_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale);
+        // The card and its driver; the full identity is on the GPU page.
+        let detail = i18n::graphics_cards(self.inventory.as_ref(), self.locale)
+            .first()
+            .map(|(card, _)| {
+                match i18n::inventory_value(
+                    self.inventory.as_ref(),
+                    &format!("graphics.{card}.driver"),
+                ) {
+                    Some(driver) => format!("{card} · {driver}"),
+                    None => card.clone(),
+                }
+            })
+            .unwrap_or_else(|| c.gpu_not_found.to_string());
+        self.resource_card(
+            "card-gpu",
+            c.gpu,
+            IconName::Frame,
+            None,
+            None,
+            None,
+            detail,
+            Resource::Gpu,
+            cx,
+        )
+    }
+
+    fn battery_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale);
+        self.resource_card(
+            "card-battery",
+            c.battery,
+            IconName::Battery,
+            None,
+            None,
+            None,
+            c.battery_not_read.to_string(),
+            Resource::Battery,
+            cx,
+        )
+    }
+
+    // Processes.
 
     fn processes_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale);
-        let tree = self.tree_mode(cx);
-        let show_commands = self.include_command_lines;
-        v_flex()
-            .w_full()
-            .h_full()
-            .min_w_0()
-            .gap_3()
-            .child(self.page_heading(c.processes, c.processes_subtitle))
-            .child(
-                h_flex()
-                    .min_w_0()
-                    .gap_4()
-                    .flex_wrap()
-                    .child(
-                        Switch::new("tree-mode")
-                            .checked(tree)
-                            .label(c.tree_view)
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_tree_mode(cx))),
-                    )
-                    .child(
-                        Switch::new("show-command-lines")
-                            .checked(show_commands)
-                            .label(c.show_command_lines)
-                            .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                                this.set_command_lines(*checked, cx)
-                            })),
-                    ),
-            )
-            .child(
-                div().flex_1().min_h(px(320.0)).child(
-                    DataTable::new(&self.processes)
-                        .bordered(true)
-                        .stripe(true)
-                        .small(),
-                ),
-            )
-            .child(self.process_detail(cx))
-            .into_any_element()
-    }
-
-    /// The detail panel: what is known about the selected process, and the
-    /// actions that are available or the reason they are not.
-    fn process_detail(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale);
-        let Some(process) = self.selected_process(cx) else {
-            return self.surface(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(c.select_a_process),
-                cx,
-            );
+        let (column, ascending) = self.app_sort;
+        let lines = app_lines(&self.apps, column, ascending);
+        let rows: Vec<Vec<TableCell>> = lines
+            .iter()
+            .map(|line| app_cells(&self.apps, *line, self.locale, self.processors()))
+            .collect();
+        let selected = lines
+            .iter()
+            .position(|line| match (line, &self.app_selection) {
+                (AppLine::Group { services, index }, Some(AppSelection::Group(key))) => {
+                    app_row(&self.apps, *services, *index).is_some_and(|row| &row.group.key == key)
+                }
+                (AppLine::Member { process }, Some(AppSelection::Process(pid))) => self
+                    .apps
+                    .process(*process)
+                    .is_some_and(|member| member.pid == *pid),
+                _ => false,
+            });
+        let sort_index = AppColumn::ALL
+            .iter()
+            .position(|candidate| *candidate == column);
+        let columns = vec![
+            Column::new(c.column_name),
+            Column::new(c.column_cpu).width(px(96.0)).align_end(),
+            Column::new(c.column_memory).width(px(120.0)).align_end(),
+            Column::new(c.column_disk).width(px(120.0)).align_end(),
+        ];
+        let selection_of = {
+            let lines = lines.clone();
+            move |this: &MonitorApp, index: usize| -> Option<AppSelection> {
+                match lines.get(index)? {
+                    AppLine::Group { services, index } => app_row(&this.apps, *services, *index)
+                        .map(|row| AppSelection::Group(row.group.key.clone())),
+                    AppLine::Member { process } => this
+                        .apps
+                        .process(*process)
+                        .map(|member| AppSelection::Process(member.pid)),
+                    AppLine::Section { .. } => None,
+                }
+            }
         };
-
-        if let Some(pending) = self.pending.clone() {
-            let question = match pending.action {
-                ProcessAction::ForceStop => c.confirm_force_stop,
-                _ => c.confirm_terminate,
-            };
-            return self.surface(
-                v_flex()
-                    .min_w_0()
-                    .gap_3()
-                    .child(
-                        div()
-                            .font_semibold()
-                            .child(format!("{} · {}", pending.name, pending.pid)),
-                    )
-                    .child(div().text_sm().child(question))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .flex_wrap()
-                            .child(
-                                Button::new("confirm-action")
-                                    .danger()
-                                    .label(c.confirm)
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.confirm_pending(cx)),
-                                    ),
-                            )
-                            .child(
-                                Button::new("cancel-action").label(c.cancel).on_click(
-                                    cx.listener(|this, _, _, cx| this.cancel_pending(cx)),
-                                ),
-                            ),
-                    ),
-                cx,
-            );
-        }
-
-        let nice_step = process
-            .nice
-            .copied()
-            .and_then(|nice| i32::try_from(nice).ok())
-            .map(|nice| (nice + 5).min(monitor_core::NICE_MAXIMUM))
-            .unwrap_or(monitor_core::NICE_MAXIMUM);
-        let paused = process.is_paused();
-        let offered: Vec<(&'static str, ProcessAction)> = vec![
-            (c.terminate, ProcessAction::Terminate),
-            (c.force_stop, ProcessAction::ForceStop),
-            if paused {
-                (c.resume_process, ProcessAction::Resume)
+        let (select, invoke, menu) = (selection_of.clone(), selection_of.clone(), selection_of);
+        DetailsTable::new("processes", columns, rows)
+            .presorted()
+            .fill()
+            .sort(sort_index.map(|column| SortState { column, ascending }))
+            .selected(selected)
+            .empty(if self.rounds == 0 {
+                c.waiting_for_first_reading
             } else {
-                (c.pause_process, ProcessAction::Pause)
-            },
-            (c.lower_priority, ProcessAction::SetNice(nice_step)),
-        ];
-
-        let buttons = offered
-            .into_iter()
-            .map(|(label, action)| {
-                let availability = self.availability(&process, action);
-                let refusal = availability
-                    .refusal()
-                    .map(|refusal| self.refusal_label(refusal, c).to_string());
-                let target = process.clone();
-                Button::new(SharedString::from(format!(
-                    "action-{}-{}",
-                    action.key(),
-                    process.pid
-                )))
-                .label(label)
-                .when(action.is_destructive(), |button| button.danger())
-                .disabled(refusal.is_some())
-                .when_some(refusal, |button, reason| {
-                    button.tooltip(SharedString::from(reason))
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.request_action(&target, action, cx);
-                }))
+                c.nothing_matches
             })
-            .collect::<Vec<_>>();
-
-        let report = self
-            .last_action
-            .clone()
-            .map(|report| self.report_line(&report, c));
-        let identity = process.display_name();
-        let details = self.diagnostic_lines(&process, c, cx);
-
-        self.surface(
-            v_flex()
-                .min_w_0()
-                .gap_3()
-                .child(
-                    h_flex()
-                        .min_w_0()
-                        .justify_between()
-                        .gap_3()
-                        .flex_wrap()
-                        .child(
-                            div()
-                                .font_semibold()
-                                .child(format!("{identity} · {}", process.pid)),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(
-                                    self.grouping_summary(process.pid, c, cx)
-                                        .unwrap_or_default(),
-                                ),
-                        ),
-                )
-                .child(h_flex().min_w_0().gap_4().flex_wrap().children(details))
-                .child(
-                    v_flex()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(c.actions),
-                        )
-                        .child(h_flex().gap_2().flex_wrap().children(buttons)),
-                )
-                .when_some(report, |element, line| {
-                    element.child(div().text_sm().child(line))
-                }),
-            cx,
-        )
-    }
-
-    fn diagnostic_lines(
-        &self,
-        process: &ProcessFacts,
-        c: &'static Copy,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        vec![
-            self.stat(
-                c.column_user,
-                cell_element(cell(&process.user, |v| v.clone()), c, cx),
-                cx,
-            ),
-            self.stat(
-                c.column_state,
-                cell_element(cell(&process.state, |v| v.clone()), c, cx),
-                cx,
-            ),
-            self.stat(
-                c.column_cpu_time,
-                cell_element(cell(&process.cpu_time_total, |v| duration(*v)), c, cx),
-                cx,
-            ),
-            self.stat(
-                c.column_memory,
-                cell_element(cell(&process.memory_resident, |v| bytes(*v as f64)), c, cx),
-                cx,
-            ),
-            self.stat(
-                c.column_descriptors,
-                cell_element(cell(&process.file_descriptors, |v| count(*v)), c, cx),
-                cx,
-            ),
-            self.stat(
-                c.column_cgroup,
-                cell_element(cell(&process.cgroup, |v| v.clone()), c, cx),
-                cx,
-            ),
-        ]
-    }
-
-    fn grouping_summary(&self, pid: u32, c: &'static Copy, cx: &App) -> Option<String> {
-        let delegate = self.apps.read(cx).delegate();
-        let group = delegate.model.grouping().group_of(pid)?;
-        let member = group.members.iter().find(|member| member.pid == pid)?;
-        Some(format!(
-            "{}: {} · {}",
-            c.grouped_because,
-            evidence_label(&member.evidence, c),
-            confidence_label(group.confidence(), c)
-        ))
-    }
-
-    fn refusal_label(&self, refusal: &ActionRefusal, c: &'static Copy) -> &'static str {
-        match refusal {
-            ActionRefusal::NotOwnedByCurrentUser { .. } => c.refusal_other_user,
-            ActionRefusal::OwnershipUnknown => c.refusal_ownership_unknown,
-            ActionRefusal::ProtectedProcess { .. } => c.refusal_protected,
-            ActionRefusal::RaisingPriorityNeedsPrivilege { .. } => c.refusal_raise_priority,
-            ActionRefusal::NiceOutOfRange { .. } => c.refusal_nice_range,
-            ActionRefusal::CurrentPriorityUnknown => c.refusal_priority_unknown,
-        }
-    }
-
-    /// One line saying what the last action actually did, including when it
-    /// failed. A signal that was accepted is not reported as an exit.
-    pub(crate) fn report_line(&self, report: &ActionReport, c: &'static Copy) -> String {
-        match report {
-            ActionReport::Succeeded { pid, outcome } => match outcome {
-                monitor_core::ActionOutcome::SignalAccepted { .. } => {
-                    format!("{pid}: {}", c.outcome_signal_sent)
+            .on_sort(Self::act_with(cx, |this, sort: SortState, _, cx| {
+                if let Some(column) = AppColumn::ALL.get(sort.column) {
+                    this.sort_apps(*column, cx);
                 }
-                monitor_core::ActionOutcome::PriorityChanged { to, .. } => {
-                    format!("{pid}: {} ({to})", c.outcome_priority_changed)
+            }))
+            .on_select(Self::act_with(cx, move |this, index: usize, _, _| {
+                if let Some(selection) = select(this, index) {
+                    this.app_selection = Some(selection);
                 }
-            },
-            ActionReport::Refused { pid, refusal } => {
-                format!("{pid}: {}", self.refusal_label(refusal, c))
-            }
-            ActionReport::Failed { pid, error } => {
-                let reason = match error {
-                    monitor_core::ActionError::ProcessDisappeared { .. } => c.failure_disappeared,
-                    monitor_core::ActionError::PermissionDenied { .. } => c.failure_denied,
-                    monitor_core::ActionError::InvalidRequest { .. } => c.failure_invalid,
-                    monitor_core::ActionError::Unsupported { .. } => c.failure_unsupported,
-                    monitor_core::ActionError::Failed { .. } => c.failure_other,
-                };
-                format!("{pid}: {reason}")
-            }
-        }
-    }
-
-    /// A page for hardware the collectors in this build cannot see.
-    ///
-    /// It exists rather than being hidden, and it says what is missing. A page
-    /// of zeros would be a lie about the machine.
-    fn unsupported_page(
-        &self,
-        title: &'static str,
-        explanation: &'static str,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let c = copy(self.locale);
-        v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_4()
-            .child(self.page_heading(title, c.unsupported_page_title))
-            .child(
-                self.surface(
-                    h_flex()
-                        .min_w_0()
-                        .gap_3()
-                        .items_start()
-                        .child(Icon::new(IconName::TriangleAlert))
-                        .child(div().min_w_0().text_sm().child(explanation)),
-                    cx,
-                ),
-            )
+            }))
+            .on_invoke(Self::act_with(
+                cx,
+                move |this, index: usize, _, cx| match invoke(this, index) {
+                    Some(AppSelection::Group(key)) => this.toggle_expanded(&key),
+                    Some(AppSelection::Process(pid)) => this.show_properties(pid, cx),
+                    None => {}
+                },
+            ))
+            .on_context_menu(Self::act_point(
+                cx,
+                move |this, index, position, window, cx| {
+                    if let Some(selection) = menu(this, index) {
+                        this.app_selection = Some(selection.clone());
+                        this.open_menu(MenuTarget::App(selection), position, window, cx);
+                    }
+                },
+            ))
             .into_any_element()
     }
 
-    /// The metric set of one collector, if the round carried it.
-    fn system_metrics(&self, collector: &str) -> Option<&CollectorReport> {
-        self.reports
+    // Details.
+
+    fn details_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale);
+        let columns_shown = detail_columns(self.include_command_lines);
+        let (sorted, direction) = self.processes.sort();
+        let tree = self.processes.tree_mode();
+        let visible = self.processes.visible_rows().to_vec();
+        let rows: Vec<Vec<TableCell>> = visible
             .iter()
-            .find(|report| report.collector.as_str() == collector)
-    }
-
-    fn metric_row(&self, label: String, rendered: Cell, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale);
-        h_flex()
-            .min_w_0()
-            .justify_between()
-            .gap_3()
-            .py_0p5()
-            .child(
-                div()
-                    .truncate()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(label),
-            )
-            .child(cell_element(rendered, c, cx))
-            .into_any_element()
-    }
-
-    fn cpu_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale);
-        let Some(report) = self.system_metrics("linux.cpu") else {
-            return self.unsupported_page(c.cpu, c.verdict_unobserved, cx);
-        };
-        let metrics = report.metrics.clone();
-        let cores = report
-            .entities_of(EntityKind::LogicalCpu)
-            .map(|entity| {
-                (
-                    entity.id.key.clone(),
-                    field::number(&entity.metrics, &metric("cpu.utilization.busy")),
-                    field::number(&entity.metrics, &metric("cpu.frequency.current")),
+            .filter_map(|row| {
+                let process = self.processes.row(row.index)?;
+                Some(
+                    columns_shown
+                        .iter()
+                        .map(|column| {
+                            let cell =
+                                process_cell(process, *column, self.locale, self.processors());
+                            if *column == ProcessColumn::Name && tree {
+                                let cell = cell.indent(row.depth.min(8) as u8);
+                                if row.has_children {
+                                    cell.expander(true)
+                                } else {
+                                    cell
+                                }
+                            } else {
+                                cell
+                            }
+                        })
+                        .collect(),
                 )
             })
-            .collect::<Vec<_>>();
-
-        let rows = [
-            ("cpu.utilization.busy", c.utilization),
-            ("cpu.utilization.user", c.column_cpu),
-            ("cpu.utilization.iowait", c.column_state),
-            ("cpu.load.average.1m", c.load_average),
-            ("cpu.logical.count", c.logical_cpus),
-            ("cpu.tasks.runnable", c.running_processes),
-        ];
-
-        v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_4()
-            .child(self.page_heading(c.cpu, c.overview_subtitle))
-            .child(self.resource_card(c.cpu, &self.overview.cpu, cx))
-            .child(
-                self.surface(
-                    v_flex().min_w_0().gap_1().children(
-                        rows.into_iter()
-                            .map(|(id, label)| {
-                                let field = field::number(&metrics, &metric(id));
-                                self.metric_row(
-                                    format!("{label} · {id}"),
-                                    cell(&field, |v| format!("{v:.3}")),
-                                    cx,
-                                )
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-                    cx,
-                ),
-            )
-            .child(
-                self.surface(
-                    v_flex().min_w_0().gap_1().children(
-                        cores
-                            .into_iter()
-                            .map(|(key, busy, frequency)| {
-                                h_flex()
-                                    .min_w_0()
-                                    .gap_3()
-                                    .justify_between()
-                                    .child(div().text_sm().child(format!("CPU {key}")))
-                                    .child(cell_element(cell(&busy, |v| ratio_percent(*v)), c, cx))
-                                    .child(cell_element(
-                                        cell(&frequency, |v| format!("{:.2} GHz", v / 1e9)),
-                                        c,
-                                        cx,
-                                    ))
-                                    .into_any_element()
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-                    cx,
-                ),
-            )
-            .into_any_element()
-    }
-
-    fn memory_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale);
-        let memory = self.overview.memory.clone();
-        v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_4()
-            .child(self.page_heading(c.memory, c.free_is_not_available))
-            .child(self.resource_card(c.memory, &self.overview.memory.resource, cx))
-            .child(
-                self.surface(
-                    v_flex()
-                        .min_w_0()
-                        .gap_1()
-                        .child(self.byte_row(c.memory, &memory.total, cx))
-                        .child(self.byte_row(c.available_memory, &memory.available, cx))
-                        .child(self.byte_row(c.cached, &memory.cached, cx))
-                        .child(self.byte_row(c.swap_used, &memory.swap_used, cx))
-                        .child(self.metric_row(
-                            c.major_faults.to_string(),
-                            cell(&memory.major_fault_rate, |v| format!("{v:.1}/s")),
-                            cx,
-                        )),
-                    cx,
-                ),
-            )
-            .into_any_element()
-    }
-
-    fn byte_row(
-        &self,
-        label: &'static str,
-        field: &Field<u64>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        self.metric_row(label.to_string(), cell(field, |v| bytes(*v as f64)), cx)
-    }
-
-    fn device_page(
-        &mut self,
-        title: &'static str,
-        collector: &str,
-        kind: EntityKind,
-        columns: [(&'static str, &'static str); 2],
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let c = copy(self.locale);
-        let Some(report) = self.system_metrics(collector) else {
-            return self.unsupported_page(title, c.verdict_unobserved, cx);
-        };
-        let devices = report
-            .entities_of(kind)
-            .map(|entity| {
-                (
-                    entity.id.key.clone(),
-                    field::number(&entity.metrics, &metric(columns[0].0)),
-                    field::number(&entity.metrics, &metric(columns[1].0)),
-                )
+            .collect();
+        let pids: Vec<u32> = visible
+            .iter()
+            .filter_map(|row| self.processes.row(row.index).map(|process| process.pid))
+            .collect();
+        let selected = self
+            .selected_pid
+            .and_then(|pid| pids.iter().position(|candidate| *candidate == pid));
+        let columns: Vec<Column> = columns_shown
+            .iter()
+            .map(|column| {
+                let mut definition = Column::new(crate::tables::column_title(*column, c))
+                    .sortable(!tree || *column != ProcessColumn::Name);
+                if let Some(width) = detail_width(*column) {
+                    definition = definition.width(px(width));
+                }
+                if numeric(*column) {
+                    definition = definition.align_end();
+                }
+                if *column == ProcessColumn::State {
+                    definition = definition.tooltip(c.state_column_tooltip);
+                }
+                if matches!(*column, ProcessColumn::ReadRate | ProcessColumn::WriteRate) {
+                    definition = definition.tooltip(c.disk_column_tooltip);
+                }
+                definition
             })
-            .collect::<Vec<_>>();
+            .collect();
+        let sort = columns_shown
+            .iter()
+            .position(|column| *column == sorted)
+            .map(|column| SortState {
+                column,
+                ascending: direction == SortDirection::Ascending,
+            });
+        let (select_pids, invoke_pids, menu_pids) = (pids.clone(), pids.clone(), pids);
+        let sort_columns = columns_shown.clone();
+        DetailsTable::new("details", columns, rows)
+            .presorted()
+            .fill()
+            .sort(sort)
+            .selected(selected)
+            .empty(if self.rounds == 0 {
+                c.waiting_for_first_reading
+            } else {
+                c.nothing_matches
+            })
+            .on_sort(Self::act_with(cx, move |this, sort: SortState, _, cx| {
+                if let Some(column) = sort_columns.get(sort.column) {
+                    this.sort_processes(*column, cx);
+                }
+            }))
+            .on_select(Self::act_with(cx, move |this, index: usize, _, _| {
+                this.selected_pid = select_pids.get(index).copied();
+            }))
+            .on_invoke(Self::act_with(cx, move |this, index: usize, _, cx| {
+                if let Some(pid) = invoke_pids.get(index).copied() {
+                    this.show_properties(pid, cx);
+                }
+            }))
+            .on_context_menu(Self::act_point(
+                cx,
+                move |this, index, position, window, cx| {
+                    if let Some(pid) = menu_pids.get(index).copied() {
+                        this.selected_pid = Some(pid);
+                        this.open_menu(MenuTarget::Process(pid), position, window, cx);
+                    }
+                },
+            ))
+            .into_any_element()
+    }
 
-        let body = if devices.is_empty() {
-            v_flex().min_w_0().child(
+    // Performance.
+
+    fn performance_page(&mut self, available: f32, cx: &mut Context<Self>) -> AnyElement {
+        let list_width = if available < 760.0 { 200.0 } else { 240.0 };
+        let detail = match self.resource.clone() {
+            Resource::Cpu => self.cpu_detail(available - list_width, cx),
+            Resource::Memory => self.memory_detail(cx),
+            Resource::Disk(name) => self.disk_detail(&name, cx),
+            Resource::Adapter(name) => self.adapter_detail(&name, cx),
+            Resource::Gpu => self.gpu_detail(cx),
+            Resource::Temperatures => self.temperature_detail(cx),
+            Resource::Battery => self.battery_detail(cx),
+        };
+        div()
+            .flex()
+            .items_start()
+            .gap(spacing::LG)
+            .min_w_0()
+            .child(
                 div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(c.no_devices),
+                    .w(px(list_width))
+                    .flex_none()
+                    .child(self.resource_list(cx)),
             )
-        } else {
-            v_flex().min_w_0().gap_2().children(
-                devices
-                    .into_iter()
-                    .map(|(key, read, write)| {
-                        h_flex()
-                            .min_w_0()
-                            .gap_3()
-                            .justify_between()
-                            .flex_wrap()
-                            .child(div().text_sm().font_semibold().truncate().child(key))
-                            .child(self.stat(
-                                columns[0].1,
-                                cell_element(cell(&read, |v| bytes_per_second(*v)), c, cx),
-                                cx,
-                            ))
-                            .child(self.stat(
-                                columns[1].1,
-                                cell_element(cell(&write, |v| bytes_per_second(*v)), c, cx),
-                                cx,
-                            ))
-                            .into_any_element()
+            .child(div().flex_1().min_w_0().child(detail))
+            .into_any_element()
+    }
+
+    /// The resources down the left of the Performance page, each with a
+    /// small chart, as Task Manager lists them.
+    fn resource_list(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        let r = &self.readings;
+        // The resource, its name, its figure, and its chart with the chart's top.
+        type Tile = (Resource, String, String, Option<(Vec<ChartSeries>, f64)>);
+        let mut tiles: Vec<Tile> = vec![
+            (
+                Resource::Cpu,
+                c.cpu.to_string(),
+                r.cpu
+                    .utilization
+                    .map(|u| match r.cpu.speed_hz {
+                        Some(speed) => format!("{} {}", share(u), hertz(speed)),
+                        None => share(u),
                     })
-                    .collect::<Vec<_>>(),
+                    .unwrap_or_else(|| c.not_available.to_string()),
+                Some((
+                    vec![ChartSeries::new(
+                        self.live.values(&SeriesKey::Cpu),
+                        ChartHue::Blue,
+                    )],
+                    100.0,
+                )),
+            ),
+            (
+                Resource::Memory,
+                c.memory.to_string(),
+                match (
+                    r.memory.in_use(),
+                    r.memory.total,
+                    r.memory.in_use_fraction(),
+                ) {
+                    (Some(used), Some(total), Some(fraction)) => format!(
+                        "{}/{} ({})",
+                        bytes(used as f64),
+                        bytes(total as f64),
+                        share(fraction)
+                    ),
+                    _ => c.not_available.to_string(),
+                },
+                Some((
+                    vec![ChartSeries::new(
+                        self.live.values(&SeriesKey::Memory),
+                        ChartHue::Purple,
+                    )],
+                    r.memory.total.unwrap_or(1) as f64,
+                )),
+            ),
+        ];
+        for disk in &r.disks {
+            tiles.push((
+                Resource::Disk(disk.name.clone()),
+                i18n::disk_title(&disk.name, disk.rotational, self.locale),
+                disk.active
+                    .map(share)
+                    .unwrap_or_else(|| c.not_available.to_string()),
+                Some((
+                    vec![ChartSeries::new(
+                        self.live.values(&SeriesKey::DiskActive(disk.name.clone())),
+                        ChartHue::Green,
+                    )],
+                    100.0,
+                )),
+            ));
+        }
+        for adapter in &r.adapters {
+            let series = vec![
+                ChartSeries::new(
+                    self.live.values(&SeriesKey::Receive(adapter.name.clone())),
+                    ChartHue::Orange,
+                ),
+                ChartSeries::new(
+                    self.live.values(&SeriesKey::Send(adapter.name.clone())),
+                    ChartHue::Orange,
+                ),
+            ];
+            let top = byte_axis(peak(&series).unwrap_or(0.0), 1024.0);
+            tiles.push((
+                Resource::Adapter(adapter.name.clone()),
+                i18n::adapter_title(adapter.kind, &adapter.name, self.locale),
+                if adapter.connected == Some(false) {
+                    i18n::adapter_status(Some(false), self.locale).to_string()
+                } else {
+                    i18n::receive_send_short(
+                        adapter.receive_rate.map(rate),
+                        adapter.send_rate.map(rate),
+                        self.locale,
+                    )
+                },
+                Some((series, top)),
+            ));
+        }
+        tiles.push((
+            Resource::Temperatures,
+            c.temperatures.to_string(),
+            r.cpu
+                .temperature_celsius
+                .map(|t| format!("{t:.0} °C"))
+                .unwrap_or_else(|| c.not_available.to_string()),
+            r.cpu.temperature_celsius.is_some().then(|| {
+                (
+                    vec![ChartSeries::new(
+                        self.live.values(&SeriesKey::CpuTemperature),
+                        ChartHue::Teal,
+                    )],
+                    100.0,
+                )
+            }),
+        ));
+        tiles.push((
+            Resource::Gpu,
+            c.gpu.to_string(),
+            c.not_read.to_string(),
+            None,
+        ));
+        tiles.push((
+            Resource::Battery,
+            c.battery.to_string(),
+            c.not_read.to_string(),
+            None,
+        ));
+
+        let mut list = div().flex().flex_col().gap(px(2.0));
+        for (index, (resource, title, value, chart)) in tiles.into_iter().enumerate() {
+            let selected = resource == self.resource;
+            let fill = better_ui::fluent::list::row_fill(selected, Interaction::Rest, p);
+            let hover = better_ui::fluent::list::row_fill(selected, Interaction::PointerOver, p);
+            let pressed = better_ui::fluent::list::row_fill(selected, Interaction::Pressed, p);
+            let target = resource.clone();
+            let thumbnail = match chart {
+                Some((series, top)) => div()
+                    .w(px(64.0))
+                    .h(px(40.0))
+                    .flex_none()
+                    .rounded(radius::SM)
+                    .border_1()
+                    .border_color(p.card_stroke)
+                    .child(
+                        LineChart::sparkline(
+                            ElementId::named_usize("tile-chart", index),
+                            series,
+                            CAPACITY,
+                            top,
+                        )
+                        .height(px(38.0)),
+                    ),
+                None => div()
+                    .w(px(64.0))
+                    .h(px(40.0))
+                    .flex_none()
+                    .rounded(radius::SM)
+                    .border_1()
+                    .border_color(p.card_stroke),
+            };
+            let mut tile = div()
+                .id(ElementId::named_usize("resource-tile", index))
+                .relative()
+                .flex()
+                .items_center()
+                .gap(spacing::MD)
+                .px(spacing::MD)
+                .py(spacing::SM)
+                .rounded(radius::SM)
+                .bg(fill)
+                .hover(move |s| s.bg(hover))
+                .active(move |s| s.bg(pressed))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.resource = target.clone();
+                    cx.notify();
+                }))
+                .child(thumbnail)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w_0()
+                        .child(label(title, BODY, p.text_primary).truncate())
+                        .child(label(value, CAPTION, p.text_secondary).truncate()),
+                );
+            if selected {
+                tile = tile.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .flex()
+                        .items_center()
+                        .child(better_ui::fluent::list::selection_bar(p, false)),
+                );
+            }
+            list = list.child(tile);
+        }
+        list.into_any_element()
+    }
+
+    fn detail_header(&self, title: String, subtitle: Option<String>, p: &Palette) -> AnyElement {
+        div()
+            .flex()
+            .items_end()
+            .justify_between()
+            .gap(spacing::MD)
+            .min_w_0()
+            .child(label(title, SUBTITLE, p.text_primary).min_w_0().truncate())
+            .children(
+                subtitle
+                    .map(|subtitle| label(subtitle, BODY, p.text_secondary).min_w_0().truncate()),
             )
+            .into_any_element()
+    }
+
+    fn span_label(&self) -> &'static str {
+        copy(self.locale).sixty_seconds
+    }
+
+    fn cpu_detail(&mut self, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        if !self.readings.has_cpu {
+            return note_card(c.cpu, c.not_reported_yet, cx);
+        }
+        let cpu = self.readings.cpu.clone();
+        let model = i18n::inventory_value(self.inventory.as_ref(), "cpu.model");
+        let chart = if self.per_core && !cpu.cores.is_empty() {
+            let columns = ((width / 150.0).floor() as usize).clamp(2, 8);
+            let charts: Vec<AnyElement> = cpu
+                .cores
+                .iter()
+                .map(|core| {
+                    LineChart::new(
+                        ElementId::named_usize("core-chart", core.index as usize),
+                        vec![ChartSeries::new(
+                            self.live.values(&SeriesKey::Core(core.index)),
+                            ChartHue::Blue,
+                        )],
+                        CAPACITY,
+                        100.0,
+                    )
+                    .height(px(64.0))
+                    .into_any_element()
+                })
+                .collect();
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .child(label(
+                            c.utilization_per_processor,
+                            CAPTION,
+                            p.text_secondary,
+                        ))
+                        .child(label("100%", CAPTION, p.text_secondary)),
+                )
+                .child(grid_tight(columns, charts))
+                .into_any_element()
+        } else {
+            LineChart::new(
+                "cpu-chart",
+                vec![ChartSeries::new(
+                    self.live.values(&SeriesKey::Cpu),
+                    ChartHue::Blue,
+                )],
+                CAPACITY,
+                100.0,
+            )
+            .height(px(240.0))
+            .caption(c.utilization_percent)
+            .maximum_label("100%")
+            .span_label(self.span_label())
+            .minimum_label("0")
+            .into_any_element()
         };
-
-        v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_4()
-            .child(self.page_heading(title, c.overview_subtitle))
-            .child(self.surface(body, cx))
+        let view = SelectorBar::new(
+            "cpu-view",
+            vec![
+                SelectorItem::new(c.overall_utilization),
+                SelectorItem::new(c.logical_processors),
+            ],
+            Some(if self.per_core { 1 } else { 0 }),
+        )
+        .on_select(Self::act_with(cx, |this, index: usize, _, _| {
+            this.per_core = index == 1
+        }));
+        let processes = self.overview.process_count.value().copied();
+        let stats = div()
+            .flex()
+            .flex_wrap()
+            .gap(spacing::XL)
+            .child(stat_or_missing(
+                c.utilization,
+                cpu.utilization.map(share),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.speed,
+                cpu.speed_hz.map(hertz),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.processes_count,
+                processes.map(|n| n.to_string()),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.threads,
+                cpu.threads.map(|n| n.to_string()),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.up_time,
+                cpu.uptime_seconds
+                    .map(|s| i18n::uptime(s as u64, self.locale)),
+                true,
+                c,
+                p,
+            ));
+        let facts = card(p)
+            .gap(px(0.0))
+            .child(crate::shell::property_row(
+                c.maximum_speed,
+                cpu.maximum_hz
+                    .map(hertz)
+                    .unwrap_or_else(|| c.not_available.to_string()),
+                cpu.maximum_hz.is_none(),
+                p,
+            ))
+            .child(crate::shell::property_row(
+                c.logical_processors,
+                cpu.logical
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| c.not_available.to_string()),
+                cpu.logical.is_none(),
+                p,
+            ))
+            .child(crate::shell::property_row(
+                c.waiting_to_run,
+                cpu.load_1m
+                    .map(|l| format!("{l:.2}"))
+                    .unwrap_or_else(|| c.not_available.to_string()),
+                cpu.load_1m.is_none(),
+                p,
+            ))
+            .child(crate::shell::property_row(
+                c.temperature,
+                cpu.temperature_celsius
+                    .map(|t| format!("{t:.0} °C"))
+                    .unwrap_or_else(|| c.not_read.to_string()),
+                cpu.temperature_celsius.is_none(),
+                p,
+            ))
+            .child(div().pt(spacing::SM).child(label(
+                c.waiting_to_run_hint,
+                CAPTION,
+                p.text_secondary,
+            )));
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::LG)
+            .child(self.detail_header(c.cpu.to_string(), model, p))
+            .child(view)
+            .child(card(p).child(chart))
+            .child(stats)
+            .child(facts)
             .into_any_element()
     }
 
-    fn storage_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn memory_detail(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
         let c = copy(self.locale);
-        self.device_page(
-            c.storage,
-            "linux.storage",
-            EntityKind::BlockDevice,
-            [
-                ("storage.read.bytes.rate", c.read_throughput),
-                ("storage.write.bytes.rate", c.write_throughput),
-            ],
-            cx,
+        if !self.readings.has_memory {
+            return note_card(c.memory, c.not_reported_yet, cx);
+        }
+        let m = self.readings.memory.clone();
+        let total = m.total.unwrap_or(0) as f64;
+        let part = |value: Option<u64>| -> f32 {
+            match value {
+                Some(value) if total > 0.0 => (value as f64 / total) as f32,
+                _ => 0.0,
+            }
+        };
+        let in_use = m.in_use();
+        let modified = m.modified;
+        // Changes waiting to be saved are part of the file cache; the bar
+        // shows them once, beside the rest of it.
+        let cached = m.cached.map(|c| c.saturating_sub(m.modified.unwrap_or(0)));
+        let free = m.free;
+        let hue = ChartHue::Purple.color(p.is_dark());
+        let composition = CompositionBar::new(vec![
+            (part(in_use), with_alpha(hue, 0.55)),
+            (part(modified), with_alpha(hue, 0.85)),
+            (part(cached), with_alpha(hue, 0.25)),
+            (part(free), with_alpha(hue, 0.0)),
+        ]);
+        let legend = div()
+            .flex()
+            .flex_wrap()
+            .gap(spacing::LG)
+            .child(legend_item(c.in_use, with_alpha(hue, 0.55), in_use, c, p))
+            .child(legend_item(
+                c.modified,
+                with_alpha(hue, 0.85),
+                modified,
+                c,
+                p,
+            ))
+            .child(legend_item(c.cached, with_alpha(hue, 0.25), cached, c, p))
+            .child(legend_item(c.free, p.card_stroke, free, c, p));
+        let chart = LineChart::new(
+            "memory-chart",
+            vec![ChartSeries::new(
+                self.live.values(&SeriesKey::Memory),
+                ChartHue::Purple,
+            )],
+            CAPACITY,
+            total.max(1.0),
         )
-    }
-
-    fn network_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale);
-        self.device_page(
-            c.network,
-            "linux.network",
-            EntityKind::NetworkInterface,
-            [
-                ("network.rx.bytes.rate", c.received),
-                ("network.tx.bytes.rate", c.sent),
-            ],
-            cx,
-        )
-    }
-
-    fn diagnostics_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale);
-        v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_4()
-            .child(self.page_heading(c.diagnostics, c.coverage_title))
-            .child(self.collector_health_card(cx))
+        .height(px(200.0))
+        .caption(c.memory_usage)
+        .maximum_label(bytes(total))
+        .span_label(self.span_label())
+        .minimum_label("0");
+        let optional = |value: Option<u64>| value.map(|v| bytes(v as f64));
+        let stats = div()
+            .flex()
+            .flex_wrap()
+            .gap(spacing::XL)
+            .child(stat_or_missing(c.in_use, optional(in_use), true, c, p))
+            .child(stat_or_missing(
+                c.available,
+                optional(m.available),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.committed,
+                match (m.committed, m.commit_limit) {
+                    (Some(a), Some(b)) => Some(format!("{}/{}", bytes(a as f64), bytes(b as f64))),
+                    (a, _) => optional(a),
+                },
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(c.cached, optional(cached), true, c, p))
+            .child(stat_or_missing(
+                c.swap,
+                match (m.swap_used, m.swap_total) {
+                    (Some(_), Some(0)) => Some(c.swap_off.to_string()),
+                    (Some(a), Some(b)) => Some(format!("{}/{}", bytes(a as f64), bytes(b as f64))),
+                    _ => None,
+                },
+                true,
+                c,
+                p,
+            ));
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::LG)
+            .child(self.detail_header(c.memory.to_string(), optional(m.total), p))
+            .child(card(p).child(chart))
+            .child(
+                card(p)
+                    .child(label(c.memory_composition, BODY_STRONG, p.text_primary))
+                    .child(composition)
+                    .child(legend),
+            )
+            .child(stats)
+            .child(label(c.memory_hint, CAPTION, p.text_secondary))
             .into_any_element()
     }
 
-    fn settings_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn disk_detail(&mut self, name: &str, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
         let c = copy(self.locale);
-        let order = self
-            .precedence
-            .order()
+        let Some(disk) = self.readings.disks.iter().find(|d| d.name == name).cloned() else {
+            return note_card(c.disk, c.not_reported_yet, cx);
+        };
+        let active = LineChart::new(
+            "disk-active",
+            vec![ChartSeries::new(
+                self.live.values(&SeriesKey::DiskActive(disk.name.clone())),
+                ChartHue::Green,
+            )],
+            CAPACITY,
+            100.0,
+        )
+        .height(px(160.0))
+        .caption(c.active_time)
+        .maximum_label("100%")
+        .span_label(self.span_label())
+        .minimum_label("0");
+        let series = vec![
+            ChartSeries::new(
+                self.live.values(&SeriesKey::DiskRead(disk.name.clone())),
+                ChartHue::Green,
+            ),
+            ChartSeries::new(
+                self.live.values(&SeriesKey::DiskWrite(disk.name.clone())),
+                ChartHue::Green,
+            ),
+        ];
+        let top = byte_axis(peak(&series).unwrap_or(0.0), 1024.0 * 1024.0);
+        let transfer = LineChart::new("disk-transfer", series, CAPACITY, top)
+            .height(px(120.0))
+            .caption(c.transfer_rate)
+            .maximum_label(rate(top))
+            .span_label(c.read_solid_write_dashed)
+            .minimum_label("0");
+        let stats = div()
+            .flex()
+            .flex_wrap()
+            .gap(spacing::XL)
+            .child(stat_or_missing(
+                c.active_time_short,
+                disk.active.map(share),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.response_time,
+                disk.response_ms().map(|ms| format!("{ms:.1} ms")),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.read_speed,
+                disk.read_rate.map(rate),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.write_speed,
+                disk.write_rate.map(rate),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.capacity,
+                disk.capacity.map(|b| bytes(b as f64)),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.kind,
+                disk.rotational
+                    .map(|spinning| if spinning { c.hdd } else { c.ssd }.to_string()),
+                true,
+                c,
+                p,
+            ));
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::LG)
+            .child(self.detail_header(
+                i18n::disk_title(&disk.name, disk.rotational, self.locale),
+                disk.model.clone(),
+                p,
+            ))
+            .child(card(p).child(active).child(transfer))
+            .child(stats)
+            .into_any_element()
+    }
+
+    fn adapter_detail(&mut self, name: &str, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        let Some(adapter) = self
+            .readings
+            .adapters
             .iter()
-            .map(|kind| kind.key())
-            .collect::<Vec<_>>()
-            .join(" › ");
+            .find(|a| a.name == name)
+            .cloned()
+        else {
+            return note_card(c.network, c.not_reported_yet, cx);
+        };
+        let series = vec![
+            ChartSeries::new(
+                self.live.values(&SeriesKey::Receive(adapter.name.clone())),
+                ChartHue::Orange,
+            ),
+            ChartSeries::new(
+                self.live.values(&SeriesKey::Send(adapter.name.clone())),
+                ChartHue::Orange,
+            ),
+        ];
+        let top = byte_axis(peak(&series).unwrap_or(0.0), 1024.0);
+        let chart = LineChart::new("adapter-chart", series, CAPACITY, top)
+            .height(px(220.0))
+            .caption(c.throughput)
+            .maximum_label(rate(top))
+            .span_label(c.receive_solid_send_dashed)
+            .minimum_label("0");
+        let stats = div()
+            .flex()
+            .flex_wrap()
+            .gap(spacing::XL)
+            .child(stat_or_missing(
+                c.send,
+                adapter.send_rate.map(rate),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.receive,
+                adapter.receive_rate.map(rate),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.connection,
+                Some(i18n::adapter_status(adapter.connected, self.locale).to_string()),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.link_speed,
+                adapter.link_speed_bps.map(i18n::bits_per_second),
+                true,
+                c,
+                p,
+            ));
+        let kind = match adapter.kind {
+            AdapterKind::Wireless => c.wireless,
+            AdapterKind::Wired => c.wired,
+            AdapterKind::Other => c.other_connection,
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::LG)
+            .child(self.detail_header(
+                i18n::adapter_title(adapter.kind, &adapter.name, self.locale),
+                Some(format!("{kind} · {}", adapter.name)),
+                p,
+            ))
+            .child(card(p).child(chart))
+            .child(stats)
+            .into_any_element()
+    }
 
-        v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_4()
-            .child(self.page_heading(c.settings, c.sampling_description))
+    fn gpu_detail(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        let cards = i18n::graphics_cards(self.inventory.as_ref(), self.locale);
+        let mut list = card(p).gap(px(0.0));
+        if cards.is_empty() {
+            list = list.child(label(c.gpu_not_found, BODY, p.text_secondary));
+        }
+        for (card_name, driver) in cards {
+            list = list.child(crate::shell::property_row(card_name, driver, false, p));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::LG)
+            .child(self.detail_header(c.gpu.to_string(), None, p))
             .child(
-                self.surface(
-                    v_flex()
-                        .min_w_0()
-                        .gap_2()
-                        .child(div().font_semibold().child(c.appearance))
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .flex_wrap()
-                                .child(Button::new("theme-dark").label(c.dark_theme).on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.set_theme(gpui_component::ThemeMode::Dark, window, cx)
-                                    }),
-                                ))
-                                .child(Button::new("theme-light").label(c.light_theme).on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.set_theme(gpui_component::ThemeMode::Light, window, cx)
-                                    }),
-                                )),
-                        ),
-                    cx,
-                ),
+                InfoBar::new(
+                    "gpu-not-read",
+                    Severity::Informational,
+                    c.not_read_yet_title,
+                )
+                .message(c.gpu_not_read)
+                .locale(self.locale.words()),
+            )
+            .child(section_title(c.graphics_cards, p))
+            .child(list)
+            .into_any_element()
+    }
+
+    fn temperature_detail(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        let temperature = self.readings.cpu.temperature_celsius;
+        let body = match temperature {
+            Some(_) => {
+                let series = vec![ChartSeries::new(
+                    self.live.values(&SeriesKey::CpuTemperature),
+                    ChartHue::Teal,
+                )];
+                let top = nice_maximum(peak(&series).unwrap_or(0.0), 100.0);
+                card(p)
+                    .child(
+                        LineChart::new("temperature-chart", series, CAPACITY, top)
+                            .height(px(200.0))
+                            .caption(c.processor_temperature)
+                            .maximum_label(format!("{top:.0} °C"))
+                            .span_label(self.span_label())
+                            .minimum_label("0 °C"),
+                    )
+                    .into_any_element()
+            }
+            None => note_card(c.processor_temperature, c.temperature_not_found, cx),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::LG)
+            .child(self.detail_header(c.temperatures.to_string(), None, p))
+            .child(body)
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(spacing::XL)
+                    .child(stat_or_missing(
+                        c.processor_temperature,
+                        temperature.map(|t| format!("{t:.0} °C")),
+                        true,
+                        c,
+                        p,
+                    )),
             )
             .child(
-                self.surface(
-                    v_flex()
-                        .min_w_0()
-                        .gap_2()
-                        .child(div().font_semibold().child(c.language))
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .flex_wrap()
-                                .child(
-                                    Button::new("locale-system")
-                                        .label(c.system_default)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.set_locale(crate::i18n::Locale::System, cx)
-                                        })),
-                                )
-                                .child(Button::new("locale-en").label(c.english).on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.set_locale(crate::i18n::Locale::EnUs, cx)
-                                    }),
-                                ))
-                                .child(
-                                    Button::new("locale-zh")
-                                        .label(c.traditional_chinese)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.set_locale(crate::i18n::Locale::ZhTw, cx)
-                                        })),
-                                ),
-                        ),
-                    cx,
-                ),
-            )
-            .child(
-                self.surface(
-                    v_flex()
-                        .min_w_0()
-                        .gap_2()
-                        .child(div().font_semibold().child(c.privacy))
-                        .child(div().text_sm().child(c.privacy_description))
-                        .child(
-                            Switch::new("settings-command-lines")
-                                .checked(self.include_command_lines)
-                                .label(c.show_command_lines)
-                                .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                                    this.set_command_lines(*checked, cx)
-                                })),
-                        ),
-                    cx,
-                ),
-            )
-            .child(
-                self.surface(
-                    v_flex()
-                        .min_w_0()
-                        .gap_2()
-                        .child(div().font_semibold().child(c.grouping_precedence))
-                        .child(div().text_sm().child(c.grouping_precedence_description))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(order),
-                        ),
-                    cx,
-                ),
-            )
-            .child(
-                self.surface(
-                    v_flex()
-                        .min_w_0()
-                        .gap_2()
-                        .child(div().font_semibold().child(c.sampling))
-                        .child(div().text_sm().child(c.sampling_description)),
-                    cx,
-                ),
+                InfoBar::new(
+                    "fans-not-read",
+                    Severity::Informational,
+                    c.not_read_yet_title,
+                )
+                .message(c.fans_not_read)
+                .locale(self.locale.words()),
             )
             .into_any_element()
     }
+
+    fn battery_detail(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::LG)
+            .child(self.detail_header(c.battery.to_string(), None, p))
+            .child(
+                InfoBar::new(
+                    "battery-not-read",
+                    Severity::Informational,
+                    c.not_read_yet_title,
+                )
+                .message(c.battery_not_read)
+                .locale(self.locale.words()),
+            )
+            .into_any_element()
+    }
+
+    // Startup apps.
+
+    fn startup_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale);
+        let entries = self.startup.entries.clone();
+        let rows: Vec<Vec<TableCell>> = entries
+            .iter()
+            .map(|entry| {
+                let mut name = TableCell::new(entry.name.clone());
+                if let Some(comment) = &entry.comment {
+                    name = name.tooltip(comment.clone());
+                }
+                let status = if !entry.installed {
+                    TableCell::new(c.not_installed)
+                        .tone(CellTone::Secondary)
+                        .tooltip(c.not_installed_hint)
+                } else if !entry.for_this_desktop {
+                    TableCell::new(c.not_on_this_desktop).tone(CellTone::Secondary)
+                } else if entry.enabled {
+                    TableCell::new(c.enabled)
+                } else {
+                    TableCell::new(c.disabled).tone(CellTone::Secondary)
+                };
+                vec![
+                    name,
+                    status,
+                    TableCell::new(i18n::scope_word(entry.scope, self.locale)),
+                    TableCell::new(entry.command.clone().unwrap_or_default())
+                        .tone(CellTone::Secondary),
+                ]
+            })
+            .collect();
+        let selected = self
+            .startup
+            .selected
+            .as_ref()
+            .and_then(|file| entries.iter().position(|entry| &entry.file_name == file));
+        let files: Vec<String> = entries.iter().map(|e| e.file_name.clone()).collect();
+        let (select_files, menu_files) = (files.clone(), files);
+        let table = DetailsTable::new(
+            "startup",
+            vec![
+                Column::new(c.column_name),
+                Column::new(c.column_status).width(px(180.0)),
+                Column::new(c.column_starts_for).width(px(180.0)),
+                Column::new(c.column_command),
+            ],
+            rows,
+        )
+        .fill()
+        .sort(self.startup_sort)
+        .selected(selected)
+        .empty(if self.startup.loaded {
+            c.no_startup_apps
+        } else {
+            c.loading
+        })
+        .on_sort(Self::act_with(cx, |this, sort: SortState, _, _| {
+            this.startup_sort = Some(sort)
+        }))
+        .on_select(Self::act_with(cx, move |this, index: usize, _, _| {
+            this.startup.selected = select_files.get(index).cloned();
+        }))
+        .on_context_menu(Self::act_point(
+            cx,
+            move |this, index, position, window, cx| {
+                if let Some(file) = menu_files.get(index).cloned() {
+                    this.startup.selected = Some(file.clone());
+                    this.open_menu(MenuTarget::Startup(file), position, window, cx);
+                }
+            },
+        ));
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::MD)
+            .size_full()
+            .min_h_0()
+            .child(label(c.startup_hint, BODY, palette(cx).text_secondary))
+            .child(div().flex_1().min_h_0().flex().flex_col().child(table))
+            .into_any_element()
+    }
+
+    // Services.
+
+    fn services_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        if let Some(error) = &self.services.error {
+            let detail = i18n::service_error_detail(error, self.locale);
+            return div()
+                .flex()
+                .flex_col()
+                .gap(spacing::MD)
+                .child(
+                    better_ui::fluent::info_bar::ErrorBar::new(
+                        "services-error",
+                        better_ui::fluent::info_bar::ErrorReport::new(c.no_service_manager, detail)
+                            .advice(c.no_service_manager_advice),
+                    )
+                    .locale(self.locale.words()),
+                )
+                .into_any_element();
+        }
+        let services = self.services.services.clone();
+        let rows: Vec<Vec<TableCell>> = services
+            .iter()
+            .map(|service| {
+                let (startup, tone) = i18n::startup_word(service, self.locale);
+                vec![
+                    TableCell::new(service.title().to_string()),
+                    TableCell::new(service.unit.clone()).tone(CellTone::Secondary),
+                    {
+                        let (word, tone) = i18n::activity_word(service.activity, self.locale);
+                        TableCell::new(word).tone(tone)
+                    },
+                    TableCell::new(startup).tone(tone).tooltip(
+                        service
+                            .lock()
+                            .map(|lock| i18n::lock_sentence(lock, self.locale))
+                            .unwrap_or_default(),
+                    ),
+                ]
+            })
+            .collect();
+        let selected = self
+            .services
+            .selected
+            .as_ref()
+            .and_then(|unit| services.iter().position(|s| &s.unit == unit));
+        let units: Vec<String> = services.iter().map(|s| s.unit.clone()).collect();
+        let (select_units, menu_units) = (units.clone(), units);
+        let table = DetailsTable::new(
+            "services",
+            vec![
+                Column::new(c.column_name),
+                Column::new(c.column_service_name),
+                Column::new(c.column_status).width(px(120.0)),
+                Column::new(c.column_at_login).width(px(170.0)),
+            ],
+            rows,
+        )
+        .fill()
+        .sort(self.services_sort)
+        .selected(selected)
+        .empty(if self.services.loaded {
+            c.no_services
+        } else {
+            c.loading
+        })
+        .on_sort(Self::act_with(cx, |this, sort: SortState, _, _| {
+            this.services_sort = Some(sort)
+        }))
+        .on_select(Self::act_with(cx, move |this, index: usize, _, _| {
+            this.services.selected = select_units.get(index).cloned();
+        }))
+        .on_context_menu(Self::act_point(
+            cx,
+            move |this, index, position, window, cx| {
+                if let Some(unit) = menu_units.get(index).cloned() {
+                    this.services.selected = Some(unit.clone());
+                    this.open_menu(MenuTarget::Service(unit), position, window, cx);
+                }
+            },
+        ));
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::MD)
+            .size_full()
+            .min_h_0()
+            .child(label(c.services_hint, BODY, p.text_secondary))
+            .child(div().flex_1().min_h_0().flex().flex_col().child(table))
+            .into_any_element()
+    }
+
+    // Settings.
+
+    fn settings_page(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        let words = self.locale.words();
+        let appearance = ComboBox::new(
+            "appearance",
+            vec![
+                ComboItem::new(c.dark_theme),
+                ComboItem::new(c.light_theme),
+                ComboItem::new(c.system_theme),
+            ],
+            Appearance::ALL
+                .iter()
+                .position(|choice| *choice == self.appearance),
+        )
+        .min_width(px(200.0))
+        .on_select(Self::act_with(cx, |this, index: usize, window, cx| {
+            if let Some(choice) = Appearance::ALL.get(index) {
+                this.set_appearance(*choice, window, cx);
+            }
+        }));
+        let language = ComboBox::new(
+            "language",
+            vec![
+                ComboItem::new(c.system_default),
+                ComboItem::new("English"),
+                ComboItem::new("繁體中文"),
+            ],
+            i18n::Locale::ALL.iter().position(|l| *l == self.locale),
+        )
+        .min_width(px(200.0))
+        .on_select(Self::act_with(cx, |this, index: usize, window, cx| {
+            if let Some(locale) = i18n::Locale::ALL.get(index) {
+                this.set_locale(*locale, window, cx);
+            }
+        }));
+        let command_lines = ToggleSwitch::new("command-lines", self.include_command_lines)
+            .locale(words)
+            .on_change(Self::act_with(cx, |this, on: bool, _, cx| {
+                this.set_command_lines(on, cx)
+            }));
+
+        let mut grouping = SettingsExpander::new("grouping", c.grouping_title, self.grouping_open)
+            .icon(IconName::GalleryVerticalEnd)
+            .description(c.grouping_description)
+            .on_toggle(Self::act_with(cx, |this, open: bool, _, _| {
+                this.grouping_open = open
+            }));
+        for (position, kind) in self.precedence.order().iter().enumerate() {
+            grouping = grouping.row(
+                SettingsRow::new(format!(
+                    "{}. {}",
+                    position + 1,
+                    i18n::evidence_kind_word(*kind, self.locale)
+                ))
+                .description(i18n::evidence_kind_explanation(*kind, self.locale)),
+            );
+        }
+
+        let source = match &self.collection {
+            crate::app::Collection::Connecting => c.collection_connecting,
+            crate::app::Collection::Service => c.collection_service,
+            crate::app::Collection::InProcess { .. } => c.collection_in_process,
+            crate::app::Collection::Unavailable { .. } => c.collection_unavailable,
+        };
+        let mut sources = SettingsExpander::new("sources", c.data_sources, self.sources_open)
+            .icon(IconName::CircleCheck)
+            .description(source)
+            .on_toggle(Self::act_with(cx, |this, open: bool, _, _| {
+                this.sources_open = open
+            }));
+        for status in &self.overview.collectors {
+            let (word, _) = match &status.health {
+                CollectorHealth::Healthy => (c.health_healthy, ()),
+                CollectorHealth::Degraded { .. } => (c.health_degraded, ()),
+                CollectorHealth::Failed { .. } => (c.health_failed, ()),
+                CollectorHealth::Unsupported(_) => (c.health_unsupported, ()),
+            };
+            sources = sources.row(
+                SettingsRow::new(i18n::collector_name(&status.collector, self.locale))
+                    .content(label(word, BODY, p.text_secondary)),
+            );
+        }
+        let coverage = self.overview.coverage;
+        sources = sources.row(SettingsRow::new(c.readings_this_second).description(
+            i18n::coverage_sentence(
+                coverage.value,
+                coverage.stale + coverage.unknown,
+                coverage.unsupported,
+                coverage.permission_denied,
+                self.locale,
+            ),
+        ));
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .max_w(px(1000.0))
+            .child(section_title(c.appearance_and_language, p))
+            .child(
+                SettingsCard::new("appearance-card", c.appearance)
+                    .icon(IconName::Palette)
+                    .description(c.appearance_description)
+                    .content(appearance),
+            )
+            .child(
+                SettingsCard::new("language-card", c.language)
+                    .icon(IconName::Globe)
+                    .description(c.language_description)
+                    .content(language),
+            )
+            .child(section_title(c.privacy, p))
+            .child(
+                SettingsCard::new("command-lines-card", c.show_command_lines)
+                    .icon(IconName::SquareTerminal)
+                    .description(c.privacy_description)
+                    .content(command_lines),
+            )
+            .child(section_title(c.how_it_works, p))
+            .child(grouping)
+            .child(sources)
+            .child(
+                SettingsCard::new("sampling-card", c.sampling)
+                    .icon(IconName::Loader)
+                    .description(c.sampling_description),
+            )
+            .child(
+                SettingsCard::new("about-card", c.app_name)
+                    .icon(IconName::Info)
+                    .description(i18n::version_line(env!("CARGO_PKG_VERSION"), self.locale)),
+            )
+            .into_any_element()
+    }
+}
+
+/// A grid of charts with 4px gaps, for the per-processor view.
+fn grid_tight(columns: usize, children: Vec<AnyElement>) -> AnyElement {
+    let columns = columns.max(1);
+    let mut rows = div().flex().flex_col().gap(px(4.0)).w_full();
+    let mut iter = children.into_iter().peekable();
+    while iter.peek().is_some() {
+        let mut row = div().flex().gap(px(4.0)).w_full();
+        for _ in 0..columns {
+            row = row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .when_some(iter.next(), |cell, child| cell.child(child)),
+            );
+        }
+        rows = rows.child(row);
+    }
+    rows.into_any_element()
+}
+
+/// One part of the memory composition's legend: a swatch, the name, the
+/// amount.
+fn legend_item(
+    name: &'static str,
+    swatch: Rgba,
+    value: Option<u64>,
+    c: &'static Copy,
+    p: &Palette,
+) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(spacing::SM)
+        .child(
+            div()
+                .size(px(12.0))
+                .rounded(px(2.0))
+                .border_1()
+                .border_color(p.card_stroke)
+                .bg(swatch),
+        )
+        .child(label(name, BODY, p.text_secondary))
+        .child(label(
+            value
+                .map(|v| bytes(v as f64))
+                .unwrap_or_else(|| c.not_available.to_string()),
+            BODY_STRONG,
+            p.text_primary,
+        ))
+        .into_any_element()
 }

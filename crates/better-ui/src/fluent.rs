@@ -23,11 +23,15 @@
 //! disabled — and accepts [`ShownState`] so the gallery can draw any one of
 //! them without a pointer over it.
 
+pub mod auto_suggest;
+pub mod badge;
 pub mod breadcrumb;
 pub mod button;
+pub mod chart;
 pub mod chrome;
 pub mod command_bar;
 pub mod dialog;
+pub mod hyperlink;
 pub mod info_bar;
 pub mod list;
 pub mod menu;

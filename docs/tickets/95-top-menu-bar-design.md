@@ -24,6 +24,12 @@ unmaintained and served GTK 3 only.
   `better-ui`. Other applications show only the shared actions above.
 - Right: the system tray (StatusNotifierItem), input method, network,
   sound, battery, the clock, and notifications.
+- Tray icons move to the bar when it is on (owner, 2026-11-12): while the top
+  bar is enabled, every StatusNotifierItem (Better OS's own and other
+  applications') shows in it and not in Zorin's bottom taskbar, so the taskbar
+  keeps its space for applications; when the top bar is turned off, they go
+  back to the taskbar. The switch is one setting, applied and restored through
+  Better Defaults, and nothing about it is per application.
 
 ## What to deliver
 

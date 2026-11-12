@@ -1,10 +1,12 @@
 mod app;
+mod charts;
 mod i18n;
 mod layout;
 mod link;
 mod pages;
 mod render;
 mod shell;
+mod startup;
 mod stored;
 mod tables;
 #[cfg(test)]
@@ -58,8 +60,8 @@ fn main() {
     let app = gpui_platform::application().with_assets(Assets);
 
     app.run(move |cx| {
-        // `gpui_component::init` installs its light theme. Better OS is
-        // dark-first, so the window applies the dark theme once it exists.
+        // `gpui_component::init` installs its light theme. The window applies
+        // the stored appearance (dark when there is none) once it exists.
         gpui_component::init(cx);
 
         let window_options = WindowOptions {

@@ -1,16 +1,16 @@
 use better_core::ComponentId;
+use better_ui::fluent::theme::Appearance;
 use gpui::*;
 use gpui_component::input::{InputEvent, InputState};
-use gpui_component::{Theme, ThemeMode};
 use manager_core::ExecutionMode;
 use manager_core::catalog::{CatalogStatus, RefreshOutcome, now_unix_seconds};
 use manager_core::exec::{CancelToken, RealDriver, RunnerEvent, StageProgress, TransactionRunner};
 use manager_core::repair::{self, PackageSystemState, RepairResult};
 use manager_core::{
     ActivityKind, ActivityRecord, ComponentFilterPreference, ComponentStatus, DesiredOperation,
-    DiskSpaceCheck, DoctorCheck, HealthState, Manager, ManagerSettings, ManagerState, MockOutcome,
-    OperationProgress, OperationStage, PlanStep, ReleaseChannel, RestartRequirement, StoredLocale,
-    StoredTheme, TransactionPlan,
+    DiskSpaceCheck, DoctorCheck, Manager, ManagerSettings, ManagerState, MockOutcome,
+    OperationProgress, OperationStage, PlanStep, RestartRequirement, StoredLocale, StoredTheme,
+    TransactionPlan,
 };
 use manager_platform::catalog_fetch::HttpManifestFetcher;
 use manager_platform::download::{ArtifactCache, HttpDownloader};
@@ -22,9 +22,14 @@ use manager_platform::{SystemCapabilities, SystemProfile};
 use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, start_catalog};
 
 use crate::{
+    attention::{ComponentFacts, Snapshot},
+    deep_link::{self, Request},
     defaults_app::DefaultsState,
-    i18n::{Locale, copy},
-    model::{ActivityFilter, ComponentInfo, DetailTab, Page, UpdateCheck},
+    home,
+    i18n::{Locale, copy, shell},
+    model::{ActivityFilter, CatalogLine, ComponentInfo, DetailTab, Page, UpdateCheck},
+    navigation::History,
+    search::SearchEntry,
 };
 
 /// How this window runs transactions.
@@ -76,6 +81,39 @@ pub(crate) fn probe_manager(
 
 pub(crate) struct ManagerApp {
     pub(crate) page: Page,
+    /// Where the back button goes.
+    pub(crate) history: History,
+    /// The person closed a wide window's pane with ☰.
+    pub(crate) wide_collapsed: bool,
+    /// The person opened a narrow window's pane with ☰ or the search button.
+    pub(crate) narrow_open: bool,
+    /// "Find a setting", in the pane.
+    pub(crate) nav_search: Entity<InputState>,
+    /// The card a search result asked for, until it has been scrolled to and
+    /// focused.
+    pub(crate) pending_card: Option<&'static str>,
+    /// The card a search result put the keyboard on, while the page shows it.
+    pub(crate) focused_card: Option<&'static str>,
+    pub(crate) card_focus: FocusHandle,
+    /// The window's own focus, so Alt+Left reaches it with nothing focused.
+    pub(crate) root_focus: FocusHandle,
+    pub(crate) content_scroll: ScrollHandle,
+    /// The banner's facts, read when Home is shown.
+    pub(crate) device: home::Device,
+    /// Whether Settings' About expander is open.
+    pub(crate) about_expanded: bool,
+    /// Whether the window is drawing dark, read at the start of each frame
+    /// for the screens that draw without a context.
+    pub(crate) dark: bool,
+    /// Set when `keep-awake/until` asked for the "Until a time" dialog, for
+    /// ticket 87's page to open and clear.
+    pub(crate) until_dialog_requested: bool,
+    /// Keeps the window following the desktop while Appearance is "Use
+    /// system setting".
+    pub(crate) appearance_follow: Option<Subscription>,
+    /// This window's hold on `io.betteros.Manager`; dropping it gives the
+    /// name up.
+    pub(crate) _bus_owner: Option<deep_link::bus::Owner>,
     pub(crate) locale: Locale,
     pub(crate) search: Entity<InputState>,
     pub(crate) search_query: String,
@@ -134,6 +172,9 @@ pub(crate) struct ManagerApp {
     /// should run.
     pub(crate) heal_task: Option<Task<()>>,
     pub(crate) _subscriptions: Vec<Subscription>,
+    pub(crate) _nav_search_subscription: Subscription,
+    /// Takes requests a second `better-manager` sent over the bus.
+    pub(crate) _bus_task: Option<Task<()>>,
 }
 
 /// What a real transaction is currently moving.
@@ -156,7 +197,11 @@ pub(crate) enum AppError {
 }
 
 impl ManagerApp {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        bus_owner: Option<deep_link::bus::Owner>,
+    ) -> Self {
         let store = JsonStore::from_default_path();
         let catalog_store = JsonCatalogStore::from_default_path();
         // The catalog a previous refresh cached, or the compiled-in one. This
@@ -177,16 +222,32 @@ impl ManagerApp {
         // the point until it is resolved.
         let planning_error = host_error.or(planning_error);
         let locale = locale_from_stored(state.settings.locale);
-        apply_theme(state.settings.theme, window, cx);
+        let appearance_follow = appearance_of(state.settings.theme).apply_and_follow(window, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(copy(locale).search));
         let subscription = Self::subscribe_to_search(&search, window, cx);
+        let nav_search = Self::nav_search_input(locale, "", window, cx);
+        let nav_search_subscription = cx.observe(&nav_search, |_, _, cx| cx.notify());
         let page = if state.active_operation.is_some() {
             Page::Installing
-        } else if state.settings.onboarding_complete {
-            Page::Overview
         } else {
-            Page::FirstRun
+            Page::Home
         };
+        let bus_task = bus_owner.as_ref().map(|owner| {
+            let requests = owner.requests.clone();
+            cx.spawn_in(window, async move |this, cx| {
+                while let Ok(request) = requests.recv().await {
+                    let shown = this.update_in(cx, |app, window, cx| {
+                        app.show_request(request, cx);
+                        window.activate_window();
+                    });
+                    if shown.is_err() {
+                        break;
+                    }
+                }
+            })
+        });
+        let root_focus = cx.focus_handle();
+        root_focus.focus(window, cx);
         let pending_plan = state
             .active_operation
             .as_ref()
@@ -194,6 +255,21 @@ impl ManagerApp {
 
         let mut app = Self {
             page,
+            history: History::default(),
+            wide_collapsed: false,
+            narrow_open: false,
+            nav_search,
+            pending_card: None,
+            focused_card: None,
+            card_focus: cx.focus_handle(),
+            root_focus,
+            content_scroll: ScrollHandle::new(),
+            device: home::HostRoot::default().device(),
+            about_expanded: true,
+            dark: true,
+            until_dialog_requested: false,
+            appearance_follow,
+            _bus_owner: bus_owner,
             locale,
             search,
             search_query: String::new(),
@@ -223,10 +299,147 @@ impl ManagerApp {
             repair_result: None,
             heal_task: None,
             _subscriptions: vec![subscription],
+            _nav_search_subscription: nav_search_subscription,
+            _bus_task: bus_task,
         };
         app.reconcile_with_host(cx);
         app.refresh_catalog_at_launch(cx);
+        app.read_package_system_record(cx);
         app
+    }
+
+    fn nav_search_input(
+        locale: Locale,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        let value = value.to_string();
+        cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(shell(locale).search_placeholder)
+                .default_value(value)
+        })
+    }
+
+    /// What every page's rules read, taken now.
+    pub(crate) fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            locale: self.locale,
+            components: self
+                .components()
+                .into_iter()
+                .map(|component| ComponentFacts {
+                    id: component.core_id,
+                    name: component.name,
+                    status: component.state,
+                    drifted: component.drift.is_some(),
+                })
+                .collect(),
+            packages_interrupted: self
+                .package_system
+                .as_ref()
+                .is_some_and(|state| state.needs_repair()),
+            catalog_warning: CatalogLine::present(
+                self.locale,
+                &self.catalog_status,
+                now_unix_seconds(),
+            )
+            .warning,
+        }
+    }
+
+    /// Shows what a command line or a second `better-manager` asked for.
+    /// An operation in progress keeps the screen, as `--component` always
+    /// did; a component the catalog does not know is ignored.
+    pub(crate) fn show_request(&mut self, request: Request, cx: &mut Context<Self>) {
+        if self.page == Page::Installing {
+            cx.notify();
+            return;
+        }
+        match request {
+            Request::Raise => cx.notify(),
+            Request::Component(id) => self.open_requested_component(&id, cx),
+            Request::Page { page, until_dialog } => {
+                self.until_dialog_requested = until_dialog;
+                self.navigate(page, cx);
+            }
+        }
+    }
+
+    /// Whether a transaction is running, so Back and Apps lead to it.
+    pub(crate) fn transaction_running(&self) -> bool {
+        self.state.active_operation.is_some() || self.running.is_some()
+    }
+
+    /// Goes back one page, if there is one to go back to.
+    pub(crate) fn go_back(&mut self, cx: &mut Context<Self>) {
+        let running = self.transaction_running();
+        if let Some(page) = crate::navigation::back_target(&mut self.history, &self.page, running) {
+            self.enter(page, cx);
+        }
+    }
+
+    /// Opens the page a search result names and puts the keyboard on its
+    /// card.
+    pub(crate) fn open_search_result(
+        &mut self,
+        entry: &SearchEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let query = String::new();
+        self.reset_nav_search(&query, window, cx);
+        self.navigate(entry.route.landing(), cx);
+        self.pending_card = Some(entry.card);
+        self.focused_card = Some(entry.card);
+        cx.notify();
+    }
+
+    fn reset_nav_search(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.nav_search = Self::nav_search_input(self.locale, value, window, cx);
+        self._nav_search_subscription = cx.observe(&self.nav_search, |_, _, cx| cx.notify());
+    }
+
+    /// The search entries the pane's box matches against.
+    pub(crate) fn search_index(&self) -> Vec<SearchEntry> {
+        crate::pages::search_index(self.locale)
+    }
+
+    /// Opens or closes the pane, as ☰ or the compact search button asks.
+    pub(crate) fn set_pane_compact(&mut self, compact: bool, narrow: bool, cx: &mut Context<Self>) {
+        if narrow {
+            self.narrow_open = !compact;
+        } else {
+            self.wide_collapsed = compact;
+        }
+        cx.notify();
+    }
+
+    /// Reads dpkg's own record, unprivileged and off the UI thread, so Home
+    /// can say a package installation was interrupted without starting the
+    /// privileged service. The Health screen still asks the service, which
+    /// is the one that repairs. A demo window reads nothing from the host.
+    fn read_package_system_record(&mut self, cx: &mut Context<Self>) {
+        if self.is_demo() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let record = cx
+                .background_spawn(async move {
+                    manager_core::dpkg_record::read(std::path::Path::new(
+                        manager_core::dpkg_record::DPKG_ADMIN_DIR,
+                    ))
+                })
+                .await;
+            if let Some(record) = record {
+                let _ = this.update(cx, |app, cx| {
+                    app.package_system = Some(record);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     /// Asks dpkg what this machine actually has, before anything is drawn.
@@ -504,6 +717,10 @@ impl ManagerApp {
         }
 
         self.locale = locale;
+        // The pane's search box carries its placeholder in the language it
+        // was made in, so it is made again, keeping what was typed.
+        let typed = self.nav_search.read(cx).value().to_string();
+        self.reset_nav_search(&typed, window, cx);
         let current_value = self.search.read(cx).value().to_string();
         let search = cx.new(|cx| {
             InputState::new(window, cx)
@@ -531,7 +748,9 @@ impl ManagerApp {
             cx.notify();
             return;
         }
-        apply_theme(theme, window, cx);
+        // Dropping the old subscription stops following the desktop when
+        // the person picks Dark or Light.
+        self.appearance_follow = appearance_of(theme).apply_and_follow(window, cx);
         cx.notify();
     }
 
@@ -545,13 +764,39 @@ impl ManagerApp {
         cx.notify();
     }
 
+    /// Goes to a page, remembering the one it leaves for the back button.
     pub(crate) fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
+        self.history.visit(&self.page, &page);
+        self.enter(page, cx);
+    }
+
+    /// Shows a page without touching the history.
+    fn enter(&mut self, page: Page, cx: &mut Context<Self>) {
         // The Health screen is where an interrupted dpkg run is shown, so it
         // asks the privileged service each time it is opened rather than at
         // launch: opening the window should not start a root process.
         if matches!(page, Page::Health | Page::DoctorResults) {
             self.check_package_system(cx);
         }
+        if page == Page::Home {
+            // The battery moves, and dpkg's record may have; both are read
+            // again each time Home is shown rather than polled.
+            self.device = home::HostRoot::default().device();
+            self.read_package_system_record(cx);
+        }
+        // Default apps reads what every integration says the first time it is
+        // shown, as its sidebar item used to.
+        if page == Page::Defaults && self.defaults.report.is_none() && !self.defaults.busy {
+            self.refresh_defaults(cx);
+        }
+        if page != self.page {
+            self.focused_card = None;
+            self.pending_card = None;
+            self.content_scroll.set_offset(gpui::Point::default());
+        }
+        // A narrow window's open pane closes once a page is chosen, as
+        // WinUI's overlay pane does.
+        self.narrow_open = false;
         self.page = page;
         cx.notify();
     }
@@ -621,16 +866,14 @@ impl ManagerApp {
         cx.notify();
     }
 
+    /// Closes Home's first-run info bar for good.
     pub(crate) fn complete_onboarding(&mut self, cx: &mut Context<Self>) {
         let mut candidate = self.state.clone();
         let mut settings = candidate.settings.clone();
         settings.onboarding_complete = true;
         candidate.update_settings(settings);
-        if self.commit_state(candidate) {
-            self.navigate(Page::Overview, cx);
-        } else {
-            cx.notify();
-        }
+        self.commit_state(candidate);
+        cx.notify();
     }
 
     pub(crate) fn prepare_update_all(&mut self, cx: &mut Context<Self>) {
@@ -966,27 +1209,8 @@ impl ManagerApp {
         cx.notify();
     }
 
-    pub(crate) fn set_release_channel(&mut self, channel: ReleaseChannel, cx: &mut Context<Self>) {
-        let mut candidate = self.state.clone();
-        let mut settings = candidate.settings.clone();
-        settings.release_channel = channel;
-        candidate.update_settings(settings);
-        self.commit_state(candidate);
-        cx.notify();
-    }
-
     pub(crate) fn toggle_check_updates(&mut self, cx: &mut Context<Self>) {
         self.update_settings(|settings| settings.check_updates = !settings.check_updates);
-        cx.notify();
-    }
-
-    pub(crate) fn toggle_auto_download(&mut self, cx: &mut Context<Self>) {
-        self.update_settings(|settings| settings.auto_download = !settings.auto_download);
-        cx.notify();
-    }
-
-    pub(crate) fn toggle_diagnostic_logs(&mut self, cx: &mut Context<Self>) {
-        self.update_settings(|settings| settings.diagnostic_logs = !settings.diagnostic_logs);
         cx.notify();
     }
 
@@ -1039,26 +1263,10 @@ impl ManagerApp {
             .unwrap_or_else(|| id.to_string())
     }
 
-    pub(crate) fn installed_count(&self) -> usize {
-        self.components()
-            .into_iter()
-            .filter(|component| component.installed_version.is_some())
-            .count()
-    }
-
     pub(crate) fn update_plan_count(&self) -> usize {
         self.components()
             .into_iter()
             .filter(|component| component.state == ComponentStatus::UpdateAvailable)
-            .count()
-    }
-
-    pub(crate) fn healthy_count(&self) -> usize {
-        self.components()
-            .into_iter()
-            .filter(|component| {
-                component.installed_version.is_some() && component.health == HealthState::Healthy
-            })
             .count()
     }
 
@@ -1116,9 +1324,8 @@ impl ManagerApp {
     }
 
     pub(crate) fn open_component(&mut self, id: &ComponentId, cx: &mut Context<Self>) {
-        self.page = Page::ComponentDetail(id.clone());
         self.detail_tab = DetailTab::Overview;
-        cx.notify();
+        self.navigate(Page::ComponentDetail(id.clone()), cx);
     }
 
     pub(crate) fn selected_component(&self) -> Option<ComponentInfo> {
@@ -1140,30 +1347,6 @@ impl ManagerApp {
     pub(crate) fn component_name_for_core(&self, id: Option<&ComponentId>) -> String {
         id.map(|id| self.plan_component_name(id))
             .unwrap_or_else(|| copy(self.locale).manager.to_string())
-    }
-
-    pub(crate) fn page_is_active(&self, page: &Page) -> bool {
-        match page {
-            Page::Components => matches!(self.page, Page::Components | Page::ComponentDetail(_)),
-            Page::Defaults => matches!(
-                self.page,
-                Page::Defaults
-                    | Page::DefaultsComponent(_)
-                    | Page::DefaultsReview
-                    | Page::DefaultsResults
-            ),
-            Page::Updates => matches!(
-                self.page,
-                Page::Updates
-                    | Page::ReviewChanges
-                    | Page::Installing
-                    | Page::Finished
-                    | Page::Restore
-                    | Page::Restored
-            ),
-            Page::Health => matches!(self.page, Page::Health | Page::DoctorResults),
-            other => &self.page == other,
-        }
     }
 
     pub(crate) fn stage(&self) -> Option<OperationStage> {
@@ -1306,13 +1489,13 @@ impl ManagerApp {
     }
 }
 
-/// Applies a stored theme choice to the running window. `System` follows the
-/// desktop appearance; the other two are explicit and override it.
-pub(crate) fn apply_theme(theme: StoredTheme, window: &mut Window, cx: &mut App) {
+/// The kit's appearance for a stored choice. The choice is stored once, in
+/// the manager's settings, for every page (spec section 10).
+pub(crate) fn appearance_of(theme: StoredTheme) -> Appearance {
     match theme {
-        StoredTheme::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
-        StoredTheme::Light => Theme::change(ThemeMode::Light, Some(window), cx),
-        StoredTheme::System => Theme::sync_system_appearance(Some(window), cx),
+        StoredTheme::Dark => Appearance::Dark,
+        StoredTheme::Light => Appearance::Light,
+        StoredTheme::System => Appearance::System,
     }
 }
 
@@ -1445,21 +1628,29 @@ pub(crate) fn activity_evidence_text(label: &str, evidence: Option<&str>) -> Str
 }
 
 /// Whether a requested component's page may replace the page the window
-/// opened on: not over an operation in progress or the first-run page, and
-/// only for a component the catalog knows.
+/// is on: not over an operation in progress, and only for a component the
+/// catalog knows.
 pub(crate) fn opens_requested_component(page: &Page, known: bool) -> bool {
-    known && !matches!(page, Page::Installing | Page::FirstRun)
+    known && !matches!(page, Page::Installing)
 }
 
 #[cfg(test)]
 mod requested_component_tests {
-    use super::{Page, opens_requested_component};
+    use super::{Page, appearance_of, opens_requested_component};
+    use better_ui::fluent::theme::Appearance;
+    use manager_core::StoredTheme;
 
     #[test]
-    fn a_requested_page_never_replaces_an_operation_or_first_run() {
-        assert!(opens_requested_component(&Page::Overview, true));
-        assert!(!opens_requested_component(&Page::Overview, false));
+    fn a_requested_page_never_replaces_an_operation() {
+        assert!(opens_requested_component(&Page::Home, true));
+        assert!(!opens_requested_component(&Page::Home, false));
         assert!(!opens_requested_component(&Page::Installing, true));
-        assert!(!opens_requested_component(&Page::FirstRun, true));
+    }
+
+    #[test]
+    fn the_stored_appearance_is_the_kit_s_appearance() {
+        assert_eq!(appearance_of(StoredTheme::Dark), Appearance::Dark);
+        assert_eq!(appearance_of(StoredTheme::Light), Appearance::Light);
+        assert_eq!(appearance_of(StoredTheme::System), Appearance::System);
     }
 }

@@ -483,7 +483,7 @@ impl ManagerApp {
                     .primary()
                     .label(c.back_to_overview)
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.navigate(Page::Overview, cx);
+                        this.navigate(Page::Home, cx);
                     })),
             )
             .into_any_element()
@@ -503,7 +503,7 @@ impl ManagerApp {
                         Button::new("restore-overview")
                             .label(c.back_to_overview)
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.navigate(Page::Overview, cx);
+                                this.navigate(Page::Home, cx);
                             })),
                         cx,
                     ),
@@ -619,7 +619,7 @@ impl ManagerApp {
                     .primary()
                     .label(c.back_to_overview)
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.navigate(Page::Overview, cx);
+                        this.navigate(Page::Home, cx);
                     })),
             )
             .into_any_element()
