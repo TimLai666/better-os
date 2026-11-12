@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 925.
-- Packages with an SPDX license expression: 923.
+- Resolved Cargo packages: 926.
+- Packages with an SPDX license expression: 924.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `e67256f16dd580de116efb0844d48ff4e4ca853150d1193404c055f6ec85c6ab`.
+- `Cargo.lock` SHA-256: `0ba48b8d6437fe0ac890923de1878363df2547c0e0c453b568475aeea1138cb8`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 403 |
 | `MIT` | 189 |
 | `Apache-2.0 OR MIT` | 76 |
-| `GPL-3.0-or-later` | 58 |
+| `GPL-3.0-or-later` | 59 |
 | `MIT/Apache-2.0` | 35 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -99,6 +99,7 @@ Better OS does not relicense or silently select a different expression.
 | `files-platform` | `0.2.9` | `GPL-3.0-or-later` | workspace |
 | `files-preview` | `0.2.9` | `GPL-3.0-or-later` | workspace |
 | `files-search` | `0.2.9` | `GPL-3.0-or-later` | workspace |
+| `fluent-gallery` | `0.2.9` | `GPL-3.0-or-later` | workspace |
 | `git-core` | `0.2.9` | `GPL-3.0-or-later` | workspace |
 | `git-gui` | `0.2.9` | `GPL-3.0-or-later` | workspace |
 | `git-platform` | `0.2.9` | `GPL-3.0-or-later` | workspace |
@@ -358,6 +359,7 @@ Better OS does not relicense or silently select a different expression.
 | `float-cmp` | `0.9.0` | `MIT` | [crates.io](https://crates.io/crates/float-cmp/0.9.0) |
 | `float-ord` | `0.3.2` | `MIT / Apache-2.0` | [crates.io](https://crates.io/crates/float-ord/0.3.2) |
 | `float_next_after` | `1.0.0` | `MIT` | [crates.io](https://crates.io/crates/float_next_after/1.0.0) |
+| `fluent-gallery` | `0.2.9` | `GPL-3.0-or-later` | workspace |
 | `fluent-uri` | `0.1.4` | `MIT` | [crates.io](https://crates.io/crates/fluent-uri/0.1.4) |
 | `flume` | `0.12.0` | `Apache-2.0/MIT` | [crates.io](https://crates.io/crates/flume/0.12.0) |
 | `fnv` | `1.0.7` | `Apache-2.0 / MIT` | [crates.io](https://crates.io/crates/fnv/1.0.7) |

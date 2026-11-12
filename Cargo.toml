@@ -15,6 +15,7 @@ members = [
     "crates/better-actions",
     "crates/better-core",
     "crates/better-ui",
+    "crates/fluent-gallery",
     "crates/files-core",
     "crates/files-platform",
     "crates/files-operations",

@@ -1,12 +1,14 @@
-//! Shared UI view models. GPUI rendering primitives are added in the GUI slice.
+//! Shared presentation for every Better OS window: the WinUI 3 control kit in
+//! [`fluent`], the window chrome and options, the command-line contract, and
+//! the older status, badge, and application primitives.
 
 pub mod command_line;
 pub mod fluent;
 
 use better_core::ComponentManifest;
 use gpui::{
-    AnyElement, App, Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, Window,
-    WindowDecorations, WindowOptions, div,
+    AnyElement, App, Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, StyledImage,
+    Window, WindowDecorations, WindowOptions, div,
 };
 use gpui_component::*;
 
@@ -274,10 +276,200 @@ pub fn badge(label: impl Into<SharedString>, style: BadgeStyle) -> impl IntoElem
         .child(label.into())
 }
 
+/// What stands for an application in a tile or a row: the icon its
+/// desktop entry names, resolved to a file, or a letter when there is no
+/// icon or the file cannot be drawn.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AppIcon {
+    /// An icon file (PNG or SVG), with the letter to draw if it fails to load.
+    File {
+        path: std::path::PathBuf,
+        fallback: SharedString,
+    },
+    Letter(SharedString),
+}
+
+impl AppIcon {
+    /// The icon for a desktop entry's `Icon=` value: an absolute path is used
+    /// as it is; a name is looked up in the icon theme directories; the
+    /// application name's first letter stands in when neither finds a file.
+    pub fn for_entry(icon: Option<&str>, name: &str, search: &icons::IconSearch) -> AppIcon {
+        let fallback = icons::initial(name);
+        match icon.and_then(|icon| search.resolve(icon)) {
+            Some(path) => AppIcon::File { path, fallback },
+            None => AppIcon::Letter(fallback),
+        }
+    }
+
+    fn render(&self, size: Pixels, style: &TileStyle) -> AnyElement {
+        let letter = move |glyph: SharedString, style: TileStyle| {
+            div()
+                .size(size)
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(style.radius)
+                .bg(style.glyph_background)
+                .text_color(style.glyph_foreground)
+                .child(glyph)
+                .into_any_element()
+        };
+        match self {
+            AppIcon::Letter(glyph) => letter(glyph.clone(), *style),
+            AppIcon::File { path, fallback } => {
+                let fallback = fallback.clone();
+                let style = *style;
+                gpui::img(path.clone())
+                    .size(size)
+                    .object_fit(gpui::ObjectFit::Contain)
+                    .with_fallback(move || letter(fallback.clone(), style))
+                    .into_any_element()
+            }
+        }
+    }
+}
+
+/// Finding the file an application's `Icon=` names, the way the freedesktop
+/// icon theme specification does for the cases Better OS needs: the user's
+/// and the system's `icons/<theme>` and `icons/hicolor` directories at the
+/// usual sizes, then `pixmaps`.
+pub mod icons {
+    use std::path::{Path, PathBuf};
+
+    use gpui::SharedString;
+
+    /// The sizes looked in, largest useful first. Scalable comes first
+    /// because it draws sharp at any size.
+    pub const SIZES: [&str; 8] = [
+        "scalable", "256x256", "128x128", "96x96", "64x64", "48x48", "32x32", "24x24",
+    ];
+
+    /// Where to look.
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    pub struct IconSearch {
+        /// `$XDG_DATA_HOME` and every `$XDG_DATA_DIRS` entry, in order.
+        pub data_dirs: Vec<PathBuf>,
+        /// Theme names to try before `hicolor`, such as the desktop's own.
+        pub themes: Vec<String>,
+    }
+
+    impl IconSearch {
+        /// The process's data directories, as the XDG base directory rule
+        /// defines them.
+        pub fn from_environment() -> IconSearch {
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            let data_home = std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .or_else(|| home.as_ref().map(|home| home.join(".local/share")));
+            let data_dirs = std::env::var("XDG_DATA_DIRS")
+                .ok()
+                .filter(|dirs| !dirs.is_empty())
+                .unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());
+            let mut dirs: Vec<PathBuf> = data_home.into_iter().collect();
+            dirs.extend(
+                data_dirs
+                    .split(':')
+                    .map(PathBuf::from)
+                    .filter(|path| path.is_absolute()),
+            );
+            IconSearch {
+                data_dirs: dirs,
+                themes: Vec::new(),
+            }
+        }
+
+        /// Every path tried for `name`, in order. Separate from
+        /// [`IconSearch::resolve`] so the order can be tested.
+        pub fn candidates(&self, name: &str) -> Vec<PathBuf> {
+            let mut paths = Vec::new();
+            let themes = self
+                .themes
+                .iter()
+                .map(String::as_str)
+                .chain(std::iter::once("hicolor"));
+            let themes: Vec<&str> = themes.collect();
+            for dir in &self.data_dirs {
+                for theme in &themes {
+                    for size in SIZES {
+                        for extension in ["svg", "png"] {
+                            if size == "scalable" && extension == "png" {
+                                continue;
+                            }
+                            paths.push(
+                                dir.join("icons")
+                                    .join(theme)
+                                    .join(size)
+                                    .join("apps")
+                                    .join(format!("{name}.{extension}")),
+                            );
+                        }
+                    }
+                }
+            }
+            for dir in &self.data_dirs {
+                for extension in ["svg", "png"] {
+                    paths.push(dir.join("pixmaps").join(format!("{name}.{extension}")));
+                }
+            }
+            paths
+        }
+
+        /// The file for an `Icon=` value, or `None`. An absolute path must
+        /// exist; a name must be a plain file name, never a path, so a
+        /// desktop entry cannot point the lookup outside the icon
+        /// directories.
+        pub fn resolve(&self, icon: &str) -> Option<PathBuf> {
+            let icon = icon.trim();
+            if icon.is_empty() {
+                return None;
+            }
+            let as_path = Path::new(icon);
+            if as_path.is_absolute() {
+                return as_path.is_file().then(|| as_path.to_path_buf());
+            }
+            if icon.contains('/') || icon.contains('\\') || icon == "." || icon == ".." {
+                return None;
+            }
+            // `Icon=firefox.png` is tolerated by most desktops: drop a known
+            // extension and look the name up.
+            let name = icon
+                .strip_suffix(".png")
+                .or_else(|| icon.strip_suffix(".svg"))
+                .unwrap_or(icon);
+            self.candidates(name)
+                .into_iter()
+                .find(|path| path.is_file())
+        }
+    }
+
+    /// The letter that stands for an application: the first alphanumeric
+    /// character of its name, upper-cased, or `?` for a name with none.
+    pub fn initial(name: &str) -> SharedString {
+        name.chars()
+            .find(|c| c.is_alphanumeric())
+            .map(|c| c.to_uppercase().collect::<String>())
+            .unwrap_or_else(|| "?".to_string())
+            .into()
+    }
+}
+
 /// The grid presentation of one application: icon glyph, name, and the badges
 /// the caller decided to show.
 pub fn application_tile(
     glyph: impl Into<SharedString>,
+    name: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+    badges: Vec<AnyElement>,
+    style: TileStyle,
+) -> impl IntoElement {
+    application_tile_with_icon(AppIcon::Letter(glyph.into()), name, detail, badges, style)
+}
+
+/// [`application_tile`] with the application's real icon, falling back to
+/// its letter.
+pub fn application_tile_with_icon(
+    icon: AppIcon,
     name: impl Into<SharedString>,
     detail: impl Into<SharedString>,
     badges: Vec<AnyElement>,
@@ -292,17 +484,7 @@ pub fn application_tile(
         .border_1()
         .border_color(style.border)
         .bg(style.background)
-        .child(
-            div()
-                .size_10()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(style.radius)
-                .bg(style.glyph_background)
-                .text_color(style.glyph_foreground)
-                .child(glyph.into()),
-        )
+        .child(icon.render(gpui::px(40.0), &style))
         .child(
             div()
                 .min_w_0()
@@ -330,6 +512,18 @@ pub fn application_list_row(
     badges: Vec<AnyElement>,
     style: TileStyle,
 ) -> impl IntoElement {
+    application_list_row_with_icon(AppIcon::Letter(glyph.into()), name, detail, badges, style)
+}
+
+/// [`application_list_row`] with the application's real icon, falling back to
+/// its letter.
+pub fn application_list_row_with_icon(
+    icon: AppIcon,
+    name: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+    badges: Vec<AnyElement>,
+    style: TileStyle,
+) -> impl IntoElement {
     div()
         .flex()
         .w_full()
@@ -342,17 +536,7 @@ pub fn application_list_row(
         .border_1()
         .border_color(style.border)
         .bg(style.background)
-        .child(
-            div()
-                .size_8()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(style.radius)
-                .bg(style.glyph_background)
-                .text_color(style.glyph_foreground)
-                .child(glyph.into()),
-        )
+        .child(icon.render(gpui::px(32.0), &style))
         .child(
             div()
                 .v_flex()
@@ -381,7 +565,7 @@ pub fn application_list_row(
 /// The colors an application tile or row uses, including its selected state.
 /// A selected item differs by border and background rather than by a color the
 /// primitive invented.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TileStyle {
     pub foreground: Hsla,
     pub muted_foreground: Hsla,
@@ -502,5 +686,102 @@ mod affordance_tests {
                 "badge must stay non-interactive, but its body uses {chrome}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::icons::{IconSearch, initial};
+    use super::*;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("better-ui-icons-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch directory");
+        dir
+    }
+
+    #[test]
+    fn a_letter_stands_in_for_any_name() {
+        assert_eq!(initial("files").as_ref(), "F");
+        assert_eq!(initial("  9 lives").as_ref(), "9");
+        assert_eq!(initial("檔案").as_ref(), "檔");
+        assert_eq!(initial("—").as_ref(), "?");
+    }
+
+    #[test]
+    fn a_named_icon_is_found_in_the_theme_then_pixmaps() {
+        let root = scratch("lookup");
+        let hicolor = root.join("share/icons/hicolor/48x48/apps");
+        std::fs::create_dir_all(&hicolor).unwrap();
+        std::fs::write(hicolor.join("editor.png"), b"png").unwrap();
+        let pixmaps = root.join("share/pixmaps");
+        std::fs::create_dir_all(&pixmaps).unwrap();
+        std::fs::write(pixmaps.join("legacy.svg"), b"<svg/>").unwrap();
+        std::fs::write(pixmaps.join("editor.svg"), b"<svg/>").unwrap();
+        let search = IconSearch {
+            data_dirs: vec![root.join("share")],
+            themes: Vec::new(),
+        };
+        // The theme wins over pixmaps.
+        assert_eq!(search.resolve("editor"), Some(hicolor.join("editor.png")));
+        assert_eq!(
+            search.resolve("editor.png"),
+            Some(hicolor.join("editor.png"))
+        );
+        assert_eq!(search.resolve("legacy"), Some(pixmaps.join("legacy.svg")));
+        assert_eq!(search.resolve("missing"), None);
+        // A name is never a path out of the icon directories.
+        assert_eq!(search.resolve("../pixmaps/legacy"), None);
+        assert_eq!(search.resolve(""), None);
+        // An absolute path is used as it is, when it exists.
+        let absolute = pixmaps.join("legacy.svg");
+        assert_eq!(
+            search.resolve(absolute.to_str().unwrap()),
+            Some(absolute.clone())
+        );
+        assert_eq!(search.resolve("/nonexistent/icon.png"), None);
+
+        let icon = AppIcon::for_entry(Some("editor"), "Text Editor", &search);
+        assert_eq!(
+            icon,
+            AppIcon::File {
+                path: hicolor.join("editor.png"),
+                fallback: "T".into()
+            }
+        );
+        assert_eq!(
+            AppIcon::for_entry(Some("missing"), "Text Editor", &search),
+            AppIcon::Letter("T".into())
+        );
+        assert_eq!(
+            AppIcon::for_entry(None, "files", &search),
+            AppIcon::Letter("F".into())
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn scalable_comes_before_fixed_sizes_and_themes_before_hicolor() {
+        let search = IconSearch {
+            data_dirs: vec!["/a".into()],
+            themes: vec!["Yaru".into()],
+        };
+        let candidates = search.candidates("x");
+        assert_eq!(
+            candidates[0],
+            std::path::PathBuf::from("/a/icons/Yaru/scalable/apps/x.svg")
+        );
+        let hicolor = candidates
+            .iter()
+            .position(|p| p.starts_with("/a/icons/hicolor"))
+            .unwrap();
+        let yaru_last = candidates
+            .iter()
+            .rposition(|p| p.starts_with("/a/icons/Yaru"))
+            .unwrap();
+        assert!(yaru_last < hicolor);
+        assert!(candidates.last().unwrap().starts_with("/a/pixmaps"));
     }
 }
