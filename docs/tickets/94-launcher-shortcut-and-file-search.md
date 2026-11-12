@@ -75,13 +75,17 @@ launcher into a summoned panel:
   at once. It starts with the session and is not something a person opens or
   quits: no entry in the application menu or the taskbar, and losing focus,
   Escape, or launching something hides it.
-- **Spotlight's shape.** A wide, short search bar centred a little above the
-  middle of the screen (about 680px wide); results appear below it in one
-  list grouped by kind (Top hit, Applications, Calculator, Folders, Files),
-  with a preview of the selected result on the right; nothing below the bar
-  until something is typed, or the pinned apps in a single row when the
-  person prefers. The current Start-menu grid becomes "All apps" behind a
-  key, not the first thing shown.
+- **Wide, with today's content (owner, corrected 2026-11-13).** The panel is
+  wide and short, centred a little above the middle of the screen. Before
+  anything is typed it shows what the Start menu shows today, laid out for
+  the wide shape: pinned apps in rows across the full width, then recommended
+  and recently used apps in columns, with "All apps" one key or click away.
+  Typing turns the same panel into grouped results (Top hit, Applications,
+  Calculator, Folders, Files) with a preview of the selected result on the
+  right.
+- **A taskbar button.** A button on the taskbar opens and hides the panel,
+  like Super+Space. It is a launcher button, not a running-window entry:
+  clicking it while the panel shows hides it.
 - **Proving how it is drawn.** A GPUI window is an `xdg_toplevel`, so Zorin's
   taskbar lists it and Mutter may place and animate it like an application.
   Before building, prove one of: hiding it from the taskbar and placing it
