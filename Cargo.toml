@@ -152,3 +152,17 @@ gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "88f102d13654fe25aa2fede076274b6b751a3704" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "88f102d13654fe25aa2fede076274b6b751a3704" }
 gpui-platform = { git = "https://github.com/zed-industries/zed", package = "gpui_platform", features = ["wayland", "x11"] }
+
+# Debug builds keep line tables only, not full debug info: a full debug build
+# of the workspace (GPUI and Zed's crates included) was 40-60 GB per target
+# directory, and every parallel worktree has its own. Backtraces still name
+# files and lines; a debugger shows less about variables. Dependencies get no
+# debug info at all.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
