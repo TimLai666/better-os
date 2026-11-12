@@ -23,6 +23,13 @@ only the last minute. This ticket keeps that service as the one collector.
   (`gpu_busy_percent`, `mem_info_vram_*`, hwmon), Intel (i915/xe through
   hwmon and the fdinfo engine counters), and NVIDIA through NVML when the
   library is present; per-process GPU use from `/proc/<pid>/fdinfo` DRM keys.
+- NPU (owner, 2026-11-12): the AMD XDNA NPU through the `amdxdna` driver
+  (`/sys/class/accel/accel*/device`: model `vbnv`, firmware `fw_version`,
+  power state and runtime status, read on the owner's machine as
+  `RyzenAI-npu4`, firmware 1.0.0.63, `D3hot`/`suspended` when idle), and its
+  busy time and per-process use from the DRM fdinfo of `/dev/accel*` where the
+  driver reports it; whatever the driver does not expose is said plainly
+  rather than estimated. Intel NPUs (`intel_vpu`) the same way.
 - Battery: charge, rate, time left, cycle count, design and full capacity,
   health, charger state, from `power_supply`.
 - Every hwmon sensor: temperatures with their labels, fan speeds, voltages
