@@ -1131,10 +1131,17 @@ impl ManagerApp {
             .operation
             .map(|operation| self.operation_label(operation))
             .unwrap_or(c.none);
+        // A unit entry carries no detail the row could show, so the unit's
+        // name travels in the sentence itself.
         let detail = entry
             .stage
-            .map(|stage| self.stage_label(stage))
-            .unwrap_or_else(|| self.evidence_label(entry.evidence.as_deref(), None));
+            .map(|stage| self.stage_label(stage).to_string())
+            .unwrap_or_else(|| {
+                crate::app::activity_evidence_text(
+                    self.evidence_label(entry.evidence.as_deref(), None),
+                    entry.evidence.as_deref(),
+                )
+            });
         h_flex()
             .w_full()
             .min_w_0()

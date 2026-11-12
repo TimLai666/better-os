@@ -17,6 +17,7 @@ use manager_platform::download::{ArtifactCache, HttpDownloader};
 use manager_platform::dpkg::DpkgProbe;
 use manager_platform::host::ClientPlatform;
 use manager_platform::privileged::DbusPrivilegedExecutor;
+use manager_platform::user_units::SystemdUserUnitController;
 use manager_platform::{SystemCapabilities, SystemProfile};
 use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, start_catalog};
 
@@ -129,6 +130,9 @@ pub(crate) struct ManagerApp {
     pub(crate) repair_task: Option<Task<()>>,
     /// How the last repair this window asked for ended.
     pub(crate) repair_result: Option<RepairResult>,
+    /// Set while the startup pass is starting the user units the record says
+    /// should run.
+    pub(crate) heal_task: Option<Task<()>>,
     pub(crate) _subscriptions: Vec<Subscription>,
 }
 
@@ -217,9 +221,10 @@ impl ManagerApp {
             package_system_task: None,
             repair_task: None,
             repair_result: None,
+            heal_task: None,
             _subscriptions: vec![subscription],
         };
-        app.reconcile_with_host();
+        app.reconcile_with_host(cx);
         app.refresh_catalog_at_launch(cx);
         app
     }
@@ -234,7 +239,7 @@ impl ManagerApp {
     ///
     /// A demo window skips it: its state is a fabrication for screenshots, and
     /// mixing real host facts into it would make it neither.
-    fn reconcile_with_host(&mut self) {
+    fn reconcile_with_host(&mut self, cx: &mut Context<Self>) {
         if self.execution == ExecutionMode::Mock {
             return;
         }
@@ -253,6 +258,60 @@ impl ManagerApp {
             .manager
             .unorderable_host_checks(&self.state, &DpkgProbe)
             .unwrap_or_default();
+        self.heal_user_units(cx);
+    }
+
+    /// Makes the record's "enabled" true of the machine again, off the UI
+    /// thread.
+    ///
+    /// The record already says which components were asked to run. Startup
+    /// is where that intent is made true again: the packages install their
+    /// units without enabling them, so a machine that installed Better OS
+    /// before this pass or upgraded Better Manager afterwards carries a
+    /// correct record and a stopped service. Starting a unit waits for
+    /// systemd, up to two seconds per unit to see it come up and ten seconds
+    /// per `systemctl` call, so it runs on a background thread like the
+    /// repair; what it did is written into the state the window has when it
+    /// lands. A running transaction owns its units, so nothing starts while
+    /// one is in progress.
+    fn heal_user_units(&mut self, cx: &mut Context<Self>) {
+        if self.is_demo()
+            || self.heal_task.is_some()
+            || self.running.is_some()
+            || self.state.active_operation.is_some()
+        {
+            return;
+        }
+        let manager = self.manager.clone();
+        let snapshot = self.state.clone();
+        self.heal_task = Some(cx.spawn(async move |this, cx| {
+            let report = cx
+                .background_spawn(async move {
+                    let units = SystemdUserUnitController::new();
+                    manager
+                        .run_user_unit_healing(&snapshot, &DpkgProbe, &units)
+                        .unwrap_or_default()
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| app.finish_healing(report, cx));
+        }));
+    }
+
+    fn finish_healing(
+        &mut self,
+        report: Vec<manager_core::reconcile::UserUnitHealing>,
+        cx: &mut Context<Self>,
+    ) {
+        self.heal_task = None;
+        let mut candidate = self.state.clone();
+        if !self
+            .manager
+            .record_user_unit_healing(&mut candidate, &report)
+            .is_empty()
+        {
+            self.commit_state(candidate);
+        }
+        cx.notify();
     }
 
     /// Asks for confirmation before adopting what the machine has, or takes
@@ -558,7 +617,7 @@ impl ManagerApp {
         self.repair_result = Some(report.result);
         // Finishing dpkg's work can move a component's installed version, and
         // dpkg is where the manager reads that.
-        self.reconcile_with_host();
+        self.reconcile_with_host(cx);
         cx.notify();
     }
 
@@ -734,6 +793,7 @@ impl ManagerApp {
                     return;
                 }
             };
+            let user_units = SystemdUserUnitController::new();
             let driver = RealDriver::new(
                 &downloader,
                 &executor,
@@ -741,7 +801,8 @@ impl ManagerApp {
                 &better_core::package_health::SystemHealthProbe,
                 uuid::Uuid::new_v4().to_string(),
                 profile,
-            );
+            )
+            .with_user_units(&user_units);
             let mut runner = TransactionRunner::new(&manager, Box::new(driver), &store)
                 .with_cancel_token(cancel);
             let _ = runner.run(&mut state, &mut |event| {
@@ -1186,6 +1247,15 @@ impl ManagerApp {
             Some("package_system.repaired") => c.evidence_package_system_repaired,
             Some("package_system.still_interrupted") => c.evidence_package_system_still_interrupted,
             Some("package_system.nothing_to_repair") => c.repair_result_nothing,
+            Some(other) if other.starts_with("user_units.failed") => c.evidence_user_units_failed,
+            Some(other) if other.starts_with("user_units.not_running") => {
+                c.evidence_user_units_not_running
+            }
+            Some(other) if other.starts_with("user_units.started") => c.evidence_user_units_started,
+            Some(other) if other.starts_with("user_units.masked") => c.evidence_user_units_masked,
+            Some(other) if other.starts_with("user_units.no_session") => {
+                c.evidence_user_units_no_session
+            }
             Some(other) if other.starts_with("host.externally_upgraded") => {
                 c.evidence_externally_upgraded
             }
@@ -1343,4 +1413,24 @@ pub(crate) fn plan_rejection_is_host_mismatch(evidence: &str, detail: Option<&st
     key == "daemon.error.plan_rejected"
         && (detail.starts_with("plan targets release ")
             || detail.starts_with("plan targets architecture "))
+}
+
+/// The sentence an activity row shows for an entry with no stage.
+///
+/// The row has no room for the failure's detail, and the startup pass's
+/// entries carry the unit in the evidence itself (`user_units.failed:<unit>`),
+/// so the unit is named after the sentence. Anything else reads as its label.
+pub(crate) fn activity_evidence_text(label: &str, evidence: Option<&str>) -> String {
+    match evidence
+        .and_then(|evidence| evidence.strip_prefix("user_units."))
+        .and_then(|rest| rest.split_once(':'))
+    {
+        Some((_, units)) if !units.trim().is_empty() => {
+            format!(
+                "{label}: {}",
+                units.split(',').collect::<Vec<_>>().join(", ")
+            )
+        }
+        _ => label.to_string(),
+    }
 }

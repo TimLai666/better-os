@@ -14,6 +14,7 @@ mod flavor;
 pub mod host;
 #[cfg(feature = "dbus-client")]
 pub mod privileged;
+pub mod user_units;
 
 use std::path::PathBuf;
 

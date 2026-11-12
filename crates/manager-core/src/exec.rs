@@ -16,11 +16,12 @@ use manager_ipc::{
 };
 use manager_platform::download::HttpDownloader;
 use manager_platform::dpkg::PackageStateProbe;
+use manager_platform::user_units::{UnitActivity, UnitFailure, UserUnitController, service_units};
 use manager_platform::{DownloadRequest, PlatformError, PrivilegedTransactionExecutor};
 
 use crate::{
     DesiredOperation, FailureEvidence, Manager, ManagerError, ManagerState, MockOutcome,
-    OperationProgress, OperationStage, StageOutcome, SystemProfile, TransactionPlan,
+    OperationProgress, OperationStage, PlanStep, StageOutcome, SystemProfile, TransactionPlan,
 };
 
 /// A cooperative cancellation flag shared with whatever is running a stage.
@@ -154,6 +155,11 @@ impl StageDriver for MockDriver {
 /// The daemon owns the applying, the health checks, and the rollback. This
 /// driver does not re-derive any of that; it reports what came back. Deciding
 /// here that a step succeeded would be inventing a result nothing observed.
+///
+/// It does own the component's user units, because starting them needs no
+/// privilege and therefore never crosses that boundary. `None` means this
+/// driver manages no units at all, which is what the tests that predate the
+/// controller get.
 pub struct RealDriver<'a> {
     downloader: &'a HttpDownloader,
     executor: &'a dyn PrivilegedTransactionExecutor,
@@ -161,6 +167,7 @@ pub struct RealDriver<'a> {
     /// changing it.
     packages: &'a dyn PackageStateProbe,
     health: &'a dyn HealthProbe,
+    user_units: Option<&'a dyn UserUnitController>,
     transaction_id: String,
     profile: SystemProfile,
     /// Set once the transaction has been handed over, so the outcome can be
@@ -182,10 +189,21 @@ impl<'a> RealDriver<'a> {
             executor,
             packages,
             health,
+            user_units: None,
             transaction_id: transaction_id.into(),
             profile,
             outcome: None,
         }
+    }
+
+    /// Adds the user-session unit controller.
+    ///
+    /// A builder method added beside `new` rather than an argument to it, so
+    /// every existing construction keeps compiling with its own meaning: a
+    /// driver that was never given a controller manages no units.
+    pub fn with_user_units(mut self, user_units: &'a dyn UserUnitController) -> Self {
+        self.user_units = Some(user_units);
+        self
     }
 
     /// Translates a plan into the wire contract the daemon revalidates.
@@ -316,6 +334,189 @@ impl<'a> RealDriver<'a> {
         }
     }
 
+    /// The units a step's package installed, from dpkg's own file list.
+    ///
+    /// Reading the list is the only way to know which units belong to this
+    /// component: no table of unit names by component id exists, and the
+    /// manifest schema does not carry one.
+    fn step_units(&self, step: &PlanStep) -> Result<Vec<String>, FailureEvidence> {
+        if self.user_units.is_none() {
+            return Ok(Vec::new());
+        }
+        let files = self
+            .packages
+            .installed_files(step.component.as_str())
+            .map_err(|_| {
+                FailureEvidence::with_detail(
+                    "health.undetermined",
+                    format!(
+                        "the dpkg file list for {} could not be read",
+                        step.component
+                    ),
+                )
+            })?;
+        Ok(service_units(&files))
+    }
+
+    fn enable_units(&self, step: &PlanStep) -> Result<(), FailureEvidence> {
+        let Some(controller) = self.user_units else {
+            return Ok(());
+        };
+        let units = self.step_units(step)?;
+        if units.is_empty() {
+            return Ok(());
+        }
+        controller.enable_now(&units).map_err(unit_failure)
+    }
+
+    /// Enables the units and restarts them: an update or a restore replaced
+    /// the program a running unit executes, and only a restart runs the new
+    /// one. A unit that was not running is simply started.
+    fn restart_units(&self, step: &PlanStep) -> Result<(), FailureEvidence> {
+        let Some(controller) = self.user_units else {
+            return Ok(());
+        };
+        let units = self.step_units(step)?;
+        if units.is_empty() {
+            return Ok(());
+        }
+        controller.enable_and_restart(&units).map_err(unit_failure)
+    }
+
+    /// Verify on a component the record says is enabled: the record is the
+    /// person's decision, so a unit that is not enabled and running is
+    /// started before it is checked. A unit that is already fine is left
+    /// alone, so "check again" on a healthy component starts nothing.
+    fn start_recorded_units(&self, step: &PlanStep) -> Result<(), FailureEvidence> {
+        let Some(controller) = self.user_units else {
+            return Ok(());
+        };
+        let units = self.step_units(step)?;
+        if units.is_empty() {
+            return Ok(());
+        }
+        let needing = controller
+            .states(&units)
+            .map_err(unit_failure)?
+            .into_iter()
+            .filter(|state| !state.is_satisfied() && state.activity != UnitActivity::Starting)
+            .map(|state| state.unit)
+            .collect::<Vec<_>>();
+        if needing.is_empty() {
+            return Ok(());
+        }
+        controller.enable_now(&needing).map_err(unit_failure)
+    }
+
+    fn disable_units(&self, step: &PlanStep) -> Result<(), FailureEvidence> {
+        let Some(controller) = self.user_units else {
+            return Ok(());
+        };
+        let units = self.step_units(step)?;
+        if units.is_empty() {
+            return Ok(());
+        }
+        controller.disable_now(&units).map_err(unit_failure)
+    }
+
+    /// Stops the units of every component this plan removes, and returns the
+    /// ones that were enabled, so a removal the daemon then refuses can put
+    /// them back. Asking first is what makes the undo exact: a unit that was
+    /// already disabled stays disabled.
+    fn stop_units_for_removal(
+        &self,
+        plan: &TransactionPlan,
+    ) -> Result<Vec<String>, FailureEvidence> {
+        let Some(controller) = self.user_units else {
+            return Ok(Vec::new());
+        };
+        let mut stopped = Vec::new();
+        for step in plan
+            .steps()
+            .iter()
+            .filter(|step| step.operation == DesiredOperation::Remove)
+        {
+            let units = self.step_units(step)?;
+            if units.is_empty() {
+                continue;
+            }
+            let enabled = controller
+                .states(&units)
+                .map_err(unit_failure)?
+                .into_iter()
+                .filter(|state| state.enabled)
+                .map(|state| state.unit);
+            if let Err(failure) = controller.disable_now(&units) {
+                // Whatever this removal already stopped is started again
+                // before it reports, so a refused removal changes nothing.
+                let _ = self.restart_stopped(&stopped);
+                return Err(unit_failure(failure));
+            }
+            stopped.extend(enabled);
+        }
+        Ok(stopped)
+    }
+
+    fn restart_stopped(&self, units: &[String]) -> Result<(), UnitFailure> {
+        match self.user_units {
+            Some(controller) if !units.is_empty() => controller.enable_now(units),
+            _ => Ok(()),
+        }
+    }
+
+    /// Fails when a step that leaves its component enabled has a unit that is
+    /// not enabled and running, naming the unit rather than saying "unhealthy".
+    ///
+    /// A unit that is `enabled` but `inactive` is the case the owner's machine
+    /// was in: the package was installed, dpkg was satisfied, and nothing was
+    /// running. The health rule has to see that, so it asks systemd and not
+    /// only dpkg.
+    fn check_units(&self, plan: &TransactionPlan) -> Option<StageOutcome> {
+        let controller = self.user_units?;
+        for step in plan.steps().iter().filter(|step| step.leaves_enabled) {
+            let units = match self.step_units(step) {
+                Ok(units) => units,
+                Err(evidence) => return Some(StageOutcome::Failed(evidence)),
+            };
+            if units.is_empty() {
+                continue;
+            }
+            let states = match controller.states(&units) {
+                Ok(states) => states,
+                Err(failure) if failure.is_no_session() => {
+                    return Some(StageOutcome::Failed(unit_failure(failure)));
+                }
+                Err(failure) => {
+                    return Some(StageOutcome::Failed(FailureEvidence::with_detail(
+                        "health.undetermined",
+                        format!("{}: {}", failure.unit, failure.message),
+                    )));
+                }
+            };
+            for state in states {
+                if state.is_satisfied() {
+                    continue;
+                }
+                let reason = if state.masked {
+                    "is masked"
+                } else if !state.enabled {
+                    "is not enabled"
+                } else {
+                    match state.activity {
+                        UnitActivity::Starting => "is still starting",
+                        UnitActivity::Failed => "has failed",
+                        _ => "is not running",
+                    }
+                };
+                return Some(StageOutcome::Failed(FailureEvidence::with_detail(
+                    "user_units.not_running",
+                    format!("{} {reason}", state.unit),
+                )));
+            }
+        }
+        None
+    }
+
     /// The health stage: the daemon's verdict for what it applied, and the
     /// shared health rule, read without root, for every step the daemon never
     /// saw: Verify, Enable, and Disable.
@@ -353,7 +554,9 @@ impl<'a> RealDriver<'a> {
                 }
             }
         }
-        StageOutcome::Completed
+        // dpkg can be completely satisfied while nothing is running: that is
+        // the state this check exists to make visible.
+        self.check_units(plan).unwrap_or(StageOutcome::Completed)
     }
 
     /// What the daemon reported, once the transaction has been handed over.
@@ -372,14 +575,87 @@ impl StageDriver for RealDriver<'_> {
     ) -> StageOutcome {
         match stage {
             OperationStage::Downloading => self.download_all(plan, progress, cancel),
-            OperationStage::Installing => self.apply(plan, progress),
+            OperationStage::Installing => {
+                // A component being removed loses its units before the package
+                // goes: once dpkg has taken the unit files away there is
+                // nothing left to name, and a service still running from a
+                // deleted file is exactly the state that cannot be described.
+                let stopped = match self.stop_units_for_removal(plan) {
+                    Ok(stopped) => stopped,
+                    Err(evidence) => return StageOutcome::Failed(evidence),
+                };
+                let outcome = self.apply(plan, progress);
+                if matches!(outcome, StageOutcome::Completed) {
+                    return outcome;
+                }
+                // The daemon did not remove the package, so the record still
+                // says enabled and the units it stopped have to run again.
+                match (self.restart_stopped(&stopped), outcome) {
+                    (Err(failure), StageOutcome::Failed(mut evidence)) => {
+                        let again = format!(
+                            "{} could not be started again: {}",
+                            failure.unit, failure.message
+                        );
+                        evidence.detail = Some(match evidence.detail.take() {
+                            Some(detail) => format!("{detail}; {again}"),
+                            None => again,
+                        });
+                        StageOutcome::Failed(evidence)
+                    }
+                    (_, outcome) => outcome,
+                }
+            }
             // The daemon already applied configuration and health-checked what
-            // it applied. Repeating either here would be guessing.
-            OperationStage::ApplyingSettings => self
-                .outcome
-                .as_ref()
-                .map(outcome_to_stage)
-                .unwrap_or(StageOutcome::Completed),
+            // it applied. Repeating either here would be guessing. What it does
+            // not do is start the component's user units, which needs no
+            // privilege and belongs to this process.
+            OperationStage::ApplyingSettings => {
+                if let Some(outcome) = &self.outcome {
+                    let stage = outcome_to_stage(outcome);
+                    if !matches!(stage, StageOutcome::Completed) {
+                        return stage;
+                    }
+                }
+                for step in plan.steps() {
+                    let result = match step.operation {
+                        DesiredOperation::Disable => self.disable_units(step),
+                        // The units went before the package did.
+                        DesiredOperation::Remove => Ok(()),
+                        // The record says this component runs. Making that
+                        // true is the repair, so a check on an enabled
+                        // component starts what is stopped before it looks;
+                        // a check on a disabled one only looks.
+                        DesiredOperation::Verify if step.leaves_enabled => {
+                            self.start_recorded_units(step)
+                        }
+                        DesiredOperation::Verify => Ok(()),
+                        // A new program is on disk, and a unit that is
+                        // already running is still executing the old one.
+                        DesiredOperation::Update | DesiredOperation::Restore
+                            if step.leaves_enabled =>
+                        {
+                            self.restart_units(step)
+                        }
+                        // A restore to a snapshot that was disabled is the
+                        // mirror image: the units stop.
+                        DesiredOperation::Restore => self.disable_units(step),
+                        DesiredOperation::Install
+                        | DesiredOperation::Update
+                        | DesiredOperation::Enable
+                            if step.leaves_enabled =>
+                        {
+                            self.enable_units(step)
+                        }
+                        DesiredOperation::Install
+                        | DesiredOperation::Update
+                        | DesiredOperation::Enable => Ok(()),
+                    };
+                    if let Err(evidence) = result {
+                        return StageOutcome::Failed(evidence);
+                    }
+                }
+                StageOutcome::Completed
+            }
             OperationStage::CheckingHealth => self.check_health(plan),
         }
     }
@@ -439,6 +715,27 @@ pub(crate) fn split_daemon_key(error_key: &str) -> FailureEvidence {
         }
         _ => FailureEvidence::new(error_key),
     }
+}
+
+/// A failed unit, as the step's evidence: the key names the kind of failure,
+/// the detail names the unit and repeats systemctl's own words.
+///
+/// No user session is its own key: nothing was refused, there was nobody to
+/// ask, and the person has to be told that rather than that a service broke.
+fn unit_failure(failure: UnitFailure) -> FailureEvidence {
+    if failure.is_no_session() {
+        return FailureEvidence::with_detail(
+            "user_units.no_session",
+            format!(
+                "{}: no user session is available to manage it ({})",
+                failure.unit, failure.message
+            ),
+        );
+    }
+    FailureEvidence::with_detail(
+        "user_units.failed",
+        format!("{}: {}", failure.unit, failure.message),
+    )
 }
 
 /// Maps a platform failure onto the stable keys a presentation layer localizes.

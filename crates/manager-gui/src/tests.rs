@@ -360,6 +360,11 @@ fn every_real_failure_reason_has_copy_in_both_locales() {
             c.demo_mode_banner,
             c.downloading_progress,
             c.check_host_reconciliation,
+            c.evidence_user_units_failed,
+            c.evidence_user_units_not_running,
+            c.evidence_user_units_started,
+            c.evidence_user_units_masked,
+            c.evidence_user_units_no_session,
         ] {
             assert!(!text.is_empty(), "{locale:?} is missing a failure reason");
         }
@@ -1720,6 +1725,165 @@ mod package_system_repair {
         }
     }
 
+    /// A stopped background service is the defect this ticket exists for, so
+    /// the window has to say that rather than fall through to a generic
+    /// refusal. Both keys carry a unit and systemctl's words in the detail.
+    #[test]
+    fn the_user_unit_evidence_keys_are_worded_rather_than_falling_through() {
+        let app = include_str!("app.rs");
+        for (key, field) in [
+            ("user_units.failed", "c.evidence_user_units_failed"),
+            (
+                "user_units.not_running",
+                "c.evidence_user_units_not_running",
+            ),
+            ("user_units.started", "c.evidence_user_units_started"),
+            ("user_units.masked", "c.evidence_user_units_masked"),
+            ("user_units.no_session", "c.evidence_user_units_no_session"),
+        ] {
+            let at = app
+                .find(&format!("\"{key}\""))
+                .unwrap_or_else(|| panic!("{key} has no wording"));
+            let arm = app[at..].split("Some(").next().unwrap();
+            assert!(arm.contains(field), "{key} must map to {field}: {arm}");
+        }
+    }
+
+    /// An activity row shows no detail, so a unit entry has to name its unit
+    /// in the sentence, and a start the record caused has to say so.
+    #[test]
+    fn a_unit_activity_row_names_the_unit_and_why_it_was_started() {
+        use crate::app::activity_evidence_text;
+
+        let zh = copy(Locale::ZhTw);
+        assert!(
+            zh.evidence_user_units_started
+                .contains("依 Better Manager 的紀錄重新啟用"),
+            "{}",
+            zh.evidence_user_units_started
+        );
+        let en = copy(Locale::EnUs);
+        assert!(
+            en.evidence_user_units_started
+                .contains("Better Manager's record"),
+            "{}",
+            en.evidence_user_units_started
+        );
+
+        assert_eq!(
+            activity_evidence_text(
+                en.evidence_user_units_failed,
+                Some("user_units.failed:better-awake.service")
+            ),
+            format!("{}: better-awake.service", en.evidence_user_units_failed)
+        );
+        assert_eq!(
+            activity_evidence_text(
+                zh.evidence_user_units_started,
+                Some("user_units.started:a.service,b.service")
+            ),
+            format!("{}: a.service, b.service", zh.evidence_user_units_started)
+        );
+        assert_eq!(
+            activity_evidence_text(en.evidence_health_failed, Some("health.failed")),
+            en.evidence_health_failed
+        );
+        let rows = include_str!("pages_main.rs");
+        let row = rows
+            .split("fn activity_row(")
+            .nth(1)
+            .unwrap()
+            .split("\n    }\n")
+            .next()
+            .unwrap();
+        assert!(row.contains("activity_evidence_text("), "{row}");
+    }
+
+    /// The record saying a component is enabled is not true of the machine
+    /// unless something makes it true, and startup is that something. A demo
+    /// window, which returns before any of this, still touches nothing.
+    #[test]
+    fn the_window_heals_user_units_when_it_reconciles() {
+        let app = include_str!("app.rs");
+        let reconcile = app
+            .split("fn reconcile_with_host(&mut self, cx: &mut Context<Self>)")
+            .nth(1)
+            .expect("reconciliation exists");
+        let reconcile = reconcile.split("\n    }\n").next().unwrap();
+        assert!(
+            reconcile.contains("self.heal_user_units(cx)"),
+            "{reconcile}"
+        );
+        assert!(reconcile.contains("ExecutionMode::Mock"), "{reconcile}");
+    }
+
+    /// Starting a unit waits on systemd for seconds at a time, so it must not
+    /// run on the thread that draws the window: the pass that talks to
+    /// systemd runs inside `background_spawn`, and only the bookkeeping comes
+    /// back to the window. Nothing starts while a transaction owns the units.
+    #[test]
+    fn the_window_starts_user_units_off_the_ui_thread() {
+        let app = include_str!("app.rs");
+        let reconcile = app
+            .split("fn reconcile_with_host(&mut self, cx: &mut Context<Self>)")
+            .nth(1)
+            .unwrap()
+            .split("\n    }\n")
+            .next()
+            .unwrap();
+        assert!(
+            !reconcile.contains("heal_user_units(&mut"),
+            "the reconciliation must not start units itself: {reconcile}"
+        );
+        let heal = app
+            .split("fn heal_user_units(&mut self, cx: &mut Context<Self>)")
+            .nth(1)
+            .expect("the background pass exists")
+            .split("\n    }\n")
+            .next()
+            .unwrap();
+        let background = heal
+            .split(".background_spawn(")
+            .nth(1)
+            .expect("the pass runs in background_spawn");
+        assert!(
+            background.contains(".run_user_unit_healing("),
+            "{background}"
+        );
+        assert!(
+            background.contains("SystemdUserUnitController::new()"),
+            "{background}"
+        );
+        assert!(heal.contains("self.running.is_some()"), "{heal}");
+        assert!(
+            heal.contains("self.state.active_operation.is_some()"),
+            "{heal}"
+        );
+        let finish = app
+            .split("fn finish_healing(")
+            .nth(1)
+            .expect("the result is applied on the window's thread")
+            .split("\n    }\n")
+            .next()
+            .unwrap();
+        assert!(finish.contains(".record_user_unit_healing("), "{finish}");
+        assert!(!finish.contains("SystemdUserUnitController"), "{finish}");
+    }
+
+    /// A real transaction enables and starts the component's own units, so the
+    /// driver it builds has to be given the controller that does it.
+    #[test]
+    fn the_real_driver_is_given_the_user_unit_controller() {
+        let app = include_str!("app.rs");
+        let run = app
+            .split("fn run_real_transaction(&mut self")
+            .nth(1)
+            .expect("the real transaction exists");
+        let run = run.split("\n    }\n").next().unwrap();
+        assert!(run.contains("SystemdUserUnitController::new()"), "{run}");
+        assert!(run.contains(".with_user_units(&user_units)"), "{run}");
+    }
+
     /// A view model cannot prove what a render function does with it. The card
     /// and its button are what make the repair reachable, and the button must
     /// go through `manager-core` rather than talking to the service itself.
@@ -1790,7 +1954,7 @@ mod unorderable_host_versions {
     fn the_window_asks_dpkg_when_it_reconciles_and_lists_the_findings() {
         let app = include_str!("app.rs");
         let reconcile = app
-            .split("fn reconcile_with_host(&mut self)")
+            .split("fn reconcile_with_host(&mut self, cx: &mut Context<Self>)")
             .nth(1)
             .expect("reconciliation exists");
         let reconcile = reconcile.split("\n    }\n").next().unwrap();

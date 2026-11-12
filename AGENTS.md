@@ -28,6 +28,21 @@ updated, verified, and rolled back through shared manager operations.
   unreleased build directly on the host or touch host system paths, package
   state, or privileged services.
 - Keep manager CLI and GUI on the same `manager-core` planning API.
+- A component's systemd **user** units are managed by `manager-core`, never by
+  a window or a command directly. `RealDriver` takes the controller through
+  `with_user_units`; a driver built without one manages no units. Enabling,
+  starting, disabling, and stopping them, and the startup pass that makes an
+  existing record true (`Manager::heal_user_units`), go through
+  `manager_platform::user_units::UserUnitController`. Units come from dpkg's
+  own file list under `/usr/lib/systemd/user`, never from a table by component
+  id, and the health check requires an enabled component's units to be enabled
+  and either active or finished successfully (a service that exits 0 on
+  purpose, such as the touchpad gestures with nothing configured). Update and
+  Restore restart a unit that is already running so the new binary runs; Verify
+  starts a stopped unit before checking. Tests set
+  `BETTER_OS_TEST_SYSTEMCTL_GUARD` so the real runner can never reach the
+  person's own user manager. User units need no privilege, so this never crosses
+  `manager-daemon`; system units are out of scope.
 - Use Rust for first-party production code. Use Go only after recording a
   concrete reason in an ADR. Do not add C, C++, Python, JavaScript, Electron,
   Tauri, or GTK application code. **One bounded exception exists**, granted by
@@ -213,9 +228,9 @@ GUI or dependency compiles when the relevant command was not executed.
   the same unenforced-budget gap `better-files.yaml` carries. Its checksums are
   the published v0.2.9 ones.
 - A package installs its systemd user unit and does not enable it, matching
-  `better-manager-daemon`. Nothing in dpkg stops a running Better Awake, Better
-  Monitor, or Better Storage user service at removal either; the manifests'
-  remove and rollback plans are where that belongs, and `better-awake.yaml`'s
+  `better-manager-daemon`; Better Manager enables it (ticket 79). Nothing in
+  dpkg stops a running user service at removal either; Better Manager stops it
+  before the package goes, and `better-awake.yaml`'s
   release notes describe behaviour the manager owns rather than the package.
 - Better Awake detects nine of Issue #13's eleven trigger kinds. Fullscreen
   needs a compositor adapter and reports itself unavailable; audio reads ALSA and

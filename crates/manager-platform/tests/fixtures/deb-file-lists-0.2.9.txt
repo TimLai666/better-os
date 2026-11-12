@@ -1,0 +1,138 @@
+# The file lists of the published Better OS 0.2.9 packages, as dpkg reports
+# them. They are the only record of which systemd user units a component owns,
+# so the unit discovery is tested against the real thing rather than a list
+# written by hand.
+#
+# Read with:
+#   gh release download v0.2.9 -p 'better-*_0.2.9_ubuntu-24.04_amd64.deb' -D <dir>
+#   dpkg-deb -c <dir>/better-awake_0.2.9_ubuntu-24.04_amd64.deb
+#
+# The packages themselves are not committed. Each section below is the verbatim
+# output for the package it names, one section per package. Better Awake,
+# Better Monitor, Better Storage, and Better Touchpad each install exactly one
+# user unit; better-manager-daemon is here because its unit lives on the system
+# bus and must not be mistaken for a user unit.
+
+## package: better-awake
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./etc/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./etc/xdg/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./etc/xdg/autostart/
+-rw-r--r-- root/root       581 2026-11-12 01:13 ./etc/xdg/autostart/better-awake-tray.desktop
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/bin/
+-rwxr-xr-x root/root  52466520 2026-11-12 01:13 ./usr/bin/awake-gui
+-rwxr-xr-x root/root   8232296 2026-11-12 01:13 ./usr/bin/awake-tray
+-rwxr-xr-x root/root   9009448 2026-11-12 01:13 ./usr/bin/better-awake-service
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/lib/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/lib/systemd/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/lib/systemd/user/
+-rw-r--r-- root/root      2379 2026-11-12 01:13 ./usr/lib/systemd/user/better-awake.service
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/applications/
+-rw-r--r-- root/root       775 2026-11-12 01:13 ./usr/share/applications/better-awake.desktop
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/doc/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/doc/better-awake/
+-rw-r--r-- root/root    104879 2026-11-12 01:13 ./usr/share/doc/better-awake/THIRD-PARTY-LICENSES.md
+-rw-r--r-- root/root     35149 2026-11-12 01:13 ./usr/share/doc/better-awake/copyright
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/icons/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/icons/hicolor/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/icons/hicolor/scalable/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/icons/hicolor/scalable/apps/
+-rw-r--r-- root/root       836 2026-11-12 01:13 ./usr/share/icons/hicolor/scalable/apps/better-awake.svg
+
+## package: better-monitor
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/bin/
+-rwxr-xr-x root/root  55404384 2026-11-12 01:13 ./usr/bin/better-monitor
+-rwxr-xr-x root/root  10364632 2026-11-12 01:13 ./usr/bin/better-monitor-cli
+-rwxr-xr-x root/root   8825248 2026-11-12 01:13 ./usr/bin/better-monitor-service
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/lib/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/lib/systemd/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/lib/systemd/user/
+-rw-r--r-- root/root      1865 2026-11-12 01:13 ./usr/lib/systemd/user/better-monitor.service
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/applications/
+-rw-r--r-- root/root       942 2026-11-12 01:13 ./usr/share/applications/io.betteros.Monitor.desktop
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/doc/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/doc/better-monitor/
+-rw-r--r-- root/root    104879 2026-11-12 01:13 ./usr/share/doc/better-monitor/THIRD-PARTY-LICENSES.md
+-rw-r--r-- root/root     35149 2026-11-12 01:13 ./usr/share/doc/better-monitor/copyright
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/icons/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/icons/hicolor/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/icons/hicolor/scalable/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/icons/hicolor/scalable/apps/
+-rw-r--r-- root/root       799 2026-11-12 01:13 ./usr/share/icons/hicolor/scalable/apps/better-monitor.svg
+
+## package: better-storage
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/bin/
+-rwxr-xr-x root/root   6018992 2026-11-12 01:14 ./usr/bin/better-storage-doctor
+-rwxr-xr-x root/root   8025160 2026-11-12 01:14 ./usr/bin/better-storage-service
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/lib/
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/lib/systemd/
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/lib/systemd/user/
+-rw-r--r-- root/root      1702 2026-11-12 01:14 ./usr/lib/systemd/user/better-storage.service
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/share/
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/share/dbus-1/
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/share/dbus-1/services/
+-rw-r--r-- root/root       491 2026-11-12 01:14 ./usr/share/dbus-1/services/org.betteros.Storage1.service
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/share/doc/
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/share/doc/better-storage/
+-rw-r--r-- root/root    104879 2026-11-12 01:14 ./usr/share/doc/better-storage/THIRD-PARTY-LICENSES.md
+-rw-r--r-- root/root     35149 2026-11-12 01:14 ./usr/share/doc/better-storage/copyright
+
+## package: better-touchpad
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/bin/
+-rwxr-xr-x root/root  56708840 2026-11-12 01:13 ./usr/bin/better-touchpad
+-rwxr-xr-x root/root   8382872 2026-11-12 01:13 ./usr/bin/better-touchpad-gestured
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/lib/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/lib/systemd/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/lib/systemd/user/
+-rw-r--r-- root/root      1926 2026-11-12 01:13 ./usr/lib/systemd/user/better-touchpad-gestures.service
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/applications/
+-rw-r--r-- root/root       705 2026-11-12 01:13 ./usr/share/applications/better-touchpad-safe-mode.desktop
+-rw-r--r-- root/root       613 2026-11-12 01:13 ./usr/share/applications/better-touchpad.desktop
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/doc/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/doc/better-touchpad/
+-rw-r--r-- root/root    104879 2026-11-12 01:13 ./usr/share/doc/better-touchpad/THIRD-PARTY-LICENSES.md
+-rw-r--r-- root/root     35149 2026-11-12 01:13 ./usr/share/doc/better-touchpad/copyright
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/gnome-shell/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/gnome-shell/extensions/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/gnome-shell/extensions/touchpad-adapter@betteros.org/
+-rw-r--r-- root/root     10561 2026-11-12 01:13 ./usr/share/gnome-shell/extensions/touchpad-adapter@betteros.org/extension.js
+-rw-r--r-- root/root       465 2026-11-12 01:13 ./usr/share/gnome-shell/extensions/touchpad-adapter@betteros.org/metadata.json
+-rw-r--r-- root/root      2962 2026-11-12 01:13 ./usr/share/gnome-shell/extensions/touchpad-adapter@betteros.org/org.betteros.TouchpadAdapter1.xml
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/icons/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/icons/hicolor/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/icons/hicolor/scalable/
+drwxr-xr-x root/root         0 2026-11-12 01:13 ./usr/share/icons/hicolor/scalable/apps/
+-rw-r--r-- root/root       820 2026-11-12 01:13 ./usr/share/icons/hicolor/scalable/apps/better-touchpad.svg
+
+## package: better-manager-daemon
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/lib/
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/lib/systemd/
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/lib/systemd/system/
+-rw-r--r-- root/root      1195 2026-11-12 01:14 ./usr/lib/systemd/system/better-manager-daemon.service
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/libexec/
+-rwxr-xr-x root/root   6940232 2026-11-12 01:14 ./usr/libexec/better-manager-daemon
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/share/
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/share/dbus-1/
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/share/dbus-1/system-services/
+-rw-r--r-- root/root       138 2026-11-12 01:14 ./usr/share/dbus-1/system-services/org.betteros.Manager1.service
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/share/dbus-1/system.d/
+-rw-r--r-- root/root      1108 2026-11-12 01:14 ./usr/share/dbus-1/system.d/org.betteros.Manager1.conf
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/share/doc/
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/share/doc/better-manager-daemon/
+-rw-r--r-- root/root    104879 2026-11-12 01:14 ./usr/share/doc/better-manager-daemon/THIRD-PARTY-LICENSES.md
+-rw-r--r-- root/root     35149 2026-11-12 01:14 ./usr/share/doc/better-manager-daemon/copyright
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/share/polkit-1/
+drwxr-xr-x root/root         0 2026-11-12 01:14 ./usr/share/polkit-1/actions/
+-rw-r--r-- root/root      1972 2026-11-12 01:14 ./usr/share/polkit-1/actions/org.betteros.manager.policy
