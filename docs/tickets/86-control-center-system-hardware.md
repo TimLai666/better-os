@@ -73,3 +73,16 @@ Spec sections 4 and 11.
 - [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
       and the license check pass. `Cargo.lock` gains only the two workspace
       crates.
+
+## Power mode follows the charger (owner, 2026-11-13)
+
+A switch on the System page, under Power mode: "Switch power mode with the
+charger" / 「依充電狀態自動切換電源模式」. When on, plugging in sets
+Performance and unplugging sets Power saver, through power-profiles-daemon
+(`net.hadess.PowerProfiles`, no root), with the two target modes choosable
+(defaults Performance and Power saver). It reacts to UPower's `OnBattery`
+change, runs in the user session (a small part of an existing Better OS
+session service, not a new daemon), does not fight a mode the person picks by
+hand until the next plug event, and is off by default. Turning it off leaves
+the current mode as it is. Tests use a fake UPower and a fake
+power-profiles-daemon on a private bus.
