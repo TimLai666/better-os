@@ -46,12 +46,17 @@ pub use activation::{
     ActivationPath, ActivationRequest, FakeNameRegistry, InstanceRole, NameOwnership, NameRegistry,
     OverlayCommand, OverlayVisibility, SingleInstance,
 };
-pub use catalog::{LauncherSnapshot, MetadataWatch, load_snapshot};
+pub use catalog::{
+    LauncherSnapshot, ManagedApplications, ManagedComponent, MetadataWatch, load_snapshot,
+};
 pub use gesture::{
     AdapterDescription, GestureAdapter, GestureDirection, GestureOutcome, GesturePhase,
     GestureRecognizer, GestureSample, GestureThresholds, MockGestureAdapter,
 };
-pub use launch::{ApplicationStarter, CatalogLauncher, RecordingStarter};
+pub use launch::{
+    ApplicationStarter, CatalogLauncher, RecordingStarter, open_location, open_location_now,
+    open_manager_component,
+};
 pub use session::{SessionCapabilities, SessionType, ShellKind, ShortcutAvailability};
 pub use shortcut::GnomeCustomKeybinding;
 

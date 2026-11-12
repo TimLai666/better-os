@@ -4,11 +4,14 @@
 
 use super::breadcrumb::{clicked, fold};
 use super::button::{ButtonKind, colors};
-use super::chrome::{CLOSE_RED, CaptionButton, caption_colors};
+use super::chrome::{CLOSE_RED, CaptionButton, caption_buttons, caption_colors};
 use super::command_bar::fit_count;
 use super::dialog::{DefaultButton, DialogButtons, DialogResult};
 use super::info_bar::{ErrorReport, Severity, severity_look};
-use super::list::{ListItem, SortState, compare_cells, list_step, row_fill, sorted_order};
+use super::list::{
+    ListItem, SortState, TILE_BODY_HEIGHT, TILE_BODY_WIDTH, TILE_HEIGHT, TILE_ICON, TILE_WIDTH,
+    compare_cells, list_step, move_item, row_fill, row_icon_size, sorted_order,
+};
 use super::menu::{EntryShape, MenuAction, MenuOpen, MenuPath};
 use super::navigation::{NavEntry, NavItem, item_fill, nav_step, pane_width, toggle_tooltip};
 use super::progress::{fraction, indeterminate_arc, indeterminate_segment};
@@ -612,9 +615,19 @@ fn a_dialog_lays_out_its_buttons_and_reads_its_keys() {
     assert_eq!(buttons.key(Key::Escape), Some(DialogResult::Close));
     let no_default = DialogButtons {
         default: DefaultButton::None,
-        ..buttons
+        ..buttons.clone()
     };
     assert_eq!(no_default.key(Key::Enter), None);
+    // A disabled primary button is not pressed by Enter; Escape still closes.
+    assert_eq!(buttons.key_with(Key::Enter, false), None);
+    assert_eq!(
+        buttons.key_with(Key::Escape, false),
+        Some(DialogResult::Close)
+    );
+    assert_eq!(
+        buttons.key_with(Key::Enter, true),
+        Some(DialogResult::Primary)
+    );
 }
 
 #[test]
@@ -901,4 +914,72 @@ fn shared_words_read_the_same_in_every_window() {
     assert_eq!(words::duration(Locale::English, 7500), "2 h 5 min");
     assert_eq!(words::duration(Locale::TraditionalChinese, 180), "3 分");
     assert_eq!(words::duration(Locale::TraditionalChinese, 3600), "1 小時");
+}
+
+#[test]
+fn a_dragged_item_lands_where_it_is_dropped_and_the_rest_shift() {
+    let mut items = vec!["a", "b", "c", "d"];
+    assert!(move_item(&mut items, 0, 2));
+    assert_eq!(items, ["b", "c", "a", "d"]);
+    assert!(move_item(&mut items, 3, 0));
+    assert_eq!(items, ["d", "b", "c", "a"]);
+    // Dropping on itself or out of range changes nothing.
+    assert!(!move_item(&mut items, 1, 1));
+    assert!(!move_item(&mut items, 9, 0));
+    assert!(!move_item(&mut items, 0, 4));
+    assert_eq!(items, ["d", "b", "c", "a"]);
+    let mut empty: Vec<u8> = Vec::new();
+    assert!(!move_item(&mut empty, 0, 0));
+}
+
+/// Windows 11's Start menu draws a pinned app as a 32px icon over two lines
+/// of 12px text in a 96px column; File Explorer draws a row's icon at 24px
+/// beside one line and 32px beside two.
+#[test]
+fn tiles_and_rows_draw_application_icons_at_windows_sizes() {
+    assert_eq!(TILE_ICON, px(32.0));
+    assert_eq!(TILE_WIDTH, px(96.0));
+    assert!(TILE_HEIGHT >= TILE_ICON + px(12.0) + px(32.0));
+    assert_eq!(row_icon_size(false), px(24.0));
+    assert_eq!(row_icon_size(true), px(32.0));
+    assert!(row_icon_size(true) <= size::TWO_LINE_ROW_HEIGHT);
+    assert!(row_icon_size(false) <= size::ROW_HEIGHT);
+}
+
+#[test]
+fn a_dialog_window_has_only_a_close_button() {
+    assert_eq!(caption_buttons(true), [CaptionButton::Close]);
+    assert_eq!(
+        caption_buttons(false),
+        [
+            CaptionButton::Minimize,
+            CaptionButton::Maximize,
+            CaptionButton::Close
+        ]
+    );
+}
+
+/// A dragged tile over another lights that tile's edge. The edge has to be
+/// there all along, transparent, or lighting it grows the tile by 2px and
+/// shifts the grid under the pointer. A GPUI style refinement cannot be
+/// inspected headless, so this reads the control's source.
+#[test]
+fn a_tile_keeps_its_size_while_a_dragged_tile_is_over_it() {
+    assert_eq!(TILE_BODY_WIDTH + px(2.0), TILE_WIDTH);
+    assert_eq!(TILE_BODY_HEIGHT + px(2.0), TILE_HEIGHT);
+    let source = include_str!("list.rs");
+    let render = &source[source
+        .find("impl RenderOnce for GridTile")
+        .expect("GridTile renders")..];
+    let drag_over = &render[render.find(".drag_over::<DraggedTile>").expect("drag over")..];
+    let drag_over = &drag_over[..drag_over.find(".on_drop(").expect("then drop")];
+    assert!(
+        !drag_over.contains("border_1"),
+        "the drag highlight must only colour the edge, not add one"
+    );
+    let before = &render[..render.find(".drag_over::<DraggedTile>").unwrap()];
+    assert!(
+        before.contains(".border_1()"),
+        "the edge is reserved at rest"
+    );
 }

@@ -1,24 +1,28 @@
 //! How one query is compared against one field, and what the comparison is
 //! worth.
 //!
-//! The ranking rules Issue #2 requires are encoded as two ordered enums and
-//! one integer, in that precedence:
+//! The order is the Windows 11 Start search order, encoded as a [`Tier`], a
+//! [`MatchKind`], a [`FieldKind`], and a detail score, in that precedence:
 //!
-//! 1. [`MatchKind`] — how the query met the text. An exact match outranks a
-//!    prefix, which outranks a match at the start of a later word, which
-//!    outranks a match buried inside a word, which outranks a fuzzy
-//!    subsequence.
-//! 2. [`FieldKind`] — where it matched. The application's name outranks its
-//!    translations, which outrank the generic name, which outranks keywords
-//!    and the executable name.
-//! 3. A detail score, which orders matches that agree on both of the above.
+//! 1. [`Tier`] — what kind of hit this is. The application's name beginning
+//!    with the query comes first (`cal` finds Calendar and Calculator), then a
+//!    later word of the name beginning with it (LibreOffice **Calc**), then
+//!    the start of a keyword, the generic name, or the program name (Evolution,
+//!    whose keywords include `calendar`), and last a fuzzy match on the name:
+//!    the query's characters in order inside it, which is what makes `gimp`
+//!    find GNU Image Manipulation Program.
+//! 2. [`MatchKind`] — inside a tier, exact beats prefix beats a later word
+//!    beats a run inside a word beats a scattered subsequence.
+//! 3. [`FieldKind`] — inside that, the name in the active locale beats a
+//!    translation, which beats the generic name, keywords, and the program.
+//! 4. A detail score: earlier and shorter is better.
 //!
-//! The precedence between the first two is a decision, not an accident: an
-//! exact keyword match beats a fuzzy name match. "Application name ranks above
-//! secondary metadata" settles ties between equally strong matches, and does
-//! not promote a weak name match over a strong keyword one — otherwise typing
-//! an application's exact keyword would rank it below every application whose
-//! name happens to contain those letters in order.
+//! Some comparisons are not hits at all. Letters merely appearing inside a
+//! keyword, a generic name, a program name, or the name in another language
+//! — `cal` inside `commandline`, scattered through `google-chrome-stable`,
+//! or through the Catalan "Controls parentals" — rank nothing: that is how a
+//! search for `cal` used to list every terminal on the machine. Only the name
+//! in the active locale is matched loosely.
 //!
 //! There is no scoring dependency here on anything outside the two strings, so
 //! the same query against the same field is worth the same number forever.
@@ -49,20 +53,71 @@ pub enum FieldKind {
     Executable,
     /// One of the entry's `Keywords`.
     Keyword,
+    /// `Name` in a third locale: neither the active one nor the
+    /// untranslated default. Counted like metadata, so an entry's Catalan or
+    /// Hindi name never ranks with the names a person can see.
+    Translation,
     /// `GenericName`, in any locale the entry carries.
     GenericName,
-    /// `Name` in a locale other than the active one, including the
-    /// untranslated value when a translation is active.
+    /// The untranslated `Name` when a translation is active: the English name
+    /// a person may still type.
     AlternateName,
     /// `Name` as the active locale resolves it.
     Name,
+}
+
+impl FieldKind {
+    /// Whether this field is a name, in any locale. Only names are matched
+    /// loosely; everything else must be matched from a word's start.
+    pub fn is_name(self) -> bool {
+        matches!(self, FieldKind::Name | FieldKind::AlternateName)
+    }
+}
+
+/// What kind of hit a match is, worst to best. The ordering is the ranking
+/// rule; see the module note.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum Tier {
+    /// The name contains the query's characters, as a run inside a word or
+    /// scattered in order.
+    NameFuzzy,
+    /// A keyword, the generic name, or the program name is the query or a
+    /// word of it begins with the query.
+    Metadata,
+    /// A later word of the name begins with the query.
+    NameWord,
+    /// The name is the query or begins with it.
+    NamePrefix,
+}
+
+impl Tier {
+    /// The tier a match falls in, or `None` when it is not a result at all:
+    /// letters inside a keyword or a program name are noise, not a hit.
+    pub fn of(kind: MatchKind, field: FieldKind) -> Option<Tier> {
+        match (field.is_name(), kind) {
+            (true, MatchKind::Exact | MatchKind::Prefix) => Some(Tier::NamePrefix),
+            (true, MatchKind::WordPrefix) => Some(Tier::NameWord),
+            // Loose matching is for the name a person sees. An entry carries
+            // its name in dozens of languages, and letters scattered through
+            // one of them (`cal` in "Controls parentals") are noise.
+            (true, MatchKind::Substring | MatchKind::Fuzzy) if field == FieldKind::Name => {
+                Some(Tier::NameFuzzy)
+            }
+            (true, MatchKind::Substring | MatchKind::Fuzzy) => None,
+            (false, MatchKind::Exact | MatchKind::Prefix | MatchKind::WordPrefix) => {
+                Some(Tier::Metadata)
+            }
+            (false, MatchKind::Substring | MatchKind::Fuzzy) => None,
+        }
+    }
 }
 
 /// The largest detail score, and therefore the width of one field bucket.
 pub const MAX_DETAIL: u32 = 9_999;
 
 const FIELD_STRIDE: u32 = MAX_DETAIL + 1;
-const KIND_STRIDE: u32 = FIELD_STRIDE * 100;
+const KIND_STRIDE: u32 = FIELD_STRIDE * 10;
+const TIER_STRIDE: u32 = KIND_STRIDE * 10;
 
 /// One field's answer for one query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,12 +128,22 @@ pub struct FieldMatch {
 }
 
 impl FieldMatch {
-    /// The single number results are sorted by. Composed so the match kind
-    /// dominates the field, and the field dominates the detail score: no
-    /// detail score can promote a fuzzy match past a substring one, and no
-    /// keyword match can be worth more than a name match of the same kind.
+    /// The tier this match falls in, or `None` when it is not a result.
+    pub fn tier(&self) -> Option<Tier> {
+        Tier::of(self.kind, self.field)
+    }
+
+    /// The single number results are sorted by. Composed so the tier
+    /// dominates the match kind, the kind dominates the field, and the field
+    /// dominates the detail score: no detail score can lift a match out of
+    /// its tier, and no keyword match is worth as much as the name beginning
+    /// with the query. A match that is no result scores zero.
     pub fn score(&self) -> u32 {
-        self.kind as u32 * KIND_STRIDE
+        let Some(tier) = self.tier() else {
+            return 0;
+        };
+        (tier as u32 + 1) * TIER_STRIDE
+            + self.kind as u32 * KIND_STRIDE
             + self.field as u32 * FIELD_STRIDE
             + self.detail.min(MAX_DETAIL)
     }
@@ -96,7 +161,8 @@ impl FieldMatch {
 
     /// Whether this match should replace `other` as a record's best.
     fn beats(&self, other: &FieldMatch) -> bool {
-        (self.kind, self.field, self.detail) > (other.kind, other.field, other.detail)
+        (self.tier(), self.kind, self.field, self.detail)
+            > (other.tier(), other.kind, other.field, other.detail)
     }
 }
 
@@ -105,7 +171,12 @@ impl FieldMatch {
 pub struct BestMatch(Option<FieldMatch>);
 
 impl BestMatch {
+    /// Keeps `candidate` if it is a result and better than what is held. A
+    /// comparison that is no result (letters inside a keyword) is dropped.
     pub fn consider(&mut self, candidate: FieldMatch) {
+        if candidate.tier().is_none() {
+            return;
+        }
         match &self.0 {
             Some(current) if !candidate.beats(current) => {}
             _ => self.0 = Some(candidate),
@@ -327,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stronger_kind_always_outscores_a_weaker_one_whatever_the_detail() {
+    fn a_stronger_kind_outscores_a_weaker_one_in_the_same_tier_whatever_the_detail() {
         let fuzzy_best = FieldMatch {
             kind: MatchKind::Fuzzy,
             field: FieldKind::Name,
@@ -335,10 +406,51 @@ mod tests {
         };
         let substring_worst = FieldMatch {
             kind: MatchKind::Substring,
-            field: FieldKind::Executable,
+            field: FieldKind::Name,
             detail: 0,
         };
         assert!(substring_worst.score() > fuzzy_best.score());
+    }
+
+    #[test]
+    fn the_tiers_are_name_prefix_then_name_word_then_metadata_then_fuzzy() {
+        let score = |kind, field, detail| FieldMatch {
+            kind,
+            field,
+            detail,
+        };
+        let name_prefix = score(MatchKind::Prefix, FieldKind::AlternateName, 0);
+        let name_word = score(MatchKind::WordPrefix, FieldKind::Name, MAX_DETAIL);
+        let keyword_exact = score(MatchKind::Exact, FieldKind::Keyword, MAX_DETAIL);
+        let name_fuzzy = score(MatchKind::Substring, FieldKind::Name, MAX_DETAIL);
+        assert!(name_prefix.score() > name_word.score());
+        assert!(name_word.score() > keyword_exact.score());
+        assert!(keyword_exact.score() > name_fuzzy.score());
+        assert_eq!(name_prefix.tier(), Some(Tier::NamePrefix));
+        assert_eq!(name_fuzzy.tier(), Some(Tier::NameFuzzy));
+    }
+
+    #[test]
+    fn letters_inside_a_keyword_or_a_program_name_are_not_a_result() {
+        for field in [
+            FieldKind::Keyword,
+            FieldKind::GenericName,
+            FieldKind::Executable,
+            FieldKind::AlternateName,
+        ] {
+            for kind in [MatchKind::Substring, MatchKind::Fuzzy] {
+                let matched = FieldMatch {
+                    kind,
+                    field,
+                    detail: MAX_DETAIL,
+                };
+                assert_eq!(matched.tier(), None, "{kind:?} on {field:?}");
+                assert_eq!(matched.score(), 0);
+                let mut best = BestMatch::default();
+                best.consider(matched);
+                assert!(best.is_none());
+            }
+        }
     }
 
     #[test]
@@ -418,12 +530,12 @@ mod tests {
     #[test]
     fn a_usage_bonus_can_never_leave_the_bucket_the_match_earned() {
         let weak = FieldMatch {
-            kind: MatchKind::Substring,
+            kind: MatchKind::WordPrefix,
             field: FieldKind::Keyword,
             detail: MAX_DETAIL,
         };
         let strong = FieldMatch {
-            kind: MatchKind::Substring,
+            kind: MatchKind::WordPrefix,
             field: FieldKind::GenericName,
             detail: 0,
         };
@@ -440,7 +552,7 @@ mod tests {
             detail: 500,
         });
         best.consider(FieldMatch {
-            kind: MatchKind::Substring,
+            kind: MatchKind::WordPrefix,
             field: FieldKind::Keyword,
             detail: 0,
         });
@@ -449,6 +561,6 @@ mod tests {
             field: FieldKind::Name,
             detail: MAX_DETAIL,
         });
-        assert_eq!(best.get().expect("a match").kind, MatchKind::Substring);
+        assert_eq!(best.get().expect("a match").kind, MatchKind::WordPrefix);
     }
 }

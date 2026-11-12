@@ -1,153 +1,171 @@
 //! Presentation-policy tests that need no display backend.
 //!
 //! What can be asserted without a window: that both locales answer every
-//! question the overlay asks them, that the keyboard hints still fit at the
-//! minimum size in both languages at every supported interface scale, and that
-//! the grid the keyboard walks is the same grid the layout draws. The rows,
-//! the selection, and the launch outcomes are covered in `model.rs`, and the
-//! window opening at all is covered by the headless smoke run.
+//! question the launcher asks them and say different things where the
+//! situations differ, that every command has words, that times read the way
+//! Windows' Recommended reads them, and that the window is the Start menu's
+//! size and still holds the six-column pinned grid. The pages, the keyboard,
+//! the menus, and the launch outcomes are covered in `model.rs`; the key
+//! path through GPUI in `overlay.rs`.
 
-use crate::i18n::{Locale, copy};
+use crate::i18n::{Locale, command_label, copy, group_label, no_matches, uninstall_detail, when};
+use crate::model::{Command, GroupKey, PINNED_COLUMNS};
 use crate::{
-    HintLayout, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, OVERLAY_COVERAGE, TILE_WIDTH, grid_columns,
-    hint_layout, overlay_size,
+    DISPLAY_MARGIN, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, START_HEIGHT, START_WIDTH, overlay_size,
 };
 
 const LOCALES: [Locale; 2] = [Locale::EnUs, Locale::ZhTw];
-const SCALES: [f32; 3] = [1.0, 1.25, 1.5];
 
-fn hints(locale: Locale) -> [&'static str; 3] {
-    let c = copy(locale);
-    [c.hint_navigate, c.hint_launch, c.hint_close]
+fn every_command() -> Vec<Command> {
+    vec![
+        Command::Open,
+        Command::RunInTerminal,
+        Command::PinToStart,
+        Command::UnpinFromStart,
+        Command::MoveToFront,
+        Command::RemoveFromList,
+        Command::OpenFileLocation,
+        Command::Uninstall(launcher_platform::ManagedComponent {
+            id: "better-files".into(),
+            display_name: "Better Files".into(),
+        }),
+        Command::CopyResult,
+        Command::OpenPath,
+        Command::OpenContainingFolder,
+    ]
 }
 
 #[test]
-fn both_locales_fill_in_every_string_the_overlay_reads() {
+fn both_locales_fill_in_every_string_the_launcher_reads() {
+    for locale in LOCALES {
+        let c = copy(locale);
+        for value in [
+            c.search_placeholder,
+            c.pinned,
+            c.all_apps,
+            c.back,
+            c.recommended,
+            c.pinned_empty,
+            c.recommended_empty,
+            c.best_match,
+            c.apps,
+            c.files_and_folders,
+            c.kind_app,
+            c.kind_terminal_app,
+            c.kind_folder,
+            c.kind_file,
+            c.kind_calculation,
+            c.loading_title,
+            c.refreshing,
+            c.empty_library_title,
+            c.empty_library_detail,
+            c.no_matches_detail,
+            c.launch_failed,
+            c.launch_failed_advice,
+            c.not_saved,
+            c.letters_other,
+            c.letters_hint,
+            c.appearance,
+            c.appearance_dark,
+            c.appearance_light,
+            c.appearance_system,
+        ] {
+            assert!(!value.trim().is_empty(), "{locale:?} has an empty string");
+        }
+        for command in every_command() {
+            assert!(!command_label(locale, &command).trim().is_empty());
+        }
+    }
+}
+
+#[test]
+fn no_string_shows_a_desktop_file_name_or_engineering_words() {
+    // The audit found `.desktop` file names under every app and wording
+    // about render threads; neither belongs in front of a person.
     for locale in LOCALES {
         let c = copy(locale);
         for value in [
             c.search_placeholder,
             c.loading_title,
-            c.loading_detail,
-            c.refreshing,
-            c.empty_library_title,
             c.empty_library_detail,
-            c.no_matches_title,
-            c.no_matches_detail,
             c.launch_failed,
-            c.hint_navigate,
-            c.hint_launch,
-            c.hint_close,
-            c.library_count,
-            c.result_count,
+            c.launch_failed_advice,
+            c.not_saved,
         ] {
-            assert!(!value.trim().is_empty(), "{locale:?} has an empty string");
+            for word in [".desktop", "render", "thread", "index", "catalog", "MIME"] {
+                assert!(!value.contains(word), "{locale:?}: {value}");
+            }
         }
     }
 }
 
 #[test]
-fn the_two_empty_states_are_worded_differently_in_both_locales() {
-    // "nothing matched what you typed" and "this machine has no applications"
-    // are different situations, and a user who cannot tell them apart cannot
-    // tell a broken install from a bad search.
+fn the_empty_states_and_the_menu_words_differ_where_the_situations_differ() {
     for locale in LOCALES {
         let c = copy(locale);
-        assert_ne!(c.no_matches_title, c.empty_library_title, "{locale:?}");
-        assert_ne!(c.no_matches_detail, c.empty_library_detail, "{locale:?}");
+        assert_ne!(c.empty_library_detail, c.no_matches_detail);
+        assert_ne!(c.pinned_empty, c.recommended_empty);
+        assert_ne!(
+            command_label(locale, &Command::Open),
+            command_label(locale, &Command::RunInTerminal)
+        );
+        assert_ne!(
+            command_label(locale, &Command::PinToStart),
+            command_label(locale, &Command::UnpinFromStart)
+        );
+        assert!(no_matches(locale, " gimpp ").contains("gimpp"));
+        assert!(uninstall_detail(locale, "Better Files").contains("Better Manager"));
+        assert!(uninstall_detail(locale, "Better Files").contains("Better Files"));
     }
-}
-
-#[test]
-fn the_two_locales_are_actually_different_translations() {
     let english = copy(Locale::EnUs);
     let chinese = copy(Locale::ZhTw);
     assert_ne!(english.search_placeholder, chinese.search_placeholder);
-    assert_ne!(english.no_matches_title, chinese.no_matches_title);
-    assert_ne!(english.hint_close, chinese.hint_close);
+    assert_ne!(english.pinned, chinese.pinned);
 }
 
 #[test]
-fn the_hint_row_fits_at_the_minimum_size_in_both_locales_at_every_scale() {
-    for locale in LOCALES {
-        for scale in SCALES {
-            assert_eq!(
-                hint_layout(MIN_WINDOW_WIDTH, scale, &hints(locale)),
-                HintLayout::Inline,
-                "{locale:?} at {scale}x does not fit the hint row at the minimum width"
-            );
-        }
+fn a_launch_time_reads_like_windows_recommended() {
+    let now = 1_000_000;
+    let cases = [
+        (now, "Just now", "剛剛"),
+        (now - 60, "1 minute ago", "1 分鐘前"),
+        (now - 5 * 60, "5 minutes ago", "5 分鐘前"),
+        (now - 3600, "1 hour ago", "1 小時前"),
+        (now - 5 * 3600, "5 hours ago", "5 小時前"),
+        (now - 30 * 3600, "Yesterday", "昨天"),
+        (now - 4 * 86_400, "4 days ago", "4 天前"),
+    ];
+    for (then, english, chinese) in cases {
+        assert_eq!(when(Locale::EnUs, now, then), english);
+        assert_eq!(when(Locale::ZhTw, now, then), chinese);
     }
+    // A clock that went backwards reads as just now, not as a panic.
+    assert_eq!(when(Locale::EnUs, 10, 20), "Just now");
 }
 
 #[test]
-fn a_hint_row_that_no_longer_fits_reports_wrapped_rather_than_overflowing() {
-    for locale in LOCALES {
-        for scale in SCALES {
-            let logical = MIN_WINDOW_WIDTH / scale;
-            assert_eq!(
-                hint_layout(MIN_WINDOW_WIDTH, scale, &hints(locale)),
-                hint_layout(logical, 1.0, &hints(locale)),
-                "{locale:?} at {scale}x disagrees with its own logical width"
-            );
-        }
-        assert_eq!(
-            hint_layout(160.0, 1.0, &hints(locale)),
-            HintLayout::Wrapped,
-            "{locale:?} claims a row fits when the arithmetic says otherwise"
-        );
-    }
+fn letter_headers_are_the_letter_or_hash_or_other() {
+    assert_eq!(group_label(Locale::EnUs, GroupKey::Letter('A')), "A");
+    assert_eq!(group_label(Locale::ZhTw, GroupKey::Symbol), "#");
+    assert_eq!(group_label(Locale::EnUs, GroupKey::Other), "Other");
+    assert_eq!(group_label(Locale::ZhTw, GroupKey::Other), "其他");
 }
 
 #[test]
-fn the_minimum_window_holds_a_search_row_and_a_row_of_tiles() {
-    const { assert!(MIN_WINDOW_WIDTH >= TILE_WIDTH * 2.0) };
-    const { assert!(MIN_WINDOW_HEIGHT >= 480.0) };
-}
-
-#[test]
-fn the_grid_widens_with_the_window_and_never_reaches_zero_columns() {
-    assert_eq!(grid_columns(0.0, 1.0), 1);
-    assert_eq!(grid_columns(-100.0, 1.0), 1);
-    assert!(grid_columns(MIN_WINDOW_WIDTH, 1.0) >= 3);
-
-    let mut previous = 0;
-    for width in [640.0, 900.0, 1280.0, 1920.0, 2560.0, 3840.0] {
-        let columns = grid_columns(width, 1.0);
-        assert!(
-            columns >= previous,
-            "a wider window must not fit fewer tiles"
-        );
-        assert!(columns <= 12, "the grid is capped so a row stays scannable");
-        previous = columns;
-    }
-}
-
-#[test]
-fn a_scaled_up_interface_fits_fewer_tiles_across() {
-    let hundred = grid_columns(1920.0, 1.0);
-    let one_fifty = grid_columns(1920.0, 1.5);
-    assert!(
-        one_fifty < hundred,
-        "at 150% the same window holds fewer tiles, not the same number"
+fn the_window_is_the_start_menus_size_and_holds_the_pinned_grid() {
+    assert_eq!(overlay_size(1920.0, 1080.0), (START_WIDTH, START_HEIGHT));
+    // A small display gets what fits, never below the minimum.
+    assert_eq!(
+        overlay_size(1280.0, 700.0),
+        (START_WIDTH, 700.0 - DISPLAY_MARGIN)
     );
-    assert!(one_fifty >= 1);
-}
-
-#[test]
-fn the_overlay_covers_most_of_the_display_but_never_less_than_the_minimum() {
-    let (width, height) = overlay_size(1920.0, 1080.0);
-    assert_eq!(width, 1920.0 * OVERLAY_COVERAGE);
-    assert_eq!(height, 1080.0 * OVERLAY_COVERAGE);
-    assert!(
-        width < 1920.0 && height < 1080.0,
-        "near-full-screen leaves the desktop visible at the edges"
+    assert_eq!(
+        overlay_size(320.0, 240.0),
+        (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
     );
-
-    // A display smaller than the minimum still gets a usable overlay.
-    let (width, height) = overlay_size(320.0, 240.0);
-    assert_eq!(width, MIN_WINDOW_WIDTH);
-    assert_eq!(height, MIN_WINDOW_HEIGHT);
+    // Six 96px tiles and the two 32px margins.
+    let grid = f32::from(better_ui::fluent::list::TILE_WIDTH) * PINNED_COLUMNS as f32;
+    assert!(MIN_WINDOW_WIDTH >= grid + 64.0);
 }
 
 #[test]

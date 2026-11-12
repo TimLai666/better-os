@@ -469,7 +469,12 @@ impl RenderOnce for MenuPanel {
         let state = self.state.clone();
         let return_focus = self.return_focus.clone();
 
-        let mut panel = panel_frame(div().id(self.id.clone()), p).py(px(2.0));
+        // `occlude`: a click on an item must not also reach whatever the
+        // menu floats over, or choosing "Move to front" opens the tile under
+        // it.
+        let mut panel = panel_frame(div().id(self.id.clone()), p)
+            .py(px(2.0))
+            .occlude();
         if let Some(state) = state.clone() {
             let shapes: Vec<EntryShape> = entries.iter().map(MenuEntry::shape).collect();
             let entries_key = entries.clone();
@@ -671,7 +676,9 @@ impl RenderOnce for SubmenuPanel {
         let p = palette(cx);
         let entries = self.panel.entries;
         let icon_column = entries.iter().any(|entry| entry.icon().is_some());
-        let mut panel = panel_frame(div().id(self.panel.id), p).py(px(2.0));
+        let mut panel = panel_frame(div().id(self.panel.id), p)
+            .py(px(2.0))
+            .occlude();
         for (index, entry) in entries.into_iter().enumerate() {
             let element: AnyElement = match entry {
                 MenuEntry::Item(item) => {
@@ -806,6 +813,7 @@ pub struct ContextMenu {
     entries: Vec<MenuEntry>,
     state: Entity<MenuOpen>,
     position: gpui::Point<gpui::Pixels>,
+    return_focus: Option<FocusHandle>,
 }
 
 impl ContextMenu {
@@ -820,13 +828,21 @@ impl ContextMenu {
             entries,
             state,
             position,
+            return_focus: None,
         }
+    }
+
+    /// Where keyboard focus goes when the menu closes, such as the search
+    /// box a person was typing in before they opened it.
+    pub fn return_focus(mut self, focus: FocusHandle) -> Self {
+        self.return_focus = Some(focus);
+        self
     }
 }
 
 impl RenderOnce for ContextMenu {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let panel = MenuPanel::new(self.id, self.entries).state(self.state, None);
+        let panel = MenuPanel::new(self.id, self.entries).state(self.state, self.return_focus);
         deferred(
             anchored()
                 .position(self.position)

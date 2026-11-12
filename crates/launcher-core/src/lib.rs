@@ -61,7 +61,7 @@ pub mod text;
 pub mod usage;
 
 pub use index::{IndexOptions, SearchIndex};
-pub use matcher::{FieldKind, FieldMatch, MatchKind};
+pub use matcher::{FieldKind, FieldMatch, MatchKind, Tier};
 pub use model::{
     BrowseModel, BrowseSection, LauncherApplication, LauncherState, LauncherView, MAIN_CATEGORIES,
     OTHER_CATEGORY, RankingOptions, SearchModel, SearchResult,

@@ -220,9 +220,11 @@ impl IndexedApplication {
     /// The strongest match any of this application's fields offers.
     ///
     /// Literal matching runs over every field first. Only if nothing literal
-    /// matched does fuzzy matching run at all, which is sound because any
-    /// literal match outranks every possible fuzzy one, and is what keeps the
-    /// expensive path off the common case.
+    /// ranked does fuzzy matching run at all, and only over the names: a
+    /// scattered match inside a keyword or a program name is not a result
+    /// (see [`crate::matcher`]). That is sound because any ranked literal
+    /// match outranks every possible fuzzy one, and it keeps the expensive
+    /// path off the common case.
     fn best_match(&self, needle: &[char], mask: u64) -> Option<FieldMatch> {
         if self.mask & mask != mask {
             return None;
@@ -238,7 +240,7 @@ impl IndexedApplication {
         }
         if best.is_none() {
             for field in &self.fields {
-                if !field.text.could_contain(mask) {
+                if field.kind != FieldKind::Name || !field.text.could_contain(mask) {
                     continue;
                 }
                 if let Some(matched) = fuzzy_match(&field.text, needle, field.kind) {
@@ -274,7 +276,7 @@ fn index_fields(record: &ApplicationRecord, locale: Option<&Locale>) -> IndexedA
         record.name.default_value(),
     );
     for translation in record.name.translations().values() {
-        push_field(&mut fields, FieldKind::AlternateName, translation);
+        push_field(&mut fields, FieldKind::Translation, translation);
     }
 
     if let Some(generic) = &record.generic_name {
@@ -364,7 +366,7 @@ fn push_field(fields: &mut Vec<IndexedField>, kind: FieldKind, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matcher::MatchKind;
+    use crate::matcher::{MatchKind, Tier};
     use crate::model::LauncherState;
     use crate::usage::{InMemoryUsage, LaunchEvent, NoUsage};
     use app_catalog_core::{DesktopFile, DesktopId, EntryScope, NoProbe};
@@ -421,7 +423,7 @@ mod tests {
         for (query, expected, field) in [
             ("photoflare", "name.desktop", FieldKind::Name),
             ("spreadsheet", "generic.desktop", FieldKind::GenericName),
-            ("文字編輯器", "localized.desktop", FieldKind::AlternateName),
+            ("文字編輯器", "localized.desktop", FieldKind::Translation),
             ("torrent", "keyword.desktop", FieldKind::Keyword),
             ("inkscape", "exec.desktop", FieldKind::Executable),
         ] {
@@ -771,6 +773,176 @@ mod tests {
         assert!(index.is_empty());
         assert!(index.browse().is_empty());
         assert!(search(&index, "anything").is_empty());
+    }
+
+    /// The entries a search for `cal` met on a real Zorin OS 18 desktop, with
+    /// the fields that matter copied from their desktop files.
+    fn desktop_with_terminals() -> Vec<ApplicationRecord> {
+        vec![
+            record(
+                "org.gnome.Calendar.desktop",
+                "Name=Calendar\nKeywords=Calendar;Event;Reminder;\nExec=gnome-calendar %U\nCategories=GNOME;GTK;Office;Calendar;Core;",
+            ),
+            record(
+                "org.gnome.Calculator.desktop",
+                "Name=Calculator\nKeywords=calculation;arithmetic;scientific;financial;\nExec=gnome-calculator\nCategories=GNOME;GTK;Utility;Calculator;",
+            ),
+            record(
+                "libreoffice-calc.desktop",
+                "Name=LibreOffice Calc\nGenericName=Spreadsheet\nKeywords=Accounting;Stats;OpenDocument Spreadsheet;Chart;Microsoft Excel;Microsoft Works;OpenOffice Calc;ods;xls;xlsx;\nExec=libreoffice --calc %U\nCategories=Office;Spreadsheet;",
+            ),
+            record(
+                "org.gnome.Evolution.desktop",
+                "Name=Evolution\nGenericName=Groupware Suite\nKeywords=email;calendar;contact;addressbook;task;\nExec=evolution %U\nCategories=GNOME;GTK;Office;Email;Calendar;",
+            ),
+            record(
+                "org.codeberg.dnkl.foot.desktop",
+                "Name=Foot\nGenericName=Terminal\nKeywords=shell;prompt;command;commandline;\nExec=foot\nCategories=System;TerminalEmulator;",
+            ),
+            record(
+                "org.codeberg.dnkl.footclient.desktop",
+                "Name=Foot Client\nGenericName=Terminal\nKeywords=shell;prompt;command;commandline;\nExec=footclient\nCategories=System;TerminalEmulator;",
+            ),
+            record(
+                "org.codeberg.dnkl.foot-server.desktop",
+                "Name=Foot Server\nGenericName=Terminal\nKeywords=shell;prompt;command;commandline;\nExec=foot --server\nCategories=System;TerminalEmulator;",
+            ),
+            record(
+                "org.gnome.Terminal.desktop",
+                "Name=Terminal\nKeywords=shell;prompt;command;commandline;cmd;\nExec=gnome-terminal\nCategories=GNOME;GTK;System;TerminalEmulator;",
+            ),
+            record(
+                "google-chrome.desktop",
+                "Name=Google Chrome\nGenericName=Web Browser\nExec=/usr/bin/google-chrome-stable %U\nCategories=Network;WebBrowser;",
+            ),
+            record(
+                "org.remmina.Remmina.desktop",
+                "Name=Remmina\nGenericName=Remote Desktop Client\nKeywords=remote desktop;rdp;vnc;ssh;spice;\nExec=remmina-file-wrapper %U\nCategories=GTK;GNOME;Network;",
+            ),
+            record(
+                "libreoffice-writer.desktop",
+                "Name=LibreOffice Writer\nGenericName=Word Processor\nKeywords=Text;Letter;Fax;Document;OpenDocument Text;Microsoft Word;Microsoft Works;Lotus WordPro;OpenOffice Writer;CV;odt;doc;docx;rtf;\nExec=libreoffice --writer %U\nCategories=Office;WordProcessor;",
+            ),
+        ]
+    }
+
+    #[test]
+    fn cal_finds_calendar_and_calculator_first_and_no_terminal_in_the_first_five() {
+        let records = desktop_with_terminals();
+        let index = index(&records);
+        let model = search(&index, "cal");
+        let found = ids(&model);
+        assert_eq!(
+            &found[..2],
+            ["org.gnome.Calendar.desktop", "org.gnome.Calculator.desktop"],
+            "the two names that begin with the query come first, shorter first: {found:?}"
+        );
+        assert_eq!(found[2], "libreoffice-calc.desktop", "{found:?}");
+        assert_eq!(found[3], "org.gnome.Evolution.desktop", "{found:?}");
+        let terminals = [
+            "org.codeberg.dnkl.foot.desktop",
+            "org.codeberg.dnkl.footclient.desktop",
+            "org.codeberg.dnkl.foot-server.desktop",
+            "org.gnome.Terminal.desktop",
+        ];
+        for terminal in terminals {
+            assert!(
+                !found.iter().take(5).any(|id| id == terminal),
+                "{terminal} is in the first five: {found:?}"
+            );
+        }
+        // And nothing that only has the letters somewhere in a keyword or a
+        // program name is listed at all.
+        for noise in terminals.iter().chain(&["google-chrome.desktop"]) {
+            assert!(!found.iter().any(|id| id == noise), "{noise}: {found:?}");
+        }
+    }
+
+    #[test]
+    fn the_four_tiers_order_a_search_name_prefix_word_metadata_fuzzy() {
+        let records = vec![
+            record("fuzzy.desktop", "Name=Clear Alarms\nExec=a"),
+            record("keyword.desktop", "Name=Mail\nKeywords=calendar;\nExec=b"),
+            record("word.desktop", "Name=Office Calc\nExec=c"),
+            record("prefix.desktop", "Name=Calendar\nExec=d"),
+        ];
+        let index = index(&records);
+        let model = search(&index, "cal");
+        assert_eq!(
+            ids(&model),
+            vec![
+                "prefix.desktop",
+                "word.desktop",
+                "keyword.desktop",
+                "fuzzy.desktop",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_name_in_a_third_locale_ranks_as_metadata_not_as_a_name() {
+        let records = vec![
+            record(
+                "malcontent.desktop",
+                "Name=Parental Controls\nName[ca]=Controls parentals\nExec=a",
+            ),
+            record("word.desktop", "Name=Remote Controls\nExec=b"),
+        ];
+        let both = index(&records);
+        let model = search(&both, "contr");
+        // The Catalan name begins with the query, but it is not a name this
+        // desktop shows: the English word match comes first.
+        assert_eq!(ids(&model)[0], "word.desktop");
+        let catalan = model
+            .results()
+            .iter()
+            .find(|result| result.application.desktop_id.as_str() == "malcontent.desktop")
+            .unwrap();
+        // ("Controls" is also a later word of the English name, which is the
+        // stronger of its two hits.)
+        assert_eq!(catalan.matched_field, FieldKind::Name);
+        let records = [record(
+            "only.desktop",
+            "Name=Parental Controls\nName[ca]=Controls parentals\nExec=a",
+        )];
+        let only = index(&records);
+        let model = search(&only, "parentals");
+        assert_eq!(model.results()[0].matched_field, FieldKind::Translation);
+        assert_eq!(
+            Tier::of(model.results()[0].match_kind, FieldKind::Translation),
+            Some(Tier::Metadata)
+        );
+    }
+
+    #[test]
+    fn letters_scattered_through_a_translation_are_not_a_result() {
+        let records = vec![record(
+            "malcontent.desktop",
+            "Name=Parental Controls\nName[ca]=Controls parentals\nExec=malcontent-control",
+        )];
+        let index = index(&records);
+        assert!(search(&index, "cal").is_empty());
+        // The translation still finds it from its start.
+        assert_eq!(
+            ids(&search(&index, "controls par")),
+            vec!["malcontent.desktop"]
+        );
+    }
+
+    #[test]
+    fn a_generic_name_counts_like_a_keyword_and_beats_a_fuzzy_name() {
+        let records = vec![
+            record("fuzzy.desktop", "Name=Spare Editor\nExec=a"),
+            record(
+                "generic.desktop",
+                "Name=Zulu\nGenericName=Spreadsheet\nExec=b",
+            ),
+        ];
+        let index = index(&records);
+        assert_eq!(
+            ids(&search(&index, "spre")),
+            vec!["generic.desktop", "fuzzy.desktop"]
+        );
     }
 
     #[test]

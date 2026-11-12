@@ -75,6 +75,52 @@ impl ApplicationStarter for CatalogLauncher {
     }
 }
 
+/// Opens a file or a folder with the desktop's default application, by
+/// handing the path to `xdg-open` as one argument: no shell, no command
+/// string. A detached child, so it outlives the launcher, which closes as
+/// soon as it has handed something off.
+pub fn open_location(
+    path: &std::path::Path,
+    spawner: &dyn ProcessSpawner,
+) -> Result<(), PlatformError> {
+    spawner
+        .spawn(&app_catalog_core::Invocation {
+            program: "xdg-open".to_string(),
+            arguments: vec![path.to_string_lossy().into_owned()],
+        })
+        .map_err(PlatformError::from)
+}
+
+/// Opens Better Manager on one component's page
+/// (`better-manager --component <id>`), which is where "Uninstall" in the
+/// launcher leads: the launcher removes nothing itself. The program is the
+/// one the manager's own desktop entry runs, so a manager installed
+/// elsewhere is still the one opened; one argument vector, no shell.
+pub fn open_manager_component(
+    manager: &app_catalog_core::ApplicationRecord,
+    component: &str,
+    spawner: &dyn ProcessSpawner,
+) -> Result<(), PlatformError> {
+    let program = manager
+        .exec
+        .as_ref()
+        .map(|exec| exec.program().to_string())
+        .ok_or_else(|| {
+            PlatformError::UnknownApplication(manager.desktop_id.as_str().to_string())
+        })?;
+    spawner
+        .spawn(&app_catalog_core::Invocation {
+            program,
+            arguments: vec!["--component".to_string(), component.to_string()],
+        })
+        .map_err(PlatformError::from)
+}
+
+/// Opens a file or a folder for real.
+pub fn open_location_now(path: &std::path::Path) -> Result<(), PlatformError> {
+    open_location(path, &SystemSpawner)
+}
+
 /// Records what it was asked to start and answers with a fixed result. This is
 /// how the overlay's launch-failure path is tested: the failure is arranged,
 /// not waited for.
@@ -162,6 +208,43 @@ mod tests {
             PlatformError::UnknownApplication("gone.desktop".to_string())
         );
         assert!(spawner.calls().is_empty());
+    }
+
+    #[test]
+    fn a_location_is_opened_as_one_argument_never_through_a_shell() {
+        let spawner = RecordingSpawner::new();
+        open_location(
+            std::path::Path::new("/home/someone/My Files; rm -rf"),
+            &spawner,
+        )
+        .unwrap();
+        let calls = spawner.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].program, "xdg-open");
+        assert_eq!(calls[0].arguments, vec!["/home/someone/My Files; rm -rf"]);
+    }
+
+    #[test]
+    fn uninstall_opens_the_manager_on_that_component() {
+        let mut builder = CatalogBuilder::new(&NoProbe);
+        builder.add_entry(
+            DesktopId::new("io.betteros.Manager.desktop").unwrap(),
+            PathBuf::from("/usr/share/applications/io.betteros.Manager.desktop"),
+            &DirectoryRank {
+                rank: 0,
+                scope: EntryScope::System,
+            },
+            b"[Desktop Entry]\nType=Application\nName=Better Manager\nExec=better-manager\n",
+        );
+        let catalog = builder.build();
+        let manager = catalog
+            .get(&DesktopId::new("io.betteros.Manager.desktop").unwrap())
+            .unwrap();
+        let spawner = RecordingSpawner::new();
+        open_manager_component(manager, "better-files", &spawner).unwrap();
+        let calls = spawner.calls();
+        assert_eq!(calls[0].program, "better-manager");
+        assert_eq!(calls[0].arguments, vec!["--component", "better-files"]);
     }
 
     #[test]

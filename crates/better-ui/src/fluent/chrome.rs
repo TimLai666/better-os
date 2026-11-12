@@ -75,6 +75,22 @@ pub struct TitleBar {
     shown: Option<(CaptionButton, ShownState)>,
     /// Draws the bar as if the window were inactive, for the gallery.
     inactive: bool,
+    /// A dialog's bar: the close button alone, and no maximize on a double
+    /// click, as a Windows 11 dialog window has.
+    dialog: bool,
+}
+
+/// The caption buttons a bar shows, left to right.
+pub fn caption_buttons(dialog: bool) -> &'static [CaptionButton] {
+    if dialog {
+        &[CaptionButton::Close]
+    } else {
+        &[
+            CaptionButton::Minimize,
+            CaptionButton::Maximize,
+            CaptionButton::Close,
+        ]
+    }
 }
 
 impl TitleBar {
@@ -85,7 +101,14 @@ impl TitleBar {
             middle: None,
             shown: None,
             inactive: false,
+            dialog: false,
         }
+    }
+
+    /// The bar of a dialog window: close only.
+    pub fn dialog(mut self) -> Self {
+        self.dialog = true;
+        self
     }
 
     pub fn icon(mut self, icon: impl IntoElement) -> Self {
@@ -210,7 +233,9 @@ impl RenderOnce for TitleBar {
                     .pl(px(16.0))
                     .gap(px(16.0))
                     .window_control_area(WindowControlArea::Drag)
-                    .on_double_click(|_, window, _| window.zoom_window())
+                    .when(!self.dialog, |bar| {
+                        bar.on_double_click(|_, window, _| window.zoom_window())
+                    })
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         down.update(cx, |s, _| s.pressed = true)
                     })
@@ -250,31 +275,11 @@ impl RenderOnce for TitleBar {
                     ),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .h_full()
-                    .child(caption_button(
-                        CaptionButton::Minimize,
-                        maximized,
-                        active,
-                        forced(CaptionButton::Minimize),
-                        p,
-                    ))
-                    .child(caption_button(
-                        CaptionButton::Maximize,
-                        maximized,
-                        active,
-                        forced(CaptionButton::Maximize),
-                        p,
-                    ))
-                    .child(caption_button(
-                        CaptionButton::Close,
-                        maximized,
-                        active,
-                        forced(CaptionButton::Close),
-                        p,
-                    )),
+                div().flex().flex_none().h_full().children(
+                    caption_buttons(self.dialog).iter().map(|button| {
+                        caption_button(*button, maximized, active, forced(*button), p)
+                    }),
+                ),
             )
     }
 }

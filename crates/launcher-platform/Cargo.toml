@@ -17,6 +17,9 @@ session-bus = ["dep:zbus", "dep:tokio"]
 [dependencies]
 app-catalog-core.workspace = true
 app-catalog-platform.workspace = true
+# Only to read which desktop entries a Better OS component installs, from the
+# manifests the manager is built with; see `catalog::ManagedApplications`.
+better-core.workspace = true
 launcher-core.workspace = true
 thiserror.workspace = true
 # The runtime is this crate's own: it blocks on the async bus calls. zbus
@@ -25,6 +28,5 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync"], optional = true
 zbus = { version = "5", optional = true }
 
 [dev-dependencies]
-better-core.workspace = true
 tempfile.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

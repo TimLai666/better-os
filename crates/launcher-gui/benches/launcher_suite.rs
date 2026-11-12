@@ -217,7 +217,6 @@ fn warm_search_update(session: &SessionEnvironment, repeats: usize) -> Vec<Row> 
     let visible = snapshot.visible();
 
     let mut model = OverlayModel::new();
-    model.set_columns(8);
     model.apply_snapshot(snapshot);
 
     let mut samples = Vec::new();

@@ -35,13 +35,30 @@ use layout::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 ///
 /// Only `--help` and `--version` are answered here, because those are the two
 /// a person types at a window's name expecting an answer rather than a window.
+/// The one option, `--component <id>`, opens that component's page: it is
+/// how Better Launcher's "Uninstall" brings a person to the place a
+/// component is removed.
 const COMMAND_LINE: WindowCommandLine = WindowCommandLine {
     program: "better-manager",
     version: env!("CARGO_PKG_VERSION"),
     help: HELP,
-    options: &[],
+    options: &[better_ui::command_line::WindowOption::Valued("--component")],
     refusal,
 };
+
+/// The component `--component <id>` asks for, when the id is a valid one.
+/// An id that is not a component's shape is ignored rather than refused: the
+/// window still opens, on its usual page.
+fn requested_component(arguments: &[String]) -> Option<better_core::ComponentId> {
+    let value = arguments.iter().enumerate().find_map(|(at, argument)| {
+        if argument == "--component" {
+            arguments.get(at + 1).cloned()
+        } else {
+            argument.strip_prefix("--component=").map(str::to_string)
+        }
+    })?;
+    better_core::ComponentId::new(value).ok()
+}
 
 fn refusal(other: &str) -> String {
     format!(
@@ -57,6 +74,8 @@ better-manager — Better OS 元件管理器的視窗 / the Better OS manager wi
 
 用法 / Usage:
   better-manager              開啟視窗 / open the window
+  better-manager --component ID
+                              開啟這個元件的頁面 / open that component's page
   better-manager --version    顯示版本 / print the version
   better-manager --help       顯示這段說明 / print this help
 
@@ -66,6 +85,7 @@ better-manager — Better OS 元件管理器的視窗 / the Better OS manager wi
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     COMMAND_LINE.open_or_exit(&arguments);
+    let requested = requested_component(&arguments);
 
     let app = gpui_platform::application().with_assets(Assets);
 
@@ -86,7 +106,13 @@ fn main() {
 
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
-                let view = cx.new(|cx| ManagerApp::new(window, cx));
+                let view = cx.new(|cx| {
+                    let mut app = ManagerApp::new(window, cx);
+                    if let Some(id) = &requested {
+                        app.open_requested_component(id, cx);
+                    }
+                    app
+                });
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("failed to open Better OS Manager window");
@@ -119,6 +145,36 @@ mod invocation_tests {
             Invocation::OpenWindow => panic!("expected a refusal, the window would open"),
             Invocation::Print(text) => panic!("expected a refusal, got: {text}"),
         }
+    }
+
+    #[test]
+    fn a_component_is_asked_for_by_id_and_a_malformed_one_is_ignored() {
+        let arguments = |values: &[&str]| -> Vec<String> {
+            values.iter().map(|value| value.to_string()).collect()
+        };
+        assert!(matches!(
+            run(&["--component", "better-files"]),
+            Invocation::OpenWindow
+        ));
+        assert_eq!(
+            super::requested_component(&arguments(&["--component", "better-files"]))
+                .map(|id| id.to_string()),
+            Some("better-files".to_string())
+        );
+        assert_eq!(super::requested_component(&arguments(&[])), None);
+        assert_eq!(
+            super::requested_component(&arguments(&["--component", "../etc"])),
+            None
+        );
+        assert_eq!(
+            super::requested_component(&arguments(&["--component=better-git"]))
+                .map(|id| id.to_string()),
+            Some("better-git".to_string())
+        );
+        assert_eq!(
+            super::requested_component(&arguments(&["--component"])),
+            None
+        );
     }
 
     #[test]
