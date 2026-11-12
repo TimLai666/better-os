@@ -200,6 +200,7 @@ fn combo_list(
     p: &Palette,
 ) -> gpui::Stateful<gpui::Div> {
     let mut list = panel_frame(div().id("combo-list"), p)
+        .occlude()
         .min_w(min_width)
         .py(px(4.0));
     for (index, item) in items.iter().enumerate() {

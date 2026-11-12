@@ -1,924 +1,916 @@
-//! The session's rules, driven through a fake `Git`, and the strings.
-//!
-//! Real `git` runs in `tests/session.rs`. Here the fake records every call and
-//! keeps a status it changes the way git would, so each rule can be checked
-//! without a repository.
+//! The window's rules without a display: the GPUI-free modules, and the
+//! session's GitHub side against a local fake server (never GitHub).
 
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use better_ui::fluent::toggle::CheckState;
 use git_core::{
-    BranchHead, ChangeKind, DiffLine, DiffLineKind, FileChange, FileDiff, Hunk, RepositoryStatus,
+    BranchHead, ChangeKind, Commit, DiffLine, DiffLineKind, FileChange, FileDiff, Hunk, Refusal,
+    RepositoryStatus,
 };
-use git_platform::{CommitMessage, DiffSide, Git, GitError};
+use git_platform::{Git, GitError};
+use github_api::{Host, Token};
 
-use crate::i18n::{self, Locale};
-use crate::recent;
-use crate::session::{
-    Badge, Check, DiffPane, GitSession, OutcomeKind, Problem, Request, Selection, truncate_leading,
-};
+use crate::changes::{Badge, Include, Inclusion, badge_of, hunk_lines, rows, truncate_leading};
+use crate::commit::{Blocked, CommitForm, parse_co_authors, summary_too_long};
+use crate::dialogs::{Dialog, Invalid, validate};
+use crate::github::{Account, GhCall, SignIn, SignInProblem};
+use crate::i18n::{EN_US, ZH_TW};
+use crate::keys::{Action, SHORTCUTS, action_for};
+use crate::remote::{NextStep, SyncAction, next_step, sync_action};
+use crate::session::{Files, GitSession, KeyringChange, Notice, Problem};
 
-const ROOT: &str = "/work/repo";
-
-#[derive(Default)]
-struct FakeState {
-    /// Paths that open, and the root they open as.
-    roots: Vec<(PathBuf, PathBuf)>,
-    status: Option<RepositoryStatus>,
-    /// What `diff` answers for one path and side; anything else gets a
-    /// one-line text diff.
-    diffs: Vec<(PathBuf, DiffSide, FileDiff)>,
-    calls: Vec<String>,
-    commits: Vec<CommitMessage>,
-    fail_commit: Option<GitError>,
-    fail_stage: Option<GitError>,
-    fail_status: Option<GitError>,
-}
-
-#[derive(Default)]
-struct FakeGit {
-    state: Mutex<FakeState>,
-}
-
-impl FakeGit {
-    fn with(status: RepositoryStatus) -> Arc<Self> {
-        let fake = FakeGit::default();
-        {
-            let mut state = fake.state.lock().unwrap();
-            state.roots.push((PathBuf::from(ROOT), PathBuf::from(ROOT)));
-            state
-                .roots
-                .push((PathBuf::from("/work/repo/src"), PathBuf::from(ROOT)));
-            state.status = Some(status);
-        }
-        Arc::new(fake)
-    }
-
-    fn calls(&self) -> Vec<String> {
-        self.state.lock().unwrap().calls.clone()
-    }
-
-    fn clear_calls(&self) {
-        self.state.lock().unwrap().calls.clear();
-    }
-
-    fn set<F: FnOnce(&mut FakeState)>(&self, change: F) {
-        change(&mut self.state.lock().unwrap());
-    }
-}
-
-fn names(paths: &[PathBuf]) -> String {
-    paths
-        .iter()
-        .map(|path| path.to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-impl Git for FakeGit {
-    fn repository_root(&self, path: &Path) -> Result<PathBuf, GitError> {
-        let mut state = self.state.lock().unwrap();
-        state.calls.push(format!("root {}", path.display()));
-        state
-            .roots
-            .iter()
-            .find(|(asked, _)| asked == path)
-            .map(|(_, root)| root.clone())
-            .ok_or_else(|| GitError::NotARepository(path.to_path_buf()))
-    }
-
-    fn status(&self, _repository: &Path) -> Result<RepositoryStatus, GitError> {
-        let mut state = self.state.lock().unwrap();
-        state.calls.push("status".to_string());
-        if let Some(error) = state.fail_status.clone() {
-            return Err(error);
-        }
-        Ok(state.status.clone().expect("the fake has a status"))
-    }
-
-    fn diff(&self, _repository: &Path, path: &Path, side: DiffSide) -> Result<FileDiff, GitError> {
-        let mut state = self.state.lock().unwrap();
-        state
-            .calls
-            .push(format!("diff {} {:?}", path.display(), side));
-        let found = state
-            .diffs
-            .iter()
-            .find(|(p, s, _)| p == path && *s == side)
-            .map(|(_, _, diff)| diff.clone());
-        Ok(found.unwrap_or_else(|| one_line_diff(&format!("{} {:?}", path.display(), side))))
-    }
-
-    fn stage(&self, _repository: &Path, paths: &[PathBuf]) -> Result<(), GitError> {
-        let mut state = self.state.lock().unwrap();
-        state.calls.push(format!("stage {}", names(paths)));
-        if let Some(error) = state.fail_stage.clone() {
-            return Err(error);
-        }
-        let status = state.status.as_mut().unwrap();
-        for change in status.changes.iter_mut() {
-            if paths.contains(&change.path) {
-                if change.untracked {
-                    change.staged = Some(ChangeKind::Added);
-                    change.untracked = false;
-                } else {
-                    change.staged = change.staged.or(change.unstaged);
-                }
-                change.unstaged = None;
-            }
-        }
-        Ok(())
-    }
-
-    fn unstage(&self, _repository: &Path, paths: &[PathBuf]) -> Result<(), GitError> {
-        let mut state = self.state.lock().unwrap();
-        state.calls.push(format!("unstage {}", names(paths)));
-        let status = state.status.as_mut().unwrap();
-        for change in status.changes.iter_mut() {
-            if paths.contains(&change.path) {
-                if change.staged == Some(ChangeKind::Added) && change.unstaged.is_none() {
-                    change.untracked = true;
-                } else {
-                    change.unstaged = change.unstaged.or(change.staged);
-                }
-                change.staged = None;
-            }
-        }
-        Ok(())
-    }
-
-    fn commit(&self, _repository: &Path, message: &CommitMessage) -> Result<(), GitError> {
-        let mut state = self.state.lock().unwrap();
-        state.calls.push("commit".to_string());
-        if let Some(error) = state.fail_commit.clone() {
-            return Err(error);
-        }
-        state.commits.push(message.clone());
-        let status = state.status.as_mut().unwrap();
-        status
-            .changes
-            .retain(|change| change.staged.is_none() || change.unstaged.is_some());
-        for change in status.changes.iter_mut() {
-            change.staged = None;
-        }
-        status.unborn = false;
-        Ok(())
-    }
-}
-
-fn one_line_diff(text: &str) -> FileDiff {
-    FileDiff::Text {
-        hunks: vec![Hunk {
-            header: "@@ -1 +1 @@".to_string(),
-            lines: vec![DiffLine {
-                kind: DiffLineKind::Added,
-                text: text.to_string(),
-                old_line: None,
-                new_line: Some(1),
-                no_newline_at_end: false,
-            }],
-        }],
-    }
-}
-
-fn change(path: &str) -> FileChange {
+fn change(path: &str, staged: Option<ChangeKind>, unstaged: Option<ChangeKind>) -> FileChange {
     FileChange {
         path: PathBuf::from(path),
         original_path: None,
-        staged: None,
-        unstaged: None,
+        staged,
+        unstaged,
         untracked: false,
         conflicted: false,
-    }
-}
-
-fn modified(path: &str) -> FileChange {
-    FileChange {
-        unstaged: Some(ChangeKind::Modified),
-        ..change(path)
-    }
-}
-
-fn staged(path: &str, kind: ChangeKind) -> FileChange {
-    FileChange {
-        staged: Some(kind),
-        ..change(path)
-    }
-}
-
-fn untracked(path: &str) -> FileChange {
-    FileChange {
-        untracked: true,
-        ..change(path)
-    }
-}
-
-fn conflicted(path: &str) -> FileChange {
-    FileChange {
-        conflicted: true,
-        ..change(path)
-    }
-}
-
-fn both(path: &str) -> FileChange {
-    FileChange {
-        unstaged: Some(ChangeKind::Modified),
-        ..staged(path, ChangeKind::Modified)
+        conflict: None,
     }
 }
 
 fn status(changes: Vec<FileChange>) -> RepositoryStatus {
     RepositoryStatus {
-        head: BranchHead::Branch("main".to_string()),
+        head: BranchHead::Branch("main".into()),
         unborn: false,
+        head_oid: None,
         upstream: None,
         ahead_behind: None,
         changes,
+        stash_count: 0,
     }
 }
 
-fn opened(fake: &Arc<FakeGit>) -> GitSession {
-    let mut session = GitSession::new(fake.clone(), None);
-    session.open(ROOT);
-    session.run_pending();
-    assert_eq!(session.repository(), Some(Path::new(ROOT)));
-    fake.clear_calls();
+fn diff() -> FileDiff {
+    let line = |kind, text: &str, old: Option<u32>, new: Option<u32>| DiffLine {
+        kind,
+        text: text.into(),
+        old_line: old,
+        new_line: new,
+        no_newline_at_end: false,
+    };
+    FileDiff::Text {
+        hunks: vec![
+            Hunk {
+                header: "@@ -1,2 +1,2 @@".into(),
+                lines: vec![
+                    line(DiffLineKind::Context, "a", Some(1), Some(1)),
+                    line(DiffLineKind::Removed, "b", Some(2), None),
+                    line(DiffLineKind::Added, "B", None, Some(2)),
+                ],
+            },
+            Hunk {
+                header: "@@ -9 +9 @@".into(),
+                lines: vec![
+                    line(DiffLineKind::Removed, "x", Some(9), None),
+                    line(DiffLineKind::Added, "X", None, Some(9)),
+                ],
+            },
+        ],
+    }
+}
+
+// --- changes -----------------------------------------------------------------
+
+#[test]
+fn badges_follow_head_to_working_tree() {
+    let m = Some(ChangeKind::Modified);
+    let a = Some(ChangeKind::Added);
+    let d = Some(ChangeKind::Deleted);
+    assert_eq!(badge_of(&change("x", m, None)), Badge::Modified);
+    assert_eq!(badge_of(&change("x", a, m)), Badge::Added);
+    assert_eq!(badge_of(&change("x", a, d)), Badge::Deleted);
+    assert_eq!(badge_of(&change("x", None, d)), Badge::Deleted);
+    assert_eq!(
+        badge_of(&change("x", Some(ChangeKind::Renamed), None)),
+        Badge::Renamed
+    );
+    let mut untracked = change("x", None, None);
+    untracked.untracked = true;
+    assert_eq!(badge_of(&untracked), Badge::Added);
+    let mut conflicted = change("x", None, None);
+    conflicted.conflicted = true;
+    assert_eq!(badge_of(&conflicted), Badge::Conflicted);
+}
+
+#[test]
+fn inclusion_defaults_to_all_and_survives_refresh() {
+    let s = status(vec![
+        change("a", Some(ChangeKind::Modified), None),
+        change("b", None, Some(ChangeKind::Modified)),
+    ]);
+    let mut inclusion = Inclusion::default();
+    inclusion.sync(&s);
+    assert_eq!(inclusion.check(Path::new("a")), CheckState::Checked);
+    inclusion.toggle_file(Path::new("a"));
+    inclusion.sync(&s);
+    assert_eq!(
+        inclusion.check(Path::new("a")),
+        CheckState::Unchecked,
+        "kept"
+    );
+    let shown = rows(&s, &inclusion, Some(Path::new("b")), "");
+    assert_eq!(Inclusion::summary(&shown), CheckState::Indeterminate);
+    assert!(shown[1].selected && !shown[0].selected);
+    inclusion.toggle_all(&shown);
+    assert_eq!(inclusion.check(Path::new("a")), CheckState::Checked);
+    let shown = rows(&s, &inclusion, None, "");
+    inclusion.toggle_all(&shown);
+    assert!(!inclusion.any_included());
+    assert_eq!(
+        rows(&s, &inclusion, None, "B").len(),
+        1,
+        "the filter ignores case"
+    );
+    inclusion.sync(&status(vec![change("c", None, Some(ChangeKind::Modified))]));
+    assert_eq!(
+        inclusion.check(Path::new("a")),
+        CheckState::Unchecked,
+        "gone"
+    );
+    assert_eq!(
+        inclusion.check(Path::new("c")),
+        CheckState::Checked,
+        "new is in"
+    );
+}
+
+#[test]
+fn lines_make_a_file_indeterminate_and_build_a_selection() {
+    let s = status(vec![change("f", None, Some(ChangeKind::Modified))]);
+    let mut inclusion = Inclusion::default();
+    inclusion.sync(&s);
+    let d = diff();
+    assert_eq!(hunk_lines(&d, 1), vec![(1, 0), (1, 1)]);
+    inclusion.set_lines(Path::new("f"), &d, &hunk_lines(&d, 1), false);
+    assert_eq!(inclusion.check(Path::new("f")), CheckState::Indeterminate);
+    let FileDiff::Text { hunks } = &d else {
+        unreachable!()
+    };
+    assert!(inclusion.line_included(Path::new("f"), &hunks[0].lines[1]));
+    assert!(!inclusion.line_included(Path::new("f"), &hunks[1].lines[0]));
+    let selection = inclusion.selections(&s);
+    let lines = selection[0].lines.as_ref().unwrap();
+    assert_eq!(lines.fingerprint, git_core::change_fingerprint(&d));
+    assert_eq!(lines.selected, vec![(None, Some(2)), (Some(2), None)]);
+    inclusion.set_lines(Path::new("f"), &d, &[(0, 0)], true);
+    assert_eq!(
+        inclusion.check(Path::new("f")),
+        CheckState::Indeterminate,
+        "context lines are not choices"
+    );
+    inclusion.set_lines(Path::new("f"), &d, &hunk_lines(&d, 1), true);
+    assert_eq!(inclusion.get(Path::new("f")), Include::All);
+    inclusion.set_lines(Path::new("f"), &d, &[(0, 1), (0, 2), (1, 0), (1, 1)], false);
+    assert_eq!(inclusion.get(Path::new("f")), Include::Nothing);
+    // The same changes shown with the whole file as context keep the
+    // choice; a diff whose changes differ makes it the whole file again.
+    inclusion.set_lines(Path::new("f"), &d, &[(0, 1)], true);
+    assert_eq!(inclusion.check(Path::new("f")), CheckState::Indeterminate);
+    let FileDiff::Text { hunks } = d.clone() else {
+        unreachable!()
+    };
+    let mut whole = hunks.clone();
+    let tail = whole.pop().unwrap();
+    whole[0].header = "@@ -1,9 +1,9 @@".into();
+    whole[0].lines.extend(tail.lines);
+    inclusion.reconcile(Path::new("f"), &FileDiff::Text { hunks: whole });
+    assert_eq!(inclusion.check(Path::new("f")), CheckState::Indeterminate);
+    let mut edited = hunks.clone();
+    edited[1].lines[1].text = "Y".into();
+    inclusion.reconcile(Path::new("f"), &FileDiff::Text { hunks: edited });
+    assert_eq!(inclusion.get(Path::new("f")), Include::All);
+}
+
+#[test]
+fn folder_captions_cut_at_the_front() {
+    assert_eq!(truncate_leading("short", 10), "short");
+    assert_eq!(truncate_leading("a/very/long/folder", 8), "…/folder");
+}
+
+// --- commit form --------------------------------------------------------------
+
+#[test]
+fn commit_is_offered_only_when_it_can_work() {
+    let mut form = CommitForm::default();
+    assert_eq!(form.blocked(true, false, false), Some(Blocked::NoSummary));
+    form.summary = "x".into();
+    assert_eq!(
+        form.blocked(false, false, false),
+        Some(Blocked::NothingIncluded)
+    );
+    assert_eq!(form.blocked(true, true, false), Some(Blocked::Busy));
+    assert_eq!(
+        form.blocked(true, false, true),
+        Some(Blocked::OperationInProgress)
+    );
+    assert_eq!(form.blocked(true, false, false), None);
+    form.allow_empty = true;
+    assert_eq!(form.blocked(false, false, false), None);
+    form.show_co_authors = true;
+    form.co_authors = "Ada <ada@example.invalid>\nnot a person".into();
+    assert_eq!(form.blocked(true, false, false), Some(Blocked::BadCoAuthor));
+    assert_eq!(parse_co_authors(&form.co_authors), Err(2));
+    form.co_authors = "Ada <ada@example.invalid>\n\n".into();
+    assert_eq!(form.options().co_authors.len(), 1);
+    form.push_after = true;
+    form.clear();
+    assert!(form.summary.is_empty() && form.push_after && !form.allow_empty);
+    assert!(summary_too_long(&"x".repeat(51)) && !summary_too_long(&"中".repeat(50)));
+}
+
+// --- history -----------------------------------------------------------------
+
+fn commit(sha: &str, parent: &str, summary: &str) -> Commit {
+    Commit {
+        sha: sha.into(),
+        parents: if parent.is_empty() {
+            vec![]
+        } else {
+            vec![parent.into()]
+        },
+        author_name: "a".into(),
+        author_email: "a@x".into(),
+        author_time: 0,
+        refs: vec![],
+        summary: summary.into(),
+        body: String::new(),
+    }
+}
+
+#[test]
+fn reorder_and_squash_todo_lists() {
+    use git_platform::{HistoryEdit, TodoAction::*};
+    let commits = vec![
+        commit("c", "b", "C"),
+        commit("b", "a", "B"),
+        commit("a", "", "A"),
+    ];
+    let Some(HistoryEdit::Rewrite { base, todo, .. }) = crate::history::reorder(&commits, 0, 1)
+    else {
+        panic!()
+    };
+    assert_eq!(base.as_deref(), Some("a"));
+    assert_eq!(todo, vec![(Pick, "b".into()), (Pick, "c".into())]);
+    let Some(HistoryEdit::Rewrite { base, todo, .. }) = crate::history::reorder(&commits, 2, 0)
+    else {
+        panic!()
+    };
+    assert_eq!(base, None, "the root moves: rewrite from --root");
+    assert_eq!(
+        todo,
+        vec![(Pick, "b".into()), (Pick, "c".into()), (Pick, "a".into())]
+    );
+    let Some(HistoryEdit::Rewrite { todo, message, .. }) =
+        crate::history::squash(&commits, 0, 2, "AC")
+    else {
+        panic!()
+    };
+    assert_eq!(
+        todo,
+        vec![(Pick, "a".into()), (Squash, "c".into()), (Pick, "b".into())]
+    );
+    assert_eq!(message.as_deref(), Some("AC"));
+    assert!(crate::history::reorder(&commits, 1, 1).is_none());
+    assert!(crate::history::can_rewrite(&commits, 2, None));
+    assert!(
+        !crate::history::can_rewrite(&commits, 1, Some(1)),
+        "pushed commits stay"
+    );
+    let mut merge = commits.clone();
+    merge[0].parents.push("z".into());
+    assert!(!crate::history::can_rewrite(&merge, 0, None));
+    assert_eq!(crate::history::age(100, 40), (1, "m"));
+    assert_eq!(
+        crate::history::squash_message(&commits[2], &commits[0]),
+        "A\n\nC"
+    );
+}
+
+// --- branches and remotes ------------------------------------------------------
+
+#[test]
+fn branch_rows_group_default_recent_and_remote_only() {
+    let parse = |text: &str| git_core::parse_branches(text.as_bytes()).unwrap();
+    let branches = parse(
+        "refs/heads/main\x1fa\x1f\x1f\x1f*\x1f3\x1fm\n\
+refs/heads/zeta\x1fb\x1f\x1f\x1f \x1f2\x1fz\n\
+refs/heads/alpha\x1fc\x1f\x1f\x1f \x1f1\x1fa\n\
+refs/remotes/origin/main\x1fa\x1f\x1f\x1f \x1f3\x1fm\n\
+refs/remotes/origin/pr-7\x1fd\x1f\x1f\x1f \x1f3\x1fp\n",
+    );
+    let rows = crate::branches::rows(&branches, Some("main"), &["zeta".into()], "");
+    let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["main", "zeta", "alpha", "origin/pr-7"]);
+    assert!(rows[3].remote_only);
+    assert_eq!(crate::branches::rows(&branches, None, &[], "PR").len(), 1);
+    assert_eq!(
+        crate::branches::remember(&["a".into(), "b".into()], "b"),
+        vec!["b", "a"]
+    );
+}
+
+#[test]
+fn the_sync_button_and_the_next_step() {
+    let mut s = status(vec![]);
+    assert_eq!(sync_action(&s, false, false), SyncAction::PublishRepository);
+    assert_eq!(sync_action(&s, true, false), SyncAction::PublishBranch);
+    assert_eq!(sync_action(&s, true, true), SyncAction::None);
+    s.upstream = Some("origin/main".into());
+    s.ahead_behind = Some((2, 0));
+    assert_eq!(sync_action(&s, true, false), SyncAction::Push { ahead: 2 });
+    s.ahead_behind = Some((2, 3));
+    assert_eq!(
+        sync_action(&s, true, false),
+        SyncAction::Pull {
+            behind: 3,
+            ahead: 2
+        }
+    );
+    s.ahead_behind = Some((0, 0));
+    assert_eq!(sync_action(&s, true, false), SyncAction::Fetch);
+    assert_eq!(
+        next_step(Refusal::NotFastForward, true, false, false),
+        NextStep::Pull
+    );
+    assert_eq!(
+        next_step(Refusal::Authentication, true, false, true),
+        NextStep::SignIn
+    );
+    assert_eq!(
+        next_step(Refusal::PermissionDenied, true, true, true),
+        NextStep::Fork
+    );
+    assert_eq!(
+        next_step(Refusal::LocalChangesWouldBeOverwritten, false, true, true),
+        NextStep::StashAndRetry
+    );
+    assert_eq!(
+        next_step(Refusal::Network, true, true, true),
+        NextStep::None
+    );
+    for refusal in [
+        Refusal::NotFastForward,
+        Refusal::StaleLease,
+        Refusal::ProtectedBranch,
+        Refusal::Other,
+    ] {
+        assert!(
+            !EN_US.refusal(refusal, true).is_empty() && !ZH_TW.refusal(refusal, true).is_empty()
+        );
+    }
+}
+
+// --- dialogs, keys, strings ------------------------------------------------------
+
+#[test]
+fn dialogs_validate_their_fields() {
+    let branches =
+        git_core::parse_branches(b"refs/heads/main\x1fa\x1f\x1f\x1f*\x1f1\x1fm\n").unwrap();
+    let new_branch = Dialog::NewBranch {
+        start: None,
+        start_label: None,
+    };
+    let texts = |a: &str| vec![a.to_string(), String::new(), String::new()];
+    assert_eq!(
+        validate(&new_branch, &texts(""), &branches, &[]),
+        Some(Invalid::Empty)
+    );
+    assert_eq!(
+        validate(&new_branch, &texts("main"), &branches, &[]),
+        Some(Invalid::BranchExists)
+    );
+    assert_eq!(
+        validate(&new_branch, &texts("new work"), &branches, &[]),
+        None
+    );
+    assert_eq!(
+        validate(&Dialog::AddLocal, &texts("relative"), &[], &[]),
+        Some(Invalid::NotAbsolute)
+    );
+    assert_eq!(validate(&Dialog::AddLocal, &texts("/abs"), &[], &[]), None);
+    let squash = Dialog::Squash { from: 0, to: 1 };
+    assert_eq!(
+        validate(&squash, &texts("ignored"), &[], &[]),
+        Some(Invalid::Empty),
+        "the message is the third field"
+    );
+    assert_eq!(
+        validate(
+            &Dialog::SignIn { enterprise: true },
+            &texts("not a host"),
+            &[],
+            &[]
+        ),
+        Some(Invalid::Empty)
+    );
+    assert_eq!(crate::dialogs::field_count(&squash), 3);
+}
+
+#[test]
+fn every_shortcut_is_unique_and_found() {
+    for (index, (action, keys, _)) in SHORTCUTS.iter().enumerate() {
+        assert!(
+            SHORTCUTS
+                .iter()
+                .skip(index + 1)
+                .all(|(a, k, _)| a != action && k != keys),
+            "{keys}"
+        );
+    }
+    assert_eq!(action_for("p", true, true, false), Some(Action::Pull));
+    assert_eq!(action_for("P", true, false, false), Some(Action::Push));
+    assert_eq!(
+        action_for("backspace", true, true, false),
+        Some(Action::DiscardAll)
+    );
+    assert_eq!(
+        action_for("w", true, false, true),
+        Some(Action::WorktreeList)
+    );
+    assert_eq!(action_for("p", false, false, false), None);
+    assert_eq!(crate::keys::label(Action::Settings), "Ctrl+,");
+}
+
+#[test]
+fn every_string_exists_in_both_languages() {
+    let (en, zh) = (EN_US.all(), ZH_TW.all());
+    assert_eq!(en.len(), zh.len());
+    for (e, z) in en.iter().zip(&zh) {
+        assert!(!e.is_empty() && !z.is_empty(), "{e} / {z}");
+    }
+    assert_eq!(EN_US.commit_label(Some("main")), "Commit to main");
+    assert_eq!(ZH_TW.commit_label(Some("main")), "提交到 main");
+    let (title, message, details) = ZH_TW.problem(&Problem::Git {
+        kind: crate::session::OpKind::Push,
+        error: GitError::Failed {
+            exit_code: Some(1),
+            message: " ! [rejected] main -> main (fetch first)".into(),
+        },
+    });
+    assert_eq!(title, "推送失敗");
+    assert!(message.contains("先拉取"));
+    assert!(details.contains("rejected"));
+    assert_eq!(EN_US.ago(30), "just now");
+    assert_eq!(EN_US.ago(180), "3 minutes ago");
+}
+
+#[test]
+fn repository_rows_search_and_missing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = tmp.path().join("repos.json");
+    let mut list = crate::repositories::RepositoryList::load(Some(file.clone()));
+    for path in ["/work/beta", "/work/alpha", "/gone/old"] {
+        list.add(Path::new(path)).unwrap();
+    }
+    list.set_alias(Path::new("/work/beta"), "Best").unwrap();
+    let rows = list.rows(
+        "",
+        Some(Path::new("/work/alpha")),
+        &[PathBuf::from("/gone/old")],
+        |p| p.starts_with("/work"),
+    );
+    assert_eq!(
+        rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+        ["old", "alpha", "Best"]
+    );
+    assert!(rows[0].missing && rows[0].recent && rows[1].current);
+    assert_eq!(list.rows("best", None, &[], |_| true).len(), 1);
+    list.relocate(Path::new("/gone/old"), Path::new("/work/old"))
+        .unwrap();
+    let reread = crate::repositories::RepositoryList::load(Some(file));
+    assert!(
+        reread
+            .entries
+            .iter()
+            .any(|e| e.path == Path::new("/work/old"))
+    );
+    assert_eq!(reread.alias(Path::new("/work/beta")), Some("Best"));
+}
+
+#[test]
+fn launches_use_argument_vectors() {
+    let settings = crate::settings::Settings::default();
+    let editor =
+        crate::settings::editor_launch(&settings, Path::new("/r/f.txt"), |p| p == "zed").unwrap();
+    assert_eq!(
+        (editor.program.as_str(), editor.path_arg.as_deref()),
+        ("zed", Some(Path::new("/r/f.txt")))
+    );
+    let custom = crate::settings::Settings {
+        editor: "code --wait".into(),
+        terminal: "konsole".into(),
+        ..Default::default()
+    };
+    let editor = crate::settings::editor_launch(&custom, Path::new("/r"), |_| false).unwrap();
+    assert_eq!(editor.args, vec!["--wait"]);
+    let terminal = crate::settings::terminal_launch(&custom, Path::new("/r"), |_| false).unwrap();
+    assert_eq!(terminal.args, vec!["--workdir", "/r"]);
+    let gnome =
+        crate::settings::terminal_launch(&settings, Path::new("/r"), |p| p == "gnome-terminal")
+            .unwrap();
+    assert_eq!(gnome.args, vec!["--working-directory=/r"]);
+    assert!(crate::settings::terminal_launch(&settings, Path::new("/r"), |_| false).is_none());
+    assert_eq!(
+        crate::settings::files_launch(Path::new("/r"), |p| p == "better-files").program,
+        "better-files"
+    );
+    assert_eq!(
+        crate::settings::files_launch(Path::new("/r"), |_| false).program,
+        "xdg-open"
+    );
+}
+
+#[test]
+fn clone_plans_and_names() {
+    let plan = crate::clone::plan("octo/hello", Path::new("/projects"), |_| false).unwrap();
+    assert_eq!(
+        plan,
+        (
+            "https://github.com/octo/hello.git".into(),
+            PathBuf::from("/projects/hello")
+        )
+    );
+    assert_eq!(
+        crate::clone::plan("", Path::new("/p"), |_| false),
+        Err(crate::clone::CloneProblem::NoUrl)
+    );
+    assert_eq!(
+        crate::clone::plan("o/r", Path::new("rel"), |_| false),
+        Err(crate::clone::CloneProblem::NoFolder)
+    );
+    assert_eq!(
+        crate::clone::plan("o/r", Path::new("/p"), |_| true),
+        Err(crate::clone::CloneProblem::FolderInUse)
+    );
+    assert_eq!(
+        crate::publish::sanitize_repository_name(" My Project! "),
+        "My-Project"
+    );
+    assert_eq!(
+        crate::publish::fill_license("(c) [year] [fullname]", 2026, "Ada"),
+        "(c) 2026 Ada"
+    );
+    assert_eq!(crate::publish::current_year(1_780_000_000), 2026);
+}
+
+#[test]
+fn trust_lists_the_programs_a_repository_names() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".git/hooks")).unwrap();
+    std::fs::write(
+        tmp.path().join(".git/config"),
+        "[filter \"x\"]\n\tclean = run-me\n[core]\n\tfsmonitor = watch\n\tbare = false\n\tsshCommand = ssh-wrapper\n[gpg]\n\tprogram = fake-gpg\n[diff]\n\texternal = differ\n[credential]\n\thelper = leak\n[merge \"m\"]\n\tdriver = merger\n[include]\n\tpath = /elsewhere\n[includeIf \"gitdir:/x/\"]\n\tpath = /more\n[user]\n\tname = Ada\n",
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join(".git/hooks/pre-commit"), "").unwrap();
+    std::fs::write(tmp.path().join(".git/hooks/pre-push.sample"), "").unwrap();
+    assert_eq!(
+        crate::trust::configured_programs(tmp.path()),
+        vec![
+            "clean = run-me",
+            "fsmonitor = watch",
+            "sshCommand = ssh-wrapper",
+            "program = fake-gpg",
+            "external = differ",
+            "helper = leak",
+            "driver = merger",
+            "path = /elsewhere",
+            "path = /more",
+            "hook: pre-commit",
+        ]
+    );
+    // A worktree's `.git` file points at its git directory, whose
+    // `commondir` holds the configuration.
+    let worktree = tmp.path().join("wt");
+    std::fs::create_dir_all(tmp.path().join(".git/worktrees/wt")).unwrap();
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(
+        worktree.join(".git"),
+        format!(
+            "gitdir: {}\n",
+            tmp.path().join(".git/worktrees/wt").display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join(".git/worktrees/wt/commondir"), "../..\n").unwrap();
+    assert!(crate::trust::configured_programs(&worktree).contains(&"clean = run-me".to_string()));
+}
+
+// --- notifications --------------------------------------------------------------
+
+#[test]
+fn notifications_fire_once_and_not_for_old_news() {
+    use crate::github::MyPull;
+    use github_api::{CheckRun, CombinedChecks, PullRequest, Review};
+    let failed = |sha: &str| MyPull {
+        pull: PullRequest {
+            number: 7,
+            title: "T".into(),
+            html_url: "u".into(),
+            head: github_api::pulls::PullRef {
+                name: "b".into(),
+                sha: sha.into(),
+                repo: None,
+            },
+            ..Default::default()
+        },
+        checks: CombinedChecks {
+            runs: vec![CheckRun {
+                id: 1,
+                name: "ci".into(),
+                status: "completed".into(),
+                conclusion: Some("failure".into()),
+                html_url: None,
+                details_url: None,
+                check_suite: None,
+            }],
+            statuses: vec![],
+        },
+        reviews: vec![],
+    };
+    let mut seen = crate::notifications::Seen::default();
+    assert!(
+        seen.update(&[failed("a")]).is_empty(),
+        "the first poll only primes"
+    );
+    assert!(seen.update(&[failed("a")]).is_empty());
+    assert_eq!(
+        seen.update(&[failed("b")]).len(),
+        1,
+        "a new head that fails"
+    );
+    let mut reviewed = failed("b");
+    reviewed.reviews.push(Review {
+        id: 9,
+        user: github_api::repos::Owner {
+            login: "rev".into(),
+        },
+        state: "APPROVED".into(),
+        html_url: String::new(),
+    });
+    let notices = seen.update(&[reviewed.clone()]);
+    assert!(
+        matches!(&notices[..], [crate::notifications::Notice::Reviewed { reviewer, .. }] if reviewer == "rev")
+    );
+    assert!(seen.update(&[reviewed]).is_empty());
+}
+
+// --- the GitHub side of the session, against a local fake server ------------------
+
+/// Serves (method, path prefix, status, body) routes on 127.0.0.1.
+fn server(
+    routes: Vec<(&'static str, &'static str, u16, String)>,
+) -> (Host, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() {
+                continue;
+            }
+            let mut parts = line.split_whitespace();
+            let (method, path) = (
+                parts.next().unwrap_or("").to_string(),
+                parts.next().unwrap_or("").to_string(),
+            );
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            log.lock().unwrap().push(format!("{method} {path}"));
+            let (status, answer) = routes
+                .iter()
+                .find(|(m, p, _, _)| *m == method && path.starts_with(p))
+                .map(|(_, _, s, b)| (*s, b.clone()))
+                .unwrap_or((404, r#"{"message":"Not Found"}"#.into()));
+            let _ = stream.write_all(
+                format!("HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}", answer.len()).as_bytes(),
+            );
+        }
+    });
+    (Host::at("github.com", &base), seen)
+}
+
+/// A `Git` that knows one repository with an `origin` on github.com.
+struct HostedGit;
+
+impl Git for HostedGit {
+    fn repository_root(&self, path: &Path) -> Result<PathBuf, GitError> {
+        Ok(path.to_path_buf())
+    }
+    fn status(&self, _: &Path) -> Result<RepositoryStatus, GitError> {
+        Ok(status(vec![]))
+    }
+    fn diff(&self, _: &Path, _: &Path, _: git_platform::DiffSide) -> Result<FileDiff, GitError> {
+        Ok(FileDiff::Text { hunks: vec![] })
+    }
+    fn stage(&self, _: &Path, _: &[PathBuf]) -> Result<(), GitError> {
+        Ok(())
+    }
+    fn unstage(&self, _: &Path, _: &[PathBuf]) -> Result<(), GitError> {
+        Ok(())
+    }
+    fn commit(&self, _: &Path, _: &git_platform::CommitMessage) -> Result<(), GitError> {
+        Ok(())
+    }
+    fn info(&self, _: &Path) -> Result<git_platform::RepositoryInfo, GitError> {
+        Ok(git_platform::RepositoryInfo {
+            remotes: vec![git_core::Remote {
+                name: "origin".into(),
+                fetch_url: "https://github.com/octo/hello.git".into(),
+                push_url: "https://github.com/octo/hello.git".into(),
+            }],
+            ..Default::default()
+        })
+    }
+}
+
+fn hosted_session(host: &Host) -> GitSession {
+    let mut session = GitSession::new(Arc::new(HostedGit), Files::default());
+    session.trust_and_open(PathBuf::from("/work/hello"));
+    session.run_git_jobs();
+    session.github.host = Some(host.clone());
     session
 }
 
-// ---- Opening ------------------------------------------------------------
-
 #[test]
-fn opening_a_folder_inside_a_repository_opens_its_root() {
-    let fake = FakeGit::with(status(vec![modified("a.rs")]));
-    let mut session = GitSession::new(fake.clone(), None);
-    session.open("/work/repo/src");
+fn sign_in_polls_stores_the_token_and_reads_the_repository() {
+    let (host, seen) = server(vec![
+        ("POST", "/login/device/code", 200, r#"{"device_code":"dc","user_code":"WXYZ-1234","verification_uri":"https://github.com/login/device","expires_in":900,"interval":5}"#.into()),
+        ("POST", "/login/oauth/access_token", 200, r#"{"access_token":"ghu_1","refresh_token":"ghr_1","expires_in":28800,"refresh_token_expires_in":15897600}"#.into()),
+        ("GET", "/user", 200, r#"{"login":"octo"}"#.into()),
+        ("GET", "/repos/octo/hello/pulls", 200, r#"[{"number":3,"title":"Mine","html_url":"https://x/3","user":{"login":"octo"},"head":{"ref":"main","sha":"s"},"base":{"ref":"dev","sha":"t"}}]"#.into()),
+        ("GET", "/repos/octo/hello/commits", 200, r#"{"check_runs":[],"statuses":[]}"#.into()),
+        ("GET", "/repos/octo/hello/branches/main", 200, r#"{"protected":true}"#.into()),
+        ("GET", "/repos/octo/hello", 200, r#"{"name":"hello","full_name":"octo/hello","owner":{"login":"octo"},"clone_url":"c","html_url":"h","permissions":{"push":true}}"#.into()),
+    ]);
+    let mut session = hosted_session(&host);
+    session.start_sign_in(host.clone());
     session.run_pending();
-    assert_eq!(session.repository(), Some(Path::new(ROOT)));
-    assert_eq!(session.repository_name().as_deref(), Some("repo"));
-    assert_eq!(session.branch(), Some("main"));
-    assert_eq!(session.rows().len(), 1);
-    assert_eq!(session.recent(), &[PathBuf::from(ROOT)]);
-}
-
-#[test]
-fn a_folder_that_is_not_a_repository_says_so_and_opens_nothing() {
-    let fake = FakeGit::with(status(vec![modified("a.rs")]));
-    let mut session = GitSession::new(fake.clone(), None);
-    session.open("/tmp/plain");
-    session.run_pending();
-    assert_eq!(session.repository(), None);
-    assert_eq!(
-        session.problem(),
-        Some(&Problem::Git(GitError::NotARepository(PathBuf::from(
-            "/tmp/plain"
-        ))))
-    );
-    assert!(session.recent().is_empty());
-}
-
-#[test]
-fn a_failed_open_keeps_the_repository_that_was_open() {
-    let fake = FakeGit::with(status(vec![modified("a.rs")]));
-    let mut session = opened(&fake);
-    session.select(Path::new("a.rs"));
-    session.run_pending();
-    session.open("/tmp/plain");
-    session.run_pending();
-    assert_eq!(session.repository(), Some(Path::new(ROOT)));
-    assert_eq!(session.rows().len(), 1);
-    assert!(session.selection().is_some());
-    assert!(matches!(
-        session.problem(),
-        Some(Problem::Git(GitError::NotARepository(_)))
-    ));
-}
-
-#[test]
-fn git_missing_is_a_message_not_a_crash() {
-    let fake = FakeGit::with(status(vec![]));
-    fake.set(|state| state.fail_status = Some(GitError::NotInstalled));
-    let mut session = GitSession::new(fake.clone(), None);
-    session.open(ROOT);
-    session.run_pending();
-    assert_eq!(session.repository(), None);
-    assert_eq!(
-        session.problem(),
-        Some(&Problem::Git(GitError::NotInstalled))
-    );
-    session.dismiss_error();
-    assert_eq!(session.problem(), None);
-}
-
-#[test]
-fn a_successful_open_clears_an_earlier_error() {
-    let fake = FakeGit::with(status(vec![]));
-    let mut session = GitSession::new(fake.clone(), None);
-    session.open("/tmp/plain");
-    session.run_pending();
-    assert!(session.problem().is_some());
-    session.open(ROOT);
-    session.run_pending();
-    assert_eq!(session.problem(), None);
-}
-
-// ---- The changes list ---------------------------------------------------
-
-#[test]
-fn rows_carry_each_state_and_checkbox() {
-    let renamed = FileChange {
-        original_path: Some(PathBuf::from("old.rs")),
-        ..staged("src/new.rs", ChangeKind::Renamed)
+    let SignIn::Waiting { code, interval } = &session.github.sign_in else {
+        panic!("{:?}", session.github.sign_in)
     };
-    let fake = FakeGit::with(status(vec![
-        modified("src/deep/dir/m.rs"),
-        staged("added.rs", ChangeKind::Added),
-        staged("gone.rs", ChangeKind::Deleted),
-        renamed,
-        untracked("notes.txt"),
-        conflicted("clash.rs"),
-        both("both.rs"),
-    ]));
-    let session = opened(&fake);
-    let rows = session.rows();
-    let summary: Vec<(&str, &str, Badge, Check, bool)> = rows
-        .iter()
-        .map(|row| {
-            (
-                row.name.as_str(),
-                row.folder.as_str(),
-                row.badge,
-                row.check,
-                row.stageable,
-            )
-        })
-        .collect();
+    assert_eq!((code.user_code.as_str(), *interval), ("WXYZ-1234", 5));
+    session.poll_sign_in();
+    session.run_pending();
+    let account = session.github.account.clone().expect("signed in");
+    assert_eq!(account.login, "octo");
+    assert_eq!(session.github.sign_in, SignIn::Idle);
+    assert!(
+        matches!(
+            session.notice,
+            Some(Notice::SignedIn(_)) | Some(Notice::Done(_))
+        ) || session.notice.is_none()
+    );
+    assert!(
+        matches!(session.keyring_changes.last(), Some(KeyringChange::Store(a)) if a.login == "octo" && a.token.refresh_token.as_deref() == Some("ghr_1"))
+    );
+    let repo = session.repo.as_ref().unwrap();
+    assert!(repo.github.loaded && repo.github.protected && repo.github.can_push);
+    assert_eq!(session.current_pull().map(|p| p.number), Some(3));
+    let network = session.network_options();
     assert_eq!(
-        summary,
-        vec![
+        network.credentials.unwrap().token,
+        "ghu_1",
+        "git gets the token for github.com"
+    );
+    session.sign_out();
+    assert!(
+        matches!(session.keyring_changes.last(), Some(KeyringChange::Delete(h)) if h == "github.com")
+    );
+    assert!(seen.lock().unwrap().iter().all(|r| !r.contains("secret")));
+}
+
+#[test]
+fn sign_in_problems_and_a_build_without_a_client_id() {
+    for (body, problem) in [
+        (r#"{"error":"expired_token"}"#, SignInProblem::Expired),
+        (r#"{"error":"access_denied"}"#, SignInProblem::Denied),
+    ] {
+        let (host, _) = server(vec![
             (
-                "m.rs",
-                "src/deep/dir",
-                Badge::Modified,
-                Check::Unchecked,
-                true
+                "POST",
+                "/login/device/code",
+                200,
+                r#"{"device_code":"d","user_code":"u","verification_uri":"v","expires_in":1}"#
+                    .into(),
             ),
-            ("added.rs", "", Badge::Added, Check::Checked, true),
-            ("gone.rs", "", Badge::Deleted, Check::Checked, true),
-            ("new.rs", "src", Badge::Renamed, Check::Checked, true),
-            ("notes.txt", "", Badge::Added, Check::Unchecked, true),
-            ("clash.rs", "", Badge::Conflicted, Check::Unchecked, false),
-            ("both.rs", "", Badge::Modified, Check::Indeterminate, true),
-        ]
-    );
-    assert_eq!(Badge::Conflicted.letter(), "!");
-}
-
-#[test]
-fn a_staged_file_changed_again_is_indeterminate_and_its_box_stages_the_rest() {
-    let fake = FakeGit::with(status(vec![both("both.rs")]));
-    let mut session = opened(&fake);
-    assert_eq!(session.rows()[0].check, Check::Indeterminate);
-    session.toggle_stage(Path::new("both.rs"));
-    session.run_pending();
-    assert_eq!(fake.calls(), vec!["stage both.rs", "status"]);
-    assert_eq!(session.rows()[0].check, Check::Checked);
-}
-
-#[test]
-fn the_checkbox_stages_and_unstages_exactly_that_file() {
-    let fake = FakeGit::with(status(vec![modified("a.rs"), modified("b.rs")]));
-    let mut session = opened(&fake);
-    session.toggle_stage(Path::new("a.rs"));
-    session.run_pending();
-    assert_eq!(fake.calls(), vec!["stage a.rs", "status"]);
-    let checks: Vec<Check> = session.rows().iter().map(|row| row.check).collect();
-    assert_eq!(checks, vec![Check::Checked, Check::Unchecked]);
-
-    fake.clear_calls();
-    session.toggle_stage(Path::new("a.rs"));
-    session.run_pending();
-    assert_eq!(fake.calls(), vec!["unstage a.rs", "status"]);
-}
-
-#[test]
-fn unstaging_a_rename_names_both_of_its_paths() {
-    let renamed = FileChange {
-        original_path: Some(PathBuf::from("old.rs")),
-        ..staged("new.rs", ChangeKind::Renamed)
-    };
-    let fake = FakeGit::with(status(vec![renamed]));
-    let mut session = opened(&fake);
-    session.toggle_stage(Path::new("new.rs"));
-    session.run_pending();
-    assert_eq!(fake.calls()[0], "unstage new.rs,old.rs");
-}
-
-#[test]
-fn a_conflicted_file_is_never_staged() {
-    let fake = FakeGit::with(status(vec![conflicted("clash.rs"), modified("a.rs")]));
-    let mut session = opened(&fake);
-    session.toggle_stage(Path::new("clash.rs"));
-    session.run_pending();
-    assert!(fake.calls().is_empty());
-    session.stage_all();
-    session.run_pending();
-    assert_eq!(fake.calls()[0], "stage a.rs");
-}
-
-#[test]
-fn the_header_checkbox_stages_everything_then_unstages_everything() {
-    let fake = FakeGit::with(status(vec![
-        modified("a.rs"),
-        staged("b.rs", ChangeKind::Added),
-        untracked("c.txt"),
-    ]));
-    let mut session = opened(&fake);
-    assert_eq!(session.all_check(), Check::Indeterminate);
-    session.toggle_all();
-    session.run_pending();
-    assert_eq!(fake.calls()[0], "stage a.rs,c.txt");
-    assert_eq!(session.all_check(), Check::Checked);
-
-    fake.clear_calls();
-    session.toggle_all();
-    session.run_pending();
-    assert_eq!(fake.calls()[0], "unstage a.rs,b.rs,c.txt");
-    assert_eq!(session.all_check(), Check::Unchecked);
-}
-
-#[test]
-fn nothing_to_stage_runs_nothing() {
-    let fake = FakeGit::with(status(vec![]));
-    let mut session = opened(&fake);
-    assert_eq!(session.all_check(), Check::Unchecked);
-    session.stage_all();
-    session.unstage_all();
-    session.toggle_stage(Path::new("missing.rs"));
-    session.run_pending();
-    assert!(fake.calls().is_empty());
-}
-
-#[test]
-fn a_failed_stage_is_shown_and_the_status_is_read_again() {
-    let fake = FakeGit::with(status(vec![modified("a.rs")]));
-    fake.set(|state| {
-        state.fail_stage = Some(GitError::Failed {
-            exit_code: Some(128),
-            message: "fatal: Unable to create '.git/index.lock': File exists.".to_string(),
-        })
-    });
-    let mut session = opened(&fake);
-    session.toggle_stage(Path::new("a.rs"));
-    session.run_pending();
-    assert_eq!(fake.calls(), vec!["stage a.rs", "status"]);
-    let (_, message) = i18n::EN_US.problem(session.problem().unwrap());
-    assert!(message.contains("index.lock"), "{message}");
-}
-
-// ---- Selection and the diff ---------------------------------------------
-
-#[test]
-fn selecting_a_row_reads_its_diff_and_the_checkbox_does_not_change_it() {
-    let fake = FakeGit::with(status(vec![modified("a.rs"), modified("b.rs")]));
-    let mut session = opened(&fake);
-    assert_eq!(session.diff_pane(), DiffPane::NothingSelected);
-    session.select(Path::new("a.rs"));
-    session.run_pending();
-    assert_eq!(fake.calls(), vec!["diff a.rs Unstaged"]);
-    assert!(matches!(session.diff_pane(), DiffPane::Text(_)));
-    assert!(session.rows()[0].selected);
-
-    session.toggle_stage(Path::new("b.rs"));
-    session.run_pending();
-    assert_eq!(
-        session.selection(),
-        Some(&Selection {
-            path: PathBuf::from("a.rs"),
-            side: DiffSide::Unstaged
-        })
-    );
-}
-
-#[test]
-fn a_fully_staged_selection_shows_its_staged_side() {
-    let fake = FakeGit::with(status(vec![modified("a.rs")]));
-    let mut session = opened(&fake);
-    session.select(Path::new("a.rs"));
-    session.run_pending();
-    fake.clear_calls();
-    session.toggle_stage(Path::new("a.rs"));
-    session.run_pending();
-    assert_eq!(
-        fake.calls(),
-        vec!["stage a.rs", "status", "diff a.rs Staged"]
-    );
-    assert_eq!(session.selection().unwrap().side, DiffSide::Staged);
-    assert_eq!(
-        session.diff().unwrap().selection.side,
-        DiffSide::Staged,
-        "the diff shown is the one for the side now selected"
-    );
-}
-
-#[test]
-fn a_selection_whose_file_is_gone_after_a_refresh_is_cleared() {
-    let fake = FakeGit::with(status(vec![modified("a.rs"), modified("b.rs")]));
-    let mut session = opened(&fake);
-    session.select(Path::new("a.rs"));
-    session.run_pending();
-    fake.set(|state| {
-        state.status.as_mut().unwrap().changes.remove(0);
-    });
-    session.refresh();
-    session.run_pending();
-    assert_eq!(session.selection(), None);
-    assert_eq!(session.diff(), None);
-    assert_eq!(session.diff_pane(), DiffPane::NothingSelected);
-}
-
-#[test]
-fn binary_empty_and_conflicted_diffs_have_their_own_states() {
-    let fake = FakeGit::with(status(vec![
-        modified("image.png"),
-        modified("mode.sh"),
-        conflicted("clash.rs"),
-    ]));
-    fake.set(|state| {
-        state.diffs.push((
-            PathBuf::from("image.png"),
-            DiffSide::Unstaged,
-            FileDiff::Binary,
-        ));
-        state.diffs.push((
-            PathBuf::from("mode.sh"),
-            DiffSide::Unstaged,
-            FileDiff::Text { hunks: vec![] },
-        ));
-    });
-    let mut session = opened(&fake);
-    session.select(Path::new("image.png"));
-    session.run_pending();
-    assert_eq!(session.diff_pane(), DiffPane::Binary);
-    session.select(Path::new("mode.sh"));
-    session.run_pending();
-    assert_eq!(session.diff_pane(), DiffPane::NoChanges);
-
-    fake.clear_calls();
-    session.select(Path::new("clash.rs"));
-    session.run_pending();
-    assert_eq!(session.diff_pane(), DiffPane::Conflicted);
-    assert!(
-        fake.calls().is_empty(),
-        "a conflicted file's diff is not read"
-    );
-}
-
-#[test]
-fn only_the_newest_selection_is_read() {
-    let fake = FakeGit::with(status(vec![
-        modified("a.rs"),
-        modified("b.rs"),
-        modified("c.rs"),
-    ]));
-    let mut session = opened(&fake);
-    session.select(Path::new("a.rs"));
-    session.select(Path::new("b.rs"));
-    session.select(Path::new("c.rs"));
-    session.run_pending();
-    assert_eq!(fake.calls(), vec!["diff c.rs Unstaged"]);
-}
-
-#[test]
-fn the_other_side_of_a_partly_staged_file_can_be_shown() {
-    let fake = FakeGit::with(status(vec![both("both.rs"), modified("only.rs")]));
-    let mut session = opened(&fake);
-    session.select(Path::new("both.rs"));
-    session.run_pending();
-    assert_eq!(session.selection().unwrap().side, DiffSide::Unstaged);
-    session.show_side(DiffSide::Staged);
-    session.run_pending();
-    assert_eq!(session.diff().unwrap().selection.side, DiffSide::Staged);
-
-    session.select(Path::new("only.rs"));
-    session.run_pending();
-    fake.clear_calls();
-    session.show_side(DiffSide::Staged);
-    session.run_pending();
-    assert!(fake.calls().is_empty(), "only.rs has nothing staged");
-}
-
-// ---- Committing ---------------------------------------------------------
-
-#[test]
-fn commit_needs_something_staged_and_a_summary() {
-    let fake = FakeGit::with(status(vec![modified("a.rs")]));
-    let mut session = opened(&fake);
-    session.summary = "Fix the parser".to_string();
-    assert!(!session.can_commit(), "nothing is staged");
-    session.commit();
-    session.run_pending();
-    assert!(fake.calls().is_empty());
-
-    session.toggle_stage(Path::new("a.rs"));
-    session.run_pending();
-    session.summary = "   ".to_string();
-    assert!(!session.can_commit(), "the summary is blank");
-    session.summary = "Fix the parser".to_string();
-    assert!(session.can_commit());
-}
-
-#[test]
-fn a_commit_empties_the_form_and_reads_the_status_again() {
-    let fake = FakeGit::with(status(vec![staged("a.rs", ChangeKind::Modified)]));
-    let mut session = opened(&fake);
-    session.select(Path::new("a.rs"));
-    session.run_pending();
-    session.summary = "  Fix the parser ".to_string();
-    session.description = "Reads the hunk header.\n".to_string();
-    let generation = session.form_generation();
-    fake.clear_calls();
-
-    session.commit();
-    assert!(
-        !session.can_commit(),
-        "a running commit is not offered twice"
-    );
-    session.run_pending();
-
-    assert_eq!(fake.calls(), vec!["commit", "status"]);
-    let commits = fake.state.lock().unwrap().commits.clone();
-    assert_eq!(
-        commits,
-        vec![CommitMessage {
-            summary: "Fix the parser".to_string(),
-            description: "Reads the hunk header.".to_string(),
-        }]
-    );
-    assert_eq!(session.summary, "");
-    assert_eq!(session.description, "");
-    assert!(session.form_generation() > generation);
-    assert!(session.rows().is_empty());
-    assert_eq!(session.selection(), None);
-    assert_eq!(session.problem(), None);
-}
-
-#[test]
-fn a_refused_commit_shows_gits_message_and_keeps_the_form() {
-    let fake = FakeGit::with(status(vec![staged("a.rs", ChangeKind::Modified)]));
-    fake.set(|state| {
-        state.fail_commit = Some(GitError::Failed {
-            exit_code: Some(1),
-            message: "pre-commit hook failed".to_string(),
-        })
-    });
-    let mut session = opened(&fake);
-    session.summary = "Fix".to_string();
-    session.commit();
-    session.run_pending();
-    assert_eq!(session.summary, "Fix");
-    assert!(session.can_commit(), "it can be tried again");
-    let (title, message) = i18n::ZH_TW.problem(session.problem().unwrap());
-    assert_eq!(title, i18n::ZH_TW.failed_title);
-    assert_eq!(message, "pre-commit hook failed");
-}
-
-#[test]
-fn the_commit_button_names_the_branch() {
-    assert_eq!(i18n::EN_US.commit_label(Some("main")), "Commit to main");
-    assert_eq!(i18n::ZH_TW.commit_label(Some("main")), "提交到 main");
-    assert_eq!(i18n::EN_US.commit_label(None), "Commit");
-}
-
-#[test]
-fn a_detached_head_has_no_branch() {
-    let mut detached = status(vec![]);
-    detached.head = BranchHead::Detached;
-    let fake = FakeGit::with(detached);
-    let session = opened(&fake);
-    assert_eq!(session.branch(), None);
-}
-
-#[test]
-fn a_repository_with_no_commit_yet_opens_and_commits() {
-    let mut first = status(vec![untracked("README.md")]);
-    first.unborn = true;
-    let fake = FakeGit::with(first);
-    let mut session = opened(&fake);
-    assert_eq!(session.branch(), Some("main"));
-    session.toggle_stage(Path::new("README.md"));
-    session.run_pending();
-    session.summary = "First commit".to_string();
-    session.commit();
-    session.run_pending();
-    assert!(session.rows().is_empty());
-    assert_eq!(session.problem(), None);
-}
-
-// ---- Driving ------------------------------------------------------------
-
-#[test]
-fn one_request_runs_at_a_time_in_order() {
-    let fake = FakeGit::with(status(vec![modified("a.rs"), modified("b.rs")]));
-    let mut session = opened(&fake);
-    session.toggle_stage(Path::new("a.rs"));
-    session.toggle_stage(Path::new("b.rs"));
-    let first = session.next_request().expect("a request is queued");
-    assert!(session.next_request().is_none(), "one is already running");
-    assert!(session.is_busy());
-    assert!(matches!(first, Request::Stage { .. }));
-    let outcome = first.run(fake.as_ref());
-    session.apply(outcome);
-    let second = session.next_request().expect("the second runs next");
-    session.apply(second.run(fake.as_ref()));
-    assert!(!session.is_busy());
-    assert_eq!(
-        fake.calls(),
-        vec!["stage a.rs", "status", "stage b.rs", "status"]
-    );
-}
-
-#[test]
-fn an_answer_for_a_repository_that_was_closed_is_ignored() {
-    let fake = FakeGit::with(status(vec![modified("a.rs")]));
-    let mut session = opened(&fake);
-    session.toggle_stage(Path::new("a.rs"));
-    let request = session.next_request().unwrap();
-    session.close_repository();
-    let outcome = request.run(fake.as_ref());
-    assert_eq!(outcome.kind, OutcomeKind::Refreshed);
-    session.apply(outcome);
-    assert_eq!(session.repository(), None);
-    assert_eq!(session.status(), None);
-    assert!(!session.is_busy());
-}
-
-#[test]
-fn closing_drops_requests_for_the_closed_repository() {
-    let fake = FakeGit::with(status(vec![modified("a.rs")]));
-    let mut session = opened(&fake);
-    session.toggle_stage(Path::new("a.rs"));
-    session.close_repository();
-    session.run_pending();
-    assert!(fake.calls().is_empty());
-}
-
-// ---- Recent repositories ------------------------------------------------
-
-#[test]
-fn recent_repositories_are_remembered_newest_first_without_duplicates() {
-    let a = PathBuf::from("/a");
-    let b = PathBuf::from("/b");
-    let list = recent::remember(&[], a.clone());
-    let list = recent::remember(&list, b.clone());
-    let list = recent::remember(&list, a.clone());
-    assert_eq!(list, vec![a, b]);
-
-    let mut long = Vec::new();
-    for index in 0..(recent::LIMIT + 5) {
-        long = recent::remember(&long, PathBuf::from(format!("/r{index}")));
+            ("POST", "/login/oauth/access_token", 200, body.into()),
+        ]);
+        let mut session = hosted_session(&host);
+        session.start_sign_in(host);
+        session.run_pending();
+        session.poll_sign_in();
+        session.run_pending();
+        assert_eq!(session.github.sign_in, SignIn::Failed(problem));
     }
-    assert_eq!(long.len(), recent::LIMIT);
-    assert_eq!(long[0], PathBuf::from(format!("/r{}", recent::LIMIT + 4)));
+    let mut session = GitSession::new(Arc::new(HostedGit), Files::default());
+    session.set_client_id("");
+    session.start_sign_in(Host::github());
+    assert_eq!(session.problem, Some(Problem::NoClientId));
+    assert!(session.queued_gh().is_empty(), "nothing is sent");
 }
 
 #[test]
-fn recent_repositories_survive_a_save_and_a_load() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let file = tmp.path().join("state/better-os/git-recent.json");
-    assert!(
-        recent::load(&file).is_empty(),
-        "a missing file is an empty list"
-    );
-    let list = vec![PathBuf::from("/work/one"), PathBuf::from("/work/two")];
-    recent::save(&file, &list).unwrap();
-    assert_eq!(recent::load(&file), list);
-    assert!(
-        !file.with_extension("json.partial").exists(),
-        "the partial file is renamed into place"
-    );
-}
-
-#[test]
-fn an_unreadable_recent_file_is_an_empty_list() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let file = tmp.path().join("git-recent.json");
-    std::fs::write(&file, b"{ not json").unwrap();
-    assert!(recent::load(&file).is_empty());
-    std::fs::write(
-        &file,
-        br#"{"repositories": ["relative/path", "/abs", "/abs"]}"#,
-    )
-    .unwrap();
-    assert_eq!(recent::load(&file), vec![PathBuf::from("/abs")]);
-}
-
-#[test]
-fn the_session_writes_the_recent_list_to_its_own_file() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let file = tmp.path().join("git-recent.json");
-    let fake = FakeGit::with(status(vec![]));
-    let mut session = GitSession::new(fake.clone(), Some(file.clone()));
-    session.open(ROOT);
+fn an_expired_token_is_refreshed_before_use_and_stored() {
+    let (host, seen) = server(vec![
+        (
+            "POST",
+            "/login/oauth/access_token",
+            200,
+            r#"{"access_token":"ghu_new","refresh_token":"ghr_new","expires_in":28800}"#.into(),
+        ),
+        (
+            "POST",
+            "/repos/octo/hello/issues",
+            201,
+            r#"{"number":5,"html_url":"https://x/5"}"#.into(),
+        ),
+    ]);
+    let mut session = hosted_session(&host);
+    session.github.account = Some(Account {
+        host: host.clone(),
+        login: "octo".into(),
+        token: Token {
+            access_token: "old".into(),
+            refresh_token: Some("ghr_old".into()),
+            expires_at: Some(0),
+            refresh_expires_at: None,
+        },
+    });
+    session.create_issue("Bug", "body");
     session.run_pending();
-    assert_eq!(recent::load(&file), vec![PathBuf::from(ROOT)]);
-    let again = GitSession::new(fake, Some(file));
-    assert_eq!(again.recent(), &[PathBuf::from(ROOT)]);
-}
-
-#[test]
-fn the_recent_file_lives_in_the_xdg_state_directory() {
+    assert!(matches!(
+        session.notice,
+        Some(Notice::IssueCreated { number: 5, .. })
+    ));
     assert_eq!(
-        recent::state_path(Some("/state".into()), Some("/home/me".into())),
-        Some(PathBuf::from("/state/better-os/git-recent.json"))
+        session.github.account.as_ref().unwrap().token.access_token,
+        "ghu_new"
     );
+    assert!(
+        matches!(session.keyring_changes.first(), Some(KeyringChange::Store(a)) if a.token.access_token == "ghu_new")
+    );
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0], "POST /login/oauth/access_token", "refresh first");
+}
+
+#[test]
+fn forking_points_origin_at_the_fork_and_keeps_upstream() {
+    let (host, _) = server(vec![(
+        "POST",
+        "/repos/octo/hello/forks",
+        202,
+        r#"{"name":"hello","full_name":"me/hello","owner":{"login":"me"},"fork":true,"clone_url":"https://github.com/me/hello.git","html_url":"h"}"#.into(),
+    )]);
+    let mut session = hosted_session(&host);
+    session.github.account = Some(Account {
+        host: host.clone(),
+        login: "me".into(),
+        token: Token {
+            access_token: "t".into(),
+            refresh_token: None,
+            expires_at: None,
+            refresh_expires_at: None,
+        },
+    });
+    session.fork();
+    while let Some(request) = session.next_gh() {
+        let answer = request.run(crate::github::now());
+        session.apply_gh(answer);
+    }
+    let ops = session.queued();
+    assert!(ops.iter().any(|op| matches!(op, crate::session::Op::AddRemote { name, url } if name == "upstream" && url.contains("octo/hello"))));
+    assert!(ops.iter().any(|op| matches!(op, crate::session::Op::SetRemoteUrl { name, url } if name == "origin" && url.contains("me/hello"))));
+    assert!(matches!(session.notice, Some(Notice::Forked { .. })));
+    let _ = GhCall::DeviceCode;
+}
+
+#[test]
+fn notification_text_is_never_read_as_markup() {
     assert_eq!(
-        recent::state_path(Some("relative".into()), Some("/home/me".into())),
-        Some(PathBuf::from(
-            "/home/me/.local/state/better-os/git-recent.json"
-        ))
+        crate::notifications::plain_text("<a href=\"x\">Fix</a> & <img src=y>\u{7}"),
+        "&lt;a href=\"x\"&gt;Fix&lt;/a&gt; &amp; &lt;img src=y&gt;"
     );
-    assert_eq!(recent::state_path(None, None), None);
-}
-
-// ---- Strings ------------------------------------------------------------
-
-#[test]
-fn both_languages_define_every_string_and_none_is_empty() {
-    let english = i18n::EN_US.all();
-    let chinese = i18n::ZH_TW.all();
-    assert_eq!(english.len(), chinese.len());
-    for text in english.iter().chain(chinese.iter()) {
-        assert!(!text.trim().is_empty());
-    }
-    for (en, zh) in english.iter().zip(chinese.iter()) {
-        for placeholder in ["{branch}", "{path}", "{detail}"] {
-            assert_eq!(
-                en.contains(placeholder),
-                zh.contains(placeholder),
-                "{en:?} and {zh:?} must carry the same placeholders"
-            );
-        }
-    }
-}
-
-#[test]
-fn the_zh_tw_copy_is_the_specs() {
-    let c = &i18n::ZH_TW;
-    assert_eq!(c.changes, "變更");
-    assert_eq!(c.summary_placeholder, "摘要（必填）");
-    assert_eq!(c.description_placeholder, "說明");
-    assert_eq!(c.commit_to, "提交到 {branch}");
-    assert_eq!(c.open, "開啟…");
-    assert_eq!(c.open_title, "開啟儲存庫");
-    assert_eq!(c.open_detail, "選擇含有 Git 儲存庫的資料夾。");
-    assert_eq!(c.no_changes, "沒有變更");
-    assert_eq!(c.select_file, "選擇檔案以檢視變更");
-    assert_eq!(c.binary_file, "二進位檔");
-    assert_eq!(c.conflicted, "衝突");
-}
-
-#[test]
-fn every_problem_has_a_title_and_a_message() {
-    let problems = [
-        Problem::Git(GitError::NotInstalled),
-        Problem::Git(GitError::NotARepository(PathBuf::from("/tmp/plain"))),
-        Problem::Git(GitError::Failed {
-            exit_code: Some(1),
-            message: "nothing added to commit".to_string(),
-        }),
-        Problem::Git(GitError::UnreadableOutput("`1` record".to_string())),
-        Problem::FolderPicker("no portal".to_string()),
-    ];
-    for c in [&i18n::EN_US, &i18n::ZH_TW] {
-        for problem in &problems {
-            let (title, message) = c.problem(problem);
-            assert!(!title.is_empty() && !message.is_empty(), "{problem:?}");
-            assert!(!message.contains('{'), "{message}");
-        }
-        let (_, message) = c.problem(&problems[1]);
-        assert!(message.contains("/tmp/plain"));
-    }
-}
-
-#[test]
-fn the_language_comes_from_lang_or_the_flag() {
-    assert_eq!(Locale::from_lang("zh_TW.UTF-8"), Locale::ZhTw);
-    assert_eq!(Locale::from_lang("zh_Hant"), Locale::ZhTw);
-    assert_eq!(Locale::from_lang("en_US.UTF-8"), Locale::EnUs);
-    assert_eq!(Locale::from_lang(""), Locale::EnUs);
-    assert_eq!(Locale::from_argument("zh-TW"), Some(Locale::ZhTw));
-    assert_eq!(Locale::from_argument("en_us"), Some(Locale::EnUs));
-    assert_eq!(Locale::from_argument("fr"), None);
-}
-
-#[test]
-fn a_long_folder_is_cut_at_its_leading_end() {
-    assert_eq!(truncate_leading("src", 10), "src");
-    assert_eq!(truncate_leading("crates/git-core/src", 10), "…-core/src");
-    assert_eq!(
-        truncate_leading("crates/git-core/src", 10).chars().count(),
-        10
-    );
-    assert_eq!(truncate_leading("資料夾/子資料夾/深處", 5), "…夾/深處");
 }

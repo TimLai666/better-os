@@ -171,6 +171,7 @@ fn change(path: &str, staged: Option<ChangeKind>, unstaged: Option<ChangeKind>) 
         unstaged,
         untracked: false,
         conflicted: false,
+        conflict: None,
     }
 }
 
@@ -182,6 +183,7 @@ fn untracked(path: &str) -> FileChange {
         unstaged: None,
         untracked: true,
         conflicted: false,
+        conflict: None,
     }
 }
 
@@ -305,6 +307,7 @@ fn status_lists_each_kind_of_change_and_the_branch() {
                 unstaged: None,
                 untracked: false,
                 conflicted: false,
+                conflict: None,
             },
             change("staged-delete.txt", Some(ChangeKind::Deleted), None),
             untracked("untracked.txt"),
@@ -378,6 +381,7 @@ fn status_reports_a_conflicted_file() {
             unstaged: None,
             untracked: false,
             conflicted: true,
+            conflict: Some(git_core::ConflictKind::BothModified),
         }]
     );
 }
@@ -1006,4 +1010,34 @@ fn a_git_dir_in_the_environment_does_not_redirect_the_repository() {
 
     let status = result.expect("status reads the repository `-C` names");
     assert_eq!(status.changes.len(), 1);
+}
+
+#[test]
+fn reading_branches_history_stashes_and_diffs_runs_none_of_its_programs() {
+    let sandbox = sandbox();
+    let markers = booby_trap(&sandbox);
+    write(&sandbox, "modify.txt", b"changed\n");
+    write(&sandbox, "new.txt", b"new\n");
+    SystemGit.info(&sandbox.repo).expect("info");
+    let log = SystemGit.log(&sandbox.repo, "HEAD", 0, 10).expect("log");
+    let files = SystemGit
+        .commit_files(&sandbox.repo, &log[0].sha)
+        .expect("commit files");
+    SystemGit
+        .commit_diff(
+            &sandbox.repo,
+            &log[0].sha,
+            &files[0],
+            git_platform::DiffOptions::default(),
+        )
+        .expect("commit diff");
+    for path in ["modify.txt", "new.txt"] {
+        SystemGit
+            .diff(&sandbox.repo, Path::new(path), DiffSide::WorkingTree)
+            .expect("working-tree diff");
+    }
+    SystemGit
+        .file_versions(&sandbox.repo, Path::new("modify.txt"), None)
+        .expect("file versions");
+    assert_eq!(markers_in(&markers), Vec::<String>::new());
 }

@@ -18,7 +18,7 @@ use super::progress::{fraction, indeterminate_arc, indeterminate_segment};
 use super::selection::{ComboOutcome, SliderModel, combo_key};
 use super::settings_card::card_fill;
 use super::tabs::{SelectorItem, TabOutcome, after_close, selector_step, tab_key};
-use super::text_box::{NumberModel, field_colors};
+use super::text_box::{NumberModel, field_colors, multi_line_height};
 use super::theme::{Appearance, config_home};
 use super::toggle::{
     CheckState, RadioOption, mark_colors, radio_step, switch_colors, switch_toggles,
@@ -1124,4 +1124,11 @@ fn the_menu_key_opens_a_rows_menu_under_that_row() {
     // A row scrolled out of view keeps the menu inside the table.
     assert_eq!(menu_anchor(viewport, px(-720.0), 2).y, px(200.0));
     assert_eq!(menu_anchor(viewport, px(0.0), 40).y, px(560.0));
+}
+
+#[test]
+fn multi_line_text_box_grows_by_a_body_line_per_row() {
+    assert_eq!(multi_line_height(1), gpui::px(32.0));
+    assert_eq!(multi_line_height(0), gpui::px(32.0));
+    assert_eq!(multi_line_height(3), gpui::px(72.0));
 }

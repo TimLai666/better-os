@@ -65,3 +65,16 @@ Spec section 6, and the Better Awake rows of section 12, every one of them.
 
 `awake-gui` keeps building until ticket 91 removes it, so both can be
 compared side by side.
+
+## Found on the owner's machine (2026-11-13)
+
+Better Awake's service holds a logind inhibitor for `sleep:idle`
+(`systemd-inhibit --list` showed `Better Awake ... sleep:idle block`), which
+stops the system from suspending but does not stop GNOME from blanking and
+locking the screen: GNOME decides idle through `org.gnome.SessionManager`
+(`Inhibit` with the idle flag), not through logind's idle inhibitor. A person
+who asks Better Awake to keep the display on gets a dark, locked screen after
+`org.gnome.desktop.session idle-delay` (600 s on that machine). The keep-awake
+policy that includes the display must also hold a GNOME session inhibitor
+(flag 8, idle) for as long as it lasts, with a test against a fake session
+manager.

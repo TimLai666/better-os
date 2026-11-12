@@ -45,6 +45,7 @@ fn plain(path: &str, staged: Option<ChangeKind>, unstaged: Option<ChangeKind>) -
         unstaged,
         untracked: false,
         conflicted: false,
+        conflict: None,
     }
 }
 
@@ -68,6 +69,10 @@ fn branch_head_detached_has_no_name() {
     let status = parse_ok(output);
     assert_eq!(status.head, BranchHead::Detached);
     assert!(!status.unborn);
+    assert_eq!(
+        status.head_oid.as_deref(),
+        Some("1111111111111111111111111111111111111111")
+    );
 }
 
 #[test]
@@ -75,6 +80,7 @@ fn branch_oid_initial_marks_repository_unborn() {
     let output = b"# branch.oid (initial)\0# branch.head main\0";
     let status = parse_ok(output);
     assert!(status.unborn);
+    assert_eq!(status.head_oid, None);
     assert_eq!(status.head, BranchHead::Branch("main".to_string()));
     assert!(status.changes.is_empty());
 }
@@ -199,6 +205,7 @@ fn rename_record_carries_the_original_path_from_next_field() {
             unstaged: None,
             untracked: false,
             conflicted: false,
+            conflict: None,
         }]
     );
 }
@@ -217,6 +224,7 @@ fn rename_with_spaces_in_both_paths_keeps_both_whole() {
             unstaged: None,
             untracked: false,
             conflicted: false,
+            conflict: None,
         }]
     );
 }
@@ -235,6 +243,7 @@ fn rename_staged_and_then_modified_sets_both_sides() {
             unstaged: Some(ChangeKind::Modified),
             untracked: false,
             conflicted: false,
+            conflict: None,
         }]
     );
 }
@@ -253,6 +262,7 @@ fn copy_record_is_copied_with_original_path() {
             unstaged: None,
             untracked: false,
             conflicted: false,
+            conflict: None,
         }]
     );
 }
@@ -273,6 +283,7 @@ u UU N... 100644 100644 100644 100644 0000000000000000000000000000000000000000 0
             unstaged: None,
             untracked: false,
             conflicted: true,
+            conflict: Some(git_core::ConflictKind::BothModified),
         }]
     );
 }
@@ -290,6 +301,7 @@ fn untracked_record_is_untracked_with_neither_side_set() {
             unstaged: None,
             untracked: true,
             conflicted: false,
+            conflict: None,
         }]
     );
 }
