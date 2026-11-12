@@ -67,3 +67,16 @@ rule is that installing makes it work, so this ticket also covers:
   detected and named, with the choice to turn it off.
 - The Touchpad page lets each gesture be tried on the spot and says whether it
   reached the desktop.
+
+## Scroll speed (owner, 2026-11-13)
+
+The owner wants to set the touchpad's scroll speed. GNOME 46 has no key for it
+(`org.gnome.desktop.peripherals.touchpad` has none) and libinput leaves it to
+the compositor. Approved order: first prove, in a disposable GNOME 46 session,
+whether the existing GNOME Shell extension can scale scroll deltas before
+they reach clients (Clutter event handling in Mutter 46), within ADR 0012 and
+0015's bounds for GJS. If it can, the Touchpad page gets vertical and
+horizontal scroll-speed sliders that apply at once and are restored on
+removal. If it cannot, the ticket records why with evidence and estimates the
+alternative (an evdev/uinput pass-through that re-emits the touchpad with
+scaled scroll) before anything is built.
