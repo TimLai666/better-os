@@ -1,0 +1,8 @@
+[D-BUS Service]
+Name=org.betteros.Awake1
+Exec=/usr/bin/better-awake-service
+# Session bus. The tray autostarts at login and the window can be opened at any
+# time; either one asking for org.betteros.Awake1 gets the service started
+# through its user unit, rather than giving up because the unit was not running
+# yet. Without this file a tray that started before the service exited for good.
+SystemdService=better-awake.service

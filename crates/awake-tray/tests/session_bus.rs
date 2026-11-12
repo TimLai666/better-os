@@ -563,7 +563,7 @@ async fn the_item_reports_the_icon_and_tooltip_for_the_state_it_is_in() {
     let icon = properties.get(interface(), "IconName").await.unwrap();
     assert_eq!(
         String::try_from(icon.try_clone().unwrap()).unwrap(),
-        "better-awake-inactive"
+        "better-awake-inactive-symbolic"
     );
 
     let indefinitely = controller
@@ -577,7 +577,7 @@ async fn the_item_reports_the_icon_and_tooltip_for_the_state_it_is_in() {
     let icon = properties.get(interface(), "IconName").await.unwrap();
     assert_eq!(
         String::try_from(icon.try_clone().unwrap()).unwrap(),
-        "better-awake-active"
+        "better-awake-active-symbolic"
     );
 }
 

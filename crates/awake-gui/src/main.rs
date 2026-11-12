@@ -20,6 +20,7 @@ mod settings;
 mod shell;
 #[cfg(test)]
 mod tests;
+mod tray;
 
 use app::AwakeApp;
 use better_ui::command_line::WindowCommandLine;
@@ -60,6 +61,10 @@ awake-gui — Better Awake 的視窗 / the Better Awake window
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     COMMAND_LINE.open_or_exit(&arguments);
+
+    // The window is where a person looks for Better Awake, so the tray comes
+    // up with it when it is not already running.
+    tray::ensure_running();
 
     let app = gpui_platform::application().with_assets(Assets);
 

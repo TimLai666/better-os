@@ -106,7 +106,14 @@ required_data_files() {
                 usr/share/applications/better-awake.desktop \
                 etc/xdg/autostart/better-awake-tray.desktop \
                 usr/lib/systemd/user/better-awake.service \
-                usr/share/icons/hicolor/scalable/apps/better-awake.svg
+                usr/share/dbus-1/services/org.betteros.Awake1.service \
+                usr/share/icons/hicolor/scalable/apps/better-awake.svg \
+                usr/share/icons/hicolor/scalable/status/better-awake-inactive-symbolic.svg \
+                usr/share/icons/hicolor/scalable/status/better-awake-active-symbolic.svg \
+                usr/share/icons/hicolor/scalable/status/better-awake-active-trigger-symbolic.svg \
+                usr/share/icons/hicolor/scalable/status/better-awake-paused-symbolic.svg \
+                usr/share/icons/hicolor/scalable/status/better-awake-attention-symbolic.svg \
+                usr/share/icons/hicolor/scalable/status/better-awake-unavailable-symbolic.svg
             ;;
         *)
             printf 'No data file list for %s\n' "$1" >&2
