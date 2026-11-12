@@ -96,3 +96,9 @@ session" had no effect. Replacing it with the new tray fixed it. Two faults:
   nothing.
 - "End session" ends only a manual session (`EndManualSession`); when the
   session running is a rule's, the menu must say so and offer "Pause rules".
+- The tray shows "延長工作階段 ▸" as a greyed submenu during an indefinite
+  session (`enabled false` on the submenu and its 15 min / 30 min / 1 hour
+  children, read from the running tray's `GetLayout` on 2026-11-13). A person
+  sees an arrow that does nothing. Extending has no meaning for "until I end
+  it", so the item is left out for an indefinite session, and for a timed one
+  it is enabled; a disabled item never carries a submenu arrow.
