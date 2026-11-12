@@ -68,7 +68,8 @@ pub(crate) enum LinkUpdate {
     /// Neither the service nor an embedded engine could be started. There is
     /// nothing to show and the window says exactly that.
     Unavailable(String),
-    History(Box<HistoryDocument>),
+    /// A History reply, its charts already worked out on this thread.
+    History(Box<crate::stored::HistoryView>),
     Incidents(Box<IncidentsDocument>),
     Inventory(Box<InventoryDocument>, Box<InventoryDiffDocument>),
     Marked(Box<IncidentWindowDocument>),
@@ -228,7 +229,11 @@ async fn handle_service(client: &MonitorClient, request: LinkRequest) -> LinkUpd
                 .history(range.from_unix_ms, range.to_unix_ms, MAX_HISTORY_SAMPLES)
                 .await
             {
-                Ok(document) => LinkUpdate::History(Box::new(document)),
+                Ok(document) => LinkUpdate::History(Box::new(crate::stored::HistoryView::build(
+                    document,
+                    range.to_unix_ms,
+                    seconds,
+                ))),
                 Err(error) => LinkUpdate::Failed(error.to_string()),
             }
         }
@@ -277,10 +282,14 @@ async fn handle_embedded(engine: &Arc<MonitorEngine>, request: LinkRequest) -> L
                 .with_store(|store| store.slice(range, MAX_HISTORY_SAMPLES as usize))
                 .await;
             let resolution_seconds = engine.config().retention.resolution_seconds;
-            LinkUpdate::History(Box::new(HistoryDocument {
-                slice,
-                resolution_seconds,
-            }))
+            LinkUpdate::History(Box::new(crate::stored::HistoryView::build(
+                HistoryDocument {
+                    slice,
+                    resolution_seconds,
+                },
+                range.to_unix_ms,
+                seconds,
+            )))
         }
         LinkRequest::Incidents => {
             let incidents = engine.with_store(|store| store.incidents().to_vec()).await;

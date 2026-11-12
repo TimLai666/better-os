@@ -1,34 +1,55 @@
 //! Deterministic layout policy, so the localized layouts can be tested.
 //!
-//! A GPUI window cannot be laid out in CI, so the parts of the layout that a
-//! translation can break are decided by these functions and asserted directly:
-//! whether a column is wide enough for its longest header in either language,
-//! and whether the action row has to wrap at a given viewport and scale.
+//! A GPUI window cannot be laid out in CI, so the parts of the layout a
+//! translation or a narrow window can break are decided by these functions
+//! and asserted directly: when the navigation pane folds to its icons, how
+//! many cards sit in a row, how many commands fit beside a page title before
+//! the rest move into the overflow menu, and whether a table column is wide
+//! enough for its heading in either language.
 //!
-//! Character width is estimated rather than measured. A CJK ideograph occupies
-//! roughly twice the advance of a Latin letter at the same size, and the
-//! estimate is deliberately generous, because the failure this guards against
-//! is a clipped label rather than a slightly loose column.
+//! Character width is estimated rather than measured. A CJK ideograph
+//! occupies roughly twice the advance of a Latin letter at the same size, and
+//! the estimate is deliberately generous, because the failure this guards
+//! against is a clipped label rather than a slightly loose column.
 
-#[cfg(test)]
-use crate::tables::ProcessColumnLayout;
-#[cfg(test)]
-use monitor_views::ProcessColumn;
-
-pub(crate) const MIN_WINDOW_WIDTH: f32 = 860.0;
+pub(crate) const MIN_WINDOW_WIDTH: f32 = 800.0;
 pub(crate) const MIN_WINDOW_HEIGHT: f32 = 600.0;
-pub(crate) const COMPACT_VIEWPORT_WIDTH: f32 = 1100.0;
 
-/// Advance width of one Latin character at the table's text size.
-#[cfg(test)]
+/// Below this width the navigation pane shows only its icons, as WinUI's
+/// NavigationView does in its Auto mode (compact from 641 to 1007 pixels).
+pub(crate) const EXPANDED_NAVIGATION_MIN_WIDTH: f32 = 1008.0;
+
+/// The page's margin on each side.
+pub(crate) const PAGE_MARGIN: f32 = 24.0;
+
+/// Advance width of one Latin character of Body text (14px).
 const LATIN_ADVANCE: f32 = 7.6;
 
-/// Horizontal padding a table cell adds around its label.
-#[cfg(test)]
-const CELL_PADDING: f32 = 22.0;
+/// Whether the pane starts folded at this window width.
+pub(crate) fn navigation_compact(window_width: f32) -> bool {
+    window_width < EXPANDED_NAVIGATION_MIN_WIDTH
+}
+
+/// The width a page's content has, inside the pane and the margins.
+pub(crate) fn content_width(window_width: f32, compact: bool) -> f32 {
+    let pane = if compact { 48.0 } else { 320.0 };
+    (window_width - pane - 1.0 - 2.0 * PAGE_MARGIN).max(0.0)
+}
+
+/// How many overview cards share a row: three where three fit at 260 pixels
+/// each, otherwise two, otherwise one.
+pub(crate) fn card_columns(content_width: f32) -> usize {
+    let gap = 16.0;
+    (1..=3)
+        .rev()
+        .find(|columns| {
+            let columns = *columns as f32;
+            (content_width - gap * (columns - 1.0)) / columns >= 260.0
+        })
+        .unwrap_or(1)
+}
 
 /// The estimated rendered width of a label, counting wide scripts as wide.
-#[cfg(test)]
 pub(crate) fn label_width(label: &str) -> f32 {
     label
         .chars()
@@ -49,65 +70,36 @@ pub(crate) fn label_width(label: &str) -> f32 {
         * LATIN_ADVANCE
 }
 
-/// Whether a column header fits without being clipped.
-#[cfg(test)]
-pub(crate) fn header_fits(label: &str, column_width: f32) -> bool {
-    label_width(label) + CELL_PADDING <= column_width
+/// The width a command bar button takes: 16px icon, the label, and WinUI's
+/// padding.
+pub(crate) fn command_width(label: &str) -> f32 {
+    16.0 + 8.0 + label_width(label) + 24.0
 }
 
-/// The width the process table asks for in total.
-#[cfg(test)]
-pub(crate) fn process_table_width(columns: &[ProcessColumn]) -> f32 {
-    columns
+/// How many of a page's commands fit beside its title; the rest go into the
+/// overflow menu. The title takes its own width first.
+pub(crate) fn commands_that_fit(content_width: f32, title: &str, labels: &[&str]) -> usize {
+    let title = label_width(title) * 2.0 + 24.0;
+    let widths: Vec<gpui::Pixels> = labels
         .iter()
-        .map(|column| ProcessColumnLayout::width_of(*column))
-        .sum()
-}
-
-/// Whether the table fits the viewport or has to scroll sideways.
-///
-/// Scrolling is a supported outcome; silently clipping a column is not, which
-/// is why this is a decision the tests can assert rather than an accident of
-/// the flex layout.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TableLayout {
-    Fits,
-    HorizontalScroll,
+        .map(|label| gpui::px(command_width(label)))
+        .collect();
+    better_ui::fluent::command_bar::fit_count(
+        &widths,
+        gpui::px((content_width - title).max(0.0)),
+        gpui::px(40.0),
+    )
 }
 
 #[cfg(test)]
-pub(crate) fn table_layout(viewport_width: f32, scale: f32, total_columns: f32) -> TableLayout {
-    // At a larger scale the same window holds fewer logical pixels.
-    let logical = viewport_width / scale;
-    // The sidebar and page padding are not available to the table.
-    let available = logical - 300.0;
-    if total_columns <= available {
-        TableLayout::Fits
-    } else {
-        TableLayout::HorizontalScroll
-    }
-}
-
-/// Whether a row of action buttons fits on one line.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ActionLayout {
-    Inline,
-    Wrapped,
+/// Whether a column heading fits its column. A fixed column's width
+/// includes 12px of padding on each side and room for the sort chevron.
+pub(crate) fn heading_fits(label: &str, column_width: f32) -> bool {
+    label_width(label) + 24.0 + 16.0 <= column_width
 }
 
 #[cfg(test)]
-pub(crate) fn action_layout(viewport_width: f32, scale: f32, labels: &[&str]) -> ActionLayout {
-    let logical_width = viewport_width / scale;
-    let needed: f32 = labels
-        .iter()
-        .map(|label| label_width(label) + 34.0)
-        .sum::<f32>()
-        + 320.0;
-    if logical_width < 700.0 || logical_width < needed {
-        ActionLayout::Wrapped
-    } else {
-        ActionLayout::Inline
-    }
+/// The width the Details table's flexible columns are left with.
+pub(crate) fn flexible_width(content_width: f32, fixed: &[f32]) -> f32 {
+    content_width - fixed.iter().sum::<f32>()
 }

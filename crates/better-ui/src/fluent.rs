@@ -25,6 +25,7 @@
 
 pub mod breadcrumb;
 pub mod button;
+pub mod chart;
 pub mod chrome;
 pub mod command_bar;
 pub mod dialog;

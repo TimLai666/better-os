@@ -3,7 +3,9 @@
 //! Three invariants hold here and are worth naming.
 //!
 //! Sampling never runs on the render thread. A background task owns the
-//! collectors and posts finished rounds; the window only adopts them.
+//! collectors and posts finished rounds; the window only adopts them, and the
+//! readings and the last minute of history are worked out once per round when
+//! a round is adopted, never while drawing.
 //!
 //! Pausing the display stops adoption, not collection.
 //!
@@ -11,89 +13,244 @@
 //! [`monitor_core::ProcessController`] for an action's availability before
 //! offering it, and hands the action to the controller to carry out.
 
+use std::path::PathBuf;
+
+use better_ui::fluent::theme::Appearance;
 use gpui::*;
-use gpui_component::{Theme, ThemeMode, input::InputState, table::TableState};
+use gpui_component::input::InputState;
 use monitor_actions_linux::LinuxProcessController;
 use monitor_collectors_linux::ProcessPrivacy;
 use monitor_core::{
     ActionError, ActionOutcome, ActionRefusal, CollectorReport, ProcessAction, ProcessController,
 };
-use monitor_ipc::{HistoryDocument, StatusDocument};
+use monitor_ipc::StatusDocument;
 use monitor_store::{Incident, Inventory, InventoryDiff};
 use monitor_views::grouping::GroupingPrecedence;
-use monitor_views::{AppsModel, OverviewModel, ProcessFacts};
+use monitor_views::{AppsModel, OverviewModel, ProcessColumn, ProcessFacts, ProcessTableModel};
 
+use crate::charts::{BuiltRound, LiveHistory, Readings, TableSettings};
 use crate::i18n::Locale;
 use crate::link::{self, DEFAULT_HISTORY_SECONDS, LinkRequest, LinkUpdate};
-use crate::tables::{AppsTableDelegate, ProcessTableDelegate};
+use crate::startup::{
+    AutostartDirs, AutostartEntry, RealSystemctl, ServiceError, ServiceUnit, read_autostart,
+    read_services, set_autostart, set_service,
+};
+use crate::tables::{AppColumn, AppSelection, tree_of};
 
-/// The pages the navigation offers.
+/// The pages the navigation offers, in the order it offers them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Page {
     Overview,
-    Apps,
     Processes,
-    Cpu,
-    Memory,
-    Storage,
-    Network,
-    Gpu,
-    Energy,
+    Details,
+    Performance,
+    Startup,
+    Services,
     History,
-    Incidents,
-    Inventory,
-    Diagnostics,
+    Events,
+    SystemInfo,
     Settings,
 }
 
-/// What the window is asking the user to confirm.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct PendingAction {
-    pub(crate) pid: u32,
-    pub(crate) name: String,
-    pub(crate) action: ProcessAction,
+impl Page {
+    /// The navigation's order: the main items, then Settings in the footer.
+    pub(crate) const ALL: [Page; 10] = [
+        Page::Overview,
+        Page::Processes,
+        Page::Details,
+        Page::Performance,
+        Page::Startup,
+        Page::Services,
+        Page::History,
+        Page::Events,
+        Page::SystemInfo,
+        Page::Settings,
+    ];
+
+    pub(crate) fn index(self) -> usize {
+        Self::ALL.iter().position(|page| *page == self).unwrap_or(0)
+    }
+
+    /// Pages that hold a table which fills the window, and therefore do not
+    /// scroll as a whole.
+    pub(crate) fn fills(self) -> bool {
+        matches!(
+            self,
+            Page::Processes | Page::Details | Page::Startup | Page::Services
+        )
+    }
 }
 
-/// The result of the last action, kept until the next one replaces it.
+/// Which resource the Performance page is showing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Resource {
+    Cpu,
+    Memory,
+    Disk(String),
+    Adapter(String),
+    Gpu,
+    Temperatures,
+    Battery,
+}
+
+/// What an action that ends processes is aimed at.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum EndTarget {
+    /// One process.
+    Process { pid: u32, name: String },
+    /// A process and everything it started, children first.
+    Tree { pid: u32, name: String },
+    /// Every process of an application.
+    App { name: String, pids: Vec<u32> },
+}
+
+impl EndTarget {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            EndTarget::Process { name, .. }
+            | EndTarget::Tree { name, .. }
+            | EndTarget::App { name, .. } => name,
+        }
+    }
+}
+
+/// A question or a sheet over the page.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Dialog {
+    /// "End this?" before anything is sent.
+    End(EndTarget),
+    /// Everything known about one process.
+    Properties(u32),
+}
+
+/// The result of the last action, kept until the person closes it or the
+/// next one replaces it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ActionReport {
-    Succeeded { pid: u32, outcome: ActionOutcome },
-    Failed { pid: u32, error: ActionError },
-    Refused { pid: u32, refusal: ActionRefusal },
+    Succeeded {
+        name: String,
+        outcome: ActionOutcome,
+        count: usize,
+    },
+    Failed {
+        name: String,
+        error: ActionError,
+    },
+    Refused {
+        name: String,
+        refusal: ActionRefusal,
+    },
+    /// The file manager could not be opened on a process's folder.
+    NoLocation {
+        name: String,
+    },
+    /// A startup app or a service was switched, or could not be.
+    Switched {
+        name: String,
+        enabled: bool,
+    },
+    /// `detail` is what the system said, shown only under "Show details".
+    SwitchFailed {
+        name: String,
+        detail: String,
+    },
+    /// Ending was asked for while the list was paused.
+    ListPaused {
+        name: String,
+    },
+}
+
+/// The startup apps list.
+#[derive(Default)]
+pub(crate) struct StartupList {
+    pub(crate) entries: Vec<AutostartEntry>,
+    pub(crate) loaded: bool,
+    pub(crate) selected: Option<String>,
+}
+
+/// The services list.
+#[derive(Default)]
+pub(crate) struct ServiceList {
+    pub(crate) services: Vec<ServiceUnit>,
+    pub(crate) error: Option<ServiceError>,
+    pub(crate) loaded: bool,
+    pub(crate) selected: Option<String>,
+}
+
+/// An open context menu: what it is about, and where it opened.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OpenMenu {
+    pub(crate) target: MenuTarget,
+    pub(crate) position: Point<Pixels>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum MenuTarget {
+    App(AppSelection),
+    Process(u32),
+    Startup(String),
+    Service(String),
 }
 
 pub(crate) struct MonitorApp {
     pub(crate) page: Page,
     pub(crate) locale: Locale,
-    pub(crate) theme: ThemeMode,
+    pub(crate) appearance: Appearance,
+    _follow: Option<Subscription>,
+    /// The person's own choice of the navigation pane's width; `None` means
+    /// the window decides from its size.
+    pub(crate) compact_choice: Option<bool>,
     pub(crate) paused: bool,
     pub(crate) include_command_lines: bool,
     pub(crate) precedence: GroupingPrecedence,
 
     pub(crate) reports: Vec<CollectorReport>,
     pub(crate) overview: OverviewModel,
+    pub(crate) readings: Readings,
+    pub(crate) live: LiveHistory,
+    pub(crate) resource: Resource,
+    /// The processor chart shows each logical processor rather than the whole.
+    pub(crate) per_core: bool,
     pub(crate) rounds: u64,
+    pub(crate) now_unix_ms: u64,
 
     /// Where the numbers are coming from, and why, when it is not the service.
     pub(crate) collection: Collection,
     pub(crate) status: Option<StatusDocument>,
-    pub(crate) history: Option<HistoryDocument>,
+    pub(crate) history: Option<crate::stored::HistoryView>,
     pub(crate) history_seconds: u64,
     pub(crate) incidents: Vec<Incident>,
     pub(crate) inventory: Option<Inventory>,
     pub(crate) inventory_captures: u32,
     pub(crate) inventory_diff: Option<InventoryDiff>,
-    /// The incident the user marked most recently, kept so the Incidents page
+    /// The incident the person marked most recently, kept so the Events page
     /// can confirm what was captured rather than only that something was.
     pub(crate) last_marked: Option<u64>,
     pub(crate) last_failure: Option<String>,
 
-    pub(crate) processes: Entity<TableState<ProcessTableDelegate>>,
-    pub(crate) apps: Entity<TableState<AppsTableDelegate>>,
+    pub(crate) apps: AppsModel,
+    pub(crate) app_sort: (AppColumn, bool),
+    pub(crate) app_selection: Option<AppSelection>,
+    /// The applications open on the Processes page, kept here so a round
+    /// built off the window's thread opens the same ones.
+    pub(crate) expanded: Vec<String>,
+    round_generation: u64,
+    applied_generation: u64,
+    pub(crate) processes: ProcessTableModel,
+    pub(crate) selected_pid: Option<u32>,
     pub(crate) filter: Entity<InputState>,
 
-    pub(crate) selected_pid: Option<u32>,
-    pub(crate) pending: Option<PendingAction>,
+    pub(crate) startup: StartupList,
+    pub(crate) services: ServiceList,
+    pub(crate) startup_sort: Option<better_ui::fluent::list::SortState>,
+    pub(crate) services_sort: Option<better_ui::fluent::list::SortState>,
+    /// Which settings expanders are open.
+    pub(crate) grouping_open: bool,
+    pub(crate) sources_open: bool,
+
+    pub(crate) dialog: Option<Dialog>,
+    pub(crate) menu: Option<OpenMenu>,
+    pub(crate) menu_state: Entity<better_ui::fluent::menu::MenuOpen>,
     pub(crate) last_action: Option<ActionReport>,
 
     controller: LinuxProcessController,
@@ -116,46 +273,49 @@ pub(crate) enum Collection {
     Unavailable { detail: String },
 }
 
+/// Where the language choice is kept, beside the appearance.
+pub(crate) fn language_path() -> Option<PathBuf> {
+    Appearance::default_path("monitor").map(|path| path.with_file_name("language"))
+}
+
 impl MonitorApp {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let locale = Locale::System;
+        let locale = language_path()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| Locale::parse(&text))
+            .unwrap_or(Locale::System);
+        let appearance = Appearance::default_path("monitor")
+            .map(|path| Appearance::load(&path))
+            .unwrap_or_default();
+        let follow = appearance.apply_and_follow(window, cx);
         let filter = cx.new(|cx| {
             InputState::new(window, cx).placeholder(crate::i18n::copy(locale).search_placeholder)
         });
-        let processes = cx.new(|cx| {
-            TableState::new(ProcessTableDelegate::new(locale), window, cx)
-                .col_movable(false)
-                .col_selectable(false)
-                .row_selectable(true)
-        });
-        let apps = cx.new(|cx| {
-            TableState::new(
-                AppsTableDelegate::new(
-                    locale,
-                    AppsModel::new(Vec::new(), GroupingPrecedence::default()),
-                ),
-                window,
-                cx,
-            )
-            .col_movable(false)
-            .col_selectable(false)
-            .row_selectable(true)
-        });
+        let menu_state = better_ui::fluent::menu::new_state(cx);
 
-        // Better OS is dark-first. `gpui_component::init` installs the light
-        // theme, so the choice is applied once the window exists.
-        Theme::change(ThemeMode::Dark, Some(window), cx);
+        let mut processes = ProcessTableModel::new(Vec::new());
+        processes.set_sort(
+            ProcessColumn::CpuUtilization,
+            monitor_views::SortDirection::Descending,
+        );
 
         let mut app = Self {
             page: Page::Overview,
             locale,
-            theme: ThemeMode::Dark,
+            appearance,
+            _follow: follow,
+            compact_choice: None,
             paused: false,
             include_command_lines: false,
             precedence: GroupingPrecedence::default(),
             reports: Vec::new(),
             overview: OverviewModel::from_reports(&[]),
+            readings: Readings::default(),
+            live: LiveHistory::default(),
+            resource: Resource::Cpu,
+            per_core: false,
             rounds: 0,
+            now_unix_ms: 0,
             collection: Collection::Connecting,
             status: None,
             history: None,
@@ -166,11 +326,24 @@ impl MonitorApp {
             inventory_diff: None,
             last_marked: None,
             last_failure: None,
+            apps: AppsModel::new(Vec::new(), GroupingPrecedence::default()),
+            app_sort: (AppColumn::Cpu, false),
+            app_selection: None,
+            expanded: Vec::new(),
+            round_generation: 0,
+            applied_generation: 0,
             processes,
-            apps,
-            filter,
             selected_pid: None,
-            pending: None,
+            filter,
+            startup: StartupList::default(),
+            services: ServiceList::default(),
+            startup_sort: None,
+            services_sort: None,
+            grouping_open: false,
+            sources_open: false,
+            dialog: None,
+            menu: None,
+            menu_state,
             last_action: None,
             controller: LinuxProcessController::for_current_process(),
             link: None,
@@ -178,7 +351,9 @@ impl MonitorApp {
         };
         app.start_link(cx);
         app.observe_filter(cx);
-        app.observe_tables(cx);
+        // The inventory names the graphics card and the processor model, so
+        // it is asked for once at the start rather than only on its page.
+        app.ask(LinkRequest::Inventory);
         app
     }
 
@@ -186,7 +361,7 @@ impl MonitorApp {
     ///
     /// The window asks for the service first. Whichever side answers, the
     /// collectors live behind the bridge and never on the render thread, and
-    /// the window never reads `/proc` itself.
+    /// the window never reads `/proc` for a reading itself.
     fn start_link(&mut self, cx: &mut Context<Self>) {
         let (request_sender, request_receiver) = smol::channel::unbounded::<LinkRequest>();
         let (update_sender, update_receiver) = smol::channel::unbounded::<LinkUpdate>();
@@ -228,15 +403,8 @@ impl MonitorApp {
                 if !self.paused
                     && let Some(round) = &status.latest_round
                 {
-                    self.reports = round.clone();
-                    self.overview = OverviewModel::from_reports(&self.reports);
-                    let processes = self
-                        .reports
-                        .iter()
-                        .find(|report| report.collector.as_str() == "linux.process")
-                        .map(ProcessFacts::from_report)
-                        .unwrap_or_default();
-                    self.apply_processes(processes, cx);
+                    self.now_unix_ms = status.now_unix_ms;
+                    self.adopt_round(round.clone(), cx);
                 }
                 self.status = Some(*status);
             }
@@ -266,16 +434,78 @@ impl MonitorApp {
         cx.notify();
     }
 
-    fn apply_processes(&mut self, processes: Vec<ProcessFacts>, cx: &mut Context<Self>) {
-        self.processes.update(cx, |table, cx| {
-            table.delegate_mut().model.update(processes.clone());
-            table.refresh(cx);
-        });
-        self.apps.update(cx, |table, cx| {
-            table.delegate_mut().model.update(processes);
-            table.delegate_mut().rebuild();
-            table.refresh(cx);
-        });
+    /// What the tables are showing now, for a round built elsewhere.
+    pub(crate) fn table_settings(&self) -> TableSettings {
+        TableSettings {
+            sort: self.processes.sort(),
+            filter: self.processes.filter().to_string(),
+            tree: self.processes.tree_mode(),
+            command_lines: self.include_command_lines,
+            precedence: self.precedence.clone(),
+            expanded: self.expanded.clone(),
+        }
+    }
+
+    /// Turn one round into the overview, the readings, and both tables on a
+    /// background thread, then adopt the result in one step. A round that
+    /// finishes after a newer one has been adopted is dropped.
+    pub(crate) fn adopt_round(&mut self, round: Vec<CollectorReport>, cx: &mut Context<Self>) {
+        self.round_generation += 1;
+        let generation = self.round_generation;
+        let settings = self.table_settings();
+        let now = self.now_unix_ms as f64 / 1000.0;
+        cx.spawn(async move |this, cx| {
+            let built = cx
+                .background_spawn(async move { BuiltRound::build(round, now, settings) })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.apply_round(generation, built);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Adopt a round built off the window's thread. Settings the person
+    /// changed while it was being built are applied on top.
+    pub(crate) fn apply_round(&mut self, generation: u64, built: BuiltRound) {
+        if generation <= self.applied_generation || self.paused {
+            return;
+        }
+        self.applied_generation = generation;
+        let current = self.table_settings();
+        let BuiltRound {
+            reports,
+            overview,
+            readings,
+            mut processes,
+            mut apps,
+            settings,
+        } = built;
+        if settings != current {
+            current.apply_processes(&mut processes);
+            current.apply_apps(&mut apps);
+        }
+        self.reports = reports;
+        self.overview = overview;
+        self.readings = readings;
+        self.live.record(&self.readings);
+        self.processes = processes;
+        self.apps = apps;
+        // A group that is gone stops being remembered as open.
+        let apps = &self.apps;
+        self.expanded.retain(|key| apps.is_expanded(key));
+        // A resource that went away (a disk unplugged) is not left selected
+        // on a page that can no longer draw it.
+        match &self.resource {
+            Resource::Disk(name) if !self.readings.disks.iter().any(|d| &d.name == name) => {
+                self.resource = Resource::Cpu;
+            }
+            Resource::Adapter(name) if !self.readings.adapters.iter().any(|a| &a.name == name) => {
+                self.resource = Resource::Cpu;
+            }
+            _ => {}
+        }
     }
 
     fn observe_filter(&mut self, cx: &mut Context<Self>) {
@@ -283,77 +513,8 @@ impl MonitorApp {
             &self.filter.clone(),
             |app, state, _: &gpui_component::input::InputEvent, cx| {
                 let text = state.read(cx).value().to_string();
-                app.processes.update(cx, |table, cx| {
-                    table.delegate_mut().model.set_filter(text.clone());
-                    table.refresh(cx);
-                });
-                app.apps.update(cx, |table, cx| {
-                    table.delegate_mut().model.set_filter(text.clone());
-                    table.delegate_mut().rebuild();
-                    table.refresh(cx);
-                });
-                cx.notify();
-            },
-        )
-        .detach();
-    }
-
-    fn observe_tables(&mut self, cx: &mut Context<Self>) {
-        cx.subscribe(
-            &self.processes.clone(),
-            |app, table, event: &gpui_component::table::TableEvent, cx| {
-                if let gpui_component::table::TableEvent::SelectRow(row) = event {
-                    app.selected_pid = table
-                        .read(cx)
-                        .delegate()
-                        .process_at(*row)
-                        .map(|process| process.pid);
-                    // A new selection abandons an unconfirmed action rather
-                    // than silently re-aiming it at a different process.
-                    app.pending = None;
-                    cx.notify();
-                }
-            },
-        )
-        .detach();
-
-        cx.subscribe(
-            &self.apps.clone(),
-            |app, table, event: &gpui_component::table::TableEvent, cx| {
-                let gpui_component::table::TableEvent::SelectRow(row) = event else {
-                    return;
-                };
-                let row = *row;
-                let clicked = table.read(cx).delegate().row_at(row);
-                match clicked {
-                    // Clicking a group expands or collapses it.
-                    Some(crate::tables::AppsRow::Group { services, index }) => {
-                        app.apps.update(cx, |table_state, cx| {
-                            let delegate = table_state.delegate_mut();
-                            let key = delegate
-                                .app_row(services, index)
-                                .map(|app_row| app_row.group.key.clone());
-                            if let Some(key) = key {
-                                delegate.model.toggle_expanded(&key);
-                                delegate.rebuild();
-                                table_state.refresh(cx);
-                            }
-                        });
-                    }
-                    // Clicking a member selects that process, so the detail
-                    // panel and its actions are reachable from either table.
-                    Some(crate::tables::AppsRow::Member { process }) => {
-                        app.selected_pid = app
-                            .apps
-                            .read(cx)
-                            .delegate()
-                            .model
-                            .process(process)
-                            .map(|member| member.pid);
-                        app.pending = None;
-                    }
-                    _ => {}
-                }
+                app.processes.set_filter(text.clone());
+                app.apps.set_filter(text);
                 cx.notify();
             },
         )
@@ -362,18 +523,26 @@ impl MonitorApp {
 
     pub(crate) fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
         self.page = page;
-        // The three stored-data pages are pulled on arrival rather than
-        // polled, because none of them changes between one frame and the next
-        // and a query for fifteen minutes of history is not free.
+        self.menu = None;
+        // The stored-data pages are pulled on arrival rather than polled,
+        // because none of them changes between one frame and the next and a
+        // query for fifteen minutes of history is not free.
         match page {
             Page::History => self.ask(LinkRequest::History {
                 seconds: self.history_seconds,
             }),
-            Page::Incidents => self.ask(LinkRequest::Incidents),
-            Page::Inventory => self.ask(LinkRequest::Inventory),
+            Page::Events => self.ask(LinkRequest::Incidents),
+            Page::SystemInfo | Page::Performance => self.ask(LinkRequest::Inventory),
+            Page::Startup => self.reload_startup(cx),
+            Page::Services => self.reload_services(cx),
             _ => {}
         }
         cx.notify();
+    }
+
+    pub(crate) fn show_resource(&mut self, resource: Resource, cx: &mut Context<Self>) {
+        self.resource = resource;
+        self.navigate(Page::Performance, cx);
     }
 
     /// Change how much history the History page shows.
@@ -383,7 +552,7 @@ impl MonitorApp {
         cx.notify();
     }
 
-    /// "The system was just slow."
+    /// "The computer was just slow."
     ///
     /// The window sends the marker and nothing else. What is captured around
     /// it is decided where the readings are, not here.
@@ -405,29 +574,40 @@ impl MonitorApp {
         )
     }
 
-    pub(crate) fn set_locale(&mut self, locale: Locale, cx: &mut Context<Self>) {
-        self.locale = locale;
-        self.processes.update(cx, |table, cx| {
-            table.delegate_mut().locale = locale;
-            table.delegate_mut().rebuild_columns();
-            table.refresh(cx);
-        });
-        self.apps.update(cx, |table, cx| {
-            table.delegate_mut().locale = locale;
-            table.delegate_mut().rebuild();
-            table.refresh(cx);
-        });
-        cx.notify();
-    }
-
-    pub(crate) fn set_theme(
+    pub(crate) fn set_locale(
         &mut self,
-        mode: ThemeMode,
+        locale: Locale,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.theme = mode;
-        Theme::change(mode, Some(window), cx);
+        self.locale = locale;
+        if let Some(path) = language_path() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(path, format!("{}\n", locale.as_str()));
+        }
+        let placeholder = crate::i18n::copy(locale).search_placeholder;
+        self.filter.update(cx, |state, cx| {
+            state.set_placeholder(placeholder, window, cx);
+        });
+        if self.page == Page::Startup {
+            self.reload_startup(cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn set_appearance(
+        &mut self,
+        appearance: Appearance,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.appearance = appearance;
+        self._follow = appearance.apply_and_follow(window, cx);
+        if let Some(path) = Appearance::default_path("monitor") {
+            let _ = appearance.save(&path);
+        }
         cx.notify();
     }
 
@@ -437,17 +617,9 @@ impl MonitorApp {
     }
 
     pub(crate) fn toggle_tree_mode(&mut self, cx: &mut Context<Self>) {
-        self.processes.update(cx, |table, cx| {
-            let model = &mut table.delegate_mut().model;
-            let tree = model.tree_mode();
-            model.set_tree_mode(!tree);
-            table.refresh(cx);
-        });
+        let tree = self.processes.tree_mode();
+        self.processes.set_tree_mode(!tree);
         cx.notify();
-    }
-
-    pub(crate) fn tree_mode(&self, cx: &App) -> bool {
-        self.processes.read(cx).delegate().model.tree_mode()
     }
 
     /// Turn command-line collection on or off.
@@ -459,24 +631,39 @@ impl MonitorApp {
         self.ask(LinkRequest::SetPrivacy(ProcessPrivacy {
             include_command_line: include,
         }));
-        self.processes.update(cx, |table, cx| {
-            table.delegate_mut().model.set_show_command_line(include);
-            table.delegate_mut().rebuild_columns();
-            table.refresh(cx);
-        });
+        self.processes.set_show_command_line(include);
         cx.notify();
     }
 
-    pub(crate) fn selected_process(&self, cx: &App) -> Option<ProcessFacts> {
-        let pid = self.selected_pid?;
+    /// The logical processor count a process's processor time is divided
+    /// by, as Task Manager does (100% is every processor). `None` until the
+    /// processor has reported, and then nothing is shown rather than a share
+    /// of one processor.
+    pub(crate) fn processors(&self) -> Option<f64> {
+        self.readings
+            .cpu
+            .logical
+            .filter(|count| *count > 0)
+            .map(|count| count as f64)
+    }
+
+    /// Open or close an application's processes on the Processes page.
+    pub(crate) fn toggle_expanded(&mut self, key: &str) {
+        self.apps.toggle_expanded(key);
+        if self.apps.is_expanded(key) {
+            if !self.expanded.iter().any(|k| k == key) {
+                self.expanded.push(key.to_string());
+            }
+        } else {
+            self.expanded.retain(|k| k != key);
+        }
+    }
+
+    pub(crate) fn process(&self, pid: u32) -> Option<&ProcessFacts> {
         self.processes
-            .read(cx)
-            .delegate()
-            .model
             .processes()
             .iter()
             .find(|process| process.pid == pid)
-            .cloned()
     }
 
     /// Whether an action can be offered, and why not when it cannot.
@@ -489,75 +676,342 @@ impl MonitorApp {
             .availability(&process.action_target(), action)
     }
 
-    /// Ask for an action. Destructive ones become a pending confirmation
-    /// rather than running; the rest run immediately.
-    pub(crate) fn request_action(
-        &mut self,
-        process: &ProcessFacts,
-        action: ProcessAction,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(refusal) = self.availability(process, action).refusal() {
+    /// The first reason none of `pids` can be ended, when not one of them
+    /// can; `None` when at least one can.
+    pub(crate) fn end_refusal(&self, pids: &[u32]) -> Option<ActionRefusal> {
+        let mut first = None;
+        for pid in pids {
+            let Some(process) = self.process(*pid) else {
+                continue;
+            };
+            // One process that may be ended is enough to offer the action.
+            let refusal = self
+                .availability(process, ProcessAction::Terminate)
+                .refusal()?
+                .clone();
+            first.get_or_insert(refusal);
+        }
+        first.or(Some(ActionRefusal::OwnershipUnknown))
+    }
+
+    /// The processes an end action would reach, children before parents.
+    pub(crate) fn end_pids(&self, target: &EndTarget) -> Vec<u32> {
+        match target {
+            EndTarget::Process { pid, .. } => vec![*pid],
+            EndTarget::Tree { pid, .. } => tree_of(*pid, self.processes.processes()),
+            EndTarget::App { pids, .. } => pids.clone(),
+        }
+    }
+
+    /// Ask to end something: refused at once when nothing it covers may be
+    /// ended, otherwise a confirmation.
+    pub(crate) fn request_end(&mut self, target: EndTarget, cx: &mut Context<Self>) {
+        self.menu = None;
+        let pids = self.end_pids(&target);
+        if self.paused {
+            // A frozen list may name a process that has closed, and its PID
+            // may since belong to something else.
+            self.last_action = Some(ActionReport::ListPaused {
+                name: target.name().to_string(),
+            });
+        } else if let EndTarget::Tree { .. } = target
+            && let Some(refusal) = self.controller.tree_refusal(&pids)
+        {
             self.last_action = Some(ActionReport::Refused {
-                pid: process.pid,
+                name: target.name().to_string(),
+                refusal,
+            });
+        } else if let Some(refusal) = self.end_refusal(&pids) {
+            self.last_action = Some(ActionReport::Refused {
+                name: target.name().to_string(),
+                refusal,
+            });
+        } else {
+            self.dialog = Some(Dialog::End(target));
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn close_dialog(&mut self, cx: &mut Context<Self>) {
+        self.dialog = None;
+        cx.notify();
+    }
+
+    /// Carry out a confirmed end. Each process is asked to exit; processes
+    /// that may not be ended (another user's, a protected one) are skipped,
+    /// and a process that is already gone is not reported as a failure of
+    /// the whole.
+    pub(crate) fn confirm_end(&mut self, cx: &mut Context<Self>) {
+        let Some(Dialog::End(target)) = self.dialog.take() else {
+            return;
+        };
+        if self.paused {
+            self.last_action = Some(ActionReport::ListPaused {
+                name: target.name().to_string(),
+            });
+            cx.notify();
+            return;
+        }
+        let pids = self.end_pids(&target);
+        let mut sent = 0;
+        let mut failure = None;
+        for pid in &pids {
+            let Some(process) = self.process(*pid).cloned() else {
+                continue;
+            };
+            if self
+                .availability(&process, ProcessAction::Terminate)
+                .refusal()
+                .is_some()
+            {
+                continue;
+            }
+            match self
+                .controller
+                .perform(&process.action_target(), ProcessAction::Terminate)
+            {
+                Ok(_) => sent += 1,
+                Err(ActionError::ProcessDisappeared { .. }) => {}
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        let name = target.name().to_string();
+        self.last_action = Some(match (sent, failure) {
+            (0, Some(error)) => ActionReport::Failed { name, error },
+            (0, None) => ActionReport::Failed {
+                name,
+                error: ActionError::ProcessDisappeared {
+                    pid: pids.first().copied().unwrap_or_default(),
+                },
+            },
+            (count, _) => ActionReport::Succeeded {
+                name,
+                outcome: ActionOutcome::SignalAccepted {
+                    signal: monitor_core::SignalKind::Terminate,
+                },
+                count,
+            },
+        });
+        cx.notify();
+    }
+
+    /// Pause, resume, or lower the priority of one process. None of these
+    /// loses work, so none asks first.
+    pub(crate) fn run_action(&mut self, pid: u32, action: ProcessAction, cx: &mut Context<Self>) {
+        self.menu = None;
+        let Some(process) = self.process(pid).cloned() else {
+            return;
+        };
+        let name = process.display_name();
+        if let Some(refusal) = self.availability(&process, action).refusal() {
+            self.last_action = Some(ActionReport::Refused {
+                name,
                 refusal: refusal.clone(),
             });
             cx.notify();
             return;
         }
-        if action.requires_confirmation() {
-            self.pending = Some(PendingAction {
-                pid: process.pid,
-                name: process.display_name(),
-                action,
-            });
-            cx.notify();
-            return;
-        }
-        self.run_action(process, action, cx);
-    }
-
-    /// Cancel a pending confirmation. Nothing was sent, so nothing is undone.
-    pub(crate) fn cancel_pending(&mut self, cx: &mut Context<Self>) {
-        self.pending = None;
+        self.last_action = Some(
+            match self.controller.perform(&process.action_target(), action) {
+                Ok(outcome) => ActionReport::Succeeded {
+                    name,
+                    outcome,
+                    count: 1,
+                },
+                Err(error) => ActionReport::Failed { name, error },
+            },
+        );
         cx.notify();
     }
 
-    pub(crate) fn confirm_pending(&mut self, cx: &mut Context<Self>) {
-        let Some(pending) = self.pending.take() else {
-            return;
-        };
-        let Some(process) = self.selected_process(cx).filter(|p| p.pid == pending.pid) else {
-            // The process went away while the question was on screen. Saying
-            // so is more useful than sending a signal to whatever now holds
-            // that PID.
-            self.last_action = Some(ActionReport::Failed {
-                pid: pending.pid,
-                error: ActionError::ProcessDisappeared { pid: pending.pid },
-            });
-            cx.notify();
-            return;
-        };
-        self.run_action(&process, pending.action, cx);
+    /// Open the folder a process's program lives in, in the file manager.
+    pub(crate) fn open_location(&mut self, pid: u32, cx: &mut Context<Self>) {
+        self.menu = None;
+        let name = self
+            .process(pid)
+            .map(ProcessFacts::display_name)
+            .unwrap_or_default();
+        // The folder is an `OsString` from the link to the program, never
+        // converted to text, so a path that is not UTF-8 opens as it is.
+        let opened = self
+            .controller
+            .program_folder(pid)
+            .and_then(|folder| {
+                std::process::Command::new("xdg-open")
+                    .arg(folder)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .ok()
+            })
+            .map(|mut child| {
+                // Reaped on a thread of its own, so a finished `xdg-open` is
+                // never left as a zombie under the window.
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                })
+            })
+            .is_some();
+        if !opened {
+            self.last_action = Some(ActionReport::NoLocation { name });
+        }
+        cx.notify();
     }
 
-    fn run_action(
+    pub(crate) fn show_properties(&mut self, pid: u32, cx: &mut Context<Self>) {
+        self.menu = None;
+        self.dialog = Some(Dialog::Properties(pid));
+        cx.notify();
+    }
+
+    pub(crate) fn dismiss_report(&mut self, cx: &mut Context<Self>) {
+        self.last_action = None;
+        cx.notify();
+    }
+
+    pub(crate) fn open_menu(
         &mut self,
-        process: &ProcessFacts,
-        action: ProcessAction,
+        target: MenuTarget,
+        position: Point<Pixels>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let target = process.action_target();
-        self.last_action = Some(match self.controller.perform(&target, action) {
-            Ok(outcome) => ActionReport::Succeeded {
-                pid: process.pid,
-                outcome,
-            },
-            Err(error) => ActionReport::Failed {
-                pid: process.pid,
-                error,
-            },
-        });
+        self.menu = Some(OpenMenu { target, position });
+        better_ui::fluent::menu::open_menu(&self.menu_state, Some(0), window, cx);
+        cx.notify();
+    }
+
+    /// Read the startup apps again, off the window's thread.
+    pub(crate) fn reload_startup(&mut self, cx: &mut Context<Self>) {
+        let chinese = self.locale.is_chinese();
+        cx.spawn(async move |this, cx| {
+            let entries = cx
+                .background_spawn(async move {
+                    AutostartDirs::from_environment()
+                        .map(|dirs| read_autostart(&dirs, chinese))
+                        .unwrap_or_default()
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.startup.entries = entries;
+                app.startup.loaded = true;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn switch_startup(
+        &mut self,
+        file_name: String,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        let Some(entry) = self
+            .startup
+            .entries
+            .iter()
+            .find(|entry| entry.file_name == file_name)
+            .cloned()
+        else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let name = entry.name.clone();
+            let result = cx
+                .background_spawn(async move {
+                    let dirs = AutostartDirs::from_environment().ok_or_else(|| {
+                        std::io::Error::new(std::io::ErrorKind::NotFound, "no home directory")
+                    })?;
+                    set_autostart(&dirs, &entry, enabled)
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.last_action = Some(match result {
+                    Ok(()) => ActionReport::Switched { name, enabled },
+                    Err(error) => ActionReport::SwitchFailed {
+                        name,
+                        detail: error.to_string(),
+                    },
+                });
+                app.reload_startup(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Read the services again, off the window's thread.
+    pub(crate) fn reload_services(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { read_services(&RealSystemctl::from_environment()) })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                match result {
+                    Ok(services) => {
+                        app.services.services = services;
+                        app.services.error = None;
+                    }
+                    Err(error) => {
+                        app.services.services.clear();
+                        app.services.error = Some(error);
+                    }
+                }
+                app.services.loaded = true;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn switch_service(&mut self, unit: String, enabled: bool, cx: &mut Context<Self>) {
+        self.menu = None;
+        let Some(service) = self
+            .services
+            .services
+            .iter()
+            .find(|service| service.unit == unit)
+            .cloned()
+        else {
+            return;
+        };
+        let locale = self.locale;
+        cx.spawn(async move |this, cx| {
+            let name = service.title().to_string();
+            let result = cx
+                .background_spawn(async move {
+                    set_service(&RealSystemctl::from_environment(), &service, enabled)
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.last_action = Some(match result {
+                    Ok(()) => ActionReport::Switched { name, enabled },
+                    Err(error) => ActionReport::SwitchFailed {
+                        name,
+                        detail: crate::i18n::service_error_detail(&error, locale),
+                    },
+                });
+                app.reload_services(cx);
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn sort_apps(&mut self, column: AppColumn, cx: &mut Context<Self>) {
+        self.app_sort = if self.app_sort.0 == column {
+            (column, !self.app_sort.1)
+        } else {
+            (column, column == AppColumn::Name)
+        };
+        cx.notify();
+    }
+
+    pub(crate) fn sort_processes(&mut self, column: ProcessColumn, cx: &mut Context<Self>) {
+        self.processes.sort_by(column);
         cx.notify();
     }
 }

@@ -13,7 +13,8 @@ pub mod store;
 
 pub use action::{
     ActionAvailability, ActionError, ActionOutcome, ActionRefusal, NICE_MAXIMUM, NICE_MINIMUM,
-    ProcessAction, ProcessController, ProcessTarget, SignalKind, unprivileged_availability,
+    ProcessAction, ProcessController, ProcessTarget, SignalKind, TreeMember, tree_refusal,
+    unprivileged_availability,
 };
 pub use collector::{
     Collector, CollectorHealth, CollectorId, CollectorReport, Entity, EntityId, EntityKind,
