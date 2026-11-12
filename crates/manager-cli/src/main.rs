@@ -523,33 +523,59 @@ type RealContext = (HttpDownloader, DbusPrivilegedExecutor);
 /// service. Nothing is asked, because the record already is the answer: each
 /// component whose units are not enabled and running has them enabled and
 /// started, and the activity log says so.
+///
+/// It is a side errand of whatever command was asked for, so nothing it meets
+/// stops that command: a failure is a warning on `messages` (standard error in
+/// the product, so a command's own output stays clean), and the command runs.
 fn heal_user_units(
     manager: &Manager,
     state: &mut ManagerState,
     store: &JsonStore,
     packages: &dyn PackageStateProbe,
     units: &dyn UserUnitController,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let healed = manager.heal_user_units(state, packages, units)?;
+    messages: &mut dyn std::io::Write,
+) {
+    let healed = match manager.heal_user_units(state, packages, units) {
+        Ok(healed) => healed,
+        Err(error) => {
+            let _ = writeln!(
+                messages,
+                "warning: background services were not checked: {error}"
+            );
+            return;
+        }
+    };
     for healing in &healed {
-        match &healing.failure {
-            Some(failure) => println!(
-                "could not start {}: {}: {}",
-                healing.component, failure.unit, failure.message
-            ),
-            None => println!(
-                "started {}: {}",
+        let _ = match &healing.failure {
+            Some(_) if healing.masked => writeln!(
+                messages,
+                "warning: {}: {} is masked, so it was not started",
                 healing.component,
                 healing.units.join(", ")
             ),
-        }
+            Some(failure) => writeln!(
+                messages,
+                "warning: could not start {}: {}: {}",
+                healing.component, failure.unit, failure.message
+            ),
+            None => writeln!(
+                messages,
+                "started {}: {} (enabled again because Better Manager records the component as enabled)",
+                healing.component,
+                healing.units.join(", ")
+            ),
+        };
     }
     // Only a pass that acted changed the state; the activity log is part of
     // that state and would otherwise be lost when the process exits.
-    if !healed.is_empty() {
-        store.save(state)?;
+    if !healed.is_empty()
+        && let Err(error) = store.save(state)
+    {
+        let _ = writeln!(
+            messages,
+            "warning: what was started could not be saved: {error}"
+        );
     }
-    Ok(())
 }
 
 fn real_context(mode: ExecutionMode) -> Result<Option<RealContext>, Box<dyn std::error::Error>> {
@@ -697,7 +723,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &store,
             &DpkgProbe,
             &SystemdUserUnitController::new(),
-        )?;
+            &mut std::io::stderr(),
+        );
     }
 
     match cli.command {
@@ -1203,12 +1230,14 @@ mod tests {
     /// is enabled becomes true of the machine. The activity entry is part of
     /// that state, so a pass that acted has to be saved rather than reported
     /// once and lost when the process exits.
-    #[test]
-    fn startup_healing_starts_an_enabled_components_units_and_saves_the_record() {
+    fn monitor_enabled() -> (
+        Manager,
+        ManagerState,
+        manager_platform::dpkg::FixedPackageStateProbe,
+    ) {
         use better_core::package_health::InstalledFiles;
         use manager_core::{ComponentRecord, HealthState, InstallProvenance};
         use manager_platform::dpkg::FixedPackageStateProbe;
-        use manager_platform::user_units::FakeUserUnitController;
 
         let manager = Manager::new(
             manager_core::catalog::built_in_catalog(),
@@ -1242,17 +1271,37 @@ mod tests {
         };
         let packages = FixedPackageStateProbe::new(&[("better-monitor", "0.2.9")])
             .with_files("better-monitor", files);
+        (manager, state, packages)
+    }
+
+    #[test]
+    fn startup_healing_starts_an_enabled_components_units_and_saves_the_record() {
+        use manager_platform::user_units::FakeUserUnitController;
+
+        let (manager, mut state, packages) = monitor_enabled();
         let units = FakeUserUnitController::new(&[]);
         let directory = tempfile::tempdir().unwrap();
         let store = JsonStore::at_path(directory.path().join("state.json"));
+        let mut messages = Vec::new();
 
-        heal_user_units(&manager, &mut state, &store, &packages, &units)
-            .expect("the startup pass runs");
+        heal_user_units(
+            &manager,
+            &mut state,
+            &store,
+            &packages,
+            &units,
+            &mut messages,
+        );
 
         let unit = units
             .state("better-monitor.service")
             .expect("the unit was started");
-        assert!(unit.enabled && unit.active);
+        assert!(unit.enabled && unit.is_active());
+        let messages = String::from_utf8(messages).unwrap();
+        assert!(
+            messages.contains("because Better Manager records the component as enabled"),
+            "{messages}"
+        );
         let saved = store.load().expect("the healed state was saved").state;
         let activity = saved.activity.last().expect("the start is recorded");
         assert!(
@@ -1262,6 +1311,43 @@ mod tests {
                 .is_some_and(|evidence| evidence.starts_with("user_units.started")),
             "{:?}",
             activity.evidence
+        );
+    }
+
+    /// The startup pass is a side errand of `list`, `status`, `run`, and the
+    /// rest. A unit that will not start, or a state file that cannot be
+    /// written, is a warning; the command the person asked for still runs.
+    #[test]
+    fn a_startup_healing_failure_is_a_warning_and_never_stops_the_command() {
+        use manager_platform::user_units::FakeUserUnitController;
+
+        let (manager, mut state, packages) = monitor_enabled();
+        let units = FakeUserUnitController::new(&[])
+            .with_failing_enable("better-monitor.service", "Unit failed to start");
+        let directory = tempfile::tempdir().unwrap();
+        // A state path whose parent is a file cannot be written.
+        let blocker = directory.path().join("not-a-directory");
+        std::fs::write(&blocker, b"").unwrap();
+        let store = JsonStore::at_path(blocker.join("state.json"));
+        let mut messages = Vec::new();
+
+        heal_user_units(
+            &manager,
+            &mut state,
+            &store,
+            &packages,
+            &units,
+            &mut messages,
+        );
+
+        let messages = String::from_utf8(messages).unwrap();
+        assert!(
+            messages.contains("warning: could not start better-monitor"),
+            "{messages}"
+        );
+        assert!(
+            messages.contains("warning: what was started could not be saved"),
+            "{messages}"
         );
     }
 }

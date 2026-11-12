@@ -36,6 +36,16 @@ struct Run {
     stderr: String,
     stdout: String,
     timed_out: bool,
+    /// Every `systemctl` invocation the command attempted. The guard variable
+    /// makes the binary record them here instead of running them, so a real
+    /// mode run can never reach the user manager of whoever runs the tests.
+    systemctl: Option<String>,
+}
+
+/// Where the guarded binary writes the `systemctl` calls it was stopped from
+/// making.
+fn systemctl_guard(directory: &Path) -> std::path::PathBuf {
+    directory.join("systemctl-guard.log")
 }
 
 fn run(directory: &Path, arguments: &[&str]) -> Run {
@@ -49,6 +59,10 @@ fn run(directory: &Path, arguments: &[&str]) -> Run {
             &directory.join("catalog.json").display().to_string(),
         ])
         .args(arguments)
+        .env(
+            manager_platform::user_units::SYSTEMCTL_GUARD_VARIABLE,
+            systemctl_guard(directory),
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -64,6 +78,7 @@ fn run(directory: &Path, arguments: &[&str]) -> Run {
                     stderr: String::from_utf8_lossy(&output.stderr).to_string(),
                     stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                     timed_out: false,
+                    systemctl: std::fs::read_to_string(systemctl_guard(directory)).ok(),
                 };
             }
             None if started.elapsed() >= TIMEOUT => {
@@ -74,6 +89,7 @@ fn run(directory: &Path, arguments: &[&str]) -> Run {
                     stderr: String::from_utf8_lossy(&output.stderr).to_string(),
                     stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                     timed_out: true,
+                    systemctl: std::fs::read_to_string(systemctl_guard(directory)).ok(),
                 };
             }
             None => std::thread::sleep(Duration::from_millis(50)),
@@ -96,6 +112,12 @@ fn assert_finished_without_panicking(run: &Run, what: &str) {
         !run.stderr.contains("there is no reactor running"),
         "{what} hit the zbus reactor panic again:\n{}",
         run.stderr
+    );
+    // A fresh state records nothing as enabled, so the startup pass has
+    // nothing to start; and were it to try, the guard would have stopped it.
+    assert_eq!(
+        run.systemctl, None,
+        "{what} tried to run systemctl in a test"
     );
     // A host this release does not publish for is the one refusal these
     // commands are allowed to end in, and it is stated rather than silent.
@@ -161,4 +183,5 @@ fn adopting_an_unknown_component_is_refused_without_writing_state() {
     assert!(!run.timed_out, "the command hung");
     assert!(!run.stderr.contains("panicked"), "{}", run.stderr);
     assert_ne!(run.status, Some(0));
+    assert_eq!(run.systemctl, None);
 }
