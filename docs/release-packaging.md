@@ -125,9 +125,8 @@ job 的隔離目錄，但 asset target 仍是 `ubuntu-22.04` 或 `ubuntu-24.04`�
 schema fixture，不列入正式 release matrix。
 
 `better-git` 是第九個套件，從 ticket 78 起由 `build-deb.sh` 建置、`verify-deb.sh`
-檢查，但還沒有任何 release 發佈過它。下一個 release 因此會有九個套件、36 個
-`.deb` 與 36 個 `.deb.sha256`，加上 `LICENSE` 與 `third-party-licenses.md` 共 74
-個 assets。以下各 release 的數字描述的是當時發佈的內容，不隨之改寫。
+檢查，第一次發佈在 v0.2.9。從這一版起每個 release 有九個套件、36 個 `.deb` 與
+36 個 `.deb.sha256`，加上 `LICENSE` 與 `third-party-licenses.md` 共 74 個 assets。以下各 release 的數字描述的是當時發佈的內容，不隨之改寫。
 
 第一個 release 發布於
 [`v0.1.0`](https://github.com/TimLai666/better-os/releases/tag/v0.1.0)，由
@@ -241,7 +240,7 @@ tokio runtime 的執行緒上開自己的連線，於是每個視窗啟動都 pa
 選擇：只要建置方式維持「一次 build 同時產出服務與視窗」，任何一個 crate 的 feature
 都是全體的 feature。
 
-目前的 release 是
+上一個 release 是
 [`v0.2.8`](https://github.com/TimLai666/better-os/releases/tag/v0.2.8)，由 merge
 commit `6e5737e793d6392ae0d677b92f07b6856ce3f9d5` 的 post-merge CI run
 [`36292358182`](https://github.com/TimLai666/better-os/actions/runs/36292358182)
@@ -254,6 +253,20 @@ commit `6e5737e793d6392ae0d677b92f07b6856ce3f9d5` 的 post-merge CI run
 `better-monitor-cli`，兩個命令列在 `--help` 與錯誤訊息裡印的也是安裝後的名字
 `better-monitor-cli` 與 `better-manager-cli`，不再印成視窗的名字。套件裝到
 `/usr/bin` 的名字沒有變，變的是程式自己說出來的名字終於和套件一致。
+
+目前的 release 是
+[`v0.2.9`](https://github.com/TimLai666/better-os/releases/tag/v0.2.9)，由 commit
+`1884b7de1e05f1a4ddd5bc71ac9396b127097e23` 的 CI run
+[`43062983687`](https://github.com/TimLai666/better-os/actions/runs/43062983687)
+產生，九個套件、36 個 `.deb` 與 36 個 `.deb.sha256`，共 74 個 assets。這是 patch
+release，內容是 ticket 63 到 75，加上第一版的 Better Git（ticket 77、78）。
+
+跟 packaging 有關的有兩件事。第一，`better-git` 是新套件，`Depends` 含 `git`，
+desktop entry 以視窗的 `app_id` 命名為 `io.betteros.Git.desktop`。第二，CI 安裝
+系統相依套件的步驟從這一版起會重試五次：連續八次 run 都因為 runner 解析不到
+Ubuntu 的 mirror 而失敗，跟這個 repository 的程式無關。這次 installer job 卡在
+`apt-get update` 直到六小時的上限被取消，重跑後才變綠，所以 release 用的是同一個
+run 重跑後的結果。
 
 `packaging/build-deb.sh` 從 0.2.4 開始會先清掉 `dist/` 裡上一次建置留下的
 `.deb` 與 `.deb.sha256`。`verify-deb.sh` 用不含版號的 glob 挑套件，同一個元件

@@ -2,7 +2,7 @@
 
 **Epic:** Build and release · **User Story:** a contributor runs one command
 that frees the build space no longer needed, without losing the build they are
-using · **Branch:** `ticket-70` · **Blocked by:** none · **Status:** implemented, not merged
+using · **Branch:** `ticket-70` · **Blocked by:** none · **Status:** released in v0.2.9
 
 ## What it delivers
 

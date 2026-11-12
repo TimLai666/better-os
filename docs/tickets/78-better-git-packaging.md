@@ -1,6 +1,6 @@
 # Ticket 78 — Better Git is installable
 
-**Blocked by:** 77 · **Status:** merged, not released
+**Blocked by:** 77 · **Status:** released in v0.2.9
 
 ## Why
 

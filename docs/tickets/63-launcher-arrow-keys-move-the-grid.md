@@ -2,7 +2,7 @@
 
 **Epic:** Better Launcher (Issue #2) · **User Story:** a person moving through
 the launcher grid with the keyboard can go left and right as well as up and
-down · **Branch:** `ticket-63` · **Blocked by:** none · **Status:** implemented, not merged
+down · **Branch:** `ticket-63` · **Blocked by:** none · **Status:** released in v0.2.9
 
 ## What it delivers
 

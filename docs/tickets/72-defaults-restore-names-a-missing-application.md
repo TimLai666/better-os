@@ -2,7 +2,7 @@
 
 **Epic:** Better Defaults (Issue #10) · **User Story:** a person whose previous
 image viewer has been uninstalled is told so on restore and can choose another
-· **Branch:** `ticket-71-72` · **Blocked by:** none · **Status:** merged, not released
+· **Branch:** `ticket-71-72` · **Blocked by:** none · **Status:** released in v0.2.9
 
 ## What it delivers
 

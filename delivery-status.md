@@ -109,6 +109,7 @@ privileged mutation out of the GUI and CLI.
 | M62 | tickets 59–62 — Awake notification, window arguments, Escape, Rust 1.95 baseline (needs M58) | agent | done | Awake tests are hermetic and a source check keeps them so; every window answers `--help` and `--version` and refuses the rest with exit 2; Rust 1.92–1.94 were each tried and fail, 1.95 builds; the new `msrv` CI job passed on its first run |
 | M63 | ticket 56 — compress and extract in Better Files (needs M59, M60) | agent | done | zip, tar, tar.gz, and tar.zst through pure-Rust `zip`, `tar`, `flate2`, and `ruzstd`, with the license inventory regenerated in the same commit; round-tripped against GNU tar, UnZip, 7-Zip, and `zstd`. Full gate on `main` from a clean build cache after every merge: fmt, check, clippy `-D warnings` on stable 1.97 and on 1.98, `cargo +1.95 check`, 183 test targets and 2,857 tests with none failing, and the license check |
 | M64 | v0.2.8 public release — tickets 50–62 (needs M59–M63) | agent | done | Workspace 0.2.7 → 0.2.8 with the manifests on placeholders for the release branch; full gate green on the branch, including clippy on 1.98 and `cargo +1.95 check`, 182 test targets and 2,860 tests, and `build-deb.sh --target ubuntu-24.04` plus `verify-deb.sh` over all eight packages. Post-merge CI run [36292358182](https://github.com/TimLai666/better-os/actions/runs/36292358182) on merge commit `6e5737e` green across all seven jobs, msrv included. [`v0.2.8`](https://github.com/TimLai666/better-os/releases/tag/v0.2.8) published with 66 assets. Every package was fetched again with plain `curl`: the 28 manifest URLs resolve, 32 sidecars verify, and 32 downloads are byte-identical to the CI artifacts. The 28 checksums were re-hashed from the downloads, cross-checked by a separate YAML reader, and checked a third time from the main session; 2,860 tests pass against them, and `install.sh --dry-run` resolves v0.2.8. Performance mode is no longer offered in Better Files, by the owner's decision |
+| M65 | v0.2.9 public release — tickets 63–75, Better Git (77, 78) | agent | done | Better Git's first window and its package are the ninth component. Full gate green on main: fmt, clippy on stable and 1.99, `cargo +1.95 check`, 3,207 tests, and `build-deb.sh --target ubuntu-24.04` plus `verify-deb.sh` over all nine packages. CI run [43062983687](https://github.com/TimLai666/better-os/actions/runs/43062983687) on `1884b7d` green after its installer job was rerun; the eight runs before it failed resolving the Ubuntu mirrors, and the apt step now retries. [`v0.2.9`](https://github.com/TimLai666/better-os/releases/tag/v0.2.9) published with 74 assets. 36 sidecars verify, the 32 manifest URLs resolve and are byte-identical to the CI artifacts, and the 32 checksums were re-hashed from those downloads and cross-checked against sidecar and artifact by a YAML reader |
 
 Every milestone from M21 onward shares the same base gate: `cargo fmt --all --
 --check`, `cargo check --workspace`, `cargo test --workspace`, and `cargo clippy
@@ -235,8 +236,9 @@ requires.
 
 ## Next Ticket
 
-Tickets 63 through 74 are open. 63 through 67 came from the follow-ups v0.2.8
-left and none blocks another: Better Launcher's left
+Tickets 63 through 75, 77, and 78 are merged and released as `v0.2.9`; 76 is the
+owner's backlog of directions and is not planned yet. 63 through 67 came from
+the follow-ups v0.2.8 left and none blocks another: Better Launcher's left
 and right arrow keys (63), the storage service releasing a disk when the
 application writing to it leaves the bus (64), the Trash view, job numbering, and
 zip reading under bad conditions (65), Better Awake's menu after a rule starts a

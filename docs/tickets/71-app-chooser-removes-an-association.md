@@ -2,7 +2,7 @@
 
 **Epic:** Better Defaults (Issue #10) · **User Story:** a person who restores a
 file type that had no default application before Better OS gets exactly that
-back · **Branch:** `ticket-71-72` · **Blocked by:** none · **Status:** merged, not released
+back · **Branch:** `ticket-71-72` · **Blocked by:** none · **Status:** released in v0.2.9
 
 ## What it delivers
 

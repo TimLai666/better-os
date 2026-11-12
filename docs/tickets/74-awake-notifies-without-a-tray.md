@@ -2,7 +2,7 @@
 
 **Epic:** Better Awake (Issue #13) · **User Story:** a person who does not run
 the tray still learns that low battery ended their session · **Branch:**
-`ticket-74` · **Blocked by:** 66 (same service code, merged) · **Status:** implemented, not merged
+`ticket-74` · **Blocked by:** 66 (same service code, merged) · **Status:** released in v0.2.9
 
 ## What it delivers
 

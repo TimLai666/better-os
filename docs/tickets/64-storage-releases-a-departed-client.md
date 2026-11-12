@@ -3,7 +3,7 @@
 **Epic:** Safe direct-removal storage (Issue #5) · **User Story:** a person
 whose Better Files crashed mid-copy is not left with a disk that never becomes
 ready to unplug · **Branch:** `ticket-64` · **Blocked by:** none ·
-**Status:** implemented, not merged
+**Status:** released in v0.2.9
 
 ## What it delivers
 

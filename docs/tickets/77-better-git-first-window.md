@@ -2,7 +2,7 @@
 
 **Epic:** Better Git · **User Story:** a person opens a repository, sees what
 changed, and commits it without a terminal · **Branch:** `ticket-77` ·
-**Blocked by:** none · **Status:** merged, not released
+**Blocked by:** none · **Status:** released in v0.2.9
 
 ## Why
 

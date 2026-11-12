@@ -2,7 +2,7 @@
 
 **Epic:** Build and release · **User Story:** the project owner knows what each
 copyleft dependency obliges before shipping another release · **Branch:**
-`ticket-67` · **Blocked by:** none · **Status:** implemented, not merged
+`ticket-67` · **Blocked by:** none · **Status:** released in v0.2.9
 
 ## What it delivers
 

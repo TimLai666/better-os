@@ -3,7 +3,7 @@
 **Epic:** Better Files (Issue #6) · **User Story:** a person whose network share
 is unreachable, or who runs two Better Files windows, or who opens a hostile
 zip, gets a working window and a clear error · **Branch:** `ticket-65` ·
-**Blocked by:** none · **Status:** implemented, not merged
+**Blocked by:** none · **Status:** released in v0.2.9
 
 ## What it delivers
 

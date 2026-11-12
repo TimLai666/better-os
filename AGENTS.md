@@ -118,10 +118,10 @@ GUI or dependency compiles when the relevant command was not executed.
   Better OS component has a time-to-photon figure. And the idle CPU figure is a
   headless one: nothing asks the window to repaint, so it is the launcher's own
   idle cost and not a claim about a launcher on a running desktop.
-- All eight packages are published. `v0.2.8` carries every component
+- All nine packages are published. `v0.2.9` carries every component
   `packaging/build-deb.sh` builds, for Ubuntu 22.04 and 24.04 on amd64 and
   arm64, and every shipped manifest now records the checksum of its own
-  published 0.2.8 asset, verified after re-downloading the public release. No
+  published 0.2.9 asset, verified after re-downloading the public release. No
   first party manifest carries a placeholder checksum any more;
   `components/manifests/better-files-example.yaml` is the one exception and is a
   schema fixture, not a released component. A version bump puts the placeholders
@@ -130,9 +130,9 @@ GUI or dependency compiles when the relevant command was not executed.
   built — write the real values back only after the new release is public and
   its assets have been downloaded again, and correct the comment above each
   block at the same time rather than leaving it describing the release before.
-- Better Git is the ninth package (ticket 78) and no release has published it
-  yet, so the next release carries 36 `.deb` files, 36 `.deb.sha256` sidecars,
-  `LICENSE`, and `third-party-licenses.md`: 74 assets, not v0.2.8's 66. Its
+- Better Git is the ninth package (ticket 78), first published in v0.2.9, so a
+  release now carries 36 `.deb` files, 36 `.deb.sha256` sidecars, `LICENSE`,
+  and `third-party-licenses.md`: 74 assets, where v0.2.8 had 66. Its
   manifest declares `component_type: enhancement` with nothing in `replaces` or
   `enhances` and `icon: generic`, because both sets are closed and a released
   Better Manager refuses a value it does not know; a standalone type is a schema
@@ -211,7 +211,7 @@ GUI or dependency compiles when the relevant command was not executed.
   `touchpad-core` emits and its benchmark baselines are the figures in
   `docs/touchpad-sensitivity-mapping.md`, but nothing runs those benchmarks —
   the same unenforced-budget gap `better-files.yaml` carries. Its checksums are
-  the published v0.2.8 ones.
+  the published v0.2.9 ones.
 - A package installs its systemd user unit and does not enable it, matching
   `better-manager-daemon`. Nothing in dpkg stops a running Better Awake, Better
   Monitor, or Better Storage user service at removal either; the manifests'

@@ -2,7 +2,7 @@
 
 **Epic:** Better Awake (Issue #13) · **User Story:** a person whose rule just
 started keeping the machine awake sees it in the tray menu without waiting ·
-**Branch:** `ticket-66` · **Blocked by:** none · **Status:** implemented, not merged
+**Branch:** `ticket-66` · **Blocked by:** none · **Status:** released in v0.2.9
 
 ## What it delivers
 
