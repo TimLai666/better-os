@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 926.
-- Packages with an SPDX license expression: 924.
+- Resolved Cargo packages: 927.
+- Packages with an SPDX license expression: 925.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `f96797ef2980ae1347c3023bfd065ebe2a8d423b060a6e054378dcee1cfb72db`.
+- `Cargo.lock` SHA-256: `e28c2521c197980ce8a0938718e1ad24e69af82637c8af07e1284d7d10eb9e05`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 403 |
 | `MIT` | 189 |
 | `Apache-2.0 OR MIT` | 76 |
-| `GPL-3.0-or-later` | 59 |
+| `GPL-3.0-or-later` | 60 |
 | `MIT/Apache-2.0` | 35 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -103,6 +103,7 @@ Better OS does not relicense or silently select a different expression.
 | `git-core` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `git-gui` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `git-platform` | `0.2.11` | `GPL-3.0-or-later` | workspace |
+| `github-api` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `launcher-core` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `launcher-gui` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `launcher-platform` | `0.2.11` | `GPL-3.0-or-later` | workspace |
@@ -398,6 +399,7 @@ Better OS does not relicense or silently select a different expression.
 | `git-core` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `git-gui` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `git-platform` | `0.2.11` | `GPL-3.0-or-later` | workspace |
+| `github-api` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `gl_generator` | `0.14.0` | `Apache-2.0` | [crates.io](https://crates.io/crates/gl_generator/0.14.0) |
 | `glob` | `0.3.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/glob/0.3.4) |
 | `globset` | `0.4.19` | `Unlicense OR MIT` | [crates.io](https://crates.io/crates/globset/0.4.19) |

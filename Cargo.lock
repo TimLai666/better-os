@@ -2564,6 +2564,7 @@ dependencies = [
  "better-ui",
  "git-core",
  "git-platform",
+ "github-api",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
@@ -2571,6 +2572,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "zbus",
 ]
 
 [[package]]
@@ -2578,8 +2580,19 @@ name = "git-platform"
 version = "0.2.11"
 dependencies = [
  "git-core",
+ "libc",
  "tempfile",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "github-api"
+version = "0.2.11"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "ureq",
 ]
 
 [[package]]

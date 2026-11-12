@@ -309,6 +309,8 @@ impl RenderOnce for Flyout {
         let focus = super::keyed_focus(self.id.clone(), window, cx);
         let dismiss_key = self.on_dismiss.clone();
         let dismiss_out = self.on_dismiss.clone();
+        // A floating panel takes the pointer: a click on it never reaches
+        // the page under it.
         let panel = panel_frame(div().id(self.id.clone()), p)
             .occlude()
             .pt(px(15.0))

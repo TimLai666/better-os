@@ -8,7 +8,7 @@ display_name: Better Git
 # it does not know, so adding one is a schema change for its own ticket.
 component_type: enhancement
 version: 0.2.11
-summary: Review what changed in a Git repository and commit it, without a terminal.
+summary: Work with Git repositories and GitHub without a terminal, the way GitHub Desktop does.
 # The icon set is closed in the same way and has no Git mark; generic is the
 # value a component without a dedicated icon takes.
 icon: generic
@@ -60,12 +60,21 @@ permissions:
   - name: run-system-git
     reason: runs the system git with an argument vector and no shell, so the person's own configuration, credential helper, and SSH keys apply
   - name: repository-read-write
-    reason: reads and stages files only in repositories the person opens, and commits there when asked
+    reason: reads and changes files only in repositories the person opens, clones, or creates, and only after the person says they trust that repository
+  - name: network-github
+    reason: reaches GitHub (or the GitHub Enterprise server the person signs in to) for sign-in, pull requests, checks, issues, publishing, and forking, and git remotes for fetch, pull, and push
+  - name: secret-service-keyring
+    reason: keeps the GitHub sign-in token in the desktop keyring through the Secret Service, never in a file
+  - name: desktop-trash
+    reason: puts a copy of every discarded change in the desktop trash so it can be restored
 paths:
   - /usr/bin/better-git
   - /usr/share/applications/io.betteros.Git.desktop
   - /usr/share/icons/hicolor/scalable/apps/better-git.svg
   - ~/.local/state/better-os/git-recent.json
+  - ~/.local/state/better-os/git-repositories.json
+  - ~/.local/state/better-os/git-trusted
+  - ~/.config/better-os/git.json
 release_notes:
   - Open a repository, see each changed file and its diff, stage or unstage it, and commit with a summary and description.
   - Every operation is the system git, which the package depends on. Better Git keeps no copy of your credentials and links no Git library.

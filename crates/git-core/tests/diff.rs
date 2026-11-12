@@ -227,3 +227,16 @@ fn a_type_change_is_two_diffs_and_both_hunks_are_read() {
     added.no_newline_at_end = true;
     assert_eq!(hunks[1].lines, vec![added]);
 }
+
+#[test]
+fn the_change_fingerprint_ignores_context_and_sees_every_change() {
+    use git_core::{change_fingerprint, parse_diff};
+    let short = b"@@ -2,3 +2,3 @@\n one\n-two\n+TWO\n three\n";
+    let whole = b"@@ -1,5 +1,5 @@\n zero\n one\n-two\n+TWO\n three\n four\n";
+    let other = b"@@ -2,3 +2,3 @@\n one\n-two\n+TOO\n three\n";
+    let moved = b"@@ -3,3 +3,3 @@\n one\n-two\n+TWO\n three\n";
+    let f = |d: &[u8]| change_fingerprint(&parse_diff(d).unwrap());
+    assert_eq!(f(short), f(whole));
+    assert_ne!(f(short), f(other));
+    assert_ne!(f(short), f(moved));
+}

@@ -251,6 +251,7 @@ pub struct ErrorBar {
     locale: Locale,
     expanded: Option<bool>,
     on_close: Option<Handler>,
+    next_step: Option<gpui::AnyElement>,
 }
 
 impl ErrorBar {
@@ -261,7 +262,15 @@ impl ErrorBar {
             locale: Locale::English,
             expanded: None,
             on_close: None,
+            next_step: None,
         }
+    }
+
+    /// The one thing to do about the error, such as "Pull" after a
+    /// refused push, shown before the details toggle.
+    pub fn next_step(mut self, action: impl IntoElement) -> Self {
+        self.next_step = Some(action.into_any_element());
+        self
     }
 
     pub fn locale(mut self, locale: Locale) -> Self {
@@ -301,9 +310,15 @@ impl RenderOnce for ErrorBar {
                 })
             },
         );
+        let actions = div()
+            .flex()
+            .items_center()
+            .gap(spacing::SM)
+            .children(self.next_step)
+            .child(toggle);
         let mut bar = InfoBar::new(self.id.clone(), Severity::Error, self.report.summary)
             .locale(self.locale)
-            .action(toggle);
+            .action(actions);
         if let Some(advice) = self.report.advice {
             bar = bar.message(advice);
         }

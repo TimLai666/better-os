@@ -25,6 +25,7 @@ members = [
     "crates/git-core",
     "crates/git-platform",
     "crates/git-gui",
+    "crates/github-api",
     "crates/launcher-core",
     "crates/launcher-platform",
     "crates/launcher-gui",
@@ -95,6 +96,7 @@ files-gui = { path = "crates/files-gui" }
 git-core = { path = "crates/git-core" }
 git-platform = { path = "crates/git-platform" }
 git-gui = { path = "crates/git-gui" }
+github-api = { path = "crates/github-api" }
 launcher-core = { path = "crates/launcher-core" }
 launcher-platform = { path = "crates/launcher-platform" }
 launcher-gui = { path = "crates/launcher-gui" }

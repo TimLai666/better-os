@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 git-core.workspace = true
+libc.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

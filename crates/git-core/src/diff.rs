@@ -171,3 +171,121 @@ fn range_start(part: &str) -> Option<u32> {
     }
     Some(start)
 }
+
+/// One row of the side-by-side diff: the line shown on the left (the old
+/// file) and on the right (the new file), as indexes into the hunk's lines.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SplitRow {
+    pub left: Option<usize>,
+    pub right: Option<usize>,
+}
+
+/// Lays a hunk out side by side, the way GitHub Desktop's split view does.
+///
+/// Expected results: a context line is on both sides; a run of removed lines
+/// followed by a run of added lines is paired row by row, and the longer run
+/// leaves the other side empty; an added line with no removal before it has
+/// an empty left side.
+pub fn split_rows(hunk: &Hunk) -> Vec<SplitRow> {
+    let mut rows = Vec::new();
+    let mut removed: Vec<usize> = Vec::new();
+    let mut added: Vec<usize> = Vec::new();
+    let flush = |rows: &mut Vec<SplitRow>, removed: &mut Vec<usize>, added: &mut Vec<usize>| {
+        for i in 0..removed.len().max(added.len()) {
+            rows.push(SplitRow {
+                left: removed.get(i).copied(),
+                right: added.get(i).copied(),
+            });
+        }
+        removed.clear();
+        added.clear();
+    };
+    for (index, line) in hunk.lines.iter().enumerate() {
+        match line.kind {
+            DiffLineKind::Removed => {
+                if !added.is_empty() {
+                    flush(&mut rows, &mut removed, &mut added);
+                }
+                removed.push(index);
+            }
+            DiffLineKind::Added => added.push(index),
+            DiffLineKind::Context => {
+                flush(&mut rows, &mut removed, &mut added);
+                rows.push(SplitRow {
+                    left: Some(index),
+                    right: Some(index),
+                });
+            }
+        }
+    }
+    flush(&mut rows, &mut removed, &mut added);
+    rows
+}
+
+/// A diff larger than this many bytes is not shown until the person asks,
+/// as GitHub Desktop does: drawing it would stall the window.
+pub const LARGE_DIFF_BYTES: usize = 3 * 1024 * 1024;
+
+/// A diff with more lines than this is not shown until the person asks.
+pub const LARGE_DIFF_LINES: usize = 20_000;
+
+/// Whether a diff is too large to show without asking.
+pub fn is_large(diff: &FileDiff) -> bool {
+    match diff {
+        FileDiff::Binary => false,
+        FileDiff::Text { hunks } => {
+            let lines: usize = hunks.iter().map(|h| h.lines.len()).sum();
+            let bytes: usize = hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .map(|l| l.text.len() + 1)
+                .sum();
+            lines > LARGE_DIFF_LINES || bytes > LARGE_DIFF_BYTES
+        }
+    }
+}
+
+/// What identifies a changed line however much context the diff around it
+/// shows: its number in the old file (a removal) or the new one (an
+/// addition). Context lines have both.
+pub type LineKey = (Option<u32>, Option<u32>);
+
+pub fn line_key(line: &DiffLine) -> LineKey {
+    (line.old_line, line.new_line)
+}
+
+/// A fingerprint of every change in a diff: each changed line's kind,
+/// numbers, and text, and whether git said it ends without a newline. Two
+/// diffs of one file read with different amounts of context (three lines,
+/// or the whole file) have the same fingerprint; any change to the file or
+/// to HEAD that changes what would be committed changes it. A choice of
+/// lines made on one diff is applied only to a diff with the same
+/// fingerprint.
+pub fn change_fingerprint(diff: &FileDiff) -> u64 {
+    // FNV-1a, 64 bits: stable across runs and builds.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for &b in bytes {
+            hash ^= u64::from(b);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    match diff {
+        FileDiff::Binary => feed(b"binary"),
+        FileDiff::Text { hunks } => {
+            for line in hunks.iter().flat_map(|h| &h.lines) {
+                let kind = match line.kind {
+                    DiffLineKind::Context => continue,
+                    DiffLineKind::Added => b'+',
+                    DiffLineKind::Removed => b'-',
+                };
+                feed(&[kind, u8::from(line.no_newline_at_end)]);
+                feed(&line.old_line.unwrap_or(0).to_le_bytes());
+                feed(&line.new_line.unwrap_or(0).to_le_bytes());
+                feed(&(line.text.len() as u64).to_le_bytes());
+                feed(line.text.as_bytes());
+            }
+        }
+    }
+    hash
+}

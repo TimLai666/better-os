@@ -109,10 +109,38 @@ fn the_manifest_declares_what_the_package_installs_and_the_state_the_window_writ
         "/usr/share/applications/io.betteros.Git.desktop",
         "/usr/share/icons/hicolor/scalable/apps/better-git.svg",
         recent.as_str(),
+        "~/.local/state/better-os/git-repositories.json",
+        "~/.local/state/better-os/git-trusted",
+        "~/.config/better-os/git.json",
     ] {
         assert!(
             manifest.paths.iter().any(|declared| declared == path),
             "the manifest does not declare {path}"
+        );
+    }
+}
+
+#[test]
+fn the_declared_state_files_are_the_ones_the_window_writes() {
+    // SAFETY: this test is the only one in this file touching the
+    // environment, and it only reads defaults computed from it.
+    unsafe {
+        std::env::set_var("HOME", "/home/someone");
+        std::env::remove_var("XDG_STATE_HOME");
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+    let files = git_gui::session::Files::defaults();
+    for (path, declared) in [
+        (
+            files.repositories,
+            "~/.local/state/better-os/git-repositories.json",
+        ),
+        (files.trust, "~/.local/state/better-os/git-trusted"),
+        (files.settings, "~/.config/better-os/git.json"),
+    ] {
+        assert_eq!(
+            path.unwrap(),
+            PathBuf::from(declared.replacen('~', "/home/someone", 1))
         );
     }
 }
