@@ -28,6 +28,16 @@ updated, verified, and rolled back through shared manager operations.
   unreleased build directly on the host or touch host system paths, package
   state, or privileged services.
 - Keep manager CLI and GUI on the same `manager-core` planning API.
+- A component's systemd **user** units are managed by `manager-core`, never by
+  a window or a command directly. `RealDriver` takes the controller through
+  `with_user_units`; a driver built without one manages no units. Enabling,
+  starting, disabling, and stopping them, and the startup pass that makes an
+  existing record true (`Manager::heal_user_units`), go through
+  `manager_platform::user_units::UserUnitController`. Units come from dpkg's
+  own file list under `/usr/lib/systemd/user`, never from a table by component
+  id, and the health check requires an enabled component's units to be enabled
+  and active. User units need no privilege, so this never crosses
+  `manager-daemon`; system units are out of scope.
 - Use Rust for first-party production code. Use Go only after recording a
   concrete reason in an ADR. Do not add C, C++, Python, JavaScript, Electron,
   Tauri, or GTK application code. **One bounded exception exists**, granted by

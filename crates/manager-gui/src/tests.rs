@@ -360,6 +360,9 @@ fn every_real_failure_reason_has_copy_in_both_locales() {
             c.demo_mode_banner,
             c.downloading_progress,
             c.check_host_reconciliation,
+            c.evidence_user_units_failed,
+            c.evidence_user_units_not_running,
+            c.evidence_user_units_started,
         ] {
             assert!(!text.is_empty(), "{locale:?} is missing a failure reason");
         }
@@ -1718,6 +1721,61 @@ mod package_system_repair {
             let arm = app[at..].split("Some(").next().unwrap();
             assert!(arm.contains(field), "{key} must map to {field}: {arm}");
         }
+    }
+
+    /// A stopped background service is the defect this ticket exists for, so
+    /// the window has to say that rather than fall through to a generic
+    /// refusal. Both keys carry a unit and systemctl's words in the detail.
+    #[test]
+    fn the_user_unit_evidence_keys_are_worded_rather_than_falling_through() {
+        let app = include_str!("app.rs");
+        for (key, field) in [
+            ("user_units.failed", "c.evidence_user_units_failed"),
+            (
+                "user_units.not_running",
+                "c.evidence_user_units_not_running",
+            ),
+            ("user_units.started", "c.evidence_user_units_started"),
+        ] {
+            let at = app
+                .find(&format!("\"{key}\""))
+                .unwrap_or_else(|| panic!("{key} has no wording"));
+            let arm = app[at..].split("Some(").next().unwrap();
+            assert!(arm.contains(field), "{key} must map to {field}: {arm}");
+        }
+    }
+
+    /// The record saying a component is enabled is not true of the machine
+    /// unless something makes it true, and startup is that something. A demo
+    /// window, which returns before any of this, still touches nothing.
+    #[test]
+    fn the_window_heals_user_units_when_it_reconciles() {
+        let app = include_str!("app.rs");
+        let reconcile = app
+            .split("fn reconcile_with_host(&mut self)")
+            .nth(1)
+            .expect("reconciliation exists");
+        let reconcile = reconcile.split("\n    }\n").next().unwrap();
+        assert!(reconcile.contains(".heal_user_units("), "{reconcile}");
+        assert!(
+            reconcile.contains("SystemdUserUnitController"),
+            "{reconcile}"
+        );
+        assert!(reconcile.contains("ExecutionMode::Mock"), "{reconcile}");
+    }
+
+    /// A real transaction enables and starts the component's own units, so the
+    /// driver it builds has to be given the controller that does it.
+    #[test]
+    fn the_real_driver_is_given_the_user_unit_controller() {
+        let app = include_str!("app.rs");
+        let run = app
+            .split("fn run_real_transaction(&mut self")
+            .nth(1)
+            .expect("the real transaction exists");
+        let run = run.split("\n    }\n").next().unwrap();
+        assert!(run.contains("SystemdUserUnitController::new()"), "{run}");
+        assert!(run.contains(".with_user_units(&user_units)"), "{run}");
     }
 
     /// A view model cannot prove what a render function does with it. The card

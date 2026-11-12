@@ -8,6 +8,7 @@
 
 pub mod catalog;
 pub mod exec;
+pub mod reconcile;
 pub mod repair;
 
 use better_core::{
@@ -455,6 +456,14 @@ pub struct PlanStep {
     #[serde(default)]
     pub release_notes: Vec<String>,
     pub rollback_available: bool,
+    /// Whether this step leaves the component enabled, and therefore has to
+    /// leave its systemd user units enabled and running. It is decided once,
+    /// where the step is planned, so a driver never re-derives it from a record
+    /// the step is about to change. A plan persisted by a version that predates
+    /// the field reads as `false`, which manages no units rather than guessing
+    /// at them.
+    #[serde(default)]
+    pub leaves_enabled: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2155,6 +2164,17 @@ impl Manager {
         let mut conflicts = manifest.conflicts.clone();
         conflicts.sort();
         let artifact = self.artifact_for_profile(manifest);
+        let leaves_enabled = match operation {
+            DesiredOperation::Install | DesiredOperation::Update | DesiredOperation::Enable => true,
+            DesiredOperation::Disable | DesiredOperation::Remove => false,
+            DesiredOperation::Verify => state
+                .component(&manifest.id)
+                .is_some_and(|record| record.enabled),
+            DesiredOperation::Restore => state
+                .component(&manifest.id)
+                .and_then(|record| record.restore_snapshot.as_ref())
+                .is_some_and(|snapshot| snapshot.enabled),
+        };
         let plan_artifact = match operation {
             DesiredOperation::Install | DesiredOperation::Update => {
                 artifact.map(|artifact| PlanArtifact {
@@ -2219,6 +2239,7 @@ impl Manager {
                     | DesiredOperation::Disable
                     | DesiredOperation::Remove
             ),
+            leaves_enabled,
         }
     }
 

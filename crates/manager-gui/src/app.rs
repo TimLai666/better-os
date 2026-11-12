@@ -17,6 +17,7 @@ use manager_platform::download::{ArtifactCache, HttpDownloader};
 use manager_platform::dpkg::DpkgProbe;
 use manager_platform::host::ClientPlatform;
 use manager_platform::privileged::DbusPrivilegedExecutor;
+use manager_platform::user_units::SystemdUserUnitController;
 use manager_platform::{SystemCapabilities, SystemProfile};
 use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, start_catalog};
 
@@ -240,11 +241,21 @@ impl ManagerApp {
         }
         let mut candidate = self.state.clone();
         let revision = candidate.revision;
-        if self
+        let reconciled = self
             .manager
             .reconcile(&mut candidate, &DpkgProbe)
-            .is_ok_and(|_| candidate.revision != revision)
-        {
+            .is_ok_and(|_| candidate.revision != revision);
+        // The record already says which components were asked to run. Startup
+        // is where that intent is made true again: the packages install their
+        // units without enabling them, so a machine that installed Better OS
+        // before this pass or upgraded Better Manager afterwards carries a
+        // correct record and a stopped service. Read-only when nothing needs
+        // starting, which is the usual case.
+        let healed = self
+            .manager
+            .heal_user_units(&mut candidate, &DpkgProbe, &SystemdUserUnitController)
+            .is_ok_and(|healed| !healed.is_empty());
+        if reconciled || healed {
             self.commit_state(candidate);
         }
         // Read-only, like the reconciliation above, and asked here once rather
@@ -734,6 +745,7 @@ impl ManagerApp {
                     return;
                 }
             };
+            let user_units = SystemdUserUnitController::new();
             let driver = RealDriver::new(
                 &downloader,
                 &executor,
@@ -741,7 +753,8 @@ impl ManagerApp {
                 &better_core::package_health::SystemHealthProbe,
                 uuid::Uuid::new_v4().to_string(),
                 profile,
-            );
+            )
+            .with_user_units(&user_units);
             let mut runner = TransactionRunner::new(&manager, Box::new(driver), &store)
                 .with_cancel_token(cancel);
             let _ = runner.run(&mut state, &mut |event| {
@@ -1186,6 +1199,11 @@ impl ManagerApp {
             Some("package_system.repaired") => c.evidence_package_system_repaired,
             Some("package_system.still_interrupted") => c.evidence_package_system_still_interrupted,
             Some("package_system.nothing_to_repair") => c.repair_result_nothing,
+            Some(other) if other.starts_with("user_units.failed") => c.evidence_user_units_failed,
+            Some(other) if other.starts_with("user_units.not_running") => {
+                c.evidence_user_units_not_running
+            }
+            Some(other) if other.starts_with("user_units.started") => c.evidence_user_units_started,
             Some(other) if other.starts_with("host.externally_upgraded") => {
                 c.evidence_externally_upgraded
             }

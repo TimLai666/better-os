@@ -18,6 +18,7 @@ use manager_platform::download::{ArtifactCache, HttpDownloader};
 use manager_platform::dpkg::{DpkgProbe, PackageStateProbe};
 use manager_platform::host::ClientPlatform;
 use manager_platform::privileged::DbusPrivilegedExecutor;
+use manager_platform::user_units::{SystemdUserUnitController, UserUnitController};
 use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, start_catalog};
 use std::path::PathBuf;
 
@@ -514,6 +515,43 @@ fn print_plan(plan: &TransactionPlan) {
 /// leave a transaction recorded as started that never was.
 type RealContext = (HttpDownloader, DbusPrivilegedExecutor);
 
+/// Makes the recorded intent true when the command starts.
+///
+/// A component the manager records as installed and enabled is one the person
+/// asked to run. The packages install their user units without enabling them,
+/// so a machine that predates this pass carries a correct record and a stopped
+/// service. Nothing is asked, because the record already is the answer: each
+/// component whose units are not enabled and running has them enabled and
+/// started, and the activity log says so.
+fn heal_user_units(
+    manager: &Manager,
+    state: &mut ManagerState,
+    store: &JsonStore,
+    packages: &dyn PackageStateProbe,
+    units: &dyn UserUnitController,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let healed = manager.heal_user_units(state, packages, units)?;
+    for healing in &healed {
+        match &healing.failure {
+            Some(failure) => println!(
+                "could not start {}: {}: {}",
+                healing.component, failure.unit, failure.message
+            ),
+            None => println!(
+                "started {}: {}",
+                healing.component,
+                healing.units.join(", ")
+            ),
+        }
+    }
+    // Only a pass that acted changed the state; the activity log is part of
+    // that state and would otherwise be lost when the process exits.
+    if !healed.is_empty() {
+        store.save(state)?;
+    }
+    Ok(())
+}
+
 fn real_context(mode: ExecutionMode) -> Result<Option<RealContext>, Box<dyn std::error::Error>> {
     match mode {
         ExecutionMode::Mock => Ok(None),
@@ -539,16 +577,23 @@ fn advance_until_done(
         _ => MockRestoreOutcome::Succeed,
     };
 
+    // The real driver owns the component's user units too: starting them needs
+    // no privilege, so it never crosses the daemon. Declared outside the match
+    // so the borrow outlives the boxed driver.
+    let user_units = SystemdUserUnitController::new();
     let driver: Box<dyn StageDriver> = match &real {
         None => Box::new(MockDriver::new(fail_at, restore_outcome)),
-        Some((downloader, executor)) => Box::new(RealDriver::new(
-            downloader,
-            executor,
-            &manager_platform::dpkg::DpkgProbe,
-            &better_core::package_health::SystemHealthProbe,
-            uuid::Uuid::new_v4().to_string(),
-            manager.profile().clone(),
-        )),
+        Some((downloader, executor)) => Box::new(
+            RealDriver::new(
+                downloader,
+                executor,
+                &manager_platform::dpkg::DpkgProbe,
+                &better_core::package_health::SystemHealthProbe,
+                uuid::Uuid::new_v4().to_string(),
+                manager.profile().clone(),
+            )
+            .with_user_units(&user_units),
+        ),
     };
     let mut runner = TransactionRunner::new(manager, driver, store);
 
@@ -643,6 +688,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manager = Manager::probe(catalog.clone(), &platform_for(cli.execution))?;
     let store = store_for(cli.state_path);
     let mut state = load_state(&store, &manager)?;
+    // A demo run reports a fabrication and touches nothing, so only a real
+    // start heals.
+    if cli.execution == ExecutionArg::Real {
+        heal_user_units(
+            &manager,
+            &mut state,
+            &store,
+            &DpkgProbe,
+            &SystemdUserUnitController::new(),
+        )?;
+    }
 
     match cli.command {
         Command::List => {
@@ -1140,6 +1196,72 @@ mod tests {
                 .to_string()
                 .starts_with("platform.error.unsupported_host:"),
             "{error}"
+        );
+    }
+
+    /// Ticket 79: starting the command is where a record that says a component
+    /// is enabled becomes true of the machine. The activity entry is part of
+    /// that state, so a pass that acted has to be saved rather than reported
+    /// once and lost when the process exits.
+    #[test]
+    fn startup_healing_starts_an_enabled_components_units_and_saves_the_record() {
+        use better_core::package_health::InstalledFiles;
+        use manager_core::{ComponentRecord, HealthState, InstallProvenance};
+        use manager_platform::dpkg::FixedPackageStateProbe;
+        use manager_platform::user_units::FakeUserUnitController;
+
+        let manager = Manager::new(
+            manager_core::catalog::built_in_catalog(),
+            manager_platform::SystemProfile::default(),
+        );
+        let monitor = ComponentId::new("better-monitor").unwrap();
+        let mut state = ManagerState::default();
+        state.components.insert(
+            monitor,
+            ComponentRecord {
+                installed_version: Some("0.2.9".to_string()),
+                enabled: true,
+                health: HealthState::Healthy,
+                installed_artifact: None,
+                provenance: InstallProvenance::Manager,
+                restore_snapshot: None,
+                failure: None,
+                recovery: None,
+                drift: None,
+            },
+        );
+        let files = InstalledFiles {
+            paths: [
+                "/usr/bin/better-monitor-service",
+                "/usr/lib/systemd/user/better-monitor.service",
+            ]
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
+            ..InstalledFiles::default()
+        };
+        let packages = FixedPackageStateProbe::new(&[("better-monitor", "0.2.9")])
+            .with_files("better-monitor", files);
+        let units = FakeUserUnitController::new(&[]);
+        let directory = tempfile::tempdir().unwrap();
+        let store = JsonStore::at_path(directory.path().join("state.json"));
+
+        heal_user_units(&manager, &mut state, &store, &packages, &units)
+            .expect("the startup pass runs");
+
+        let unit = units
+            .state("better-monitor.service")
+            .expect("the unit was started");
+        assert!(unit.enabled && unit.active);
+        let saved = store.load().expect("the healed state was saved").state;
+        let activity = saved.activity.last().expect("the start is recorded");
+        assert!(
+            activity
+                .evidence
+                .as_deref()
+                .is_some_and(|evidence| evidence.starts_with("user_units.started")),
+            "{:?}",
+            activity.evidence
         );
     }
 }
