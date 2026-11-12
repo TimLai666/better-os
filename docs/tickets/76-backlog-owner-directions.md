@@ -92,3 +92,29 @@ fix, check that the fix worked, and undo it. Open before planning:
   verified, starting with the two above.
 - How entries stay correct across distributions and desktops once Omarchy is
   supported.
+
+## 6. One control center, inside Better Manager
+
+On 2026-11-12 the owner decided that Better OS does not grow more small
+apps. Better Awake, Better Touchpad, and Better Defaults stop being separate
+windows, and Better Manager becomes the one control center, laid out like
+Windows 11 Settings: categories on the left, settings cards on the right. It
+holds what it holds today (installing, updating, and checking components),
+those three, Better Patch, and hardware controls such as the performance
+mode, the battery charge limit, the keyboard backlight, and the fans where
+the hardware allows it. Writing those needs root, so it goes through
+`manager-daemon` and polkit like every other privileged change.
+
+On the owner's ASUS Vivobook S 14 M5406WA the kernel exposes, read on
+2026-11-12: `platform_profile` with quiet, balanced, and performance;
+`charge_control_end_threshold` on `BAT1`; `asus::kbd_backlight`, single colour
+with brightness 0 to 3 (no RGB); and fan speed through hwmon. Whether its fan
+curve can be set is not yet checked.
+
+## 7. Every app complete before it is called done
+
+On the same day the owner rejected shipping thin first versions: each app is
+built with its whole feature set, in Fluent, and is not released until all of
+it works on a real desktop with nothing for the person to type. Better Files
+matches every feature of `omacom/folio` (MIT), rewritten in Rust and GPUI;
+Better Git matches GitHub Desktop.
