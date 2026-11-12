@@ -53,3 +53,15 @@ Spec section 9.
 
 Never run either fix against the person's real fontconfig cache or Flatpak
 overrides from an agent session; use the scratch HOME.
+
+## Candidate fault from the owner's machine (2026-11-13), not yet confirmed
+
+On battery, after GNOME blanks the screen (no suspend involved), the panel
+takes noticeably long to light up again. The eDP panel has PSR enabled
+(`amdgpu ... eDP-1: PSR support 1 ... sink PSR ver 4`). The owner will try
+`amdgpu.dcdebugmask=0x10` (PSR off) on the kernel command line for a day or
+two; if that fixes it, it becomes an entry here (detect amdgpu with a PSR
+panel, apply and restore the parameter through the daemon), with its power
+cost stated. A separate observation from the same resume:
+`ucsi_acpi USBC000:00: failed to re-enable notifications (-110)` ten seconds
+after an actual suspend exit.
