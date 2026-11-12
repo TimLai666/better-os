@@ -254,7 +254,7 @@ commit `6e5737e793d6392ae0d677b92f07b6856ce3f9d5` 的 post-merge CI run
 `better-monitor-cli` 與 `better-manager-cli`，不再印成視窗的名字。套件裝到
 `/usr/bin` 的名字沒有變，變的是程式自己說出來的名字終於和套件一致。
 
-目前的 release 是
+上一個 release 是
 [`v0.2.9`](https://github.com/TimLai666/better-os/releases/tag/v0.2.9)，由 commit
 `1884b7de1e05f1a4ddd5bc71ac9396b127097e23` 的 CI run
 [`43062983687`](https://github.com/TimLai666/better-os/actions/runs/43062983687)
@@ -267,6 +267,15 @@ desktop entry 以視窗的 `app_id` 命名為 `io.betteros.Git.desktop`。第二
 Ubuntu 的 mirror 而失敗，跟這個 repository 的程式無關。這次 installer job 卡在
 `apt-get update` 直到六小時的上限被取消，重跑後才變綠，所以 release 用的是同一個
 run 重跑後的結果。
+
+目前的 release 是
+[`v0.2.10`](https://github.com/TimLai666/better-os/releases/tag/v0.2.10)，由 commit
+`c938bfe2f8caf100eb57fffc03976a82d1ca8752` 的 CI run
+[`43240521695`](https://github.com/TimLai666/better-os/actions/runs/43240521695)
+產生，同樣是九個套件、36 個 `.deb` 與 36 個 `.deb.sha256`，共 74 個 assets。內容是
+ticket 79：Better Manager 安裝、啟用、更新、還原元件時會啟動它的 systemd user
+unit，開啟時會把已啟用卻沒在跑的元件啟動起來。套件本身沒有改變打包方式，unit
+仍然以停用狀態安裝，由 Better Manager 啟用。
 
 `packaging/build-deb.sh` 從 0.2.4 開始會先清掉 `dist/` 裡上一次建置留下的
 `.deb` 與 `.deb.sha256`。`verify-deb.sh` 用不含版號的 glob 挑套件，同一個元件

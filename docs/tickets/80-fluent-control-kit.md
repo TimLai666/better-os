@@ -1,6 +1,6 @@
 # Ticket 80 — The Fluent control kit every window is built from
 
-**Blocked by:** none · **Status:** merged, not released
+**Blocked by:** none · **Status:** released in v0.2.10
 
 ## Why
 
