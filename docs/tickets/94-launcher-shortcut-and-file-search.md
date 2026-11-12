@@ -62,3 +62,29 @@ read on 2026-11-12:
       and the restore of every setting written.
 - [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
       and the license check pass.
+
+## Spotlight, not an application (owner, 2026-11-13)
+
+The owner finds it wrong that Better Launcher behaves like an application
+that is opened and closed, and wants it horizontal, like macOS Spotlight,
+since it sits in the middle of the screen. So this ticket also turns the
+launcher into a summoned panel:
+
+- **Always ready.** A session service keeps the launcher process resident
+  with its catalog and icons loaded; Super+Space only shows it, so it appears
+  at once. It starts with the session and is not something a person opens or
+  quits: no entry in the application menu or the taskbar, and losing focus,
+  Escape, or launching something hides it.
+- **Spotlight's shape.** A wide, short search bar centred a little above the
+  middle of the screen (about 680px wide); results appear below it in one
+  list grouped by kind (Top hit, Applications, Calculator, Folders, Files),
+  with a preview of the selected result on the right; nothing below the bar
+  until something is typed, or the pinned apps in a single row when the
+  person prefers. The current Start-menu grid becomes "All apps" behind a
+  key, not the first thing shown.
+- **Proving how it is drawn.** A GPUI window is an `xdg_toplevel`, so Zorin's
+  taskbar lists it and Mutter may place and animate it like an application.
+  Before building, prove one of: hiding it from the taskbar and placing it
+  through Better OS's existing GNOME Shell extension (within ADR 0012 and
+  0015's bounds), or drawing the panel in the extension itself. Record the
+  choice and its evidence in an ADR.
