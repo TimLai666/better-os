@@ -65,3 +65,18 @@ panel, apply and restore the parameter through the daemon), with its power
 cost stated. A separate observation from the same resume:
 `ucsi_acpi USBC000:00: failed to re-enable notifications (-110)` ten seconds
 after an actual suspend exit.
+
+## Candidate fault: the USB-C charging port stops responding (owner, 2026-11-13)
+
+The owner reports the USB-C charging port sometimes stops working. The kernel
+log on that machine shows the UCSI firmware interface timing out:
+`ucsi_acpi USBC000:00: ucsi_handle_connector_change: GET_CONNECTOR_STATUS
+failed (-110)` (2026-11-12 06:04) and `failed to re-enable notifications
+(-110)` after a resume (2026-11-13 00:08). BIOS M5406WA.314 (2025-04-17),
+kernel 7.0.0-42. When UCSI stops answering, Linux stops learning about plug
+and unplug on that connector. Still to establish: whether charging itself
+stops (power delivery is negotiated by the embedded controller, not by Linux)
+or only what Linux reports. Candidate entry: detect the -110 errors, tell the
+person in plain words, and offer to reset the interface (unload and reload
+`ucsi_acpi` through the daemon), plus point to a newer BIOS from ASUS when one
+exists. Not built until the symptom is confirmed.
