@@ -1,76 +1,54 @@
-//! The two virtualized tables.
+//! The rows of the Processes and Details tables, decided without a window.
 //!
-//! Both are `gpui-component` `TableState` delegates, which render only the
-//! rows the viewport can show. The models behind them decide order, filtering,
-//! and tree structure; these types only turn a row into elements.
+//! The models in `monitor-views` decide grouping, filtering, and the tree;
+//! this module decides what each row says: the cells, their order, and how a
+//! reading that has no value is written. Every cell goes through
+//! [`reading`], the single place a reading becomes text. A reading with no
+//! value is written as the reason it has none, in the secondary tone, and
+//! never as `0`.
 //!
-//! Every cell goes through [`cell_element`], which is the single place a
-//! reading becomes something visible. A reading with no value renders as the
-//! reason it has none, in the muted style, and never as `0`.
+//! The windows draws the rows with `better_ui::fluent::list::DetailsTable`.
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
-    ActiveTheme,
-    table::{Column, ColumnSort, TableDelegate, TableState},
-    *,
-};
+use std::cmp::Ordering;
+
+use better_ui::fluent::list::{CellTone, TableCell};
+use better_ui::fluent::words;
 use monitor_views::apps::{Aggregate, AppRow};
-use monitor_views::format::{
-    Cell, NonValue, bytes, bytes_per_second, cell, count, duration, ratio_percent,
-};
+use monitor_views::format::{Cell, NonValue, cell};
 use monitor_views::grouping::{Confidence, GroupingEvidence};
-use monitor_views::{AppsModel, ProcessColumn, ProcessFacts, ProcessTableModel, SortDirection};
+use monitor_views::{AppsModel, ProcessColumn, ProcessFacts};
 
-use crate::i18n::{Copy, Locale, copy};
+use crate::i18n::{Copy, Locale, process_state};
 
-/// Column widths, owned here so the layout tests and the renderer cannot
-/// disagree about how much room a header has.
-pub(crate) struct ProcessColumnLayout;
+/// Bytes as a person reads them, in Windows' units: `1.2 MB`.
+pub(crate) fn bytes(value: f64) -> String {
+    words::bytes(value.max(0.0) as u64)
+}
 
-impl ProcessColumnLayout {
-    pub(crate) fn width_of(column: ProcessColumn) -> f32 {
-        match column {
-            ProcessColumn::Name => 240.0,
-            ProcessColumn::Pid => 88.0,
-            ProcessColumn::ParentPid => 96.0,
-            ProcessColumn::User => 130.0,
-            ProcessColumn::State => 150.0,
-            ProcessColumn::CpuUtilization => 130.0,
-            ProcessColumn::CpuTime => 130.0,
-            ProcessColumn::Memory => 130.0,
-            ProcessColumn::Swap => 120.0,
-            ProcessColumn::ReadRate => 120.0,
-            ProcessColumn::WriteRate => 120.0,
-            ProcessColumn::Threads => 110.0,
-            ProcessColumn::FileDescriptors => 110.0,
-            ProcessColumn::StartTime => 130.0,
-            ProcessColumn::Nice => 100.0,
-            ProcessColumn::Cgroup => 260.0,
-            ProcessColumn::CommandLine => 320.0,
-        }
+/// A rate in bytes per second: `1.2 MB/s`.
+pub(crate) fn rate(value: f64) -> String {
+    format!("{}/s", bytes(value))
+}
+
+/// A round top for a chart of bytes or bytes per second, in the binary
+/// units [`bytes`] writes, so the axis reads `2 MB/s` rather than `1.9`.
+pub(crate) fn byte_axis(peak: f64, floor: f64) -> f64 {
+    let peak = peak.max(floor);
+    let mut unit = 1.0_f64;
+    while peak / unit >= 1024.0 && unit < 1024f64.powi(5) {
+        unit *= 1024.0;
     }
+    better_ui::fluent::chart::nice_maximum(peak / unit, 1.0) * unit
+}
 
-    pub(crate) fn header_of(column: ProcessColumn, c: &'static Copy) -> &'static str {
-        match column {
-            ProcessColumn::Name => c.column_name,
-            ProcessColumn::Pid => c.column_pid,
-            ProcessColumn::ParentPid => c.column_parent_pid,
-            ProcessColumn::User => c.column_user,
-            ProcessColumn::State => c.column_state,
-            ProcessColumn::CpuUtilization => c.column_cpu,
-            ProcessColumn::CpuTime => c.column_cpu_time,
-            ProcessColumn::Memory => c.column_memory,
-            ProcessColumn::Swap => c.column_swap,
-            ProcessColumn::ReadRate => c.column_read,
-            ProcessColumn::WriteRate => c.column_write,
-            ProcessColumn::Threads => c.column_threads,
-            ProcessColumn::FileDescriptors => c.column_descriptors,
-            ProcessColumn::StartTime => c.column_start_time,
-            ProcessColumn::Nice => c.column_nice,
-            ProcessColumn::Cgroup => c.column_cgroup,
-            ProcessColumn::CommandLine => c.column_command_line,
-        }
+/// A fraction of `0.0..=1.0` as a percentage with one decimal below ten,
+/// the way Task Manager writes a process's processor share.
+pub(crate) fn share(value: f64) -> String {
+    let percent = (value * 100.0).max(0.0);
+    if percent < 10.0 {
+        format!("{percent:.1}%")
+    } else {
+        format!("{percent:.0}%")
     }
 }
 
@@ -90,343 +68,405 @@ pub(crate) fn non_value_label(reason: &NonValue, c: &'static Copy) -> &'static s
     }
 }
 
-/// Draw one reading.
+/// One reading as a table cell.
 ///
 /// A measured value is plain text. A stale one carries its age. A missing one
-/// is the reason, in muted italics, with the detail on hover — visually and
-/// semantically distinct from a zero, which is what the specification asks
-/// for.
-pub(crate) fn cell_element(rendered: Cell, c: &'static Copy, cx: &App) -> AnyElement {
+/// is a dash in the secondary tone with the reason on hover, which is
+/// visibly and semantically different from a zero.
+pub(crate) fn reading(rendered: Cell, c: &'static Copy) -> TableCell {
     match rendered {
-        Cell::Value(text) => div().truncate().child(text).into_any_element(),
-        Cell::Stale { text, age_seconds } => div()
-            .truncate()
-            .text_color(cx.theme().warning_foreground)
-            .child(format!("{text} · {age_seconds}s {}", c.stale_suffix))
-            .into_any_element(),
+        Cell::Value(text) => TableCell::new(text),
+        Cell::Stale { text, age_seconds } => {
+            TableCell::new(format!("{text} ({age_seconds} {})", c.seconds_old))
+                .tone(CellTone::Caution)
+        }
+        // A dash keeps a narrow column readable; the reason is one pointer
+        // rest away, and the properties sheet writes it out in full.
         Cell::Missing(reason) => {
             let label = non_value_label(&reason, c);
-            div()
-                .truncate()
-                .italic()
-                .text_color(cx.theme().muted_foreground)
-                .child(format!("— {label}"))
-                .into_any_element()
+            let why = match reason.detail() {
+                Some(detail) if !detail.is_empty() => format!("{label}: {detail}"),
+                _ => label.to_string(),
+            };
+            TableCell::new("—").tone(CellTone::Secondary).tooltip(why)
         }
     }
 }
 
-/// Render one process column.
+/// A name cell, carrying its full text on hover when it is long enough to
+/// be cut off in a narrow window.
+pub(crate) fn named(name: String) -> TableCell {
+    if name.chars().count() > 20 {
+        TableCell::new(name.clone()).tooltip(name)
+    } else {
+        TableCell::new(name)
+    }
+}
+
+/// The columns the Details table shows, in order. The command line is
+/// private and only appears once the person has turned it on.
+pub(crate) fn detail_columns(show_command_line: bool) -> Vec<ProcessColumn> {
+    let mut columns = vec![
+        ProcessColumn::Name,
+        ProcessColumn::Pid,
+        ProcessColumn::State,
+        ProcessColumn::User,
+        ProcessColumn::CpuUtilization,
+        ProcessColumn::Memory,
+        ProcessColumn::ReadRate,
+        ProcessColumn::WriteRate,
+    ];
+    if show_command_line {
+        columns.push(ProcessColumn::CommandLine);
+    }
+    columns
+}
+
+/// A column's fixed width, or `None` for the columns that share what is left.
+pub(crate) fn detail_width(column: ProcessColumn) -> Option<f32> {
+    match column {
+        ProcessColumn::Name | ProcessColumn::CommandLine => None,
+        ProcessColumn::Pid => Some(80.0),
+        ProcessColumn::State => Some(128.0),
+        ProcessColumn::User => Some(112.0),
+        ProcessColumn::CpuUtilization => Some(72.0),
+        ProcessColumn::Memory => Some(96.0),
+        ProcessColumn::ReadRate | ProcessColumn::WriteRate => Some(96.0),
+        _ => Some(110.0),
+    }
+}
+
+/// Whether a column holds numbers, which read best aligned to the end.
+pub(crate) fn numeric(column: ProcessColumn) -> bool {
+    matches!(
+        column,
+        ProcessColumn::Pid
+            | ProcessColumn::CpuUtilization
+            | ProcessColumn::Memory
+            | ProcessColumn::ReadRate
+            | ProcessColumn::WriteRate
+            | ProcessColumn::Swap
+            | ProcessColumn::Threads
+            | ProcessColumn::FileDescriptors
+    )
+}
+
+pub(crate) fn column_title(column: ProcessColumn, c: &'static Copy) -> &'static str {
+    match column {
+        ProcessColumn::Name => c.column_name,
+        ProcessColumn::Pid => c.column_pid,
+        ProcessColumn::ParentPid => c.column_parent_pid,
+        ProcessColumn::User => c.column_user,
+        ProcessColumn::State => c.column_state,
+        ProcessColumn::CpuUtilization => c.column_cpu,
+        ProcessColumn::CpuTime => c.column_cpu_time,
+        ProcessColumn::Memory => c.column_memory,
+        ProcessColumn::Swap => c.column_swap,
+        ProcessColumn::ReadRate => c.column_read,
+        ProcessColumn::WriteRate => c.column_write,
+        ProcessColumn::Threads => c.column_threads,
+        ProcessColumn::FileDescriptors => c.column_descriptors,
+        ProcessColumn::StartTime => c.column_running_for,
+        ProcessColumn::Nice => c.column_nice,
+        ProcessColumn::Cgroup => c.column_cgroup,
+        ProcessColumn::CommandLine => c.column_command_line,
+    }
+}
+
+/// One process column as a cell.
+///
+/// `processors` is the number of logical processors: a process's processor
+/// time is shown as a share of the whole machine, as Task Manager shows it,
+/// so the column adds up to the Processor page rather than to 2,400%.
 pub(crate) fn process_cell(
     process: &ProcessFacts,
     column: ProcessColumn,
-    c: &'static Copy,
-    cx: &App,
-) -> AnyElement {
+    locale: Locale,
+    processors: Option<f64>,
+) -> TableCell {
+    let c = crate::i18n::copy(locale);
     match column {
-        ProcessColumn::Name => cell_element(Cell::Value(process.display_name()), c, cx),
-        ProcessColumn::Pid => cell_element(Cell::Value(process.pid.to_string()), c, cx),
-        ProcessColumn::ParentPid => {
-            cell_element(cell(&process.parent_pid, |value| count(*value)), c, cx)
+        ProcessColumn::Name => named(process.display_name()),
+        ProcessColumn::Pid => TableCell::new(process.pid.to_string()),
+        ProcessColumn::ParentPid => reading(cell(&process.parent_pid, |v| v.to_string()), c),
+        ProcessColumn::User => reading(cell(&process.user, |v| v.clone()), c),
+        ProcessColumn::State => match process.state.any_value() {
+            Some(raw) => {
+                let (label, explanation) = process_state(raw, locale);
+                TableCell::new(label).tooltip(explanation)
+            }
+            None => reading(cell(&process.state, |v| v.clone()), c),
+        },
+        ProcessColumn::CpuUtilization => match processors {
+            Some(count) => reading(cell(&process.cpu_utilization, |v| share(*v / count)), c),
+            None => counting_processors(c),
+        },
+        ProcessColumn::CpuTime => reading(
+            cell(&process.cpu_time_total, |v| {
+                words::duration(locale.words(), *v as u64)
+            }),
+            c,
+        ),
+        ProcessColumn::Memory => reading(cell(&process.memory_resident, |v| bytes(*v as f64)), c),
+        ProcessColumn::Swap => reading(cell(&process.memory_swap, |v| bytes(*v as f64)), c),
+        ProcessColumn::ReadRate => reading(cell(&process.read_rate, |v| rate(*v)), c),
+        ProcessColumn::WriteRate => reading(cell(&process.write_rate, |v| rate(*v)), c),
+        ProcessColumn::Threads => reading(cell(&process.threads, |v| v.to_string()), c),
+        ProcessColumn::FileDescriptors => {
+            reading(cell(&process.file_descriptors, |v| v.to_string()), c)
         }
-        ProcessColumn::User => cell_element(cell(&process.user, |value| value.clone()), c, cx),
-        ProcessColumn::State => cell_element(cell(&process.state, |value| value.clone()), c, cx),
-        ProcessColumn::CpuUtilization => cell_element(
-            cell(&process.cpu_utilization, |value| ratio_percent(*value)),
+        ProcessColumn::StartTime => reading(
+            cell(&process.runtime, |v| {
+                words::duration(locale.words(), *v as u64)
+            }),
             c,
-            cx,
         ),
-        ProcessColumn::CpuTime => cell_element(
-            cell(&process.cpu_time_total, |value| duration(*value)),
-            c,
-            cx,
-        ),
-        ProcessColumn::Memory => cell_element(
-            cell(&process.memory_resident, |value| bytes(*value as f64)),
-            c,
-            cx,
-        ),
-        ProcessColumn::Swap => cell_element(
-            cell(&process.memory_swap, |value| bytes(*value as f64)),
-            c,
-            cx,
-        ),
-        ProcessColumn::ReadRate => cell_element(
-            cell(&process.read_rate, |value| bytes_per_second(*value)),
-            c,
-            cx,
-        ),
-        ProcessColumn::WriteRate => cell_element(
-            cell(&process.write_rate, |value| bytes_per_second(*value)),
-            c,
-            cx,
-        ),
-        ProcessColumn::Threads => {
-            cell_element(cell(&process.threads, |value| count(*value)), c, cx)
-        }
-        ProcessColumn::FileDescriptors => cell_element(
-            cell(&process.file_descriptors, |value| count(*value)),
-            c,
-            cx,
-        ),
-        ProcessColumn::StartTime => {
-            cell_element(cell(&process.runtime, |value| duration(*value)), c, cx)
-        }
-        ProcessColumn::Nice => cell_element(cell(&process.nice, |value| value.to_string()), c, cx),
-        ProcessColumn::Cgroup => cell_element(cell(&process.cgroup, |value| value.clone()), c, cx),
-        ProcessColumn::CommandLine => {
-            cell_element(cell(&process.command_line, |value| value.clone()), c, cx)
-        }
+        ProcessColumn::Nice => reading(cell(&process.nice, |v| v.to_string()), c),
+        ProcessColumn::Cgroup => reading(cell(&process.cgroup, |v| v.clone()), c),
+        ProcessColumn::CommandLine => reading(cell(&process.command_line, |v| v.clone()), c),
     }
 }
 
-/// The Processes table.
-pub(crate) struct ProcessTableDelegate {
-    pub(crate) model: ProcessTableModel,
-    pub(crate) locale: Locale,
-    columns: Vec<Column>,
-    visible_columns: Vec<ProcessColumn>,
-}
-
-impl ProcessTableDelegate {
-    pub(crate) fn new(locale: Locale) -> Self {
-        let mut delegate = Self {
-            model: ProcessTableModel::new(Vec::new()),
-            locale,
-            columns: Vec::new(),
-            visible_columns: Vec::new(),
-        };
-        delegate.rebuild_columns();
-        delegate
-    }
-
-    /// Rebuild the column definitions, which changes when the language or the
-    /// command-line privacy setting changes.
-    pub(crate) fn rebuild_columns(&mut self) {
-        let c = copy(self.locale);
-        let (sorted, direction) = self.model.sort();
-        self.visible_columns = self.model.columns();
-        self.columns = self
-            .visible_columns
-            .iter()
-            .map(|column| {
-                let width = ProcessColumnLayout::width_of(*column);
-                let definition =
-                    Column::new(column.key(), ProcessColumnLayout::header_of(*column, c))
-                        .width(width)
-                        .min_width(72.0)
-                        .sortable();
-                if *column == sorted {
-                    definition.sort(match direction {
-                        SortDirection::Ascending => ColumnSort::Ascending,
-                        SortDirection::Descending => ColumnSort::Descending,
-                    })
-                } else {
-                    definition
-                }
-            })
-            .collect();
-    }
-
-    pub(crate) fn process_at(&self, row: usize) -> Option<&ProcessFacts> {
-        self.model.process_at(row)
-    }
-}
-
-impl TableDelegate for ProcessTableDelegate {
-    fn columns_count(&self, _: &App) -> usize {
-        self.columns.len()
-    }
-
-    fn rows_count(&self, _: &App) -> usize {
-        self.model.visible_rows().len()
-    }
-
-    fn column(&self, col_ix: usize, _: &App) -> Column {
-        self.columns[col_ix].clone()
-    }
-
-    fn perform_sort(
-        &mut self,
-        col_ix: usize,
-        sort: ColumnSort,
-        _: &mut Window,
-        _: &mut Context<TableState<Self>>,
-    ) {
-        let Some(column) = self.visible_columns.get(col_ix).copied() else {
-            return;
-        };
-        let direction = match sort {
-            ColumnSort::Ascending => SortDirection::Ascending,
-            _ => SortDirection::Descending,
-        };
-        self.model.set_sort(column, direction);
-        self.rebuild_columns();
-    }
-
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let c = copy(self.locale);
-        let Some(row) = self.model.visible_rows().get(row_ix).copied() else {
-            return div().into_any_element();
-        };
-        let Some(process) = self.model.row(row.index) else {
-            return div().into_any_element();
-        };
-        let Some(column) = self.visible_columns.get(col_ix).copied() else {
-            return div().into_any_element();
-        };
-        // Tree depth is drawn as indentation on the name column only, so the
-        // numeric columns stay aligned and comparable down the table.
-        let indent = if column == ProcessColumn::Name {
-            row.depth as f32 * 14.0
-        } else {
-            0.0
-        };
-        h_flex()
-            .min_w_0()
-            .w_full()
-            .items_center()
-            .gap_1()
-            .pl(px(indent))
-            .when(
-                column == ProcessColumn::Name && row.has_children,
-                |element| {
-                    element.child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("▾"),
-                    )
-                },
-            )
-            .child(process_cell(process, column, c, cx))
-            .into_any_element()
-    }
-}
-
-/// One line of the Apps table: either an application, or one of its processes.
+/// Which column the Processes page is sorted by.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AppsRow {
-    /// A section heading: applications, then background services.
-    Section { services: bool },
-    /// Index into the applications or services list.
+pub(crate) enum AppColumn {
+    Name,
+    Cpu,
+    Memory,
+    Disk,
+}
+
+impl AppColumn {
+    pub(crate) const ALL: [AppColumn; 4] = [
+        AppColumn::Name,
+        AppColumn::Cpu,
+        AppColumn::Memory,
+        AppColumn::Disk,
+    ];
+}
+
+/// What is selected on the Processes page: an application, or one of its
+/// processes. A group is named by its key, which survives a refresh.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AppSelection {
+    Group(String),
+    Process(u32),
+}
+
+/// One line of the Processes table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AppLine {
+    /// A heading: apps, then background processes.
+    Section { services: bool, count: usize },
+    /// An application, by its index in the model's list.
     Group { services: bool, index: usize },
-    /// A member process, by its index in the model's process list.
+    /// One of an expanded application's processes, by its index in the
+    /// model's process list.
     Member { process: usize },
 }
 
-/// The Apps table, flattened so the same virtualized table can draw group rows
-/// and the member rows of an expanded group.
-pub(crate) struct AppsTableDelegate {
-    pub(crate) model: AppsModel,
-    pub(crate) locale: Locale,
-    rows: Vec<AppsRow>,
-    columns: Vec<Column>,
+fn disk(row: &AppRow) -> Aggregate {
+    Aggregate {
+        total: row.read_rate.total + row.write_rate.total,
+        counted: row.read_rate.counted.min(row.write_rate.counted),
+        missing: row.read_rate.missing.max(row.write_rate.missing),
+    }
 }
 
-impl AppsTableDelegate {
-    pub(crate) fn new(locale: Locale, model: AppsModel) -> Self {
-        let mut delegate = Self {
-            model,
-            locale,
-            rows: Vec::new(),
-            columns: Vec::new(),
-        };
-        delegate.rebuild();
-        delegate
-    }
-
-    pub(crate) fn rebuild(&mut self) {
-        let c = copy(self.locale);
-        self.columns = vec![
-            Column::new("name", c.applications)
-                .width(280.0)
-                .min_width(140.0),
-            Column::new("count", c.process_count).width(110.0),
-            Column::new("cpu", c.column_cpu).width(130.0),
-            Column::new("memory", c.column_memory).width(140.0),
-            Column::new("read", c.column_read).width(130.0),
-            Column::new("write", c.column_write).width(130.0),
-            Column::new("evidence", c.grouped_because).width(320.0),
-        ];
-
-        let mut rows = Vec::new();
-        for services in [false, true] {
-            let groups = if services {
-                self.model.services()
-            } else {
-                self.model.applications()
-            };
-            if groups.is_empty() {
-                continue;
-            }
-            rows.push(AppsRow::Section { services });
-            for (index, row) in groups.iter().enumerate() {
-                rows.push(AppsRow::Group { services, index });
-                if self.model.is_expanded(&row.group.key) {
-                    rows.extend(
-                        row.member_indices
-                            .iter()
-                            .map(|process| AppsRow::Member { process: *process }),
-                    );
-                }
-            }
+/// Order two aggregates, with "nothing measured" last in either direction.
+fn by_total(a: &Aggregate, b: &Aggregate, ascending: bool) -> Ordering {
+    match (a.is_unavailable(), b.is_unavailable()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => {
+            let order = a.total.partial_cmp(&b.total).unwrap_or(Ordering::Equal);
+            if ascending { order } else { order.reverse() }
         }
-        self.rows = rows;
     }
+}
 
-    pub(crate) fn row_at(&self, row: usize) -> Option<AppsRow> {
-        self.rows.get(row).copied()
-    }
+/// The order of one section's applications under a sort.
+pub(crate) fn app_order(rows: &[AppRow], column: AppColumn, ascending: bool) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    order.sort_by(|&x, &y| {
+        let (a, b) = (&rows[x], &rows[y]);
+        match column {
+            AppColumn::Name => {
+                let order = a
+                    .group
+                    .display_name
+                    .to_lowercase()
+                    .cmp(&b.group.display_name.to_lowercase());
+                if ascending { order } else { order.reverse() }
+            }
+            AppColumn::Cpu => by_total(&a.cpu_utilization, &b.cpu_utilization, ascending),
+            AppColumn::Memory => by_total(&a.memory_resident, &b.memory_resident, ascending),
+            AppColumn::Disk => by_total(&disk(a), &disk(b), ascending),
+        }
+        .then_with(|| a.group.key.cmp(&b.group.key))
+    });
+    order
+}
 
-    pub(crate) fn app_row(&self, services: bool, index: usize) -> Option<&AppRow> {
-        if services {
-            self.model.services().get(index)
+/// Every line of the Processes table: a heading, then each application in
+/// order, with an expanded one's processes under it.
+pub(crate) fn app_lines(model: &AppsModel, column: AppColumn, ascending: bool) -> Vec<AppLine> {
+    let mut lines = Vec::new();
+    for services in [false, true] {
+        let rows = if services {
+            model.services()
         } else {
-            self.model.applications().get(index)
+            model.applications()
+        };
+        if rows.is_empty() {
+            continue;
         }
+        lines.push(AppLine::Section {
+            services,
+            count: rows.len(),
+        });
+        for index in app_order(rows, column, ascending) {
+            lines.push(AppLine::Group { services, index });
+            if rows[index].process_count() > 1 && model.is_expanded(&rows[index].group.key) {
+                lines.extend(
+                    rows[index]
+                        .member_indices
+                        .iter()
+                        .map(|process| AppLine::Member { process: *process }),
+                );
+            }
+        }
+    }
+    lines
+}
+
+pub(crate) fn app_row(model: &AppsModel, services: bool, index: usize) -> Option<&AppRow> {
+    if services {
+        model.services().get(index)
+    } else {
+        model.applications().get(index)
     }
 }
 
-/// An aggregate as a cell: a complete total, an explicit floor when some
-/// members did not report, or the fact that nothing was measured at all.
-pub(crate) fn aggregate_cell(
+/// An aggregate as a cell: a complete total, a floor marked as one when some
+/// processes did not report, or the fact that nothing was measured.
+pub(crate) fn aggregate(
     value: &Aggregate,
     c: &'static Copy,
     render: impl Fn(f64) -> String,
-    cx: &App,
-) -> AnyElement {
+) -> TableCell {
     if value.is_unavailable() {
-        return cell_element(Cell::Missing(NonValue::NotCollected), c, cx);
+        return reading(Cell::Missing(NonValue::NotCollected), c);
     }
     let text = render(value.total);
     if value.is_partial() {
-        // A floor, not a total: some members did not report, and the row says
-        // how many rather than presenting the partial sum as the answer.
-        div()
-            .truncate()
-            .text_color(cx.theme().warning_foreground)
-            .child(format!(
-                "{} {text} ({}/{})",
-                c.partial_total,
-                value.counted,
-                value.counted + value.missing
-            ))
-            .into_any_element()
+        TableCell::new(format!("≥ {text}")).tooltip(format!(
+            "{} {}/{}",
+            c.partial_total,
+            value.counted,
+            value.counted + value.missing
+        ))
     } else {
-        div().truncate().child(text).into_any_element()
+        TableCell::new(text)
     }
 }
 
-/// The sentence that explains a group.
-pub(crate) fn evidence_label(evidence: &GroupingEvidence, c: &'static Copy) -> &'static str {
-    match evidence {
+/// A share of the whole machine cannot be worked out before the processor
+/// count is known; until then the cell says it is still measuring.
+pub(crate) fn counting_processors(c: &'static Copy) -> TableCell {
+    TableCell::new("—")
+        .tone(CellTone::Secondary)
+        .tooltip(c.not_yet_sampled)
+}
+
+/// An application's processor time as a share of every logical processor,
+/// Task Manager's rule: 100% is the whole machine.
+pub(crate) fn cpu_aggregate(
+    value: &Aggregate,
+    c: &'static Copy,
+    processors: Option<f64>,
+) -> TableCell {
+    match processors {
+        Some(count) => aggregate(value, c, |v| share(v / count)),
+        None => counting_processors(c),
+    }
+}
+
+/// The cells of one Processes line, in the order of [`AppColumn::ALL`].
+pub(crate) fn app_cells(
+    model: &AppsModel,
+    line: AppLine,
+    locale: Locale,
+    processors: Option<f64>,
+) -> Vec<TableCell> {
+    let c = crate::i18n::copy(locale);
+    match line {
+        AppLine::Section { services, count } => vec![
+            TableCell::new(format!(
+                "{} ({count})",
+                if services {
+                    c.background_processes
+                } else {
+                    c.apps_section
+                }
+            ))
+            .strong()
+            .tone(CellTone::Secondary),
+            TableCell::default(),
+            TableCell::default(),
+            TableCell::default(),
+        ],
+        AppLine::Group { services, index } => {
+            let Some(row) = app_row(model, services, index) else {
+                return vec![TableCell::default(); 4];
+            };
+            let count = row.process_count();
+            let mut name = if count > 1 {
+                TableCell::new(format!("{} ({count})", row.group.display_name))
+                    .expander(model.is_expanded(&row.group.key))
+            } else {
+                TableCell::new(row.group.display_name.clone()).indent(1)
+            };
+            name = name.tooltip(format!(
+                "{}\n{}",
+                row.group.display_name,
+                grouping_sentence(&row.group.evidence, row.group.confidence(), c)
+            ));
+            vec![
+                name,
+                cpu_aggregate(&row.cpu_utilization, c, processors),
+                aggregate(&row.memory_resident, c, bytes),
+                aggregate(&disk(row), c, rate),
+            ]
+        }
+        AppLine::Member { process } => {
+            let Some(member) = model.process(process) else {
+                return vec![TableCell::default(); 4];
+            };
+            let disk = match (member.read_rate.value(), member.write_rate.value()) {
+                (Some(read), Some(write)) => TableCell::new(rate(read + write)),
+                _ => reading(cell(&member.read_rate, |v| rate(*v)), c),
+            };
+            vec![
+                named(member.display_name())
+                    .indent(2)
+                    .tone(CellTone::Primary),
+                process_cell(member, ProcessColumn::CpuUtilization, locale, processors),
+                process_cell(member, ProcessColumn::Memory, locale, processors),
+                disk,
+            ]
+        }
+    }
+}
+
+/// The sentence that says why processes were put together.
+pub(crate) fn grouping_sentence(
+    evidence: &GroupingEvidence,
+    confidence: Confidence,
+    c: &'static Copy,
+) -> String {
+    let because = match evidence {
         GroupingEvidence::SystemdUnit { .. } => c.evidence_systemd_unit,
         GroupingEvidence::Flatpak { .. } => c.evidence_flatpak,
         GroupingEvidence::Snap { .. } => c.evidence_snap,
@@ -434,142 +474,44 @@ pub(crate) fn evidence_label(evidence: &GroupingEvidence, c: &'static Copy) -> &
         GroupingEvidence::Ancestry { .. } => c.evidence_ancestry,
         GroupingEvidence::ExecutableIdentity { .. } => c.evidence_executable,
         GroupingEvidence::Unattributed { .. } => c.evidence_unattributed,
-    }
-}
-
-pub(crate) fn confidence_label(confidence: Confidence, c: &'static Copy) -> &'static str {
-    match confidence {
+    };
+    let sure = match confidence {
         Confidence::High => c.confidence_high,
         Confidence::Medium => c.confidence_medium,
         Confidence::Low => c.confidence_low,
-    }
+    };
+    format!("{because} {sure}")
 }
 
-impl TableDelegate for AppsTableDelegate {
-    fn columns_count(&self, _: &App) -> usize {
-        self.columns.len()
-    }
+/// Whether ending is offered: only with something selected, and never while
+/// the list is paused, because a frozen list can name a process that has
+/// closed and whose PID now belongs to another.
+pub(crate) fn end_offered(list_paused: bool, has_target: bool) -> bool {
+    has_target && !list_paused
+}
 
-    fn rows_count(&self, _: &App) -> usize {
-        self.rows.len()
-    }
-
-    fn column(&self, col_ix: usize, _: &App) -> Column {
-        self.columns[col_ix].clone()
-    }
-
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let c = copy(self.locale);
-        let Some(row) = self.rows.get(row_ix).copied() else {
-            return div().into_any_element();
-        };
-        match row {
-            AppsRow::Section { services } => {
-                if col_ix != 0 {
-                    return div().into_any_element();
-                }
-                div()
-                    .font_semibold()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(if services {
-                        c.background_services
-                    } else {
-                        c.applications
-                    })
-                    .into_any_element()
-            }
-            AppsRow::Group { services, index } => {
-                let Some(app) = self.app_row(services, index) else {
-                    return div().into_any_element();
-                };
-                let expanded = self.model.is_expanded(&app.group.key);
-                match col_ix {
-                    0 => h_flex()
-                        .min_w_0()
-                        .gap_1()
-                        .items_center()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(if expanded { "▾" } else { "▸" }),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .font_semibold()
-                                .child(app.group.display_name.clone()),
-                        )
-                        .into_any_element(),
-                    1 => div()
-                        .child(format!("{} {}", app.process_count(), c.process_count))
-                        .into_any_element(),
-                    2 => aggregate_cell(&app.cpu_utilization, c, ratio_percent, cx),
-                    3 => aggregate_cell(&app.memory_resident, c, bytes, cx),
-                    4 => aggregate_cell(&app.read_rate, c, bytes_per_second, cx),
-                    5 => aggregate_cell(&app.write_rate, c, bytes_per_second, cx),
-                    6 => v_flex()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .truncate()
-                                .text_xs()
-                                .child(evidence_label(&app.group.evidence, c)),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(confidence_label(app.group.confidence(), c)),
-                        )
-                        .into_any_element(),
-                    _ => div().into_any_element(),
-                }
-            }
-            AppsRow::Member { process } => {
-                let Some(member) = self.model.process(process) else {
-                    return div().into_any_element();
-                };
-                match col_ix {
-                    0 => div()
-                        .pl(px(28.0))
-                        .truncate()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(format!("{} · {}", member.display_name(), member.pid))
-                        .into_any_element(),
-                    2 => process_cell(member, ProcessColumn::CpuUtilization, c, cx),
-                    3 => process_cell(member, ProcessColumn::Memory, c, cx),
-                    4 => process_cell(member, ProcessColumn::ReadRate, c, cx),
-                    5 => process_cell(member, ProcessColumn::WriteRate, c, cx),
-                    6 => {
-                        let evidence = self
-                            .model
-                            .grouping()
-                            .group_of(member.pid)
-                            .and_then(|group| {
-                                group
-                                    .members
-                                    .iter()
-                                    .find(|entry| entry.pid == member.pid)
-                                    .map(|entry| evidence_label(&entry.evidence, c))
-                            })
-                            .unwrap_or(c.evidence_unattributed);
-                        div()
-                            .truncate()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(evidence)
-                            .into_any_element()
-                    }
-                    _ => div().into_any_element(),
-                }
-            }
+/// A process and everything under it, children before their parents, so a
+/// tree is ended from the leaves up and nothing is re-parented to the init
+/// process halfway through.
+pub(crate) fn tree_of(pid: u32, processes: &[ProcessFacts]) -> Vec<u32> {
+    let mut order = Vec::new();
+    let mut stack = vec![(pid, false)];
+    let mut seen = std::collections::HashSet::new();
+    while let Some((current, children_done)) = stack.pop() {
+        if children_done {
+            order.push(current);
+            continue;
+        }
+        if !seen.insert(current) {
+            continue;
+        }
+        stack.push((current, true));
+        for child in processes
+            .iter()
+            .filter(|process| process.parent() == Some(current) && process.pid != current)
+        {
+            stack.push((child.pid, false));
         }
     }
+    order
 }

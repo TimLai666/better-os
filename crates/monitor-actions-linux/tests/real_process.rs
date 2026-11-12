@@ -63,10 +63,17 @@ fn wait_for_state(pid: u32, expected: char) -> char {
     last
 }
 
+/// The target as the window would build it: owner, start time, and nice
+/// value read back from `/proc`, so the controller's identity check passes for
+/// the real child and for nothing else.
 fn target(controller: &LinuxProcessController, pid: u32) -> ProcessTarget {
-    ProcessTarget::new(pid, "sleep")
-        .owned_by(controller.current_uid().expect("a uid"))
-        .with_nice(controller.read_nice(pid).unwrap_or(0))
+    let target = controller.target_for(pid).expect("the child is readable");
+    assert_eq!(target.owner_uid, controller.current_uid());
+    assert!(
+        target.start_token.is_some(),
+        "the start time is the identity"
+    );
+    target
 }
 
 #[test]
