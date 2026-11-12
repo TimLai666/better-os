@@ -87,6 +87,14 @@ impl DialogButtons {
             _ => None,
         }
     }
+
+    /// [`DialogButtons::key`] when the primary button may be disabled
+    /// (`IsPrimaryButtonEnabled="False"`): Enter does not press a button
+    /// that cannot be pressed.
+    pub fn key_with(&self, key: Key, primary_enabled: bool) -> Option<DialogResult> {
+        self.key(key)
+            .filter(|result| primary_enabled || *result != DialogResult::Primary)
+    }
 }
 
 /// A content dialog over a smoke layer that covers the window. Draw it as
@@ -101,6 +109,7 @@ pub struct ContentDialog {
     on_result: Option<ValueHandler<DialogResult>>,
     /// Draw in the page, without the smoke layer, for the gallery.
     inline: bool,
+    primary_enabled: bool,
 }
 
 impl ContentDialog {
@@ -112,7 +121,15 @@ impl ContentDialog {
             buttons: DialogButtons::default(),
             on_result: None,
             inline: false,
+            primary_enabled: true,
         }
+    }
+
+    /// Disables the primary button, as `IsPrimaryButtonEnabled` does: drawn
+    /// disabled, not clicked, not pressed by Enter.
+    pub fn primary_enabled(mut self, enabled: bool) -> Self {
+        self.primary_enabled = enabled;
+        self
     }
 
     pub fn buttons(mut self, buttons: DialogButtons) -> Self {
@@ -146,6 +163,7 @@ impl RenderOnce for ContentDialog {
         let focus = super::keyed_focus(super::child_id(&self.id, "trap"), window, cx);
         let buttons = self.buttons.clone();
         let on_result = self.on_result.clone();
+        let primary_enabled = self.primary_enabled;
 
         let mut row = div()
             .flex()
@@ -166,6 +184,7 @@ impl RenderOnce for ContentDialog {
                     Button::new(ElementId::named_usize("dialog-button", index), kind)
                         .label(label)
                         .full_width()
+                        .disabled(result == DialogResult::Primary && !self.primary_enabled)
                         .on_click(move |window, cx| {
                             if let Some(handler) = handler.as_ref() {
                                 handler(result, window, cx);
@@ -195,8 +214,8 @@ impl RenderOnce for ContentDialog {
             .overflow_hidden()
             .track_focus(&focus)
             .on_key_down(move |event, window, cx| {
-                if let Some(result) =
-                    Key::from_keystroke(&event.keystroke).and_then(|key| buttons.key(key))
+                if let Some(result) = Key::from_keystroke(&event.keystroke)
+                    .and_then(|key| buttons.key_with(key, primary_enabled))
                 {
                     cx.stop_propagation();
                     if let Some(handler) = on_result.as_ref() {
@@ -291,6 +310,7 @@ impl RenderOnce for Flyout {
         let dismiss_key = self.on_dismiss.clone();
         let dismiss_out = self.on_dismiss.clone();
         let panel = panel_frame(div().id(self.id.clone()), p)
+            .occlude()
             .pt(px(15.0))
             .pb(px(17.0))
             .px(spacing::LG)

@@ -12,39 +12,93 @@
 //!
 //! With no path it opens against a placeholder target so the surface can be
 //! launched in a headless smoke test with nothing else installed.
+//!
+//! The window takes the appearance stored for it
+//! (`$XDG_CONFIG_HOME/better-os/app-chooser/appearance`: dark, light, or
+//! system), dark when none is stored, as ADR 0004 sets for every window.
 
 use app_chooser_gui::cli::{parse_arguments, target_from};
 use app_chooser_gui::{
-    AppChooser, ChooserEvent, ChooserMode, Locale, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
+    AppChooser, ChooserEvent, ChooserMode, DIALOG_WIDTH, Locale, MIN_WINDOW_HEIGHT,
+    MIN_WINDOW_WIDTH, dialog_height,
 };
+use better_ui::fluent::chrome::TitleBar;
+use better_ui::fluent::palette;
+use better_ui::fluent::theme::Appearance;
 use gpui::*;
-use gpui_component::{ActiveTheme, Icon, IconName, Root, Sizable as _, Theme, ThemeMode, v_flex};
+use gpui_component::{Icon, IconName, Root};
 use gpui_component_assets::Assets;
 
-/// The standalone window around the reusable chooser.
+/// The standalone window around the reusable chooser: a dialog window,
+/// sized to what the dialog holds.
 ///
 /// The titlebar lives here rather than in `AppChooser` itself, because the same
-/// surface is also drawn inside Better Files as an overlay — and an overlay
-/// with a window titlebar in the middle of another window would be wrong.
+/// surface is also drawn inside Better Files — and a window titlebar in the
+/// middle of another window would be wrong. It is a dialog's bar: the close
+/// button alone.
 struct StandaloneChooser {
     chooser: Entity<AppChooser>,
-    /// The window title says which of the two jobs this chooser was opened
-    /// for, in the same words the surface's own heading uses.
     title: &'static str,
+    _appearance: Option<Subscription>,
+    _observe: Subscription,
+}
+
+impl StandaloneChooser {
+    fn new(
+        chooser: Entity<AppChooser>,
+        title: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let appearance = Appearance::default_path("app-chooser")
+            .map(|path| Appearance::load(&path))
+            .unwrap_or_default();
+        let observe = cx.observe_in(&chooser, window, |_, chooser, window, cx| {
+            let chooser = chooser.read(cx);
+            // Asked again on every change, not only when the height moved:
+            // a compositor may ignore a request (a tiled window) and honour
+            // the same one later (once it floats).
+            // The program-picking mode holds a browser under the list and
+            // takes the dialog's full height.
+            let height = if chooser.mode() == ChooserMode::ChooseExecutable {
+                app_chooser_gui::MAX_DIALOG_HEIGHT
+            } else {
+                dialog_height(chooser.line_count(), true, chooser.has_notice())
+            };
+            {
+                // The window's own frame (its shadow, on a floating
+                // client-decorated window) sits outside the dialog.
+                let frame = gpui_component::window_paddings(window);
+                window.resize(size(
+                    px(DIALOG_WIDTH) + frame.left + frame.right,
+                    px(height) + frame.top + frame.bottom,
+                ));
+            }
+        });
+        Self {
+            chooser,
+            title,
+            _appearance: appearance.apply_and_follow(window, cx),
+            _observe: observe,
+        }
+    }
 }
 
 impl Render for StandaloneChooser {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Mutter gives an `xdg-toplevel` client no decorations, so this window
-        // draws its own or it cannot be closed, minimized, maximized or moved.
-        v_flex()
+        // draws its own or it cannot be closed or moved.
+        let p = palette(cx);
+        div()
             .size_full()
-            .bg(cx.theme().background)
-            .child(better_ui::window_chrome::title_bar(
-                Icon::new(IconName::SquareTerminal).small(),
-                self.title,
-                cx.theme().foreground,
-            ))
+            .flex()
+            .flex_col()
+            .bg(p.window_background)
+            .child(
+                TitleBar::new(self.title)
+                    .icon(Icon::new(IconName::ExternalLink).size(px(16.0)))
+                    .dialog(),
+            )
             .child(div().flex_1().min_h_0().child(self.chooser.clone()))
     }
 }
@@ -58,17 +112,18 @@ fn main() {
     app.run(move |cx| {
         gpui_component::init(cx);
 
+        // Two rows until the list is read; the window then fits the dialog.
         let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(720.0), px(760.0)), cx)),
+            window_bounds: Some(WindowBounds::centered(
+                size(px(DIALOG_WIDTH), px(dialog_height(2, true, false))),
+                cx,
+            )),
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
             ..better_ui::window_chrome::window_options("io.betteros.AppChooser")
         };
 
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
-                // Better OS is dark-first; gpui-component installs its light
-                // theme at init.
-                Theme::change(ThemeMode::Dark, Some(window), cx);
                 let chooser =
                     cx.new(|cx| AppChooser::new(target, mode, Locale::System, window, cx));
                 cx.subscribe(&chooser, |_, event: &ChooserEvent, cx| {
@@ -85,7 +140,7 @@ fn main() {
                     ChooserMode::OpenWith => c.open_with_title,
                     ChooserMode::ChooseExecutable => c.executable_title,
                 };
-                let root = cx.new(|_| StandaloneChooser { chooser, title });
+                let root = cx.new(|cx| StandaloneChooser::new(chooser, title, window, cx));
                 cx.new(|cx| Root::new(root, window, cx))
             })
             .expect("failed to open the Better App Chooser window");

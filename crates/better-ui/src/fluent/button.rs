@@ -134,6 +134,7 @@ pub struct Button {
     kind: ButtonKind,
     label: Option<SharedString>,
     icon: Option<Icon>,
+    trailing_icon: Option<Icon>,
     checked: Option<bool>,
     disabled: bool,
     shown: ShownState,
@@ -149,6 +150,7 @@ impl Button {
             kind,
             label: None,
             icon: None,
+            trailing_icon: None,
             checked: None,
             disabled: false,
             shown: ShownState::Live,
@@ -201,6 +203,12 @@ impl Button {
 
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+
+    /// A glyph after the label, as Windows 11 Start's "All apps ›" has.
+    pub fn trailing_icon(mut self, icon: impl Into<Icon>) -> Self {
+        self.trailing_icon = Some(icon.into());
         self
     }
 
@@ -266,6 +274,9 @@ impl RenderOnce for Button {
         }
         if let Some(label) = self.label {
             button = button.child(div().whitespace_nowrap().child(label));
+        }
+        if let Some(icon) = self.trailing_icon {
+            button = button.child(icon.size(px(12.0)));
         }
         if let Some(tooltip) = self.tooltip {
             button = button.tooltip(super::dialog::tooltip_builder(tooltip));

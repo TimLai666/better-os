@@ -1,5 +1,5 @@
-//! List rows with a selection fill and bar, and a details table with
-//! sortable column headers.
+//! List rows with a selection fill and bar, grid tiles, and a details table
+//! with sortable column headers.
 //!
 //! `ListViewItem_themeresources.xaml`: rows with 4px corners on a
 //! transparent fill, `SubtleFillColorSecondary` under the pointer and when
@@ -10,15 +10,26 @@
 //! Keyboard: the list is one tab stop; Up, Down, Home, and End move the
 //! selection and stop at the ends; Enter invokes the selected row. A sortable
 //! header sorts on Enter or Space, and a second press reverses the order.
+//!
+//! [`ListRow`] is one `ListViewItem` on its own, for a window whose list
+//! holds more than text — an application's own icon, a trailing button, a
+//! line that opens under the title — and whose keyboard model lives in the
+//! window. [`GridTile`] is one `GridViewItem` as the Windows 11 Start menu
+//! draws a pinned app: a 32px icon over a two-line Caption label, with a
+//! fill under the pointer and no frame. Tiles can be dragged to reorder
+//! them; [`move_item`] is the reordering rule.
 
 use std::cmp::Ordering;
 use std::rc::Rc;
 
 use gpui::{
-    App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce, Rgba,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, App, AppContext as _, Context, ElementId, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Pixels, Point, Render, RenderOnce, Rgba, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{Icon, IconName};
+
+use crate::AppIcon;
 
 use super::ValueHandler;
 use super::{
@@ -259,6 +270,461 @@ impl RenderOnce for ListView {
                     select(next, window, cx);
                 }
             })
+    }
+}
+
+/// What stands at the leading edge of a [`ListRow`].
+#[derive(Clone)]
+pub enum Leading {
+    /// A 16px glyph in secondary text, as [`ListView`] draws one.
+    Glyph(IconName),
+    /// An application's own icon, at the row's icon size.
+    App(AppIcon),
+}
+
+/// The size an application icon is drawn at in a row: 24px beside one line,
+/// 32px beside a second line of caption text, as File Explorer and Windows
+/// 11's Start search draw them.
+pub fn row_icon_size(two_line: bool) -> Pixels {
+    if two_line { px(32.0) } else { px(24.0) }
+}
+
+/// A handler told about a click, with the event (its click count).
+pub type ClickHandler = Rc<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App)>;
+
+/// A handler told where a secondary click happened, in window coordinates.
+pub type PointHandler = Rc<dyn Fn(Point<Pixels>, &mut Window, &mut App)>;
+
+/// The letter tile behind an application with no icon file: accent fill and
+/// text on accent, 4px corners.
+fn app_icon(icon: &AppIcon, size: Pixels, p: &Palette) -> AnyElement {
+    icon.element(size, p.text_on_accent.into(), p.accent.into(), radius::SM)
+}
+
+/// One `ListViewItem`: the selection fill and bar of [`ListView`], with an
+/// application icon or a glyph, an optional trailing element, and an
+/// optional block under the title that grows the row. The window keeps the
+/// list's keyboard model; `highlighted` draws the keyboard focus visual on
+/// the row the window's keyboard is on.
+#[derive(IntoElement)]
+pub struct ListRow {
+    id: ElementId,
+    title: SharedString,
+    caption: Option<SharedString>,
+    leading: Option<Leading>,
+    trailing: Option<AnyElement>,
+    detail: Option<AnyElement>,
+    selected: bool,
+    highlighted: bool,
+    disabled: bool,
+    shown: ShownState,
+    on_click: Option<ClickHandler>,
+    on_secondary: Option<PointHandler>,
+}
+
+impl ListRow {
+    pub fn new(id: impl Into<ElementId>, title: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+            caption: None,
+            leading: None,
+            trailing: None,
+            detail: None,
+            selected: false,
+            highlighted: false,
+            disabled: false,
+            shown: ShownState::Live,
+            on_click: None,
+            on_secondary: None,
+        }
+    }
+
+    pub fn caption(mut self, caption: impl Into<SharedString>) -> Self {
+        self.caption = Some(caption.into());
+        self
+    }
+
+    pub fn glyph(mut self, icon: IconName) -> Self {
+        self.leading = Some(Leading::Glyph(icon));
+        self
+    }
+
+    pub fn app_icon(mut self, icon: AppIcon) -> Self {
+        self.leading = Some(Leading::App(icon));
+        self
+    }
+
+    /// Something at the trailing edge, such as an icon button.
+    pub fn trailing(mut self, trailing: impl IntoElement) -> Self {
+        self.trailing = Some(trailing.into_any_element());
+        self
+    }
+
+    /// A block under the title and caption, inside the row.
+    pub fn detail(mut self, detail: impl IntoElement) -> Self {
+        self.detail = Some(detail.into_any_element());
+        self
+    }
+
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    /// Draws the keyboard focus visual: the row the window's keyboard is on.
+    pub fn highlighted(mut self, highlighted: bool) -> Self {
+        self.highlighted = highlighted;
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn shown(mut self, shown: ShownState) -> Self {
+        self.shown = shown;
+        self
+    }
+
+    pub fn on_click(
+        mut self,
+        handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_click = Some(Rc::new(handler));
+        self
+    }
+
+    /// A right click, with where it happened, for a context menu.
+    pub fn on_secondary(
+        mut self,
+        handler: impl Fn(Point<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_secondary = Some(Rc::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for ListRow {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let forced = super::resolve(self.disabled, self.shown);
+        let disabled = forced == Some(Interaction::Disabled);
+        let two_line = self.caption.is_some();
+        let fill = row_fill(self.selected, forced.unwrap_or(Interaction::Rest), p);
+        let hover = row_fill(self.selected, Interaction::PointerOver, p);
+        let pressed = row_fill(self.selected, Interaction::Pressed, p);
+        let (title_color, caption_color) = if disabled {
+            (p.text_disabled, p.text_disabled)
+        } else {
+            (p.text_primary, p.text_secondary)
+        };
+        let has_detail = self.detail.is_some();
+        let mut row = div()
+            .id(self.id)
+            .relative()
+            .w_full()
+            .min_h(if two_line {
+                size::TWO_LINE_ROW_HEIGHT
+            } else {
+                size::ROW_HEIGHT
+            })
+            .px(px(12.0))
+            .when(has_detail, |row| row.py(px(8.0)))
+            .flex()
+            .items_center()
+            .gap(px(12.0))
+            .rounded(radius::SM)
+            .bg(fill);
+        if forced.is_none() && !disabled {
+            row = row
+                .hover(move |s| s.bg(hover))
+                .active(move |s| s.bg(pressed));
+        }
+        if self.selected {
+            row = row.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .flex()
+                    .items_center()
+                    .child(selection_bar(p, disabled)),
+            );
+        }
+        let leading: Option<AnyElement> = self.leading.map(|leading| match leading {
+            Leading::Glyph(icon) => Icon::new(icon)
+                .size(size::ICON)
+                .text_color(caption_color)
+                .into_any_element(),
+            Leading::App(icon) => app_icon(&icon, row_icon_size(two_line), p),
+        });
+        row = row
+            .children(leading.map(|leading| div().flex_none().child(leading)))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        text(div(), BODY)
+                            .text_color(title_color)
+                            .truncate()
+                            .child(self.title),
+                    )
+                    .children(self.caption.map(|caption| {
+                        text(div(), CAPTION)
+                            .text_color(caption_color)
+                            .truncate()
+                            .child(caption)
+                    }))
+                    .children(self.detail),
+            )
+            .children(self.trailing.map(|t| div().flex_none().child(t)));
+        if !disabled {
+            if let Some(handler) = self.on_click {
+                row = row.on_click(move |event, window, cx| handler(event, window, cx));
+            }
+            if let Some(handler) = self.on_secondary {
+                row = row.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                    cx.stop_propagation();
+                    handler(event.position, window, cx);
+                });
+            }
+        }
+        with_focus_ring(row, self.highlighted && !disabled, radius::SM, p)
+    }
+}
+
+/// Moves the item at `from` to sit at `to`, the way a dragged tile lands
+/// where it is dropped: everything between shifts by one. Out-of-range
+/// indices change nothing. Returns whether the order changed.
+pub fn move_item<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
+    if from >= items.len() || to >= items.len() || from == to {
+        return false;
+    }
+    let item = items.remove(from);
+    items.insert(to, item);
+    true
+}
+
+/// A Start-menu tile's size: `GridViewItem` at Windows 11's pinned-app
+/// metrics, a 32px icon 16px from the top over two lines of Caption.
+pub const TILE_WIDTH: Pixels = px(96.0);
+pub const TILE_HEIGHT: Pixels = px(84.0);
+
+/// The body inside a tile's 1px edge.
+pub const TILE_BODY_WIDTH: Pixels = px(94.0);
+pub const TILE_BODY_HEIGHT: Pixels = px(82.0);
+/// The icon inside a tile.
+pub const TILE_ICON: Pixels = px(32.0);
+
+/// What a dragged [`GridTile`] carries. `group` keeps tiles of two grids
+/// from landing in each other.
+#[derive(Clone, Debug)]
+pub struct DraggedTile {
+    pub group: SharedString,
+    pub index: usize,
+    pub label: SharedString,
+    pub icon: AppIcon,
+}
+
+/// The tile drawn under the pointer while it is dragged: the tile itself on
+/// the flyout fill, so it reads as lifted off the page.
+pub struct TileDragPreview {
+    tile: DraggedTile,
+}
+
+impl Render for TileDragPreview {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = palette(cx);
+        tile_body(
+            div()
+                .bg(p.flyout)
+                .border_1()
+                .border_color(p.flyout_stroke)
+                .rounded(radius::SM)
+                .shadow_md(),
+            &self.tile.icon,
+            self.tile.label.clone(),
+            p.text_primary,
+            p,
+        )
+    }
+}
+
+fn tile_body(
+    element: gpui::Div,
+    icon: &AppIcon,
+    label: SharedString,
+    color: Rgba,
+    p: &Palette,
+) -> gpui::Div {
+    // Both a tile and its drag preview wear a 1px edge around this body, so
+    // the whole is exactly `TILE_WIDTH` by `TILE_HEIGHT`.
+    element
+        .w(TILE_BODY_WIDTH)
+        .h(TILE_BODY_HEIGHT)
+        .flex()
+        .flex_col()
+        .items_center()
+        .pt(px(11.0))
+        .gap(px(6.0))
+        .child(app_icon(icon, TILE_ICON, p))
+        .child(
+            text(div(), CAPTION)
+                .w_full()
+                .px(px(4.0))
+                .text_center()
+                .text_color(color)
+                .line_clamp(2)
+                .child(label),
+        )
+}
+
+type ReorderHandler = Rc<dyn Fn(usize, usize, &mut Window, &mut App)>;
+
+/// One `GridViewItem`, as a pinned app in the Windows 11 Start menu.
+#[derive(IntoElement)]
+pub struct GridTile {
+    id: ElementId,
+    icon: AppIcon,
+    label: SharedString,
+    highlighted: bool,
+    shown: ShownState,
+    tooltip: Option<SharedString>,
+    on_click: Option<ClickHandler>,
+    on_secondary: Option<PointHandler>,
+    reorder: Option<(SharedString, usize, ReorderHandler)>,
+}
+
+impl GridTile {
+    pub fn new(id: impl Into<ElementId>, icon: AppIcon, label: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            icon,
+            label: label.into(),
+            highlighted: false,
+            shown: ShownState::Live,
+            tooltip: None,
+            on_click: None,
+            on_secondary: None,
+            reorder: None,
+        }
+    }
+
+    /// Draws the keyboard focus visual: the tile the window's keyboard is on.
+    pub fn highlighted(mut self, highlighted: bool) -> Self {
+        self.highlighted = highlighted;
+        self
+    }
+
+    pub fn shown(mut self, shown: ShownState) -> Self {
+        self.shown = shown;
+        self
+    }
+
+    /// The full name, for a label two lines cannot hold.
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    pub fn on_click(
+        mut self,
+        handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_click = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn on_secondary(
+        mut self,
+        handler: impl Fn(Point<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_secondary = Some(Rc::new(handler));
+        self
+    }
+
+    /// Makes the tile draggable within `group`; a tile of the same group
+    /// dropped on this one calls `handler(from, to)`.
+    pub fn reorderable(
+        mut self,
+        group: impl Into<SharedString>,
+        index: usize,
+        handler: impl Fn(usize, usize, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.reorder = Some((group.into(), index, Rc::new(handler)));
+        self
+    }
+}
+
+impl RenderOnce for GridTile {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let forced = self.shown.forced();
+        let fill = row_fill(false, forced.unwrap_or(Interaction::Rest), p);
+        let hover = row_fill(false, Interaction::PointerOver, p);
+        let pressed = row_fill(false, Interaction::Pressed, p);
+        // The 1px edge is always there, transparent until a dragged tile is
+        // over this one, so showing it never moves the tile.
+        let mut tile = div()
+            .id(self.id)
+            .relative()
+            .flex_none()
+            .rounded(radius::SM)
+            .border_1()
+            .border_color(with_alpha(p.accent, 0.0))
+            .bg(if self.highlighted { hover } else { fill });
+        if forced.is_none() {
+            tile = tile
+                .hover(move |s| s.bg(hover))
+                .active(move |s| s.bg(pressed));
+        }
+        let body = tile_body(div(), &self.icon, self.label.clone(), p.text_primary, p);
+        tile = tile.child(body);
+        if let Some(tooltip) = self.tooltip {
+            tile = tile.tooltip(super::dialog::tooltip_builder(tooltip));
+        }
+        if let Some(handler) = self.on_click {
+            tile = tile.on_click(move |event, window, cx| handler(event, window, cx));
+        }
+        if let Some(handler) = self.on_secondary {
+            tile = tile.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                cx.stop_propagation();
+                handler(event.position, window, cx);
+            });
+        }
+        if let Some((group, index, handler)) = self.reorder {
+            let dragged = DraggedTile {
+                group: group.clone(),
+                index,
+                label: self.label.clone(),
+                icon: self.icon.clone(),
+            };
+            let accent = p.accent;
+            let over_group = group.clone();
+            tile = tile
+                .on_drag(dragged, |tile, _, _, cx| {
+                    cx.new(|_| TileDragPreview { tile: tile.clone() })
+                })
+                .drag_over::<DraggedTile>(move |style, dragged, _, _| {
+                    if dragged.group == over_group && dragged.index != index {
+                        style.border_color(accent)
+                    } else {
+                        style
+                    }
+                })
+                .on_drop(move |dragged: &DraggedTile, window, cx| {
+                    if dragged.group == group {
+                        handler(dragged.index, index, window, cx);
+                    }
+                });
+        }
+        with_focus_ring(tile, self.highlighted, radius::SM, p)
     }
 }
 

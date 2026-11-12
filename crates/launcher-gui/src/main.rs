@@ -21,10 +21,11 @@
 //! dimensions, and both are recorded rather than settled here.
 
 use gpui::*;
-use gpui_component::{Root, Theme, ThemeMode};
+use gpui_component::Root;
 use gpui_component_assets::Assets;
 use launcher_gui::{
-    LauncherOverlay, Locale, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, OverlayEvent, overlay_size,
+    LauncherOverlay, Locale, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, OverlayEvent, START_HEIGHT,
+    START_WIDTH, overlay_size,
 };
 use launcher_platform::activation::{
     ActivationRequest, InstanceRole, OverlayVisibility, SingleInstance,
@@ -75,18 +76,16 @@ fn main() {
     application.run(move |cx| {
         gpui_component::init(cx);
 
-        // Near-full-screen, sized from the display rather than from a fixed
-        // number. Full-screen versus bounded is a deferred decision, and this
-        // is the form of it that is cheapest to change.
+        // The Start menu's own size, shrunk on a display too small for it.
         let (width, height) = cx
             .primary_display()
             .map(|display| {
                 let bounds = display.bounds();
                 overlay_size(f32::from(bounds.size.width), f32::from(bounds.size.height))
             })
-            .unwrap_or((1280.0, 820.0));
-        // The overlay draws no titlebar. It is dismissed with Escape or by
-        // launching something, and `better_ui::window_chrome` records why.
+            .unwrap_or((START_WIDTH, START_HEIGHT));
+        // The launcher draws no titlebar. It is dismissed with Escape or by
+        // opening something, and `better_ui::window_chrome` records why.
         let window_options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(width), px(height)), cx)),
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
@@ -96,9 +95,8 @@ fn main() {
         let mut inbox = inbox.take();
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
-                // Better OS is dark-first; gpui-component installs its light
-                // theme at init.
-                Theme::change(ThemeMode::Dark, Some(window), cx);
+                // The overlay applies the stored appearance (dark unless the
+                // person chose light or the system's), ADR 0004.
                 let overlay = cx.new(|cx| LauncherOverlay::new(Locale::System, window, cx));
                 cx.subscribe(&overlay, |_, event: &OverlayEvent, cx| match event {
                     OverlayEvent::Closed => cx.quit(),

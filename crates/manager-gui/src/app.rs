@@ -1106,6 +1106,15 @@ impl ManagerApp {
             .unwrap_or_else(|| self.pending_steps())
     }
 
+    /// Opens a component's page because another window asked for it
+    /// (`better-manager --component <id>`). An operation in progress and the
+    /// first-run page keep the screen; an unknown component is ignored.
+    pub(crate) fn open_requested_component(&mut self, id: &ComponentId, cx: &mut Context<Self>) {
+        if opens_requested_component(&self.page, self.component_by_id(id).is_some()) {
+            self.open_component(id, cx);
+        }
+    }
+
     pub(crate) fn open_component(&mut self, id: &ComponentId, cx: &mut Context<Self>) {
         self.page = Page::ComponentDetail(id.clone());
         self.detail_tab = DetailTab::Overview;
@@ -1432,5 +1441,25 @@ pub(crate) fn activity_evidence_text(label: &str, evidence: Option<&str>) -> Str
             )
         }
         _ => label.to_string(),
+    }
+}
+
+/// Whether a requested component's page may replace the page the window
+/// opened on: not over an operation in progress or the first-run page, and
+/// only for a component the catalog knows.
+pub(crate) fn opens_requested_component(page: &Page, known: bool) -> bool {
+    known && !matches!(page, Page::Installing | Page::FirstRun)
+}
+
+#[cfg(test)]
+mod requested_component_tests {
+    use super::{Page, opens_requested_component};
+
+    #[test]
+    fn a_requested_page_never_replaces_an_operation_or_first_run() {
+        assert!(opens_requested_component(&Page::Overview, true));
+        assert!(!opens_requested_component(&Page::Overview, false));
+        assert!(!opens_requested_component(&Page::Installing, true));
+        assert!(!opens_requested_component(&Page::FirstRun, true));
     }
 }

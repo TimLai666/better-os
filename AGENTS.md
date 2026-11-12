@@ -166,7 +166,7 @@ GUI or dependency compiles when the relevant command was not executed.
   `better_ui::window_chrome`, because Mutter offers no server-side decorations
   to an `xdg-toplevel` client — without it a window has no close button and
   cannot be dragged. Better Launcher is the one deliberate exception, recorded
-  in code: a near-fullscreen overlay dismissed by Escape gets no titlebar, but
+  in code: a Start-menu panel (ticket 82) dismissed by Escape gets no titlebar, but
   it still sets `app_id` like every other window, which is what lets a dock or
   an application grid match a window to its desktop entry. Escape on Better
   Launcher is now a tested key mapping and was pressed in a headless sway
