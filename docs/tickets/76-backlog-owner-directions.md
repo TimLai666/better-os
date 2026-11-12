@@ -36,30 +36,13 @@ desktop shell, since Better Touchpad and Better Defaults are written against
 GNOME 46. Open before planning: which Debian release, which desktop, and
 whether Zorin and Ubuntu stay supported while the distribution is built.
 
-## 4. Better OS runs on Omarchy
+## 4. Omarchy (withdrawn)
 
-On 2026-11-11 the owner changed the project's positioning: Omarchy, an Arch
-Linux distribution with the Hyprland compositor, has to be able to use Better
-OS. Three parts of the project assume otherwise today, and each needs its own
-decision before any ticket is cut:
-
-- **Installation.** Better Manager, the privileged daemon, the health check,
-  the release packages, and `install.sh` are all built on `.deb`, `apt-get`,
-  and `dpkg`. Arch uses pacman. Either the daemon gains a second package
-  backend with its own packages, or the components reach Omarchy another way
-  (an AUR package, a plain archive) and Better Manager does not manage them
-  there.
-- **Host support.** `better-core::host` refuses any host that is not Ubuntu
-  based, and every manifest lists `ubuntu` and `zorin` as its distributions.
-- **Desktop integration.** Better Touchpad's gestures run through a GNOME Shell
-  extension and its settings through dconf, and Better Defaults writes GNOME
-  keys. Hyprland has neither. The windows themselves are GPUI and should run
-  on any Wayland compositor, which nobody has tried on Hyprland.
-
-This direction and direction 3 pull apart: a Debian-based distribution keeps
-`.deb` and can keep GNOME, while Omarchy needs pacman and Hyprland. The ADR
-that replaces "not a distribution fork" has to say which comes first and
-whether both are goals.
+On 2026-11-11 the owner asked for Better OS to run on Omarchy (Arch Linux with
+Hyprland) and considered moving from Zorin to it. On 2026-11-12 the owner
+withdrew that: Better OS stays on Zorin and Ubuntu with GNOME, and Omarchy is
+not a goal. Nothing was built for it. `omacom/folio` remains the reference for
+Better Files' features, which does not depend on running on Omarchy.
 
 ## 5. Better Patch: known Linux desktop faults, found and fixed
 
@@ -90,8 +73,7 @@ fix, check that the fix worked, and undo it. Open before planning:
   change outside the daemon.
 - What counts as worth an entry: a fault someone reproduced and a fix someone
   verified, starting with the two above.
-- How entries stay correct across distributions and desktops once Omarchy is
-  supported.
+- How entries stay correct across Zorin and Ubuntu releases.
 
 ## 6. One control center, inside Better Manager
 
