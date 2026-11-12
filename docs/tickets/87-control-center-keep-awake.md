@@ -78,3 +78,21 @@ who asks Better Awake to keep the display on gets a dark, locked screen after
 policy that includes the display must also hold a GNOME session inhibitor
 (flag 8, idle) for as long as it lasts, with a test against a fake session
 manager.
+
+## Found on the owner's machine (2026-11-13): "End session" did nothing
+
+After Better Awake was updated from 0.2.10 to 0.2.11 the service was
+restarted (ticket 79), but the tray still running was the 0.2.10 binary
+(`/usr/bin/awake-tray (deleted)`), started two hours earlier, and its "End
+session" had no effect. Replacing it with the new tray fixed it. Two faults:
+
+- An update must restart the tray as well as the service. The tray is an
+  autostart program, not a unit, so nothing restarts it; either make it a
+  systemd user unit bound to `graphical-session.target` (then ticket 79's
+  restart covers it) or have the update step restart it.
+- The tray must follow the service across a restart (watch
+  `NameOwnerChanged` for `org.betteros.Awake1`, re-read status and
+  re-subscribe), and a menu action that fails must say so instead of doing
+  nothing.
+- "End session" ends only a manual session (`EndManualSession`); when the
+  session running is a rule's, the menu must say so and offer "Pause rules".
