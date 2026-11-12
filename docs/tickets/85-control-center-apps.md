@@ -55,3 +55,12 @@ Spec section 7, and the Better Manager rows of section 12, every one of them.
 
 The real daemon is reachable from the sandbox. Use demo mode or fixtures for
 every state that would change packages.
+
+## Uninstall removes everything (owner, 2026-11-13)
+
+The uninstall confirmation carries a check box, ticked by default, "Also
+delete my settings and history" / 「同時刪除我的設定和紀錄」. Uninstalling
+removes everything the component added (see AGENTS.md); when the box is
+ticked it also deletes the person's data the manifest's `paths` name under
+`~/.local/state`, `~/.config` and `~/.cache`, moving it to the trash rather
+than unlinking it. The CLI takes `--keep-data`. Tests with a scratch HOME.

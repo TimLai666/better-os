@@ -40,7 +40,12 @@ updated, verified, and rolled back through shared manager operations.
   its services and their enablement, autostart entries, D-Bus activation
   files, udev rules and sleep hooks, GNOME extensions it enabled, keybindings
   and defaults it set (restored to what they were), and its caches. Nothing
-  it installed outlives it.
+  it installed outlives it. The person's own data (rules, history, recent
+  lists, trust lists, per-folder views) is deleted too unless they untick
+  "Also delete my settings and history", a check box in the uninstall
+  confirmation that is ticked by default; unticked, it stays for a reinstall.
+  Each manifest's `paths` names that data so the manager knows what to
+  delete.
 - A component's systemd **user** units are managed by `manager-core`, never by
   a window or a command directly. `RealDriver` takes the controller through
   `with_user_units`; a driver built without one manages no units. Enabling,
