@@ -44,6 +44,12 @@ with HOME and XDG directories in a temporary folder:
   When the history has not been loaded yet, `amend_last` also returns early
   without setting `amend`, and the checkbox handler only switches tabs to
   load it, so nothing fills the form when the history arrives.
+- **"Fetch: done" banner.** The owner, 2026-11-14: after a fetch, a green
+  "擷取：完成" bar stays at the top of the window until it is closed, and
+  is not needed, since the toolbar's fetch button already shows the result
+  ("上次擷取：剛才"). It is `Notice::Done(kind)` (`git-gui/src/session.rs`
+  around lines 2711 and 2765), drawn by `render.rs` as a Success `InfoBar`
+  with a close button and no timeout, after every operation kind.
 - **Tabs.** Better Git's "Changes / History" and the branch flyout's
   "Branches / Pull requests" use `SelectorBar` and look like tabs in the
   sandbox. The owner's report covers all apps, so the controls that switch
@@ -87,6 +93,15 @@ with HOME and XDG directories in a temporary folder:
   is not loaded yet, the form says it is reading the last commit, reads it
   directly (`git log -1`), and fills in when it arrives; amend stays ticked.
   Tests for each entry point.
+- No "done" banners. An operation whose result the window already shows
+  (fetch, pull, push, commit, switch, merge, rebase, stash, tag, branch and
+  worktree changes, discard) shows no bar when it succeeds; the toolbar
+  button, the lists, and the history are the confirmation, as in GitHub
+  Desktop. A notice that carries something the window does not show (a
+  pull request or issue created with its link, published to a URL, forked,
+  a stash waiting, checks re-run) appears as a short-lived toast that hides
+  itself after about 6 seconds, stays while the pointer is on it, and keeps
+  its link button. Errors keep their bar until closed.
 - Worktrees: the repository list shows each repository's linked worktrees
   under it (path and branch), and choosing one opens it. In the branch list
   a branch checked out in another worktree says so ("Open in its worktree")
