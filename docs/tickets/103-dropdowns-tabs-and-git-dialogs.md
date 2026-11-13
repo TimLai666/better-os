@@ -58,6 +58,16 @@ with HOME and XDG directories in a temporary folder:
   the blank parts of Better Git's three "New repository…" entries (the
   welcome card, File menu, and the repository flyout's Add menu) all opened
   the dialog, so the failing item is another one; the audit below finds it.
+- **Uncommitted changes not picked up.** The owner, 2026-11-14: Better Git
+  does not seem to see uncommitted changes. The status read itself is
+  complete (`git status --porcelain=v2 -z --branch --show-stash
+  --untracked-files=all`, `git-platform/src/lib.rs` around line 1067), but
+  the only thing that re-reads it is the window becoming active
+  (`observe_window_activation` in `git-gui/src/app.rs` around line 275, then
+  `Session::refresh`). A file saved in an editor while Better Git stays
+  visible and unfocused beside it, or saved without Better Git ever losing
+  focus (a terminal command, a build), never shows up until the window is
+  activated again or some job such as a fetch finishes.
 - **Tabs.** Better Git's "Changes / History" and the branch flyout's
   "Branches / Pull requests" use `SelectorBar` and look like tabs in the
   sandbox. The owner's report covers all apps, so the controls that switch
@@ -123,6 +133,19 @@ with HOME and XDG directories in a temporary folder:
   a stash waiting, checks re-run) appears as a short-lived toast that hides
   itself after about 6 seconds, stays while the pointer is on it, and keeps
   its link button. Errors keep their bar until closed.
+- Live changes: the open repository's working tree and its `.git` (HEAD,
+  index, refs, the operation-in-progress files) are watched with the
+  `notify` crate already in the workspace (as `files-platform/src/watch.rs`
+  does), and a change triggers a debounced status refresh (about 300 ms)
+  that keeps the selection and scroll position. Directories Git ignores
+  (`node_modules`, `target`, and the rest of `git check-ignore`) are not
+  watched, so a large project does not exhaust inotify watches; if a watch
+  cannot be added (limit reached, a network filesystem), Better Git falls
+  back to refreshing every 3 seconds while the window is visible and says
+  so once in the status area. Activation still refreshes. The refresh never
+  overlaps a running Git operation and never runs more than one at a time.
+  Tests: a file created, edited, deleted, and staged from outside shows up
+  without any click; an ignored directory's churn causes no refresh.
 - Worktrees: the repository list shows each repository's linked worktrees
   under it (path and branch), and choosing one opens it. In the branch list
   a branch checked out in another worktree says so ("Open in its worktree")
@@ -140,6 +163,8 @@ with HOME and XDG directories in a temporary folder:
 - [ ] Better Git: ticking "Amend last commit" right after opening a
       repository fills the summary and description in the same moment;
       screenshot before any fetch.
+- [ ] Better Git: with the window open and untouched, a file edited from a
+      shell appears in Changes within a second; screenshots before and after.
 - [ ] Better Git: a repository with two linked worktrees shows them in the
       repository list and marks their branches in the branch list.
 - [ ] Tests never touch the person's real HOME, `~/.gitconfig`, or keyring.
