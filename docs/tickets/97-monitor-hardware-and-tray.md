@@ -1,6 +1,6 @@
 # Ticket 97 — Better Monitor reads all the hardware and lives in the taskbar
 
-**Blocked by:** 81 · **Status:** implemented, not merged
+**Blocked by:** 81 · **Status:** merged, not released
 
 ## Why
 
