@@ -24,6 +24,33 @@ The owner's settings, read 2026-11-14: GTK theme and icon theme
 This changes the earlier "everything Fluent" direction for the window frame
 only: the content and the controls inside the title bar stay Fluent.
 
+## How it is drawn (owner, 2026-11-14)
+
+Chromium, and so Claude Desktop, draws its Linux window frame and caption
+buttons by asking GTK to render them with the current theme, offscreen, and
+painting the result (`ui/gtk/window_frame_provider_gtk.cc` and
+`ui/gtk/nav_button_provider_gtk.cc` in Chromium, BSD-licensed, read for the
+method only). Claude Desktop on the owner's machine is a native Wayland
+window (absent from the XWayland window tree), so its frame is not drawn by
+the compositor; it looks like the system because GTK draws it.
+
+The owner chose the same: Better OS asks GTK to draw the frame, the shadow,
+and the caption buttons, rather than imitating the theme.
+
+- GTK is loaded at run time (`dlopen` of libgtk-3 or libgtk-4, as Chromium
+  does), so a machine without it falls back to Adwaita-like drawing and the
+  binary does not link GTK. Initialise GTK without opening a display
+  connection of its own where possible, and never let it create windows.
+- For each needed part (frame edges and corners with their shadow, focused
+  and unfocused; each caption button in normal, hover, pressed, and backdrop
+  states, light and dark) render it through GTK's style machinery into a
+  Cairo image surface at the window's scale, cache the images per theme,
+  scale, and state, and draw them in GPUI. Re-render when the theme, the
+  colour scheme, the scale, or `button-layout` changes.
+- GTK and Cairo are LGPL system libraries, loaded dynamically: add them to
+  the "dynamically linked system libraries" section of the license inventory
+  and to the packages' Depends as recommended libraries.
+
 ## What to build
 
 - **Caption buttons like the system's.** `TitleBar` draws minimize,
