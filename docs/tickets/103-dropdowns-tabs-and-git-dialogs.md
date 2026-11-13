@@ -58,6 +58,16 @@ with HOME and XDG directories in a temporary folder:
   the blank parts of Better Git's three "New repository…" entries (the
   welcome card, File menu, and the repository flyout's Add menu) all opened
   the dialog, so the failing item is another one; the audit below finds it.
+  The owner then clarified: it is the dropdown menus and buttons in general,
+  where only the text seems to react. A likely cause in the kit, from
+  reading `fluent/menu.rs`: a menu row is drawn with `mx(4)` and `my(2)`
+  margins inside the panel's padding, its highlight comes from the menu's
+  `highlight` state set by `on_hover(true)` and never cleared on
+  `on_hover(false)`, and the click handler is on the row only. A pointer in
+  the 2–4px gaps between rows or at the panel's edge (4–8 physical pixels at
+  the owner's 200% scale) still sees the last row highlighted, but the click
+  lands on the panel and does nothing. Buttons and other controls get the
+  same check.
 - **Uncommitted changes not picked up.** The owner, 2026-11-14: Better Git
   does not seem to see uncommitted changes. The status read itself is
   complete (`git status --porcelain=v2 -z --branch --show-stash
@@ -106,6 +116,11 @@ with HOME and XDG directories in a temporary folder:
   it for every kit row (menu items, list and table rows, navigation items,
   settings cards, combo items, breadcrumb items, selector items, tabs).
   List every place fixed, per app, in What was built.
+  Menu and list rows: the hit area covers the full row height and width
+  with no gaps between rows (the inset look is drawn inside the hit area),
+  and a highlight is shown only while the pointer is actually over that
+  row (cleared on hover-out), so what looks clickable is clickable. Test at
+  scale 1 and 2.
 
 **Better Git:**
 
