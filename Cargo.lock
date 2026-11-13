@@ -4407,9 +4407,11 @@ dependencies = [
 name = "monitor-collectors-linux"
 version = "0.2.12"
 dependencies = [
+ "libc",
  "monitor-core",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -4452,6 +4454,7 @@ dependencies = [
  "smol",
  "tempfile",
  "tokio",
+ "zbus",
 ]
 
 [[package]]
@@ -4492,6 +4495,19 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "monitor-tray"
+version = "0.2.12"
+dependencies = [
+ "monitor-core",
+ "monitor-ipc",
+ "monitor-service",
+ "serde",
+ "tempfile",
+ "tokio",
+ "zbus",
 ]
 
 [[package]]

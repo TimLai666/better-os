@@ -16,31 +16,30 @@ enhances:
 # ticket 36 put the session service, the command line, and the systemd user
 # unit into the same package, so the wider payload took its own version number
 # rather than reusing 0.1.0.
-# Placeholder checksums until v0.2.12 is published. ADR 0002 records the
-# checksum of a *published* release asset; the v0.2.11 values these variants
-# carried describe 0.2.11's packages, not 0.2.12's. The real values are written
-# back once the release is public and every asset has been re-downloaded and
-# verified.
+# The checksums below belong to the published v0.2.12 release assets. Each one
+# was re-hashed from the package downloaded back from the public release rather
+# than copied from its sidecar, which is what ADR 0002 requires a manifest to
+# record.
 artifacts:
   - release: "22.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.12/better-monitor_0.2.12_ubuntu-22.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 4d0ae751c34f862bf01dea9049cd5b478f46eaa5c9a525280a29d2900f67a6d1
     release_asset: better-monitor_0.2.12_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.12/better-monitor_0.2.12_ubuntu-22.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: a1843bcebef94ce3d5511c1b4a67cc3d37d1053bc8dd1d349d59319fb44acd14
     release_asset: better-monitor_0.2.12_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.12/better-monitor_0.2.12_ubuntu-24.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 5f560a5d65ad29bfafe6a93cdad95bf63e406694e13653a69b72d69088b62d48
     release_asset: better-monitor_0.2.12_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.12/better-monitor_0.2.12_ubuntu-24.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 25fe3449186ab96c754afc95fcba37e5433521489ae1a1e5ad8ae3bd54fd74c6
     release_asset: better-monitor_0.2.12_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
@@ -67,7 +66,14 @@ paths:
   - /usr/bin/better-monitor
   - /usr/bin/better-monitor-service
   - /usr/bin/better-monitor-cli
+  # The taskbar item (ticket 97): a user unit enabled and disabled with the
+  # component, which the window starts through its activation file.
+  - /usr/bin/better-monitor-tray
+  - /usr/lib/systemd/user/better-monitor-tray.service
+  - /usr/share/dbus-1/services/org.betteros.MonitorTray1.service
   - /usr/lib/systemd/user/better-monitor.service
+  # Asking for org.betteros.Monitor1 starts the service through its unit.
+  - /usr/share/dbus-1/services/org.betteros.Monitor1.service
   # The desktop entry launches the window and neither of the other two
   # executables: the service is started by the user unit, and the command line
   # has no window to show.

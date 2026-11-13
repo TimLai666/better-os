@@ -121,7 +121,6 @@ pub(crate) struct Copy {
     pub(crate) not_available: &'static str,
     pub(crate) not_read: &'static str,
     pub(crate) gpu_not_found: &'static str,
-    pub(crate) battery_not_read: &'static str,
 
     // Tables.
     pub(crate) apps_section: &'static str,
@@ -247,12 +246,80 @@ pub(crate) struct Copy {
     pub(crate) wireless: &'static str,
     pub(crate) wired: &'static str,
     pub(crate) other_connection: &'static str,
-    pub(crate) not_read_yet_title: &'static str,
-    pub(crate) gpu_not_read: &'static str,
-    pub(crate) graphics_cards: &'static str,
     pub(crate) processor_temperature: &'static str,
-    pub(crate) temperature_not_found: &'static str,
-    pub(crate) fans_not_read: &'static str,
+    pub(crate) column_network: &'static str,
+    pub(crate) column_gpu: &'static str,
+    pub(crate) column_gpu_memory: &'static str,
+    pub(crate) column_power: &'static str,
+    pub(crate) network_column_tooltip: &'static str,
+    pub(crate) npu: &'static str,
+    pub(crate) sensors: &'static str,
+    pub(crate) dedicated_memory: &'static str,
+    pub(crate) shared_memory: &'static str,
+    pub(crate) gpu_clock: &'static str,
+    pub(crate) memory_clock: &'static str,
+    pub(crate) power: &'static str,
+    pub(crate) driver: &'static str,
+    pub(crate) location: &'static str,
+    pub(crate) programs_using: &'static str,
+    pub(crate) busy_from_clients: &'static str,
+    pub(crate) gpu_apps: &'static str,
+    pub(crate) gpu_busy_unreported: &'static str,
+    pub(crate) firmware: &'static str,
+    pub(crate) power_state: &'static str,
+    pub(crate) npu_asleep: &'static str,
+    pub(crate) npu_running: &'static str,
+    pub(crate) awake_time: &'static str,
+    pub(crate) npu_no_busy: &'static str,
+    pub(crate) npu_idle: &'static str,
+    pub(crate) charge: &'static str,
+    pub(crate) battery_charging: &'static str,
+    pub(crate) battery_discharging: &'static str,
+    pub(crate) battery_full: &'static str,
+    pub(crate) battery_not_charging: &'static str,
+    pub(crate) battery_unknown: &'static str,
+    pub(crate) time_left: &'static str,
+    pub(crate) time_to_full: &'static str,
+    pub(crate) battery_health: &'static str,
+    pub(crate) full_capacity: &'static str,
+    pub(crate) design_capacity: &'static str,
+    pub(crate) charge_cycles: &'static str,
+    pub(crate) not_reported_by_firmware: &'static str,
+    pub(crate) voltage: &'static str,
+    pub(crate) charge_limit: &'static str,
+    pub(crate) charging_at: &'static str,
+    pub(crate) drawing: &'static str,
+    pub(crate) battery_model: &'static str,
+    pub(crate) chargers: &'static str,
+    pub(crate) connected: &'static str,
+    pub(crate) not_connected: &'static str,
+    pub(crate) power_adapter: &'static str,
+    pub(crate) usb_c_port: &'static str,
+    pub(crate) battery_charge_chart: &'static str,
+    pub(crate) battery_use_title: &'static str,
+    pub(crate) battery_use_now: &'static str,
+    pub(crate) battery_use_since: &'static str,
+    pub(crate) battery_use_note: &'static str,
+    pub(crate) battery_use_plugged: &'static str,
+    pub(crate) battery_use_never: &'static str,
+    pub(crate) battery_use_nothing: &'static str,
+    pub(crate) column_energy: &'static str,
+    pub(crate) no_battery: &'static str,
+    pub(crate) temperatures_heading: &'static str,
+    pub(crate) fans: &'static str,
+    pub(crate) voltages: &'static str,
+    pub(crate) currents: &'static str,
+    pub(crate) power_readings: &'static str,
+    pub(crate) clocks: &'static str,
+    pub(crate) no_fans: &'static str,
+    pub(crate) no_sensors: &'static str,
+    pub(crate) critical_at: &'static str,
+    pub(crate) hottest: &'static str,
+    pub(crate) fan_speed: &'static str,
+    pub(crate) open_full_window: &'static str,
+    pub(crate) collection_version_mismatch: &'static str,
+    pub(crate) collection_component_off: &'static str,
+    pub(crate) popup_last_minutes: &'static str,
 
     // Startup apps and services.
     pub(crate) startup_hint: &'static str,
@@ -321,6 +388,7 @@ pub(crate) struct Copy {
     pub(crate) disk_budget: &'static str,
     pub(crate) gaps_title: &'static str,
     pub(crate) no_gaps: &'static str,
+    pub(crate) set_aside_title: &'static str,
     pub(crate) gap_service_stopped: &'static str,
     pub(crate) gap_missed_cadence: &'static str,
     pub(crate) gap_interrupted_write: &'static str,
@@ -391,7 +459,6 @@ pub(crate) const EN: Copy = Copy {
     not_available: "Not available",
     not_read: "Not measured",
     gpu_not_found: "No graphics card found",
-    battery_not_read: "This version doesn't read the battery yet.",
 
     apps_section: "Apps",
     background_processes: "Background processes",
@@ -512,12 +579,80 @@ pub(crate) const EN: Copy = Copy {
     wireless: "Wi‑Fi",
     wired: "Ethernet",
     other_connection: "Network",
-    not_read_yet_title: "Not measured yet",
-    gpu_not_read: "This version of Better Monitor can name your graphics card but can't yet read how busy it is.",
-    graphics_cards: "Graphics cards found",
     processor_temperature: "Processor temperature",
-    temperature_not_found: "This computer doesn't report a processor temperature.",
-    fans_not_read: "This version doesn't read fan speeds or temperatures other than the processor's yet.",
+    column_network: "Network",
+    column_gpu: "GPU",
+    column_gpu_memory: "GPU memory",
+    column_power: "Power use",
+    network_column_tooltip: "TCP traffic per second. UDP traffic, such as a browser's QUIC connections, has no per-program counter and isn't counted.",
+    npu: "NPU",
+    sensors: "Temperatures and fans",
+    dedicated_memory: "Dedicated GPU memory",
+    shared_memory: "Shared GPU memory",
+    gpu_clock: "GPU clock",
+    memory_clock: "Memory clock",
+    power: "Power",
+    driver: "Driver",
+    location: "Location",
+    programs_using: "Programs using it",
+    busy_from_clients: "How busy it is comes from your own programs' use; other users' programs aren't counted.",
+    gpu_apps: "Apps using the graphics card",
+    gpu_busy_unreported: "The driver doesn't report how busy this card is.",
+    firmware: "Firmware",
+    power_state: "Power state",
+    npu_asleep: "Asleep",
+    npu_running: "Running",
+    awake_time: "Awake time",
+    npu_no_busy: "The driver doesn't report how busy the NPU is while programs use it.",
+    npu_idle: "No program has the NPU open, so it isn't doing any work.",
+    charge: "Charge",
+    battery_charging: "Charging",
+    battery_discharging: "On battery",
+    battery_full: "Fully charged",
+    battery_not_charging: "Plugged in, not charging",
+    battery_unknown: "State not reported",
+    time_left: "Time left",
+    time_to_full: "Until full",
+    battery_health: "Battery health",
+    full_capacity: "Full charge capacity",
+    design_capacity: "Design capacity",
+    charge_cycles: "Charge cycles",
+    not_reported_by_firmware: "Not reported by the firmware",
+    voltage: "Voltage",
+    charge_limit: "Charge limit",
+    charging_at: "Charging power",
+    drawing: "Power draw",
+    battery_model: "Model",
+    chargers: "Power adapters",
+    connected: "Connected",
+    not_connected: "Not connected",
+    power_adapter: "Power adapter",
+    usb_c_port: "USB-C port",
+    battery_charge_chart: "Charge (%)",
+    battery_use_title: "What is using the battery",
+    battery_use_now: "Right now",
+    battery_use_since: "Since unplugged",
+    battery_use_note: "An estimate: the battery's draw is shared out by each app's processor and graphics time. The screen and the radios aren't charged to any app.",
+    battery_use_plugged: "Plugged in, so nothing is using the battery now.",
+    battery_use_never: "Better Monitor hasn't seen this computer run on battery since it started.",
+    battery_use_nothing: "No app has used a measurable share yet.",
+    column_energy: "Energy",
+    no_battery: "This computer has no battery.",
+    temperatures_heading: "Temperatures",
+    fans: "Fans",
+    voltages: "Voltages",
+    currents: "Currents",
+    power_readings: "Power",
+    clocks: "Clocks",
+    no_fans: "This computer reports no fan.",
+    no_sensors: "This computer reports no sensors.",
+    critical_at: "Critical at",
+    hottest: "Hottest",
+    fan_speed: "Fan speed",
+    open_full_window: "Open Better Monitor",
+    collection_component_off: "Better Monitor is turned off in Better Manager, so its background service isn't running and isn't started from here. This window collects for itself while it is open.",
+    collection_version_mismatch: "Better Monitor was updated, but its background service is still the older version, so this window is collecting for itself. The service restarts with the new version at your next sign-in.",
+    popup_last_minutes: "Last 5 minutes",
 
     startup_hint: "Apps that start when you sign in. Turning one off writes your own copy of its setting; files installed for everyone are never changed.",
     enabled: "Enabled",
@@ -582,6 +717,7 @@ pub(crate) const EN: Copy = Copy {
     disk_budget: "Disk space allowed",
     gaps_title: "Times nothing was recorded",
     no_gaps: "Nothing is missing in this period.",
+    set_aside_title: "Some saved readings could not be read",
     gap_service_stopped: "Better Monitor wasn't running",
     gap_missed_cadence: "Measuring fell behind",
     gap_interrupted_write: "Recording was interrupted",
@@ -650,7 +786,6 @@ pub(crate) const ZH: Copy = Copy {
     not_available: "無法取得",
     not_read: "未測量",
     gpu_not_found: "找不到顯示卡",
-    battery_not_read: "這個版本還不會讀取電池。",
 
     apps_section: "應用程式",
     background_processes: "背景處理程序",
@@ -771,12 +906,80 @@ pub(crate) const ZH: Copy = Copy {
     wireless: "Wi‑Fi",
     wired: "乙太網路",
     other_connection: "網路",
-    not_read_yet_title: "目前還沒測量",
-    gpu_not_read: "這個版本的系統監控認得出你的顯示卡，但還不會讀取它有多忙。",
-    graphics_cards: "找到的顯示卡",
     processor_temperature: "處理器溫度",
-    temperature_not_found: "這台電腦沒有回報處理器溫度。",
-    fans_not_read: "這個版本還不會讀取風扇轉速，也不會讀取處理器以外的溫度。",
+    column_network: "網路",
+    column_gpu: "GPU",
+    column_gpu_memory: "GPU 記憶體",
+    column_power: "耗電",
+    network_column_tooltip: "每秒的 TCP 流量。UDP 流量（例如瀏覽器的 QUIC 連線）沒有各程式的計數，所以不算在內。",
+    npu: "NPU",
+    sensors: "溫度與風扇",
+    dedicated_memory: "專用 GPU 記憶體",
+    shared_memory: "共用 GPU 記憶體",
+    gpu_clock: "GPU 時脈",
+    memory_clock: "記憶體時脈",
+    power: "功率",
+    driver: "驅動程式",
+    location: "位置",
+    programs_using: "使用中的程式",
+    busy_from_clients: "忙碌程度是加總你自己程式的用量，其他使用者的程式不算在內。",
+    gpu_apps: "使用顯示卡的應用程式",
+    gpu_busy_unreported: "驅動程式沒有回報這張顯示卡有多忙。",
+    firmware: "韌體",
+    power_state: "電源狀態",
+    npu_asleep: "休眠中",
+    npu_running: "運作中",
+    awake_time: "喚醒時間",
+    npu_no_busy: "驅動程式沒有回報程式使用 NPU 時它有多忙。",
+    npu_idle: "目前沒有程式開啟 NPU，所以它沒有在工作。",
+    charge: "電量",
+    battery_charging: "充電中",
+    battery_discharging: "使用電池中",
+    battery_full: "已充飽",
+    battery_not_charging: "已接上電源，未充電",
+    battery_unknown: "狀態未回報",
+    time_left: "剩餘時間",
+    time_to_full: "充滿還需",
+    battery_health: "電池健康度",
+    full_capacity: "完全充電容量",
+    design_capacity: "設計容量",
+    charge_cycles: "充電循環次數",
+    not_reported_by_firmware: "韌體沒有提供",
+    voltage: "電壓",
+    charge_limit: "充電上限",
+    charging_at: "充電功率",
+    drawing: "耗電功率",
+    battery_model: "型號",
+    chargers: "電源轉接器",
+    connected: "已連接",
+    not_connected: "未連接",
+    power_adapter: "電源轉接器",
+    usb_c_port: "USB-C 連接埠",
+    battery_charge_chart: "電量（%）",
+    battery_use_title: "哪些程式在耗電",
+    battery_use_now: "現在",
+    battery_use_since: "拔掉電源之後",
+    battery_use_note: "這是估算：依各應用程式使用處理器和顯示卡的時間，分攤電池的耗電。螢幕和無線網路的耗電不算在任何程式頭上。",
+    battery_use_plugged: "目前接著電源，現在沒有程式在耗用電池。",
+    battery_use_never: "系統監控啟動之後，還沒看到這台電腦使用電池。",
+    battery_use_nothing: "還沒有應用程式用到可量測的電量。",
+    column_energy: "耗電量",
+    no_battery: "這台電腦沒有電池。",
+    temperatures_heading: "溫度",
+    fans: "風扇",
+    voltages: "電壓",
+    currents: "電流",
+    power_readings: "功率",
+    clocks: "時脈",
+    no_fans: "這台電腦沒有回報風扇。",
+    no_sensors: "這台電腦沒有回報任何感測器。",
+    critical_at: "臨界溫度",
+    hottest: "最高溫",
+    fan_speed: "風扇轉速",
+    open_full_window: "開啟系統監控",
+    collection_component_off: "系統監控在 Better Manager 裡是關閉的，所以背景服務沒有執行，這裡也不會啟動它。這個視窗開著的時候會自己收集資料。",
+    collection_version_mismatch: "系統監控已更新，但背景服務還是舊版本，所以這個視窗先自己收集資料。下次登入時服務會以新版本重新啟動。",
+    popup_last_minutes: "最近 5 分鐘",
 
     startup_hint: "登入時會自動啟動的應用程式。關閉時只會寫入你自己的設定副本，不會改動為所有人安裝的檔案。",
     enabled: "已啟用",
@@ -841,6 +1044,7 @@ pub(crate) const ZH: Copy = Copy {
     disk_budget: "可用的磁碟空間",
     gaps_title: "沒有記錄的時段",
     no_gaps: "這段期間沒有缺漏。",
+    set_aside_title: "有些已存的紀錄讀不出來",
     gap_service_stopped: "系統監控沒有執行",
     gap_missed_cadence: "測量跟不上",
     gap_interrupted_write: "記錄中斷",
@@ -1471,6 +1675,35 @@ pub(crate) fn collector_name(collector: &str, locale: Locale) -> String {
                 "Processes"
             }
         }
+        "linux.process.usage" => {
+            if z {
+                "各程式的網路與顯示卡用量"
+            } else {
+                "Network and graphics use by program"
+            }
+        }
+        "linux.gpu" => {
+            if z {
+                "顯示卡"
+            } else {
+                "Graphics cards"
+            }
+        }
+        "linux.npu" => "NPU",
+        "linux.battery" => {
+            if z {
+                "電池與電源"
+            } else {
+                "Battery and power"
+            }
+        }
+        "linux.sensors" => {
+            if z {
+                "溫度、風扇與感測器"
+            } else {
+                "Temperatures, fans, and sensors"
+            }
+        }
         _ => {
             if z {
                 "其他來源"
@@ -1742,6 +1975,22 @@ pub(crate) fn window_sentence(before: u64, after: u64, locale: Locale) -> String
         format!("涵蓋前 {b} 到後 {a}")
     } else {
         format!("Covers {b} before to {a} after")
+    }
+}
+
+/// What the history page says about saved records the store could not read
+/// and kept aside instead of throwing away.
+pub(crate) fn set_aside_sentence(count: u64, locale: Locale) -> String {
+    if zh(locale) {
+        format!(
+            "有 {count} 筆紀錄的格式這個版本看不懂，所以沒有顯示。原始內容已另外保存，不會被刪掉，之後的版本可能讀得出來。"
+        )
+    } else if count == 1 {
+        "1 record is in a form this version cannot read, so it is not shown. It is kept aside unchanged, so a later version may still read it.".to_string()
+    } else {
+        format!(
+            "{count} records are in a form this version cannot read, so they are not shown. They are kept aside unchanged, so a later version may still read them."
+        )
     }
 }
 
@@ -2265,5 +2514,272 @@ pub(crate) fn captures_sentence(captures: u32, locale: Locale) -> String {
         format!(
             "Better Monitor has looked at this computer {times}. Values marked \"stays on this computer\" are never exported."
         )
+    }
+}
+
+/// A graphics card as a person names it: the driver's product name when it
+/// gives one, otherwise the vendor and the card (`AMD graphics (card1)`).
+///
+/// Integrated graphics have no product name of their own in sysfs, but the
+/// processor's model often carries it (`AMD Ryzen AI 9 HX 370 w/ Radeon
+/// 890M`), and that is what a person knows the graphics as.
+pub(crate) fn gpu_title(
+    gpu: &crate::charts::GpuReadings,
+    cpu_model: Option<&str>,
+    locale: Locale,
+) -> String {
+    if let Some(name) = &gpu.name {
+        return name.clone();
+    }
+    if let (Some(vendor), Some(model)) = (gpu.vendor.as_deref(), cpu_model)
+        && model.starts_with(vendor)
+        && let Some((_, graphics)) = model.split_once(" w/ ")
+    {
+        return format!("{vendor} {}", graphics.trim());
+    }
+    let vendor = gpu.vendor.clone();
+    let card = gpu.card.clone().unwrap_or_else(|| gpu.key.clone());
+    match (vendor, zh(locale)) {
+        (Some(vendor), false) => format!("{vendor} graphics ({card})"),
+        (Some(vendor), true) => format!("{vendor} 顯示卡（{card}）"),
+        (None, false) => format!("Graphics card ({card})"),
+        (None, true) => format!("顯示卡（{card}）"),
+    }
+}
+
+/// An NPU as a person names it.
+pub(crate) fn npu_title(npu: &crate::charts::NpuReadings, locale: Locale) -> String {
+    match (&npu.model, &npu.vendor, zh(locale)) {
+        (Some(model), Some(vendor), _) => format!("{vendor} {model}"),
+        (Some(model), None, _) => model.clone(),
+        (None, Some(vendor), false) => format!("{vendor} NPU"),
+        (None, Some(vendor), true) => format!("{vendor} NPU"),
+        (None, None, _) => "NPU".to_string(),
+    }
+}
+
+/// The NPU's power state in words: asleep or running.
+pub(crate) fn npu_state(npu: &crate::charts::NpuReadings, locale: Locale) -> Option<&'static str> {
+    let c = copy(locale);
+    let asleep = npu.runtime_status.as_deref() == Some("suspended")
+        || npu
+            .power_state
+            .as_deref()
+            .is_some_and(|state| state.starts_with("D3"));
+    let running =
+        npu.runtime_status.as_deref() == Some("active") || npu.power_state.as_deref() == Some("D0");
+    if asleep {
+        Some(c.npu_asleep)
+    } else if running {
+        Some(c.npu_running)
+    } else {
+        None
+    }
+}
+
+/// What a hwmon chip is, in words: `k10temp` is the processor.
+pub(crate) fn chip_title(chip: &str, locale: Locale) -> String {
+    let z = zh(locale);
+    let lower = chip.to_ascii_lowercase();
+    let word = |en: &'static str, zh_word: &'static str| -> String {
+        if z {
+            zh_word.to_string()
+        } else {
+            en.to_string()
+        }
+    };
+    if ["k10temp", "coretemp", "zenpower", "cpu_thermal"].contains(&lower.as_str()) {
+        word("Processor", "處理器")
+    } else if ["amdgpu", "radeon", "i915", "xe", "nouveau", "nvidia"].contains(&lower.as_str()) {
+        word("Graphics card", "顯示卡")
+    } else if lower.starts_with("nvme") {
+        word("SSD", "固態硬碟")
+    } else if lower.starts_with("drivetemp") {
+        word("Disk", "磁碟")
+    } else if lower == "acpitz" {
+        word("Motherboard (ACPI)", "主機板（ACPI）")
+    } else if lower == "acpi_fan" {
+        word("Fan (ACPI)", "風扇（ACPI）")
+    } else if lower == "asus" || lower.starts_with("asus") {
+        word("ASUS embedded controller", "ASUS 嵌入式控制器")
+    } else if lower.starts_with("thinkpad") {
+        word("ThinkPad embedded controller", "ThinkPad 嵌入式控制器")
+    } else if lower.starts_with("dell") {
+        word("Dell embedded controller", "Dell 嵌入式控制器")
+    } else if lower.contains("phy") || lower.starts_with("iwlwifi") || lower.starts_with("ath") {
+        word("Wi-Fi", "Wi-Fi")
+    } else if lower.starts_with("bat") {
+        word("Battery", "電池")
+    } else if lower.starts_with("ucsi_source_psy") {
+        word("USB-C port", "USB-C 連接埠")
+    } else if lower.starts_with("acad") || lower.starts_with("ac") && lower.len() <= 4 {
+        word("Power adapter", "電源轉接器")
+    } else {
+        chip.to_string()
+    }
+}
+
+/// One hwmon reading's name: the chip in words, then the driver's label
+/// when it gave one (`Processor · Tctl`).
+pub(crate) fn sensor_title(sensor: &crate::charts::SensorReadings, locale: Locale) -> String {
+    let chip = chip_title(&sensor.chip, locale);
+    match sensor.label.as_deref() {
+        // A label that is only the input's own name (`temp1`) says nothing.
+        Some(label) if !label.starts_with(sensor_prefix(&sensor.kind)) || label.contains(' ') => {
+            let label = match label {
+                "cpu_fan" => {
+                    if zh(locale) {
+                        "處理器風扇"
+                    } else {
+                        "Processor fan"
+                    }
+                }
+                "gpu_fan" => {
+                    if zh(locale) {
+                        "顯示卡風扇"
+                    } else {
+                        "Graphics fan"
+                    }
+                }
+                other => other,
+            };
+            format!("{chip} · {label}")
+        }
+        _ => chip,
+    }
+}
+
+fn sensor_prefix(kind: &str) -> &'static str {
+    match kind {
+        "temperature" => "temp",
+        "fan" => "fan",
+        "voltage" => "in",
+        "current" => "curr",
+        "power" => "power",
+        "frequency" => "freq",
+        _ => "\u{0}",
+    }
+}
+
+/// A hwmon reading in its unit.
+pub(crate) fn sensor_value(kind: &str, value: f64) -> String {
+    match kind {
+        "temperature" => format!("{value:.0} °C"),
+        "fan" => format!("{} RPM", group_thousands(value.round() as u64)),
+        "voltage" => format!("{value:.2} V"),
+        "current" => format!("{value:.2} A"),
+        "power" => crate::tables::watts(value),
+        "frequency" => {
+            if value >= 1e9 {
+                format!("{:.2} GHz", value / 1e9)
+            } else {
+                format!("{:.0} MHz", value / 1e6)
+            }
+        }
+        _ => format!("{value}"),
+    }
+}
+
+fn group_thousands(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// A battery's state in words.
+pub(crate) fn battery_status(status: Option<&str>, locale: Locale) -> &'static str {
+    let c = copy(locale);
+    match status {
+        Some("charging") => c.battery_charging,
+        Some("discharging") => c.battery_discharging,
+        Some("full") => c.battery_full,
+        Some("not_charging") => c.battery_not_charging,
+        _ => c.battery_unknown,
+    }
+}
+
+/// Hours and minutes: `2 h 10 min`, `2 小時 10 分鐘`.
+pub(crate) fn hours_minutes(seconds: f64, locale: Locale) -> String {
+    let minutes = (seconds / 60.0).round().max(0.0) as u64;
+    let (hours, minutes) = (minutes / 60, minutes % 60);
+    match (hours, zh(locale)) {
+        (0, false) => format!("{minutes} min"),
+        (0, true) => format!("{minutes} 分鐘"),
+        (h, false) => format!("{h} h {minutes} min"),
+        (h, true) => format!("{h} 小時 {minutes} 分鐘"),
+    }
+}
+
+/// The one line under a battery's figure: its state, and how long is left.
+pub(crate) fn battery_line(battery: &crate::charts::BatteryReadings, locale: Locale) -> String {
+    let status = battery_status(battery.status.as_deref(), locale);
+    let z = zh(locale);
+    match (
+        battery.status.as_deref(),
+        battery.time_remaining,
+        battery.time_to_full,
+    ) {
+        (Some("discharging"), Some(left), _) => {
+            let left = hours_minutes(left, locale);
+            if z {
+                format!("{status}，剩下約 {left}")
+            } else {
+                format!("{status}, about {left} left")
+            }
+        }
+        (Some("charging"), _, Some(full)) => {
+            let full = hours_minutes(full, locale);
+            if z {
+                format!("{status}，約 {full}後充滿")
+            } else {
+                format!("{status}, full in about {full}")
+            }
+        }
+        _ => status.to_string(),
+    }
+}
+
+/// Watt-hours: `32.4 Wh`.
+pub(crate) fn watt_hours(value: f64) -> String {
+    if value < 1.0 {
+        format!("{:.0} mWh", value * 1000.0)
+    } else {
+        format!("{value:.1} Wh")
+    }
+}
+
+/// What kind of power source, in words.
+pub(crate) fn power_source_title(
+    source: &crate::charts::PowerSourceReadings,
+    locale: Locale,
+) -> String {
+    let c = copy(locale);
+    match source.kind.as_deref() {
+        Some("usb") => match &source.usb_type {
+            Some(kind) if kind.contains("PD") => format!("{} (USB PD)", c.usb_c_port),
+            _ => c.usb_c_port.to_string(),
+        },
+        _ => c.power_adapter.to_string(),
+    }
+}
+
+/// "Since unplugged at 14:03" in words, given minutes ago.
+pub(crate) fn since_unplugged(
+    seconds_on_battery: f64,
+    total_watt_hours: f64,
+    locale: Locale,
+) -> String {
+    let span = hours_minutes(seconds_on_battery, locale);
+    let energy = watt_hours(total_watt_hours);
+    if zh(locale) {
+        format!("使用電池 {span}，共耗用 {energy}")
+    } else {
+        format!("{span} on battery, {energy} used")
     }
 }

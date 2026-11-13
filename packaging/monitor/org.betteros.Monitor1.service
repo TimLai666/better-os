@@ -1,0 +1,7 @@
+[D-BUS Service]
+Name=org.betteros.Monitor1
+Exec=/usr/bin/better-monitor-service
+# Session bus. The taskbar item autostarts at login and the window can be
+# opened at any time; either one asking for org.betteros.Monitor1 gets the
+# service started through its user unit rather than finding nothing there.
+SystemdService=better-monitor.service

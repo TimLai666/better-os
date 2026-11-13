@@ -34,7 +34,8 @@ required_executables() {
             printf '%s\n' \
                 usr/bin/better-monitor \
                 usr/bin/better-monitor-service \
-                usr/bin/better-monitor-cli
+                usr/bin/better-monitor-cli \
+                usr/bin/better-monitor-tray
             ;;
         better-launcher)
             printf '%s\n' usr/bin/better-launcher
@@ -73,6 +74,9 @@ required_data_files() {
         better-monitor)
             printf '%s\n' \
                 usr/lib/systemd/user/better-monitor.service \
+                usr/share/dbus-1/services/org.betteros.Monitor1.service \
+                usr/lib/systemd/user/better-monitor-tray.service \
+                usr/share/dbus-1/services/org.betteros.MonitorTray1.service \
                 usr/share/applications/io.betteros.Monitor.desktop \
                 usr/share/icons/hicolor/scalable/apps/better-monitor.svg
             ;;
@@ -428,6 +432,39 @@ for package_name in \
             grep -q '^Exec=better-monitor$' \
                 "$extract_dir/usr/share/applications/io.betteros.Monitor.desktop" || {
                 printf 'The Better Monitor desktop entry does not run the window binary\n' >&2
+                exit 1
+            }
+            # The taskbar item is a user unit that starts the packaged program,
+            # replaces a stray copy first, and is never an autostart entry
+            # (which Better Manager could not stop or restart).
+            grep -q '^ExecStart=/usr/bin/better-monitor-tray$' \
+                "$extract_dir/usr/lib/systemd/user/better-monitor-tray.service" &&
+                grep -q '^ExecStartPre=-/usr/bin/pkill --uid %U ' \
+                    "$extract_dir/usr/lib/systemd/user/better-monitor-tray.service" &&
+                grep -q '^PartOf=graphical-session.target$' \
+                    "$extract_dir/usr/lib/systemd/user/better-monitor-tray.service" &&
+                grep -q '^WantedBy=graphical-session.target$' \
+                    "$extract_dir/usr/lib/systemd/user/better-monitor-tray.service" || {
+                printf 'The Better Monitor taskbar user unit is wrong\n' >&2
+                exit 1
+            }
+            if [[ -e "$extract_dir/etc/xdg/autostart/better-monitor-tray.desktop" ]]; then
+                printf 'The Better Monitor taskbar item must not also autostart\n' >&2
+                exit 1
+            fi
+            grep -q '^SystemdService=better-monitor-tray.service$' \
+                "$extract_dir/usr/share/dbus-1/services/org.betteros.MonitorTray1.service" &&
+                grep -q '^Name=org.betteros.MonitorTray1$' \
+                    "$extract_dir/usr/share/dbus-1/services/org.betteros.MonitorTray1.service" || {
+                printf 'The Better Monitor taskbar activation file is wrong\n' >&2
+                exit 1
+            }
+            # Asking for the service starts it through its user unit.
+            grep -q '^SystemdService=better-monitor.service$' \
+                "$extract_dir/usr/share/dbus-1/services/org.betteros.Monitor1.service" &&
+                grep -q '^Name=org.betteros.Monitor1$' \
+                    "$extract_dir/usr/share/dbus-1/services/org.betteros.Monitor1.service" || {
+                printf 'The Better Monitor D-Bus activation file is wrong\n' >&2
                 exit 1
             }
             ;;

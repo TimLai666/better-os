@@ -6,12 +6,29 @@
 
 use std::path::{Path, PathBuf};
 
+/// Where per-socket traffic counters come from.
+///
+/// They are not a file: the kernel answers a `NETLINK_SOCK_DIAG` dump. A
+/// snapshot records the raw reply bytes instead, so a test drives the same
+/// parser production uses without opening a socket.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SocketSource {
+    /// Ask the running kernel.
+    Netlink,
+    /// A recorded reply: the concatenated netlink messages of one TCP dump.
+    Recorded(PathBuf),
+}
+
 /// The filesystem roots a collector reads from.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Roots {
     proc_dir: PathBuf,
     sys_dir: PathBuf,
     passwd_path: PathBuf,
+    sockets: SocketSource,
+    /// Whether NVIDIA's management library may be loaded. Only the real
+    /// machine loads it; a snapshot never does, so no test can reach a driver.
+    nvml: bool,
 }
 
 impl Roots {
@@ -21,6 +38,8 @@ impl Roots {
             proc_dir: PathBuf::from("/proc"),
             sys_dir: PathBuf::from("/sys"),
             passwd_path: PathBuf::from("/etc/passwd"),
+            sockets: SocketSource::Netlink,
+            nvml: true,
         }
     }
 
@@ -32,6 +51,8 @@ impl Roots {
             proc_dir: root.join("proc"),
             sys_dir: root.join("sys"),
             passwd_path: root.join("etc").join("passwd"),
+            sockets: SocketSource::Recorded(root.join("netlink").join("sock_diag_tcp")),
+            nvml: false,
         }
     }
 
@@ -44,7 +65,19 @@ impl Roots {
             proc_dir: proc_dir.into(),
             sys_dir: sys_dir.into(),
             passwd_path: passwd_path.into(),
+            sockets: SocketSource::Recorded(PathBuf::from("/nonexistent/sock_diag_tcp")),
+            nvml: false,
         }
+    }
+
+    /// Where per-socket traffic counters are read from.
+    pub fn sockets(&self) -> &SocketSource {
+        &self.sockets
+    }
+
+    /// Whether NVIDIA's management library may be loaded.
+    pub fn loads_nvml(&self) -> bool {
+        self.nvml
     }
 
     /// A path under the proc root, given the same relative form a
@@ -91,6 +124,8 @@ mod tests {
             PathBuf::from("/sys/class/net/eth0/speed")
         );
         assert_eq!(roots.passwd_path(), Path::new("/etc/passwd"));
+        assert_eq!(roots.sockets(), &SocketSource::Netlink);
+        assert!(roots.loads_nvml());
     }
 
     #[test]
@@ -108,5 +143,11 @@ mod tests {
             roots.passwd_path(),
             Path::new("/fixtures/snapshot-a/etc/passwd")
         );
+        // A snapshot never opens a netlink socket or loads a vendor library.
+        assert_eq!(
+            roots.sockets(),
+            &SocketSource::Recorded(PathBuf::from("/fixtures/snapshot-a/netlink/sock_diag_tcp"))
+        );
+        assert!(!roots.loads_nvml());
     }
 }
