@@ -50,6 +50,14 @@ with HOME and XDG directories in a temporary folder:
   ("上次擷取：剛才"). It is `Notice::Done(kind)` (`git-gui/src/session.rs`
   around lines 2711 and 2765), drawn by `render.rs` as a Success `InfoBar`
   with a close button and no timeout, after every operation kind.
+- **Clicks on the blank part of an item.** The owner, 2026-11-14: the
+  "New repository" click that did nothing was on the blank part of the item,
+  which was highlighted under the pointer; a click on the words works. The
+  owner asks that every app be checked: the whole highlighted item is the
+  click target, never only its text. In the sandbox the same day, clicks on
+  the blank parts of Better Git's three "New repository…" entries (the
+  welcome card, File menu, and the repository flyout's Add menu) all opened
+  the dialog, so the failing item is another one; the audit below finds it.
 - **Tabs.** Better Git's "Changes / History" and the branch flyout's
   "Branches / Pull requests" use `SelectorBar` and look like tabs in the
   sandbox. The owner's report covers all apps, so the controls that switch
@@ -75,6 +83,19 @@ with HOME and XDG directories in a temporary folder:
   (Better Touchpad's speed presets) stays a value control, but must not be
   confused with tabs: if it switches what the page shows, it is a
   `SelectorBar`.
+
+- **The highlighted area is the click area, in every app.** Audit every
+  element in every app crate (and `better-ui`) that changes its look under
+  the pointer (`.hover(`, `on_hover`, a highlight state) or reacts to a
+  click (`on_click`, `on_mouse_down`, `on_mouse_up`): the handler sits on
+  the same element that draws the highlight, that element fills the row
+  (no click target that is only the label, an icon, or a child with its own
+  width), and no child that occludes or stops propagation leaves a dead
+  spot inside it. Add a kit test helper that clicks a row at its left edge,
+  centre, right edge, and the gap between label and trailing text, and use
+  it for every kit row (menu items, list and table rows, navigation items,
+  settings cards, combo items, breadcrumb items, selector items, tabs).
+  List every place fixed, per app, in What was built.
 
 **Better Git:**
 
