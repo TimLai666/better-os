@@ -54,13 +54,13 @@ benchmarks:
     maximum_regression_percent: 1
 permissions:
   - name: session-bus-name
-    reason: owns org.betteros.Awake1 so the tray and the settings window talk to one service, and the tray owns org.betteros.AwakeTray1 while it raises the low-battery notification so the service raises it only when no tray is running
+    reason: owns org.betteros.Awake1 so the tray and the settings window talk to one service, and the tray owns org.betteros.AwakeTray1 while it raises the low-battery notification so the service raises it only when no tray is running; asking for that name starts the tray through its better-awake-tray user unit
   - name: logind-inhibitor
     reason: holds systemd-logind sleep and idle locks; display-blank and automatic-lock have no logind lock and are reported unmet rather than faked
   - name: status-notifier-item
     reason: the tray needs the StatusNotifierItem protocol; a missing StatusNotifierWatcher host is reported, never assumed present
   - name: systemd-user-unit
-    reason: installs a systemd user unit for the service and an XDG autostart entry for the tray
+    reason: installs systemd user units for the service and for the tray, both bound to graphical-session.target
   - name: procfs-read
     reason: trigger providers read /proc for running processes, CPU utilization, and network throughput
   - name: sysfs-read
@@ -72,12 +72,12 @@ paths:
   - /usr/bin/awake-tray
   - /usr/bin/awake-gui
   - /usr/share/applications/better-awake.desktop
-  - /etc/xdg/autostart/better-awake-tray.desktop
   - /usr/lib/systemd/user/better-awake.service
-  # One icon for both entries: the tray autostart entry names the same theme
-  # name the settings window does.
+  - /usr/lib/systemd/user/better-awake-tray.service
+  # One icon for the window and the notifications the tray raises.
   - /usr/share/icons/hicolor/scalable/apps/better-awake.svg
   - /usr/share/dbus-1/services/org.betteros.Awake1.service
+  - /usr/share/dbus-1/services/org.betteros.AwakeTray1.service
   - /usr/share/icons/hicolor/scalable/status/better-awake-inactive-symbolic.svg
   - /usr/share/icons/hicolor/scalable/status/better-awake-active-symbolic.svg
   - /usr/share/icons/hicolor/scalable/status/better-awake-active-trigger-symbolic.svg
@@ -88,8 +88,11 @@ paths:
   - ~/.local/state/better-awake/awake-history.json
   - ~/.local/state/better-awake/awake-service-state.json
 release_notes:
+  - The tray menu always matches the service. A panel now sees every changed menu under new item ids, so it can no longer keep showing the not-awake menu during a session, and every item with an arrow opens.
+  - Choosing a length while a session runs changes that session instead of reporting an error, and an action the service refuses is said in a notification.
+  - The tray runs as a systemd user unit, so an update restarts it with the service, and it follows the service and the panel across their restarts.
   - Keep-awake sessions started by hand or by an automatic rule, with every active reason listed and the battery stop threshold on by default.
   - Uninstall stops the service and releases every inhibitor it holds before the package is removed, so the machine is never left awake with nobody left to explain why.
-  - Uninstall disables the better-awake systemd user unit and removes the tray autostart entry, and the tray unregisters itself from the StatusNotifierWatcher host rather than leaving a dead icon behind.
+  - Uninstall disables the better-awake and better-awake-tray systemd user units (the second is the tray's autostart), and the tray leaves the StatusNotifierWatcher host when its unit stops rather than leaving a dead icon behind.
   - Your rules and history are kept by default when the component is removed. Deleting them is a separate, explicit choice at uninstall time, never the default.
-  - Rollback reinstalls the previously installed version and restores its systemd user unit and autostart entry. Rules and history are left untouched by a rollback, so a failed update never costs you the rules you wrote.
+  - Rollback reinstalls the previously installed version and restores its systemd user units, the tray's included. Rules and history are left untouched by a rollback, so a failed update never costs you the rules you wrote.

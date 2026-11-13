@@ -353,15 +353,17 @@ async fn serve_tray(bus: &PrivateBus) -> (zbus::Connection, Arc<TrayController>)
     let status = client.status().await.unwrap();
     let controller = Arc::new(TrayController::new(client, Locale::EnUs, status));
 
-    let connection = bus.connect().await.unwrap();
-    connection
-        .object_server()
-        .at(ITEM_PATH, StatusNotifierItem::new(controller.clone()))
-        .await
-        .unwrap();
-    connection
-        .object_server()
-        .at(MENU_PATH, DbusMenu::new(controller.clone()))
+    // Served from the builder, as `main.rs` does: objects added to a built
+    // connection start zbus's object server lazily, and a call arriving before
+    // it has subscribed is dropped without a reply.
+    let address: zbus::Address = bus.address.parse().unwrap();
+    let connection = zbus::connection::Builder::address(address)
+        .unwrap()
+        .serve_at(ITEM_PATH, StatusNotifierItem::new(controller.clone()))
+        .unwrap()
+        .serve_at(MENU_PATH, DbusMenu::new(controller.clone()))
+        .unwrap()
+        .build()
         .await
         .unwrap();
     controller.attach(connection.clone()).await;
@@ -1033,4 +1035,907 @@ async fn a_tray_with_no_notifier_does_not_claim_the_notifications() {
             .unwrap(),
         "a tray that cannot notify must leave the service to do it"
     );
+}
+
+// ---- The AppIndicator host, replayed -----------------------------------------
+//
+// GNOME's AppIndicator extension (`ubuntu/gnome-shell-extension-appindicator`,
+// and the `zorin-appindicator@zorinos.com` fork Zorin ships, whose
+// `dbusMenu.js` is the same in every part used here) keeps every menu item it
+// has seen in a cache keyed by id. `HostMenu` is that cache, call for call:
+//
+// - a layout read is always `GetLayout(0, -1, ["type", "children-display"])`;
+// - an id it has not seen is created from that reply and then filled with
+//   `GetGroupProperties([ids], [])`;
+// - an id it has seen gets only the `type` and `children-display` that reply
+//   carried, and nothing else is read again unless an `ItemsPropertiesUpdated`
+//   arrived while the menu was closed (`_doLayoutUpdate`);
+// - `LayoutUpdated` and `ItemsPropertiesUpdated` that arrive while the menu is
+//   closed are only remembered, and acted on when it next opens;
+// - opening the menu sends `AboutToShow(0)` and re-reads the layout if that
+//   answers true; unfolding a submenu sends `AboutToShow(id)`;
+// - a click is `Event(id, "clicked", <i 0>, timestamp)`.
+//
+// Owner's machine, 2026-11-13: the tray reused ids 1..N for every layout, so
+// this cache kept the not-awake labels on the awake layout's ids. These tests
+// fail against that tray.
+
+/// One child of a layout node, which arrives as a variant holding `(ia{sv}av)`.
+fn child_node(child: &OwnedValue) -> Node {
+    let value: zbus::zvariant::Value<'_> = child.try_clone().unwrap().into();
+    let value = match value {
+        zbus::zvariant::Value::Value(inner) => *inner,
+        other => other,
+    };
+    let zbus::zvariant::Value::Structure(structure) = value else {
+        panic!("a layout child is not a structure");
+    };
+    let mut fields = structure.into_fields().into_iter();
+    let id = i32::try_from(fields.next().unwrap()).unwrap();
+    let properties = HashMap::<String, OwnedValue>::try_from(fields.next().unwrap()).unwrap();
+    let children = Vec::<OwnedValue>::try_from(fields.next().unwrap()).unwrap();
+    Node(id, properties, children)
+}
+
+#[derive(Debug, Default)]
+struct HostItem {
+    properties: HashMap<String, OwnedValue>,
+    children: Vec<i32>,
+}
+
+/// What the panel draws for one item.
+#[derive(Clone, Debug, PartialEq)]
+struct Drawn {
+    depth: usize,
+    id: i32,
+    label: String,
+    kind: &'static str,
+    enabled: bool,
+    children: usize,
+}
+
+struct HostMenu {
+    connection: zbus::Connection,
+    tray: String,
+    items: HashMap<i32, HostItem>,
+    signals: zbus::MessageStream,
+    active: bool,
+    layout_update_required: bool,
+    items_update_required: bool,
+}
+
+fn string_property(properties: &HashMap<String, OwnedValue>, name: &str) -> Option<String> {
+    properties
+        .get(name)
+        .and_then(|value| value.downcast_ref::<&str>().ok().map(str::to_string))
+}
+
+impl HostMenu {
+    async fn attach(bus: &PrivateBus, tray: &zbus::Connection) -> Self {
+        let connection = bus.connect().await.unwrap();
+        let tray = tray.unique_name().unwrap().to_string();
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender(tray.as_str())
+            .unwrap()
+            .path(MENU_PATH)
+            .unwrap()
+            .build();
+        let signals = zbus::MessageStream::for_match_rule(rule, &connection, None)
+            .await
+            .unwrap();
+        let mut items = HashMap::new();
+        items.insert(0, HostItem::default());
+        let mut host = Self {
+            connection,
+            tray,
+            items,
+            signals,
+            active: false,
+            layout_update_required: false,
+            items_update_required: false,
+        };
+        // `initAsync` reads the layout once, closed.
+        host.layout_update().await;
+        host
+    }
+
+    async fn call<B, R>(&self, method: &str, body: &B) -> R
+    where
+        B: serde::Serialize + zbus::zvariant::DynamicType,
+        R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
+    {
+        self.connection
+            .call_method(
+                Some(self.tray.as_str()),
+                MENU_PATH,
+                Some("com.canonical.dbusmenu"),
+                method,
+                body,
+            )
+            .await
+            .unwrap()
+            .body()
+            .deserialize()
+            .unwrap()
+    }
+
+    async fn layout_update(&mut self) {
+        let (_revision, root): (u32, Node) = self
+            .call(
+                "GetLayout",
+                &(
+                    0i32,
+                    -1i32,
+                    vec!["type".to_string(), "children-display".to_string()],
+                ),
+            )
+            .await;
+        let mut requested = Vec::new();
+        self.merge(&root, &mut requested);
+        self.request_properties(requested).await;
+        self.collect_garbage();
+        self.layout_update_required = false;
+        self.items_update_required = false;
+    }
+
+    /// `_doLayoutUpdate`.
+    fn merge(&mut self, node: &Node, requested: &mut Vec<i32>) {
+        let children: Vec<Node> = node.2.iter().map(child_node).collect();
+        for child in &children {
+            self.merge(child, requested);
+        }
+        let ids: Vec<i32> = children.iter().map(|child| child.0).collect();
+        match self.items.get_mut(&node.0) {
+            Some(item) => {
+                for (name, value) in &node.1 {
+                    item.properties
+                        .insert(name.clone(), value.try_clone().unwrap());
+                }
+                item.children = ids;
+                if !self.items_update_required {
+                    return;
+                }
+            }
+            None => {
+                let mut properties = HashMap::new();
+                for (name, value) in &node.1 {
+                    properties.insert(name.clone(), value.try_clone().unwrap());
+                }
+                self.items.insert(
+                    node.0,
+                    HostItem {
+                        properties,
+                        children: ids,
+                    },
+                );
+            }
+        }
+        requested.push(node.0);
+    }
+
+    /// `_requestProperties`: every property, and the item is reset first.
+    async fn request_properties(&mut self, ids: Vec<i32>) {
+        if ids.is_empty() {
+            return;
+        }
+        let reply: Vec<(i32, HashMap<String, OwnedValue>)> = self
+            .call("GetGroupProperties", &(ids, Vec::<String>::new()))
+            .await;
+        for (id, properties) in reply {
+            if let Some(item) = self.items.get_mut(&id) {
+                item.properties = properties;
+            }
+        }
+    }
+
+    fn collect_garbage(&mut self) {
+        let mut reachable = std::collections::HashSet::new();
+        let mut queue = vec![0];
+        while let Some(id) = queue.pop() {
+            if reachable.insert(id)
+                && let Some(item) = self.items.get(&id)
+            {
+                queue.extend(item.children.iter().copied());
+            }
+        }
+        self.items.retain(|id, _| reachable.contains(id));
+    }
+
+    /// Handles every signal the tray has sent so far, as `_onSignal` does.
+    async fn pump(&mut self) {
+        use zbus::export::futures_core::Stream;
+        loop {
+            let next = tokio::time::timeout(
+                std::time::Duration::from_millis(150),
+                std::future::poll_fn(|context| {
+                    std::pin::Pin::new(&mut self.signals).poll_next(context)
+                }),
+            )
+            .await;
+            let Ok(Some(Ok(message))) = next else { return };
+            let header = message.header();
+            let member = header.member().map(|member| member.to_string());
+            let root_has_children = self
+                .items
+                .get(&0)
+                .is_some_and(|root| !root.children.is_empty());
+            match member.as_deref() {
+                Some("LayoutUpdated") => {
+                    if !self.active && root_has_children {
+                        self.layout_update_required = true;
+                    } else {
+                        self.layout_update().await;
+                    }
+                }
+                Some("ItemsPropertiesUpdated") => {
+                    if !self.active && root_has_children {
+                        self.items_update_required = true;
+                        continue;
+                    }
+                    type Updated = Vec<(i32, HashMap<String, OwnedValue>)>;
+                    type Removed = Vec<(i32, Vec<String>)>;
+                    let (updated, removed): (Updated, Removed) =
+                        message.body().deserialize().unwrap();
+                    for (id, properties) in updated {
+                        if let Some(item) = self.items.get_mut(&id) {
+                            item.properties.extend(properties);
+                        }
+                    }
+                    for (id, names) in removed {
+                        if let Some(item) = self.items.get_mut(&id) {
+                            for name in names {
+                                item.properties.remove(&name);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The panel icon clicked: `active` first, then `AboutToShow(0)`.
+    async fn open(&mut self) {
+        self.pump().await;
+        self.active = true;
+        if self.layout_update_required {
+            self.layout_update().await;
+        } else if self.items_update_required {
+            let ids: Vec<i32> = self.items.keys().copied().collect();
+            self.request_properties(ids).await;
+            self.items_update_required = false;
+        }
+        let changed: (bool,) = self.call("AboutToShow", &(0i32,)).await;
+        if changed.0 {
+            self.layout_update().await;
+        }
+        self.pump().await;
+    }
+
+    async fn close(&mut self) {
+        self.active = false;
+        self.pump().await;
+    }
+
+    /// What the panel shows, depth-first.
+    fn drawn(&self) -> Vec<Drawn> {
+        let mut drawn = Vec::new();
+        self.draw(0, 0, &mut drawn);
+        drawn
+    }
+
+    fn draw(&self, id: i32, depth: usize, drawn: &mut Vec<Drawn>) {
+        let Some(item) = self.items.get(&id) else {
+            return;
+        };
+        for child in &item.children {
+            let Some(entry) = self.items.get(child) else {
+                continue;
+            };
+            let properties = &entry.properties;
+            let kind =
+                if string_property(properties, "children-display").as_deref() == Some("submenu") {
+                    "submenu"
+                } else if string_property(properties, "type").as_deref() == Some("separator") {
+                    "separator"
+                } else {
+                    "item"
+                };
+            let enabled = properties
+                .get("enabled")
+                .map(|value| bool::try_from(value).unwrap())
+                .unwrap_or(true);
+            drawn.push(Drawn {
+                depth,
+                id: *child,
+                label: string_property(properties, "label")
+                    .unwrap_or_default()
+                    .replacen('_', "", 1),
+                kind,
+                enabled,
+                children: entry.children.len(),
+            });
+            if kind == "submenu" {
+                self.draw(*child, depth + 1, drawn);
+            }
+        }
+    }
+
+    fn find(&self, label: &str) -> Drawn {
+        self.drawn()
+            .into_iter()
+            .find(|item| item.label == label)
+            .unwrap_or_else(|| panic!("the panel shows no {label:?}: {:#?}", self.drawn()))
+    }
+
+    fn shows(&self, label: &str) -> bool {
+        self.drawn().iter().any(|item| item.label == label)
+    }
+
+    /// Unfolds a submenu, then clicks an item, the way a person does it.
+    async fn click(&mut self, label: &str) {
+        let item = self.find(label);
+        // The submenu holding it, if any, is unfolded first.
+        let drawn = self.drawn();
+        if let Some(position) = drawn.iter().position(|entry| entry.id == item.id)
+            && item.depth > 0
+            && let Some(parent) = drawn[..position]
+                .iter()
+                .rev()
+                .find(|entry| entry.depth == item.depth - 1 && entry.kind == "submenu")
+        {
+            let _: (bool,) = self.call("AboutToShow", &(parent.id,)).await;
+        }
+        let _: () = self
+            .call(
+                "Event",
+                &(item.id, "clicked", zbus::zvariant::Value::from(0i32), 0u32),
+            )
+            .await;
+        // A click closes the menu.
+        self.close().await;
+    }
+
+    /// Every way the drawn menu can be broken, checked at once.
+    fn assert_well_formed(&self) {
+        for item in self.drawn() {
+            match item.kind {
+                "separator" => {}
+                "submenu" => {
+                    assert!(!item.label.is_empty(), "a submenu with no label: {item:?}");
+                    assert!(item.enabled, "a disabled submenu arrow: {item:?}");
+                    assert!(item.children > 0, "a submenu that opens nothing: {item:?}");
+                }
+                _ => assert!(!item.label.is_empty(), "an item with no label: {item:?}"),
+            }
+        }
+    }
+}
+
+/// The menu as the tray means it, read with every property. What the host
+/// draws must be exactly this.
+async fn intended(bus: &PrivateBus, tray: &zbus::Connection) -> Vec<(usize, String)> {
+    fn walk(node: &Node, depth: usize, out: &mut Vec<(usize, String)>) {
+        for child in &node.2 {
+            let child = child_node(child);
+            out.push((
+                depth,
+                string_property(&child.1, "label").unwrap_or_default(),
+            ));
+            walk(&child, depth + 1, out);
+        }
+    }
+    let reader = bus.connect().await.unwrap();
+    let (_, root) = get_layout(&reader, tray.unique_name().unwrap().as_str()).await;
+    let mut out = Vec::new();
+    walk(&root, 0, &mut out);
+    out
+}
+
+fn as_drawn_labels(host: &HostMenu) -> Vec<(usize, String)> {
+    host.drawn()
+        .into_iter()
+        .map(|item| (item.depth, item.label))
+        .collect()
+}
+
+async fn serve_following_tray(bus: &PrivateBus) -> (zbus::Connection, Arc<TrayController>) {
+    let (tray, controller) = serve_tray(bus).await;
+    tokio::spawn(controller.clone().follow_service(tray.clone(), None));
+    // The subscription is in place before anything is asked of the service.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    (tray, controller)
+}
+
+#[tokio::test]
+async fn the_panel_shows_the_awake_menu_after_a_session_starts_from_it() {
+    let bus = bus_or_skip!();
+    let service = serve_service(&bus).await.unwrap();
+    let (tray, _controller) = serve_following_tray(&bus).await;
+    let mut host = HostMenu::attach(&bus, &tray).await;
+
+    host.open().await;
+    assert!(host.shows("Not keeping this computer awake"));
+    host.assert_well_formed();
+    host.click("Indefinitely").await;
+    assert!(service.engine.holds_inhibitor().await);
+
+    host.open().await;
+    assert_eq!(as_drawn_labels(&host), intended(&bus, &tray).await);
+    host.assert_well_formed();
+    assert!(host.shows("Keeping this computer awake"));
+    for stale in [
+        "Not keeping this computer awake",
+        "Start a session",
+        "Until…",
+    ] {
+        assert!(!host.shows(stale), "the panel still shows {stale:?}");
+    }
+    // Nothing to extend in a session with no end, so no arrow for it.
+    assert!(!host.shows("Extend session"));
+    assert!(host.shows("End session"));
+}
+
+#[tokio::test]
+async fn every_item_of_both_menus_does_what_it_says_through_the_panel() {
+    let bus = bus_or_skip!();
+    let service = serve_service(&bus).await.unwrap();
+    let (tray, controller) = serve_following_tray(&bus).await;
+    let mut host = HostMenu::attach(&bus, &tray).await;
+
+    // Not awake: a length starts a session of that length.
+    host.open().await;
+    host.click("30 minutes").await;
+    let status = controller.status().await;
+    assert_eq!(status.sessions.len(), 1);
+    assert_eq!(status.sessions[0].end, WireEnd::Duration { seconds: 1_800 });
+
+    // Awake: a length changes the running session, from now, and never
+    // starts a second one or reports an error.
+    host.open().await;
+    host.assert_well_formed();
+    assert_eq!(as_drawn_labels(&host), intended(&bus, &tray).await);
+    let change = host.find("Change length");
+    assert_eq!(change.kind, "submenu");
+    host.click("2 hours").await;
+    let status = controller.status().await;
+    assert_eq!(status.sessions.len(), 1, "{:?}", status.sessions);
+    assert_eq!(status.sessions[0].session_id, 1);
+    assert_eq!(
+        status.sessions[0].end,
+        WireEnd::UntilUnixSeconds {
+            unix_seconds: NOW + 7_200
+        }
+    );
+
+    // A timed session can be extended, and the extension is an open submenu.
+    host.open().await;
+    host.assert_well_formed();
+    let extend = host.find("Extend session");
+    assert!(extend.enabled && extend.kind == "submenu" && extend.children == 3);
+    host.click("15 min").await;
+    assert_eq!(
+        controller.status().await.sessions[0].end,
+        WireEnd::UntilUnixSeconds {
+            unix_seconds: NOW + 7_200 + 900
+        }
+    );
+
+    // The quick options change what the next session asks for.
+    host.open().await;
+    host.click("End session").await;
+    assert!(!service.engine.holds_inhibitor().await);
+    host.open().await;
+    assert_eq!(as_drawn_labels(&host), intended(&bus, &tray).await);
+    host.assert_well_formed();
+    assert!(host.shows("Not keeping this computer awake"));
+    host.click("Allow display to turn off").await;
+    assert!(!controller.options().await.allow_display_off);
+    host.open().await;
+    let toggle = host.find("Allow display to turn off");
+    assert_eq!(
+        host.items[&toggle.id].properties["toggle-state"]
+            .downcast_ref::<i32>()
+            .unwrap(),
+        0,
+        "the panel shows the checkmark the tray holds"
+    );
+    host.close().await;
+}
+
+#[tokio::test]
+async fn the_open_menu_follows_a_session_started_somewhere_else() {
+    let bus = bus_or_skip!();
+    let _service = serve_service(&bus).await.unwrap();
+    let (tray, _controller) = serve_following_tray(&bus).await;
+    let mut host = HostMenu::attach(&bus, &tray).await;
+
+    host.open().await;
+    assert!(host.shows("Start a session"));
+    // The settings window starts one while the panel menu is open.
+    client(&bus)
+        .await
+        .send(start(WireEnd::Indefinite))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    host.pump().await;
+    assert_eq!(as_drawn_labels(&host), intended(&bus, &tray).await);
+    assert!(host.shows("Reason: Android Studio build is running"));
+    host.assert_well_formed();
+}
+
+#[tokio::test]
+async fn starting_from_a_stale_menu_changes_the_running_session_instead_of_failing() {
+    let bus = bus_or_skip!();
+    let service = serve_service(&bus).await.unwrap();
+    // Not following: this tray still believes nothing is running.
+    let (_tray, controller) = serve_tray(&bus).await;
+    service.engine.handle(start(WireEnd::Indefinite)).await;
+    assert_eq!(controller.indicator().await, WireIndicator::Inactive);
+
+    let fifteen = controller
+        .menu()
+        .await
+        .find_by_label("15 minutes")
+        .unwrap()
+        .id;
+    assert_eq!(
+        controller.activate(fifteen).await,
+        awake_tray::Activation::Applied
+    );
+    let status = controller.status().await;
+    assert_eq!(status.sessions.len(), 1);
+    assert_eq!(
+        status.sessions[0].reason, "Android Studio build is running",
+        "the running session is changed, not replaced by the tray's"
+    );
+    assert_eq!(
+        status.sessions[0].end,
+        WireEnd::UntilUnixSeconds {
+            unix_seconds: NOW + 900
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_refused_action_is_said_in_a_notification() {
+    let bus = bus_or_skip!();
+    let (_daemon, raised) = serve_notifications(&bus, Behaviour::Accept).await;
+    let service = serve_service(&bus).await.unwrap();
+    let (_tray, controller) = serve_tray(&bus).await;
+    controller
+        .attach_notifier(notifier(&bus, Locale::EnUs).await)
+        .await;
+
+    let indefinitely = controller
+        .menu()
+        .await
+        .find_by_label("Indefinitely")
+        .unwrap()
+        .id;
+    controller.activate(indefinitely).await;
+    let end = controller
+        .menu()
+        .await
+        .find_by_label("End session")
+        .unwrap()
+        .id;
+    // Ended elsewhere; this tray does not know.
+    service
+        .engine
+        .handle(AwakeRequest::new(RequestBody::EndManualSession))
+        .await;
+
+    assert!(matches!(
+        controller.activate(end).await,
+        awake_tray::Activation::Failed(_)
+    ));
+    let raised = settle(&raised, 1).await;
+    assert_eq!(raised.len(), 1);
+    let labels = Locale::EnUs.labels();
+    assert_eq!(raised[0].summary, labels.action_failed);
+    assert_eq!(raised[0].body, labels.failed_no_manual_session);
+    // And the menu is the truth again.
+    assert_eq!(controller.indicator().await, WireIndicator::Inactive);
+}
+
+#[tokio::test]
+async fn the_tray_follows_the_service_across_a_restart() {
+    let bus = bus_or_skip!();
+    let service = serve_service(&bus).await.unwrap();
+    let (_tray, controller) = serve_following_tray(&bus).await;
+    service.engine.handle(start(WireEnd::Indefinite)).await;
+    controller.refresh().await.unwrap();
+    assert_eq!(controller.indicator().await, WireIndicator::ActiveManual);
+
+    // The service stops and a new one takes the name, holding nothing.
+    drop(service);
+    let _restarted = serve_service(&bus).await.unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while controller.indicator().await != WireIndicator::Inactive
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        controller.indicator().await,
+        WireIndicator::Inactive,
+        "a new service is read as soon as it is on the bus"
+    );
+
+    // And its signals reach the tray: the subscription followed the name.
+    client(&bus)
+        .await
+        .send(start(WireEnd::Indefinite))
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while controller.indicator().await != WireIndicator::ActiveManual
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(controller.indicator().await, WireIndicator::ActiveManual);
+}
+
+#[tokio::test]
+async fn a_watcher_that_appears_after_the_tray_gets_the_item_registered() {
+    let bus = bus_or_skip!();
+    let tray = bus.connect().await.unwrap();
+    let name = tray.unique_name().unwrap().to_string();
+    assert_eq!(
+        register_and_verify(&tray, &name).await,
+        TrayAvailability::NoWatcher
+    );
+
+    let reports = Arc::new(Mutex::new(Vec::new()));
+    let sink = reports.clone();
+    tokio::spawn(awake_tray::sni::keep_registered(
+        tray.clone(),
+        name.clone(),
+        move |availability| sink.lock().unwrap().push(availability),
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let _watcher = serve_watcher(&bus, true, true).await.unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while reports.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        reports.lock().unwrap().as_slice(),
+        &[TrayAvailability::Registered]
+    );
+}
+
+// ---- A service that never answers -------------------------------------------
+
+const SILENT_NAME: &str = "org.betteros.Awake1Silent";
+
+/// Owns a name and the interface, and does not reply to a request until the
+/// test lets it: what a lost reply or a wedged handler looks like from the
+/// tray. The test releases it before the bus goes, so no handler is left
+/// parked inside zbus when the connection is torn down.
+struct SilentService {
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+#[zbus::interface(name = "org.betteros.Awake1")]
+impl SilentService {
+    async fn request(&self, _request_json: String) -> zbus::fdo::Result<String> {
+        let _permit = self.release.acquire().await;
+        Err(zbus::fdo::Error::Failed("released".to_string()))
+    }
+}
+
+struct Silent {
+    _connection: zbus::Connection,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+impl Drop for Silent {
+    fn drop(&mut self) {
+        self.release
+            .add_permits(tokio::sync::Semaphore::MAX_PERMITS / 2);
+    }
+}
+
+/// A connection whose calls give up after 300 ms, as the tray's give up after
+/// `CALL_TIMEOUT`.
+async fn impatient(bus: &PrivateBus) -> zbus::Connection {
+    let address: zbus::Address = bus.address.parse().unwrap();
+    zbus::connection::Builder::address(address)
+        .unwrap()
+        .method_timeout(std::time::Duration::from_millis(300))
+        .build()
+        .await
+        .unwrap()
+}
+
+async fn serve_silent(bus: &PrivateBus) -> Silent {
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let address: zbus::Address = bus.address.parse().unwrap();
+    let connection = zbus::connection::Builder::address(address)
+        .unwrap()
+        .name(SILENT_NAME)
+        .unwrap()
+        .serve_at(
+            OBJECT_PATH,
+            SilentService {
+                release: release.clone(),
+            },
+        )
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    Silent {
+        _connection: connection,
+        release,
+    }
+}
+
+#[tokio::test]
+async fn a_service_that_never_answers_is_reported_unavailable_instead_of_hanging() {
+    let bus = bus_or_skip!();
+    let _silent = serve_silent(&bus).await;
+    let client = ServiceClient::with_destination(impatient(&bus).await, SILENT_NAME.into())
+        .await
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let reply = client.status().await;
+    assert!(
+        matches!(reply, Err(awake_tray::ClientError::ServiceUnavailable(_))),
+        "{reply:?}"
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+}
+
+#[tokio::test]
+async fn a_click_the_service_never_answers_fails_and_is_said() {
+    let bus = bus_or_skip!();
+    let (_daemon, raised) = serve_notifications(&bus, Behaviour::Accept).await;
+    let _service = serve_service(&bus).await.unwrap();
+    let status = client(&bus).await.status().await.unwrap();
+    let _silent = serve_silent(&bus).await;
+    let silent = ServiceClient::with_destination(impatient(&bus).await, SILENT_NAME.into())
+        .await
+        .unwrap();
+    let controller = TrayController::new(silent, Locale::EnUs, status);
+    controller
+        .attach_notifier(notifier(&bus, Locale::EnUs).await)
+        .await;
+
+    let fifteen = controller
+        .menu()
+        .await
+        .find_by_label("15 minutes")
+        .unwrap()
+        .id;
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        controller.activate(fifteen).await,
+        awake_tray::Activation::Failed(awake_tray::ClientError::ServiceUnavailable(_))
+    ));
+    // The send and the refresh after it each wait out the timeout, no more.
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    let raised = settle(&raised, 1).await;
+    assert_eq!(raised.len(), 1);
+    assert_eq!(
+        raised[0].body,
+        Locale::EnUs.labels().failed_service_unavailable
+    );
+}
+
+// ---- Review follow-ups -------------------------------------------------------
+
+#[tokio::test]
+async fn racing_rebuilds_reach_the_host_in_the_order_they_were_made() {
+    let bus = bus_or_skip!();
+    let service = serve_service(&bus).await.unwrap();
+    let (tray, controller) = serve_tray(&bus).await;
+    let reader = bus.connect().await.unwrap();
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender(tray.unique_name().unwrap().as_str())
+        .unwrap()
+        .member("LayoutUpdated")
+        .unwrap()
+        .build();
+    let mut signals = zbus::MessageStream::for_match_rule(rule, &reader, None)
+        .await
+        .unwrap();
+
+    let not_awake = client(&bus).await.status().await.unwrap();
+    service.engine.handle(start(WireEnd::Indefinite)).await;
+    let awake = client(&bus).await.status().await.unwrap();
+
+    for _ in 0..20 {
+        tokio::join!(
+            controller.set_status(awake.clone()),
+            controller.set_status(not_awake.clone()),
+        );
+    }
+
+    use zbus::export::futures_core::Stream;
+    let mut revisions = Vec::new();
+    while let Ok(Some(Ok(message))) = tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        std::future::poll_fn(|context| std::pin::Pin::new(&mut signals).poll_next(context)),
+    )
+    .await
+    {
+        let (revision, _parent): (u32, i32) = message.body().deserialize().unwrap();
+        revisions.push(revision);
+    }
+    assert!(!revisions.is_empty());
+    assert!(
+        revisions.windows(2).all(|pair| pair[0] < pair[1]),
+        "out of order: {revisions:?}"
+    );
+    assert_eq!(revisions.last().copied(), Some(controller.revision().await));
+}
+
+#[tokio::test]
+async fn changing_a_session_that_just_ended_starts_one_instead() {
+    let bus = bus_or_skip!();
+    let service = serve_service(&bus).await.unwrap();
+    // Not following, so this tray keeps showing the session after it ends.
+    let (_tray, controller) = serve_tray(&bus).await;
+    service.engine.handle(start(WireEnd::Indefinite)).await;
+    controller.refresh().await.unwrap();
+    let ended = controller.status().await.sessions[0].session_id;
+    service
+        .engine
+        .handle(AwakeRequest::new(RequestBody::EndManualSession))
+        .await;
+
+    // "30 minutes" under "Change length" in the menu this tray still shows.
+    let menu = controller.menu().await;
+    let change = menu.find_by_label("Change length").unwrap();
+    let thirty = change
+        .children
+        .iter()
+        .find(|item| item.label == "30 minutes")
+        .unwrap()
+        .id;
+    assert_eq!(
+        controller.activate(thirty).await,
+        awake_tray::Activation::Applied
+    );
+    let status = controller.status().await;
+    assert_eq!(status.sessions.len(), 1);
+    assert_ne!(status.sessions[0].session_id, ended, "a new session");
+    assert_eq!(status.sessions[0].end, WireEnd::Duration { seconds: 1_800 });
+}
+
+#[tokio::test]
+async fn a_new_tray_gets_the_name_an_exiting_one_was_still_holding() {
+    let bus = bus_or_skip!();
+    let old = bus.connect().await.unwrap();
+    assert!(
+        claim_notifications(&old, Some(notifier(&bus, Locale::EnUs).await))
+            .await
+            .is_some()
+    );
+
+    let new = bus.connect().await.unwrap();
+    let notifier = notifier(&bus, Locale::EnUs).await;
+    let claim = tokio::spawn(async move {
+        awake_tray::notify::claim_notifications_within(
+            &new,
+            Some(notifier),
+            10,
+            std::time::Duration::from_millis(100),
+        )
+        .await
+        .is_some()
+    });
+    // The old tray finishes exiting a moment later.
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    drop(old);
+    assert!(claim.await.unwrap(), "the replacing tray takes the name");
 }

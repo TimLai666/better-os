@@ -40,6 +40,8 @@ pub struct Labels {
     pub not_supported: &'static str,
     pub battery_stops_at: &'static str,
     pub battery_off: &'static str,
+    /// The battery row on a machine with no battery.
+    pub battery_not_applicable: &'static str,
     pub extend_session: &'static str,
     pub change_session: &'static str,
     pub end_session: &'static str,
@@ -85,6 +87,22 @@ pub struct Labels {
     /// explanation, so it says where it came from rather than inventing one.
     pub tray_session_reason: &'static str,
     pub security_confirmation_needed: &'static str,
+    /// Offered while a manual session runs: the lengths to replace it with.
+    pub change_length: &'static str,
+    /// The submenu holding what the running session holds back.
+    pub current_settings: &'static str,
+    /// The title of the notification a refused menu action raises.
+    pub action_failed: &'static str,
+    /// The bodies of that notification, one per reason, in plain words.
+    pub failed_service_unavailable: &'static str,
+    pub failed_backend_unavailable: &'static str,
+    pub failed_no_manual_session: &'static str,
+    /// The session a change or an extension named is no longer running.
+    pub failed_session_gone: &'static str,
+    pub failed_cannot_extend: &'static str,
+    pub failed_end_in_the_past: &'static str,
+    pub failed_too_many_sessions: &'static str,
+    pub failed_other: &'static str,
 }
 
 pub const ZH_TW: Labels = Labels {
@@ -106,16 +124,17 @@ pub const ZH_TW: Labels = Labels {
     started: "開始於",
     until_ended: "直到手動結束",
     system_sleep: "系統睡眠",
-    display_sleep: "螢幕睡眠",
+    display_sleep: "螢幕休眠",
     automatic_lock: "自動鎖定",
-    battery_protection: "電量保護",
-    prevented: "已阻止",
-    allowed: "允許",
-    not_supported: "此環境不支援",
+    battery_protection: "電量停止門檻",
+    prevented: "已擋下",
+    allowed: "維持原本行為",
+    not_supported: "有要求，但後端無法提供",
     battery_stops_at: "低於 {percent}% 時停止",
-    battery_off: "未啟用",
+    battery_off: "不因電量停止",
+    battery_not_applicable: "這台機器不適用",
     extend_session: "延長工作階段",
-    change_session: "變更工作階段…",
+    change_session: "工作階段設定…",
     end_session: "結束工作階段",
     automatic_rules: "自動規則",
     pause_automatic_rules: "暫停自動規則",
@@ -145,6 +164,17 @@ pub const ZH_TW: Labels = Labels {
     active_reasons: "{count} 個進行中的原因",
     tray_session_reason: "從系統匣開始的工作階段",
     security_confirmation_needed: "需要在主視窗確認",
+    change_length: "改成其他長度",
+    current_settings: "目前的設定",
+    action_failed: "保持清醒沒有完成這個動作",
+    failed_service_unavailable: "保持清醒服務沒有回應。請稍後再試一次。",
+    failed_backend_unavailable: "這台電腦目前無法保持清醒，所以沒有開始。",
+    failed_no_manual_session: "目前沒有手動開始的工作階段可以結束。",
+    failed_session_gone: "這段工作階段已經結束了，請重新開始一段。",
+    failed_cannot_extend: "這段工作階段沒有結束時間，不需要延長。",
+    failed_end_in_the_past: "選的時間已經過了，請改選其他長度。",
+    failed_too_many_sessions: "同時進行的工作階段太多了，請先結束一些。",
+    failed_other: "服務沒有接受這個要求，工作階段維持原狀。",
 };
 
 pub const EN_US: Labels = Labels {
@@ -168,14 +198,15 @@ pub const EN_US: Labels = Labels {
     system_sleep: "System sleep",
     display_sleep: "Display sleep",
     automatic_lock: "Automatic lock",
-    battery_protection: "Battery protection",
-    prevented: "Prevented",
+    battery_protection: "Battery stop threshold",
+    prevented: "Held off",
     allowed: "Allowed",
-    not_supported: "Not supported here",
-    battery_stops_at: "Stops at {percent}%",
-    battery_off: "Off",
+    not_supported: "Asked for, not delivered by the backend",
+    battery_stops_at: "Stops below {percent}%",
+    battery_off: "Never stops for battery level",
+    battery_not_applicable: "Not applicable on this machine",
     extend_session: "Extend session",
-    change_session: "Change session…",
+    change_session: "Session settings…",
     end_session: "End session",
     automatic_rules: "Automatic rules",
     pause_automatic_rules: "Pause automatic rules",
@@ -205,6 +236,17 @@ pub const EN_US: Labels = Labels {
     active_reasons: "{count} active reasons",
     tray_session_reason: "Started from the tray",
     security_confirmation_needed: "Confirm in the main window",
+    change_length: "Change length",
+    current_settings: "Current settings",
+    action_failed: "Better Awake could not do that",
+    failed_service_unavailable: "The Better Awake service is not answering. Try again in a moment.",
+    failed_backend_unavailable: "This computer cannot be kept awake right now, so nothing was started.",
+    failed_no_manual_session: "There is no session you started to end.",
+    failed_session_gone: "That session has already ended. Start a new one.",
+    failed_cannot_extend: "This session has no end time, so there is nothing to extend.",
+    failed_end_in_the_past: "That time has already passed. Choose another length.",
+    failed_too_many_sessions: "Too many sessions are running at once. End some first.",
+    failed_other: "The service did not accept that, so the session is unchanged.",
 };
 
 /// The tray's wording for a locale. A trait because [`Locale`] is defined where
@@ -347,5 +389,88 @@ mod tests {
                 && EN_US.rules_paused_until.contains("{time}"),
             "both locales must keep the placeholder the menu substitutes"
         );
+    }
+
+    #[test]
+    fn the_wording_ticket_102_adds_is_short_and_translated() {
+        for locale in [Locale::ZhTw, Locale::EnUs] {
+            let labels = locale.labels();
+            for label in [labels.change_length, labels.current_settings] {
+                assert!(!label.trim().is_empty());
+                assert!(label.chars().count() <= 32);
+            }
+            for body in [
+                labels.action_failed,
+                labels.failed_service_unavailable,
+                labels.failed_backend_unavailable,
+                labels.failed_no_manual_session,
+                labels.failed_session_gone,
+                labels.failed_cannot_extend,
+                labels.failed_end_in_the_past,
+                labels.failed_too_many_sessions,
+                labels.failed_other,
+            ] {
+                assert!(!body.trim().is_empty());
+                // Plain words, never the error key the service answered with.
+                assert!(!body.contains("awake."), "{body}");
+            }
+        }
+        assert_ne!(ZH_TW.change_length, EN_US.change_length);
+        assert_ne!(ZH_TW.current_settings, EN_US.current_settings);
+        assert_ne!(ZH_TW.failed_other, EN_US.failed_other);
+    }
+
+    #[test]
+    fn the_current_settings_rows_use_the_windows_words() {
+        // Copied from awake-gui's i18n (effective policy and battery rows), so
+        // the tray and the window say the same thing about the same session.
+        for (labels, words) in [
+            (
+                &ZH_TW,
+                [
+                    "系統睡眠",
+                    "螢幕休眠",
+                    "自動鎖定",
+                    "已擋下",
+                    "維持原本行為",
+                    "有要求，但後端無法提供",
+                    "電量停止門檻",
+                    "低於 {percent}% 時停止",
+                    "不因電量停止",
+                    "這台機器不適用",
+                ],
+            ),
+            (
+                &EN_US,
+                [
+                    "System sleep",
+                    "Display sleep",
+                    "Automatic lock",
+                    "Held off",
+                    "Allowed",
+                    "Asked for, not delivered by the backend",
+                    "Battery stop threshold",
+                    "Stops below {percent}%",
+                    "Never stops for battery level",
+                    "Not applicable on this machine",
+                ],
+            ),
+        ] {
+            assert_eq!(
+                [
+                    labels.system_sleep,
+                    labels.display_sleep,
+                    labels.automatic_lock,
+                    labels.prevented,
+                    labels.allowed,
+                    labels.not_supported,
+                    labels.battery_protection,
+                    labels.battery_stops_at,
+                    labels.battery_off,
+                    labels.battery_not_applicable,
+                ],
+                words
+            );
+        }
     }
 }

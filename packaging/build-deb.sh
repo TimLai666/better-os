@@ -540,8 +540,11 @@ make_package better-touchpad \
 
 # The tray and the settings window are installed under the names the desktop
 # entries and the component manifest already name, which are not the Cargo
-# binary names. The unit is installed, not enabled: enabling is Better
-# Manager's enable step, the same split better-manager-daemon uses.
+# binary names. The units are installed, not enabled: enabling is Better
+# Manager's enable step, the same split better-manager-daemon uses. The tray
+# is a user unit, not an XDG autostart entry, so an update restarts it with the
+# service (ticket 102); the old /etc/xdg/autostart entry was never a conffile,
+# so dpkg removes it on upgrade.
 PACKAGE_BINARIES=(
     "better-awake-service:usr/bin/better-awake-service"
     "better-awake-tray:usr/bin/awake-tray"
@@ -549,10 +552,11 @@ PACKAGE_BINARIES=(
 )
 PACKAGE_DATA=(
     "packaging/awake/better-awake.desktop:usr/share/applications/better-awake.desktop"
-    "packaging/awake/better-awake-tray.desktop:etc/xdg/autostart/better-awake-tray.desktop"
     "packaging/awake/better-awake.service:usr/lib/systemd/user/better-awake.service"
+    "packaging/awake/better-awake-tray.service:usr/lib/systemd/user/better-awake-tray.service"
     "packaging/icons/better-awake.svg:usr/share/icons/hicolor/scalable/apps/better-awake.svg"
     "packaging/awake/org.betteros.Awake1.service:usr/share/dbus-1/services/org.betteros.Awake1.service"
+    "packaging/awake/org.betteros.AwakeTray1.service:usr/share/dbus-1/services/org.betteros.AwakeTray1.service"
     "packaging/icons/awake-status/better-awake-inactive-symbolic.svg:usr/share/icons/hicolor/scalable/status/better-awake-inactive-symbolic.svg"
     "packaging/icons/awake-status/better-awake-active-symbolic.svg:usr/share/icons/hicolor/scalable/status/better-awake-active-symbolic.svg"
     "packaging/icons/awake-status/better-awake-active-trigger-symbolic.svg:usr/share/icons/hicolor/scalable/status/better-awake-active-trigger-symbolic.svg"
