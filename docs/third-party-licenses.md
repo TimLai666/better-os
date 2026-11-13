@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 926.
-- Packages with an SPDX license expression: 924.
+- Resolved Cargo packages: 927.
+- Packages with an SPDX license expression: 925.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `f96797ef2980ae1347c3023bfd065ebe2a8d423b060a6e054378dcee1cfb72db`.
+- `Cargo.lock` SHA-256: `7dbea23320bbbcdea02a4b2fe61daddae2de966128cab2b93216c5f30e0c5c65`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 403 |
 | `MIT` | 189 |
 | `Apache-2.0 OR MIT` | 76 |
-| `GPL-3.0-or-later` | 59 |
+| `GPL-3.0-or-later` | 60 |
 | `MIT/Apache-2.0` | 35 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -124,6 +124,7 @@ Better OS does not relicense or silently select a different expression.
 | `monitor-ipc` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `monitor-service` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `monitor-store` | `0.2.11` | `GPL-3.0-or-later` | workspace |
+| `monitor-tray` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `monitor-views` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `option-ext` | `0.2.0` | `MPL-2.0` | [crates.io](https://crates.io/crates/option-ext/0.2.0) |
 | `r-efi` | `5.3.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/5.3.0) |
@@ -558,6 +559,7 @@ Better OS does not relicense or silently select a different expression.
 | `monitor-ipc` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `monitor-service` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `monitor-store` | `0.2.11` | `GPL-3.0-or-later` | workspace |
+| `monitor-tray` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `monitor-views` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `moxcms` | `0.8.1` | `BSD-3-Clause OR Apache-2.0` | [crates.io](https://crates.io/crates/moxcms/0.8.1) |
 | `naga` | `29.0.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/naga/29.0.4) |

@@ -97,6 +97,7 @@ async fn collection_continues_after_every_client_has_disconnected() {
         let client_view = engine
             .handle(MonitorRequest::new(RequestBody::QueryStatus {
                 include_latest_round: true,
+                top_processes: None,
             }))
             .await;
         let ResponseBody::Status(status) = client_view.body else {
@@ -419,31 +420,31 @@ async fn the_engine_refuses_what_the_protocol_refuses() {
 
     for (document, expected) in [
         (
-            r#"{"protocol_version":2,"body":{"request":"query_incidents"}}"#,
+            r#"{"protocol_version":1,"body":{"request":"query_incidents"}}"#,
             "monitor.ipc.error.protocol_version",
         ),
         (
-            r#"{"protocol_version":1,"body":{"request":"burn_the_disk"}}"#,
+            r#"{"protocol_version":2,"body":{"request":"burn_the_disk"}}"#,
             "monitor.ipc.error.malformed",
         ),
         (
-            r#"{"protocol_version":1,"body":{"request":"query_incidents"},"extra":1}"#,
+            r#"{"protocol_version":2,"body":{"request":"query_incidents"},"extra":1}"#,
             "monitor.ipc.error.malformed",
         ),
         (
-            r#"{"protocol_version":1,"body":{"request":"query_history","from_unix_ms":9,"to_unix_ms":1,"max_samples":10}}"#,
+            r#"{"protocol_version":2,"body":{"request":"query_history","from_unix_ms":9,"to_unix_ms":1,"max_samples":10}}"#,
             "monitor.ipc.error.invalid_range",
         ),
         (
-            r#"{"protocol_version":1,"body":{"request":"request_export","from_unix_ms":0,"to_unix_ms":1,"destination":"../escape"}}"#,
+            r#"{"protocol_version":2,"body":{"request":"request_export","from_unix_ms":0,"to_unix_ms":1,"destination":"../escape"}}"#,
             "monitor.ipc.error.invalid_destination",
         ),
         (
-            r#"{"protocol_version":1,"body":{"request":"query_export_progress","export_id":404}}"#,
+            r#"{"protocol_version":2,"body":{"request":"query_export_progress","export_id":404}}"#,
             "monitor.ipc.error.unknown_export",
         ),
         (
-            r#"{"protocol_version":1,"body":{"request":"query_incident_window","incident_id":404}}"#,
+            r#"{"protocol_version":2,"body":{"request":"query_incident_window","incident_id":404}}"#,
             "monitor.ipc.error.unknown_incident",
         ),
     ] {
@@ -532,7 +533,10 @@ async fn the_status_document_reports_what_the_service_can_and_cannot_observe() {
     let status = engine.status(false).await;
     assert!(status.recording);
     assert_eq!(status.rounds_collected, 2);
-    assert_eq!(status.collectors.len(), 6);
+    assert_eq!(
+        status.collectors.len(),
+        monitor_collectors_linux::LinuxCollectors::collector_names().len()
+    );
     assert!(status.latest_round.is_none(), "not asked for");
     assert_eq!(
         status.retention.window_seconds,
@@ -540,7 +544,10 @@ async fn the_status_document_reports_what_the_service_can_and_cannot_observe() {
     );
 
     let with_round = engine.status(true).await;
-    assert_eq!(with_round.latest_round.map(|round| round.len()), Some(6));
+    assert_eq!(
+        with_round.latest_round.map(|round| round.len()),
+        Some(monitor_collectors_linux::LinuxCollectors::collector_names().len())
+    );
 }
 
 /// Copy a fixture so a test can modify it without touching the original.
@@ -555,4 +562,32 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
             std::fs::copy(entry.path(), &target).expect("a copyable file");
         }
     }
+}
+
+#[tokio::test]
+async fn a_summary_status_keeps_only_the_busiest_processes() {
+    let directory = tempfile::tempdir().unwrap();
+    let engine = MonitorEngine::start(config(directory.path().to_path_buf())).unwrap();
+    tick(&engine, 2).await;
+    let full = engine.status(true).await;
+    let processes = |round: &[monitor_core::CollectorReport]| {
+        round
+            .iter()
+            .find(|r| r.collector.as_str() == "linux.process")
+            .map(|r| r.entities.len())
+            .unwrap_or(0)
+    };
+    let all = processes(full.latest_round.as_deref().unwrap());
+    let reply = engine
+        .handle(MonitorRequest::new(RequestBody::QueryStatus {
+            include_latest_round: true,
+            top_processes: Some(1),
+        }))
+        .await;
+    let ResponseBody::Status(summary) = reply.body else {
+        panic!("a status reply")
+    };
+    let kept = processes(summary.latest_round.as_deref().unwrap());
+    assert!((1..=6).contains(&kept), "kept {kept} of {all}");
+    assert!(kept <= all);
 }

@@ -1037,6 +1037,8 @@ fn chart_colors_differ_per_resource_and_per_appearance() {
         ChartHue::Green,
         ChartHue::Orange,
         ChartHue::Teal,
+        ChartHue::Red,
+        ChartHue::Magenta,
     ];
     for dark in [false, true] {
         for (i, a) in hues.iter().enumerate() {

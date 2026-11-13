@@ -66,6 +66,9 @@ const MISSED_CADENCE_MULTIPLE: u64 = 3;
 #[derive(Clone, Debug)]
 pub struct ServiceConfig {
     pub store_root: PathBuf,
+    /// Where an older Better Monitor kept its store, imported once when this
+    /// version's store is created and never written. `None` imports nothing.
+    pub legacy_store_root: Option<PathBuf>,
     pub retention: RetentionPolicy,
     pub sample_interval: Duration,
     pub audit_interval: Duration,
@@ -88,6 +91,7 @@ impl ServiceConfig {
     pub fn system() -> Self {
         Self {
             store_root: HistoryStore::default_root(),
+            legacy_store_root: Some(HistoryStore::legacy_root()),
             retention: RetentionPolicy::default(),
             sample_interval: Duration::from_millis(DEFAULT_SAMPLE_INTERVAL_MS),
             audit_interval: Duration::from_secs(DEFAULT_AUDIT_INTERVAL_SECONDS),
@@ -103,6 +107,7 @@ impl ServiceConfig {
     pub fn at(store_root: impl Into<PathBuf>, roots: Roots, audit: AuditSources) -> Self {
         Self {
             store_root: store_root.into(),
+            legacy_store_root: None,
             retention: RetentionPolicy::default(),
             sample_interval: Duration::from_millis(DEFAULT_SAMPLE_INTERVAL_MS),
             audit_interval: Duration::from_secs(DEFAULT_AUDIT_INTERVAL_SECONDS),
@@ -133,6 +138,10 @@ struct EngineState {
     exports: BTreeMap<u64, ExportDocument>,
     capabilities: Vec<(String, Vec<MetricDescriptor>, Vec<SupportState>)>,
     unavailable: BTreeMap<String, Vec<String>>,
+    /// What has used the battery since the machine was last unplugged.
+    battery_use: monitor_ipc::BatteryUseTracker,
+    /// When the previous round was taken, for the battery-use interval.
+    previous_round_at: Option<Timestamp>,
 }
 
 /// The service's brain. Every request and every tick goes through here.
@@ -154,7 +163,18 @@ impl MonitorEngine {
     /// first new sample lands, so a chart cannot draw a straight line across
     /// the hours the service was not running.
     pub fn start(config: ServiceConfig) -> Result<Arc<Self>, StoreError> {
-        let mut store = HistoryStore::open(&config.store_root, config.retention)?;
+        // Only the default store imports: a store somewhere else (a command
+        // line's `--store`) starts empty, as it always did.
+        let legacy = config
+            .legacy_store_root
+            .as_ref()
+            .filter(|_| config.store_root == HistoryStore::default_root());
+        let mut store = match legacy {
+            Some(legacy) => {
+                HistoryStore::open_importing(&config.store_root, legacy, config.retention)?
+            }
+            None => HistoryStore::open(&config.store_root, config.retention)?,
+        };
         let started_at_unix_ms = now_unix_ms();
         let recovered_truncated_bytes = store.recovery().history.truncated_bytes;
 
@@ -182,6 +202,8 @@ impl MonitorEngine {
                 exports: BTreeMap::new(),
                 capabilities: Vec::new(),
                 unavailable: BTreeMap::new(),
+                battery_use: monitor_ipc::BatteryUseTracker::new(),
+                previous_round_at: None,
             }),
             started_at_unix_ms,
             rounds: AtomicU64::new(0),
@@ -229,6 +251,12 @@ impl MonitorEngine {
 
         let sample = Sample::from_reports(&reports, self.config.tracked_processes);
         let mut state = self.state.lock().await;
+        let seconds = state
+            .previous_round_at
+            .and_then(|previous| Timestamp::interval_seconds(previous, at))
+            .unwrap_or(0.0);
+        state.previous_round_at = Some(at);
+        state.battery_use.observe(&reports, seconds, wall);
         state.latest_round = reports;
 
         if state.bucket_opened_unix_ms == 0 {
@@ -358,9 +386,14 @@ impl MonitorEngine {
         match request.body {
             RequestBody::QueryStatus {
                 include_latest_round,
-            } => Ok(MonitorResponse::status(
-                self.status(include_latest_round).await,
-            )),
+                top_processes,
+            } => {
+                let mut status = self.status(include_latest_round).await;
+                if let (Some(top), Some(round)) = (top_processes, status.latest_round.as_mut()) {
+                    *round = monitor_ipc::trim_round(round, top as usize);
+                }
+                Ok(MonitorResponse::status(status))
+            }
             RequestBody::QueryHistory {
                 from_unix_ms,
                 to_unix_ms,
@@ -528,6 +561,7 @@ impl MonitorEngine {
             recovered_truncated_bytes: self.recovered_truncated_bytes,
             collectors,
             latest_round: include_latest_round.then(|| state.latest_round.clone()),
+            battery_use: state.battery_use.current(),
         }
     }
 
@@ -657,22 +691,6 @@ fn unavailable_metrics(
 }
 
 /// The declared catalog for one collector.
-///
-/// The collectors expose their descriptors as associated functions rather than
-/// through the trait, so this maps a name to the right one instead of the
-/// service holding six typed handles it does not otherwise need.
 fn descriptors_for(collector: &CollectorId) -> Vec<MetricDescriptor> {
-    use monitor_collectors_linux::{
-        CpuCollector, MemoryCollector, NetworkCollector, PressureCollector, ProcessCollector,
-        StorageCollector,
-    };
-    match collector.as_str() {
-        "linux.cpu" => CpuCollector::descriptors(),
-        "linux.memory" => MemoryCollector::descriptors(),
-        "linux.pressure" => PressureCollector::descriptors(),
-        "linux.process" => ProcessCollector::descriptors(),
-        "linux.storage" => StorageCollector::descriptors(),
-        "linux.network" => NetworkCollector::descriptors(),
-        _ => Vec::new(),
-    }
+    LinuxCollectors::descriptors_of(collector.as_str())
 }

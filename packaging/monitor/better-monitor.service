@@ -7,9 +7,12 @@ After=graphical-session.target
 [Service]
 # Type=simple, for the same reason better-awake.service is: the service builds
 # its session bus connection and only then requests org.betteros.Monitor1, so
-# there is no bus name for systemd to wait on at exec time. It is also not
-# activatable on demand — recording what the machine was doing before a
-# slowdown only works if something was already watching.
+# there is no bus name for systemd to wait on at exec time. It is enabled to
+# run for the whole session, because recording what the machine was doing
+# before a slowdown only works if something was already watching. Since
+# ticket 97 it is also D-Bus activatable (org.betteros.Monitor1.service), so a
+# window or the taskbar item asking for it starts it through this unit when it
+# is not running yet; it still does not exit when idle.
 Type=simple
 ExecStart=/usr/bin/better-monitor-service
 Restart=on-failure
@@ -32,10 +35,12 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
-# Session bus only. Better Monitor's export is the only path data leaves the
-# machine and it has no network code, so no network address family is allowed
-# here either.
-RestrictAddressFamilies=AF_UNIX
+# The session bus, and AF_NETLINK for one read-only NETLINK_SOCK_DIAG dump a
+# round: the kernel's per-socket TCP counters, which is how traffic is
+# attributed to programs (ticket 97). Netlink carries nothing off the machine.
+# Better Monitor's export is the only path data leaves the machine and it has
+# no network code, so no network address family is allowed here.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
 
 [Install]
 # The unit is installed, not enabled: the package ships the unit and Better

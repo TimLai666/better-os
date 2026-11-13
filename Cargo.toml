@@ -45,6 +45,7 @@ members = [
     "crates/monitor-ipc",
     "crates/monitor-export",
     "crates/monitor-service",
+    "crates/monitor-tray",
     "crates/monitor-cli",
     "crates/monitor-actions-linux",
     "crates/monitor-gui",
@@ -112,6 +113,7 @@ monitor-store = { path = "crates/monitor-store" }
 monitor-ipc = { path = "crates/monitor-ipc" }
 monitor-export = { path = "crates/monitor-export" }
 monitor-service = { path = "crates/monitor-service" }
+monitor-tray = { path = "crates/monitor-tray" }
 monitor-actions-linux = { path = "crates/monitor-actions-linux" }
 touchpad-core = { path = "crates/touchpad-core" }
 touchpad-gesture-service = { path = "crates/touchpad-gesture-service" }

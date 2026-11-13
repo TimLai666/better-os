@@ -1,0 +1,27 @@
+[package]
+name = "monitor-tray"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "better-monitor-tray"
+path = "src/main.rs"
+
+[lib]
+name = "monitor_tray"
+path = "src/lib.rs"
+
+[dependencies]
+monitor-core.workspace = true
+monitor-ipc.workspace = true
+monitor-service.workspace = true
+serde.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+# Default async-io flavor, as everywhere in this workspace (ticket 49).
+zbus = { version = "5" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "test-util"] }

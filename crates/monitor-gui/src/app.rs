@@ -88,7 +88,11 @@ pub(crate) enum Resource {
     Memory,
     Disk(String),
     Adapter(String),
-    Gpu,
+    /// A graphics card, by its PCI address.
+    Gpu(String),
+    /// An NPU, by its PCI address.
+    Npu(String),
+    /// Every temperature, fan, and other hwmon reading.
     Temperatures,
     Battery,
 }
@@ -411,6 +415,7 @@ impl MonitorApp {
             LinkUpdate::Embedded(detail) => {
                 self.collection = Collection::InProcess { detail };
             }
+            LinkUpdate::Connected => self.collection = Collection::Service,
             LinkUpdate::Unavailable(detail) => {
                 self.collection = Collection::Unavailable { detail };
             }
@@ -502,6 +507,12 @@ impl MonitorApp {
                 self.resource = Resource::Cpu;
             }
             Resource::Adapter(name) if !self.readings.adapters.iter().any(|a| &a.name == name) => {
+                self.resource = Resource::Cpu;
+            }
+            Resource::Gpu(key) if !self.readings.gpus.iter().any(|g| &g.key == key) => {
+                self.resource = Resource::Cpu;
+            }
+            Resource::Npu(key) if !self.readings.npus.iter().any(|n| &n.key == key) => {
                 self.resource = Resource::Cpu;
             }
             _ => {}

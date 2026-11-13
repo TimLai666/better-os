@@ -67,7 +67,14 @@ paths:
   - /usr/bin/better-monitor
   - /usr/bin/better-monitor-service
   - /usr/bin/better-monitor-cli
+  # The taskbar item (ticket 97): a user unit enabled and disabled with the
+  # component, which the window starts through its activation file.
+  - /usr/bin/better-monitor-tray
+  - /usr/lib/systemd/user/better-monitor-tray.service
+  - /usr/share/dbus-1/services/org.betteros.MonitorTray1.service
   - /usr/lib/systemd/user/better-monitor.service
+  # Asking for org.betteros.Monitor1 starts the service through its unit.
+  - /usr/share/dbus-1/services/org.betteros.Monitor1.service
   # The desktop entry launches the window and neither of the other two
   # executables: the service is started by the user unit, and the command line
   # has no window to show.
