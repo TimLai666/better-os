@@ -103,9 +103,21 @@ pub(crate) fn named(name: String) -> TableCell {
     }
 }
 
+/// Whether the process tables carry a GPU column: some program has a GPU
+/// reading. A card whose driver does not report use per program (or a
+/// card that is asleep) leaves every row empty, and a column of dashes would
+/// only suggest that nothing is using it.
+pub(crate) fn shows_gpu_column(processes: &[ProcessFacts]) -> bool {
+    processes
+        .iter()
+        .any(|process| process.gpu_utilization.any_value().is_some())
+}
+
 /// The columns the Details table shows, in order. The command line is
 /// private and only appears once the person has turned it on.
-pub(crate) fn detail_columns(show_command_line: bool) -> Vec<ProcessColumn> {
+///
+/// The GPU column only appears when [`shows_gpu_column`] says so.
+pub(crate) fn detail_columns(show_command_line: bool, has_gpu: bool) -> Vec<ProcessColumn> {
     let mut columns = vec![
         ProcessColumn::Name,
         ProcessColumn::Pid,
@@ -113,9 +125,12 @@ pub(crate) fn detail_columns(show_command_line: bool) -> Vec<ProcessColumn> {
         ProcessColumn::User,
         ProcessColumn::CpuUtilization,
         ProcessColumn::Memory,
-        ProcessColumn::ReadRate,
-        ProcessColumn::WriteRate,
+        ProcessColumn::Disk,
+        ProcessColumn::Network,
     ];
+    if has_gpu {
+        columns.push(ProcessColumn::Gpu);
+    }
     if show_command_line {
         columns.push(ProcessColumn::CommandLine);
     }
@@ -127,11 +142,14 @@ pub(crate) fn detail_width(column: ProcessColumn) -> Option<f32> {
     match column {
         ProcessColumn::Name | ProcessColumn::CommandLine => None,
         ProcessColumn::Pid => Some(80.0),
-        ProcessColumn::State => Some(128.0),
-        ProcessColumn::User => Some(112.0),
+        ProcessColumn::State => Some(96.0),
+        ProcessColumn::User => Some(88.0),
         ProcessColumn::CpuUtilization => Some(72.0),
-        ProcessColumn::Memory => Some(96.0),
-        ProcessColumn::ReadRate | ProcessColumn::WriteRate => Some(96.0),
+        ProcessColumn::Memory => Some(88.0),
+        ProcessColumn::ReadRate | ProcessColumn::WriteRate => Some(88.0),
+        ProcessColumn::Disk => Some(88.0),
+        ProcessColumn::Network => Some(96.0),
+        ProcessColumn::Gpu => Some(72.0),
         _ => Some(110.0),
     }
 }
@@ -145,6 +163,11 @@ pub(crate) fn numeric(column: ProcessColumn) -> bool {
             | ProcessColumn::Memory
             | ProcessColumn::ReadRate
             | ProcessColumn::WriteRate
+            | ProcessColumn::Disk
+            | ProcessColumn::Network
+            | ProcessColumn::Gpu
+            | ProcessColumn::GpuMemory
+            | ProcessColumn::Power
             | ProcessColumn::Swap
             | ProcessColumn::Threads
             | ProcessColumn::FileDescriptors
@@ -164,6 +187,11 @@ pub(crate) fn column_title(column: ProcessColumn, c: &'static Copy) -> &'static 
         ProcessColumn::Swap => c.column_swap,
         ProcessColumn::ReadRate => c.column_read,
         ProcessColumn::WriteRate => c.column_write,
+        ProcessColumn::Disk => c.column_disk,
+        ProcessColumn::Network => c.column_network,
+        ProcessColumn::Gpu => c.column_gpu,
+        ProcessColumn::GpuMemory => c.column_gpu_memory,
+        ProcessColumn::Power => c.column_power,
         ProcessColumn::Threads => c.column_threads,
         ProcessColumn::FileDescriptors => c.column_descriptors,
         ProcessColumn::StartTime => c.column_running_for,
@@ -211,6 +239,17 @@ pub(crate) fn process_cell(
         ProcessColumn::Swap => reading(cell(&process.memory_swap, |v| bytes(*v as f64)), c),
         ProcessColumn::ReadRate => reading(cell(&process.read_rate, |v| rate(*v)), c),
         ProcessColumn::WriteRate => reading(cell(&process.write_rate, |v| rate(*v)), c),
+        ProcessColumn::Disk => match process.disk_rate() {
+            Some(value) => TableCell::new(rate(value)),
+            None => reading(cell(&process.read_rate, |v| rate(*v)), c),
+        },
+        ProcessColumn::Network => match process.network_rate() {
+            Some(value) => TableCell::new(rate(value)),
+            None => reading(cell(&process.network_receive_rate, |v| rate(*v)), c),
+        },
+        ProcessColumn::Gpu => reading(cell(&process.gpu_utilization, |v| share(*v)), c),
+        ProcessColumn::GpuMemory => reading(cell(&process.gpu_memory, |v| bytes(*v as f64)), c),
+        ProcessColumn::Power => reading(cell(&process.energy_power, |v| watts(*v)), c),
         ProcessColumn::Threads => reading(cell(&process.threads, |v| v.to_string()), c),
         ProcessColumn::FileDescriptors => {
             reading(cell(&process.file_descriptors, |v| v.to_string()), c)
@@ -234,14 +273,18 @@ pub(crate) enum AppColumn {
     Cpu,
     Memory,
     Disk,
+    Network,
+    Gpu,
 }
 
 impl AppColumn {
-    pub(crate) const ALL: [AppColumn; 4] = [
+    pub(crate) const ALL: [AppColumn; 6] = [
         AppColumn::Name,
         AppColumn::Cpu,
         AppColumn::Memory,
         AppColumn::Disk,
+        AppColumn::Network,
+        AppColumn::Gpu,
     ];
 }
 
@@ -270,6 +313,24 @@ fn disk(row: &AppRow) -> Aggregate {
         total: row.read_rate.total + row.write_rate.total,
         counted: row.read_rate.counted.min(row.write_rate.counted),
         missing: row.read_rate.missing.max(row.write_rate.missing),
+    }
+}
+
+fn network(row: &AppRow) -> Aggregate {
+    let (receive, send) = (&row.network_receive_rate, &row.network_send_rate);
+    Aggregate {
+        total: receive.total + send.total,
+        counted: receive.counted.min(send.counted),
+        missing: receive.missing.max(send.missing),
+    }
+}
+
+/// Watts, the way a person reads a small power: `1.2 W`, `350 mW`.
+pub(crate) fn watts(value: f64) -> String {
+    if value.abs() < 1.0 {
+        format!("{:.0} mW", value * 1000.0)
+    } else {
+        format!("{value:.1} W")
     }
 }
 
@@ -303,6 +364,8 @@ pub(crate) fn app_order(rows: &[AppRow], column: AppColumn, ascending: bool) -> 
             AppColumn::Cpu => by_total(&a.cpu_utilization, &b.cpu_utilization, ascending),
             AppColumn::Memory => by_total(&a.memory_resident, &b.memory_resident, ascending),
             AppColumn::Disk => by_total(&disk(a), &disk(b), ascending),
+            AppColumn::Network => by_total(&network(a), &network(b), ascending),
+            AppColumn::Gpu => by_total(&a.gpu_utilization, &b.gpu_utilization, ascending),
         }
         .then_with(|| a.group.key.cmp(&b.group.key))
     });
@@ -416,10 +479,12 @@ pub(crate) fn app_cells(
             TableCell::default(),
             TableCell::default(),
             TableCell::default(),
+            TableCell::default(),
+            TableCell::default(),
         ],
         AppLine::Group { services, index } => {
             let Some(row) = app_row(model, services, index) else {
-                return vec![TableCell::default(); 4];
+                return vec![TableCell::default(); AppColumn::ALL.len()];
             };
             let count = row.process_count();
             let mut name = if count > 1 {
@@ -438,11 +503,13 @@ pub(crate) fn app_cells(
                 cpu_aggregate(&row.cpu_utilization, c, processors),
                 aggregate(&row.memory_resident, c, bytes),
                 aggregate(&disk(row), c, rate),
+                aggregate(&network(row), c, rate),
+                gpu_aggregate(&row.gpu_utilization, c),
             ]
         }
         AppLine::Member { process } => {
             let Some(member) = model.process(process) else {
-                return vec![TableCell::default(); 4];
+                return vec![TableCell::default(); AppColumn::ALL.len()];
             };
             let disk = match (member.read_rate.value(), member.write_rate.value()) {
                 (Some(read), Some(write)) => TableCell::new(rate(read + write)),
@@ -455,9 +522,17 @@ pub(crate) fn app_cells(
                 process_cell(member, ProcessColumn::CpuUtilization, locale, processors),
                 process_cell(member, ProcessColumn::Memory, locale, processors),
                 disk,
+                process_cell(member, ProcessColumn::Network, locale, processors),
+                process_cell(member, ProcessColumn::Gpu, locale, processors),
             ]
         }
     }
+}
+
+/// An application's graphics share: the sum of its processes' shares of the
+/// busiest engine, capped at the whole card.
+pub(crate) fn gpu_aggregate(value: &Aggregate, c: &'static Copy) -> TableCell {
+    aggregate(value, c, |v| share(v.min(1.0)))
 }
 
 /// The sentence that says why processes were put together.

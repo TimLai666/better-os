@@ -85,11 +85,17 @@ fn one_round_produces_one_report_per_collector_at_a_shared_timestamp() {
 
 #[test]
 fn the_captured_snapshot_produces_a_healthy_report_from_every_collector() {
+    // The snapshot was recorded with /proc and the CPU, disk, network, and
+    // hwmon parts of /sys only. The graphics, NPU, and battery collectors find
+    // no interface there and must say exactly that, never fail.
     let roots = Roots::at(fixture("snapshot-a"));
     let mut collectors = LinuxCollectors::new(roots.clone(), ProcessPrivacy::default());
     for report in collectors.sample(&roots, at(0)) {
+        let hardware =
+            ["linux.gpu", "linux.npu", "linux.battery"].contains(&report.collector.as_str());
         assert!(
-            matches!(report.health, CollectorHealth::Healthy),
+            matches!(report.health, CollectorHealth::Healthy)
+                || (hardware && matches!(report.health, CollectorHealth::Unsupported(_))),
             "{} reported {:?}",
             report.collector,
             report.health
@@ -211,19 +217,19 @@ fn a_completely_absent_proc_leaves_every_collector_saying_so_rather_than_panicki
 }
 
 #[test]
-fn the_real_machine_is_readable_and_reports_no_collector_failure() {
-    // The one test that touches the live host. It asserts only what is true of
-    // any Linux machine, so it cannot become flaky on different hardware.
-    let roots = Roots::system();
-    let mut collectors = LinuxCollectors::new(roots.clone(), ProcessPrivacy::default());
-    collectors.sample(&roots, Timestamp::now());
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let reports = collectors.sample(&roots, Timestamp::now());
+fn a_recorded_machine_sampled_twice_reports_no_collector_failure() {
+    // The machine the tests run on is never read: two rounds over the two
+    // trees captured from a real desktop stand in for it.
+    let a = Roots::at(fixture("snapshot-a"));
+    let b = Roots::at(fixture("snapshot-b"));
+    let mut collectors = LinuxCollectors::new(a.clone(), ProcessPrivacy::default());
+    collectors.sample(&a, at(0));
+    let reports = collectors.sample(&b, at(2_860));
 
     for report in &reports {
         assert!(
             !matches!(report.health, CollectorHealth::Failed { .. }),
-            "{} failed on the live host: {:?}",
+            "{} failed on the recorded machine: {:?}",
             report.collector,
             report.health
         );
@@ -234,7 +240,7 @@ fn the_real_machine_is_readable_and_reports_no_collector_failure() {
         .metrics
         .get(&metric("cpu.utilization.busy"))
         .and_then(|observation| observation.as_f64())
-        .expect("a busy ratio from the live host");
+        .expect("a busy ratio from the recorded machine");
     assert!((0.0..=1.0).contains(&busy), "busy ratio was {busy}");
 
     let memory = &reports[1];
@@ -242,7 +248,7 @@ fn the_real_machine_is_readable_and_reports_no_collector_failure() {
         .metrics
         .get(&metric("memory.total"))
         .and_then(|observation| observation.as_f64())
-        .expect("a memory total from the live host");
+        .expect("a memory total from the recorded machine");
     assert!(total > 0.0);
 
     let processes = &reports[3];
@@ -251,17 +257,21 @@ fn the_real_machine_is_readable_and_reports_no_collector_failure() {
 
 #[test]
 fn no_command_line_reaches_a_report_under_the_default_privacy_setting() {
-    // The live host is used deliberately: a fixture cannot prove that real
-    // command lines stay out.
-    let roots = Roots::system();
+    // The recorded tree carries a real command line
+    // (`bash /opt/fixture/capture.sh`), so a collector that read it anyway
+    // would put it in the report.
+    let roots = Roots::at(fixture("snapshot-a"));
     let mut collectors = LinuxCollectors::new(roots.clone(), ProcessPrivacy::default());
-    let reports = collectors.sample(&roots, Timestamp::now());
+    let reports = collectors.sample(&roots, at(0));
+    let mut seen = 0;
     for report in &reports {
         for (_, id, observation) in report.observations() {
             if id.as_str() == "process.command_line" {
+                seen += 1;
                 assert_eq!(observation.state(), ObservationState::Unsupported);
                 assert_eq!(observation.as_text(), None);
             }
         }
     }
+    assert!(seen > 0, "the recorded processes were not read");
 }

@@ -36,6 +36,16 @@ pub enum ProcessColumn {
     Swap,
     ReadRate,
     WriteRate,
+    /// Reads and writes together.
+    Disk,
+    /// TCP traffic in both directions.
+    Network,
+    /// The busiest graphics engine's share the process caused.
+    Gpu,
+    /// Graphics memory on the card.
+    GpuMemory,
+    /// Estimated share of the battery draw, on battery.
+    Power,
     Threads,
     FileDescriptors,
     StartTime,
@@ -46,7 +56,7 @@ pub enum ProcessColumn {
 
 impl ProcessColumn {
     /// Every column, in the order the table lays them out.
-    pub const ALL: [ProcessColumn; 17] = [
+    pub const ALL: [ProcessColumn; 22] = [
         ProcessColumn::Name,
         ProcessColumn::Pid,
         ProcessColumn::ParentPid,
@@ -58,6 +68,11 @@ impl ProcessColumn {
         ProcessColumn::Swap,
         ProcessColumn::ReadRate,
         ProcessColumn::WriteRate,
+        ProcessColumn::Disk,
+        ProcessColumn::Network,
+        ProcessColumn::Gpu,
+        ProcessColumn::GpuMemory,
+        ProcessColumn::Power,
         ProcessColumn::Threads,
         ProcessColumn::FileDescriptors,
         ProcessColumn::StartTime,
@@ -79,6 +94,11 @@ impl ProcessColumn {
             ProcessColumn::Swap => "swap",
             ProcessColumn::ReadRate => "read",
             ProcessColumn::WriteRate => "write",
+            ProcessColumn::Disk => "disk",
+            ProcessColumn::Network => "network",
+            ProcessColumn::Gpu => "gpu",
+            ProcessColumn::GpuMemory => "gpu-memory",
+            ProcessColumn::Power => "power",
             ProcessColumn::Threads => "threads",
             ProcessColumn::FileDescriptors => "descriptors",
             ProcessColumn::StartTime => "start-time",
@@ -497,6 +517,23 @@ fn compare(
         ProcessColumn::WriteRate => numeric(
             as_f64(&a.write_rate, |v| v),
             as_f64(&b.write_rate, |v| v),
+            descending,
+        ),
+        ProcessColumn::Disk => numeric(a.disk_rate(), b.disk_rate(), descending),
+        ProcessColumn::Network => numeric(a.network_rate(), b.network_rate(), descending),
+        ProcessColumn::Gpu => numeric(
+            as_f64(&a.gpu_utilization, |v| v),
+            as_f64(&b.gpu_utilization, |v| v),
+            descending,
+        ),
+        ProcessColumn::GpuMemory => numeric(
+            as_f64(&a.gpu_memory, |v| v as f64),
+            as_f64(&b.gpu_memory, |v| v as f64),
+            descending,
+        ),
+        ProcessColumn::Power => numeric(
+            as_f64(&a.energy_power, |v| v),
+            as_f64(&b.energy_power, |v| v),
             descending,
         ),
         ProcessColumn::Threads => numeric(

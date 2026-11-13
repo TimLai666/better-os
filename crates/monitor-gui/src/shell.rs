@@ -83,13 +83,19 @@ impl MonitorApp {
                 .locale(words)
                 .into_any_element(),
             ),
-            Collection::InProcess { .. } if stored => bars.push(
+            Collection::InProcess { detail } if stored => bars.push(
                 InfoBar::new(
                     "bar-in-process",
                     Severity::Warning,
                     c.collection_in_process_title,
                 )
-                .message(c.collection_in_process)
+                .message(if detail.contains("protocol_version") {
+                    c.collection_version_mismatch
+                } else if detail.contains("component_disabled") {
+                    c.collection_component_off
+                } else {
+                    c.collection_in_process
+                })
                 .locale(words)
                 .into_any_element(),
             ),

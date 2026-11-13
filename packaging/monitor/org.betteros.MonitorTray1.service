@@ -1,0 +1,8 @@
+[D-BUS Service]
+Name=org.betteros.MonitorTray1
+Exec=/usr/bin/better-monitor-tray
+# Opening Better Monitor's window asks for this name when no taskbar item owns
+# it, and the bus starts the item through its user unit, so it runs under the
+# same unit Better Manager enables and disables rather than as a stray child
+# of the window.
+SystemdService=better-monitor-tray.service
