@@ -38,7 +38,12 @@ What restarts today:
   (`systemctl --user -M <uid>@ try-restart` or `systemd-run --user` per
   user, only units that are running, never starting a unit the person
   turned off). Better Manager keeps doing its own restart, and the two
-  never fight (try-restart is idempotent).
+  never fight (try-restart is idempotent). A user unit that is new in the
+  upgraded package (ticket 102's `better-awake-tray.service`, ticket 97's
+  `better-monitor-tray.service`, which replace autostart entries) is enabled
+  and started for each logged-in user when the component was enabled
+  before, so an upgrade with `apt` does not leave the person without the
+  tray until Better Manager next runs.
 - **Windows restart themselves and come back where they were.** Every app
   watches its own program file (`/proc/self/exe` replaced, or an inotify on
   the installed path). When it changes, the app saves its view state (open
