@@ -7,8 +7,8 @@
 
 use crate::model::{DeviceAddress, PlatformDevice};
 use crate::traits::{
-    DeviceControl, EjectOutcome, FlushBackend, FlushReport, OpenUseInspector, PlatformError,
-    WritebackInspector,
+    DeviceControl, EjectOutcome, FlushBackend, FlushReport, FormatRequest, OpenUseInspector,
+    PlatformError, WritebackInspector,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,6 +22,9 @@ pub struct FakeDeviceControl {
     calls: Arc<Mutex<Vec<String>>>,
     /// Object paths whose drive cannot be powered off.
     no_power_off: Arc<Mutex<Vec<String>>>,
+    /// What each fake drive holds after an image was written to it. Nothing
+    /// here ever touches a real device.
+    written: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
 }
 
 impl FakeDeviceControl {
@@ -55,6 +58,15 @@ impl FakeDeviceControl {
     }
 
     /// The operations that reached this control, in order.
+    /// The bytes an image write left on a fake drive.
+    pub fn written(&self, address: &DeviceAddress) -> Option<Vec<u8>> {
+        self.written
+            .lock()
+            .expect("written lock")
+            .get(&address.object_path)
+            .cloned()
+    }
+
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().expect("call lock").clone()
     }
@@ -134,6 +146,71 @@ impl DeviceControl for FakeDeviceControl {
                 "unmounted and powered off".to_string()
             },
         })
+    }
+
+    async fn format(
+        &self,
+        address: &DeviceAddress,
+        request: &FormatRequest,
+    ) -> Result<(), PlatformError> {
+        request
+            .validate()
+            .map_err(|detail| PlatformError::Refused {
+                operation: "format".to_string(),
+                device: address.object_path.clone(),
+                detail,
+            })?;
+        self.record(format!(
+            "format {} {} {}",
+            address.object_path,
+            request.kind.udisks_type(),
+            request.label.trim()
+        ));
+        let mut devices = self.devices.lock().expect("device lock");
+        let device = devices
+            .get_mut(&address.object_path)
+            .ok_or_else(|| PlatformError::UnknownDevice(address.object_path.clone()))?;
+        device.mount_point = None;
+        device.block.id_type = Some(request.kind.udisks_type().to_string());
+        device.block.id_label = Some(request.label.trim().to_string());
+        Ok(())
+    }
+
+    async fn write_image(
+        &self,
+        address: &DeviceAddress,
+        image: &Path,
+    ) -> Result<u64, PlatformError> {
+        let bytes = std::fs::read(image).map_err(|error| PlatformError::Refused {
+            operation: "write image".to_string(),
+            device: address.object_path.clone(),
+            detail: error.to_string(),
+        })?;
+        {
+            let mut devices = self.devices.lock().expect("device lock");
+            let device = devices
+                .get_mut(&address.object_path)
+                .ok_or_else(|| PlatformError::UnknownDevice(address.object_path.clone()))?;
+            if device.block.size > 0 && bytes.len() as u64 > device.block.size {
+                return Err(PlatformError::Refused {
+                    operation: "write image".to_string(),
+                    device: address.object_path.clone(),
+                    detail: "the image is larger than the drive".to_string(),
+                });
+            }
+            device.mount_point = None;
+        }
+        self.record(format!(
+            "write image {} {}",
+            address.object_path,
+            image.display()
+        ));
+        let length = bytes.len() as u64;
+        self.written
+            .lock()
+            .expect("written lock")
+            .insert(address.object_path.clone(), bytes);
+        Ok(length)
     }
 }
 

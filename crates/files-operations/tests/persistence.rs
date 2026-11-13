@@ -19,6 +19,7 @@ use support::{local, write_pattern};
 
 fn engine_with(store: &JobStore) -> JobEngine {
     JobEngine::new(EngineConfig {
+        displaced_trash: Some(support::test_trash()),
         workers: 1,
         store: Some(store.clone()),
         conflicts: ConflictPolicy::new(),

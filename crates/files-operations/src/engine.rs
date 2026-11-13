@@ -148,6 +148,13 @@ struct JobShared {
     /// Where the job's item journal stands, and what changed since the last
     /// persist.
     journal: JournalCursor,
+    /// What the person answered about folders that were already there.
+    /// Under a merged folder, folders merge and files replace (into the
+    /// trash); under a skipped one nothing is copied; under a renamed one
+    /// everything follows the new name.
+    folder_answers: Vec<(PathBuf, crate::exec::FolderAnswer)>,
+    /// Where displaced items go; see [`EngineConfig::displaced_trash`].
+    displaced_trash: Option<PathBuf>,
 }
 
 struct Job {
@@ -284,6 +291,11 @@ pub struct EngineConfig {
     pub store: Option<JobStore>,
     /// Standing conflict answers every job starts with.
     pub conflicts: ConflictPolicy,
+    /// The home trash that Replace and Merge send what they displace to.
+    /// `None` is the session's own (`$XDG_DATA_HOME/Trash`). An item on
+    /// another device goes to that device's trash either way. Nothing a
+    /// conflict answer displaces is ever deleted.
+    pub displaced_trash: Option<PathBuf>,
 }
 
 impl Default for EngineConfig {
@@ -292,6 +304,7 @@ impl Default for EngineConfig {
             workers: 2,
             store: None,
             conflicts: ConflictPolicy::new(),
+            displaced_trash: None,
         }
     }
 }
@@ -304,6 +317,7 @@ struct Inner {
     next_id: AtomicU64,
     store: Option<JobStore>,
     defaults: ConflictPolicy,
+    displaced_trash: Option<PathBuf>,
     observer: Option<Arc<dyn JobObserver>>,
 }
 
@@ -381,6 +395,7 @@ impl JobEngine {
             ),
             store: config.store,
             defaults: config.conflicts,
+            displaced_trash: config.displaced_trash,
             observer,
         });
         let mut workers = Vec::new();
@@ -443,6 +458,8 @@ impl JobEngine {
                 failures: Vec::new(),
                 hard_links: HashMap::new(),
                 journal: JournalCursor::default(),
+                folder_answers: Vec::new(),
+                displaced_trash: self.inner.displaced_trash.clone(),
             }),
             signal: Condvar::new(),
             listeners: Mutex::new(Vec::new()),
@@ -1199,6 +1216,37 @@ impl JobControl for WorkerControl {
         let progress = shared.progress;
         drop(shared);
         self.job.publish(JobEvent::Progress(self.job.id, progress));
+    }
+
+    fn displaced_trash(&self) -> Option<PathBuf> {
+        self.job
+            .shared
+            .lock()
+            .expect("job state")
+            .displaced_trash
+            .clone()
+    }
+
+    fn record_folder_answer(&mut self, folder: PathBuf, answer: crate::exec::FolderAnswer) {
+        self.job
+            .shared
+            .lock()
+            .expect("job state")
+            .folder_answers
+            .push((folder, answer));
+    }
+
+    fn folder_answer_for(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<(PathBuf, crate::exec::FolderAnswer)> {
+        let shared = self.job.shared.lock().expect("job state");
+        shared
+            .folder_answers
+            .iter()
+            .filter(|(folder, _)| path.starts_with(folder))
+            .max_by_key(|(folder, _)| folder.components().count())
+            .cloned()
     }
 
     fn resolve(&mut self, conflict: Conflict) -> Result<Resolution, OperationError> {

@@ -18,6 +18,26 @@ image = { version = "0.25", default-features = false, features = [
     "bmp",
 ] }
 
+# The shared thumbnail cache names a thumbnail by the MD5 of the file's URI
+# and keeps the file's mtime in a PNG text chunk (freedesktop thumbnail
+# specification). Both crates are already in the lockfile through `image`
+# and the digest crates.
+md-5 = "0.10"
+png = "0.18"
+# The preview window lists what is inside an archive with the same readers
+# the extract operation uses; nothing new is compiled.
+zip.workspace = true
+tar.workspace = true
+flate2.workspace = true
+ruzstd.workspace = true
+# Audio and video in the large preview. The bindings are MIT/Apache; the
+# GStreamer libraries they call are LGPL, linked dynamically from the system
+# (the package depends on the base plugins). The decoders are whatever
+# GStreamer plugins are installed; a missing one is said plainly.
+gstreamer = "0.25"
+gstreamer-video = "0.25"
+gstreamer-app = "0.25"
+
 [dev-dependencies]
 tempfile.workspace = true
 

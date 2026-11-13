@@ -67,6 +67,7 @@ enum Request {
         operation: String,
     },
     SetPolicy(PolicyRequest),
+    Erase(crate::devices::EraseRequest),
 }
 
 /// The production link.
@@ -191,6 +192,10 @@ impl DeviceLink for StorageLink {
 
     fn request_policy(&self, request: PolicyRequest) {
         let _ = self.requests.send(Request::SetPolicy(request));
+    }
+
+    fn request_erase(&self, request: crate::devices::EraseRequest) {
+        let _ = self.requests.send(Request::Erase(request));
     }
 
     fn operation_completed(&self, object_path: &str, operation: &str) -> Result<(), String> {
@@ -529,6 +534,64 @@ async fn handle<C: DeviceControl>(
                     .await;
             }
         },
+        Request::Erase(request) => {
+            use crate::devices::EraseRequest;
+            let object_path = request.object_path().to_string();
+            let format = matches!(request, EraseRequest::Format { .. });
+            // Only a request the person confirmed in the window gets here.
+            let outcome = match (backend, request) {
+                (
+                    Backend::Service(client),
+                    EraseRequest::Format {
+                        object_path,
+                        filesystem,
+                        label,
+                    },
+                ) => client
+                    .format(&object_path, filesystem, &label, true)
+                    .await
+                    .map_err(|error| error.to_string()),
+                (Backend::Service(client), EraseRequest::WriteImage { object_path, image }) => {
+                    client
+                        .write_image(&object_path, &image, true)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                }
+                (
+                    Backend::Embedded(embedded),
+                    EraseRequest::Format {
+                        object_path,
+                        filesystem,
+                        label,
+                    },
+                ) => embedded
+                    .coordinator
+                    .format(
+                        &storage_core::DeviceHandle::new(object_path),
+                        &storage_platform::FormatRequest {
+                            kind: filesystem,
+                            label,
+                        },
+                        true,
+                    )
+                    .await
+                    .map_err(|error| error.to_string()),
+                (Backend::Embedded(embedded), EraseRequest::WriteImage { object_path, image }) => {
+                    embedded
+                        .coordinator
+                        .write_image(&storage_core::DeviceHandle::new(object_path), &image, true)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                }
+            };
+            let _ = notices.send(DeviceNotice::Erased {
+                object_path,
+                format,
+                outcome,
+            });
+        }
         Request::SetPolicy(request) => {
             let object_path = request.object_path.clone();
             let result = match backend {

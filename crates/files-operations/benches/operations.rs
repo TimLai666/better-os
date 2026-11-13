@@ -261,6 +261,8 @@ fn persistence_cost(root: &Path, sizes: &Sizes) {
         workers: 1,
         store: Some(store.clone()),
         conflicts: ConflictPolicy::new(),
+        // No job here answers a clash; nothing is displaced.
+        displaced_trash: None,
     });
     let destination = fresh(root, "persist-destination");
     let started = Instant::now();
@@ -467,6 +469,8 @@ fn time_job(operation: Operation, policy: CopyPolicy) -> Duration {
         workers: 1,
         store: None,
         conflicts: ConflictPolicy::new(),
+        // No job here answers a clash; nothing is displaced.
+        displaced_trash: None,
     });
     let started = Instant::now();
     let handle = engine

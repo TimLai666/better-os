@@ -60,7 +60,9 @@ pub use conflict::{
 };
 pub use engine::{EngineConfig, JobEngine, JobEvent, JobHandle, JobId, JobObserver, JobSnapshot};
 pub use error::{ArchiveLimit, OperationError};
-pub use exec::{CopiedInode, ItemOutcome, JobControl, build_plan, preview_bulk_rename};
+pub use exec::{
+    CopiedInode, FolderAnswer, ItemOutcome, JobControl, build_plan, preview_bulk_rename,
+};
 pub use log::{LogEvent, LogRecord, MetadataProperty, OperationLog, SkipReason};
 pub use plan::{InodeKey, ItemKind, Plan, PlanItem};
 pub use policy::{

@@ -54,6 +54,7 @@ use crate::prefs::{FilesPreferences, ItemScale, PreferenceStore, ViewMode};
 use crate::preview::PreviewPanel;
 use crate::reader::FilesReader;
 use crate::search::SearchState;
+use crate::settings_store::{FolderView, ViewState, ViewStateStore};
 use crate::toolbar::{PathRejection, PathValidator, resolve_path_input};
 
 /// Something the window says once, and stops saying when the next thing
@@ -90,6 +91,24 @@ pub enum Notice {
     Start {
         problem: Option<StartProblem>,
         ignored: usize,
+    },
+    /// No terminal is installed that Open Terminal Here knows how to start.
+    NoTerminal,
+    /// A format or image write finished, or why it did not.
+    Erased {
+        label: String,
+        format: bool,
+        failure: Option<String>,
+    },
+    /// A server is being opened.
+    Mounting(String),
+    /// A server could not be opened.
+    MountFailed(crate::network::MountError),
+    /// What an undo (or redo, when `undoing` is false) did, or why it did
+    /// not run.
+    Undo {
+        undoing: bool,
+        outcome: Result<crate::undo::ChangeKind, crate::undo::Refusal>,
     },
 }
 
@@ -146,6 +165,32 @@ impl Notice {
                 NavigationError::LastTab => c.last_tab_stays_open.to_string(),
                 NavigationError::NothingToRestore => c.nothing_to_reopen.to_string(),
                 NavigationError::NoSuchTab(_) => error.to_string(),
+            },
+            Notice::Undo { undoing, outcome } => match outcome {
+                Ok(kind) => (if *undoing { c.undo_done } else { c.redo_done })
+                    .replace("{kind}", crate::undo::kind_label(*kind, c)),
+                Err(refusal) => refusal.message(*undoing, c),
+            },
+            Notice::NoTerminal => c.no_terminal.to_string(),
+            Notice::Erased {
+                label,
+                format,
+                failure,
+            } => match (format, failure) {
+                (true, None) => c.format_done.replace("{device}", label),
+                (false, None) => c.image_written.replace("{device}", label),
+                (_, Some(reason)) => {
+                    format!("{}: {reason}", c.erase_failed.replace("{device}", label))
+                }
+            },
+            Notice::Mounting(address) => format!("{} {address}", c.server_connecting),
+            Notice::MountFailed(error) => match error {
+                crate::network::MountError::NoGio => c.server_no_gio.to_string(),
+                crate::network::MountError::TimedOut => c.server_timed_out.to_string(),
+                crate::network::MountError::NeedsPassword => c.server_sign_in.to_string(),
+                crate::network::MountError::Failed(reason) => {
+                    format!("{}: {reason}", c.server_failed)
+                }
             },
             Notice::AlreadyPinned => c.already_pinned.to_string(),
             Notice::NotPinnable => c.not_writable_here.to_string(),
@@ -229,13 +274,51 @@ pub enum PendingDialog {
     /// Compress, waiting for a format. The request holds the selection it was
     /// opened for, and the chooser which format the keyboard is on.
     Compress(CompressChooser),
+    /// A server that wants a name and password before it opens.
+    ServerLogin {
+        address: String,
+    },
+    /// Format a drive: the filesystem chosen, the name typed, and the
+    /// warning that everything on it goes.
+    Format {
+        object_path: String,
+        device_label: String,
+        filesystem: storage_platform::FilesystemKind,
+    },
+    /// Write a disk image to a drive, after the same warning.
+    WriteImage {
+        object_path: String,
+        device_label: String,
+        image: LocalPath,
+    },
 }
 
 /// One window's worth of state.
 pub struct FilesSession {
     pub locale: Locale,
+    /// The language, the preview pane, the search's own hidden setting, and
+    /// a mirror of the view the folder in front of the person has: its mode,
+    /// zoom, sort order, and hidden-file visibility. The mirror is filled
+    /// from [`ViewState`] every time the folder changes.
     pub preferences: FilesPreferences,
     preference_store: PreferenceStore,
+    /// How each folder is shown, and the last folder, under the XDG state
+    /// directory.
+    view_store: ViewStateStore,
+    pub views: ViewState,
+    /// Undo and redo of the file changes this window made.
+    pub history: crate::undo::History,
+    /// The jobs this window submitted that undo will cover once they finish,
+    /// with what each was asked to do.
+    undoable: Vec<(files_operations::JobId, files_operations::Operation)>,
+    /// Opens servers typed in the path bar, and the mount in flight.
+    mounter: Arc<dyn crate::network::Mounter>,
+    mounting: Option<
+        std::sync::mpsc::Receiver<(
+            String,
+            Result<std::path::PathBuf, crate::network::MountError>,
+        )>,
+    >,
     bookmark_store: BookmarkStore,
     pub bookmarks: BookmarkFile,
     pub directories: UserDirectories,
@@ -294,6 +377,7 @@ pub struct SessionSetup {
     pub start: Location,
     pub preferences: FilesPreferences,
     pub preference_store: PreferenceStore,
+    pub view_store: ViewStateStore,
     pub bookmark_store: BookmarkStore,
     pub directories: UserDirectories,
     pub mounts: MountTable,
@@ -328,6 +412,7 @@ impl SessionSetup {
         Self {
             start,
             preferences,
+            view_store: ViewStateStore::beside(preference_store.path()),
             preference_store,
             bookmark_store,
             directories: UserDirectories::default(),
@@ -348,8 +433,9 @@ impl FilesSession {
     pub fn new(setup: SessionSetup) -> Self {
         let SessionSetup {
             start,
-            preferences,
+            mut preferences,
             preference_store,
+            view_store,
             bookmark_store,
             directories,
             mounts,
@@ -361,6 +447,13 @@ impl FilesSession {
             link,
             preview,
         } = setup;
+        let mut views = view_store.load();
+        views.set_last_folder(local_folder(&start).as_deref());
+        mirror(
+            &mut preferences,
+            views.view_for(local_folder(&start).as_deref()),
+        );
+        reader.set_include_hidden_applications(preferences.show_hidden);
         let view = preferences.view_preferences();
         let bookmarks = bookmark_store.load();
         let tabs = TabSet::with_preferences(start.clone(), view);
@@ -370,6 +463,12 @@ impl FilesSession {
             locale: Locale::from_preference(preferences.locale),
             preferences,
             preference_store,
+            view_store,
+            views,
+            history: crate::undo::History::default(),
+            mounter: Arc::new(crate::network::GioMounter),
+            mounting: None,
+            undoable: Vec::new(),
             bookmark_store,
             bookmarks,
             directories,
@@ -440,10 +539,14 @@ impl FilesSession {
     /// middle-clicking a folder does.
     pub fn open_tab(&mut self, location: Location, activate: bool) -> TabId {
         let id = self.tabs.open(location.clone(), activate);
-        let view = self.preferences.view_preferences();
+        let view = self
+            .views
+            .view_for(local_folder(&location).as_deref())
+            .view_preferences();
         let pane = Pane::open(location, view, self.reader.as_ref());
         self.panes.push((id, pane));
         if activate {
+            self.adopt_folder_view();
             self.resync_content();
         }
         id
@@ -456,6 +559,7 @@ impl FilesSession {
         match self.tabs.close(id) {
             Ok(()) => {
                 self.panes.retain(|(tab, _)| *tab != id);
+                self.adopt_folder_view();
                 self.resync_content();
             }
             Err(error) => self.notice = Some(Notice::Navigation(error)),
@@ -471,6 +575,7 @@ impl FilesSession {
                 let view = tab.preferences();
                 let pane = Pane::resume(history, view, self.reader.as_ref());
                 self.panes.push((id, pane));
+                self.adopt_folder_view();
                 self.resync_content();
             }
             Err(error) => self.notice = Some(Notice::Navigation(error)),
@@ -479,6 +584,7 @@ impl FilesSession {
 
     pub fn activate_tab(&mut self, id: TabId) {
         if self.tabs.activate(id).is_ok() {
+            self.adopt_folder_view();
             self.resync_content();
         }
     }
@@ -557,6 +663,14 @@ impl FilesSession {
     fn after_navigation(&mut self) {
         let id = self.active_tab();
         self.sync_history(id);
+        // A filter belongs to the folder it was typed in.
+        self.pane_mut().model_mut().set_name_filter("");
+        self.adopt_folder_view();
+        let folder = local_folder(self.location());
+        if folder.is_some() && self.views.last_folder() != folder.as_deref() {
+            self.views.set_last_folder(folder.as_deref());
+            self.persist_views();
+        }
         self.content.clear_type_ahead();
         self.resync_content();
         // A search belongs to the location it was started in. Carrying it into
@@ -573,6 +687,10 @@ impl FilesSession {
         home: Option<&std::path::Path>,
         validator: &dyn PathValidator,
     ) {
+        if let Some(address) = crate::network::server_address(text) {
+            self.mount_server(address, None);
+            return;
+        }
         match resolve_path_input(text, home, validator) {
             Ok(location) => {
                 self.notice = None;
@@ -585,22 +703,29 @@ impl FilesSession {
     // --- View preferences -------------------------------------------------
 
     /// `Ctrl+H`. The model re-filters what it already holds, so this is
-    /// immediate and starts no listing; the preference is then persisted.
+    /// immediate and starts no listing; the choice is remembered for this
+    /// folder.
     pub fn toggle_hidden(&mut self) {
         let shown = self.pane_mut().toggle_hidden();
         self.preferences.show_hidden = shown;
         // The Applications location has its own hidden rule — an excluded or
         // `NoDisplay` entry — and it follows the same key.
         self.reader.set_include_hidden_applications(shown);
-        self.apply_preferences_to_all_tabs();
-        self.persist_preferences();
+        self.sync_active_tab_view();
+        self.record_view();
+        // Applications leaves its hidden entries out when it reads the
+        // catalog, so showing them means reading it again.
+        if matches!(self.location(), Location::Applications) {
+            let reader = self.reader.clone();
+            self.pane_mut().reload(reader.as_ref());
+        }
         self.resync_content();
     }
 
     pub fn set_view_mode(&mut self, mode: ViewMode) {
         self.preferences.view_mode = mode;
         self.content.mode = mode;
-        self.persist_preferences();
+        self.record_view();
     }
 
     pub fn toggle_view_mode(&mut self) {
@@ -610,13 +735,15 @@ impl FilesSession {
     pub fn set_scale(&mut self, scale: ItemScale) {
         self.preferences.scale = scale;
         self.content.scale = scale;
-        self.persist_preferences();
+        self.record_view();
     }
 
     pub fn set_order(&mut self, order: SortOrder) {
         self.preferences.set_order(order);
-        self.apply_preferences_to_all_tabs();
-        self.persist_preferences();
+        let order = self.preferences.order();
+        self.pane_mut().set_order(order);
+        self.sync_active_tab_view();
+        self.record_view();
         self.resync_content();
     }
 
@@ -640,28 +767,94 @@ impl FilesSession {
         self.set_order(order.with_folders_first(!order.folders_first));
     }
 
+    /// `S` and `Shift+S`: the next or previous sort, through name, type,
+    /// newest, oldest and size, the way folio steps through its sort menu.
+    pub fn step_sort(&mut self, forward: bool) {
+        let next = crate::context_menu::step_sort(self.preferences.order(), forward);
+        self.set_order(next);
+    }
+
+    /// "Use this view for every folder": the folder's view becomes the
+    /// default and every other folder's own view is forgotten.
+    pub fn use_view_everywhere(&mut self) {
+        self.views.apply_everywhere(self.current_view());
+        self.persist_views();
+    }
+
+    /// Whether the folder in front of the person has a view of its own.
+    pub fn folder_has_own_view(&self) -> bool {
+        local_folder(self.location()).is_some_and(|path| self.views.has_override(&path))
+    }
+
     pub fn set_locale(&mut self, locale: Locale) {
         self.locale = locale;
         self.preferences.locale = locale.to_preference();
         self.persist_preferences();
     }
 
-    /// The global policy in one place: every tab gets the same order and the
-    /// same hidden preference.
-    fn apply_preferences_to_all_tabs(&mut self) {
-        let order = self.preferences.order();
-        let hidden = self.preferences.hidden();
-        for (_, pane) in &mut self.panes {
+    /// The view the person is looking at, as stored.
+    fn current_view(&self) -> FolderView {
+        FolderView::new(
+            self.preferences.view_mode,
+            self.preferences.scale,
+            self.preferences.show_hidden,
+            self.preferences.order(),
+        )
+    }
+
+    /// Takes the stored view of the folder in front of the person and shows
+    /// it: the mode and zoom, and the pane's sort and hidden filter.
+    fn adopt_folder_view(&mut self) {
+        let mut view = self
+            .views
+            .view_for(local_folder(self.location()).as_deref());
+        // Recents reads newest first, whatever the folders are sorted by.
+        if matches!(self.location(), Location::Recent) {
+            view.set_order(SortOrder::new(
+                SortKey::Modified,
+                files_core::SortDirection::Descending,
+            ));
+        }
+        mirror(&mut self.preferences, view);
+        self.content.mode = view.mode;
+        self.content.scale = view.scale;
+        let order = view.order();
+        let hidden = view.hidden();
+        let pane = self.pane_mut();
+        if pane.preferences().order != order {
             pane.set_order(order);
+        }
+        if pane.preferences().hidden != hidden {
             pane.set_hidden_preference(hidden);
         }
-        for tab in 0..self.tabs.len() {
-            let id = self.tabs.tabs()[tab].id();
-            if let Some(tab) = self.tabs.get_mut(id) {
-                let preferences = tab.preferences_mut();
-                preferences.order = order;
-                preferences.hidden = hidden;
-            }
+        self.reader
+            .set_include_hidden_applications(view.show_hidden);
+        self.sync_active_tab_view();
+    }
+
+    /// Keeps the tab's own copy of the view in step with its pane, so a tab
+    /// closed and reopened comes back the way it looked.
+    fn sync_active_tab_view(&mut self) {
+        let id = self.active_tab();
+        let order = self.preferences.order();
+        let hidden = self.preferences.hidden();
+        if let Some(tab) = self.tabs.get_mut(id) {
+            let preferences = tab.preferences_mut();
+            preferences.order = order;
+            preferences.hidden = hidden;
+        }
+    }
+
+    /// Remembers the current view for the folder in front of the person.
+    fn record_view(&mut self) {
+        let folder = local_folder(self.location());
+        self.views.set_view(folder.as_deref(), self.current_view());
+        self.persist_views();
+    }
+
+    fn persist_views(&mut self) {
+        if let Err(error) = self.view_store.save(&self.views) {
+            self.notice = Some(Notice::Key(format!("files.prefs.error.unwritable:{error}")));
         }
     }
 
@@ -673,10 +866,29 @@ impl FilesSession {
 
     // --- Selection and opening --------------------------------------------
 
+    /// Rubber-band selection: exactly the content-area rows given, or those
+    /// added to what was selected when `extend` (Ctrl held).
+    pub fn select_rows(&mut self, rows: &[usize], base: &[files_core::EntryId]) {
+        let ids: Vec<files_core::EntryId> = rows
+            .iter()
+            .filter_map(|row| self.model_row(*row))
+            .filter_map(|row| self.pane().model().visible(row).map(Entry::id))
+            .chain(base.iter().cloned())
+            .collect();
+        let selection = self.pane_mut().model_mut().selection_mut();
+        selection.select_all(&ids);
+        self.resync_content();
+        self.refresh_preview();
+    }
+
     pub fn apply_selection(&mut self, input: SelectionInput, columns: usize) -> Option<usize> {
         let mut content = std::mem::take(&mut self.content);
         let scrolled = content.apply(self.pane_mut().model_mut(), input, columns);
         self.content = content;
+        // The side preview follows the selection at once: a click changes
+        // nothing the frame pump watches, so waiting for it left the pane
+        // saying "select something" with something selected.
+        self.refresh_preview();
         scrolled
     }
 
@@ -684,6 +896,7 @@ impl FilesSession {
         let mut content = std::mem::take(&mut self.content);
         let scrolled = content.type_ahead_key(self.pane_mut().model_mut(), character, now);
         self.content = content;
+        self.refresh_preview();
         scrolled
     }
 
@@ -699,6 +912,7 @@ impl FilesSession {
             .selection_mut()
             .select_only(EntryId::Name(name.to_string()));
         self.resync_content();
+        self.refresh_preview();
     }
 
     /// The entries currently selected, in visible order.
@@ -950,6 +1164,85 @@ impl FilesSession {
     /// Clicking a device row. A mounted device is opened; an unmounted one is
     /// mounted and then opened, which is Issue #6's "clicking mounts and opens
     /// automatically".
+    /// Format… from a drive's menu: opens the dialog that names the drive,
+    /// offers the filesystems and says that everything on it goes.
+    pub fn request_format(&mut self, object_path: &str) {
+        self.dialog = Some(PendingDialog::Format {
+            object_path: object_path.to_string(),
+            device_label: self.device_label(object_path),
+            filesystem: storage_platform::FilesystemKind::Exfat,
+        });
+    }
+
+    /// Write to Drive… for a disk image: opens the confirmation.
+    pub fn request_write_image(&mut self, image: LocalPath, object_path: &str) {
+        self.dialog = Some(PendingDialog::WriteImage {
+            object_path: object_path.to_string(),
+            device_label: self.device_label(object_path),
+            image,
+        });
+    }
+
+    /// The person confirmed a Format or an image write: only now does the
+    /// request go to the storage layer, which refuses an unconfirmed one.
+    pub fn confirm_erase(&mut self, label: &str) {
+        let request = match self.dialog.take() {
+            Some(PendingDialog::Format {
+                object_path,
+                filesystem,
+                ..
+            }) => {
+                let format = storage_platform::FormatRequest {
+                    kind: filesystem,
+                    label: label.to_string(),
+                };
+                if let Err(reason) = format.validate() {
+                    self.notice = Some(Notice::Key(reason));
+                    return;
+                }
+                crate::devices::EraseRequest::Format {
+                    object_path,
+                    filesystem,
+                    label: label.trim().to_string(),
+                }
+            }
+            Some(PendingDialog::WriteImage {
+                object_path, image, ..
+            }) => crate::devices::EraseRequest::WriteImage {
+                object_path,
+                image: image.as_path().to_path_buf(),
+            },
+            other => {
+                self.dialog = other;
+                return;
+            }
+        };
+        self.link.request_erase(request);
+    }
+
+    /// Picks the filesystem in an open Format dialog.
+    pub fn choose_filesystem(&mut self, kind: storage_platform::FilesystemKind) {
+        if let Some(PendingDialog::Format { filesystem, .. }) = &mut self.dialog {
+            *filesystem = kind;
+        }
+    }
+
+    /// The drives an image could be written to: those the storage layer
+    /// reports.
+    pub fn image_targets(&self) -> Vec<(String, String)> {
+        self.devices
+            .rows()
+            .iter()
+            .map(|row| (row.object_path.clone(), row.label.clone()))
+            .collect()
+    }
+
+    /// Mount from a drive's menu: asks the storage layer to mount it,
+    /// without going there.
+    pub fn mount_device(&mut self, object_path: &str) {
+        self.link.request_mount(object_path);
+    }
+
     pub fn open_device(&mut self, object_path: &str) {
         let Some(row) = self.devices.get(object_path) else {
             return;
@@ -995,6 +1288,18 @@ impl FilesSession {
     fn apply_device_notice(&mut self, notice: DeviceNotice) {
         match notice {
             DeviceNotice::Mode(mode) => self.collection = mode,
+            DeviceNotice::Erased {
+                object_path,
+                format,
+                outcome,
+            } => {
+                self.notice = Some(Notice::Erased {
+                    label: self.device_label(&object_path),
+                    format,
+                    failure: outcome.err(),
+                });
+                self.link.request_refresh();
+            }
             DeviceNotice::Inventory(reports) => self.devices.apply_inventory(reports),
             DeviceNotice::Mounted {
                 object_path,
@@ -1336,10 +1641,12 @@ impl FilesSession {
     /// purpose: the engine owns the job, and holding a receipt would be the
     /// beginning of tying the job to this window.
     pub fn submit(&mut self, spec: JobSpec) {
+        let operation = spec.operation.clone();
         match self.engine.submit(spec) {
-            Ok(_handle) => {
+            Ok(handle) => {
                 self.notice = None;
                 self.operations_open = true;
+                self.undoable.push((handle.id(), operation));
             }
             Err(error) => self.notice = Some(Notice::Rejected(error)),
         }
@@ -1536,6 +1843,12 @@ impl FilesSession {
         for snapshot in &jobs {
             if snapshot.state.is_terminal() {
                 self.finished.record(opcenter::job_row(snapshot, c));
+                if let Some(at) = self.undoable.iter().position(|(id, _)| *id == snapshot.id) {
+                    let (_, operation) = self.undoable.remove(at);
+                    if let Some(change) = crate::undo::change_from_job(&operation, snapshot) {
+                        self.history.record(change);
+                    }
+                }
             }
         }
         self.jobs = jobs;
@@ -1568,6 +1881,7 @@ impl FilesSession {
         }
         changed |= self.refresh_jobs();
         changed |= self.pump_devices();
+        changed |= self.pump_mount();
         // Search is fed after the pane, so entries that arrived this frame are
         // considered this frame rather than next.
         let mut search = std::mem::take(&mut self.search);
@@ -1609,6 +1923,18 @@ impl FilesSession {
             Command::PreviousTab => self.previous_tab(),
             Command::ToggleHidden => self.toggle_hidden(),
             Command::ToggleViewMode => self.toggle_view_mode(),
+            Command::ShowGrid => self.set_view_mode(ViewMode::Grid),
+            Command::ShowList => self.set_view_mode(ViewMode::List),
+            Command::ShowColumns => self.set_view_mode(ViewMode::Columns),
+            Command::NormalSize => self.set_scale(ItemScale::default()),
+            Command::GoHome => {
+                let home = self.home_location();
+                self.navigate_to(home);
+            }
+            Command::TogglePin => self.toggle_pin(),
+            // The window owns the system clipboard, the menu's position and
+            // the shortcut sheet; it reads what to do from the session.
+            Command::CopyPath | Command::ContextMenu | Command::ShowShortcuts => {}
             Command::LargerItems => self.set_scale(self.preferences.scale.larger()),
             Command::SmallerItems => self.set_scale(self.preferences.scale.smaller()),
             Command::MoveUp => {
@@ -1639,9 +1965,17 @@ impl FilesSession {
                 self.apply_selection(SelectionInput::SelectAll, columns);
             }
             Command::ClearSelection => {
+                // Escape steps back one thing at a time: a dialog or notice,
+                // then the selection, then (as in folio) the work under way.
+                let had_something = self.dialog.is_some()
+                    || self.notice.is_some()
+                    || !self.pane().model().selection().is_empty();
                 self.dialog = None;
                 self.notice = None;
                 self.apply_selection(SelectionInput::Clear, columns);
+                if !had_something {
+                    self.cancel_latest_job();
+                }
             }
             Command::ExtendUp | Command::ExtendDown => {
                 let direction = if command == Command::ExtendUp {
@@ -1667,6 +2001,22 @@ impl FilesSession {
             Command::MoveToTrash => self.trash_selection(),
             Command::DeletePermanently => self.request_permanent_delete(),
             Command::RestoreFromTrash => self.restore_selection_from_trash(),
+            Command::Undo => self.undo(),
+            Command::PreviewWindow => self.open_preview_window(),
+            Command::CyclePane => {
+                self.focus = match self.focus {
+                    Focus::Content => {
+                        if self.sidebar_cursor.is_none() && !self.bookmarks.is_empty() {
+                            self.sidebar_cursor = Some(0);
+                        }
+                        Focus::Sidebar
+                    }
+                    Focus::Sidebar => Focus::Content,
+                };
+            }
+            // The window owns the filter field and opens windows.
+            Command::FilterFolder | Command::NewWindow | Command::SplitView => {}
+            Command::Redo => self.redo(),
             Command::ToggleOperations => self.operations_open = !self.operations_open,
             Command::Compress => self.request_compress(),
             Command::Extract => self.extract_selection(),
@@ -1701,6 +2051,358 @@ impl FilesSession {
             // there, exactly as `FocusPathField` is.
             Command::FocusSearch => {}
         }
+    }
+
+    /// The text `Ctrl+Shift+C` puts on the clipboard: the selected entries'
+    /// paths, one per line, or the folder's own path when nothing is
+    /// selected. `None` for a place with no path (Trash, Applications).
+    pub fn path_text(&self) -> Option<String> {
+        let selected: Vec<String> = self
+            .selected_entries()
+            .into_iter()
+            .filter_map(Entry::as_local_path)
+            .map(|path| path.as_path().to_string_lossy().into_owned())
+            .collect();
+        if !selected.is_empty() {
+            return Some(selected.join("\n"));
+        }
+        local_folder(self.location()).map(|path| path.to_string_lossy().into_owned())
+    }
+
+    /// `Ctrl+P`: pins the selected folder, or the folder in front of the
+    /// person, and unpins it when it is already in the sidebar.
+    pub fn toggle_pin(&mut self) {
+        let target = self
+            .focused_entry()
+            .filter(|entry| entry.kind == files_core::EntryKind::Directory)
+            .and_then(Entry::as_local_path)
+            .cloned()
+            .map(Location::Local)
+            .unwrap_or_else(|| self.location().clone());
+        self.toggle_pin_of(&target);
+    }
+
+    /// Pins `location`, or unpins it when it is pinned already.
+    pub fn toggle_pin_of(&mut self, location: &Location) {
+        let pinned = (0..self.bookmarks.len()).find(|index| {
+            self.bookmarks
+                .get(*index)
+                .is_some_and(|bookmark| bookmark.location() == location)
+        });
+        match pinned {
+            Some(index) => self.remove_bookmark(index),
+            None => self.pin(location),
+        }
+    }
+
+    /// What the content-area menus need to know, read from the selection
+    /// and the folder.
+    pub fn selection_facts(&self) -> crate::context_menu::SelectionFacts {
+        let selected = self.selected_entries();
+        let single_folder = selected.len() == 1
+            && selected[0].kind == files_core::EntryKind::Directory
+            && selected[0].as_local_path().is_some();
+        let single_folder_pinned = single_folder
+            && selected[0]
+                .as_local_path()
+                .is_some_and(|path| self.bookmarks.contains(&Location::Local(path.clone())));
+        let all_local =
+            !selected.is_empty() && selected.iter().all(|entry| entry.as_local_path().is_some());
+        crate::context_menu::SelectionFacts {
+            count: selected.len(),
+            single_folder,
+            single_folder_pinned,
+            all_local,
+            archive: self.archive_actions(),
+            writable: local_folder(self.location()).is_some_and(|path| {
+                std::fs::metadata(&path).is_ok_and(|meta| !meta.permissions().readonly())
+            }),
+            in_trash: self.viewing_trash(),
+            can_paste: !self.clipboard.is_empty(),
+            showing_hidden: self.preferences.show_hidden,
+            has_items: self.row_count() > 0,
+        }
+    }
+
+    /// Carries out one context-menu line. The sidebar lines act on
+    /// `sidebar_target`, the row the menu was opened on.
+    pub fn run_menu_command(
+        &mut self,
+        command: crate::context_menu::MenuCommand,
+        sidebar_target: Option<&crate::sidebar::SidebarRow>,
+        columns: usize,
+    ) {
+        use crate::context_menu::MenuCommand as M;
+        if let Some(row) = sidebar_target {
+            match command {
+                M::Open => self.navigate_to(row.location.clone()),
+                M::OpenInNewTab => {
+                    self.open_tab(row.location.clone(), true);
+                }
+                M::Pin => self.pin(&row.location),
+                M::RenameBookmark => {
+                    if let Some(index) = row.bookmark_index {
+                        self.dialog = Some(PendingDialog::RenameBookmark(index));
+                    }
+                }
+                M::MoveBookmarkUp => {
+                    if let Some(index) = row.bookmark_index {
+                        self.move_bookmark_up(index);
+                    }
+                }
+                M::MoveBookmarkDown => {
+                    if let Some(index) = row.bookmark_index {
+                        self.move_bookmark_down(index);
+                    }
+                }
+                M::RemoveBookmark | M::Unpin => {
+                    if let Some(index) = row.bookmark_index {
+                        self.remove_bookmark(index);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        match command {
+            M::Open => self.open_focused(),
+            M::OpenInNewTab => {
+                if let Some(id) = self.focused_entry().map(Entry::id) {
+                    self.open_in_new_tab(&id);
+                }
+            }
+            M::OpenWith => self.open_with_selected(),
+            M::Preview => {
+                if !self.preview.open {
+                    self.toggle_preview();
+                }
+            }
+            M::Pin | M::Unpin => self.toggle_pin(),
+            M::Rename => {
+                self.focus = Focus::Content;
+                self.begin_rename();
+            }
+            M::Duplicate => self.duplicate_selection(),
+            M::Copy => self.copy_selection(),
+            M::Cut => self.cut_selection(),
+            M::Paste => self.paste(),
+            M::NewFolder => self.dialog = Some(PendingDialog::NewFolder),
+            M::NewFile => self.dialog = Some(PendingDialog::NewFile),
+            M::Compress => self.request_compress(),
+            M::Extract => self.extract_selection(),
+            M::ToggleHidden => self.toggle_hidden(),
+            M::SelectAll => {
+                self.apply_selection(SelectionInput::SelectAll, columns);
+            }
+            M::MoveToTrash => self.trash_selection(),
+            M::DeletePermanently => self.request_permanent_delete(),
+            M::Restore => self.restore_selection_from_trash(),
+            M::EmptyTrash => self.empty_trash(columns),
+            M::OpenTerminal => self.open_terminal_here(&crate::terminal::on_path),
+            // The window puts the text on the clipboard.
+            M::CopyPath => {}
+            M::RenameBookmark
+            | M::MoveBookmarkUp
+            | M::MoveBookmarkDown
+            | M::RemoveBookmark
+            | M::Eject
+            | M::Mount
+            | M::Format => {}
+        }
+    }
+
+    /// Type-to-filter: shows only the names in this folder that contain
+    /// `text`, ignoring case. It never reloads and never looks below this
+    /// folder (that is what search is for), and it is cleared when the
+    /// folder changes.
+    pub fn set_filter(&mut self, text: &str) {
+        self.pane_mut().model_mut().set_name_filter(text);
+        self.resync_content();
+    }
+
+    pub fn filter(&self) -> &str {
+        self.pane().model().name_filter()
+    }
+
+    /// "Showing 3 of 120", or `None` while nothing is filtered.
+    pub fn filter_status(&self) -> Option<(usize, usize)> {
+        let model = self.pane().model();
+        (!model.name_filter().is_empty()).then(|| (model.visible_len(), model.total_len()))
+    }
+
+    /// Empty Trash: everything in the Trash, deleted for good, after the
+    /// same confirmation a permanent delete asks for.
+    pub fn empty_trash(&mut self, columns: usize) {
+        if !self.viewing_trash() {
+            self.navigate_to(Location::Trash(TrashLocation::Root));
+            return;
+        }
+        self.apply_selection(SelectionInput::SelectAll, columns);
+        self.request_permanent_delete();
+    }
+
+    /// Open Terminal Here: the person's terminal, started in this folder.
+    /// `installed` says which programs are on the system.
+    pub fn open_terminal_here(&mut self, installed: &dyn Fn(&str) -> bool) {
+        let Some(folder) = local_folder(self.location()) else {
+            self.notice = Some(Notice::Command(CommandRefusal::NotAFilesystemLocation));
+            return;
+        };
+        match crate::terminal::terminal_invocation(&folder, installed) {
+            Some(invocation) => {
+                if self.spawner.spawn(&invocation).is_err() {
+                    self.notice = Some(Notice::NoTerminal);
+                }
+            }
+            None => self.notice = Some(Notice::NoTerminal),
+        }
+    }
+
+    /// Opens a server through GVfs on a worker thread; [`Self::pump`] goes
+    /// there once it is mounted, or asks for a name and password.
+    pub fn mount_server(
+        &mut self,
+        address: String,
+        credentials: Option<crate::network::Credentials>,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mounter = Arc::clone(&self.mounter);
+        self.notice = Some(Notice::Mounting(address.clone()));
+        let _ = std::thread::Builder::new()
+            .name("files-server-mount".to_string())
+            .spawn(move || {
+                let result = mounter.mount(&address, credentials.as_ref());
+                let _ = sender.send((address, result));
+            });
+        self.mounting = Some(receiver);
+    }
+
+    /// Uses another way of mounting servers. For tests.
+    pub fn set_mounter(&mut self, mounter: Arc<dyn crate::network::Mounter>) {
+        self.mounter = mounter;
+    }
+
+    /// Whether a server is being opened.
+    pub fn is_mounting(&self) -> bool {
+        self.mounting.is_some()
+    }
+
+    fn pump_mount(&mut self) -> bool {
+        let Some(receiver) = &self.mounting else {
+            return false;
+        };
+        let Ok((address, result)) = receiver.try_recv() else {
+            return false;
+        };
+        self.mounting = None;
+        match result {
+            Ok(path) => match Location::local(path) {
+                Ok(location) => {
+                    self.notice = None;
+                    self.navigate_to(location);
+                }
+                Err(_) => {
+                    self.notice = Some(Notice::MountFailed(crate::network::MountError::Failed(
+                        "not a path".to_string(),
+                    )))
+                }
+            },
+            Err(crate::network::MountError::NeedsPassword) => {
+                self.notice = None;
+                self.dialog = Some(PendingDialog::ServerLogin { address });
+            }
+            Err(error) => self.notice = Some(Notice::MountFailed(error)),
+        }
+        true
+    }
+
+    /// The name of the application an entry opens with, as the details pane
+    /// shows it ("Opens with Text Editor"). `None` for a folder, or a type
+    /// nothing handles.
+    pub fn opens_with(&self, entry: &Entry) -> Option<String> {
+        if entry.kind != files_core::EntryKind::File {
+            return None;
+        }
+        let (route, _) = crate::openwith::route_open_file(
+            entry.mime.as_ref(),
+            self.defaults.as_ref(),
+            &self.catalog,
+        );
+        match route {
+            OpenRoute::LaunchWith { desktop_id, .. } => self
+                .catalog
+                .snapshot()
+                .get(&desktop_id)
+                .map(|app| app.display_name(None).to_string()),
+            _ => None,
+        }
+    }
+
+    /// Space: the selected file or folder in the large preview, which is a
+    /// program of its own (`better-files-preview`, beside this one), so a
+    /// file that upsets a decoder never takes the file manager down.
+    pub fn open_preview_window(&mut self) {
+        let Some(path) = self
+            .focused_entry()
+            .and_then(Entry::as_local_path)
+            .map(|path| path.as_path().to_string_lossy().into_owned())
+        else {
+            self.notice = Some(Notice::Command(CommandRefusal::NothingToActOn));
+            return;
+        };
+        let invocation = app_catalog_core::Invocation {
+            program: preview_program(),
+            arguments: vec![path],
+        };
+        if self.spawner.spawn(&invocation).is_err() {
+            // No separate preview: the side pane shows what it can.
+            if !self.preview.open {
+                self.toggle_preview();
+            }
+        }
+    }
+
+    /// Cancels the newest job still running, if there is one. Returns
+    /// whether one was.
+    pub fn cancel_latest_job(&mut self) -> bool {
+        let latest = self
+            .jobs
+            .iter()
+            .filter(|job| !job.state.is_terminal())
+            .map(|job| job.id)
+            .max_by_key(|id| id.value());
+        match latest {
+            Some(id) => {
+                self.engine.cancel(id);
+                self.refresh_jobs();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Uses `root` as the home trash for what undo puts away, instead of the
+    /// session's own. For tests.
+    pub fn set_undo_trash(&mut self, root: std::path::PathBuf) {
+        self.history = crate::undo::History::with_trash(Some(root));
+    }
+
+    /// `Ctrl+Z`: undoes the latest change and says what it did, or why not.
+    pub fn undo(&mut self) {
+        self.notice = Some(Notice::Undo {
+            undoing: true,
+            outcome: self.history.undo(),
+        });
+        self.reload();
+    }
+
+    /// `Ctrl+Shift+Z` or `Ctrl+Y`.
+    pub fn redo(&mut self) {
+        self.notice = Some(Notice::Undo {
+            undoing: false,
+            outcome: self.history.redo(),
+        });
+        self.reload();
     }
 
     fn begin_rename(&mut self) {
@@ -1745,4 +2447,31 @@ impl FilesSession {
     pub fn viewing_trash(&self) -> bool {
         matches!(self.location(), Location::Trash(TrashLocation::Root))
     }
+}
+
+/// The folder behind a location, when it is one on this machine.
+pub(crate) fn local_folder(location: &Location) -> Option<std::path::PathBuf> {
+    match location {
+        Location::Local(path) => Some(path.as_path().to_path_buf()),
+        _ => None,
+    }
+}
+
+/// Copies a stored folder view into the preferences mirror.
+fn mirror(preferences: &mut FilesPreferences, view: FolderView) {
+    preferences.view_mode = view.mode;
+    preferences.scale = view.scale;
+    preferences.show_hidden = view.show_hidden;
+    preferences.set_order(view.order());
+}
+
+/// The preview program: `better-files-preview` beside this executable, or on
+/// `$PATH` when this one is not where it can be found.
+pub fn preview_program() -> String {
+    std::env::current_exe()
+        .ok()
+        .map(|exe| exe.with_file_name("better-files-preview"))
+        .filter(|candidate| candidate.is_file())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "better-files-preview".to_string())
 }

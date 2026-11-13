@@ -644,3 +644,142 @@ async fn two_devices_reporting_one_identity_are_both_left_unknown() {
         assert!(!report.state.permits_direct_removal());
     }
 }
+
+// --- Format and write image: fakes only, never a real drive -------------
+
+#[tokio::test]
+async fn format_is_refused_until_the_person_confirms_erasing_and_then_goes_through_the_platform() {
+    let fixture = Fixture::new("format");
+    let mut harness = harness(
+        &fixture,
+        FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]),
+    );
+    connect_and_mount(&mut harness).await;
+    let request = storage_platform::FormatRequest {
+        kind: storage_platform::FilesystemKind::Exfat,
+        label: "PHOTOS".into(),
+    };
+    let refused = harness.coordinator.format(&handle(), &request, false).await;
+    assert!(matches!(
+        refused,
+        Err(storage_service::coordinator::ServiceError::Refused(_))
+    ));
+    assert!(
+        !harness
+            .control
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("format"))
+    );
+
+    harness
+        .coordinator
+        .format(&handle(), &request, true)
+        .await
+        .unwrap();
+    assert!(
+        harness
+            .control
+            .calls()
+            .contains(&format!("format {OBJECT} exfat PHOTOS"))
+    );
+}
+
+#[tokio::test]
+async fn a_label_the_filesystem_cannot_hold_is_refused_before_anything_is_erased() {
+    let fixture = Fixture::new("label");
+    let mut harness = harness(
+        &fixture,
+        FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]),
+    );
+    connect_and_mount(&mut harness).await;
+    let too_long = storage_platform::FormatRequest {
+        kind: storage_platform::FilesystemKind::Fat32,
+        label: "A LABEL FAR TOO LONG".into(),
+    };
+    assert!(
+        harness
+            .coordinator
+            .format(&handle(), &too_long, true)
+            .await
+            .is_err()
+    );
+    let bad = storage_platform::FormatRequest {
+        kind: storage_platform::FilesystemKind::Fat32,
+        label: "a*b".into(),
+    };
+    assert!(
+        harness
+            .coordinator
+            .format(&handle(), &bad, true)
+            .await
+            .is_err()
+    );
+    assert!(
+        !harness
+            .control
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("format"))
+    );
+}
+
+#[tokio::test]
+async fn nothing_is_erased_while_a_file_operation_is_writing_to_the_drive() {
+    let fixture = Fixture::new("busy");
+    let mut harness = harness(
+        &fixture,
+        FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]),
+    );
+    connect_and_mount(&mut harness).await;
+    harness
+        .coordinator
+        .operation_started_by(":1.42", &handle(), "copy".into())
+        .await;
+    let request = storage_platform::FormatRequest {
+        kind: storage_platform::FilesystemKind::Ext4,
+        label: "data".into(),
+    };
+    let refused = harness.coordinator.format(&handle(), &request, true).await;
+    assert!(matches!(
+        refused,
+        Err(storage_service::coordinator::ServiceError::Refused(reason)) if reason == "storage.erase.busy"
+    ));
+}
+
+#[tokio::test]
+async fn an_image_is_written_to_the_fake_drive_only_when_confirmed() {
+    let fixture = Fixture::new("image");
+    let mut harness = harness(
+        &fixture,
+        FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]),
+    );
+    connect_and_mount(&mut harness).await;
+    let image = fixture.root.join("installer.iso");
+    std::fs::write(&image, b"ISO 9660 stand-in").unwrap();
+    assert!(
+        harness
+            .coordinator
+            .write_image(&handle(), &image, false)
+            .await
+            .is_err()
+    );
+    assert_eq!(harness.control.written(&address()), None);
+    let written = harness
+        .coordinator
+        .write_image(&handle(), &image, true)
+        .await
+        .unwrap();
+    assert_eq!(written, 17);
+    assert_eq!(
+        harness.control.written(&address()).unwrap(),
+        b"ISO 9660 stand-in"
+    );
+    assert!(
+        harness
+            .coordinator
+            .write_image(&handle(), Path::new("relative.iso"), true)
+            .await
+            .is_err()
+    );
+}

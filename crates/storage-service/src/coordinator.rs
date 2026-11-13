@@ -25,7 +25,8 @@ use storage_core::{
     Timestamp, Transition,
 };
 use storage_platform::traits::{
-    DeviceControl, EjectOutcome, FlushBackend, OpenUseInspector, PlatformError, WritebackInspector,
+    DeviceControl, EjectOutcome, FlushBackend, FormatRequest, OpenUseInspector, PlatformError,
+    WritebackInspector,
 };
 use storage_platform::{PlatformDevice, PlatformEvent};
 use thiserror::Error;
@@ -50,6 +51,10 @@ pub enum ServiceError {
     Policy(#[from] PolicyError),
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// An erasing action the person did not confirm, or one that cannot be
+    /// done now, with the stable reason.
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// The session clock. Monotonic in production; driven by hand in tests, so an
@@ -349,6 +354,92 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         }
         self.apply_mount(handle, None).await;
         Ok(outcome)
+    }
+
+    /// Whether something is being written to the device right now: a
+    /// tracked operation, or writeback still on its way.
+    fn is_writing(&self, handle: &DeviceHandle) -> bool {
+        self.report(handle).is_some_and(|report| {
+            matches!(
+                report.state,
+                StateReport::Writing { .. }
+                    | StateReport::PerformanceMode {
+                        active_write: true,
+                        ..
+                    }
+            )
+        }) || self
+            .clients
+            .values()
+            .any(|started| started.iter().any(|(device, _)| device == handle))
+    }
+
+    /// Erases a volume and makes a new filesystem on it, through the
+    /// platform's own Format. Refused unless the person confirmed erasing
+    /// it in the window, and while anything is being written to it.
+    pub async fn format(
+        &mut self,
+        handle: &DeviceHandle,
+        request: &FormatRequest,
+        erase_confirmed: bool,
+    ) -> Result<(), ServiceError> {
+        if !erase_confirmed {
+            return Err(ServiceError::Refused(
+                "storage.erase.not_confirmed".to_string(),
+            ));
+        }
+        request
+            .validate()
+            .map_err(|detail| ServiceError::Refused(format!("storage.format.label:{detail}")))?;
+        let device = self
+            .known
+            .get(handle)
+            .ok_or_else(|| ServiceError::UnknownDevice(handle.as_str().to_string()))?
+            .clone();
+        if self.is_writing(handle) {
+            return Err(ServiceError::Refused("storage.erase.busy".to_string()));
+        }
+        self.control.format(&device.address, request).await?;
+        if let Some(known) = self.known.get_mut(handle) {
+            known.mount_point = None;
+        }
+        self.apply_mount(handle, None).await;
+        Ok(())
+    }
+
+    /// Writes a disk image to the whole drive a volume is on. Refused
+    /// unless confirmed, while anything is being written to it, and for an
+    /// image that is not a readable regular file.
+    pub async fn write_image(
+        &mut self,
+        handle: &DeviceHandle,
+        image: &std::path::Path,
+        erase_confirmed: bool,
+    ) -> Result<u64, ServiceError> {
+        if !erase_confirmed {
+            return Err(ServiceError::Refused(
+                "storage.erase.not_confirmed".to_string(),
+            ));
+        }
+        if !image.is_absolute() || !image.is_file() {
+            return Err(ServiceError::Refused(
+                "storage.image.not_a_file".to_string(),
+            ));
+        }
+        let device = self
+            .known
+            .get(handle)
+            .ok_or_else(|| ServiceError::UnknownDevice(handle.as_str().to_string()))?
+            .clone();
+        if self.is_writing(handle) {
+            return Err(ServiceError::Refused("storage.erase.busy".to_string()));
+        }
+        let written = self.control.write_image(&device.address, image).await?;
+        if let Some(known) = self.known.get_mut(handle) {
+            known.mount_point = None;
+        }
+        self.apply_mount(handle, None).await;
+        Ok(written)
     }
 
     /// Changes a device's policy and persists it.

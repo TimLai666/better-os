@@ -70,6 +70,76 @@ pub struct EjectOutcome {
     pub detail: String,
 }
 
+/// The filesystems Format offers, as folio's Format dialog does.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilesystemKind {
+    /// Readable by Windows, macOS and Linux, and any size of file.
+    Exfat,
+    /// Readable by almost anything, files up to 4 GB.
+    Fat32,
+    /// Linux only.
+    Ext4,
+}
+
+impl FilesystemKind {
+    pub const ALL: [FilesystemKind; 3] = [
+        FilesystemKind::Exfat,
+        FilesystemKind::Fat32,
+        FilesystemKind::Ext4,
+    ];
+
+    /// The type UDisks2's `Format` is asked for.
+    pub fn udisks_type(self) -> &'static str {
+        match self {
+            FilesystemKind::Exfat => "exfat",
+            FilesystemKind::Fat32 => "vfat",
+            FilesystemKind::Ext4 => "ext4",
+        }
+    }
+
+    /// The longest volume label each filesystem stores.
+    pub fn label_limit(self) -> usize {
+        match self {
+            FilesystemKind::Exfat => 15,
+            FilesystemKind::Fat32 => 11,
+            FilesystemKind::Ext4 => 16,
+        }
+    }
+}
+
+/// One Format: the filesystem and the new name.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FormatRequest {
+    pub kind: FilesystemKind,
+    pub label: String,
+}
+
+impl FormatRequest {
+    /// Whether the label fits the filesystem: not too long, no control
+    /// characters, no `/`, and (for FAT32) only the characters FAT allows.
+    pub fn validate(&self) -> Result<(), String> {
+        let label = self.label.trim();
+        if label.chars().count() > self.kind.label_limit() {
+            return Err(format!(
+                "the label is longer than {} characters",
+                self.kind.label_limit()
+            ));
+        }
+        if label.chars().any(|c| c.is_control() || c == '/') {
+            return Err("the label has a character the filesystem cannot store".to_string());
+        }
+        if self.kind == FilesystemKind::Fat32
+            && label
+                .chars()
+                .any(|c| !c.is_ascii() || "\"*+,.:;<=>?[\\]|".contains(c))
+        {
+            return Err("FAT32 labels take plain letters, digits and spaces".to_string());
+        }
+        Ok(())
+    }
+}
+
 /// Enumerating and controlling devices. Implemented over UDisks2 in production
 /// and by a fake in tests.
 pub trait DeviceControl: Send + Sync {
@@ -97,6 +167,24 @@ pub trait DeviceControl: Send + Sync {
         &self,
         address: &DeviceAddress,
     ) -> impl Future<Output = Result<EjectOutcome, PlatformError>> + Send;
+
+    /// Erases the volume and makes a new filesystem on it, through UDisks2's
+    /// own `Format` (which unmounts first and asks polkit). Validated by the
+    /// caller.
+    fn format(
+        &self,
+        address: &DeviceAddress,
+        request: &FormatRequest,
+    ) -> impl Future<Output = Result<(), PlatformError>> + Send;
+
+    /// Writes a disk image (`.iso`, `.img`) to the whole drive the volume is
+    /// on, through UDisks2's `OpenForRestore` (polkit asks). Returns the
+    /// bytes written.
+    fn write_image(
+        &self,
+        address: &DeviceAddress,
+        image: &std::path::Path,
+    ) -> impl Future<Output = Result<u64, PlatformError>> + Send;
 }
 
 /// Flushing. Always the narrowest scope that applies: one filesystem, or one

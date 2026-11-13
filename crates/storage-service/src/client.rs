@@ -30,6 +30,8 @@ pub trait Storage {
     fn mount(&self, object_path: &str) -> zbus::Result<String>;
     fn eject(&self, object_path: &str) -> zbus::Result<String>;
     fn set_policy(&self, request_json: &str) -> zbus::Result<()>;
+    fn format(&self, request_json: &str) -> zbus::Result<()>;
+    fn write_image(&self, request_json: &str) -> zbus::Result<u64>;
     fn notify_operation_started(&self, notice_json: &str) -> zbus::Result<()>;
     fn notify_operation_completed(&self, notice_json: &str) -> zbus::Result<()>;
     fn refresh(&self) -> zbus::Result<()>;
@@ -178,6 +180,43 @@ impl StorageClient {
         };
         let json = request.to_json()?;
         self.proxy.set_policy(&json).await.map_err(map_call_error)
+    }
+
+    /// Formats a volume. `erase_confirmed` is the person's answer in the
+    /// window; the service refuses the request without it.
+    pub async fn format(
+        &self,
+        object_path: &str,
+        filesystem: storage_platform::FilesystemKind,
+        label: &str,
+        erase_confirmed: bool,
+    ) -> Result<(), ClientError> {
+        let json = crate::protocol::FormatDeviceRequest {
+            protocol_version: crate::protocol::PROTOCOL_VERSION,
+            object_path: object_path.to_string(),
+            filesystem,
+            label: label.to_string(),
+            erase_confirmed,
+        }
+        .to_json()?;
+        self.proxy.format(&json).await.map_err(map_call_error)
+    }
+
+    /// Writes a disk image to the drive a volume is on.
+    pub async fn write_image(
+        &self,
+        object_path: &str,
+        image: &std::path::Path,
+        erase_confirmed: bool,
+    ) -> Result<u64, ClientError> {
+        let json = crate::protocol::WriteImageRequest {
+            protocol_version: crate::protocol::PROTOCOL_VERSION,
+            object_path: object_path.to_string(),
+            image_path: image.to_string_lossy().into_owned(),
+            erase_confirmed,
+        }
+        .to_json()?;
+        self.proxy.write_image(&json).await.map_err(map_call_error)
     }
 
     /// Tells the service a write is starting, so readiness is refused while it

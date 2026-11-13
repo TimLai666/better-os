@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 927.
-- Packages with an SPDX license expression: 925.
+- Resolved Cargo packages: 950.
+- Packages with an SPDX license expression: 948.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `ff2a0df29f4d191113582ad984feed9afc0a6ad075653fd2b5157cf9373a8995`.
+- `Cargo.lock` SHA-256: `4530c49b6b79469bdefa8223d77c88bcaeb61bbad8120f076d99a04cd29c5dc2`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -25,11 +25,11 @@ source of truth for those packages.
 
 | License expression | Package records |
 | --- | ---: |
-| `MIT OR Apache-2.0` | 403 |
-| `MIT` | 189 |
-| `Apache-2.0 OR MIT` | 76 |
+| `MIT OR Apache-2.0` | 412 |
+| `MIT` | 200 |
+| `Apache-2.0 OR MIT` | 77 |
 | `GPL-3.0-or-later` | 60 |
-| `MIT/Apache-2.0` | 35 |
+| `MIT/Apache-2.0` | 36 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
 | `Zlib OR Apache-2.0 OR MIT` | 17 |
@@ -46,6 +46,7 @@ source of truth for those packages.
 | `MPL-2.0` | 3 |
 | `Zlib` | 3 |
 | `0BSD` | 2 |
+| `Apache-2.0 WITH LLVM-exception` | 2 |
 | `BSD-2-Clause OR Apache-2.0 OR MIT` | 2 |
 | `BSD-3-Clause OR Apache-2.0` | 2 |
 | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | 2 |
@@ -58,7 +59,6 @@ source of truth for those packages.
 | `Apache-2.0 AND ISC` | 1 |
 | `Apache-2.0 OR BSL-1.0` | 1 |
 | `Apache-2.0 OR GPL-2.0-only` | 1 |
-| `Apache-2.0 WITH LLVM-exception` | 1 |
 | `BSD-2-Clause OR MIT OR Apache-2.0` | 1 |
 | `CC0-1.0 OR Apache-2.0` | 1 |
 | `CC0-1.0 OR MIT-0 OR Apache-2.0` | 1 |
@@ -143,6 +143,18 @@ Better OS does not relicense or silently select a different expression.
 | `ztracing` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `ztracing_macro` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 
+## System libraries linked dynamically
+
+These are not Cargo packages and are not shipped in any Better OS package.
+They are installed from the distribution, as the package dependencies
+name them, and linked at run time; each keeps its own license.
+
+| Library | Distribution packages | License | Used by |
+| --- | --- | --- | --- |
+| GStreamer core, base and app/video libraries | `libgstreamer1.0-0`, `libgstreamer-plugins-base1.0-0` | `LGPL-2.1-or-later` | `better-files-preview`: audio and video playback, through the `gstreamer`, `gstreamer-app` and `gstreamer-video` bindings (`MIT OR Apache-2.0`) |
+| GStreamer base plugins | `gstreamer1.0-plugins-base` | `LGPL-2.1-or-later` | `better-files-preview`: `playbin` and the format converters, loaded at run time |
+| GLib and GObject | `libglib2.0-0` (`libglib2.0-0t64` on Ubuntu 24.04) | `LGPL-2.1-or-later` | the GStreamer bindings above |
+
 ## Package inventory
 
 | Package | Version | License metadata | Source |
@@ -201,6 +213,7 @@ Better OS does not relicense or silently select a different expression.
 | `async-trait` | `0.1.91` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/async-trait/0.1.91) |
 | `atomic` | `0.5.3` | `Apache-2.0/MIT` | [crates.io](https://crates.io/crates/atomic/0.5.3) |
 | `atomic-waker` | `1.1.2` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/atomic-waker/1.1.2) |
+| `atomic_refcell` | `0.1.14` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/atomic_refcell/0.1.14) |
 | `atspi` | `0.29.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/atspi/0.29.0) |
 | `atspi-common` | `0.13.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/atspi-common/0.13.0) |
 | `atspi-proxies` | `0.13.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/atspi-proxies/0.13.0) |
@@ -251,6 +264,7 @@ Better OS does not relicense or silently select a different expression.
 | `cbindgen` | `0.28.0` | `MPL-2.0` | [crates.io](https://crates.io/crates/cbindgen/0.28.0) |
 | `cc` | `1.4.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/cc/1.4.0) |
 | `cexpr` | `0.6.0` | `Apache-2.0/MIT` | [crates.io](https://crates.io/crates/cexpr/0.6.0) |
+| `cfg-expr` | `0.20.10` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/cfg-expr/0.20.10) |
 | `cfg-if` | `1.0.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/cfg-if/1.0.4) |
 | `cfg_aliases` | `0.2.2` | `MIT` | [crates.io](https://crates.io/crates/cfg_aliases/0.2.2) |
 | `cgl` | `0.3.2` | `MIT / Apache-2.0` | [crates.io](https://crates.io/crates/cgl/0.3.2) |
@@ -396,16 +410,21 @@ Better OS does not relicense or silently select a different expression.
 | `gif` | `0.13.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gif/0.13.3) |
 | `gif` | `0.14.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gif/0.14.2) |
 | `gimli` | `0.32.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gimli/0.32.3) |
+| `gio-sys` | `0.22.9` | `MIT` | [crates.io](https://crates.io/crates/gio-sys/0.22.9) |
 | `git-core` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `git-gui` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `git-platform` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `github-api` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `gl_generator` | `0.14.0` | `Apache-2.0` | [crates.io](https://crates.io/crates/gl_generator/0.14.0) |
+| `glib` | `0.22.10` | `MIT` | [crates.io](https://crates.io/crates/glib/0.22.10) |
+| `glib-macros` | `0.22.9` | `MIT` | [crates.io](https://crates.io/crates/glib-macros/0.22.9) |
+| `glib-sys` | `0.22.9` | `MIT` | [crates.io](https://crates.io/crates/glib-sys/0.22.9) |
 | `glob` | `0.3.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/glob/0.3.4) |
 | `globset` | `0.4.19` | `Unlicense OR MIT` | [crates.io](https://crates.io/crates/globset/0.4.19) |
 | `globwalk` | `0.8.1` | `MIT` | [crates.io](https://crates.io/crates/globwalk/0.8.1) |
 | `glow` | `0.17.0` | `MIT OR Apache-2.0 OR Zlib` | [crates.io](https://crates.io/crates/glow/0.17.0) |
 | `glutin_wgl_sys` | `0.6.1` | `Apache-2.0` | [crates.io](https://crates.io/crates/glutin_wgl_sys/0.6.1) |
+| `gobject-sys` | `0.22.9` | `MIT` | [crates.io](https://crates.io/crates/gobject-sys/0.22.9) |
 | `gpu-allocator` | `0.28.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gpu-allocator/0.28.0) |
 | `gpu-descriptor` | `0.3.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gpu-descriptor/0.3.2) |
 | `gpu-descriptor-types` | `0.2.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gpu-descriptor-types/0.2.0) |
@@ -424,6 +443,14 @@ Better OS does not relicense or silently select a different expression.
 | `gpui_windows` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `granit-parser` | `0.0.7` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/granit-parser/0.0.7) |
 | `grid` | `1.0.1` | `MIT` | [crates.io](https://crates.io/crates/grid/1.0.1) |
+| `gstreamer` | `0.25.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gstreamer/0.25.4) |
+| `gstreamer-app` | `0.25.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gstreamer-app/0.25.2) |
+| `gstreamer-app-sys` | `0.25.4` | `MIT` | [crates.io](https://crates.io/crates/gstreamer-app-sys/0.25.4) |
+| `gstreamer-base` | `0.25.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gstreamer-base/0.25.4) |
+| `gstreamer-base-sys` | `0.25.4` | `MIT` | [crates.io](https://crates.io/crates/gstreamer-base-sys/0.25.4) |
+| `gstreamer-sys` | `0.25.4` | `MIT` | [crates.io](https://crates.io/crates/gstreamer-sys/0.25.4) |
+| `gstreamer-video` | `0.25.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gstreamer-video/0.25.4) |
+| `gstreamer-video-sys` | `0.25.4` | `MIT` | [crates.io](https://crates.io/crates/gstreamer-video-sys/0.25.4) |
 | `h2` | `0.4.15` | `MIT` | [crates.io](https://crates.io/crates/h2/0.4.15) |
 | `half` | `2.7.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/half/2.7.1) |
 | `harfrust` | `0.5.2` | `MIT` | [crates.io](https://crates.io/crates/harfrust/0.5.2) |
@@ -483,6 +510,7 @@ Better OS does not relicense or silently select a different expression.
 | `itertools` | `0.11.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/itertools/0.11.0) |
 | `itertools` | `0.13.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/itertools/0.13.0) |
 | `itertools` | `0.14.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/itertools/0.14.0) |
+| `itertools` | `0.15.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/itertools/0.15.0) |
 | `itoa` | `1.0.18` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/itoa/1.0.18) |
 | `jni-sys` | `0.3.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/jni-sys/0.3.1) |
 | `jni-sys` | `0.4.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/jni-sys/0.4.1) |
@@ -493,6 +521,7 @@ Better OS does not relicense or silently select a different expression.
 | `khronos_api` | `3.1.0` | `Apache-2.0` | [crates.io](https://crates.io/crates/khronos_api/3.1.0) |
 | `kqueue` | `1.2.0` | `MIT` | [crates.io](https://crates.io/crates/kqueue/1.2.0) |
 | `kqueue-sys` | `1.1.2` | `MIT` | [crates.io](https://crates.io/crates/kqueue-sys/1.1.2) |
+| `kstring` | `2.0.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/kstring/2.0.2) |
 | `kurbo` | `0.11.3` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/kurbo/0.11.3) |
 | `kurbo` | `0.13.1` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/kurbo/0.13.1) |
 | `launcher-core` | `0.2.11` | `GPL-3.0-or-later` | workspace |
@@ -562,6 +591,7 @@ Better OS does not relicense or silently select a different expression.
 | `monitor-store` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `monitor-views` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `moxcms` | `0.8.1` | `BSD-3-Clause OR Apache-2.0` | [crates.io](https://crates.io/crates/moxcms/0.8.1) |
+| `muldiv` | `1.0.1` | `MIT` | [crates.io](https://crates.io/crates/muldiv/1.0.1) |
 | `naga` | `29.0.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/naga/29.0.4) |
 | `ndk-sys` | `0.6.0+11769913` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/ndk-sys/0.6.0+11769913) |
 | `new_debug_unreachable` | `1.0.6` | `MIT` | [crates.io](https://crates.io/crates/new_debug_unreachable/1.0.6) |
@@ -622,6 +652,7 @@ Better OS does not relicense or silently select a different expression.
 | `open` | `5.4.0` | `MIT` | [crates.io](https://crates.io/crates/open/5.4.0) |
 | `openssl-probe` | `0.2.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/openssl-probe/0.2.1) |
 | `option-ext` | `0.2.0` | `MPL-2.0` | [crates.io](https://crates.io/crates/option-ext/0.2.0) |
+| `option-operations` | `0.6.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/option-operations/0.6.1) |
 | `ordered-float` | `5.3.0` | `MIT` | [crates.io](https://crates.io/crates/ordered-float/5.3.0) |
 | `ordered-stream` | `0.2.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/ordered-stream/0.2.0) |
 | `parking` | `2.2.1` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/parking/2.2.1) |
@@ -629,6 +660,7 @@ Better OS does not relicense or silently select a different expression.
 | `parking_lot_core` | `0.9.12` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/parking_lot_core/0.9.12) |
 | `paste` | `1.0.15` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/paste/1.0.15) |
 | `pastey` | `0.1.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pastey/0.1.1) |
+| `pastey` | `0.2.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pastey/0.2.3) |
 | `pathfinder_geometry` | `0.5.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/pathfinder_geometry/0.5.1) |
 | `pathfinder_simd` | `0.5.6` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pathfinder_simd/0.5.6) |
 | `pbkdf2` | `0.12.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pbkdf2/0.12.2) |
@@ -647,7 +679,7 @@ Better OS does not relicense or silently select a different expression.
 | `pin-project-internal` | `1.1.13` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/pin-project-internal/1.1.13) |
 | `pin-project-lite` | `0.2.17` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/pin-project-lite/0.2.17) |
 | `piper` | `0.2.5` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/piper/0.2.5) |
-| `pkg-config` | `0.3.33` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pkg-config/0.3.33) |
+| `pkg-config` | `0.3.34` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pkg-config/0.3.34) |
 | `png` | `0.17.16` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/png/0.17.16) |
 | `png` | `0.18.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/png/0.18.1) |
 | `polling` | `3.11.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/polling/3.11.0) |
@@ -828,9 +860,11 @@ Better OS does not relicense or silently select a different expression.
 | `sysinfo` | `0.31.4` | `MIT` | [crates.io](https://crates.io/crates/sysinfo/0.31.4) |
 | `system-configuration` | `0.6.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/system-configuration/0.6.1) |
 | `system-configuration-sys` | `0.6.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/system-configuration-sys/0.6.0) |
+| `system-deps` | `9.0.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/system-deps/9.0.1) |
 | `taffy` | `0.12.2` | `MIT` | [crates.io](https://crates.io/crates/taffy/0.12.2) |
 | `tao-core-video-sys` | `0.2.0` | `MIT` | [crates.io](https://crates.io/crates/tao-core-video-sys/0.2.0) |
 | `tar` | `0.4.46` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/tar/0.4.46) |
+| `target-lexicon` | `0.13.5` | `Apache-2.0 WITH LLVM-exception` | [crates.io](https://crates.io/crates/target-lexicon/0.13.5) |
 | `tauri-winrt-notification` | `0.7.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/tauri-winrt-notification/0.7.3) |
 | `tempfile` | `3.27.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/tempfile/3.27.0) |
 | `tendril` | `0.4.3` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/tendril/0.4.3) |
@@ -916,6 +950,7 @@ Better OS does not relicense or silently select a different expression.
 | `value-bag` | `1.13.2` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/value-bag/1.13.2) |
 | `value-bag-serde1` | `1.13.2` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/value-bag-serde1/1.13.2) |
 | `value-bag-sval2` | `1.13.2` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/value-bag-sval2/1.13.2) |
+| `version-compare` | `0.2.1` | `MIT` | [crates.io](https://crates.io/crates/version-compare/0.2.1) |
 | `version_check` | `0.9.5` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/version_check/0.9.5) |
 | `vswhom` | `0.1.0` | `MIT` | [crates.io](https://crates.io/crates/vswhom/0.1.0) |
 | `vswhom-sys` | `0.1.3` | `MIT` | [crates.io](https://crates.io/crates/vswhom-sys/0.1.3) |

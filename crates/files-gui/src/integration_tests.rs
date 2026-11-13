@@ -201,6 +201,19 @@ impl DeviceLink for Arc<FakeLink> {
             .push(format!("completed {object_path} {operation}"));
         Ok(())
     }
+    fn request_erase(&self, request: crate::devices::EraseRequest) {
+        self.calls.lock().unwrap().push(match request {
+            crate::devices::EraseRequest::Format {
+                object_path,
+                filesystem,
+                label,
+            } => format!("format {object_path} {} {label}", filesystem.udisks_type()),
+            crate::devices::EraseRequest::WriteImage { object_path, image } => {
+                format!("write image {object_path} {}", image.display())
+            }
+        });
+    }
+
     fn request_policy(&self, request: crate::policy::PolicyRequest) {
         self.calls.lock().unwrap().push(format!(
             "policy {} {} [{}]",
@@ -261,6 +274,8 @@ fn rig(defaults: Vec<(String, DesktopId)>, mode: CollectionMode) -> (Rig, FilesS
     let link = FakeLink::new(mode);
     let engine = Arc::new(JobEngine::new(EngineConfig {
         store: None,
+        // A clash answered in a test never reaches the person's trash.
+        displaced_trash: Some(root.path().join("Trash")),
         ..EngineConfig::default()
     }));
 
@@ -268,6 +283,7 @@ fn rig(defaults: Vec<(String, DesktopId)>, mode: CollectionMode) -> (Rig, FilesS
         start: Location::local(home.join("Documents")).unwrap(),
         preferences: FilesPreferences::default(),
         preference_store: PreferenceStore::at_path(root.path().join("prefs.json")),
+        view_store: crate::settings_store::ViewStateStore::at_path(root.path().join("views.json")),
         bookmark_store: BookmarkStore::at_path(root.path().join("bookmarks")),
         directories: UserDirectories::from_values(Some(&home), None),
         mounts: MountTable::new(Vec::new()),
@@ -350,8 +366,10 @@ fn the_applications_location_lists_real_applications_by_localized_name() {
 #[test]
 fn a_no_display_application_appears_only_when_hidden_entries_are_shown() {
     let (_rig, mut session) = plain();
-    session.toggle_hidden();
     session.navigate_to(Location::Applications);
+    settle(&mut session);
+    // Hidden entries are a view setting of the place being looked at.
+    session.toggle_hidden();
     settle(&mut session);
     let names: Vec<String> = session
         .pane()
@@ -1458,6 +1476,7 @@ impl Tracked {
         let engine = JobEngine::with_observer(
             EngineConfig {
                 store: None,
+                displaced_trash: Some(root.path().join("Trash")),
                 ..EngineConfig::default()
             },
             tracker.clone(),
@@ -2041,4 +2060,182 @@ fn extract_on_a_file_that_is_not_an_archive_says_so_and_submits_nothing() {
                 .contains(".tar.zst")
         );
     }
+}
+
+#[test]
+fn open_terminal_here_starts_the_terminal_in_this_folder_or_says_none_is_installed() {
+    let (rig, mut session) = plain();
+    settle(&mut session);
+    session.open_terminal_here(&|program: &str| program == "kgx");
+    let calls = rig.spawner.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].program, "kgx");
+    assert_eq!(
+        calls[0].arguments,
+        [format!(
+            "--working-directory={}",
+            rig.home.join("Documents").display()
+        )]
+    );
+
+    session.open_terminal_here(&|_: &str| false);
+    assert_eq!(rig.spawner.calls().len(), 1);
+    assert_eq!(
+        session
+            .notice
+            .as_ref()
+            .unwrap()
+            .message(crate::i18n::copy(crate::i18n::Locale::EnUs)),
+        crate::i18n::EN_US.no_terminal
+    );
+}
+
+#[test]
+fn empty_trash_with_nothing_in_it_asks_nothing() {
+    let (_rig, mut session) = plain();
+    session.navigate_to(Location::Trash(files_core::TrashLocation::Root));
+    settle(&mut session);
+    if session.row_count() > 0 {
+        // The reader in this rig sees no trash, so this does not happen; if
+        // it ever does, the confirmation is what must come next.
+        session.empty_trash(1);
+        assert!(matches!(
+            session.dialog,
+            Some(crate::session::PendingDialog::ConfirmDelete { .. })
+        ));
+        return;
+    }
+    session.empty_trash(1);
+    assert!(
+        session.dialog.is_none(),
+        "nothing to delete, nothing to confirm"
+    );
+}
+
+#[test]
+fn mount_from_the_drive_menu_asks_the_storage_layer_and_stays_put() {
+    let (rig, mut session) = plain();
+    settle(&mut session);
+    let before = session.location().clone();
+    session.mount_device("/org/freedesktop/UDisks2/block_devices/sdb1");
+    assert!(
+        rig.link
+            .calls()
+            .contains(&"mount /org/freedesktop/UDisks2/block_devices/sdb1".to_string())
+    );
+    assert_eq!(session.location(), &before);
+}
+
+#[test]
+fn the_details_pane_says_what_a_file_opens_with() {
+    let (rig, session) = rig(
+        vec![("text/plain".to_string(), id("org.example.Editor.desktop"))],
+        CollectionMode::Service,
+    );
+    let mut entry = files_core::Entry::file(
+        "notes.txt",
+        files_core::LocalPath::new(rig.home.join("Documents/notes.txt")).unwrap(),
+        EntryKind::File,
+    );
+    entry.mime = Some(mime("text/plain"));
+    let name = session.opens_with(&entry).expect("an application");
+    assert!(!name.is_empty());
+    entry.mime = Some(mime("application/x-nothing-handles-this"));
+    assert_eq!(session.opens_with(&entry), None);
+    let folder = files_core::Entry::file(
+        "Documents",
+        files_core::LocalPath::new(rig.home.join("Documents")).unwrap(),
+        EntryKind::Directory,
+    );
+    assert_eq!(session.opens_with(&folder), None);
+}
+
+#[test]
+fn space_opens_the_selected_file_in_the_preview_program() {
+    let (rig, mut session) = plain();
+    settle(&mut session);
+    let notes = session
+        .pane()
+        .model()
+        .iter_visible()
+        .position(|entry| entry.name == "notes.txt")
+        .expect("notes.txt is listed");
+    session.apply_selection(crate::content::SelectionInput::Click(notes), 1);
+    session.dispatch(crate::keys::Command::PreviewWindow, 1, 10);
+    let calls = rig.spawner.calls();
+    let last = calls.last().expect("the preview was started");
+    assert!(last.program.ends_with("better-files-preview"));
+    assert_eq!(
+        last.arguments,
+        [rig.home.join("Documents/notes.txt").display().to_string()]
+    );
+}
+
+#[test]
+fn format_asks_first_validates_the_name_and_only_then_reaches_the_storage_layer() {
+    let (rig, mut session) = plain();
+    settle(&mut session);
+    rig.link.push(DeviceNotice::Inventory(vec![report(
+        "/dev/obj",
+        None,
+        ready(),
+    )]));
+    session.pump();
+    session.request_format("/dev/obj");
+    assert!(matches!(
+        session.dialog,
+        Some(crate::session::PendingDialog::Format { .. })
+    ));
+    assert!(
+        rig.link.calls().is_empty(),
+        "nothing is erased by opening the dialog"
+    );
+
+    session.choose_filesystem(storage_platform::FilesystemKind::Fat32);
+    // FAT32 takes eleven characters at most: refused, nothing sent.
+    session.confirm_erase("A NAME FAR TOO LONG");
+    assert!(rig.link.calls().is_empty());
+
+    session.request_format("/dev/obj");
+    session.choose_filesystem(storage_platform::FilesystemKind::Fat32);
+    session.confirm_erase("PHOTOS");
+    assert_eq!(rig.link.calls(), ["format /dev/obj vfat PHOTOS"]);
+    assert!(session.dialog.is_none());
+
+    rig.link.push(DeviceNotice::Erased {
+        object_path: "/dev/obj".into(),
+        format: true,
+        outcome: Ok(()),
+    });
+    session.pump();
+    assert_eq!(
+        session.notice.as_ref().unwrap().message(&EN_US),
+        "USB Drive was formatted."
+    );
+}
+
+#[test]
+fn an_image_is_written_only_after_the_confirmation() {
+    let (rig, mut session) = plain();
+    settle(&mut session);
+    rig.link.push(DeviceNotice::Inventory(vec![report(
+        "/dev/obj",
+        None,
+        ready(),
+    )]));
+    session.pump();
+    let image = rig.home.join("Documents/installer.iso");
+    fs::write(&image, b"iso").unwrap();
+    assert!(crate::context_menu::is_disk_image(&image));
+    assert_eq!(
+        session.image_targets(),
+        [("/dev/obj".to_string(), "USB Drive".to_string())]
+    );
+    session.request_write_image(files_core::LocalPath::new(&image).unwrap(), "/dev/obj");
+    assert!(rig.link.calls().is_empty());
+    session.confirm_erase("");
+    assert_eq!(
+        rig.link.calls(),
+        [format!("write image /dev/obj {}", image.display())]
+    );
 }

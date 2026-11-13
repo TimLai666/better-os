@@ -9,7 +9,7 @@ use super::button::{ButtonKind, colors};
 use super::chrome::{
     CLOSE_RED, CaptionButton, back_tooltip, caption_buttons, caption_colors, is_back_shortcut,
 };
-use super::command_bar::fit_count;
+use super::command_bar::{fit_count, split_primary};
 use super::dialog::{DefaultButton, DialogButtons, DialogResult};
 use super::hyperlink::link_color;
 use super::info_bar::{ErrorReport, Severity, severity_look};
@@ -17,10 +17,10 @@ use super::list::{
     ListItem, SortState, TILE_BODY_HEIGHT, TILE_BODY_WIDTH, TILE_HEIGHT, TILE_ICON, TILE_WIDTH,
     compare_cells, list_step, move_item, row_fill, row_icon_size, sorted_order,
 };
-use super::menu::{EntryShape, MenuAction, MenuOpen, MenuPath};
+use super::menu::{EntryShape, MenuAction, MenuEntry, MenuItem, MenuOpen, MenuPath, shapes};
 use super::navigation::{
-    NavEntry, NavItem, SearchSlot, content_offset, floats_over_content, item_fill, nav_step,
-    pane_width, search_slot, toggle_tooltip,
+    NavEntry, NavItem, SearchSlot, content_offset, floats_over_content, is_menu_key, item_fill,
+    nav_step, pane_width, search_slot, toggle_tooltip,
 };
 use super::progress::{fraction, indeterminate_arc, indeterminate_segment};
 use super::selection::{ComboOutcome, SliderModel, combo_key};
@@ -861,6 +861,60 @@ fn a_command_bar_keeps_what_fits() {
     assert_eq!(fit_count(&widths, px(240.0), px(40.0)), 3);
     assert_eq!(fit_count(&widths, px(239.0), px(40.0)), 2);
     assert_eq!(fit_count(&widths, px(100.0), px(40.0)), 0);
+}
+
+#[test]
+fn a_command_bar_moves_the_tail_into_the_overflow_and_never_ends_on_a_divider() {
+    // command, separator, command, command, separator, command
+    let kinds = [true, false, true, true, false, true];
+    assert_eq!(
+        split_primary(&kinds, None),
+        (vec![0, 1, 2, 3, 4, 5], vec![])
+    );
+    assert_eq!(split_primary(&kinds, Some(3)), (vec![0, 1, 2, 3], vec![5]));
+    assert_eq!(split_primary(&kinds, Some(1)), (vec![0], vec![2, 3, 5]));
+    assert_eq!(split_primary(&kinds, Some(0)), (vec![], vec![0, 2, 3, 5]));
+}
+
+#[test]
+fn a_toggle_menu_item_is_an_ordinary_item_to_the_keyboard() {
+    let entries = vec![
+        MenuItem::new("Show hidden files").checked(true).entry(),
+        MenuItem::new("Folders first").checked(false).entry(),
+        MenuEntry::Separator,
+        MenuItem::new("Off").checked(true).disabled(true).entry(),
+    ];
+    assert_eq!(
+        shapes(&entries),
+        vec![
+            EntryShape::Item { enabled: true },
+            EntryShape::Item { enabled: true },
+            EntryShape::Separator,
+            EntryShape::Item { enabled: false },
+        ]
+    );
+    let MenuEntry::Item(item) = &entries[0] else {
+        panic!("an item");
+    };
+    assert_eq!(item.checked, Some(true));
+}
+
+#[test]
+fn a_navigation_item_with_a_caption_is_two_lines_tall() {
+    let plain = NavItem::new("Home", gpui_component::IconName::Folder);
+    assert_eq!(plain.height(), size::ROW_HEIGHT);
+    let drive = plain.clone().caption("Safe to unplug");
+    assert_eq!(drive.height(), size::TWO_LINE_ROW_HEIGHT);
+}
+
+#[test]
+fn the_menu_key_and_shift_f10_ask_for_a_context_menu() {
+    let key = |text: &str| gpui::Keystroke::parse(text).expect("a keystroke");
+    assert!(is_menu_key(&key("menu")));
+    assert!(is_menu_key(&key("shift-f10")));
+    assert!(!is_menu_key(&key("f10")));
+    assert!(!is_menu_key(&key("ctrl-shift-f10")));
+    assert!(!is_menu_key(&key("enter")));
 }
 
 #[test]

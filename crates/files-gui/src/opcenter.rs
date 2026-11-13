@@ -106,15 +106,37 @@ pub fn controls_for(snapshot: &JobSnapshot) -> JobControls {
 /// Overwrite is offered only where replacing the destination actually settles
 /// the conflict; a full disk is not made emptier by overwriting, so offering
 /// it there would be a button that fails.
+///
+/// A folder copied onto a folder also offers Merge, as folio's clash dialog
+/// does. Replace and Merge never delete: what they displace goes to the
+/// trash, which the prompt says.
 pub fn choices_for(conflict: &Conflict) -> Vec<Resolution> {
+    choices_with(conflict, folders_clash(conflict))
+}
+
+/// [`choices_for`], with whether both sides are folders given rather than
+/// read from the disk.
+pub fn choices_with(conflict: &Conflict, both_folders: bool) -> Vec<Resolution> {
     let mut choices = Vec::new();
     choices.push(Resolution::Skip);
     if conflict.kind.accepts_overwrite() {
+        if both_folders {
+            choices.push(Resolution::Merge);
+        }
         choices.push(Resolution::Overwrite);
         choices.push(Resolution::Rename);
     }
     choices.push(Resolution::Cancel);
     choices
+}
+
+/// Whether a conflict is a folder arriving where a folder already is.
+pub fn folders_clash(conflict: &Conflict) -> bool {
+    conflict.destination.is_dir()
+        && conflict
+            .source
+            .as_ref()
+            .is_some_and(|source| source.is_dir())
 }
 
 /// Maps one snapshot to one row.

@@ -16,6 +16,7 @@ pub mod hidden;
 pub mod local;
 pub mod mime;
 pub mod mounts;
+pub mod recent;
 pub mod trash;
 pub mod watch;
 pub mod xdg;
@@ -24,7 +25,9 @@ use thiserror::Error;
 
 pub use hidden::read_hidden_rules;
 pub use local::{LocalDirectoryReader, ReaderConfig, list_directory_blocking};
-pub use mime::{GlobMimeDetector, MimeDetector, SharedMimeDetector, detector_from_env};
+pub use mime::{
+    GlobMimeDetector, MimeDescriptions, MimeDetector, SharedMimeDetector, detector_from_env,
+};
 pub use mounts::{MountPoint, MountTable, external_devices, read_mount_table};
 pub use trash::{
     DeviceProbe, HostDevices, SharedTrash, TrashDirectory, TrashError, TrashedItem, VolumeTrash,

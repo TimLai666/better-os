@@ -45,55 +45,127 @@ pub struct RenderedRow {
     /// True for the entry the keyboard is on, which is drawn differently from
     /// a merely selected one.
     pub focused: bool,
-    /// A glyph rather than an icon theme lookup. Loading an icon theme is a
-    /// separate piece of work; a placeholder that is honest about being one
-    /// beats an empty square.
-    pub glyph: &'static str,
+    /// What stands in for the entry when no themed icon is found: a folder
+    /// or a page from the window's own icon set, never an emoji.
+    pub fallback: FallbackIcon,
+}
+
+/// The second line under a grid tile, as folio's tiles have: the size and
+/// the day a file was changed, or just the day for a folder. Empty when
+/// neither is known.
+pub fn tile_caption(row: &RenderedRow) -> String {
+    let day = row.modified.split(' ').next().unwrap_or("").trim();
+    let day = if day == "—" { "" } else { day };
+    let size = if row.kind == EntryKind::File && row.size != "—" {
+        row.size.as_str()
+    } else {
+        ""
+    };
+    match (size.is_empty(), day.is_empty()) {
+        (false, false) => format!("{size} · {day}"),
+        (false, true) => size.to_string(),
+        (true, false) => day.to_string(),
+        (true, true) => String::new(),
+    }
+}
+
+/// The window's own icon for an entry, used when the icon theme has none.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FallbackIcon {
+    Folder,
+    File,
+    Application,
 }
 
 /// Formats one entry for display.
 pub fn rendered_row(entry: &Entry, selected: bool, focused: bool, c: &'static Copy) -> RenderedRow {
+    rendered_row_named(entry, selected, focused, c, &|_| None)
+}
+
+/// [`rendered_row`], with the readable name of a file type looked up by
+/// `describe` (the shared MIME database's comment, in the person's
+/// language).
+pub fn rendered_row_named(
+    entry: &Entry,
+    selected: bool,
+    focused: bool,
+    c: &'static Copy,
+    describe: &dyn Fn(&str) -> Option<String>,
+) -> RenderedRow {
     RenderedRow {
         id: entry.id(),
         name: entry.name.clone(),
         kind: entry.kind,
         size: format::entry_size(entry.size),
         modified: format::file_time(entry.modified),
-        type_label: type_label(entry, c),
+        type_label: type_label_named(entry, c, describe),
         extension: entry.extension().to_string(),
         hidden: entry.hidden.is_hidden(),
         selected,
         focused,
-        glyph: glyph_for(entry.kind),
+        fallback: fallback_icon(entry.kind),
     }
 }
 
-/// The type cell: the detected MIME type when the platform found one, and the
-/// localized kind otherwise.
+/// The type cell, in words: "Folder", "Plain text document", "PNG image".
+/// A type the database does not name reads as its extension in capitals
+/// and the word for a file ("RS file"), never as `text/rust`.
 pub fn type_label(entry: &Entry, c: &'static Copy) -> String {
-    if entry.kind == EntryKind::Directory {
-        return c.kind_folder.to_string();
-    }
-    if let Some(mime) = entry.mime.as_ref() {
-        return mime.as_str().to_string();
-    }
-    match entry.kind {
-        EntryKind::Directory => c.kind_folder,
-        EntryKind::File => c.kind_file,
-        EntryKind::Application => c.kind_application,
-        EntryKind::Special => c.kind_special,
-        EntryKind::Unknown => c.kind_unknown,
-    }
-    .to_string()
+    type_label_named(entry, c, &|_| None)
 }
 
-fn glyph_for(kind: EntryKind) -> &'static str {
+pub fn type_label_named(
+    entry: &Entry,
+    c: &'static Copy,
+    describe: &dyn Fn(&str) -> Option<String>,
+) -> String {
+    match entry.kind {
+        EntryKind::Directory => return c.kind_folder.to_string(),
+        EntryKind::Application => return c.kind_application.to_string(),
+        EntryKind::Special => return c.kind_special.to_string(),
+        EntryKind::File | EntryKind::Unknown => {}
+    }
+    if let Some(name) = entry.mime.as_ref().and_then(|mime| describe(mime.as_str())) {
+        return name;
+    }
+    let extension = entry.extension();
+    if extension.is_empty() {
+        c.kind_file.to_string()
+    } else {
+        format!("{} {}", extension.to_uppercase(), c.type_unknown_file)
+    }
+}
+
+/// The themed icons to try for an entry, most specific first, as
+/// `(icon theme context, name)`.
+pub fn icon_candidates(
+    entry: &Entry,
+    icon_names: &dyn Fn(&str) -> Vec<String>,
+) -> Vec<(&'static str, String)> {
+    match entry.kind {
+        EntryKind::Directory => vec![("places", "folder".to_string())],
+        EntryKind::Application => vec![("mimetypes", "application-x-executable".to_string())],
+        EntryKind::Special => vec![("mimetypes", "inode-symlink".to_string())],
+        EntryKind::File | EntryKind::Unknown => {
+            let mut names: Vec<(&'static str, String)> = entry
+                .mime
+                .as_ref()
+                .map(|mime| icon_names(mime.as_str()))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|name| ("mimetypes", name))
+                .collect();
+            names.push(("mimetypes", "text-x-generic".to_string()));
+            names
+        }
+    }
+}
+
+fn fallback_icon(kind: EntryKind) -> FallbackIcon {
     match kind {
-        EntryKind::Directory => "📁",
-        EntryKind::File => "📄",
-        EntryKind::Application => "🚀",
-        EntryKind::Special => "⚙",
-        EntryKind::Unknown => "❓",
+        EntryKind::Directory => FallbackIcon::Folder,
+        EntryKind::Application => FallbackIcon::Application,
+        _ => FallbackIcon::File,
     }
 }
 
@@ -159,6 +231,107 @@ impl ListColumn {
             ListColumn::Extension => "extension",
         }
     }
+}
+
+/// How the content area lays its items out, for rubber-band selection: the
+/// grid as the virtual body draws it (rows of `columns` tiles of `tile`
+/// pixels with `gap` between them and around the top, `pad` from the left),
+/// or the list's rows of `row` pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BandLayout {
+    Grid {
+        columns: usize,
+        tile: f32,
+        gap: f32,
+        pad: f32,
+    },
+    List {
+        row: f32,
+    },
+}
+
+/// The items a rubber band from `start` to `end` touches, in the content's
+/// own coordinates (scrolling already added), out of `count` items. A band
+/// in the gaps between tiles touches nothing; in the list, any row the band
+/// crosses is touched.
+pub fn band_hits(
+    start: (f32, f32),
+    end: (f32, f32),
+    layout: BandLayout,
+    count: usize,
+) -> Vec<usize> {
+    let (left, right) = (start.0.min(end.0), start.0.max(end.0));
+    let (top, bottom) = (start.1.min(end.1), start.1.max(end.1));
+    let mut hits = Vec::new();
+    match layout {
+        BandLayout::List { row } if row > 0.0 => {
+            let first = (top.max(0.0) / row).floor() as usize;
+            let last = (bottom.max(0.0) / row).floor() as usize;
+            hits.extend((first..=last).filter(|index| *index < count));
+        }
+        BandLayout::Grid {
+            columns,
+            tile,
+            gap,
+            pad,
+        } if columns > 0 && tile > 0.0 => {
+            let rows = count.div_ceil(columns);
+            for row in 0..rows {
+                let y = gap + row as f32 * (tile + gap);
+                if y > bottom || y + tile < top {
+                    continue;
+                }
+                for column in 0..columns {
+                    let index = row * columns + column;
+                    if index >= count {
+                        break;
+                    }
+                    let x = pad + column as f32 * (tile + gap);
+                    if x <= right && x + tile >= left {
+                        hits.push(index);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    hits
+}
+
+/// The narrowest the name column is drawn before other columns step aside.
+pub const MIN_NAME_WIDTH: f32 = 220.0;
+
+/// The columns the list draws in `width` pixels: the name always, then the
+/// others while the name keeps [`MIN_NAME_WIDTH`]; the extension steps aside
+/// first, then the type, the size, and the date, as folio's list drops the
+/// date then the size when it is narrow.
+pub fn visible_columns(width: f32) -> Vec<ListColumn> {
+    let mut shown = vec![
+        ListColumn::Name,
+        ListColumn::Size,
+        ListColumn::Modified,
+        ListColumn::Type,
+        ListColumn::Extension,
+    ];
+    let others = |shown: &[ListColumn]| -> f32 {
+        shown
+            .iter()
+            .filter(|column| **column != ListColumn::Name)
+            .map(|column| column.width() + 8.0)
+            .sum()
+    };
+    for drop in [
+        ListColumn::Extension,
+        ListColumn::Type,
+        ListColumn::Size,
+        ListColumn::Modified,
+    ] {
+        if width - others(&shown) >= MIN_NAME_WIDTH {
+            break;
+        }
+        shown.retain(|column| *column != drop);
+    }
+    shown
 }
 
 /// The sort keys the toolbar offers, in menu order.
@@ -276,7 +449,7 @@ impl ContentView {
     /// How many tiles fit across the grid at this width. One in the list.
     pub fn columns(&self, viewport_width: f32) -> usize {
         match self.mode {
-            ViewMode::List => 1,
+            ViewMode::List | ViewMode::Columns => 1,
             ViewMode::Grid => {
                 let tile = self.scale.tile_size() + GRID_GAP;
                 ((viewport_width / tile).floor() as usize).max(1)
@@ -288,7 +461,7 @@ impl ContentView {
     /// list divides the scroll offset by.
     pub fn row_height(&self) -> f32 {
         match self.mode {
-            ViewMode::List => self.scale.row_height(),
+            ViewMode::List | ViewMode::Columns => self.scale.row_height(),
             ViewMode::Grid => self.scale.tile_size() + GRID_GAP,
         }
     }

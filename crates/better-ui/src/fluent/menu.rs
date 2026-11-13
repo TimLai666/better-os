@@ -49,6 +49,9 @@ pub struct MenuItem {
     pub shortcut: Option<SharedString>,
     pub disabled: bool,
     pub shown: ShownState,
+    /// `Some` for a toggle item (`ToggleMenuFlyoutItem`): a check mark in the
+    /// icon column when on, an empty icon column when off.
+    pub checked: Option<bool>,
     pub on_select: Option<Handler>,
 }
 
@@ -60,8 +63,15 @@ impl MenuItem {
             shortcut: None,
             disabled: false,
             shown: ShownState::Live,
+            checked: None,
             on_select: None,
         }
+    }
+
+    /// Makes the item a toggle item, drawn with a check mark when `checked`.
+    pub fn checked(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
+        self
     }
 
     pub fn icon(mut self, icon: IconName) -> Self {
@@ -119,9 +129,18 @@ impl MenuEntry {
         }
     }
 
+    /// Whether the panel needs its icon column for this entry: it has an
+    /// icon, or it is a toggle item whose check mark comes and goes.
+    fn needs_icon_column(&self) -> bool {
+        self.icon().is_some() || matches!(self, MenuEntry::Item(item) if item.checked.is_some())
+    }
+
     fn icon(&self) -> Option<IconName> {
         match self {
-            MenuEntry::Item(item) => item.icon.clone(),
+            MenuEntry::Item(item) => match item.checked {
+                Some(true) => Some(IconName::Check),
+                _ => item.icon.clone(),
+            },
             MenuEntry::Submenu { icon, .. } => icon.clone(),
             MenuEntry::Separator => None,
         }
@@ -465,7 +484,7 @@ impl RenderOnce for MenuPanel {
             None => (self.highlight, self.submenu, self.sub_highlight),
         };
         let entries = Rc::new(self.entries);
-        let icon_column = entries.iter().any(|entry| entry.icon().is_some());
+        let icon_column = entries.iter().any(MenuEntry::needs_icon_column);
         let state = self.state.clone();
         let return_focus = self.return_focus.clone();
 
@@ -547,7 +566,7 @@ impl RenderOnce for MenuPanel {
                     let mut element = row(
                         ElementId::named_usize("item", index),
                         item.label.clone(),
-                        item.icon.clone(),
+                        MenuEntry::Item(item.clone()).icon(),
                         icon_column,
                         shortcut,
                         shown_state,
@@ -645,13 +664,22 @@ impl RenderOnce for MenuPanel {
                             state: state.clone(),
                             return_focus: return_focus.clone(),
                         };
+                        // Beside the item, pushed back inside the window
+                        // when the menu already sits at its edge, so a
+                        // submenu of a menu opened at the right edge stays
+                        // on screen.
                         element = element.child(
                             div()
                                 .absolute()
                                 .top(px(-4.0))
                                 .left(relative(1.0))
                                 .ml(px(4.0))
-                                .child(sub),
+                                .child(
+                                    deferred(
+                                        anchored().snap_to_window_with_margin(px(8.0)).child(sub),
+                                    )
+                                    .with_priority(2),
+                                ),
                         );
                     }
                     element.into_any_element()
@@ -675,7 +703,7 @@ impl RenderOnce for SubmenuPanel {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
         let entries = self.panel.entries;
-        let icon_column = entries.iter().any(|entry| entry.icon().is_some());
+        let icon_column = entries.iter().any(MenuEntry::needs_icon_column);
         let mut panel = panel_frame(div().id(self.panel.id), p)
             .py(px(2.0))
             .occlude();
@@ -698,7 +726,7 @@ impl RenderOnce for SubmenuPanel {
                     let mut element = row(
                         ElementId::named_usize("sub-item", index),
                         item.label.clone(),
-                        item.icon.clone(),
+                        MenuEntry::Item(item.clone()).icon(),
                         icon_column,
                         shortcut,
                         shown,

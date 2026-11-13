@@ -29,7 +29,7 @@
 
 | 類型 | 目前可見的套件 | 規範 |
 | --- | --- | --- |
-| Build-time | `libfontconfig1-dev`、`libxcb1-dev`、`libxkbcommon-dev`、`libxkbcommon-x11-dev` | 只安裝在開發機或 CI，絕不放進 release package 的 `Depends`。 |
+| Build-time | `libfontconfig1-dev`、`libxcb1-dev`、`libxkbcommon-dev`、`libxkbcommon-x11-dev`、`libgstreamer1.0-dev`、`libgstreamer-plugins-base1.0-dev`（測試另需 `gstreamer1.0-plugins-good`） | 只安裝在開發機或 CI，絕不放進 release package 的 `Depends`。 |
 | Runtime 範例 | `libfontconfig1`、`libxcb1`、`libxkbcommon0`、`libxkbcommon-x11-0`，以及實際使用的 Wayland runtime libraries | 由每個支援 target、CPU architecture 的最終 binary 與 package metadata 驗證後決定，這份範例不是最終鎖定清單。 |
 
 `RUST_FONTCONFIG_DLOPEN=1` 是 build 與 CI 的設定，不是使用者安裝或啟動

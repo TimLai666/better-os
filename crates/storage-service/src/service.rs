@@ -28,6 +28,7 @@ fn refuse(error: ServiceError) -> fdo::Error {
     match error {
         ServiceError::UnknownDevice(path) => fdo::Error::UnknownObject(path),
         ServiceError::Policy(error) => fdo::Error::AccessDenied(error.to_string()),
+        ServiceError::Refused(reason) => fdo::Error::AccessDenied(reason),
         other => fdo::Error::Failed(other.to_string()),
     }
 }
@@ -80,6 +81,42 @@ impl<C: DeviceControl + 'static> StorageService<C> {
         }
         .to_json()
         .map_err(|error| fdo::Error::Failed(error.to_string()))
+    }
+
+    /// Erases a volume and makes a new filesystem on it. Refused unless the
+    /// request says the person confirmed erasing it.
+    async fn format(&self, request_json: &str) -> Result<(), fdo::Error> {
+        let request = crate::protocol::FormatDeviceRequest::from_json(request_json)
+            .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
+        let format = storage_platform::FormatRequest {
+            kind: request.filesystem,
+            label: request.label,
+        };
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator
+            .format(
+                &DeviceHandle::new(&request.object_path),
+                &format,
+                request.erase_confirmed,
+            )
+            .await
+            .map_err(refuse)
+    }
+
+    /// Writes a disk image to the drive a volume is on. Returns the bytes
+    /// written. Refused unless confirmed.
+    async fn write_image(&self, request_json: &str) -> Result<u64, fdo::Error> {
+        let request = crate::protocol::WriteImageRequest::from_json(request_json)
+            .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator
+            .write_image(
+                &DeviceHandle::new(&request.object_path),
+                std::path::Path::new(&request.image_path),
+                request.erase_confirmed,
+            )
+            .await
+            .map_err(refuse)
     }
 
     /// Changes a device's removal policy. Performance mode is refused unless

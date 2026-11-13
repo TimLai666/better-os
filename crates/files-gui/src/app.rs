@@ -12,8 +12,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use better_ui::fluent::menu::MenuOpen;
+use better_ui::fluent::theme::Appearance;
 use gpui::*;
-use gpui_component::{Theme, ThemeMode, input::InputState};
+use gpui_component::input::{InputEvent, InputState};
 use smol::Timer;
 
 use crate::apps::CatalogHandle;
@@ -37,9 +39,57 @@ use crate::toolbar::{FilesystemValidator, display_path};
 const BUSY_INTERVAL: Duration = Duration::from_millis(16);
 const IDLE_INTERVAL: Duration = Duration::from_millis(250);
 
+/// A context menu that is open: what it was opened on, where, and its
+/// keyboard state.
+pub(crate) struct OpenMenu {
+    pub(crate) target: crate::context_menu::MenuTarget,
+    pub(crate) nav: Option<crate::shell::NavTarget>,
+    pub(crate) position: Point<Pixels>,
+    pub(crate) state: Entity<MenuOpen>,
+}
+
 pub struct FilesApp {
     pub(crate) session: FilesSession,
-    pub(crate) theme: ThemeMode,
+    /// The appearance the person chose, saved under
+    /// `$XDG_CONFIG_HOME/better-os/files/appearance` (ADR 0004).
+    pub(crate) appearance: Appearance,
+    _follow_desktop: Option<Subscription>,
+    /// The navigation pane's open or compact state when the person chose
+    /// one with its toggle; `None` follows the window's width.
+    pub(crate) nav_compact: Option<bool>,
+    pub(crate) context_menu: Option<OpenMenu>,
+    pub(crate) show_shortcuts: bool,
+    pub(crate) weak: WeakEntity<Self>,
+    /// The file type names and themed icons, read once per type.
+    pub(crate) type_names: Arc<files_platform::MimeDescriptions>,
+    pub(crate) icons: crate::views::IconCache,
+    pub(crate) thumbnails: crate::views::Thumbnails,
+    /// Split view: the right pane, a Better Files of its own.
+    pub(crate) split: Option<Entity<FilesApp>>,
+    /// True for that right pane: no title bar and no sidebar of its own,
+    /// and Ctrl+W closes it.
+    pub(crate) embedded: bool,
+    /// The window's own Better Files, for a right pane to close itself.
+    pub(crate) parent: Option<WeakEntity<FilesApp>>,
+    /// For a right pane: the width it really has, set by the window's own
+    /// Better Files each frame.
+    pub(crate) pane_width: Option<f32>,
+    /// The whole window's width, which decides whether the navigation pane
+    /// is compact. `viewport` is this pane's share of the window.
+    pub(crate) window_width: Pixels,
+    /// The tailnet's machines and the Dropbox folder, refreshed in the
+    /// background.
+    pub(crate) sharing: Sharing,
+    /// Plugins and their latest answers.
+    pub(crate) plugins: crate::plugin_host::PluginHost,
+    /// The content list's scroll position, which rubber-band selection
+    /// reads to turn the pointer into content coordinates.
+    pub(crate) content_scroll: UniformListScrollHandle,
+    /// A rubber band being dragged: where it started and where the pointer
+    /// is, in content coordinates, and what was selected before (kept when
+    /// Ctrl is held).
+    pub(crate) band: Option<crate::views::Band>,
+    _subscriptions: Vec<Subscription>,
     pub(crate) path_input: Entity<InputState>,
     pub(crate) dialog_input: Entity<InputState>,
     pub(crate) focus_handle: FocusHandle,
@@ -56,6 +106,15 @@ pub struct FilesApp {
     /// `Ctrl+F` the way the path field is focused by `Ctrl+L`.
     pub(crate) search_input: Entity<InputState>,
     pub(crate) editing_search: bool,
+    /// The type-to-filter field, and whether it has the keyboard.
+    pub(crate) filter_input: Entity<InputState>,
+    /// The password field of a server sign-in.
+    pub(crate) password_input: Entity<InputState>,
+    pub(crate) filtering: bool,
+    /// Set after a sign-in is sent, so the next frame empties the password
+    /// field (the submit has no window to do it with).
+    pub(crate) clear_password: bool,
+    pub(crate) login_prepared: bool,
     /// The chooser entity, while Open With is showing one. Held so the window
     /// can keep it alive and hear its event; the chooser performs the launch
     /// and any association write itself.
@@ -64,6 +123,8 @@ pub struct FilesApp {
     /// The catalog generation the last frame drew, so a background reload is
     /// noticed without comparing two catalogs.
     pub(crate) catalog_generation: u64,
+    /// The LocalSend list's generation the window last drew.
+    pub(crate) localsend_generation: u64,
     _pump: Option<Task<()>>,
 }
 
@@ -87,15 +148,25 @@ impl FilesApp {
         // job's own thread, and for as long as the job runs.
         let link: Arc<dyn crate::devices::DeviceLink> = Arc::new(StorageLink::start());
         crate::shared_tracker().attach(link.clone());
-        let default = directories
-            .home()
-            .cloned()
-            .unwrap_or_else(|| files_core::Location::Local(files_core::LocalPath::root()));
+        // With no folder on the command line, the window opens where it was
+        // last closed, when that folder is still there; otherwise at home.
+        let view_store = crate::settings_store::ViewStateStore::from_env();
+        let last = view_store
+            .load()
+            .last_folder()
+            .and_then(|path| files_core::Location::local(path).ok());
+        let default = last.unwrap_or_else(|| {
+            directories
+                .home()
+                .cloned()
+                .unwrap_or_else(|| files_core::Location::Local(files_core::LocalPath::root()))
+        });
 
         let mut session = FilesSession::new(SessionSetup {
             start: start.location(default),
             preferences,
             preference_store,
+            view_store,
             bookmark_store: crate::bookmarks::BookmarkStore::from_env(),
             directories,
             mounts: files_platform::MountTable::from_env(),
@@ -135,14 +206,113 @@ impl FilesApp {
         let search_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(crate::i18n::copy(locale).search_placeholder)
         });
+        let password_input = cx.new(|cx| InputState::new(window, cx).masked(true));
+        let filter_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(crate::i18n::copy(locale).filter_placeholder)
+        });
 
-        // Better OS is dark-first. `gpui_component::init` installs the light
-        // theme, so the choice is applied once the window exists.
-        Theme::change(ThemeMode::Dark, Some(window), cx);
+        // Better OS is dark-first; the person's own choice wins. The kit
+        // repaints gpui-component in the Fluent palette.
+        let appearance = Appearance::default_path("files")
+            .map(|path| Appearance::load(&path))
+            .unwrap_or_default();
+        let follow = appearance.apply_and_follow(window, cx);
+
+        let locale_for_plugins = session.locale.resolved();
+        let language = match session.locale.resolved() {
+            Locale::ZhTw => "zh_TW".to_string(),
+            _ => "en".to_string(),
+        };
+        let subscriptions = vec![
+            cx.subscribe_in(
+                &path_input,
+                window,
+                |app, _, event: &InputEvent, window, cx| match event {
+                    InputEvent::PressEnter { .. } => app.submit_path(window, cx),
+                    InputEvent::Blur => {
+                        app.editing_path = false;
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            ),
+            cx.subscribe_in(
+                &dialog_input,
+                window,
+                |app, _, event: &InputEvent, _window, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        app.submit_dialog(cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &filter_input,
+                window,
+                |app, state, event: &InputEvent, _w, cx| match event {
+                    InputEvent::Change => {
+                        let text = state.read(cx).value().to_string();
+                        app.session.set_filter(&text);
+                        cx.notify();
+                    }
+                    InputEvent::Focus => {
+                        app.filtering = true;
+                        cx.notify();
+                    }
+                    InputEvent::Blur => {
+                        app.filtering = false;
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            ),
+            cx.subscribe_in(
+                &search_input,
+                window,
+                |app, state, event: &InputEvent, _w, cx| match event {
+                    InputEvent::Change => {
+                        let text = state.read(cx).value().to_string();
+                        if text != app.session.search.text {
+                            app.session.set_search_text(text);
+                            cx.notify();
+                        }
+                    }
+                    InputEvent::Focus => {
+                        app.editing_search = true;
+                        cx.notify();
+                    }
+                    InputEvent::Blur => {
+                        app.editing_search = false;
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            ),
+        ];
 
         let mut app = Self {
             session,
-            theme: ThemeMode::Dark,
+            appearance,
+            _follow_desktop: follow,
+            nav_compact: None,
+            context_menu: None,
+            show_shortcuts: false,
+            weak: cx.entity().downgrade(),
+            type_names: Arc::new(files_platform::MimeDescriptions::from_env(language)),
+            icons: crate::views::IconCache::from_env(),
+            thumbnails: crate::views::Thumbnails::from_env(),
+            split: None,
+            embedded: false,
+            parent: None,
+            pane_width: None,
+            window_width: px(1_200.0),
+            sharing: Sharing::start(),
+            plugins: crate::plugin_host::PluginHost::start(match locale_for_plugins {
+                Locale::ZhTw => "zh-TW",
+                _ => "en",
+            }),
+            content_scroll: UniformListScrollHandle::new(),
+            band: None,
+            _subscriptions: subscriptions,
             path_input,
             dialog_input,
             focus_handle: cx.focus_handle(),
@@ -151,9 +321,15 @@ impl FilesApp {
             viewport: size(px(1_200.0), px(800.0)),
             search_input,
             editing_search: false,
+            filter_input,
+            password_input,
+            filtering: false,
+            clear_password: false,
+            login_prepared: false,
             chooser: None,
             _chooser_subscription: None,
             catalog_generation: 0,
+            localsend_generation: 0,
             _pump: None,
         };
         app.sync_path_field(window, cx);
@@ -175,6 +351,59 @@ impl FilesApp {
                 let Ok(interval) = this.update(cx, |app, cx| {
                     if app.session.pump() {
                         cx.notify();
+                    }
+                    if app
+                        .thumbnails
+                        .ready
+                        .swap(false, std::sync::atomic::Ordering::AcqRel)
+                    {
+                        cx.notify();
+                    }
+                    if app.plugins.take_changed() {
+                        cx.notify();
+                    }
+                    for outcome in app.plugins.take_outcomes() {
+                        match outcome {
+                            crate::plugin_host::Outcome::Notice(text)
+                            | crate::plugin_host::Outcome::Failed(text) => {
+                                app.session.notice = Some(Notice::Key(text));
+                            }
+                            crate::plugin_host::Outcome::Copy(text) => {
+                                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                            }
+                            crate::plugin_host::Outcome::Go(path) => {
+                                if let Ok(location) = files_core::Location::local(path) {
+                                    app.session.navigate_to(location);
+                                }
+                            }
+                        }
+                        cx.notify();
+                    }
+                    let finished = app
+                        .sharing
+                        .last
+                        .lock()
+                        .ok()
+                        .and_then(|mut last| last.take());
+                    if let Some((machine, sent)) = finished {
+                        let c = crate::i18n::copy(app.locale());
+                        let words = if sent {
+                            c.taildrop_sent
+                        } else {
+                            c.taildrop_failed
+                        };
+                        app.session.notice =
+                            Some(Notice::Key(words.replace("{machine}", &machine)));
+                        cx.notify();
+                    }
+                    // A LocalSend device that answered while a menu is open
+                    // joins it now.
+                    let generation = app.sharing.localsend_generation();
+                    if generation != app.localsend_generation {
+                        app.localsend_generation = generation;
+                        if app.context_menu.is_some() {
+                            cx.notify();
+                        }
                     }
                     // A background catalog reload is a redraw for the
                     // Applications location and nothing else.
@@ -209,12 +438,7 @@ impl FilesApp {
 
     /// How many tiles fit across the content area at the current width.
     pub(crate) fn columns(&self) -> usize {
-        let sidebar = if self.compact() {
-            64.0
-        } else {
-            crate::layout::SIDEBAR_WIDTH
-        };
-        let available = (f32::from(self.viewport.width) - sidebar - 40.0).max(120.0);
+        let available = (f32::from(self.viewport.width) - self.nav_width() - 40.0).max(120.0);
         self.session.content.columns(available)
     }
 
@@ -226,20 +450,177 @@ impl FilesApp {
         )
     }
 
-    pub(crate) fn set_locale(&mut self, locale: Locale, cx: &mut Context<Self>) {
-        self.session.set_locale(locale);
-        cx.notify();
-    }
-
-    pub(crate) fn set_theme(
+    pub(crate) fn set_locale(
         &mut self,
-        mode: ThemeMode,
+        locale: Locale,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.theme = mode;
-        Theme::change(mode, Some(window), cx);
+        self.session.set_locale(locale);
+        // The type names follow the language.
+        let language = match locale.resolved() {
+            Locale::ZhTw => "zh_TW",
+            _ => "en",
+        };
+        self.type_names = Arc::new(files_platform::MimeDescriptions::from_env(language));
+        let c = crate::i18n::copy(locale);
+        self.path_input.update(cx, |state, cx| {
+            state.set_placeholder(c.path_placeholder, window, cx)
+        });
+        self.search_input.update(cx, |state, cx| {
+            state.set_placeholder(c.search_placeholder, window, cx)
+        });
         cx.notify();
+    }
+
+    /// Applies and saves the appearance the person picked.
+    pub(crate) fn set_appearance(
+        &mut self,
+        appearance: Appearance,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.appearance = appearance;
+        self._follow_desktop = appearance.apply_and_follow(window, cx);
+        if let Some(path) = Appearance::default_path("files")
+            && let Err(error) = appearance.save(&path)
+        {
+            self.session.notice =
+                Some(Notice::Key(format!("files.prefs.error.unwritable:{error}")));
+        }
+        cx.notify();
+    }
+
+    /// Whether the navigation pane is drawn compact: the person's choice,
+    /// or compact below the WinUI breakpoint.
+    pub(crate) fn nav_compact(&self) -> bool {
+        self.nav_compact
+            .unwrap_or(self.window_width < px(COMPACT_VIEWPORT_WIDTH))
+    }
+
+    /// The search box's width: narrower in a narrow pane (half of a split
+    /// window), so the address box keeps room for the current folder.
+    pub(crate) fn search_width(&self) -> f32 {
+        let content = f32::from(self.viewport.width) - self.nav_width();
+        if content < 640.0 {
+            150.0
+        } else if self.compact() {
+            200.0
+        } else {
+            280.0
+        }
+    }
+
+    /// The navigation pane's width, which every width this pane computes
+    /// subtracts from its viewport.
+    pub(crate) fn nav_width(&self) -> f32 {
+        if self.nav_compact() { 48.0 } else { 320.0 }
+    }
+
+    /// What every navigation does afterwards: the address box shows the new
+    /// place, and an open menu closes.
+    pub(crate) fn after_location_change(&mut self, _window: &mut Window) {
+        self.editing_path = false;
+        self.context_menu = None;
+    }
+
+    /// Turns the breadcrumbs into a text field holding the path, selected.
+    pub(crate) fn begin_path_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editing_path = true;
+        self.sync_path_field(window, cx);
+        self.path_input
+            .update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Ctrl+Alt+N: opens the right pane on this folder, or closes it.
+    pub(crate) fn toggle_split(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.embedded {
+            return;
+        }
+        if self.split.take().is_some() {
+            window.focus(&self.focus_handle, cx);
+            cx.notify();
+            return;
+        }
+        let start = StartPlan {
+            target: self
+                .session
+                .location()
+                .as_local_path()
+                .cloned()
+                .map(crate::launch::StartTarget::Folder),
+            problem: None,
+            ignored: 0,
+        };
+        let parent = cx.entity().downgrade();
+        let right = cx.new(|cx| {
+            let mut app = FilesApp::new(window, cx, start);
+            app.embedded = true;
+            app.parent = Some(parent);
+            app
+        });
+        let focus = right.read(cx).focus_handle.clone();
+        window.focus(&focus, cx);
+        self.split = Some(right);
+        cx.notify();
+    }
+
+    /// Shows the filter field and gives it the keyboard.
+    pub(crate) fn open_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.filtering = true;
+        self.filter_input
+            .update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Clears the filter and hands the keyboard back to the files.
+    pub(crate) fn close_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.filtering = false;
+        self.session.set_filter("");
+        self.filter_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    /// Sends files to a tailnet machine with Taildrop, on a worker thread,
+    /// and says when it is done.
+    pub(crate) fn taildrop(
+        &mut self,
+        files: Vec<std::path::PathBuf>,
+        machine: crate::share::Machine,
+    ) {
+        let done = self.sharing.last.clone();
+        let name = machine.name.clone();
+        std::thread::spawn(move || {
+            let sent = crate::share::taildrop(&files, &machine);
+            if let Ok(mut last) = done.lock() {
+                *last = Some((name, sent));
+            }
+        });
+    }
+
+    /// Copies a Dropbox share link for `path`.
+    pub(crate) fn copy_dropbox_link(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        match crate::share::dropbox_link(path) {
+            Some(link) => cx.write_to_clipboard(ClipboardItem::new_string(link)),
+            None => {
+                self.session.notice = Some(Notice::Key(
+                    crate::i18n::copy(self.locale())
+                        .dropbox_link_failed
+                        .to_string(),
+                ))
+            }
+        }
+    }
+
+    /// `Ctrl+Shift+C`: the selected paths, or the folder's, as text on the
+    /// clipboard, where every other application can paste them.
+    pub(crate) fn copy_path_text(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = self.session.path_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
     }
 
     /// Puts the current location back in the path field.
@@ -270,8 +651,22 @@ impl FilesApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The right pane's keys are its own: the window's pane, which holds
+        // it, must not act on them a second time.
+        if self.embedded {
+            cx.stop_propagation();
+        }
         // The Performance mode confirmation is answered with its own buttons;
         // Escape is Cancel, and nothing else reaches the window behind it.
+        if self.show_shortcuts {
+            if matches!(event.keystroke.key.as_str(), "escape" | "?" | "f1")
+                || event.keystroke.key_char.as_deref() == Some("?")
+            {
+                self.show_shortcuts = false;
+                cx.notify();
+            }
+            return;
+        }
         if self.session.policy_confirmation.is_some() {
             if event.keystroke.key == "escape" {
                 self.session.cancel_policy();
@@ -294,15 +689,32 @@ impl FilesApp {
             return;
         }
         // The text fields own their own keys while one is focused.
-        if self.editing_path || self.editing_search || self.session.dialog.is_some() {
+        if self.editing_path
+            || self.editing_search
+            || self.filtering
+            || self.session.dialog.is_some()
+        {
             if event.keystroke.key == "escape" {
                 self.editing_path = false;
+                if self.filtering {
+                    self.close_filter(window, cx);
+                }
                 if self.editing_search {
                     self.editing_search = false;
                     self.session.close_search();
                     self.sync_search_field(window, cx);
                 }
                 self.session.dialog = None;
+                cx.notify();
+            } else if self.editing_path && event.keystroke.key == "tab" {
+                // Tab completes the folder being typed, as folio's path bar.
+                let text = self.path_input.read(cx).value().to_string();
+                let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+                if let Some(completed) = crate::pathbar::complete_path(&text, home.as_deref()) {
+                    self.path_input
+                        .update(cx, |state, cx| state.set_value(completed, window, cx));
+                }
+                cx.stop_propagation();
                 cx.notify();
             } else if self.editing_search {
                 // Every other keystroke goes to the field, and the query is
@@ -331,12 +743,53 @@ impl FilesApp {
             return;
         };
         if command == crate::keys::Command::FocusPathField {
-            self.editing_path = true;
-            self.path_input.update(cx, |state, cx| {
-                state.focus(window, cx);
-            });
-            cx.notify();
+            self.begin_path_edit(window, cx);
             return;
+        }
+        match command {
+            crate::keys::Command::FilterFolder => {
+                self.open_filter(window, cx);
+                return;
+            }
+            crate::keys::Command::SplitView => {
+                self.toggle_split(window, cx);
+                return;
+            }
+            crate::keys::Command::CloseTab if self.embedded => {
+                // Ctrl+W in the right pane closes the pane, as in folio.
+                if let Some(parent) = self.parent.clone() {
+                    let _ = parent.update(cx, |app, cx| {
+                        app.split = None;
+                        window.focus(&app.focus_handle, cx);
+                        cx.notify();
+                    });
+                }
+                return;
+            }
+            crate::keys::Command::NewWindow => {
+                open_window_at(self.session.location().as_local_path().cloned(), cx);
+                return;
+            }
+            crate::keys::Command::CopyPath => {
+                self.copy_path_text(cx);
+                return;
+            }
+            crate::keys::Command::ShowShortcuts => {
+                self.show_shortcuts = !self.show_shortcuts;
+                cx.notify();
+                return;
+            }
+            crate::keys::Command::ContextMenu => {
+                let at = window.mouse_position();
+                let target = if self.session.selected_entries().is_empty() {
+                    crate::context_menu::MenuTarget::Background
+                } else {
+                    crate::context_menu::MenuTarget::Selection
+                };
+                self.open_content_menu(target, at, window, cx);
+                return;
+            }
+            _ => {}
         }
         if command == crate::keys::Command::FocusSearch {
             self.editing_search = true;
@@ -426,6 +879,18 @@ impl FilesApp {
                 .get(*index)
                 .map(|bookmark| bookmark.display_name()),
             Some(PendingDialog::NewFolder) | Some(PendingDialog::NewFile) => Some(String::new()),
+            Some(PendingDialog::Format { device_label, .. }) => Some(
+                device_label
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == ' ')
+                    .take(11)
+                    .collect(),
+            ),
+            Some(PendingDialog::ServerLogin { .. }) => {
+                self.password_input
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                Some(std::env::var("USER").unwrap_or_default())
+            }
             _ => None,
         };
         if let Some(initial) = initial {
@@ -457,6 +922,22 @@ impl FilesApp {
             // submit, so it stays open.
             PendingDialog::Compress(chooser) => {
                 self.session.dialog = Some(PendingDialog::Compress(chooser));
+            }
+            erase @ (PendingDialog::Format { .. } | PendingDialog::WriteImage { .. }) => {
+                self.session.dialog = Some(erase);
+                self.session.confirm_erase(&text);
+            }
+            PendingDialog::ServerLogin { address } => {
+                // Read once, handed to the mount, and cleared from the field.
+                let password = self.password_input.read(cx).value().to_string();
+                self.session.mount_server(
+                    address,
+                    Some(crate::network::Credentials {
+                        user: text,
+                        password,
+                    }),
+                );
+                self.clear_password = true;
             }
         }
         cx.notify();
@@ -507,6 +988,32 @@ impl Focusable for FilesApp {
     }
 }
 
+fn files_window_options(cx: &App) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(WindowBounds::centered(size(px(1_280.0), px(820.0)), cx)),
+        window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
+        ..better_ui::window_chrome::window_options("io.betteros.Files")
+    }
+}
+
+/// Ctrl+N: another Better Files window on `folder` (home when `None`), in
+/// this process, so it shares the one job engine.
+pub(crate) fn open_window_at(folder: Option<files_core::LocalPath>, cx: &mut App) {
+    let start = StartPlan {
+        target: folder.map(crate::launch::StartTarget::Folder),
+        problem: None,
+        ignored: 0,
+    };
+    let options = files_window_options(cx);
+    cx.spawn(async move |cx| {
+        let _ = cx.open_window(options, |window, cx| {
+            let view = cx.new(|cx| FilesApp::new(window, cx, start));
+            cx.new(|cx| gpui_component::Root::new(view, window, cx))
+        });
+    })
+    .detach();
+}
+
 /// Opens the window at the location the command line resolved to.
 pub fn run(start: StartPlan) {
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
@@ -514,11 +1021,7 @@ pub fn run(start: StartPlan) {
     app.run(move |cx| {
         gpui_component::init(cx);
 
-        let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1_280.0), px(820.0)), cx)),
-            window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-            ..better_ui::window_chrome::window_options("io.betteros.Files")
-        };
+        let window_options = files_window_options(cx);
 
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
@@ -528,5 +1031,134 @@ pub fn run(start: StartPlan) {
             .expect("failed to open Better Files window");
         })
         .detach();
+
+        // "Show in folder" from other applications: each request opens a
+        // window, in this process.
+        let (requests, received) = std::sync::mpsc::channel();
+        crate::filemanager1::serve(requests);
+        cx.spawn(async move |cx| {
+            loop {
+                Timer::after(Duration::from_millis(250)).await;
+                while let Ok(target) = received.try_recv() {
+                    let start = StartPlan {
+                        target: Some(target),
+                        problem: None,
+                        ignored: 0,
+                    };
+                    cx.update(|cx| {
+                        let options = files_window_options(cx);
+                        cx.spawn(async move |cx| {
+                            let _ = cx.open_window(options, |window, cx| {
+                                let view = cx.new(|cx| FilesApp::new(window, cx, start));
+                                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                            });
+                        })
+                        .detach();
+                    });
+                }
+            }
+        })
+        .detach();
     });
+}
+
+/// The tailnet and Dropbox, read on a thread every minute so the sidebar
+/// never waits for `tailscale` or `dropbox`.
+/// The Dropbox folder and its sync word, when there is one.
+type DropboxState = Option<(std::path::PathBuf, Option<String>)>;
+
+pub(crate) struct Sharing {
+    machines: std::sync::Arc<std::sync::Mutex<Vec<crate::share::Machine>>>,
+    dropbox: std::sync::Arc<std::sync::Mutex<DropboxState>>,
+    /// The last Taildrop or LocalSend: to whom, and whether it went.
+    pub(crate) last: std::sync::Arc<std::sync::Mutex<Option<(String, bool)>>>,
+    /// LocalSend devices found the last time a Share menu was opened.
+    localsend: std::sync::Arc<crate::localsend::KnownPeers>,
+    fingerprint: String,
+}
+
+impl Sharing {
+    fn start() -> Self {
+        let sharing = Self {
+            machines: Default::default(),
+            dropbox: Default::default(),
+            last: Default::default(),
+            localsend: Default::default(),
+            fingerprint: crate::localsend::fingerprint(),
+        };
+        let machines = sharing.machines.clone();
+        let dropbox = sharing.dropbox.clone();
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let _ = std::thread::Builder::new()
+            .name("files-sharing".to_string())
+            .spawn(move || {
+                loop {
+                    let found = crate::share::tailnet_machines();
+                    if let Ok(mut machines) = machines.lock() {
+                        *machines = found;
+                    }
+                    let folder = home.as_deref().and_then(crate::share::dropbox_folder);
+                    let state = folder.map(|folder| {
+                        let status = crate::share::dropbox_status(&folder);
+                        (folder, status)
+                    });
+                    if let Ok(mut dropbox) = dropbox.lock() {
+                        *dropbox = state;
+                    }
+                    std::thread::sleep(Duration::from_secs(60));
+                }
+            });
+        sharing
+    }
+
+    pub(crate) fn machines(&self) -> Vec<crate::share::Machine> {
+        self.machines
+            .lock()
+            .map(|machines| machines.clone())
+            .unwrap_or_default()
+    }
+
+    /// LocalSend devices on the network, as last found.
+    pub(crate) fn localsend_peers(&self) -> Vec<crate::localsend::Peer> {
+        self.localsend.peers()
+    }
+
+    /// Changes whenever the LocalSend devices do.
+    pub(crate) fn localsend_generation(&self) -> u64 {
+        self.localsend.generation()
+    }
+
+    /// Looks for LocalSend devices for a second and a half, off the window's
+    /// thread. Only when a menu that could send is opened.
+    pub(crate) fn discover_localsend(&self) {
+        let found = self.localsend.clone();
+        let fingerprint = self.fingerprint.clone();
+        let _ = std::thread::Builder::new()
+            .name("files-localsend".to_string())
+            .spawn(move || {
+                let answered = crate::localsend::discover(
+                    &crate::localsend::alias(),
+                    &fingerprint,
+                    Duration::from_millis(1_500),
+                    |peer| found.found(peer),
+                );
+                found.finished(answered);
+            });
+    }
+
+    /// Sends files to a LocalSend device, off the window's thread.
+    pub(crate) fn localsend(&self, files: Vec<std::path::PathBuf>, peer: crate::localsend::Peer) {
+        let done = self.last.clone();
+        let own = crate::localsend::own_info(&crate::localsend::alias(), &self.fingerprint, false);
+        std::thread::spawn(move || {
+            let sent = crate::localsend::send(&peer, own, &files).is_ok();
+            if let Ok(mut last) = done.lock() {
+                *last = Some((peer.alias.clone(), sent));
+            }
+        });
+    }
+
+    pub(crate) fn dropbox(&self) -> Option<(std::path::PathBuf, Option<String>)> {
+        self.dropbox.lock().ok().and_then(|dropbox| dropbox.clone())
+    }
 }

@@ -387,6 +387,53 @@ impl EjectReport {
     }
 }
 
+/// Format a volume: Better Files asks only after the person confirmed
+/// erasing it, and says so here; the service refuses a request that does
+/// not.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormatDeviceRequest {
+    pub protocol_version: u32,
+    pub object_path: String,
+    pub filesystem: storage_platform::FilesystemKind,
+    pub label: String,
+    pub erase_confirmed: bool,
+}
+
+impl FormatDeviceRequest {
+    pub fn to_json(&self) -> Result<String, ProtocolError> {
+        serde_json::to_string(self).map_err(|error| ProtocolError::Malformed {
+            detail: error.to_string(),
+        })
+    }
+
+    pub fn from_json(document: &str) -> Result<Self, ProtocolError> {
+        parse(document)
+    }
+}
+
+/// Write a disk image to the drive a volume is on, confirmed the same way.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WriteImageRequest {
+    pub protocol_version: u32,
+    pub object_path: String,
+    pub image_path: String,
+    pub erase_confirmed: bool,
+}
+
+impl WriteImageRequest {
+    pub fn to_json(&self) -> Result<String, ProtocolError> {
+        serde_json::to_string(self).map_err(|error| ProtocolError::Malformed {
+            detail: error.to_string(),
+        })
+    }
+
+    pub fn from_json(document: &str) -> Result<Self, ProtocolError> {
+        parse(document)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
