@@ -38,6 +38,8 @@ use crate::toolbar::toolbar_state;
 pub(crate) enum NavTarget {
     /// One of a plugin's items.
     PluginItem(Box<(crate::plugins::Plugin, crate::plugins::Item)>),
+    /// A plugin's own page (`plugin:<id>`).
+    PluginView(String),
     Row(SidebarRow),
     Device(DeviceRow),
     /// A machine on the tailnet, opened over SFTP.
@@ -48,7 +50,10 @@ impl NavTarget {
     fn location(&self) -> Option<&files_core::Location> {
         match self {
             NavTarget::Row(row) => Some(&row.location),
-            NavTarget::Device(_) | NavTarget::Machine(_) | NavTarget::PluginItem(_) => None,
+            NavTarget::Device(_)
+            | NavTarget::Machine(_)
+            | NavTarget::PluginItem(_)
+            | NavTarget::PluginView(_) => None,
         }
     }
 }
@@ -121,15 +126,30 @@ impl FilesApp {
                 .into_any_element()
         } else {
             let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-            let crumbs = crate::pathbar::crumbs(self.session.location(), home.as_deref(), c);
+            let crumbs = crate::pathbar::crumbs_named(
+                self.session.location(),
+                home.as_deref(),
+                c,
+                &self.session.directories,
+            );
             let width =
                 (f32::from(self.viewport.width) - self.nav_width() - 180.0 - self.search_width())
                     .max(120.0);
             let visible = crate::pathbar::visible_crumbs(&crumbs, width - 24.0);
-            let labels: Vec<SharedString> = crumbs
+            let mut labels: Vec<SharedString> = crumbs
                 .iter()
                 .map(|crumb| SharedString::from(crumb.label.clone()))
                 .collect();
+            // A plugin's page is named by its title, nothing to climb to.
+            let plugin_title = self.plugin_page_title();
+            if let Some(title) = &plugin_title {
+                labels = vec![title.clone().into()];
+            }
+            let crumbs = if plugin_title.is_some() {
+                Vec::new()
+            } else {
+                crumbs
+            };
             let targets: Rc<Vec<files_core::Location>> =
                 Rc::new(crumbs.into_iter().map(|crumb| crumb.location).collect());
             let this = cx.entity().downgrade();
@@ -163,9 +183,14 @@ impl FilesApp {
                 .border_color(p.stroke)
                 .overflow_hidden()
                 .child(
-                    gpui_component::Icon::new(icon_for_location(self.session.location()))
-                        .size(px(16.0))
-                        .text_color(p.text_secondary),
+                    match self.session.location() {
+                        files_core::Location::Trash(_) => {
+                            gpui_component::Icon::empty().path(crate::icons::TRASH)
+                        }
+                        other => gpui_component::Icon::new(icon_for_location(other)),
+                    }
+                    .size(px(16.0))
+                    .text_color(p.text_secondary),
                 )
                 .child(div().flex().min_w_0().overflow_hidden().child(bar))
                 .child(div().flex_1().h_full())
@@ -734,6 +759,9 @@ impl FilesApp {
         let mut out: Vec<(NavEntry, Option<NavTarget>)> = Vec::new();
         let row_item = |row: &SidebarRow| {
             let mut item = NavItem::new(row.label.clone(), icon_for_row(row));
+            if let Some(path) = crate::icons::place_icon(&row.location, &row.key) {
+                item = item.icon_path(path);
+            }
             if !row.availability.is_available() {
                 item = item.caption(c.unavailable);
             } else if row.identity_volatile {
@@ -807,23 +835,35 @@ impl FilesApp {
                 NavEntry::Header(plugin.translate(&section.title).into()),
                 None,
             ));
-            for item in poll.items {
-                let icon = match item.icon.as_deref() {
-                    Some("peer" | "tailnet") => IconName::Globe,
-                    Some("drive") => IconName::HardDrive,
-                    Some(
-                        "folder" | "documents" | "downloads" | "pictures" | "music" | "videos",
-                    ) => IconName::Folder,
-                    _ => IconName::File,
-                };
+            let opened = self
+                .plugin_opened
+                .get(&plugin.id)
+                .cloned()
+                .unwrap_or_default();
+            for item in section.rows(&poll.items, &opened) {
+                let icon = crate::plugin_page::item_icon(item.icon.as_deref());
                 let mut nav = NavItem::new(item.name.clone(), icon);
                 if let Some(subtitle) = &item.subtitle {
                     nav = nav.caption(subtitle.render(&plugin.catalog));
                 }
                 out.push((
                     nav.entry(),
-                    Some(NavTarget::PluginItem(Box::new((plugin.clone(), item)))),
+                    Some(NavTarget::PluginItem(Box::new((
+                        plugin.clone(),
+                        item.clone(),
+                    )))),
                 ));
+            }
+            // With a view, the section ends with the row that opens it, and
+            // how many items there are.
+            if let Some(view) = &plugin.manifest.view {
+                let label = view.label.as_deref().unwrap_or(&view.title);
+                let nav = NavItem::new(
+                    plugin.translate(label),
+                    crate::plugin_page::item_icon(view.icon.as_deref()),
+                )
+                .caption(poll.items.len().to_string());
+                out.push((nav.entry(), Some(NavTarget::PluginView(plugin.id.clone()))));
             }
         }
 
@@ -953,6 +993,10 @@ impl FilesApp {
     }
 
     pub(crate) fn open_nav_target(&mut self, target: &NavTarget, window: &mut Window) {
+        // Any other row leaves a plugin's page.
+        if !matches!(target, NavTarget::PluginView(_) | NavTarget::PluginItem(_)) {
+            self.plugin_view = None;
+        }
         match target {
             NavTarget::Row(row) => {
                 if let Some(index) = row.bookmark_index {
@@ -970,27 +1014,10 @@ impl FilesApp {
             }
             NavTarget::PluginItem(pair) => {
                 let (plugin, item) = pair.as_ref();
-                match &item.open {
-                    Some(crate::plugins::Open::Path { path }) => {
-                        let path = crate::plugins::expand(path, self.plugins.home());
-                        if let Ok(location) = files_core::Location::local(path) {
-                            self.session.navigate_to(location);
-                        }
-                    }
-                    Some(crate::plugins::Open::Mount { mount }) => {
-                        self.session.mount_server(mount.clone(), None);
-                    }
-                    Some(crate::plugins::Open::Run { run }) => {
-                        self.plugins.run(
-                            plugin.clone(),
-                            run.clone(),
-                            Vec::new(),
-                            Some(item.clone()),
-                            false,
-                        );
-                    }
-                    None => {}
-                }
+                self.open_plugin_item(plugin, item);
+            }
+            NavTarget::PluginView(id) => {
+                self.open_plugin_view(id);
             }
             NavTarget::Machine(machine) => {
                 self.session

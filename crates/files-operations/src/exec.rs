@@ -75,14 +75,15 @@ pub trait JobControl {
 }
 
 /// What the person answered about a folder that was already there.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FolderAnswer {
     /// Go into it; every clash inside is a Replace.
     Merge,
     /// Leave it, and everything that would have gone into it, alone.
     Skip,
     /// Keep both: the folder and everything in it go to this new name.
-    MovedTo(PathBuf),
+    MovedTo(#[serde(with = "crate::store::path_bytes")] PathBuf),
 }
 
 /// Where an item goes once the answers about the folders above it apply:
@@ -113,6 +114,21 @@ fn inside_merge(path: &Path, control: &dyn JobControl) -> bool {
 /// the job, or the trash on the item's own device. Nothing a conflict answer
 /// displaces is ever deleted; if it cannot go to the trash, the item fails and
 /// the one already there stays where it was.
+/// Whether putting `source` at `destination` with Replace or Merge would
+/// put it in place of itself or of a folder it is inside. Compared as
+/// written and, where both exist, as resolved, so a link or `..` cannot
+/// hide it.
+fn replaces_source(source: &Path, destination: &Path) -> bool {
+    let inside = |source: &Path, destination: &Path| source.starts_with(destination);
+    if inside(source, destination) {
+        return true;
+    }
+    match (fs::canonicalize(source), fs::canonicalize(destination)) {
+        (Ok(source), Ok(destination)) => inside(&source, &destination),
+        _ => false,
+    }
+}
+
 fn displace(existing: &Path, control: &mut dyn JobControl) -> Result<(), ItemOutcome> {
     let root = control.displaced_trash();
     match trash_one(existing, root.as_deref(), control) {
@@ -592,6 +608,13 @@ fn transfer(
                             );
                             destination = renamed;
                         }
+                        Resolution::Overwrite | Resolution::Merge
+                            if replaces_source(&item.source, &destination) =>
+                        {
+                            return Ok(ItemOutcome::Failed(OperationError::ReplacesSource {
+                                path: destination.clone(),
+                            }));
+                        }
                         Resolution::Merge if existing.is_dir() => {
                             control.record_folder_answer(destination.clone(), FolderAnswer::Merge);
                         }
@@ -687,6 +710,13 @@ fn transfer_leaf(
                     .unwrap_or_else(|| OsStr::new("unnamed"))
                     .to_os_string();
                 destination = next_available_name(&parent, &name);
+            }
+            Resolution::Overwrite | Resolution::Merge
+                if replaces_source(&item.source, &destination) =>
+            {
+                return Ok(ItemOutcome::Failed(OperationError::ReplacesSource {
+                    path: destination.clone(),
+                }));
             }
             Resolution::Overwrite | Resolution::Merge => {
                 if !kind.accepts_overwrite() {

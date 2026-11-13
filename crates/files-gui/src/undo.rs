@@ -78,6 +78,10 @@ pub enum Step {
     /// The change sent the item at `original` to the trash, where it is at
     /// `stored`.
     Trashed { original: PathBuf, stored: PathBuf },
+    /// A move into a folder that was already there (Merge) made the folder
+    /// `now` for the folder `was`, item by item. Undone, `was` is there
+    /// again and `now` goes once it is empty.
+    Folder { now: PathBuf, was: PathBuf },
 }
 
 /// One change: its kind, what to call it, and its steps in the order they
@@ -192,35 +196,26 @@ impl History {
     }
 
     /// Undoes the latest change. On success returns the change's kind.
+    ///
+    /// A change that cannot be undone (its item was moved or replaced
+    /// since) is said so and forgotten, so the next Undo reaches the change
+    /// before it rather than refusing the same way forever.
     pub fn undo(&mut self) -> Result<ChangeKind, Refusal> {
         let change = self.undo.pop().ok_or(Refusal::Nothing)?;
-        match flip(&change, true, self.trash.as_deref()) {
-            Ok(flipped) => {
-                let kind = flipped.kind;
-                self.redo.push(flipped);
-                Ok(kind)
-            }
-            Err(refusal) => {
-                // Nothing ran: the change stays where it was.
-                self.undo.push(change);
-                Err(refusal)
-            }
-        }
+        let flipped = flip(&change, true, self.trash.as_deref())?;
+        let kind = flipped.kind;
+        self.redo.push(flipped);
+        Ok(kind)
     }
 
+    /// Redoes the latest undone change; one that cannot be redone is
+    /// forgotten, as for undo.
     pub fn redo(&mut self) -> Result<ChangeKind, Refusal> {
         let change = self.redo.pop().ok_or(Refusal::Nothing)?;
-        match flip(&change, false, self.trash.as_deref()) {
-            Ok(flipped) => {
-                let kind = flipped.kind;
-                self.undo.push(flipped);
-                Ok(kind)
-            }
-            Err(refusal) => {
-                self.redo.push(change);
-                Err(refusal)
-            }
-        }
+        let flipped = flip(&change, false, self.trash.as_deref())?;
+        let kind = flipped.kind;
+        self.undo.push(flipped);
+        Ok(kind)
     }
 }
 
@@ -351,6 +346,9 @@ fn flip(change: &Change, undoing: bool, trash: Option<&Path>) -> Result<Change, 
                     });
                 }
             }
+            // A folder made or emptied by the items around it: nothing of
+            // its own to check.
+            (Step::Folder { .. }, _) => {}
         }
     }
 
@@ -379,9 +377,32 @@ fn failed(path: &Path, reason: impl ToString) -> Refusal {
     }
 }
 
+/// Makes the folder an item is going back into, when the change took it
+/// away (a merged move removes each source folder once it is empty).
+fn ensure_parent(path: &Path) -> Result<(), Refusal> {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => {
+            fs::create_dir_all(parent).map_err(|error| failed(path, error))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn run_step(step: &Step, undoing: bool, trash: Option<&Path>) -> Result<Step, Refusal> {
     Ok(match (step, undoing) {
+        (Step::Folder { now, was }, true) => {
+            fs::create_dir_all(was).map_err(|error| failed(was, error))?;
+            // Only once empty: something put in it since stays, and so does
+            // the folder.
+            let _ = fs::remove_dir(now);
+            step.clone()
+        }
+        (Step::Folder { now, .. }, false) => {
+            fs::create_dir_all(now).map_err(|error| failed(now, error))?;
+            step.clone()
+        }
         (Step::Moved { now, was, id }, true) => {
+            ensure_parent(was)?;
             fs::rename(now, was).map_err(|error| failed(now, error))?;
             Step::Moved {
                 now: now.clone(),
@@ -390,6 +411,7 @@ fn run_step(step: &Step, undoing: bool, trash: Option<&Path>) -> Result<Step, Re
             }
         }
         (Step::Moved { now, was, id }, false) => {
+            ensure_parent(now)?;
             fs::rename(was, now).map_err(|error| failed(was, error))?;
             Step::Moved {
                 now: now.clone(),
@@ -523,13 +545,27 @@ pub fn change_from_job(operation: &Operation, snapshot: &JobSnapshot) -> Option<
                 .map(|source| source.as_path().to_path_buf())
                 .collect();
             let mut steps: Vec<Step> = Vec::new();
-            for (source, now, _) in &pairs {
-                if tops.contains(source)
-                    && !steps
-                        .iter()
-                        .any(|step| matches!(step, Step::Moved { was, .. } if was == source))
-                {
+            for (source, now, how) in &pairs {
+                // Already part of an item moved whole.
+                let covered = steps
+                    .iter()
+                    .any(|step| matches!(step, Step::Moved { was, .. } if source.starts_with(was)));
+                if covered {
+                    continue;
+                }
+                if tops.contains(source) {
                     steps.push(moved(now, source));
+                } else if tops.iter().any(|top| source.starts_with(top)) {
+                    // Inside a folder merged into one already there: the
+                    // move went item by item, and so does its undo.
+                    steps.push(if *how == "made" && now.is_dir() {
+                        Step::Folder {
+                            now: now.clone(),
+                            was: source.clone(),
+                        }
+                    } else {
+                        moved(now, source)
+                    });
                 }
             }
             (ChangeKind::Move, with_displaced(steps, &trashed, operation))
@@ -566,6 +602,7 @@ pub fn change_from_job(operation: &Operation, snapshot: &JobSnapshot) -> Option<
             Step::Moved { now, .. } => name_of(now),
             Step::Made { path, .. } => name_of(path),
             Step::Trashed { original, .. } => name_of(original),
+            Step::Folder { now, .. } => name_of(now),
         }
     } else {
         String::new()

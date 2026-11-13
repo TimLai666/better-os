@@ -77,6 +77,23 @@ pub fn parse_status(json: &str) -> Vec<Machine> {
             os: peer.os,
         })
         .collect();
+    // Two machines that both call themselves "localhost" (phones often do)
+    // are told apart by their MagicDNS names, which are unique.
+    let names: Vec<String> = machines
+        .iter()
+        .map(|machine| machine.name.to_lowercase())
+        .collect();
+    for machine in &mut machines {
+        let lower = machine.name.to_lowercase();
+        if names.iter().filter(|name| **name == lower).count() > 1 {
+            machine.name = machine
+                .address
+                .split('.')
+                .next()
+                .unwrap_or(&machine.name)
+                .to_string();
+        }
+    }
     machines.sort_by(|a, b| {
         b.online
             .cmp(&a.online)

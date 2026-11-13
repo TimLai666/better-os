@@ -151,7 +151,12 @@ pub fn job_row(snapshot: &JobSnapshot, c: &'static Copy) -> JobRow {
         items_label: items_label(&snapshot.progress),
         bytes_label: bytes_label(&snapshot.progress),
         throughput_label: throughput_label(&snapshot.throughput),
-        remaining_label: remaining_label(&snapshot.remaining, c),
+        // A finished job has no time left to estimate.
+        remaining_label: if snapshot.state.is_terminal() {
+            String::new()
+        } else {
+            remaining_label(&snapshot.remaining, c)
+        },
         current: snapshot.current.clone(),
         controls: controls_for(snapshot),
         conflict: snapshot.conflict.as_ref().map(|conflict| ConflictPrompt {

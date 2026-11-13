@@ -124,7 +124,9 @@ fn mime_of(path: &Path) -> Option<String> {
 
 /// Builds what one file shows. Runs on a worker thread: converting an office
 /// document or rendering a PDF page can take seconds.
-fn load(path: &Path, scratch: &Path, c: &'static Copy) -> Content {
+/// `max_frame`: the window's size in pixels, which a video's frames are
+/// scaled down to fit.
+fn load(path: &Path, scratch: &Path, c: &'static Copy, max_frame: (u32, u32)) -> Content {
     let mime = mime_of(path);
     match view_kind(path, mime.as_deref()) {
         ViewKind::Image => Content::Image(path.to_path_buf()),
@@ -149,7 +151,7 @@ fn load(path: &Path, scratch: &Path, c: &'static Copy) -> Content {
             Err(_) => Content::Message(c.preview_decode_failed.into()),
         },
         kind @ (ViewKind::Audio | ViewKind::Video) => {
-            let (player, note) = match Player::open(path, AudioOut::Speakers) {
+            let (player, note) = match Player::open(path, AudioOut::Speakers, max_frame) {
                 Ok(mut player) => {
                     player.play();
                     (Some(player), None)
@@ -305,16 +307,19 @@ impl PreviewApp {
             locale,
             _subscriptions: subscriptions,
             _poll: None,
-            _media: cx.spawn(async move |this, cx| {
+            _media: cx.spawn_in(window, async move |this, cx| {
                 loop {
                     Timer::after(Duration::from_millis(16)).await;
-                    if this.update(cx, |app, cx| app.pump_media(cx)).is_err() {
+                    if this
+                        .update_in(cx, |app, window, cx| app.pump_media(window, cx))
+                        .is_err()
+                    {
                         break;
                     }
                 }
             }),
         };
-        app.start_loading(cx);
+        app.start_loading(window, cx);
         app
     }
 
@@ -322,17 +327,23 @@ impl PreviewApp {
         &self.files[self.at]
     }
 
-    fn start_loading(&mut self, cx: &mut Context<Self>) {
-        self.release_frame(cx);
+    fn start_loading(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.release_frame(window, cx);
         self.content = Content::Loading;
         self.zoom = 1.0;
         let (sender, receiver) = mpsc::channel();
         let file = self.current().to_path_buf();
         let scratch = self.scratch.path().to_path_buf();
+        let viewport = window.viewport_size();
+        let scale = window.scale_factor();
+        let max_frame = (
+            (f32::from(viewport.width) * scale).ceil() as u32,
+            (f32::from(viewport.height) * scale).ceil() as u32,
+        );
         let index = self.at;
         let c = copy(self.locale);
         std::thread::spawn(move || {
-            let _ = sender.send((index, load(&file, &scratch, c)));
+            let _ = sender.send((index, load(&file, &scratch, c, max_frame)));
         });
         self.loaded = Some(receiver);
         self._poll = Some(cx.spawn(async move |this, cx| {
@@ -377,7 +388,7 @@ impl PreviewApp {
             (self.at + len - 1) % len
         };
         window.set_window_title(&self.title());
-        self.start_loading(cx);
+        self.start_loading(window, cx);
     }
 
     fn title(&self) -> String {
@@ -389,7 +400,7 @@ impl PreviewApp {
 
     /// Takes the player's news and its newest frame. Runs every 16 ms; does
     /// nothing unless a media file is open.
-    fn pump_media(&mut self, cx: &mut Context<Self>) {
+    fn pump_media(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let c = copy(self.locale);
         let Content::Media(media) = &mut self.content else {
             return;
@@ -433,7 +444,9 @@ impl PreviewApp {
         {
             let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
             if let Some(old) = media.frame.replace(image) {
-                cx.drop_image(old, None);
+                // The window being drawn is not in the app's list while it
+                // is updated, so it is named, or its texture stays behind.
+                cx.drop_image(old, Some(window));
             }
             changed = true;
         }
@@ -443,11 +456,11 @@ impl PreviewApp {
     }
 
     /// Gives the shown video frame's texture back before the content goes.
-    fn release_frame(&mut self, cx: &mut Context<Self>) {
+    fn release_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Content::Media(media) = &mut self.content
             && let Some(old) = media.frame.take()
         {
-            cx.drop_image(old, None);
+            cx.drop_image(old, Some(window));
         }
     }
 
@@ -800,7 +813,7 @@ impl PreviewApp {
                 .flex_col()
                 .gap(px(4.0))
                 .child(fluent::label(
-                    format!("{total} {}", c.item_count),
+                    files_gui::i18n::counted(*total, c.item_one, c.item_count),
                     BODY_STRONG,
                     p.text_primary,
                 ))

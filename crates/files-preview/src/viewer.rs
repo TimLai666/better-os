@@ -541,12 +541,19 @@ fn read_tar(reader: impl Read, entries: &mut Vec<ArchiveEntry>) -> std::io::Resu
 /// Runs `program` with `arguments` (never through a shell) and returns its
 /// standard output, or `None` when it is missing, fails, or outlives
 /// `limit`.
+///
+/// The program runs in a process group of its own, and a timeout ends the
+/// whole group: LibreOffice's `soffice` starts `soffice.bin` and leaves it
+/// running, and killing only the first would leave the second converting
+/// (and holding the pipe) after the window gave up on it.
 pub fn run(program: &str, arguments: &[String], limit: Duration) -> Option<Vec<u8>> {
+    use std::os::unix::process::CommandExt;
     let mut child = Command::new(program)
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
         .ok()?;
     let mut stdout = child.stdout.take()?;
@@ -563,14 +570,28 @@ pub fn run(program: &str, arguments: &[String], limit: Duration) -> Option<Vec<u
                 return status.success().then_some(output);
             }
             Ok(None) if started.elapsed() > limit => {
-                let _ = child.kill();
-                let _ = child.wait();
+                end_group(&mut child);
                 return None;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
             Err(_) => return None,
         }
     }
+}
+
+/// Kills a child started with `process_group(0)` and everything it
+/// started, then reaps it.
+pub(crate) fn end_group(child: &mut std::process::Child) {
+    if let Ok(group) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: `kill` takes plain integers. The group is the child's own
+        // (it was started as a group leader and has not been reaped), so no
+        // unrelated process can be named by it.
+        unsafe {
+            libc::kill(-group, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// The number of pages `pdfinfo` reports.
@@ -875,6 +896,35 @@ mod tests {
             run("echo", &["$(x)".into()], Duration::from_secs(5)),
             Some(b"$(x)\n".to_vec())
         );
+    }
+
+    /// A program that started one of its own and hangs: the timeout ends
+    /// both, as `soffice` and its `soffice.bin` have to be.
+    #[test]
+    fn a_timeout_ends_what_the_program_started_too() {
+        let folder = tempfile::tempdir().unwrap();
+        let pid_file = folder.path().join("pid");
+        let script = format!("sleep 60 & echo $! > '{}'; wait", pid_file.display());
+        assert_eq!(
+            run("sh", &["-c".into(), script], Duration::from_millis(300)),
+            None
+        );
+        let pid: i32 = fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // Gone, or a zombie its shell parent left for init to reap.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let alive = || {
+            fs::read_to_string(format!("/proc/{pid}/stat"))
+                .map(|stat| !stat.contains(") Z "))
+                .unwrap_or(false)
+        };
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(), "the grandchild {pid} is still running");
     }
 
     #[test]

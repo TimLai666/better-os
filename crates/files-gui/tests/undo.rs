@@ -295,7 +295,131 @@ fn an_item_moved_since_stops_the_undo_and_nothing_runs() {
         "Can't undo that: b.txt isn't where it was left."
     );
     assert!(refusal.message(true, &ZH_TW).contains("b.txt"));
-    assert!(history.can_undo(), "the change stays to try again");
+    assert_eq!(
+        fs::read(rig.dir.join("c.txt")).unwrap(),
+        b"x",
+        "nothing ran"
+    );
+}
+
+/// A change that cannot be undone any more does not stand in front of the
+/// ones before it: it is said so and forgotten, and the next Undo reaches
+/// the older change.
+#[test]
+fn a_change_that_cannot_be_undone_does_not_block_the_ones_before_it() {
+    let rig = rig();
+    let older = rig.dir.join("older.txt");
+    let newer = rig.dir.join("newer.txt");
+    fs::write(&older, b"o").unwrap();
+    fs::write(&newer, b"n").unwrap();
+    let mut history = rig.history();
+    history.record(rig.run(
+        Operation::Rename {
+            path: local(&older),
+            new_name: "older-renamed.txt".into(),
+        },
+        None,
+    ));
+    history.record(rig.run(
+        Operation::Rename {
+            path: local(&newer),
+            new_name: "newer-renamed.txt".into(),
+        },
+        None,
+    ));
+    // Somebody moves the newer one on.
+    fs::rename(
+        rig.dir.join("newer-renamed.txt"),
+        rig.dir.join("elsewhere.txt"),
+    )
+    .unwrap();
+    assert!(matches!(history.undo(), Err(Refusal::NotWhereLeft { .. })));
+    assert_eq!(history.undo(), Ok(ChangeKind::Rename));
+    assert!(older.exists(), "the older rename was undone");
+    assert!(
+        rig.dir.join("elsewhere.txt").exists(),
+        "the moved one was left alone"
+    );
+}
+
+/// A move into a folder that was already there, answered with Merge, went
+/// item by item; its undo puts every item back where it was (making the
+/// source folders again), leaves what was only there, brings back what it
+/// replaced, and redo does it again.
+#[test]
+fn a_move_answered_with_merge_is_undone_item_by_item() {
+    let rig = rig();
+    let source = rig.dir.join("in/photos");
+    fs::create_dir_all(source.join("2024")).unwrap();
+    fs::write(source.join("a.jpg"), b"new a").unwrap();
+    fs::write(source.join("clash.jpg"), b"new clash").unwrap();
+    fs::write(source.join("2024/b.jpg"), b"b").unwrap();
+    let out = rig.dir.join("out");
+    fs::create_dir_all(out.join("photos")).unwrap();
+    fs::write(out.join("photos/clash.jpg"), b"old clash").unwrap();
+    fs::write(out.join("photos/only-there.jpg"), b"stay").unwrap();
+
+    let change = rig.run(
+        Operation::Move {
+            sources: vec![local(&source)],
+            destination: local(&out),
+        },
+        Some(Resolution::Merge),
+    );
+    assert_eq!(change.kind, ChangeKind::Move);
+    assert!(!source.exists(), "the move emptied and removed the source");
+    let mut history = rig.history();
+    history.record(change);
+
+    assert_eq!(history.undo(), Ok(ChangeKind::Move));
+    assert_eq!(fs::read(source.join("a.jpg")).unwrap(), b"new a");
+    assert_eq!(fs::read(source.join("clash.jpg")).unwrap(), b"new clash");
+    assert_eq!(fs::read(source.join("2024/b.jpg")).unwrap(), b"b");
+    assert_eq!(
+        fs::read(out.join("photos/clash.jpg")).unwrap(),
+        b"old clash"
+    );
+    assert_eq!(
+        fs::read(out.join("photos/only-there.jpg")).unwrap(),
+        b"stay"
+    );
+    assert!(!out.join("photos/a.jpg").exists());
+    assert!(
+        !out.join("photos/2024").exists(),
+        "the folder the move made is gone"
+    );
+
+    assert_eq!(history.redo(), Ok(ChangeKind::Move));
+    assert_eq!(fs::read(out.join("photos/a.jpg")).unwrap(), b"new a");
+    assert_eq!(fs::read(out.join("photos/2024/b.jpg")).unwrap(), b"b");
+    assert_eq!(
+        fs::read(out.join("photos/clash.jpg")).unwrap(),
+        b"new clash"
+    );
+}
+
+/// Merge into a folder where nothing clashes inside is still a change.
+#[test]
+fn a_merged_move_with_no_clash_inside_is_still_undoable() {
+    let rig = rig();
+    let source = rig.dir.join("in/docs");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("new.txt"), b"new").unwrap();
+    let out = rig.dir.join("out");
+    fs::create_dir_all(out.join("docs")).unwrap();
+    fs::write(out.join("docs/old.txt"), b"old").unwrap();
+    let mut history = rig.history();
+    history.record(rig.run(
+        Operation::Move {
+            sources: vec![local(&source)],
+            destination: local(&out),
+        },
+        Some(Resolution::Merge),
+    ));
+    assert_eq!(history.undo(), Ok(ChangeKind::Move));
+    assert_eq!(fs::read(source.join("new.txt")).unwrap(), b"new");
+    assert!(!out.join("docs/new.txt").exists());
+    assert_eq!(fs::read(out.join("docs/old.txt")).unwrap(), b"old");
 }
 
 #[test]

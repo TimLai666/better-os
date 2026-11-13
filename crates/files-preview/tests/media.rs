@@ -74,7 +74,29 @@ fn run_until(
     events
 }
 
+/// Points GStreamer's plugin registry (and any other cache) at a folder of
+/// this test process's own, so running the tests never writes to the
+/// person's `~/.cache/gstreamer-1.0`. Runs once, before GStreamer starts.
+fn isolate() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let folder = std::env::temp_dir().join(format!(
+            "better-files-gstreamer-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&folder);
+        // SAFETY: every test calls this before anything else, `Once` makes
+        // the others wait until it returns, and nothing in these tests reads
+        // the environment from another thread meanwhile.
+        unsafe {
+            std::env::set_var("GST_REGISTRY", folder.join("registry.bin"));
+            std::env::set_var("XDG_CACHE_HOME", &folder);
+        }
+    });
+}
+
 fn scratch(name: &str) -> (tempfile::TempDir, PathBuf) {
+    isolate();
     let folder = tempfile::tempdir().unwrap();
     let path = folder.path().join(name);
     (folder, path)
@@ -84,7 +106,7 @@ fn scratch(name: &str) -> (tempfile::TempDir, PathBuf) {
 fn a_wav_plays_to_its_end_and_knows_its_length() {
     let (_folder, wav) = scratch("tone.wav");
     write_wav(&wav, 0.6);
-    let mut player = Player::open(&wav, AudioOut::Discard).unwrap();
+    let mut player = Player::open(&wav, AudioOut::Discard, (1920, 1080)).unwrap();
     run_until(&mut player, |player, _| player.duration().is_some());
     let length = player.duration().expect("the length is known once paused");
     assert!(
@@ -108,7 +130,7 @@ fn a_wav_plays_to_its_end_and_knows_its_length() {
 fn pause_holds_the_position_and_seek_moves_it() {
     let (_folder, wav) = scratch("long.wav");
     write_wav(&wav, 3.0);
-    let mut player = Player::open(&wav, AudioOut::Discard).unwrap();
+    let mut player = Player::open(&wav, AudioOut::Discard, (1920, 1080)).unwrap();
     run_until(&mut player, |player, _| player.duration().is_some());
 
     player.seek(Duration::from_millis(2_000));
@@ -149,7 +171,7 @@ fn pause_holds_the_position_and_seek_moves_it() {
 fn volume_is_kept_between_silent_and_as_recorded() {
     let (_folder, wav) = scratch("tone.wav");
     write_wav(&wav, 0.3);
-    let mut player = Player::open(&wav, AudioOut::Discard).unwrap();
+    let mut player = Player::open(&wav, AudioOut::Discard, (1920, 1080)).unwrap();
     player.set_volume(0.25);
     assert!((player.volume() - 0.25).abs() < 1e-6);
     player.set_volume(7.0);
@@ -162,7 +184,7 @@ fn volume_is_kept_between_silent_and_as_recorded() {
 fn a_video_shows_its_first_frame_paused_and_new_frames_while_playing() {
     let (_folder, avi) = scratch("clip.avi");
     write_avi(&avi);
-    let mut player = Player::open(&avi, AudioOut::Discard).unwrap();
+    let mut player = Player::open(&avi, AudioOut::Discard, (1920, 1080)).unwrap();
 
     let mut first = None;
     run_until(&mut player, |player, _| {
@@ -230,7 +252,7 @@ fn a_seek_lands_where_asked_even_between_key_frames() {
     }
     pipeline.set_state(gst::State::Null).unwrap();
 
-    let mut player = Player::open(&webm, AudioOut::Discard).unwrap();
+    let mut player = Player::open(&webm, AudioOut::Discard, (1920, 1080)).unwrap();
     run_until(&mut player, |player, _| player.duration().is_some());
     player.seek(Duration::from_millis(2_000));
     run_until(&mut player, |player, _| {
@@ -249,7 +271,7 @@ fn a_seek_lands_where_asked_even_between_key_frames() {
 fn a_file_that_is_not_media_fails_with_a_message() {
     let (_folder, junk) = scratch("noise.mp4");
     std::fs::write(&junk, vec![0x5a; 4096]).unwrap();
-    match Player::open(&junk, AudioOut::Discard) {
+    match Player::open(&junk, AudioOut::Discard, (1920, 1080)) {
         Err(error) => assert!(!error.to_string().is_empty()),
         Ok(mut player) => {
             let events = run_until(&mut player, |_, events| {
@@ -272,4 +294,24 @@ fn clock_reads_minutes_and_hours() {
     assert_eq!(clock(Duration::from_secs(0)), "0:00");
     assert_eq!(clock(Duration::from_secs(65)), "1:05");
     assert_eq!(clock(Duration::from_secs(3_725)), "1:02:05");
+}
+
+#[test]
+fn a_large_video_is_scaled_down_to_the_preview_and_a_small_one_is_left_alone() {
+    let (_folder, avi) = scratch("clip.avi");
+    write_avi(&avi);
+    let first_frame = |max: (u32, u32)| {
+        let mut player = Player::open(&avi, AudioOut::Discard, max).unwrap();
+        let mut frame = None;
+        run_until(&mut player, |player, _| {
+            frame = player.take_frame();
+            frame.is_some()
+        });
+        let frame = frame.expect("a first frame");
+        (frame.width, frame.height)
+    };
+    // 160x120 into an 80-pixel-wide preview: halved, aspect kept.
+    assert_eq!(first_frame((80, 600)), (80, 60));
+    // Never scaled up.
+    assert_eq!(first_frame((1920, 1080)), (160, 120));
 }

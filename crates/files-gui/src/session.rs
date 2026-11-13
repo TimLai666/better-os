@@ -94,6 +94,11 @@ pub enum Notice {
     },
     /// No terminal is installed that Open Terminal Here knows how to start.
     NoTerminal,
+    /// An image is being written to a drive: how far it is.
+    WritingImage {
+        label: String,
+        percent: u8,
+    },
     /// A format or image write finished, or why it did not.
     Erased {
         label: String,
@@ -172,6 +177,10 @@ impl Notice {
                 Err(refusal) => refusal.message(*undoing, c),
             },
             Notice::NoTerminal => c.no_terminal.to_string(),
+            Notice::WritingImage { label, percent } => c
+                .image_writing
+                .replace("{device}", label)
+                .replace("{percent}", &percent.to_string()),
             Notice::Erased {
                 label,
                 format,
@@ -285,11 +294,13 @@ pub enum PendingDialog {
         device_label: String,
         filesystem: storage_platform::FilesystemKind,
     },
-    /// Write a disk image to a drive, after the same warning.
+    /// Write a disk image to a whole drive, after a warning that names
+    /// every volume on it.
     WriteImage {
         object_path: String,
         device_label: String,
         image: LocalPath,
+        volumes: Vec<String>,
     },
 }
 
@@ -339,6 +350,9 @@ pub struct FilesSession {
     /// Which favourite the keyboard is on, for the reorder and remove keys.
     pub sidebar_cursor: Option<usize>,
     pub operations_open: bool,
+    /// Copies and moves an earlier Better Files left unfinished, offered
+    /// in the operation center until resumed or dismissed.
+    pub interrupted: crate::interrupted::InterruptedJobs,
     pub jobs: Vec<JobSnapshot>,
     pub finished: SessionHistory,
 
@@ -484,6 +498,7 @@ impl FilesSession {
             focus: Focus::Content,
             sidebar_cursor: None,
             operations_open: false,
+            interrupted: crate::interrupted::InterruptedJobs::default(),
             jobs: Vec::new(),
             finished: SessionHistory::default(),
             catalog,
@@ -1174,12 +1189,21 @@ impl FilesSession {
         });
     }
 
-    /// Write to Drive… for a disk image: opens the confirmation.
+    /// Write to Drive… for a disk image: opens the confirmation, which
+    /// names the drive and every volume on it.
     pub fn request_write_image(&mut self, image: LocalPath, object_path: &str) {
+        let Some(target) = self
+            .image_targets()
+            .into_iter()
+            .find(|target| target.object_path == object_path)
+        else {
+            return;
+        };
         self.dialog = Some(PendingDialog::WriteImage {
-            object_path: object_path.to_string(),
-            device_label: self.device_label(object_path),
+            object_path: target.object_path,
+            device_label: target.name,
             image,
+            volumes: target.volumes,
         });
     }
 
@@ -1227,14 +1251,10 @@ impl FilesSession {
         }
     }
 
-    /// The drives an image could be written to: those the storage layer
-    /// reports.
-    pub fn image_targets(&self) -> Vec<(String, String)> {
-        self.devices
-            .rows()
-            .iter()
-            .map(|row| (row.object_path.clone(), row.label.clone()))
-            .collect()
+    /// The drives an image could be written to (whole drives, never a
+    /// partition), each with the volumes writing to it erases.
+    pub fn image_targets(&self) -> Vec<crate::devices::ImageTarget> {
+        crate::devices::image_targets(self.devices.rows())
     }
 
     /// Mount from a drive's menu: asks the storage layer to mount it,
@@ -1288,13 +1308,30 @@ impl FilesSession {
     fn apply_device_notice(&mut self, notice: DeviceNotice) {
         match notice {
             DeviceNotice::Mode(mode) => self.collection = mode,
+            DeviceNotice::ImageProgress {
+                object_path,
+                written,
+                total,
+            } => {
+                self.notice = Some(Notice::WritingImage {
+                    label: self.drive_name(&object_path),
+                    percent: (written.saturating_mul(100))
+                        .checked_div(total)
+                        .unwrap_or(0)
+                        .min(100) as u8,
+                });
+            }
             DeviceNotice::Erased {
                 object_path,
                 format,
                 outcome,
             } => {
                 self.notice = Some(Notice::Erased {
-                    label: self.device_label(&object_path),
+                    label: if format {
+                        self.device_label(&object_path)
+                    } else {
+                        self.drive_name(&object_path)
+                    },
                     format,
                     failure: outcome.err(),
                 });
@@ -1427,6 +1464,14 @@ impl FilesSession {
             .get(object_path)
             .map(|row| row.label.clone())
             .unwrap_or_else(|| object_path.to_string())
+    }
+
+    /// A drive by its vendor and model, for an image write.
+    fn drive_name(&self, object_path: &str) -> String {
+        self.devices
+            .get(object_path)
+            .and_then(|row| row.drive_name.clone())
+            .unwrap_or_else(|| self.device_label(object_path))
     }
 
     /// A device left. Removes the row, clears every navigation state that
@@ -1827,6 +1872,19 @@ impl FilesSession {
     pub fn retry_job(&mut self, id: JobId) {
         self.engine.retry_failed(id);
         self.refresh_jobs();
+    }
+
+    /// Starts an interrupted copy or move again.
+    pub fn resume_interrupted(&mut self, id: u64) {
+        if let Some(Err(error)) = self.interrupted.resume(id, &self.engine) {
+            self.notice = Some(Notice::Key(error.to_string()));
+        }
+        self.refresh_jobs();
+    }
+
+    /// Forgets an interrupted copy or move.
+    pub fn dismiss_interrupted(&mut self, id: u64) {
+        self.interrupted.dismiss(id);
     }
 
     pub fn resolve_conflict(&mut self, id: JobId, decision: ConflictDecision) {

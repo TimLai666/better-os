@@ -33,18 +33,21 @@ fn refuse(error: ServiceError) -> fdo::Error {
     }
 }
 
-pub struct StorageService<C: DeviceControl + 'static> {
+pub struct StorageService<C: DeviceControl + Clone + 'static> {
     coordinator: Arc<Mutex<StorageCoordinator<C>>>,
 }
 
-impl<C: DeviceControl + 'static> StorageService<C> {
+/// How often an image write's progress is signalled, at most.
+const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+impl<C: DeviceControl + Clone + 'static> StorageService<C> {
     pub fn new(coordinator: Arc<Mutex<StorageCoordinator<C>>>) -> Self {
         Self { coordinator }
     }
 }
 
 #[interface(name = "org.betteros.Storage1")]
-impl<C: DeviceControl + 'static> StorageService<C> {
+impl<C: DeviceControl + Clone + 'static> StorageService<C> {
     /// Every connected external device and its current state. A client that
     /// just started calls this once and then follows the signal.
     async fn list_devices(&self) -> Result<String, fdo::Error> {
@@ -103,20 +106,88 @@ impl<C: DeviceControl + 'static> StorageService<C> {
             .map_err(refuse)
     }
 
-    /// Writes a disk image to the drive a volume is on. Returns the bytes
-    /// written. Refused unless confirmed.
-    async fn write_image(&self, request_json: &str) -> Result<u64, fdo::Error> {
+    /// Writes a disk image to a whole drive. Returns the bytes written.
+    /// Refused unless confirmed. The checks and the unmounting run under
+    /// the coordinator; the copy does not, so every other device (and every
+    /// other request) is served while it runs, and the drive itself refuses
+    /// everything until it ends. `ImageProgress` signals say how far it is.
+    async fn write_image(
+        &self,
+        request_json: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<u64, fdo::Error> {
         let request = crate::protocol::WriteImageRequest::from_json(request_json)
             .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
-        let mut coordinator = self.coordinator.lock().await;
-        coordinator
-            .write_image(
-                &DeviceHandle::new(&request.object_path),
-                std::path::Path::new(&request.image_path),
-                request.erase_confirmed,
-            )
-            .await
-            .map_err(refuse)
+        let (write, control) = {
+            let mut coordinator = self.coordinator.lock().await;
+            let write = coordinator
+                .begin_image_write(
+                    &DeviceHandle::new(&request.object_path),
+                    std::path::Path::new(&request.image_path),
+                    request.erase_confirmed,
+                )
+                .await
+                .map_err(refuse)?;
+            (write, coordinator.control().clone())
+        };
+
+        // Progress arrives on the copying thread; a thread of its own turns
+        // it into signals, at most every PROGRESS_INTERVAL and always the
+        // last one, and ends when the copy drops its sender.
+        let (sender, written) = std::sync::mpsc::channel::<u64>();
+        let signaller = {
+            let emitter = emitter.to_owned();
+            let object_path = request.object_path.clone();
+            let total = write.total;
+            std::thread::spawn(move || {
+                // A small runtime of its own to send the signals on.
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread().build() else {
+                    // No runtime, no progress; the copy itself goes on.
+                    while written.recv().is_ok() {}
+                    return;
+                };
+                let mut last = None::<std::time::Instant>;
+                let mut pending = None;
+                loop {
+                    let next = written.recv_timeout(PROGRESS_INTERVAL);
+                    let ended =
+                        matches!(next, Err(std::sync::mpsc::RecvTimeoutError::Disconnected));
+                    if let Ok(bytes) = next {
+                        pending = Some(bytes);
+                    }
+                    let due = last.is_none_or(|at| at.elapsed() >= PROGRESS_INTERVAL);
+                    if let Some(bytes) = pending
+                        && (due || ended)
+                    {
+                        let _ = runtime.block_on(Self::image_progress(
+                            &emitter,
+                            &object_path,
+                            bytes,
+                            total,
+                        ));
+                        last = Some(std::time::Instant::now());
+                        pending = None;
+                    }
+                    if ended {
+                        return;
+                    }
+                }
+            })
+        };
+        let progress: storage_platform::ImageProgress = {
+            let sender = std::sync::Mutex::new(sender);
+            Arc::new(move |bytes| {
+                if let Ok(sender) = sender.lock() {
+                    let _ = sender.send(bytes);
+                }
+            })
+        };
+        let result = control
+            .write_image(&write.address, &write.image, progress)
+            .await;
+        let _ = signaller.join();
+        self.coordinator.lock().await.finish_image_write(&write);
+        result.map_err(|error| refuse(ServiceError::Platform(error)))
     }
 
     /// Changes a device's removal policy. Performance mode is refused unless
@@ -209,6 +280,15 @@ impl<C: DeviceControl + 'static> StorageService<C> {
         serde_json::to_string(&plan).map_err(|error| fdo::Error::Failed(error.to_string()))
     }
 
+    /// How far an image write is: bytes written of the image's length.
+    #[zbus(signal)]
+    async fn image_progress(
+        emitter: &SignalEmitter<'_>,
+        object_path: &str,
+        written: u64,
+        total: u64,
+    ) -> zbus::Result<()>;
+
     #[zbus(signal)]
     async fn device_state_changed(
         emitter: &SignalEmitter<'_>,
@@ -228,7 +308,7 @@ impl<C: DeviceControl + 'static> StorageService<C> {
 /// The subscription is in place when this returns, so a service that calls it
 /// before taking its well-known name cannot miss a client's departure. The
 /// returned future is spawned by the caller on its own runtime.
-pub async fn watch_departures<C: DeviceControl + 'static>(
+pub async fn watch_departures<C: DeviceControl + Clone + 'static>(
     connection: &zbus::Connection,
     coordinator: Arc<Mutex<StorageCoordinator<C>>>,
 ) -> zbus::Result<impl std::future::Future<Output = ()> + Send + 'static> {
@@ -262,7 +342,7 @@ pub async fn watch_departures<C: DeviceControl + 'static>(
 }
 
 /// Forwards state changes to the bus until the coordinator is dropped.
-pub async fn publish_updates<C: DeviceControl + 'static>(
+pub async fn publish_updates<C: DeviceControl + Clone + 'static>(
     connection: zbus::Connection,
     mut updates: tokio::sync::broadcast::Receiver<crate::protocol::DeviceReport>,
 ) -> zbus::Result<()> {

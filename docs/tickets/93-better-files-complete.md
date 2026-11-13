@@ -186,6 +186,65 @@ Fifth pass:
   (`localsend::KnownPeers`, whose generation the window watches), and a
   device that stopped answering leaves at the end of the search.
 
+After the independent review of the fifth pass:
+
+- **Write image goes to a whole drive.** Targets are drives (vendor, model,
+  size), never a partition; the dialog names every volume on the drive and
+  says all of them are erased (Format's own warning now says only that
+  volume is). Every mounted volume on the drive is unmounted first, and one
+  that will not unmount stops the write before a byte is written.
+- **The storage service no longer holds its lock while an image copies**:
+  the drive and its volumes refuse every other request until the copy ends,
+  `ImageProgress` signals report how far it is, and the window shows the
+  percentage. The copy runs on a thread of its own (zbus's executor has no
+  tokio runtime). Labels are measured in UTF-16 units for exFAT and bytes
+  for ext4 and FAT.
+- **Undo:** a move answered with Merge is undone item by item (the source
+  folders are made again, the folders the move made go once empty), Merge
+  with no clash inside is recorded too, and a change that can no longer be
+  undone is said so and forgotten instead of blocking the older ones.
+- **Replace or Merge onto the source itself, or a folder it is inside, is
+  refused** before anything reaches the trash
+  (`files.operation.error.replaces_source`).
+- **Durable jobs:** a copy or move records how to start it again and the
+  answers given about folders; at start the window offers every copy or
+  move a dead process left unfinished (Resume, Dismiss), and a resumed job
+  leaves its finished items alone and keeps the folder answers.
+- **LocalSend** pins the peer's certificate to the SHA-256 it announced,
+  refuses plain-HTTP peers, and reads at most 1 MB of an answer.
+- **Window:** a clash card with the clashing name, where each one is (paths
+  shortened in the middle) and "Apply to the rest" as a check box; list
+  columns and grid tiles sized beside every open panel; path-bar crumbs
+  and sidebar use the same names (文件); a trash can and one icon per
+  personal folder; "1 item", "2 hidden items", line counts as lines;
+  file types from the language pack when the database XML has no
+  translation (純文字文件); duplicate tailnet names told apart by their DNS
+  names; a short search hint in a narrow pane; "Working out the time left";
+  no estimate on a finished job; the same file name in another folder is a
+  new preview.
+- **Preview:** video frames scaled down to the window; textures freed on
+  the window being drawn; LibreOffice and thumbnailers run in a process
+  group ended whole on timeout; thumbnailers write into a private 0700
+  folder; the media tests keep GStreamer's registry out of `~/.cache`.
+- **Plugin pages** (`plugin:<id>`), as in the parity list.
+
+Screenshots of this round (`shots-93b/`, a private headless sway with a fake
+storage service on its own session bus, a fake drive and a LocalSend
+stand-in): `30-dark-plugin-section-devices-1600-dark-en.png`,
+`31-plugin-page-1600-dark-en.png`,
+`32-format-dialog-fake-drive-1600-dark-en.png`,
+`33-write-image-dialog-whole-drive-1600-dark-en.png`,
+`34-clash-card-name-paths-checkbox-1600-dark-en.png`,
+`35-merged-move-done-1600-dark-en.png`,
+`36-undo-after-merge-move-1600-dark-en.png`,
+`37-localsend-in-share-submenu-1600-dark-en.png`,
+`38-list-preview-details-1600-dark-zh.png`,
+`39-list-preview-details-1600-light-zh.png`,
+`40-preview-follows-click-1600-light-en.png`,
+`41-compact-sidebar-icons-tooltip-960-light-en.png`. The earlier rounds'
+`shots-93/` (01–28) were lost when the machine's temporary folder was
+cleared on a restart.
+
 Screenshots (`shots-93/`): 01–09 at 960px (the shared sandbox tiled the
 window), 10–16 at 1600px on a private headless sway:
 `10-thumbnails-1600-light-en.png`, `11-rubber-band-1600-light-en.png`,

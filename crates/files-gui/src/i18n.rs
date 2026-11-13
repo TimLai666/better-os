@@ -161,7 +161,12 @@ pub struct Copy {
     pub kind_unknown: &'static str,
     pub selected_count: &'static str,
     pub item_count: &'static str,
+    /// After a count of one.
+    pub item_one: &'static str,
     pub hidden_shown: &'static str,
+    pub hidden_one: &'static str,
+    pub line_count: &'static str,
+    pub line_one: &'static str,
     pub skipped_entries: &'static str,
 
     // Opening
@@ -186,6 +191,10 @@ pub struct Copy {
     pub failures: &'static str,
     pub completed_this_session: &'static str,
     pub conflict_needs_a_decision: &'static str,
+    /// Before the folder the new one comes from.
+    pub conflict_from: &'static str,
+    /// Before the folder where one is already there.
+    pub conflict_into: &'static str,
     pub conflict_exists: &'static str,
     pub conflict_no_space: &'static str,
     pub conflict_permission: &'static str,
@@ -346,6 +355,8 @@ pub struct Copy {
 
     // Search
     pub search_placeholder: &'static str,
+    /// The search field's hint where the field is narrow.
+    pub search_short: &'static str,
     pub search_in: &'static str,
     pub search_matches: &'static str,
     pub search_scanned: &'static str,
@@ -371,6 +382,12 @@ pub struct Copy {
     pub write_image_to: &'static str,
     pub write_image_title: &'static str,
     pub write_image_confirm: &'static str,
+    /// `{device}`: the drive.
+    pub write_image_warning: &'static str,
+    /// Above the list of volumes the image write erases.
+    pub write_image_volumes: &'static str,
+    /// `{device}`, `{percent}`.
+    pub image_writing: &'static str,
     pub format_done: &'static str,
     pub image_written: &'static str,
     pub erase_failed: &'static str,
@@ -445,6 +462,15 @@ pub struct Copy {
     pub normal_size: &'static str,
     pub preview_pane: &'static str,
     pub jobs_panel: &'static str,
+    /// Heading over jobs an earlier run did not finish.
+    pub interrupted_heading: &'static str,
+    /// `{folder}`.
+    pub interrupted_copy: &'static str,
+    pub interrupted_move: &'static str,
+    /// `{count}`.
+    pub interrupted_remaining: &'static str,
+    pub interrupted_resume: &'static str,
+    pub interrupted_dismiss: &'static str,
     pub use_view_everywhere: &'static str,
     pub appearance: &'static str,
     pub theme_system: &'static str,
@@ -553,7 +579,11 @@ pub const EN_US: Copy = Copy {
     kind_unknown: "Unknown",
     selected_count: "selected",
     item_count: "items",
-    hidden_shown: "hidden",
+    item_one: "item",
+    hidden_shown: "hidden items",
+    hidden_one: "hidden item",
+    line_count: "lines",
+    line_one: "line",
     skipped_entries: "entries could not be read",
 
     refusal_broken_symlink: "This link points at something that is not there",
@@ -572,10 +602,12 @@ pub const EN_US: Copy = Copy {
     confidence_high: "reliable estimate",
     confidence_medium: "steady estimate",
     confidence_low: "rough estimate",
-    confidence_none: "no estimate yet",
+    confidence_none: "Working out the time left",
     failures: "Failed items",
     completed_this_session: "Finished this session",
     conflict_needs_a_decision: "Waiting for a decision",
+    conflict_from: "From",
+    conflict_into: "Already in",
     conflict_exists: "Something is already there",
     conflict_no_space: "The destination is full",
     conflict_permission: "Permission denied",
@@ -724,6 +756,7 @@ pub const EN_US: Copy = Copy {
     preview_folder_truncated: "counted up to the limit",
 
     search_placeholder: "Search this location",
+    search_short: "Search",
     search_in: "in",
     search_matches: "matches",
     search_scanned: "scanned",
@@ -740,7 +773,7 @@ pub const EN_US: Copy = Copy {
     view_columns: "Columns",
     format_drive: "Format…",
     format_title: "Format {device}",
-    format_warning: "Everything on this drive will be erased. This can't be undone.",
+    format_warning: "Everything on this volume will be erased. Other volumes on the drive are not touched. This can't be undone.",
     format_name: "Name",
     format_confirm: "Format",
     format_exfat: "exFAT — Windows, macOS and Linux",
@@ -749,6 +782,9 @@ pub const EN_US: Copy = Copy {
     write_image_to: "Write to {device}…",
     write_image_title: "Write {image} to {device}",
     write_image_confirm: "Write",
+    write_image_warning: "Everything on {device} will be erased: the whole drive, not one volume. This can't be undone.",
+    write_image_volumes: "These volumes will be erased:",
+    image_writing: "Writing the image to {device}… {percent}%",
     format_done: "{device} was formatted.",
     image_written: "The image was written to {device}.",
     erase_failed: "Couldn't finish on {device}",
@@ -820,6 +856,12 @@ pub const EN_US: Copy = Copy {
     normal_size: "Normal size",
     preview_pane: "Preview pane",
     jobs_panel: "File operations",
+    interrupted_heading: "Not finished last time",
+    interrupted_copy: "Copy to {folder}",
+    interrupted_move: "Move to {folder}",
+    interrupted_remaining: "{count} items left",
+    interrupted_resume: "Resume",
+    interrupted_dismiss: "Dismiss",
     use_view_everywhere: "Use this view for every folder",
     appearance: "Appearance",
     theme_system: "Use system setting",
@@ -928,7 +970,11 @@ pub const ZH_TW: Copy = Copy {
     kind_unknown: "未知",
     selected_count: "個已選取",
     item_count: "個項目",
+    item_one: "個項目",
     hidden_shown: "個隱藏項目",
+    hidden_one: "個隱藏項目",
+    line_count: "行",
+    line_one: "行",
     skipped_entries: "個項目無法讀取",
 
     refusal_broken_symlink: "這個連結指向不存在的目標",
@@ -947,10 +993,12 @@ pub const ZH_TW: Copy = Copy {
     confidence_high: "估計可靠",
     confidence_medium: "估計穩定",
     confidence_low: "估計粗略",
-    confidence_none: "尚無法估計",
+    confidence_none: "正在估算剩餘時間",
     failures: "失敗項目",
     completed_this_session: "這次工作階段已完成",
     conflict_needs_a_decision: "等待你的決定",
+    conflict_from: "來源",
+    conflict_into: "已存在於",
     conflict_exists: "目的地已經有同名項目",
     conflict_no_space: "目的地空間不足",
     conflict_permission: "沒有權限",
@@ -1099,6 +1147,7 @@ pub const ZH_TW: Copy = Copy {
     preview_folder_truncated: "已計算到上限",
 
     search_placeholder: "搜尋這個位置",
+    search_short: "搜尋",
     search_in: "於",
     search_matches: "個相符",
     search_scanned: "個已檢查",
@@ -1115,7 +1164,7 @@ pub const ZH_TW: Copy = Copy {
     view_columns: "欄位",
     format_drive: "格式化…",
     format_title: "格式化 {device}",
-    format_warning: "這個磁碟上的所有內容都會被清除，而且無法復原。",
+    format_warning: "這個磁區上的所有內容都會被清除，同一個磁碟上的其他磁區不受影響。這個動作無法復原。",
     format_name: "名稱",
     format_confirm: "格式化",
     format_exfat: "exFAT — Windows、macOS 和 Linux 都能用",
@@ -1124,6 +1173,9 @@ pub const ZH_TW: Copy = Copy {
     write_image_to: "寫入 {device}…",
     write_image_title: "把 {image} 寫入 {device}",
     write_image_confirm: "寫入",
+    write_image_warning: "{device} 上的所有內容都會被清除：是整顆磁碟，不只一個磁區。這個動作無法復原。",
+    write_image_volumes: "以下磁區都會被清除：",
+    image_writing: "正在把映像檔寫入 {device}… {percent}%",
     format_done: "{device} 已格式化。",
     image_written: "映像檔已寫入 {device}。",
     erase_failed: "無法在 {device} 完成",
@@ -1195,6 +1247,12 @@ pub const ZH_TW: Copy = Copy {
     normal_size: "一般大小",
     preview_pane: "預覽窗格",
     jobs_panel: "檔案作業",
+    interrupted_heading: "上次沒做完的作業",
+    interrupted_copy: "複製到 {folder}",
+    interrupted_move: "移動到 {folder}",
+    interrupted_remaining: "還有 {count} 個項目",
+    interrupted_resume: "繼續",
+    interrupted_dismiss: "略過",
     use_view_everywhere: "所有資料夾都用這個檢視",
     appearance: "外觀",
     theme_system: "跟隨系統",
@@ -1251,6 +1309,11 @@ pub fn scale_label(scale: ItemScale, c: &'static Copy) -> &'static str {
         ItemScale::Medium => c.size_medium,
         ItemScale::Large => c.size_large,
     }
+}
+
+/// "1 item", "4 items": a count and the word that goes with it.
+pub fn counted(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
 }
 
 pub fn user_directory_label(directory: UserDirectory, c: &'static Copy) -> &'static str {

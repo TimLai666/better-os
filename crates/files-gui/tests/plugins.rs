@@ -302,3 +302,121 @@ fn the_host_runs_actions_off_the_window_and_hands_back_their_results() {
     };
     assert_eq!(rows, [("Sync".to_string(), "up to date".to_string())]);
 }
+
+/// A plugin's view and an "opened" section, as folio's docs/plugins.md
+/// describes them: the section lists only what was opened, most recent
+/// first, at most `limit`; the view has its title, row label and empty text;
+/// items carry their details rows.
+#[test]
+fn a_view_and_a_section_of_opened_items_read_as_folio_describes() {
+    use files_gui::plugins::{Manifest, PollOutput, load_opened, remember_opened, save_opened};
+    let manifest: Manifest = serde_json::from_str(
+        r#"{"folio": 1,
+            "section": {"title": "Tailnet", "rows": "opened", "limit": 2},
+            "view": {"title": "Tailnet", "label": "Machines", "icon": "tailnet",
+                     "empty": "No machines are online"}}"#,
+    )
+    .unwrap();
+    let view = manifest.view.clone().unwrap();
+    assert_eq!(view.title, "Tailnet");
+    assert_eq!(view.label.as_deref(), Some("Machines"));
+    assert_eq!(view.empty.as_deref(), Some("No machines are online"));
+
+    let poll: PollOutput = serde_json::from_str(
+        r#"{"items": [
+            {"id": "a", "name": "alpha", "details": [["Host", "alpha.ts.net"]]},
+            {"id": "b", "name": "beta"},
+            {"id": "c", "name": "gamma"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        poll.items[0].details,
+        vec![("Host".to_string(), "alpha.ts.net".to_string())]
+    );
+
+    let section = manifest.section.unwrap();
+    let mut opened = Vec::new();
+    assert!(
+        section.rows(&poll.items, &opened).is_empty(),
+        "nothing opened yet"
+    );
+    remember_opened(&mut opened, "a");
+    remember_opened(&mut opened, "gone");
+    remember_opened(&mut opened, "c");
+    remember_opened(&mut opened, "a");
+    assert_eq!(opened, ["a", "c", "gone"]);
+    let names: Vec<&str> = section
+        .rows(&poll.items, &opened)
+        .iter()
+        .map(|item| item.name.as_str())
+        .collect();
+    // Most recent first, only items the plugin still offers, at most two.
+    assert_eq!(names, ["alpha", "gamma"]);
+
+    // "all" (the default) is every item, in the plugin's order.
+    let all: Manifest = serde_json::from_str(r#"{"folio": 1, "section": {"title": "T"}}"#).unwrap();
+    assert_eq!(all.section.unwrap().rows(&poll.items, &opened).len(), 3);
+
+    // Twenty ids at most are remembered.
+    for index in 0..30 {
+        remember_opened(&mut opened, &index.to_string());
+    }
+    assert_eq!(opened.len(), 20);
+    assert_eq!(opened[0], "29");
+
+    let root = root();
+    let file = root.path().join("state/plugins-opened.json");
+    let mut remembered = std::collections::BTreeMap::new();
+    remembered.insert("tailnet".to_string(), opened.clone());
+    save_opened(&file, &remembered).unwrap();
+    assert_eq!(load_opened(&file), remembered);
+    assert!(load_opened(&root.path().join("missing.json")).is_empty());
+}
+
+/// Moving down a folder asks for every file's details; one worker answers,
+/// for the file landed on, and the files passed over are never run.
+#[test]
+fn details_are_fetched_by_one_worker_for_the_latest_file_only() {
+    use files_gui::plugin_host::PluginHost;
+    let root = root();
+    let log = root.path().join("runs.log");
+    let dir = plugin_dir(
+        root.path(),
+        "slowdetails",
+        r#"{"folio":1,"details":{"command":["./status"]}}"#,
+    );
+    script(
+        &dir,
+        "status",
+        &format!(
+            "echo \"$1\" >> '{}'; sleep 0.3; echo '[[\"Seen\",\"yes\"]]'",
+            log.display()
+        ),
+    );
+    let plugin = load(&dir, "en", &|_| true).unwrap();
+    let host = PluginHost::with(vec![plugin], "en");
+    let files: Vec<PathBuf> = (0..6)
+        .map(|index| {
+            let file = root.path().join(format!("f{index}.txt"));
+            fs::write(&file, b"x").unwrap();
+            file
+        })
+        .collect();
+    for file in &files {
+        host.details_for(file, Some("text/plain"));
+    }
+    let last = files.last().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while host.details_for(last, Some("text/plain")).is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the last file's details never came"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let runs = fs::read_to_string(&log).unwrap();
+    let runs: Vec<&str> = runs.lines().collect();
+    // The first (already running) and the last; nothing in between.
+    assert!(runs.len() <= 2, "{runs:?}");
+    assert_eq!(runs.last().copied(), Some(last.to_str().unwrap()));
+}

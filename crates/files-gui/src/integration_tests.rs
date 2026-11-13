@@ -237,6 +237,11 @@ fn report(object_path: &str, mount_point: Option<&str>, state: StateReport) -> D
         mount_point: mount_point.map(str::to_string),
         policy: RemovalPolicy::DirectRemoval,
         state,
+        drive: None,
+        drive_name: None,
+        size: 0,
+        whole_disk: false,
+        erasing: false,
     }
 }
 
@@ -2215,27 +2220,69 @@ fn format_asks_first_validates_the_name_and_only_then_reaches_the_storage_layer(
 }
 
 #[test]
-fn an_image_is_written_only_after_the_confirmation() {
+fn an_image_goes_to_a_whole_drive_named_with_every_volume_it_erases() {
     let (rig, mut session) = plain();
     settle(&mut session);
-    rig.link.push(DeviceNotice::Inventory(vec![report(
-        "/dev/obj",
-        None,
-        ready(),
-    )]));
+    let on_drive = |object_path: &str, label: &str, whole_disk: bool| {
+        let mut row = report(object_path, None, ready());
+        row.display_name = label.to_string();
+        row.drive = Some("/drives/stick".to_string());
+        row.drive_name = Some("Generic Flash Disk".to_string());
+        row.size = 32 * 1024 * 1024 * 1024;
+        row.whole_disk = whole_disk;
+        if whole_disk {
+            row.filesystem = None;
+        }
+        row
+    };
+    rig.link.push(DeviceNotice::Inventory(vec![
+        on_drive("/dev/sdc", "32 GB Drive", true),
+        on_drive("/dev/sdc1", "PHOTOS", false),
+        on_drive("/dev/sdc2", "BACKUP", false),
+        // A stick on another drive is neither a target nor erased.
+        report("/dev/other", None, ready()),
+    ]));
     session.pump();
     let image = rig.home.join("Documents/installer.iso");
     fs::write(&image, b"iso").unwrap();
     assert!(crate::context_menu::is_disk_image(&image));
-    assert_eq!(
-        session.image_targets(),
-        [("/dev/obj".to_string(), "USB Drive".to_string())]
-    );
-    session.request_write_image(files_core::LocalPath::new(&image).unwrap(), "/dev/obj");
+    let targets = session.image_targets();
+    assert_eq!(targets.len(), 1, "the drive, not each volume: {targets:?}");
+    assert_eq!(targets[0].object_path, "/dev/sdc");
+    assert_eq!(targets[0].name, "Generic Flash Disk · 32.0 GB");
+    assert_eq!(targets[0].volumes, ["PHOTOS", "BACKUP"]);
+
+    // A partition is not offered and cannot be asked for.
+    session.request_write_image(files_core::LocalPath::new(&image).unwrap(), "/dev/sdc1");
+    assert!(session.dialog.is_none());
+
+    session.request_write_image(files_core::LocalPath::new(&image).unwrap(), "/dev/sdc");
+    match &session.dialog {
+        Some(crate::session::PendingDialog::WriteImage {
+            device_label,
+            volumes,
+            ..
+        }) => {
+            assert_eq!(device_label, "Generic Flash Disk · 32.0 GB");
+            assert_eq!(volumes, &["PHOTOS", "BACKUP"]);
+        }
+        other => panic!("expected the write-image dialog, got {other:?}"),
+    }
     assert!(rig.link.calls().is_empty());
     session.confirm_erase("");
     assert_eq!(
         rig.link.calls(),
-        [format!("write image /dev/obj {}", image.display())]
+        [format!("write image /dev/sdc {}", image.display())]
+    );
+
+    rig.link.push(DeviceNotice::ImageProgress {
+        object_path: "/dev/sdc".into(),
+        written: 512,
+        total: 2048,
+    });
+    session.pump();
+    assert_eq!(
+        session.notice.as_ref().unwrap().message(&EN_US),
+        "Writing the image to Generic Flash Disk… 25%"
     );
 }

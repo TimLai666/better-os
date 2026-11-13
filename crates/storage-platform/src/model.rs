@@ -21,6 +21,9 @@ pub struct DeviceAddress {
 /// `org.freedesktop.UDisks2.Drive` properties this crate reads.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DriveInfo {
+    /// The drive's UDisks2 object path: every volume on one drive shares it.
+    #[serde(default)]
+    pub object_path: String,
     pub removable: bool,
     pub media_removable: bool,
     /// The raw `ConnectionBus` string, kept raw so an unrecognized bus stays

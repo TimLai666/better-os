@@ -397,15 +397,19 @@ impl ThumbnailCache {
         let metadata = fs::metadata(file).ok()?;
         let mtime = metadata.mtime();
         let uri = file_uri(file);
-        let scratch = std::env::temp_dir().join(format!(
-            "better-files-thumb-{}-{}.png",
-            std::process::id(),
-            hash(&uri)
-        ));
+        // A folder of its own (mode 0700, a name nobody can guess), so no
+        // other user can put a file or a link where the thumbnailer writes.
+        // It goes, with whatever is in it, when this returns.
+        let folder = tempfile::Builder::new()
+            .prefix("better-files-thumb-")
+            .permissions(<fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700))
+            .tempdir()
+            .ok()?;
+        let scratch = folder.path().join("thumbnail.png");
         let words = thumbnailer.command(file, &scratch, size.edge());
         let ran = run_with_timeout(&words, THUMBNAILER_TIMEOUT);
         let picture = ran.then(|| image::open(&scratch).ok()).flatten();
-        let _ = fs::remove_file(&scratch);
+        drop(folder);
         let Some(picture) = picture else {
             let marker = self
                 .root
@@ -432,11 +436,14 @@ fn run_with_timeout(words: &[String], limit: std::time::Duration) -> bool {
     let Some((program, arguments)) = words.split_first() else {
         return false;
     };
+    use std::os::unix::process::CommandExt;
     let Ok(mut child) = std::process::Command::new(program)
         .args(arguments)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        // Its own group, so a timeout ends what it started too.
+        .process_group(0)
         .spawn()
     else {
         return false;
@@ -446,8 +453,7 @@ fn run_with_timeout(words: &[String], limit: std::time::Duration) -> bool {
         match child.try_wait() {
             Ok(Some(status)) => return status.success(),
             Ok(None) if started.elapsed() > limit => {
-                let _ = child.kill();
-                let _ = child.wait();
+                crate::viewer::end_group(&mut child);
                 return false;
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
@@ -630,5 +636,48 @@ mod tests {
             std::time::Duration::from_millis(300)
         ));
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    /// The thumbnailer writes into a folder only this user can enter, under
+    /// a name nobody can guess, and the folder is gone afterwards.
+    #[test]
+    fn a_thumbnailer_writes_into_a_private_folder_that_is_removed_afterwards() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = ThumbnailCache::at(root.path().join("thumbnails"));
+        let document = root.path().join("doc.pdf");
+        fs::write(&document, b"%PDF").unwrap();
+        let ready = root.path().join("ready.png");
+        picture(&ready, 64, 64);
+        let seen = root.path().join("seen");
+        let spy = script(
+            root.path(),
+            "spy",
+            &format!(
+                "echo \"$1\" > '{seen}'; stat -c %a \"$(dirname \"$1\")\" >> '{seen}'; cp '{ready}' \"$1\"",
+                seen = seen.display(),
+                ready = ready.display()
+            ),
+        );
+        let thumbnailers = vec![Thumbnailer {
+            try_exec: None,
+            exec: vec![spy.display().to_string(), "%o".into()],
+            mime_types: vec!["application/pdf".into()],
+        }];
+        assert!(
+            cache
+                .make_with(
+                    &document,
+                    "application/pdf",
+                    ThumbSize::Normal,
+                    &thumbnailers
+                )
+                .is_some()
+        );
+        let seen = fs::read_to_string(&seen).unwrap();
+        let mut lines = seen.lines();
+        let output = PathBuf::from(lines.next().unwrap());
+        assert_eq!(lines.next().unwrap(), "700");
+        assert!(!output.exists());
+        assert!(!output.parent().unwrap().exists(), "the folder went too");
     }
 }

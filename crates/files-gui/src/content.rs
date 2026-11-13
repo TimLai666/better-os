@@ -628,10 +628,14 @@ pub fn status_line(model: &DirectoryModel, c: &'static Copy) -> String {
         ListingStatus::Cancelled => parts.push(c.listing_cancelled.to_string()),
         ListingStatus::Complete => {}
     }
-    parts.push(format!("{} {}", model.visible_len(), c.item_count));
+    parts.push(crate::i18n::counted(
+        model.visible_len(),
+        c.item_one,
+        c.item_count,
+    ));
     let hidden = model.total_len().saturating_sub(model.visible_len());
     if hidden > 0 {
-        parts.push(format!("{hidden} {}", c.hidden_shown));
+        parts.push(crate::i18n::counted(hidden, c.hidden_one, c.hidden_shown));
     }
     let selected = model.selection().len();
     if selected > 0 {

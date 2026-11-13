@@ -25,10 +25,10 @@ use storage_core::{
     Timestamp, Transition,
 };
 use storage_platform::traits::{
-    DeviceControl, EjectOutcome, FlushBackend, FormatRequest, OpenUseInspector, PlatformError,
-    WritebackInspector,
+    DeviceControl, EjectOutcome, FlushBackend, FormatRequest, ImageProgress, OpenUseInspector,
+    PlatformError, WritebackInspector,
 };
-use storage_platform::{PlatformDevice, PlatformEvent};
+use storage_platform::{DeviceAddress, PlatformDevice, PlatformEvent};
 use thiserror::Error;
 use tokio::sync::broadcast;
 
@@ -89,6 +89,21 @@ impl Clock {
     }
 }
 
+/// An image write whose checks passed: the drive is marked as being
+/// written and every volume on it is unmounted. The copy runs without the
+/// coordinator ([`StorageCoordinator::control`]), then
+/// [`StorageCoordinator::finish_image_write`] ends it.
+#[derive(Clone, Debug)]
+pub struct ImageWrite {
+    pub drive: DeviceHandle,
+    pub address: DeviceAddress,
+    pub image: PathBuf,
+    /// The image's length, for progress.
+    pub total: u64,
+    /// The drive and every volume on it.
+    members: Vec<DeviceHandle>,
+}
+
 pub struct StorageCoordinator<C: DeviceControl> {
     control: C,
     flush: Arc<dyn FlushBackend>,
@@ -107,6 +122,9 @@ pub struct StorageCoordinator<C: DeviceControl> {
     /// client's unique connection name. Operations started in process have
     /// no client and are not here.
     clients: BTreeMap<String, BTreeSet<(DeviceHandle, String)>>,
+    /// Devices an image is being written to: the drive and every volume on
+    /// it. Nothing else may be done to them until the write ends.
+    erasing: BTreeSet<DeviceHandle>,
     /// The runtime this service owns, when it was built inside one.
     ///
     /// zbus runs on its default async-io flavor across this workspace — see
@@ -142,6 +160,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             diagnostics: VecDeque::new(),
             updates,
             clients: BTreeMap::new(),
+            erasing: BTreeSet::new(),
             runtime: tokio::runtime::Handle::try_current().ok(),
         })
     }
@@ -160,6 +179,20 @@ impl<C: DeviceControl> StorageCoordinator<C> {
 
     pub fn clock(&self) -> &Clock {
         &self.clock
+    }
+
+    /// The platform control, for work that must not hold the coordinator:
+    /// an image write's copy.
+    pub fn control(&self) -> &C {
+        &self.control
+    }
+
+    /// Refuses anything on a device an image is being written to.
+    fn refuse_if_erasing(&self, handle: &DeviceHandle) -> Result<(), ServiceError> {
+        if self.erasing.contains(handle) {
+            return Err(ServiceError::Refused("storage.erase.busy".to_string()));
+        }
+        Ok(())
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<DeviceReport> {
@@ -327,6 +360,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
     /// Mount-on-open. The device stays mounted afterwards; leaving the folder
     /// does not unmount it.
     pub async fn mount(&mut self, handle: &DeviceHandle) -> Result<PathBuf, ServiceError> {
+        self.refuse_if_erasing(handle)?;
         let device = self
             .known
             .get(handle)
@@ -343,6 +377,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
     /// The explicit action, still supported and still required in Performance
     /// mode: unmount, then power the drive off where the platform allows it.
     pub async fn eject(&mut self, handle: &DeviceHandle) -> Result<EjectOutcome, ServiceError> {
+        self.refuse_if_erasing(handle)?;
         let device = self
             .known
             .get(handle)
@@ -396,7 +431,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             .get(handle)
             .ok_or_else(|| ServiceError::UnknownDevice(handle.as_str().to_string()))?
             .clone();
-        if self.is_writing(handle) {
+        if self.is_writing(handle) || self.erasing.contains(handle) {
             return Err(ServiceError::Refused("storage.erase.busy".to_string()));
         }
         self.control.format(&device.address, request).await?;
@@ -407,39 +442,124 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         Ok(())
     }
 
-    /// Writes a disk image to the whole drive a volume is on. Refused
-    /// unless confirmed, while anything is being written to it, and for an
-    /// image that is not a readable regular file.
-    pub async fn write_image(
+    /// Starts writing a disk image to a whole drive. Refused unless
+    /// confirmed, for an image that is not a regular file, for anything but
+    /// a drive's own block device, and while anything on the drive is being
+    /// written. Every mounted volume on the drive is unmounted first; one
+    /// that will not unmount refuses the whole write, before a byte is
+    /// written. From here until [`Self::finish_image_write`], every
+    /// operation on the drive or its volumes is refused.
+    pub async fn begin_image_write(
         &mut self,
         handle: &DeviceHandle,
         image: &std::path::Path,
         erase_confirmed: bool,
-    ) -> Result<u64, ServiceError> {
+    ) -> Result<ImageWrite, ServiceError> {
         if !erase_confirmed {
             return Err(ServiceError::Refused(
                 "storage.erase.not_confirmed".to_string(),
             ));
         }
-        if !image.is_absolute() || !image.is_file() {
-            return Err(ServiceError::Refused(
-                "storage.image.not_a_file".to_string(),
-            ));
-        }
+        let total = match std::fs::metadata(image) {
+            Ok(metadata) if image.is_absolute() && metadata.is_file() => metadata.len(),
+            _ => {
+                return Err(ServiceError::Refused(
+                    "storage.image.not_a_file".to_string(),
+                ));
+            }
+        };
         let device = self
             .known
             .get(handle)
             .ok_or_else(|| ServiceError::UnknownDevice(handle.as_str().to_string()))?
             .clone();
-        if self.is_writing(handle) {
+        let drive_object = device
+            .drive
+            .as_ref()
+            .map(|drive| drive.object_path.clone())
+            .filter(|path| !path.is_empty());
+        let (true, Some(drive_object)) = (device.block.partition_number.is_none(), drive_object)
+        else {
+            return Err(ServiceError::Refused(
+                "storage.image.not_a_drive".to_string(),
+            ));
+        };
+        let members: Vec<DeviceHandle> = self
+            .known
+            .iter()
+            .filter(|(_, other)| {
+                other
+                    .drive
+                    .as_ref()
+                    .is_some_and(|drive| drive.object_path == drive_object)
+            })
+            .map(|(member, _)| member.clone())
+            .collect();
+        if members
+            .iter()
+            .any(|member| self.is_writing(member) || self.erasing.contains(member))
+        {
             return Err(ServiceError::Refused("storage.erase.busy".to_string()));
         }
-        let written = self.control.write_image(&device.address, image).await?;
-        if let Some(known) = self.known.get_mut(handle) {
-            known.mount_point = None;
+        for member in &members {
+            let Some(volume) = self.known.get(member).cloned() else {
+                continue;
+            };
+            if volume.mount_point.is_none() {
+                continue;
+            }
+            if let Err(error) = self.control.unmount(&volume.address).await {
+                return Err(ServiceError::Refused(format!(
+                    "storage.image.unmount_failed:{}:{error}",
+                    volume.block.device_path
+                )));
+            }
+            if let Some(known) = self.known.get_mut(member) {
+                known.mount_point = None;
+            }
+            self.apply_mount(member, None).await;
         }
-        self.apply_mount(handle, None).await;
-        Ok(written)
+        self.erasing.extend(members.iter().cloned());
+        Ok(ImageWrite {
+            drive: handle.clone(),
+            address: device.address,
+            image: image.to_path_buf(),
+            total,
+            members,
+        })
+    }
+
+    /// Ends an image write: the drive and its volumes take requests again.
+    pub fn finish_image_write(&mut self, write: &ImageWrite) {
+        for member in &write.members {
+            self.erasing.remove(member);
+        }
+    }
+
+    /// Whether an image is being written to this device or its drive.
+    pub fn is_erasing(&self, handle: &DeviceHandle) -> bool {
+        self.erasing.contains(handle)
+    }
+
+    /// An image write in one call, holding the coordinator throughout: for
+    /// a caller that owns it outright (the in-process engine, tests). The
+    /// service uses the three steps so other devices stay served meanwhile.
+    pub async fn write_image(
+        &mut self,
+        handle: &DeviceHandle,
+        image: &std::path::Path,
+        erase_confirmed: bool,
+        progress: ImageProgress,
+    ) -> Result<u64, ServiceError> {
+        let write = self
+            .begin_image_write(handle, image, erase_confirmed)
+            .await?;
+        let result = self
+            .control
+            .write_image(&write.address, &write.image, progress)
+            .await;
+        self.finish_image_write(&write);
+        Ok(result?)
     }
 
     /// Changes a device's policy and persists it.
@@ -729,6 +849,11 @@ impl<C: DeviceControl> StorageCoordinator<C> {
                 mount_point: None,
                 policy: RemovalPolicy::DirectRemoval,
                 state: StateReport::from_state(&transition.state),
+                drive: None,
+                drive_name: None,
+                size: 0,
+                whole_disk: false,
+                erasing: false,
             },
         };
         let _ = self.updates.send(report);
@@ -740,6 +865,8 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         machine: &storage_core::DeviceMachine,
     ) -> DeviceReport {
         let identity = machine.identity();
+        let device = self.known.get(handle);
+        let drive = device.and_then(|device| device.drive.as_ref());
         DeviceReport {
             object_path: handle.as_str().to_string(),
             device_path: identity.device_path().to_string(),
@@ -753,6 +880,20 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             mount_point: machine.mount_point().map(str::to_string),
             policy: machine.policy(),
             state: StateReport::from_state(machine.state()),
+            drive: drive
+                .map(|drive| drive.object_path.clone())
+                .filter(|path| !path.is_empty()),
+            drive_name: drive.and_then(|drive| {
+                let name = [drive.vendor.as_deref(), drive.model.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (!name.is_empty()).then_some(name)
+            }),
+            size: device.map(|device| device.block.size).unwrap_or(0),
+            whole_disk: device.is_some_and(|device| device.block.partition_number.is_none()),
+            erasing: self.erasing.contains(handle),
         }
     }
 }

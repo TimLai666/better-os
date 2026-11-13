@@ -115,6 +115,57 @@ pub struct DeviceRow {
     /// Set when this device was pulled out during a write. Survives the row
     /// being removed, so the warning outlives the device.
     pub unsafe_removal: Option<UnsafeRemoval>,
+    /// The drive this device is on; every volume on one drive shares it.
+    pub drive: Option<String>,
+    /// The drive's vendor and model.
+    pub drive_name: Option<String>,
+    pub size: u64,
+    /// The drive's own block device, not a partition on it.
+    pub whole_disk: bool,
+    pub filesystem: Option<String>,
+    /// An image is being written to this device's drive.
+    pub erasing: bool,
+}
+
+/// A drive a disk image can be written to, and what writing it erases.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageTarget {
+    /// The drive's own block device: what the image is written to.
+    pub object_path: String,
+    /// Vendor, model and size: "Generic Flash Disk · 32 GB".
+    pub name: String,
+    /// Every volume on the drive, by the names the window shows them under.
+    pub volumes: Vec<String>,
+}
+
+/// The drives in an inventory an image could be written to, each with the
+/// volumes it would erase. A drive already being written to is left out.
+pub fn image_targets(rows: &[DeviceRow]) -> Vec<ImageTarget> {
+    rows.iter()
+        .filter(|row| row.whole_disk && !row.erasing)
+        .filter_map(|disk| {
+            let drive = disk.drive.as_ref()?;
+            let name = format!(
+                "{} · {}",
+                disk.drive_name
+                    .clone()
+                    .unwrap_or_else(|| disk.label.clone()),
+                crate::format::bytes(disk.size)
+            );
+            let volumes = rows
+                .iter()
+                .filter(|row| row.drive.as_ref() == Some(drive))
+                // The drive itself only when it holds a filesystem directly.
+                .filter(|row| !row.whole_disk || row.filesystem.is_some())
+                .map(|row| row.label.clone())
+                .collect();
+            Some(ImageTarget {
+                object_path: disk.object_path.clone(),
+                name,
+                volumes,
+            })
+        })
+        .collect()
 }
 
 /// What was lost, or might have been.
@@ -230,6 +281,12 @@ pub enum DeviceNotice {
     PolicyRefused {
         object_path: String,
         detail: String,
+    },
+    /// How far an image write is.
+    ImageProgress {
+        object_path: String,
+        written: u64,
+        total: u64,
     },
     /// A format or image write finished: `Ok` or the reason it did not.
     Erased {
@@ -508,6 +565,12 @@ pub fn row_from(report: DeviceReport) -> DeviceRow {
         state,
         blockers,
         unsafe_removal,
+        drive: report.drive,
+        drive_name: report.drive_name,
+        size: report.size,
+        whole_disk: report.whole_disk,
+        filesystem: report.filesystem,
+        erasing: report.erasing,
     }
 }
 

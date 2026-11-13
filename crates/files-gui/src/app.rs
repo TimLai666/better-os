@@ -82,6 +82,13 @@ pub struct FilesApp {
     pub(crate) sharing: Sharing,
     /// Plugins and their latest answers.
     pub(crate) plugins: crate::plugin_host::PluginHost,
+    /// Whether the search field shows its short hint (a narrow pane).
+    pub(crate) search_short: bool,
+    /// A plugin's own page, when one is open in the main pane.
+    pub(crate) plugin_view: Option<crate::plugin_page::PluginPage>,
+    /// The items opened from each plugin, most recent first, for sections
+    /// that list only those.
+    pub(crate) plugin_opened: std::collections::BTreeMap<String, Vec<String>>,
     /// The content list's scroll position, which rubber-band selection
     /// reads to turn the pointer into content coordinates.
     pub(crate) content_scroll: UniformListScrollHandle,
@@ -182,6 +189,12 @@ impl FilesApp {
         });
         session.preview.open = session.preferences.preview_open;
         session.search.include_hidden = session.preferences.search_hidden;
+        // Work an earlier Better Files did not live to finish is offered
+        // first thing, in the operation center.
+        session.interrupted = crate::interrupted_jobs();
+        if !session.interrupted.is_empty() {
+            session.operations_open = true;
+        }
         if let Some(problem) = loaded.problem {
             session.notice = Some(Notice::Key(problem));
         }
@@ -310,6 +323,11 @@ impl FilesApp {
                 Locale::ZhTw => "zh-TW",
                 _ => "en",
             }),
+            plugin_view: None,
+            search_short: false,
+            plugin_opened: crate::plugins::opened_path()
+                .map(|path| crate::plugins::load_opened(&path))
+                .unwrap_or_default(),
             content_scroll: UniformListScrollHandle::new(),
             band: None,
             _subscriptions: subscriptions,
@@ -438,7 +456,7 @@ impl FilesApp {
 
     /// How many tiles fit across the content area at the current width.
     pub(crate) fn columns(&self) -> usize {
-        let available = (f32::from(self.viewport.width) - self.nav_width() - 40.0).max(120.0);
+        let available = (self.content_width() - 40.0).max(120.0);
         self.session.content.columns(available)
     }
 
@@ -470,6 +488,7 @@ impl FilesApp {
         self.search_input.update(cx, |state, cx| {
             state.set_placeholder(c.search_placeholder, window, cx)
         });
+        self.search_short = false;
         cx.notify();
     }
 
@@ -636,6 +655,19 @@ impl FilesApp {
 
     pub(crate) fn submit_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.path_input.read(cx).value().to_string();
+        // `plugin:<id>` opens a plugin's own page, as in folio.
+        if let Some(id) = text.trim().strip_prefix("plugin:") {
+            if !self.open_plugin_view(id.trim()) {
+                self.session.notice = Some(crate::session::Notice::Key(format!(
+                    "files.plugin.no_view:{}",
+                    id.trim()
+                )));
+            }
+            self.editing_path = false;
+            self.sync_path_field(window, cx);
+            cx.notify();
+            return;
+        }
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         self.session
             .submit_path(&text, home.as_deref(), &FilesystemValidator);
@@ -727,6 +759,15 @@ impl FilesApp {
                     cx.notify();
                 }
             }
+            return;
+        }
+        // A plugin's page takes the arrows, Enter and Escape.
+        if self.plugin_view.is_some()
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && self.plugin_page_key(event.keystroke.key.as_str())
+        {
+            cx.notify();
             return;
         }
         let modifiers = Modifiers {
@@ -1016,7 +1057,7 @@ pub(crate) fn open_window_at(folder: Option<files_core::LocalPath>, cx: &mut App
 
 /// Opens the window at the location the command line resolved to.
 pub fn run(start: StartPlan) {
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let app = gpui_platform::application().with_assets(crate::icons::FilesAssets);
 
     app.run(move |cx| {
         gpui_component::init(cx);

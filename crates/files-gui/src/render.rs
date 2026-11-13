@@ -89,7 +89,30 @@ impl Render for FilesApp {
         let address = self.address_row(cx);
         let commands = self.command_bar(cx);
         let tab_strip = self.tab_strip(cx);
-        let content = self.content(cx);
+        // A narrow search field says "Search", not half of a sentence.
+        let short = self.search_width() < 200.0;
+        if short != self.search_short {
+            self.search_short = short;
+            let hint = if short {
+                c.search_short
+            } else {
+                c.search_placeholder
+            };
+            self.search_input
+                .update(cx, |state, cx| state.set_placeholder(hint, window, cx));
+        }
+        // Moving anywhere closes a plugin's page.
+        if self
+            .plugin_view
+            .as_ref()
+            .is_some_and(|page| &page.at != self.session.location())
+        {
+            self.plugin_view = None;
+        }
+        let content = match self.plugin_page(cx) {
+            Some(page) => page,
+            None => self.content(cx),
+        };
         let operations = self
             .session
             .operations_open
@@ -329,7 +352,10 @@ impl FilesApp {
                 },
                 c,
             ),
-            (MenuTarget::Sidebar(_), Some(NavTarget::Machine(_) | NavTarget::PluginItem(_)))
+            (
+                MenuTarget::Sidebar(_),
+                Some(NavTarget::Machine(_) | NavTarget::PluginItem(_) | NavTarget::PluginView(_)),
+            )
             | (MenuTarget::Sidebar(_), None) => Vec::new(),
         }
     }
@@ -544,10 +570,11 @@ impl FilesApp {
                 let targets = self.session.image_targets();
                 if !targets.is_empty() {
                     entries.push(MenuEntry::Separator);
-                    for (object_path, label) in targets {
+                    for target in targets {
                         let image = single.clone();
+                        let object_path = target.object_path;
                         entries.push(
-                            MenuItem::new(c.write_image_to.replace("{device}", &label))
+                            MenuItem::new(c.write_image_to.replace("{device}", &target.name))
                                 .on_select(act(cx, move |app, window, cx| {
                                     if let Ok(image) = files_core::LocalPath::new(image.clone()) {
                                         app.session.request_write_image(image, &object_path);
@@ -609,7 +636,7 @@ impl FilesApp {
             }
             (_, Some(NavTarget::Device(_)))
             | (_, Some(NavTarget::Machine(_)))
-            | (_, Some(NavTarget::PluginItem(_))) => {}
+            | (_, Some(NavTarget::PluginItem(_) | NavTarget::PluginView(_))) => {}
             (_, None) => {
                 let columns = self.columns();
                 self.session.run_menu_command(command, None, columns);

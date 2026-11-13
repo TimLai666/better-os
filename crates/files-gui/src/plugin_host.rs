@@ -24,7 +24,12 @@ struct Shared {
     plugins: Vec<(Plugin, Option<PollOutput>)>,
     outcomes: Vec<Outcome>,
     details: HashMap<PathBuf, Vec<(String, String)>>,
-    pending_details: Vec<PathBuf>,
+    /// The file whose details are wanted next. A newer request replaces
+    /// an older one that has not started: moving through a folder asks for
+    /// every file, and only the one landed on matters.
+    wanted_details: Option<(PathBuf, Option<String>)>,
+    /// Whether the one details worker is running.
+    details_worker: bool,
     changed: bool,
 }
 
@@ -208,7 +213,9 @@ impl PluginHost {
     }
 
     /// The details rows plugins give for a file, if known; asks for them in
-    /// the background the first time.
+    /// the background the first time. One worker fetches them, the most
+    /// recently asked-for file first and only it: requests for files passed
+    /// over on the way are dropped, never queued.
     pub fn details_for(&self, path: &Path, mime: Option<&str>) -> Vec<(String, String)> {
         let Ok(mut shared) = self.shared.lock() else {
             return Vec::new();
@@ -216,33 +223,45 @@ impl PluginHost {
         if let Some(rows) = shared.details.get(path) {
             return rows.clone();
         }
-        if shared.pending_details.iter().any(|pending| pending == path)
-            || !shared
-                .plugins
-                .iter()
-                .any(|(plugin, _)| plugin.manifest.details.is_some())
+        if !shared
+            .plugins
+            .iter()
+            .any(|(plugin, _)| plugin.manifest.details.is_some())
         {
             return Vec::new();
         }
-        shared.pending_details.push(path.to_path_buf());
+        shared.wanted_details = Some((path.to_path_buf(), mime.map(str::to_string)));
+        if shared.details_worker {
+            return Vec::new();
+        }
+        shared.details_worker = true;
         drop(shared);
         let host = self.clone();
-        let path = path.to_path_buf();
-        let mime = mime.map(str::to_string);
         std::thread::spawn(move || {
-            let mut rows = Vec::new();
-            for (plugin, _) in host.snapshot() {
-                rows.extend(plugin.details(
-                    &path,
-                    mime.as_deref(),
-                    host.home.as_deref(),
-                    &host.language,
-                ));
-            }
-            if let Ok(mut shared) = host.shared.lock() {
-                shared.pending_details.retain(|pending| *pending != path);
-                shared.details.insert(path, rows);
-                shared.changed = true;
+            loop {
+                let next = host.shared.lock().ok().and_then(|mut shared| {
+                    let next = shared.wanted_details.take();
+                    if next.is_none() {
+                        shared.details_worker = false;
+                    }
+                    next
+                });
+                let Some((path, mime)) = next else {
+                    return;
+                };
+                let mut rows = Vec::new();
+                for (plugin, _) in host.snapshot() {
+                    rows.extend(plugin.details(
+                        &path,
+                        mime.as_deref(),
+                        host.home.as_deref(),
+                        &host.language,
+                    ));
+                }
+                if let Ok(mut shared) = host.shared.lock() {
+                    shared.details.insert(path, rows);
+                    shared.changed = true;
+                }
             }
         });
         Vec::new()

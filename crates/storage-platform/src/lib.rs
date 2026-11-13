@@ -29,7 +29,7 @@ pub use probe::{DoctorReport, probe};
 pub use roots::Roots;
 pub use traits::{
     DeviceControl, EjectOutcome, FilesystemKind, FlushBackend, FlushReport, FormatRequest,
-    OpenUseInspector, PlatformError, WritebackInspector,
+    ImageProgress, OpenUseInspector, PlatformError, WritebackInspector,
 };
 pub use udisks::UDisks2;
 pub use writeback::LinuxWriteback;

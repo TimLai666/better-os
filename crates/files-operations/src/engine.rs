@@ -153,6 +153,9 @@ struct JobShared {
     /// trash); under a skipped one nothing is copied; under a renamed one
     /// everything follows the new name.
     folder_answers: Vec<(PathBuf, crate::exec::FolderAnswer)>,
+    /// For a job resumed after an interruption: the items the interrupted
+    /// run had finished or skipped, which this run leaves alone.
+    resumed: Vec<ItemRecord>,
     /// Where displaced items go; see [`EngineConfig::displaced_trash`].
     displaced_trash: Option<PathBuf>,
 }
@@ -235,6 +238,15 @@ impl Job {
                 .map(|elapsed| elapsed.as_secs())
                 .unwrap_or(0),
             checksums: Vec::new(),
+            resume: resume_spec(&self.spec),
+            folder_answers: shared
+                .folder_answers
+                .iter()
+                .map(|(folder, answer)| crate::store::FolderAnswerRecord {
+                    folder: folder.clone(),
+                    answer: answer.clone(),
+                })
+                .collect(),
         }
     }
 
@@ -420,6 +432,67 @@ impl JobEngine {
     /// destination inside its own source, a name with a separator in it — is
     /// refused here rather than becoming a job that fails a moment later.
     pub fn submit(&self, spec: JobSpec) -> Result<JobHandle, OperationError> {
+        self.enqueue(spec, Vec::new(), Vec::new())
+    }
+
+    /// Starts an interrupted copy or move again, from a record that
+    /// [`JobStore::recover`] reported as interrupted. The items it had
+    /// finished or skipped are left alone; the answers it was given about
+    /// folders that were already there still hold. The new job has a new
+    /// number, and the old record is removed once the new one is written.
+    ///
+    /// Refused (`Interrupted`) for a record that carries no resume spec: a
+    /// kind that is not resumed, or a record written before resuming
+    /// existed.
+    pub fn resume_interrupted(&self, record: &JobRecord) -> Result<JobHandle, OperationError> {
+        let Some(resume) = &record.resume else {
+            return Err(OperationError::Interrupted);
+        };
+        let local = |path: &PathBuf| {
+            files_core::location::LocalPath::new(path.clone())
+                .map_err(|_| OperationError::NotFound { path: path.clone() })
+        };
+        let sources = resume
+            .sources
+            .iter()
+            .map(local)
+            .collect::<Result<Vec<_>, _>>()?;
+        let destination = local(&resume.destination)?;
+        let operation = if resume.moving {
+            crate::spec::Operation::Move {
+                sources,
+                destination,
+            }
+        } else {
+            crate::spec::Operation::Copy {
+                sources,
+                destination,
+            }
+        };
+        let finished = record
+            .items
+            .iter()
+            .filter(|item| matches!(item.status, ItemStatus::Done | ItemStatus::Skipped))
+            .cloned()
+            .collect();
+        let answers = record
+            .folder_answers
+            .iter()
+            .map(|record| (record.folder.clone(), record.answer.clone()))
+            .collect();
+        let handle = self.enqueue(JobSpec::new(operation), finished, answers)?;
+        if let Some(store) = &self.inner.store {
+            let _ = store.remove(record.id);
+        }
+        Ok(handle)
+    }
+
+    fn enqueue(
+        &self,
+        spec: JobSpec,
+        resumed: Vec<ItemRecord>,
+        folder_answers: Vec<(PathBuf, crate::exec::FolderAnswer)>,
+    ) -> Result<JobHandle, OperationError> {
         spec.validate()?;
         if let crate::spec::Operation::PermanentDelete { .. } = spec.operation {
             // The confirmation is a type that cannot be forged or
@@ -458,7 +531,8 @@ impl JobEngine {
                 failures: Vec::new(),
                 hard_links: HashMap::new(),
                 journal: JournalCursor::default(),
-                folder_answers: Vec::new(),
+                folder_answers,
+                resumed,
                 displaced_trash: self.inner.displaced_trash.clone(),
             }),
             signal: Condvar::new(),
@@ -838,6 +912,19 @@ fn run_job(inner: &Arc<Inner>, job: Arc<Job>) {
                 error: None,
             })
             .collect();
+        // A resumed job: what the interrupted run finished stays finished.
+        // Matched by source and destination, not by position, because a
+        // move's finished sources are gone from the new plan.
+        if !shared.resumed.is_empty() {
+            let resumed = std::mem::take(&mut shared.resumed);
+            for item in shared.items.iter_mut() {
+                if let Some(before) = resumed.iter().find(|before| {
+                    before.source == item.source && before.destination == item.destination
+                }) {
+                    item.status = before.status;
+                }
+            }
+        }
         shared.journal.items_replaced();
         shared.progress = Progress {
             items_total: plan.total_items(),
@@ -850,6 +937,16 @@ fn run_job(inner: &Arc<Inner>, job: Arc<Job>) {
             bytes: shared.progress.bytes_total,
         };
         shared.log.push(at, None, planned);
+        shared.progress.items_done = shared
+            .items
+            .iter()
+            .filter(|item| item.status == ItemStatus::Done)
+            .count() as u64;
+        shared.progress.items_skipped = shared
+            .items
+            .iter()
+            .filter(|item| item.status == ItemStatus::Skipped)
+            .count() as u64;
         // Sources the walk could not read are failures, recorded before any
         // work starts so the totals never shrink silently.
         for (path, error) in &plan.unreadable {
@@ -973,6 +1070,30 @@ fn finish(
     // A finished job's journal is compacted to one line per item.
     job.write_whole(inner.store.as_ref(), shared);
     job.publish(JobEvent::Finished(job.id, state));
+}
+
+/// What a record needs to start this job again after an interruption:
+/// copies and moves only.
+fn resume_spec(spec: &JobSpec) -> Option<crate::store::ResumeSpec> {
+    let (moving, sources, destination) = match &spec.operation {
+        crate::spec::Operation::Copy {
+            sources,
+            destination,
+        } => (false, sources, destination),
+        crate::spec::Operation::Move {
+            sources,
+            destination,
+        } => (true, sources, destination),
+        _ => return None,
+    };
+    Some(crate::store::ResumeSpec {
+        moving,
+        sources: sources
+            .iter()
+            .map(|source| source.as_path().to_path_buf())
+            .collect(),
+        destination: destination.as_path().to_path_buf(),
+    })
 }
 
 /// How often a running job's record is persisted.

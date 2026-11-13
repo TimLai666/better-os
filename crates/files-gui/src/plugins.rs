@@ -52,6 +52,23 @@ pub struct Manifest {
     pub actions: Vec<Action>,
     #[serde(default)]
     pub details: Option<Details>,
+    #[serde(default)]
+    pub view: Option<View>,
+}
+
+/// A plugin's own page in the main pane, at `plugin:<id>`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct View {
+    /// Names the page in the title, the path bar and the search field.
+    pub title: String,
+    /// The section's last row, which opens the page; the title if left out.
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// Said when there are no items.
+    #[serde(default)]
+    pub empty: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -68,6 +85,71 @@ fn default_every() -> u64 {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Section {
     pub title: String,
+    /// `"all"` (the default) or `"opened"`: only the items opened before,
+    /// most recent first, at most `limit`.
+    #[serde(default)]
+    pub rows: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// How many opened items a plugin's section shows by default.
+pub const OPENED_ROWS: usize = 6;
+/// How many opened item ids are remembered per plugin.
+pub const OPENED_KEPT: usize = 20;
+
+impl Section {
+    /// The items the section lists, from everything the plugin offers and
+    /// the ids opened before (most recent first).
+    pub fn rows<'a>(&self, items: &'a [Item], opened: &[String]) -> Vec<&'a Item> {
+        if self.rows.as_deref() != Some("opened") {
+            return items.iter().collect();
+        }
+        opened
+            .iter()
+            .filter_map(|id| items.iter().find(|item| &item.id == id))
+            .take(self.limit.unwrap_or(OPENED_ROWS))
+            .collect()
+    }
+}
+
+/// Remembers that `id` was opened: first in the list, once, at most
+/// [`OPENED_KEPT`] kept.
+pub fn remember_opened(opened: &mut Vec<String>, id: &str) {
+    opened.retain(|known| known != id);
+    opened.insert(0, id.to_string());
+    opened.truncate(OPENED_KEPT);
+}
+
+/// The opened items of every plugin, kept in
+/// `$XDG_STATE_HOME/better-os/files/plugins-opened.json` so a machine that
+/// sleeps comes back to the sidebar when it wakes.
+pub fn opened_path() -> Option<PathBuf> {
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
+        })?;
+    Some(state.join("better-os/files/plugins-opened.json"))
+}
+
+pub fn load_opened(path: &Path) -> BTreeMap<String, Vec<String>> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Writes through a temporary file and a rename, so a crash never leaves
+/// half a file.
+pub fn save_opened(path: &Path, opened: &BTreeMap<String, Vec<String>>) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, serde_json::to_vec(opened)?)?;
+    std::fs::rename(&temporary, path)
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -160,6 +242,9 @@ pub struct Item {
     pub icon: Option<String>,
     #[serde(default)]
     pub subtitle: Option<Text>,
+    /// Rows for the details pane: a translated label and a value.
+    #[serde(default)]
+    pub details: Vec<(String, String)>,
     #[serde(default)]
     pub open: Option<Open>,
 }

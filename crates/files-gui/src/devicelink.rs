@@ -238,6 +238,11 @@ enum Backend<C: DeviceControl> {
 struct Embedded<C: DeviceControl> {
     coordinator: StorageCoordinator<C>,
     events: UnboundedReceiver<PlatformEvent>,
+    /// Image writes whose copy ended, for the coordinator to let go of.
+    finished: (
+        tokio::sync::mpsc::UnboundedSender<storage_service::coordinator::ImageWrite>,
+        UnboundedReceiver<storage_service::coordinator::ImageWrite>,
+    ),
 }
 
 async fn serve(
@@ -300,6 +305,9 @@ async fn serve(
         if let Backend::Embedded(embedded) = &mut backend {
             while let Ok(event) = embedded.events.try_recv() {
                 embedded.coordinator.handle_event(event).await;
+            }
+            while let Ok(write) = embedded.finished.1.try_recv() {
+                embedded.coordinator.finish_image_write(&write);
             }
         }
 
@@ -410,10 +418,11 @@ async fn start_embedded() -> Result<Backend<UDisks2>, String> {
     Ok(Backend::Embedded(Box::new(Embedded {
         coordinator,
         events,
+        finished: tokio::sync::mpsc::unbounded_channel(),
     })))
 }
 
-async fn handle<C: DeviceControl>(
+async fn handle<C: DeviceControl + Clone + 'static>(
     backend: &mut Backend<C>,
     request: Request,
     notices: &Sender<DeviceNotice>,
@@ -534,41 +543,24 @@ async fn handle<C: DeviceControl>(
                     .await;
             }
         },
-        Request::Erase(request) => {
-            use crate::devices::EraseRequest;
-            let object_path = request.object_path().to_string();
-            let format = matches!(request, EraseRequest::Format { .. });
+        Request::Erase(crate::devices::EraseRequest::WriteImage { object_path, image }) => {
+            write_image(backend, object_path, image, notices).await;
+        }
+        Request::Erase(crate::devices::EraseRequest::Format {
+            object_path,
+            filesystem,
+            label,
+        }) => {
             // Only a request the person confirmed in the window gets here.
-            let outcome = match (backend, request) {
-                (
-                    Backend::Service(client),
-                    EraseRequest::Format {
-                        object_path,
-                        filesystem,
-                        label,
-                    },
-                ) => client
+            let outcome = match backend {
+                Backend::Service(client) => client
                     .format(&object_path, filesystem, &label, true)
                     .await
                     .map_err(|error| error.to_string()),
-                (Backend::Service(client), EraseRequest::WriteImage { object_path, image }) => {
-                    client
-                        .write_image(&object_path, &image, true)
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
-                }
-                (
-                    Backend::Embedded(embedded),
-                    EraseRequest::Format {
-                        object_path,
-                        filesystem,
-                        label,
-                    },
-                ) => embedded
+                Backend::Embedded(embedded) => embedded
                     .coordinator
                     .format(
-                        &storage_core::DeviceHandle::new(object_path),
+                        &storage_core::DeviceHandle::new(object_path.clone()),
                         &storage_platform::FormatRequest {
                             kind: filesystem,
                             label,
@@ -577,18 +569,10 @@ async fn handle<C: DeviceControl>(
                     )
                     .await
                     .map_err(|error| error.to_string()),
-                (Backend::Embedded(embedded), EraseRequest::WriteImage { object_path, image }) => {
-                    embedded
-                        .coordinator
-                        .write_image(&storage_core::DeviceHandle::new(object_path), &image, true)
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
-                }
             };
             let _ = notices.send(DeviceNotice::Erased {
                 object_path,
-                format,
+                format: true,
                 outcome,
             });
         }
@@ -622,6 +606,85 @@ async fn handle<C: DeviceControl>(
                     object_path,
                     detail,
                 },
+            });
+        }
+    }
+}
+
+/// Writes a disk image to a whole drive. The copy runs as a task of its
+/// own, so this thread keeps serving the window (and the inventory keeps
+/// showing the drive as being written) meanwhile; progress and the end come
+/// back as notices. Only a write the person confirmed gets here.
+async fn write_image<C: DeviceControl + Clone + 'static>(
+    backend: &mut Backend<C>,
+    object_path: String,
+    image: PathBuf,
+    notices: &Sender<DeviceNotice>,
+) {
+    let notices = notices.clone();
+    let progress_notices = notices.clone();
+    let progress_path = object_path.clone();
+    let progress = move |written: u64, total: u64| {
+        let _ = progress_notices.send(DeviceNotice::ImageProgress {
+            object_path: progress_path.clone(),
+            written,
+            total,
+        });
+    };
+    match backend {
+        Backend::Service(client) => {
+            let client = client.clone();
+            tokio::spawn(async move {
+                let outcome = client
+                    .write_image(&object_path, &image, true, progress)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string());
+                let _ = notices.send(DeviceNotice::Erased {
+                    object_path,
+                    format: false,
+                    outcome,
+                });
+            });
+        }
+        Backend::Embedded(embedded) => {
+            let write = match embedded
+                .coordinator
+                .begin_image_write(
+                    &storage_core::DeviceHandle::new(object_path.clone()),
+                    &image,
+                    true,
+                )
+                .await
+            {
+                Ok(write) => write,
+                Err(error) => {
+                    let _ = notices.send(DeviceNotice::Erased {
+                        object_path,
+                        format: false,
+                        outcome: Err(error.to_string()),
+                    });
+                    return;
+                }
+            };
+            let control = embedded.coordinator.control().clone();
+            let finished = embedded.finished.0.clone();
+            let total = write.total;
+            tokio::spawn(async move {
+                let report: storage_platform::ImageProgress =
+                    std::sync::Arc::new(move |written| progress(written, total));
+                let outcome = control
+                    .write_image(&write.address, &write.image, report)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string());
+                // The coordinator lets the drive go on its next tick.
+                let _ = finished.send(write);
+                let _ = notices.send(DeviceNotice::Erased {
+                    object_path,
+                    format: false,
+                    outcome,
+                });
             });
         }
     }
@@ -715,6 +778,7 @@ mod tests {
         let mut backend = Backend::Embedded(Box::new(Embedded {
             coordinator,
             events,
+            finished: unbounded_channel(),
         }));
         let (notices, _window) = channel();
         assert_eq!(kind(&backend), DeviceStateKind::ReadyToUnplug);
@@ -766,6 +830,11 @@ mod tests {
                 reason: "test".to_string(),
                 detail: String::new(),
             },
+            drive: None,
+            drive_name: None,
+            size: 0,
+            whole_disk: false,
+            erasing: false,
         };
         assert_eq!(
             mounted_from(&[report("/a", Some("/media/a")), report("/b", None)]),
@@ -816,6 +885,7 @@ mod tests {
             Backend::Embedded(Box::new(Embedded {
                 coordinator,
                 events,
+                finished: unbounded_channel(),
             })),
             clock,
         )

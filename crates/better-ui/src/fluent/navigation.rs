@@ -76,6 +76,9 @@ pub struct NavItem {
     /// One trailing icon action, such as Eject on a drive. Only drawn in the
     /// open pane; a window offers the same action in the item's context menu.
     pub action: Option<NavAction>,
+    /// An SVG the window's own asset source serves, drawn instead of `icon`
+    /// for a glyph the kit's set does not have (a trash can).
+    pub icon_path: Option<SharedString>,
 }
 
 /// A trailing icon action on a navigation item.
@@ -112,7 +115,14 @@ impl NavItem {
             caption: None,
             caption_warning: false,
             action: None,
+            icon_path: None,
         }
+    }
+
+    /// Draws this SVG (served by the window's asset source) as the icon.
+    pub fn icon_path(mut self, path: impl Into<SharedString>) -> Self {
+        self.icon_path = Some(path.into());
+        self
     }
 
     pub fn caption(mut self, caption: impl Into<SharedString>) -> Self {
@@ -430,12 +440,13 @@ fn item_row(
         BODY,
     )
     .child(
-        div()
-            .w(px(40.0))
-            .flex_none()
-            .flex()
-            .justify_center()
-            .child(Icon::new(item.icon.clone()).size(size::ICON)),
+        div().w(px(40.0)).flex_none().flex().justify_center().child(
+            match &item.icon_path {
+                Some(path) => Icon::empty().path(path.clone()),
+                None => Icon::new(item.icon.clone()),
+            }
+            .size(size::ICON),
+        ),
     )
     .when(!c.compact, |row| {
         let caption_color = if item.caption_warning {

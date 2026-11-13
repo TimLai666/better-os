@@ -73,8 +73,10 @@ fn init() -> Result<(), MediaError> {
 
 impl Player {
     /// Opens `path` paused on its first frame. Playback starts with
-    /// [`Player::play`].
-    pub fn open(path: &Path, audio: AudioOut) -> Result<Self, MediaError> {
+    /// [`Player::play`]. Video frames are scaled down (never up, aspect
+    /// kept) to fit `max_frame`, the preview's size in pixels, so a 4K video
+    /// is not copied at 4K into a window a quarter of that.
+    pub fn open(path: &Path, audio: AudioOut, max_frame: (u32, u32)) -> Result<Self, MediaError> {
         init()?;
         let uri = gst::glib::filename_to_uri(path, None)
             .map_err(|error| MediaError::Pipeline(error.to_string()))?;
@@ -84,9 +86,12 @@ impl Player {
             .map_err(|_| MediaError::Unavailable("playbin".into()))?;
 
         let frame = Arc::new(Mutex::new(None));
+        let (max_width, max_height) = (max_frame.0.max(16) as i32, max_frame.1.max(16) as i32);
         let caps = gst_video::VideoCapsBuilder::new()
             .format(gst_video::VideoFormat::Bgra)
             .pixel_aspect_ratio(gst::Fraction::new(1, 1))
+            .width_range(1..=max_width)
+            .height_range(1..=max_height)
             .build();
         let sink = gst_app::AppSink::builder()
             .caps(&caps)
@@ -112,7 +117,30 @@ impl Player {
                 })
                 .build(),
         );
-        playbin.set_property("video-sink", &sink);
+        // Convert and scale in front of the sink, so the caps above are
+        // what reaches it whatever the decoder makes.
+        let unavailable = |name: &str| MediaError::Unavailable(name.to_string());
+        let convert = gst::ElementFactory::make("videoconvert")
+            .build()
+            .map_err(|_| unavailable("videoconvert"))?;
+        let scale = gst::ElementFactory::make("videoscale")
+            .build()
+            .map_err(|_| unavailable("videoscale"))?;
+        let video = gst::Bin::new();
+        video
+            .add_many([&convert, &scale, sink.upcast_ref()])
+            .map_err(|error| MediaError::Pipeline(error.to_string()))?;
+        gst::Element::link_many([&convert, &scale, sink.upcast_ref()])
+            .map_err(|error| MediaError::Pipeline(error.to_string()))?;
+        let input = convert
+            .static_pad("sink")
+            .ok_or_else(|| unavailable("videoconvert"))?;
+        let ghost = gst::GhostPad::with_target(&input)
+            .map_err(|error| MediaError::Pipeline(error.to_string()))?;
+        video
+            .add_pad(&ghost)
+            .map_err(|error| MediaError::Pipeline(error.to_string()))?;
+        playbin.set_property("video-sink", &video);
         if audio == AudioOut::Discard {
             let discard = gst::ElementFactory::make("fakesink")
                 .property("sync", true)

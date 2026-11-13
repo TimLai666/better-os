@@ -2068,3 +2068,64 @@ fn the_side_preview_follows_a_click_without_waiting_for_anything_else() {
         "the pane is preparing notes.txt, not asking for a selection"
     );
 }
+
+/// Two folders each with a `notes.txt`: going from one to the other shows
+/// the second file, not the first one's preview kept because the names
+/// match.
+#[test]
+fn the_same_name_in_another_folder_is_a_new_preview() {
+    let root = tempfile::tempdir().unwrap();
+    let mut panel = crate::preview::PreviewPanel::default();
+    panel.toggle();
+    let mut ask = |folder: &str| {
+        let dir = root.path().join(folder);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("notes.txt"), folder).unwrap();
+        let entry = Entry::file(
+            "notes.txt",
+            files_core::location::LocalPath::new(dir.join("notes.txt")).unwrap(),
+            EntryKind::File,
+        );
+        panel.request_for(Some(&entry), &Location::local(&dir).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while panel.is_waiting() && Instant::now() < deadline {
+            panel.pump();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        match panel.slot() {
+            crate::preview::PreviewSlot::Ready(preview) => match preview.as_ref() {
+                files_preview::Preview::Text(text) => format!("{text:?}"),
+                other => format!("{other:?}"),
+            },
+            other => format!("{other:?}"),
+        }
+    };
+    assert!(ask("first").contains("first"));
+    assert!(ask("second").contains("second"), "the second folder's file");
+}
+
+/// At 960 wide with the operation center open, the list's columns are
+/// chosen for what is left beside it (the panel is 420 wide, not the
+/// preview's 320), so the last one steps aside instead of being cut off.
+#[test]
+fn the_list_columns_fit_beside_every_open_panel() {
+    use crate::layout::side_panels_width;
+    assert_eq!(side_panels_width(false, false, false, false), 0.0);
+    assert_eq!(side_panels_width(false, true, false, false), 320.0);
+    // A compact window draws no preview.
+    assert_eq!(side_panels_width(false, true, true, false), 0.0);
+    assert_eq!(side_panels_width(false, true, false, true), 740.0);
+    assert_eq!(side_panels_width(true, true, false, false), 360.0);
+
+    let content = 960.0 - 48.0 - side_panels_width(false, false, true, true) - 48.0;
+    let shown = crate::content::visible_columns(content);
+    let used: f32 = shown
+        .iter()
+        .filter(|column| **column != crate::content::ListColumn::Name)
+        .map(|column| column.width() + 8.0)
+        .sum();
+    assert!(
+        used + crate::content::MIN_NAME_WIDTH <= content,
+        "{shown:?} need {used} beside the name in {content}"
+    );
+}

@@ -776,14 +776,20 @@ impl FilesApp {
         if self.session.preferences.view_mode == ViewMode::Columns {
             return vec![ListColumn::Name];
         }
-        let side = if self.session.preview.open || self.session.operations_open {
-            320.0
-        } else {
-            0.0
-        };
-        crate::content::visible_columns(
-            f32::from(self.viewport.width) - self.nav_width() - side - 48.0,
-        )
+        crate::content::visible_columns(self.content_width() - 48.0)
+    }
+
+    /// The content area's width: the pane less the navigation pane and
+    /// every side panel that is drawn.
+    pub(crate) fn content_width(&self) -> f32 {
+        f32::from(self.viewport.width)
+            - self.nav_width()
+            - crate::layout::side_panels_width(
+                self.session.details.is_some(),
+                self.session.preview.open,
+                self.compact(),
+                self.session.operations_open,
+            )
     }
 }
 

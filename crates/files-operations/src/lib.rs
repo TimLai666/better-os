@@ -75,4 +75,7 @@ pub use spec::{
     OperationKind, RenamePattern, TrashItemRef,
 };
 pub use state::JobState;
-pub use store::{ItemRecord, ItemStatus, JobRecord, JobStore, JournalEntry, Recovery, StoreError};
+pub use store::{
+    FolderAnswerRecord, ItemRecord, ItemStatus, JobRecord, JobStore, JournalEntry, Recovery,
+    ResumeSpec, StoreError,
+};

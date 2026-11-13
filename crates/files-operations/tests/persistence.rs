@@ -308,6 +308,8 @@ fn a_persist_writes_the_same_bytes_at_ten_thousand_and_a_hundred_thousand_items(
             log: files_operations::OperationLog::default(),
             updated_at: 1,
             checksums: Vec::new(),
+            resume: None,
+            folder_answers: Vec::new(),
         };
         store.write(&record).unwrap();
         record.items[7].status = ItemStatus::Done;
@@ -360,6 +362,8 @@ fn a_new_process_does_not_overwrite_the_records_an_earlier_one_left() {
         log: files_operations::OperationLog::default(),
         updated_at: 1,
         checksums: Vec::new(),
+        resume: None,
+        folder_answers: Vec::new(),
     };
     store.write(&abandoned).unwrap();
     // And a record this build cannot read, which still holds its number.
@@ -513,4 +517,137 @@ fn recovery_ignores_a_claim_that_never_became_a_record() {
     let recovery = store.recover();
     assert_eq!(recovery.settled.len(), 1);
     assert!(recovery.damaged.is_empty());
+}
+
+/// A copy whose process died after it had merged part of a folder: the
+/// record says which items were done and that the folder was to be merged.
+/// Resumed, it leaves the done items alone, keeps merging without asking
+/// again, and finishes.
+#[test]
+fn an_interrupted_copy_resumes_with_its_folder_answers_and_leaves_finished_items_alone() {
+    use files_operations::{FolderAnswer, FolderAnswerRecord, ItemRecord, ResumeSpec};
+    let root = tempfile::tempdir().unwrap();
+    let store = JobStore::new(root.path().join("jobs"));
+    let trash = root.path().join("Trash");
+    let source = root.path().join("source/a");
+    let destination = root.path().join("destination");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(destination.join("a")).unwrap();
+    fs::write(source.join("x.txt"), b"new x").unwrap();
+    fs::write(source.join("y.txt"), b"new y").unwrap();
+    // What the dead run had done: x copied (and since changed by someone,
+    // which a re-copy would undo), y not yet; the folder was there before.
+    fs::write(destination.join("a/x.txt"), b"x, edited after the copy").unwrap();
+    fs::write(destination.join("a/y.txt"), b"old y").unwrap();
+    fs::write(destination.join("a/only-there.txt"), b"keep me").unwrap();
+
+    let item = |name: &str, status| ItemRecord {
+        source: source.join(name),
+        destination: Some(destination.join("a").join(name)),
+        status,
+        bytes: 5,
+        error: None,
+    };
+    let dead = files_operations::JobRecord {
+        schema_version: files_operations::store::RECORD_SCHEMA_VERSION,
+        id: 1,
+        kind: files_operations::OperationKind::Copy,
+        state: JobState::Running,
+        progress: files_operations::Progress {
+            items_total: 3,
+            items_done: 2,
+            ..files_operations::Progress::default()
+        },
+        items: vec![
+            ItemRecord {
+                source: source.clone(),
+                destination: Some(destination.join("a")),
+                status: ItemStatus::Done,
+                bytes: 0,
+                error: None,
+            },
+            item("x.txt", ItemStatus::Done),
+            item("y.txt", ItemStatus::Pending),
+        ],
+        log: files_operations::OperationLog::default(),
+        updated_at: 1,
+        checksums: Vec::new(),
+        resume: Some(ResumeSpec {
+            moving: false,
+            sources: vec![source.clone()],
+            destination: destination.clone(),
+        }),
+        folder_answers: vec![FolderAnswerRecord {
+            folder: destination.join("a"),
+            answer: FolderAnswer::Merge,
+        }],
+    };
+    store.write(&dead).unwrap();
+
+    let recovery = store.recover();
+    assert_eq!(recovery.interrupted.len(), 1);
+    let engine = JobEngine::new(EngineConfig {
+        displaced_trash: Some(trash.clone()),
+        workers: 1,
+        store: Some(store.clone()),
+        conflicts: ConflictPolicy::new(),
+    });
+    let handle = engine.resume_interrupted(&recovery.interrupted[0]).unwrap();
+    let finished = engine.wait(handle.id(), support::LIMIT).unwrap();
+    assert_eq!(
+        finished.state,
+        JobState::Completed,
+        "{:?}",
+        finished.failures
+    );
+    assert_eq!(fs::read(destination.join("a/y.txt")).unwrap(), b"new y");
+    assert_eq!(
+        fs::read(destination.join("a/x.txt")).unwrap(),
+        b"x, edited after the copy",
+        "a finished item is not copied again"
+    );
+    assert_eq!(
+        fs::read(destination.join("a/only-there.txt")).unwrap(),
+        b"keep me"
+    );
+    // The replaced y went to the trash, as Merge says.
+    assert!(trash.join("files/y.txt").exists());
+    // The old record is gone; only the resumed job's is left.
+    assert!(!store.holds(1));
+    assert!(store.recover().interrupted.is_empty());
+}
+
+/// What a job records is enough to resume it: the operation, and the answers
+/// about folders.
+#[test]
+fn a_copy_records_how_to_resume_it_and_the_folder_answers_it_was_given() {
+    use files_operations::{ConflictDecision, FolderAnswer, Resolution};
+    let root = tempfile::tempdir().unwrap();
+    let store = JobStore::new(root.path().join("jobs"));
+    let source = root.path().join("a");
+    let destination = root.path().join("destination");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(destination.join("a")).unwrap();
+    fs::write(source.join("x.txt"), b"x").unwrap();
+    let engine = engine_with(&store);
+    let handle = engine
+        .submit(JobSpec::new(Operation::Copy {
+            sources: vec![local(&source)],
+            destination: local(&destination),
+        }))
+        .unwrap();
+    support::wait_for(&engine, handle.id(), |snapshot| {
+        snapshot.state == JobState::WaitingOnConflict
+    });
+    engine.resolve(handle.id(), ConflictDecision::once(Resolution::Merge));
+    engine.wait(handle.id(), support::LIMIT).unwrap();
+
+    let record = store.read(handle.id().value()).unwrap();
+    let resume = record.resume.expect("a copy can be resumed");
+    assert!(!resume.moving);
+    assert_eq!(resume.sources, vec![source]);
+    assert_eq!(resume.destination, destination);
+    assert_eq!(record.folder_answers.len(), 1);
+    assert_eq!(record.folder_answers[0].folder, destination.join("a"));
+    assert_eq!(record.folder_answers[0].answer, FolderAnswer::Merge);
 }

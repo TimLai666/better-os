@@ -457,9 +457,16 @@ Status at the end of the fifth ticket-93 pass: **108 of 113 lines ticked**, 5 de
       limit, `items`/`places`/`actions`, `open` (path, GVfs mount, run),
       `to: items` submenus, `under`/`types`/`files`/`single`/`detach`,
       results (`notice`, `copy`, `path`, `error`), and `i18n` catalogs.
-      Tests `tests/plugins.rs` (10). A plugin's own `view` (`plugin:<id>` in
-      the main pane) is not supported yet: its items show in the sidebar
-      section instead.
+      A plugin's own `view` is its page in the main pane (`plugin_page.rs`):
+      opened from the section's last row (with the item count) or by typing
+      `plugin:<id>` in the path bar, its items in the plugin's order with
+      icon, name and subtitle, the selected item's `details` beside them,
+      ↑ ↓ Enter Escape and a double click; the section's `rows: "opened"`
+      lists the items opened before, most recent first, kept in
+      `$XDG_STATE_HOME/better-os/files/plugins-opened.json`. Details are
+      fetched by one worker for the latest file only. Tests
+      `tests/plugins.rs` (12); shots `30-dark-plugin-section-devices`,
+      `31-plugin-page`.
 - [~] The bundled Tailscale, Dropbox and LocalSend plugins — folio:
       `plugins/*/manifest.json`. Deliberately built in rather than shipped as
       plugins: `share.rs` and `localsend.rs` do what folio's three plugins do,

@@ -22,8 +22,25 @@ pub struct Crumb {
 /// The crumbs for `location`, first to last. `home` is the person's home
 /// folder, when there is one.
 pub fn crumbs(location: &Location, home: Option<&Path>, c: &'static Copy) -> Vec<Crumb> {
+    crumbs_named(
+        location,
+        home,
+        c,
+        &files_platform::UserDirectories::default(),
+    )
+}
+
+/// The crumbs, with the person's own folders (Documents, Pictures, …)
+/// named as the sidebar names them, in the window's language: 文件, not
+/// the folder's name on disk.
+pub fn crumbs_named(
+    location: &Location,
+    home: Option<&Path>,
+    c: &'static Copy,
+    directories: &files_platform::UserDirectories,
+) -> Vec<Crumb> {
     match location {
-        Location::Local(path) => local_crumbs(path.as_path(), home, c),
+        Location::Local(path) => local_crumbs(path.as_path(), home, c, directories),
         Location::Trash(_) => vec![Crumb {
             label: c.place_trash.to_string(),
             location: Location::Trash(TrashLocation::Root),
@@ -43,7 +60,18 @@ pub fn crumbs(location: &Location, home: Option<&Path>, c: &'static Copy) -> Vec
     }
 }
 
-fn local_crumbs(path: &Path, home: Option<&Path>, c: &'static Copy) -> Vec<Crumb> {
+fn local_crumbs(
+    path: &Path,
+    home: Option<&Path>,
+    c: &'static Copy,
+    directories: &files_platform::UserDirectories,
+) -> Vec<Crumb> {
+    let named = |at: &Path| {
+        directories.sidebar().into_iter().find_map(|resolved| {
+            (resolved.location.as_local_path()?.as_path() == at)
+                .then(|| crate::i18n::user_directory_label(resolved.directory, c).to_string())
+        })
+    };
     let mut out = Vec::new();
     let (start, rest): (PathBuf, &Path) = match home.and_then(|home| {
         path.strip_prefix(home)
@@ -69,7 +97,7 @@ fn local_crumbs(path: &Path, home: Option<&Path>, c: &'static Copy) -> Vec<Crumb
     for part in rest.components() {
         at.push(part);
         out.push(Crumb {
-            label: part.as_os_str().to_string_lossy().into_owned(),
+            label: named(&at).unwrap_or_else(|| part.as_os_str().to_string_lossy().into_owned()),
             location: local(&at),
         });
     }

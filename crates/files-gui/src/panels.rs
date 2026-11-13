@@ -20,6 +20,8 @@ impl FilesApp {
         let p = fluent::palette(cx);
         let rows = self.session.job_rows();
         let finished: Vec<JobRow> = self.session.finished.rows().into_iter().cloned().collect();
+        let interrupted = self.session.interrupted.list();
+        let no_interrupted = interrupted.is_empty();
         let this = cx.entity().downgrade();
 
         v_flex()
@@ -48,9 +50,22 @@ impl FilesApp {
                             }),
                     ),
             )
-            .when(rows.is_empty() && finished.is_empty(), |panel| {
-                panel.child(fluent::label(c.no_operations, BODY, p.text_secondary))
+            .when(!interrupted.is_empty(), |panel| {
+                panel.child(fluent::label(
+                    c.interrupted_heading,
+                    CAPTION,
+                    p.text_secondary,
+                ))
             })
+            .children(
+                interrupted
+                    .into_iter()
+                    .map(|job| self.interrupted_card(job, cx)),
+            )
+            .when(
+                rows.is_empty() && finished.is_empty() && no_interrupted,
+                |panel| panel.child(fluent::label(c.no_operations, BODY, p.text_secondary)),
+            )
             .children(rows.into_iter().map(|row| self.job_card(row, cx)))
             .when(!finished.is_empty(), |panel| {
                 panel.child(div().pt(px(8.0)).child(fluent::label(
@@ -60,6 +75,74 @@ impl FilesApp {
                 )))
             })
             .children(finished.into_iter().map(|row| self.finished_card(row, cx)))
+            .into_any_element()
+    }
+
+    /// A copy or move an earlier run did not finish: where it was going,
+    /// what is left, Resume and Dismiss.
+    fn interrupted_card(
+        &self,
+        job: crate::interrupted::InterruptedJob,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use better_ui::fluent::{self, BODY_STRONG, CAPTION, button::Button as KitButton};
+        let c = copy(self.locale());
+        let p = fluent::palette(cx);
+        let folder = job
+            .destination
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| job.destination.to_string_lossy().into_owned());
+        let title = if job.moving {
+            c.interrupted_move
+        } else {
+            c.interrupted_copy
+        }
+        .replace("{folder}", &folder);
+        let id = job.id;
+        let resume = {
+            let this = cx.entity().downgrade();
+            KitButton::accent(
+                SharedString::from(format!("interrupted-resume-{id}")),
+                c.interrupted_resume,
+            )
+            .on_click(move |_window, cx| {
+                let _ = this.update(cx, |app, cx| {
+                    app.session.resume_interrupted(id);
+                    cx.notify();
+                });
+            })
+        };
+        let dismiss = {
+            let this = cx.entity().downgrade();
+            KitButton::standard(
+                SharedString::from(format!("interrupted-dismiss-{id}")),
+                c.interrupted_dismiss,
+            )
+            .on_click(move |_window, cx| {
+                let _ = this.update(cx, |app, cx| {
+                    app.session.dismiss_interrupted(id);
+                    cx.notify();
+                });
+            })
+        };
+        v_flex()
+            .w_full()
+            .min_w_0()
+            .gap(px(6.0))
+            .p(px(12.0))
+            .rounded(fluent::radius::MD)
+            .bg(p.card)
+            .border_1()
+            .border_color(p.card_stroke)
+            .child(fluent::label(title, BODY_STRONG, p.text_primary).truncate())
+            .child(fluent::label(
+                c.interrupted_remaining
+                    .replace("{count}", &job.remaining.to_string()),
+                CAPTION,
+                p.text_secondary,
+            ))
+            .child(h_flex().gap(px(8.0)).child(resume).child(dismiss))
             .into_any_element()
     }
 
@@ -132,15 +215,21 @@ impl FilesApp {
                 .status(status),
             )
             .child(fluent::label(
-                format!(
-                    "{} · {} · {} {} · {} {}",
-                    row.items_label,
-                    row.bytes_label,
-                    c.throughput,
-                    row.throughput_label,
-                    c.remaining,
-                    row.remaining_label
-                ),
+                {
+                    let mut line = format!(
+                        "{} · {} · {} {}",
+                        row.items_label, row.bytes_label, c.throughput, row.throughput_label,
+                    );
+                    // With no estimate yet the phrase stands alone ("Remaining"
+                    // in front of it read as a broken sentence); a finished job
+                    // has none.
+                    if row.remaining_label == c.confidence_none {
+                        line.push_str(&format!(" · {}", row.remaining_label));
+                    } else if !row.remaining_label.is_empty() {
+                        line.push_str(&format!(" · {} {}", c.remaining, row.remaining_label));
+                    }
+                    line
+                },
                 CAPTION,
                 p.text_secondary,
             ))
@@ -253,23 +342,63 @@ impl FilesApp {
                 BODY_STRONG,
                 p.text_primary,
             ))
+            // The clashing name first, then where each one is: long paths
+            // keep both ends ("/home/…/Reports"), the part that tells them
+            // apart.
+            .child(fluent::label(
+                conflict
+                    .destination
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| conflict.destination.to_string_lossy().into_owned()),
+                BODY_STRONG,
+                p.text_primary,
+            ))
             .child(fluent::label(conflict.title.clone(), BODY, p.text_primary))
-            .child(
+            .children(conflict.source.as_ref().map(|source| {
                 fluent::label(
-                    conflict.destination.to_string_lossy().into_owned(),
+                    format!(
+                        "{} {}",
+                        c.conflict_from,
+                        source.parent().unwrap_or(source).to_string_lossy()
+                    ),
                     CAPTION,
                     p.text_secondary,
                 )
-                .truncate(),
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis_middle()
+            }))
+            .child(
+                fluent::label(
+                    format!(
+                        "{} {}",
+                        c.conflict_into,
+                        conflict
+                            .destination
+                            .parent()
+                            .unwrap_or(&conflict.destination)
+                            .to_string_lossy()
+                    ),
+                    CAPTION,
+                    p.text_secondary,
+                )
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis_middle(),
             )
             .children(note.map(|note| fluent::label(note, CAPTION, p.text_secondary)))
             .child(
-                KitButton::toggle(
+                better_ui::fluent::toggle::CheckBox::new(
                     SharedString::from(format!("apply-remaining-{}", id.value())),
-                    c.apply_to_remaining,
-                    apply,
+                    if apply {
+                        better_ui::fluent::toggle::CheckState::Checked
+                    } else {
+                        better_ui::fluent::toggle::CheckState::Unchecked
+                    },
                 )
-                .on_click(move |_window, cx| {
+                .label(c.apply_to_remaining)
+                .on_change(move |_state, _window, cx| {
                     let _ = toggle.update(cx, |app, cx| {
                         app.apply_to_remaining = !app.apply_to_remaining;
                         cx.notify();
@@ -406,11 +535,10 @@ impl FilesApp {
                 column = column
                     .child(fluent::label(
                         format!(
-                            "{}: {} · {} {}",
+                            "{}: {} · {}",
                             c.preview_encoding,
                             text.encoding.as_str(),
-                            text.lines,
-                            c.item_count
+                            crate::i18n::counted(text.lines, c.line_one, c.line_count)
                         ),
                         CAPTION,
                         p.text_secondary,
@@ -593,7 +721,7 @@ impl FilesApp {
 
     pub(crate) fn dialog(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         use better_ui::fluent::{
-            self, BODY,
+            self, BODY, BODY_STRONG,
             dialog::{ContentDialog, DefaultButton, DialogButtons, DialogResult},
             text_box::TextBox,
         };
@@ -685,8 +813,28 @@ impl FilesApp {
                     )
                     .child(TextBox::new("format-name", &self.dialog_input).header(c.format_name))
             }
-            PendingDialog::WriteImage { .. } => {
-                content.child(fluent::label(c.format_warning, BODY, p.critical))
+            PendingDialog::WriteImage {
+                device_label,
+                volumes,
+                ..
+            } => {
+                let mut content = content.child(fluent::label(
+                    c.write_image_warning.replace("{device}", device_label),
+                    BODY,
+                    p.critical,
+                ));
+                if !volumes.is_empty() {
+                    content = content
+                        .child(fluent::label(
+                            c.write_image_volumes,
+                            BODY_STRONG,
+                            p.text_primary,
+                        ))
+                        .children(volumes.iter().map(|volume| {
+                            fluent::label(format!("• {volume}"), BODY, p.text_primary)
+                        }));
+                }
+                content
             }
             _ => content.child(TextBox::new("dialog-field", &self.dialog_input)),
         };

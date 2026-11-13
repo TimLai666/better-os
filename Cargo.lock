@@ -2100,8 +2100,10 @@ dependencies = [
  "gpui_platform",
  "image",
  "libc",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "smol",
  "socket2",
  "storage-core",
@@ -2109,7 +2111,6 @@ dependencies = [
  "storage-service",
  "tempfile",
  "tokio",
- "ureq",
  "zbus",
 ]
 
@@ -2153,6 +2154,7 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-video",
  "image",
+ "libc",
  "md-5",
  "png 0.18.1",
  "ruzstd",

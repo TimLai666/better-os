@@ -34,12 +34,16 @@ ruzstd.workspace = true
 # GStreamer libraries they call are LGPL, linked dynamically from the system
 # (the package depends on the base plugins). The decoders are whatever
 # GStreamer plugins are installed; a missing one is said plainly.
+# A converter or thumbnailer that times out is ended with everything it
+# started (its process group). Already in the lockfile.
+libc = "0.2"
+# A private folder for an installed thumbnailer's output.
+tempfile.workspace = true
 gstreamer = "0.25"
 gstreamer-video = "0.25"
 gstreamer-app = "0.25"
 
 [dev-dependencies]
-tempfile.workspace = true
 
 [[bench]]
 name = "preview"

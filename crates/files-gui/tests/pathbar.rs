@@ -1,5 +1,6 @@
 //! The address bar's crumbs: Home first under home, `/` first elsewhere.
 
+use std::fs;
 use std::path::Path;
 
 use files_core::{Location, TrashLocation};
@@ -165,4 +166,30 @@ mod completion {
             None
         );
     }
+}
+
+/// The person's own folders are named in the path bar as the sidebar names
+/// them, in the window's language.
+#[test]
+fn the_persons_folders_are_named_as_the_sidebar_names_them() {
+    use files_gui::i18n::user_directory_label;
+    use files_gui::pathbar::crumbs_named;
+    use files_platform::{UserDirectories, UserDirectory};
+    let home = tempfile::tempdir().unwrap();
+    fs::create_dir_all(home.path().join("Documents/reports")).unwrap();
+    let directories = UserDirectories::from_values(Some(home.path()), None);
+    let location = Location::local(home.path().join("Documents/reports")).unwrap();
+    let labels: Vec<String> = crumbs_named(&location, Some(home.path()), &ZH_TW, &directories)
+        .into_iter()
+        .map(|crumb| crumb.label)
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            ZH_TW.place_home.to_string(),
+            user_directory_label(UserDirectory::Documents, &ZH_TW).to_string(),
+            "reports".to_string()
+        ]
+    );
+    assert_ne!(labels[1], "Documents");
 }

@@ -145,6 +145,9 @@ pub struct MimeDescriptions {
     language: String,
     names: std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
     generic: std::sync::OnceLock<std::collections::HashMap<String, String>>,
+    /// shared-mime-info's own translations, for a database whose XML was
+    /// stripped of them (Ubuntu moves them to `locale-langpack`).
+    catalog: std::sync::OnceLock<std::collections::HashMap<String, String>>,
 }
 
 impl MimeDescriptions {
@@ -156,6 +159,7 @@ impl MimeDescriptions {
             language: language.into(),
             names: std::sync::Mutex::new(std::collections::HashMap::new()),
             generic: std::sync::OnceLock::new(),
+            catalog: std::sync::OnceLock::new(),
         }
     }
 
@@ -178,12 +182,63 @@ impl MimeDescriptions {
         let found = self.data_dirs.iter().find_map(|dir| {
             let text =
                 std::fs::read_to_string(dir.join("mime").join(format!("{mime}.xml"))).ok()?;
-            comment_for(&text, &self.language)
+            let localized = comment_for(&text, &self.language)?;
+            let plain = comment_for(&text, "");
+            if plain.as_ref() != Some(&localized) || self.is_english() {
+                return Some(localized);
+            }
+            // The XML had no translation: shared-mime-info's catalog may.
+            // Ubuntu's XML capitalizes ("Plain text document") where the
+            // catalog does not ("plain text document"): matched by case.
+            Some(
+                self.catalog()
+                    .get(&localized.to_lowercase())
+                    .cloned()
+                    .unwrap_or(localized),
+            )
         });
         if let Ok(mut names) = self.names.lock() {
             names.insert(mime.to_string(), found.clone());
         }
         found
+    }
+
+    fn is_english(&self) -> bool {
+        self.language.is_empty() || self.language == "C" || self.language.starts_with("en")
+    }
+
+    /// shared-mime-info's message catalog for the language, from
+    /// `<data dir>/locale-langpack/<lang>/LC_MESSAGES/shared-mime-info.mo`
+    /// or `<data dir>/locale/…`, the exact tag first, then the language.
+    fn catalog(&self) -> &std::collections::HashMap<String, String> {
+        self.catalog.get_or_init(|| {
+            if self.is_english() {
+                return std::collections::HashMap::new();
+            }
+            let tag = self.language.split(['.', '@']).next().unwrap_or("");
+            let base = tag.split('_').next().unwrap_or("");
+            for language in [tag, base] {
+                for dir in &self.data_dirs {
+                    for tree in ["locale-langpack", "locale"] {
+                        let path = dir
+                            .join(tree)
+                            .join(language)
+                            .join("LC_MESSAGES/shared-mime-info.mo");
+                        if let Ok(bytes) = std::fs::read(&path) {
+                            let catalog: std::collections::HashMap<String, String> =
+                                read_mo(&bytes)
+                                    .into_iter()
+                                    .map(|(original, text)| (original.to_lowercase(), text))
+                                    .collect();
+                            if !catalog.is_empty() {
+                                return catalog;
+                            }
+                        }
+                    }
+                }
+            }
+            std::collections::HashMap::new()
+        })
     }
 
     /// The themed icon names for `mime`, most specific first.
@@ -214,6 +269,50 @@ impl MimeDescriptions {
         }
         names
     }
+}
+
+/// The messages in a GNU gettext `.mo` catalog: original to translation.
+/// A file that is not one, or is cut short, gives what could be read.
+pub fn read_mo(bytes: &[u8]) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let word = |at: usize, little: bool| -> Option<u32> {
+        let raw: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
+        Some(if little {
+            u32::from_le_bytes(raw)
+        } else {
+            u32::from_be_bytes(raw)
+        })
+    };
+    let little = match word(0, true) {
+        Some(0x9504_12de) => true,
+        Some(0xde12_0495) => false,
+        _ => return out,
+    };
+    let (Some(count), Some(originals), Some(translations)) =
+        (word(8, little), word(12, little), word(16, little))
+    else {
+        return out;
+    };
+    let text = |table: u32, index: u32| -> Option<&str> {
+        let entry = table as usize + index as usize * 8;
+        let length = word(entry, little)? as usize;
+        let offset = word(entry + 4, little)? as usize;
+        std::str::from_utf8(bytes.get(offset..offset.checked_add(length)?)?).ok()
+    };
+    for index in 0..count.min(1_000_000) {
+        if let (Some(original), Some(translation)) =
+            (text(originals, index), text(translations, index))
+            && !original.is_empty()
+            && !translation.is_empty()
+        {
+            // A context, if any, is before a 0x04; plurals after a NUL.
+            let original = original.rsplit('\u{4}').next().unwrap_or(original);
+            let original = original.split('\0').next().unwrap_or(original);
+            let translation = translation.split('\0').next().unwrap_or(translation);
+            out.insert(original.to_string(), translation.to_string());
+        }
+    }
+    out
 }
 
 /// `media/subtype` with no path characters, so a type name can never point a
@@ -418,5 +517,76 @@ mod tests {
             vec!["image-png".to_string(), "image-x-generic".to_string()]
         );
         assert!(names.icon_names("nonsense").is_empty());
+    }
+
+    /// A little-endian gettext catalog of `(original, translation)` pairs.
+    fn mo(pairs: &[(&str, &str)]) -> Vec<u8> {
+        let count = pairs.len() as u32;
+        let header = 28u32;
+        let originals = header;
+        let translations = originals + count * 8;
+        let mut strings_at = translations + count * 8;
+        let mut tables = (Vec::new(), Vec::new());
+        let mut strings = Vec::new();
+        for (original, translation) in pairs {
+            for (text, table) in [(original, &mut tables.0), (translation, &mut tables.1)] {
+                table.extend_from_slice(&(text.len() as u32).to_le_bytes());
+                table.extend_from_slice(&strings_at.to_le_bytes());
+                strings.extend_from_slice(text.as_bytes());
+                strings.push(0);
+                strings_at += text.len() as u32 + 1;
+            }
+        }
+        let mut out = Vec::new();
+        for value in [0x9504_12de_u32, 0, count, originals, translations, 0, 0] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend(tables.0);
+        out.extend(tables.1);
+        out.extend(strings);
+        out
+    }
+
+    /// Ubuntu's database has no translations in its XML; they are in the
+    /// language pack's catalog, which is where 純文字文件 comes from.
+    #[test]
+    fn a_type_the_xml_does_not_translate_is_read_from_the_language_pack() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("share");
+        std::fs::create_dir_all(data.join("mime/text")).unwrap();
+        std::fs::write(
+            data.join("mime/text/plain.xml"),
+            r#"<?xml version="1.0"?><mime-type xmlns="http://www.freedesktop.org/standards/shared-mime-info" type="text/plain">
+  <comment>Plain text document</comment>
+  <comment xml:lang="de">Einfaches Textdokument</comment>
+</mime-type>"#,
+        )
+        .unwrap();
+        let catalog = data.join("locale-langpack/zh_TW/LC_MESSAGES");
+        std::fs::create_dir_all(&catalog).unwrap();
+        std::fs::write(
+            catalog.join("shared-mime-info.mo"),
+            mo(&[
+                // In lower case, as Ubuntu's catalog has it.
+                ("plain text document", "純文字文件"),
+                ("PDF document", "PDF 文件"),
+            ]),
+        )
+        .unwrap();
+
+        let zh = MimeDescriptions::new(vec![data.clone()], "zh_TW");
+        assert_eq!(zh.describe("text/plain").as_deref(), Some("純文字文件"));
+        // A translation in the XML still wins, and English stays English.
+        let de = MimeDescriptions::new(vec![data.clone()], "de");
+        assert_eq!(
+            de.describe("text/plain").as_deref(),
+            Some("Einfaches Textdokument")
+        );
+        let en = MimeDescriptions::new(vec![data], "en");
+        assert_eq!(
+            en.describe("text/plain").as_deref(),
+            Some("Plain text document")
+        );
+        assert!(read_mo(b"not a catalog").is_empty());
     }
 }

@@ -40,6 +40,9 @@ pub trait Storage {
     #[zbus(signal)]
     fn device_state_changed(&self, object_path: String, state_json: String) -> zbus::Result<()>;
 
+    #[zbus(signal)]
+    fn image_progress(&self, object_path: String, written: u64, total: u64) -> zbus::Result<()>;
+
     #[zbus(property)]
     fn protocol_version(&self) -> zbus::Result<u32>;
 }
@@ -202,12 +205,15 @@ impl StorageClient {
         self.proxy.format(&json).await.map_err(map_call_error)
     }
 
-    /// Writes a disk image to the drive a volume is on.
+    /// Writes a disk image to a whole drive (its own block device, as
+    /// `whole_disk` reports say). `progress` hears the bytes written and
+    /// the image's length as the service signals them.
     pub async fn write_image(
         &self,
         object_path: &str,
         image: &std::path::Path,
         erase_confirmed: bool,
+        mut progress: impl FnMut(u64, u64),
     ) -> Result<u64, ClientError> {
         let json = crate::protocol::WriteImageRequest {
             protocol_version: crate::protocol::PROTOCOL_VERSION,
@@ -216,7 +222,34 @@ impl StorageClient {
             erase_confirmed,
         }
         .to_json()?;
-        self.proxy.write_image(&json).await.map_err(map_call_error)
+        // Subscribed before the call, so no early signal is missed.
+        let mut signals = self
+            .proxy
+            .receive_image_progress()
+            .await
+            .map_err(|error| ClientError::Transport(error.to_string()))?;
+        let call = self.proxy.write_image(&json);
+        tokio::pin!(call);
+        let mut listening = true;
+        loop {
+            let next = std::future::poll_fn(|context| {
+                use zbus::export::futures_core::Stream;
+                std::pin::Pin::new(&mut signals).poll_next(context)
+            });
+            tokio::select! {
+                result = &mut call => return result.map_err(map_call_error),
+                signal = next, if listening => match signal {
+                    Some(signal) => {
+                        if let Ok(args) = signal.args()
+                            && args.object_path() == object_path
+                        {
+                            progress(*args.written(), *args.total());
+                        }
+                    }
+                    None => listening = false,
+                },
+            }
+        }
     }
 
     /// Tells the service a write is starting, so readiness is refused while it

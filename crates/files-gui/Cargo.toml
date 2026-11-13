@@ -32,9 +32,11 @@ files-platform.workspace = true
 # org.freedesktop.FileManager1, so "Show in folder" in other applications
 # opens Better Files. Already in the workspace through the storage service.
 zbus.workspace = true
-# LocalSend's protocol: HTTPS to the receiver and a multicast announcement.
-# Both crates are already built for Better Manager and the async runtime.
-ureq = "3"
+# LocalSend's protocol: HTTPS to the receiver, its certificate pinned to the
+# fingerprint it announced, and a multicast announcement. rustls (with ring),
+# sha2 and socket2 are already built for Better Manager and the async runtime.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+sha2 = "0.10"
 socket2 = { version = "0.6", features = ["all"] }
 # Plugins run in a process group of their own, ended whole.
 libc = "0.2"

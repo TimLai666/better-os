@@ -60,3 +60,18 @@ fn dropbox_state_and_links_are_read_from_its_output() {
     );
     assert_eq!(parse_sharelink("Dropbox isn't running!\n"), None);
 }
+
+/// Two phones that both call themselves "localhost" are listed by their
+/// MagicDNS names, so the sidebar never shows two rows with one name.
+#[test]
+fn machines_with_the_same_name_are_told_apart_by_their_dns_names() {
+    let status = r#"{"BackendState":"Running","Peer":{
+        "a":{"HostName":"localhost","DNSName":"pixel.tail1.ts.net.","Online":false,"OS":"android"},
+        "b":{"HostName":"localhost","DNSName":"iphone.tail1.ts.net.","Online":false,"OS":"iOS"},
+        "c":{"HostName":"studio","DNSName":"studio.tail1.ts.net.","Online":true,"OS":"linux"}}}"#;
+    let names: Vec<String> = parse_status(status)
+        .into_iter()
+        .map(|machine| machine.name)
+        .collect();
+    assert_eq!(names, ["studio", "iphone", "pixel"]);
+}

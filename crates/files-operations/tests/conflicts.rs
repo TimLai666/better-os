@@ -517,3 +517,58 @@ fn a_replace_that_cannot_reach_the_trash_leaves_the_old_file_alone() {
     assert_ne!(finished.state, JobState::Completed);
     assert_eq!(fs::read(destination.join("report.txt")).unwrap(), b"old");
 }
+
+/// Replace or Merge answered for a clash with the source itself, or with a
+/// folder the source is inside: refused, and nothing reaches the trash.
+#[test]
+fn replace_or_merge_onto_the_source_or_its_own_folder_is_refused_before_anything_moves() {
+    for resolution in [Resolution::Overwrite, Resolution::Merge] {
+        let root = tempfile::tempdir().unwrap();
+        let trash = root.path().join("Trash");
+        // `work/a/a` copied into `work` would land on `work/a`, the folder
+        // it is in.
+        let work = root.path().join("work");
+        let inner = work.join("a/a");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(inner.join("keep.txt"), b"precious").unwrap();
+        // `work/note.txt` copied into `work` lands on itself.
+        fs::write(work.join("note.txt"), b"also precious").unwrap();
+
+        let engine = support::engine_with_trash(&trash);
+        for (source, clash) in [
+            (inner.clone(), work.join("a")),
+            (work.join("note.txt"), work.join("note.txt")),
+        ] {
+            let handle = engine
+                .submit(JobSpec::new(Operation::Copy {
+                    sources: vec![local(&source)],
+                    destination: local(&work),
+                }))
+                .unwrap();
+            let parked = wait_for(&engine, handle.id(), |snapshot| {
+                snapshot.state == JobState::WaitingOnConflict || snapshot.state.is_terminal()
+            });
+            if parked.state == JobState::WaitingOnConflict {
+                assert_eq!(parked.conflict.unwrap().destination, clash);
+                engine.resolve(handle.id(), ConflictDecision::once(resolution));
+            }
+            let finished = engine.wait(handle.id(), support::LIMIT).unwrap();
+            assert!(
+                finished
+                    .failures
+                    .iter()
+                    .any(|(_, error)| error.key() == "files.operation.error.replaces_source"),
+                "{resolution:?} onto {}: {:?}",
+                clash.display(),
+                finished.failures
+            );
+        }
+        assert_eq!(fs::read(inner.join("keep.txt")).unwrap(), b"precious");
+        assert_eq!(fs::read(work.join("note.txt")).unwrap(), b"also precious");
+        assert!(
+            trashed(&trash).is_empty(),
+            "{resolution:?}: {:?}",
+            trashed(&trash)
+        );
+    }
+}

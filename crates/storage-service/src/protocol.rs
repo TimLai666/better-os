@@ -239,6 +239,24 @@ pub struct DeviceReport {
     pub mount_point: Option<String>,
     pub policy: RemovalPolicy,
     pub state: StateReport,
+    /// The drive this device is on (its UDisks2 drive object). Every volume
+    /// on one drive has the same one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drive: Option<String>,
+    /// The drive's vendor and model, as it reports them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drive_name: Option<String>,
+    /// The device's size in bytes.
+    #[serde(default)]
+    pub size: u64,
+    /// The drive's own block device rather than a partition on it: what a
+    /// disk image is written to.
+    #[serde(default)]
+    pub whole_disk: bool,
+    /// An image is being written to this device's drive; everything else
+    /// on it is refused until that ends.
+    #[serde(default)]
+    pub erasing: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

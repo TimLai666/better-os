@@ -418,6 +418,8 @@ fn synthetic_record(root: &Path, id: u64, count: usize) -> files_operations::Job
         log,
         updated_at: 1,
         checksums: Vec::new(),
+        resume: None,
+        folder_answers: Vec::new(),
     }
 }
 

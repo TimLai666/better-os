@@ -9,8 +9,30 @@ use files_preview::media::{AudioOut, MediaEvent, Player};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 
+/// Points GStreamer's plugin registry (and any other cache) at a folder of
+/// this test process's own, so running the tests never writes to the
+/// person's `~/.cache/gstreamer-1.0`. Runs once, before GStreamer starts.
+fn isolate() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let folder = std::env::temp_dir().join(format!(
+            "better-files-gstreamer-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&folder);
+        // SAFETY: every test calls this before anything else, `Once` makes
+        // the others wait until it returns, and nothing in these tests reads
+        // the environment from another thread meanwhile.
+        unsafe {
+            std::env::set_var("GST_REGISTRY", folder.join("registry.bin"));
+            std::env::set_var("XDG_CACHE_HOME", &folder);
+        }
+    });
+}
+
 #[test]
 fn a_missing_codec_is_reported_by_name() {
+    isolate();
     gst::init().unwrap();
     let wavparse = gst::ElementFactory::find("wavparse").expect("the good plugins are installed");
     wavparse.set_rank(gst::Rank::NONE);
@@ -34,7 +56,7 @@ fn a_missing_codec_is_reported_by_name() {
     bytes.extend_from_slice(&[0; 1600]);
     std::fs::write(&wav, bytes).unwrap();
 
-    let mut player = Player::open(&wav, AudioOut::Discard).unwrap();
+    let mut player = Player::open(&wav, AudioOut::Discard, (1920, 1080)).unwrap();
     let started = Instant::now();
     let mut events = Vec::new();
     while started.elapsed() < Duration::from_secs(10)
