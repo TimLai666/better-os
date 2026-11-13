@@ -34,6 +34,16 @@ with HOME and XDG directories in a temporary folder:
   repository list and the branch list do not show them: a branch checked
   out in another worktree is listed as an ordinary branch, and switching to
   it fails in Git.
+- **Amend.** The owner, 2026-11-14: choosing "Amend last commit" does not
+  put the last commit's message into the commit form; it appears only after
+  "Fetch origin". `Session::amend_last` (`git-gui/src/session.rs`) fills
+  the form and bumps its generation, but `GitApp::act`/`act_with`
+  (`git-gui/src/app.rs`) call `drive` and `cx.notify` without
+  `after_change`, and `sync_form`, which copies the form into the text
+  fields, only runs from `after_change` after a background job finishes.
+  When the history has not been loaded yet, `amend_last` also returns early
+  without setting `amend`, and the checkbox handler only switches tabs to
+  load it, so nothing fills the form when the history arrives.
 - **Tabs.** Better Git's "Changes / History" and the branch flyout's
   "Branches / Pull requests" use `SelectorBar` and look like tabs in the
   sandbox. The owner's report covers all apps, so the controls that switch
@@ -70,6 +80,13 @@ with HOME and XDG directories in a temporary folder:
   from the signed-in GitHub account, and writes them with
   `git config --global` itself after showing what it will write. It never
   tells the person to type a command.
+- Amend: the message and co-authors appear in the form at once, from the
+  checkbox, the History menu, and the Repository menu. Every session change
+  made by a click or key reaches the text fields in the same frame (the
+  action path runs `after_change`, not only finished jobs). When the history
+  is not loaded yet, the form says it is reading the last commit, reads it
+  directly (`git log -1`), and fills in when it arrives; amend stays ticked.
+  Tests for each entry point.
 - Worktrees: the repository list shows each repository's linked worktrees
   under it (path and branch), and choosing one opens it. In the branch list
   a branch checked out in another worktree says so ("Open in its worktree")
@@ -84,6 +101,9 @@ with HOME and XDG directories in a temporary folder:
 - [ ] Better Git: "Create" with an empty name, a name that exists, and a
       path that is not empty each show their reason; with no identity the
       identity step appears and the repository is created afterwards.
+- [ ] Better Git: ticking "Amend last commit" right after opening a
+      repository fills the summary and description in the same moment;
+      screenshot before any fetch.
 - [ ] Better Git: a repository with two linked worktrees shows them in the
       repository list and marks their branches in the branch list.
 - [ ] Tests never touch the person's real HOME, `~/.gitconfig`, or keyring.
