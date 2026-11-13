@@ -1,6 +1,6 @@
 # Ticket 84 — Control center: the shell, Home, and Settings
 
-**Blocked by:** 80, 83 · **Status:** merged, not released
+**Blocked by:** 80, 83 · **Status:** released in v0.2.12
 
 ## Why
 
