@@ -146,6 +146,17 @@ with HOME and XDG directories in a temporary folder:
   overlaps a running Git operation and never runs more than one at a time.
   Tests: a file created, edited, deleted, and staged from outside shows up
   without any click; an ignored directory's churn causes no refresh.
+- Shortcut buttons that are always there (owner, 2026-11-14, with a
+  screenshot of GitHub Desktop's "No local changes" page): "Open in
+  {editor}" (Ctrl+Shift+A), "Show in Better Files" (Ctrl+Shift+F), "Open in
+  Terminal" (Ctrl+`), and "View on GitHub" (Ctrl+Shift+G, only for a
+  repository hosted on GitHub or GitHub Enterprise) sit in the toolbar's
+  right side, after Fetch/Push, whenever a repository is open, with or
+  without changes. Each has its icon and label; below about 1200px window
+  width they become icon buttons with tooltips naming the action and its
+  shortcut. The editor's name comes from Settings (as GitHub Desktop's
+  "Open in GNOME Text Editor"). The existing "No local changes" page keeps
+  its suggestion cards as well.
 - Worktrees: the repository list shows each repository's linked worktrees
   under it (path and branch), and choosing one opens it. In the branch list
   a branch checked out in another worktree says so ("Open in its worktree")
