@@ -13,8 +13,10 @@ taskbar marks the app's icon. The banner follows the app's notification
 policy (`MessageTray.NotificationPolicy.newForApp`), so turning off the
 app's banners in GNOME Settings hides it, but nothing controls the rest.
 
-The owner, 2026-11-14, asked for a Better Manager switch for this, set
-separately for each app.
+The owner reported the Claude Desktop behaviour to Anthropic on
+2026-11-14 (feedback id `30a5398f-1a6b-49a6-9621-290a497b98ab`) and asked
+for a Better Manager switch for this, set separately for each app, so any
+app that does the same can be quieted.
 
 ## What to build
 
