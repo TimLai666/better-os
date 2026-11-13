@@ -121,3 +121,40 @@ fn the_package_ships_the_command_line_the_refusal_names() {
         "the packaging build must build the command line"
     );
 }
+
+/// An unknown page is refused by name, in both languages, before any window
+/// or session bus is touched: the process exits on its own with status 2.
+#[test]
+fn an_unknown_page_is_refused_without_opening_a_window() {
+    for arguments in [&["--page", "bogus"][..], &["--page=bogus"], &["--page"]] {
+        let run = run(arguments);
+        assert!(!run.timed_out, "{arguments:?} did not exit");
+        assert_eq!(run.status, Some(2), "{arguments:?}: {}", run.stderr);
+        assert!(run.stderr.contains("這一頁"), "{}", run.stderr);
+        assert!(run.stderr.contains("there is no page"), "{}", run.stderr);
+        assert!(run.stderr.contains("keep-awake/until"), "{}", run.stderr);
+        assert!(!run.stderr.contains("panicked"), "{}", run.stderr);
+    }
+}
+
+/// `--help` documents `--page` and every page it takes.
+#[test]
+fn help_documents_the_page_option() {
+    let run = run(&["--help"]);
+    assert_eq!(run.status, Some(0));
+    assert!(run.stdout.contains("--page PAGE"), "{}", run.stdout);
+    for name in [
+        "home",
+        "system",
+        "touchpad",
+        "keep-awake",
+        "keep-awake/until",
+        "apps",
+        "updates",
+        "default-apps",
+        "fixes",
+        "settings",
+    ] {
+        assert!(run.stdout.contains(name), "{name}: {}", run.stdout);
+    }
+}

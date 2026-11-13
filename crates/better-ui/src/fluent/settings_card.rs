@@ -20,9 +20,10 @@ use gpui::{
 };
 use gpui_component::{Icon, IconName};
 
+use super::info_bar::{Severity, severity_icon};
 use super::{
-    BODY, CAPTION, Interaction, Key, Palette, ShownState, keyed_focus, palette, radius, resolve,
-    shows_focus, text, with_focus_ring,
+    BODY, CAPTION, Interaction, Key, Palette, SUBTITLE, ShownState, keyed_focus, palette, radius,
+    resolve, shows_focus, text, with_focus_ring,
 };
 use super::{Handler, ValueHandler};
 
@@ -39,8 +40,17 @@ pub fn card_fill(clickable: bool, state: Interaction, p: &Palette) -> gpui::Rgba
     }
 }
 
+/// What stands at a card's leading edge.
+#[derive(Clone)]
+enum CardLeading {
+    Icon(IconName),
+    /// The info bar's status icon, for a card that reports a state (Home's
+    /// attention cards).
+    Status(Severity),
+}
+
 fn header_block(
-    icon: Option<IconName>,
+    leading: Option<CardLeading>,
     header: SharedString,
     description: Option<SharedString>,
     disabled: bool,
@@ -56,11 +66,21 @@ fn header_block(
         .items_center()
         .flex_1()
         .min_w_0()
-        .children(icon.map(|icon| {
+        .children(leading.map(|leading| {
+            let mark = match leading {
+                CardLeading::Icon(icon) => Icon::new(icon)
+                    .size(px(20.0))
+                    .text_color(title)
+                    .into_any_element(),
+                CardLeading::Status(severity) => severity_icon(severity, p).into_any_element(),
+            };
             div()
                 .mr(px(20.0))
+                .w(px(20.0))
                 .flex_none()
-                .child(Icon::new(icon).size(px(20.0)).text_color(title))
+                .flex()
+                .justify_center()
+                .child(mark)
         }))
         .child(
             div()
@@ -82,7 +102,7 @@ fn header_block(
 #[derive(IntoElement)]
 pub struct SettingsCard {
     id: ElementId,
-    icon: Option<IconName>,
+    icon: Option<CardLeading>,
     header: SharedString,
     description: Option<SharedString>,
     content: Option<AnyElement>,
@@ -106,7 +126,14 @@ impl SettingsCard {
     }
 
     pub fn icon(mut self, icon: IconName) -> Self {
-        self.icon = Some(icon);
+        self.icon = Some(CardLeading::Icon(icon));
+        self
+    }
+
+    /// The info bar's status icon in place of a glyph, for a card that
+    /// reports something: an error, a warning, that all is well.
+    pub fn status(mut self, severity: Severity) -> Self {
+        self.icon = Some(CardLeading::Status(severity));
         self
     }
 
@@ -244,7 +271,7 @@ impl SettingsRow {
 #[derive(IntoElement)]
 pub struct SettingsExpander {
     id: ElementId,
-    icon: Option<IconName>,
+    icon: Option<CardLeading>,
     header: SharedString,
     description: Option<SharedString>,
     content: Option<AnyElement>,
@@ -270,7 +297,7 @@ impl SettingsExpander {
     }
 
     pub fn icon(mut self, icon: IconName) -> Self {
-        self.icon = Some(icon);
+        self.icon = Some(CardLeading::Icon(icon));
         self
     }
 
@@ -430,5 +457,87 @@ impl RenderOnce for SettingsExpander {
             root = root.child(body);
         }
         root
+    }
+}
+
+/// The banner at the top of a page that is about this computer, as Windows
+/// 11 Settings' Home and System pages open with: a card with a 48px glyph,
+/// the device's name in Subtitle over a Caption line, and something at the
+/// trailing edge (the battery). It sits in the page like any card: card
+/// fill, card stroke, 4px corners, 20px by 24px padding.
+#[derive(IntoElement)]
+pub struct DeviceBanner {
+    icon: IconName,
+    title: SharedString,
+    caption: Option<SharedString>,
+    trailing: Option<AnyElement>,
+}
+
+impl DeviceBanner {
+    pub fn new(icon: IconName, title: impl Into<SharedString>) -> Self {
+        Self {
+            icon,
+            title: title.into(),
+            caption: None,
+            trailing: None,
+        }
+    }
+
+    pub fn caption(mut self, caption: impl Into<SharedString>) -> Self {
+        self.caption = Some(caption.into());
+        self
+    }
+
+    pub fn trailing(mut self, trailing: impl IntoElement) -> Self {
+        self.trailing = Some(trailing.into_any_element());
+        self
+    }
+}
+
+impl RenderOnce for DeviceBanner {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        div()
+            .w_full()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(20.0))
+            .py(px(20.0))
+            .px(px(24.0))
+            .rounded(radius::SM)
+            .border_1()
+            .border_color(p.card_stroke)
+            .bg(p.card)
+            .child(
+                div().flex_none().child(
+                    Icon::new(self.icon)
+                        .size(px(48.0))
+                        .text_color(p.text_secondary),
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(200.0))
+                    .child(
+                        text(div(), SUBTITLE)
+                            .text_color(p.text_primary)
+                            .whitespace_normal()
+                            .child(self.title),
+                    )
+                    .children(self.caption.map(|caption| {
+                        text(div(), CAPTION)
+                            .text_color(p.text_secondary)
+                            .whitespace_normal()
+                            .child(caption)
+                    })),
+            )
+            .children(
+                self.trailing
+                    .map(|trailing| div().flex_none().child(trailing)),
+            )
     }
 }

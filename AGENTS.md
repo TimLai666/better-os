@@ -28,6 +28,24 @@ updated, verified, and rolled back through shared manager operations.
   unreleased build directly on the host or touch host system paths, package
   state, or privileged services.
 - Keep manager CLI and GUI on the same `manager-core` planning API.
+- Every Better OS background service runs because it was installed, with
+  nothing for the person to type (owner, 2026-11-12 and 2026-11-13). A new
+  service, tray, or hook is enabled and started by the install step, comes
+  back at login, can be started on demand by D-Bus activation where a client
+  asks for it. The only things that stop it are disabling the component in
+  Better Manager (it stays off, across logins, until enabled again) and
+  uninstalling it; the record decides, so a unit someone stopped by hand is
+  started again by Better Manager. A component whose service needs a manual
+  command is not done. Uninstalling removes everything the component added:
+  its services and their enablement, autostart entries, D-Bus activation
+  files, udev rules and sleep hooks, GNOME extensions it enabled, keybindings
+  and defaults it set (restored to what they were), and its caches. Nothing
+  it installed outlives it. The person's own data (rules, history, recent
+  lists, trust lists, per-folder views) is deleted too unless they untick
+  "Also delete my settings and history", a check box in the uninstall
+  confirmation that is ticked by default; unticked, it stays for a reinstall.
+  Each manifest's `paths` names that data so the manager knows what to
+  delete.
 - A component's systemd **user** units are managed by `manager-core`, never by
   a window or a command directly. `RealDriver` takes the controller through
   `with_user_units`; a driver built without one manages no units. Enabling,
@@ -133,10 +151,10 @@ GUI or dependency compiles when the relevant command was not executed.
   Better OS component has a time-to-photon figure. And the idle CPU figure is a
   headless one: nothing asks the window to repaint, so it is the launcher's own
   idle cost and not a claim about a launcher on a running desktop.
-- All nine packages are published. `v0.2.10` carries every component
+- All nine packages are published. `v0.2.12` carries every component
   `packaging/build-deb.sh` builds, for Ubuntu 22.04 and 24.04 on amd64 and
   arm64, and every shipped manifest now records the checksum of its own
-  published 0.2.10 asset, verified after re-downloading the public release. No
+  published 0.2.12 asset, verified after re-downloading the public release. No
   first party manifest carries a placeholder checksum any more;
   `components/manifests/better-files-example.yaml` is the one exception and is a
   schema fixture, not a released component. A version bump puts the placeholders
@@ -226,7 +244,7 @@ GUI or dependency compiles when the relevant command was not executed.
   `touchpad-core` emits and its benchmark baselines are the figures in
   `docs/touchpad-sensitivity-mapping.md`, but nothing runs those benchmarks —
   the same unenforced-budget gap `better-files.yaml` carries. Its checksums are
-  the published v0.2.10 ones.
+  the published v0.2.12 ones.
 - A package installs its systemd user unit and does not enable it, matching
   `better-manager-daemon`; Better Manager enables it (ticket 79). Nothing in
   dpkg stops a running user service at removal either; Better Manager stops it

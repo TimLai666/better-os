@@ -1,19 +1,38 @@
 //! Better Git: the window, and the decisions behind it.
 //!
-//! [`session`], [`i18n`], [`recent`], and the command line below hold every
-//! decision and have no GPUI in them; they are tested without a display. The
-//! window ([`run`]) only draws the session and hands its requests to a
-//! background thread, so no `git` process runs on the thread that paints.
+//! [`session`] and the modules beside it hold every decision and have no
+//! GPUI in them; they are tested without a display. The window ([`run`])
+//! only draws the session and hands its git jobs and GitHub requests to
+//! background threads, so no `git` process or network request runs on the
+//! thread that paints.
 //!
 //! git itself is reached through `git_platform::Git`. The window uses
-//! `SystemGit`; tests give the session a fake.
+//! `SystemGit`; tests give the session a fake or a real `git` in a
+//! temporary repository. GitHub is reached through `github_api`; tests use
+//! a local fake server.
 
+pub mod branches;
+pub mod changes;
+pub mod clone;
+pub mod commit;
+pub mod conflicts;
+pub mod dialogs;
+pub mod github;
+pub mod history;
 pub mod i18n;
+pub mod keys;
+pub mod notifications;
+pub mod publish;
 pub mod recent;
+pub mod remote;
+pub mod repositories;
 pub mod session;
+pub mod settings;
+pub mod trust;
 
 mod app;
 mod render;
+mod theme;
 
 #[cfg(test)]
 mod tests;
@@ -39,6 +58,14 @@ pub enum Appearance {
 }
 
 impl Appearance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+            Self::System => "system",
+        }
+    }
+
     pub fn from_argument(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "dark" => Some(Self::Dark),
@@ -55,7 +82,8 @@ pub struct StartOptions {
     /// The repository to open, from the first argument that is not a flag.
     pub path: Option<PathBuf>,
     pub locale: Locale,
-    pub appearance: Appearance,
+    /// `None` keeps the stored choice.
+    pub appearance: Option<Appearance>,
 }
 
 /// What to do with the command line.
@@ -146,7 +174,7 @@ pub fn invocation(arguments: &[OsString]) -> Start {
     let mut options = StartOptions {
         path: paths.into_iter().next().map(PathBuf::from),
         locale: Locale::System,
-        appearance: Appearance::default(),
+        appearance: None,
     };
     let mut flags = flags.iter();
     while let Some(flag) = flags.next() {
@@ -166,7 +194,7 @@ pub fn invocation(arguments: &[OsString]) -> Start {
                 None => return Start::Refuse(refusal(&format!("--lang {value}"))),
             },
             "--appearance" => match Appearance::from_argument(&value) {
-                Some(appearance) => options.appearance = appearance,
+                Some(appearance) => options.appearance = Some(appearance),
                 None => return Start::Refuse(refusal(&format!("--appearance {value}"))),
             },
             _ => {}

@@ -1,6 +1,6 @@
 # Ticket 82 — Better Launcher and the app chooser, rebuilt in Fluent and complete
 
-**Blocked by:** 80 · **Status:** merged, not released
+**Blocked by:** 80 · **Status:** released in v0.2.11
 
 ## Why
 

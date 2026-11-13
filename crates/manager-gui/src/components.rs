@@ -75,39 +75,6 @@ impl ManagerApp {
             .into_any_element()
     }
 
-    pub(crate) fn section_header(
-        &self,
-        title: &'static str,
-        subtitle: Option<&'static str>,
-        action: Option<Button>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        h_flex()
-            .w_full()
-            .min_w_0()
-            .gap_3()
-            .items_end()
-            .justify_between()
-            .flex_wrap()
-            .child(
-                v_flex()
-                    .min_w(px(220.0))
-                    .flex_1()
-                    .gap_1()
-                    .child(div().text_lg().font_semibold().child(title))
-                    .when_some(subtitle, |view, subtitle| {
-                        view.child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(subtitle),
-                        )
-                    }),
-            )
-            .when_some(action, |row, action| row.child(action))
-            .into_any_element()
-    }
-
     pub(crate) fn key_value_row(
         &self,
         label: impl IntoElement,
@@ -131,55 +98,6 @@ impl ManagerApp {
                     .child(label),
             )
             .child(div().min_w_0().text_sm().font_medium().child(value))
-            .into_any_element()
-    }
-
-    pub(crate) fn bullet_row(
-        &self,
-        icon: IconName,
-        title: &'static str,
-        detail: &'static str,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        h_flex()
-            .w_full()
-            .min_w_0()
-            .gap_3()
-            .items_start()
-            .child(
-                div()
-                    .size_7()
-                    .flex_shrink_0()
-                    .rounded_full()
-                    .bg(cx.theme().secondary)
-                    .text_color(cx.theme().primary)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(Icon::new(icon).small()),
-            )
-            .child(
-                // `flex_1` is what makes this a column of text rather than a
-                // column of single characters. Without it the wrapper's flex
-                // basis stays `auto`, a nested flex column reports its
-                // min-content width for that basis — one character wide in a
-                // language that breaks between every character — and nothing
-                // ever asks it to grow, so the row leaves the rest of its width
-                // empty. `min_w` keeps the guarantee when the row really is too
-                // narrow: the enclosing row wraps instead of squeezing.
-                v_flex()
-                    .flex_1()
-                    .min_w(px(crate::layout::STEP_LABEL_MIN_WIDTH))
-                    .gap_1()
-                    .child(div().min_w_0().text_sm().font_semibold().child(title))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(detail),
-                    ),
-            )
             .into_any_element()
     }
 

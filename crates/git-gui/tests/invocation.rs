@@ -31,7 +31,7 @@ fn no_argument_opens_an_empty_dark_window() {
     let options = opened(run(&[]));
     assert_eq!(options.path, None);
     assert_eq!(options.locale, Locale::System);
-    assert_eq!(options.appearance, Appearance::Dark);
+    assert_eq!(options.appearance, None, "no flag keeps the stored choice");
 }
 
 #[test]
@@ -47,10 +47,10 @@ fn the_first_plain_argument_is_the_repository() {
 fn flags_and_their_values_are_not_taken_for_a_path() {
     let options = opened(run(&["--lang", "zh-TW", "--appearance", "light", "/r"]));
     assert_eq!(options.locale, Locale::ZhTw);
-    assert_eq!(options.appearance, Appearance::Light);
+    assert_eq!(options.appearance, Some(Appearance::Light));
     assert_eq!(options.path, Some(PathBuf::from("/r")));
     let options = opened(run(&["--appearance=system", "--lang=en-US"]));
-    assert_eq!(options.appearance, Appearance::System);
+    assert_eq!(options.appearance, Some(Appearance::System));
     assert_eq!(options.path, None);
 }
 

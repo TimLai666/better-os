@@ -38,6 +38,50 @@ pub struct FileChange {
     pub untracked: bool,
     /// An unmerged path. `staged` and `unstaged` are both `None`.
     pub conflicted: bool,
+    /// For an unmerged path, which sides changed it.
+    pub conflict: Option<ConflictKind>,
+}
+
+/// The `XY` of an unmerged (`u`) record: what each side did to the path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConflictKind {
+    /// `UU`: both sides changed the file.
+    BothModified,
+    /// `AA`: both sides added a file at this path.
+    BothAdded,
+    /// `DD`: both sides deleted it.
+    BothDeleted,
+    /// `AU`: added by us.
+    AddedByUs,
+    /// `UA`: added by them.
+    AddedByThem,
+    /// `DU`: deleted by us, changed by them.
+    DeletedByUs,
+    /// `UD`: changed by us, deleted by them.
+    DeletedByThem,
+}
+
+impl ConflictKind {
+    /// Reads the two letters of a `u` record.
+    pub fn from_xy(xy: &[u8]) -> Option<ConflictKind> {
+        Some(match xy {
+            b"UU" => ConflictKind::BothModified,
+            b"AA" => ConflictKind::BothAdded,
+            b"DD" => ConflictKind::BothDeleted,
+            b"AU" => ConflictKind::AddedByUs,
+            b"UA" => ConflictKind::AddedByThem,
+            b"DU" => ConflictKind::DeletedByUs,
+            b"UD" => ConflictKind::DeletedByThem,
+            _ => return None,
+        })
+    }
+
+    /// True when the working-tree file holds git's conflict markers, so the
+    /// person edits it; false when one side deleted it and the choice is
+    /// keep or delete.
+    pub fn has_markers(self) -> bool {
+        matches!(self, ConflictKind::BothModified | ConflictKind::BothAdded)
+    }
 }
 
 /// Where HEAD is.
@@ -55,12 +99,17 @@ pub struct RepositoryStatus {
     pub head: BranchHead,
     /// True when the repository has no commit yet (`# branch.oid (initial)`).
     pub unborn: bool,
+    /// The commit HEAD points at (`# branch.oid`); `None` before the first
+    /// commit.
+    pub head_oid: Option<String>,
     /// The upstream branch name, when one is configured.
     pub upstream: Option<String>,
     /// Commits ahead of and behind the upstream, when git reported them.
     pub ahead_behind: Option<(u32, u32)>,
     /// Changed paths in the order git printed them.
     pub changes: Vec<FileChange>,
+    /// How many stash entries exist (`# stash N`, from `--show-stash`).
+    pub stash_count: u32,
 }
 
 /// Reads the NUL-separated output of
@@ -94,9 +143,11 @@ pub fn parse_status(output: &[u8]) -> Result<RepositoryStatus, ParseError> {
     let mut status = RepositoryStatus {
         head: BranchHead::Detached,
         unborn: false,
+        head_oid: None,
         upstream: None,
         ahead_behind: None,
         changes: Vec::new(),
+        stash_count: 0,
     };
     let mut saw_head = false;
 
@@ -117,6 +168,7 @@ pub fn parse_status(output: &[u8]) -> Result<RepositoryStatus, ParseError> {
                     unstaged,
                     untracked: false,
                     conflicted: false,
+                    conflict: None,
                 });
             }
             Some(b'2') => {
@@ -135,13 +187,16 @@ pub fn parse_status(output: &[u8]) -> Result<RepositoryStatus, ParseError> {
                     unstaged,
                     untracked: false,
                     conflicted: false,
+                    conflict: None,
                 });
             }
             Some(b'u') => {
                 let parts: Vec<&[u8]> = record.splitn(11, |&byte| byte == b' ').collect();
-                let Some(path) = parts.get(10) else {
+                let (Some(xy), Some(path)) = (parts.get(1), parts.get(10)) else {
                     return Err(malformed("`u` record has too few fields"));
                 };
+                let kind = ConflictKind::from_xy(xy)
+                    .ok_or_else(|| malformed("`u` record has an unknown `XY`"))?;
                 status.changes.push(FileChange {
                     path: path_of(path),
                     original_path: None,
@@ -149,6 +204,7 @@ pub fn parse_status(output: &[u8]) -> Result<RepositoryStatus, ParseError> {
                     unstaged: None,
                     untracked: false,
                     conflicted: true,
+                    conflict: Some(kind),
                 });
             }
             Some(b'?') => {
@@ -162,6 +218,7 @@ pub fn parse_status(output: &[u8]) -> Result<RepositoryStatus, ParseError> {
                     unstaged: None,
                     untracked: true,
                     conflicted: false,
+                    conflict: None,
                 });
             }
             Some(b'!') => {}
@@ -196,7 +253,10 @@ fn read_header(record: &[u8], status: &mut RepositoryStatus) -> Result<bool, Par
         .ok_or_else(|| malformed("header record does not start with `# `"))?;
     let (key, value) = body.split_once(' ').unwrap_or((body, ""));
     match key {
-        "branch.oid" => status.unborn = value == "(initial)",
+        "branch.oid" => {
+            status.unborn = value == "(initial)";
+            status.head_oid = (!status.unborn).then(|| value.to_string());
+        }
         "branch.head" => {
             status.head = if value == "(detached)" {
                 BranchHead::Detached
@@ -207,6 +267,7 @@ fn read_header(record: &[u8], status: &mut RepositoryStatus) -> Result<bool, Par
         }
         "branch.upstream" => status.upstream = Some(value.to_string()),
         "branch.ab" => status.ahead_behind = Some(parse_ahead_behind(value)?),
+        "stash" => status.stash_count = value.parse().unwrap_or(0),
         _ => {}
     }
     Ok(false)

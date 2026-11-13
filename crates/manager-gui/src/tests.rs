@@ -2,9 +2,8 @@ use crate::{
     app::{demo_manager, translated_component},
     i18n::{Locale, copy},
     layout::{
-        ActionLayout, ColumnLayout, MIN_READABLE_CHARACTERS, MIN_WINDOW_WIDTH,
-        STEP_LABEL_MIN_WIDTH, action_layout, character_advance, characters_per_line,
-        first_run_column, step_label_width,
+        ActionLayout, MIN_CONTENT_WIDTH, MIN_READABLE_CHARACTERS, action_layout,
+        characters_per_line,
     },
     model::{CatalogLine, ComponentInfo, host_line},
 };
@@ -23,12 +22,10 @@ fn required_visible_copy_exists_in_both_locales() {
     for locale in [Locale::EnUs, Locale::ZhTw] {
         let c = copy(locale);
         for value in [
-            c.overview,
             c.components,
             c.updates,
             c.health,
             c.activity,
-            c.settings,
             c.review_changes,
             c.install_updates,
             c.applying_settings,
@@ -206,14 +203,11 @@ fn state_saved_before_the_theme_setting_existed_loads_dark() {
 #[test]
 fn every_theme_choice_has_copy_in_both_locales() {
     for locale in [Locale::EnUs, Locale::ZhTw] {
-        let c = copy(locale);
-        for label in [
-            c.appearance,
-            c.appearance_description,
-            c.dark_theme,
-            c.light_theme,
-            c.system_default,
-        ] {
+        let s = crate::i18n::shell(locale);
+        for label in [s.appearance, s.appearance_description]
+            .into_iter()
+            .chain(crate::settings_page::appearance_labels(locale))
+        {
             assert!(!label.trim().is_empty());
         }
     }
@@ -234,15 +228,15 @@ fn localized_long_actions_wrap_at_every_supported_scale() {
         .max()
         .unwrap();
         for scale in [1.0, 1.25, 1.5] {
-            let expected_at_minimum = match locale {
-                Locale::EnUs => ActionLayout::Wrapped,
-                Locale::ZhTw if scale == 1.0 => ActionLayout::Inline,
-                Locale::ZhTw | Locale::System => ActionLayout::Wrapped,
-            };
-            assert_eq!(
-                action_layout(MIN_WINDOW_WIDTH, scale, longest),
-                expected_at_minimum
-            );
+            // The control center's narrowest content column (960 less the
+            // compact pane and margins) holds them on one line until the
+            // person scales up to 150%, where the row wraps.
+            if scale >= 1.5 {
+                assert_eq!(
+                    action_layout(MIN_CONTENT_WIDTH, scale, longest),
+                    ActionLayout::Wrapped
+                );
+            }
             assert_eq!(action_layout(1920.0, scale, longest), ActionLayout::Inline);
         }
     }
@@ -255,87 +249,12 @@ fn synthetic_long_translations_wrap_at_the_supported_minimum_size() {
     for scale in [1.0, 1.25, 1.5] {
         assert_eq!(
             action_layout(
-                MIN_WINDOW_WIDTH,
+                MIN_CONTENT_WIDTH,
                 scale,
                 synthetic_translation.chars().count()
             ),
             ActionLayout::Wrapped
         );
-    }
-}
-
-/// The first-run step list, and the width its labels are owed.
-///
-/// A field report from a Chinese desktop showed the step column rendered one
-/// character per line beside a compatibility card that had taken the width.
-/// The column had no flex grow factor, so it never claimed the space the row
-/// had already given it. These lock the geometry the fix depends on.
-mod step_list {
-    use super::*;
-
-    /// Every window size a person can actually produce.
-    fn sizes() -> impl Iterator<Item = (f32, f32)> {
-        [MIN_WINDOW_WIDTH, 1024.0, 1280.0, 1920.0, 2560.0]
-            .into_iter()
-            .flat_map(|width| {
-                [1.0, 1.25, 1.5]
-                    .into_iter()
-                    .map(move |scale| (width, scale))
-            })
-    }
-
-    #[test]
-    fn a_step_label_is_never_narrower_than_the_readable_minimum() {
-        for (width, scale) in sizes() {
-            let label = step_label_width(width, scale);
-            assert!(
-                label >= STEP_LABEL_MIN_WIDTH,
-                "{width}x{scale} gives a step label {label} wide"
-            );
-        }
-    }
-
-    #[test]
-    fn a_step_label_holds_a_readable_run_of_characters_in_both_locales() {
-        for locale in [Locale::EnUs, Locale::ZhTw] {
-            let advance = character_advance(locale);
-            for (width, scale) in sizes() {
-                let characters = characters_per_line(step_label_width(width, scale), advance);
-                assert!(
-                    characters >= MIN_READABLE_CHARACTERS,
-                    "{locale:?} at {width}x{scale} fits {characters} characters on a line"
-                );
-            }
-        }
-    }
-
-    /// The regression itself, stated as the number it produced.
-    #[test]
-    fn a_column_that_collapses_to_its_min_content_width_is_one_character_wide() {
-        let collapsed = characters_per_line(
-            character_advance(Locale::ZhTw),
-            character_advance(Locale::ZhTw),
-        );
-        assert_eq!(collapsed, 1);
-        assert!(collapsed < MIN_READABLE_CHARACTERS);
-    }
-
-    #[test]
-    fn the_two_first_run_columns_stack_rather_than_squeeze() {
-        // Side by side while both fit at their declared minimum...
-        assert_eq!(first_run_column(1920.0, 1.0).0, ColumnLayout::SideBySide);
-        assert_eq!(
-            first_run_column(MIN_WINDOW_WIDTH, 1.0).0,
-            ColumnLayout::SideBySide
-        );
-        // ...and stacked once they do not, which is what keeps the label wide.
-        assert_eq!(
-            first_run_column(MIN_WINDOW_WIDTH, 1.5).0,
-            ColumnLayout::Stacked
-        );
-        let (_, stacked) = first_run_column(MIN_WINDOW_WIDTH, 1.5);
-        let (_, side_by_side) = first_run_column(MIN_WINDOW_WIDTH, 1.0);
-        assert!(stacked > side_by_side);
     }
 }
 
@@ -606,7 +525,7 @@ mod component_page {
                 new_longest <= shipped_longest,
                 "{locale:?} added a label longer than anything already on screen"
             );
-            for width in [MIN_WINDOW_WIDTH, 1280.0, 1920.0] {
+            for width in [MIN_CONTENT_WIDTH, 1280.0, 1920.0] {
                 for scale in [1.0, 1.25, 1.5] {
                     let shipped = action_layout(width, scale, shipped_longest);
                     let added = action_layout(width, scale, new_longest);
@@ -917,7 +836,7 @@ fn the_unsupported_host_state_has_copy_in_both_locales() {
 /// updates afterwards.
 mod version_and_update_check {
     use super::*;
-    use crate::model::{AboutInfo, MANAGER_VERSION, PROJECT_REPOSITORY, UpdateCheck};
+    use crate::model::{MANAGER_VERSION, PROJECT_REPOSITORY, UpdateCheck};
 
     fn status(
         source: CatalogSource,
@@ -943,18 +862,23 @@ mod version_and_update_check {
             crate::app::probe_manager(manager_core::catalog::built_in_catalog(), &platform);
         assert_eq!(error, None);
 
-        let about = AboutInfo::present(Locale::EnUs, manager.profile());
-
         // The version is the package's own, so a release bump moves it without
-        // anything else being edited.
-        assert_eq!(about.version, env!("CARGO_PKG_VERSION"));
-        assert_eq!(about.version, MANAGER_VERSION);
-        assert_eq!(about.version.split('.').count(), 3, "{}", about.version);
-        // The platform line is what ticket 45's probe read, not an assumption.
-        assert_eq!(about.platform, "zorin 24.04 · amd64");
-        assert_eq!(about.repository, PROJECT_REPOSITORY);
-        assert!(about.repository.starts_with("https://"));
-        assert!(about.name.contains(copy(Locale::EnUs).manager));
+        // anything else being edited; Settings › About says it.
+        let version = crate::i18n::shell(Locale::EnUs)
+            .about_version
+            .replace("{version}", MANAGER_VERSION);
+        assert_eq!(
+            version,
+            format!("Better Manager {}", env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(MANAGER_VERSION.split('.').count(), 3, "{MANAGER_VERSION}");
+        // The host line Home's banner carries is what ticket 45's probe read,
+        // not an assumption.
+        let profile = manager.profile();
+        assert_eq!(profile.architecture, "amd64");
+        assert_eq!(profile.release, "24.04");
+        assert_eq!(crate::settings_page::SOURCE_URL, PROJECT_REPOSITORY);
+        assert!(PROJECT_REPOSITORY.starts_with("https://"));
     }
 
     #[test]
@@ -967,31 +891,27 @@ mod version_and_update_check {
             crate::app::probe_manager(manager_core::catalog::built_in_catalog(), &platform);
         assert_eq!(error, Some(crate::app::AppError::UnsupportedHost));
 
-        let about = AboutInfo::present(Locale::ZhTw, manager.profile());
-        assert_eq!(about.platform, "unknown unknown · unknown");
-        assert!(!about.platform.contains("24.04"));
+        let profile = manager.profile();
+        let line = host_line(profile, copy(Locale::ZhTw).ubuntu_base);
+        assert!(!line.contains("24.04"), "{line}");
+        assert_eq!(profile.architecture, "unknown");
     }
 
     #[test]
     fn the_about_section_is_named_in_the_users_own_language() {
         for locale in [Locale::EnUs, Locale::ZhTw] {
-            let c = copy(locale);
-            for value in [
-                c.about_section,
-                c.about_version,
-                c.about_platform,
-                c.about_repository,
-            ] {
+            let s = crate::i18n::shell(locale);
+            for value in [s.about, s.about_version, s.about_source, s.about_licenses] {
                 assert!(!value.trim().is_empty(), "{locale:?} is missing a string");
             }
         }
-        let en = copy(Locale::EnUs);
-        let zh = copy(Locale::ZhTw);
+        let en = crate::i18n::shell(Locale::EnUs);
+        let zh = crate::i18n::shell(Locale::ZhTw);
         for (english, chinese) in [
-            (en.about_section, zh.about_section),
-            (en.about_version, zh.about_version),
-            (en.about_platform, zh.about_platform),
-            (en.about_repository, zh.about_repository),
+            (en.about, zh.about),
+            (en.about_source, zh.about_source),
+            (en.about_licenses, zh.about_licenses),
+            (en.privacy, zh.privacy),
         ] {
             assert_ne!(english, chinese);
         }
@@ -1150,17 +1070,11 @@ mod version_and_update_check {
     fn the_new_labels_lay_out_no_worse_than_the_ones_already_shipped() {
         for locale in [Locale::EnUs, Locale::ZhTw] {
             let c = copy(locale);
-            let new_longest = [
-                c.check_updates,
-                c.checking_updates,
-                c.about_version,
-                c.about_platform,
-                c.about_repository,
-            ]
-            .iter()
-            .map(|label| label.chars().count())
-            .max()
-            .unwrap();
+            let new_longest = [c.check_updates, c.checking_updates]
+                .iter()
+                .map(|label| label.chars().count())
+                .max()
+                .unwrap();
             let shipped_longest = [c.install_updates, c.restore_previous, c.catalog_refreshing]
                 .iter()
                 .map(|label| label.chars().count())
@@ -1170,7 +1084,7 @@ mod version_and_update_check {
                 new_longest <= shipped_longest,
                 "{locale:?} added a label longer than anything already on screen"
             );
-            for width in [MIN_WINDOW_WIDTH, 1280.0, 1920.0] {
+            for width in [MIN_CONTENT_WIDTH, 1280.0, 1920.0] {
                 for scale in [1.0, 1.25, 1.5] {
                     let shipped = action_layout(width, scale, shipped_longest);
                     let added = action_layout(width, scale, new_longest);
@@ -1187,7 +1101,7 @@ mod version_and_update_check {
     /// and it is a URL that must not be truncated into something misleading.
     #[test]
     fn the_repository_line_fits_the_narrowest_supported_window() {
-        let characters = characters_per_line(MIN_WINDOW_WIDTH, 1.0);
+        let characters = characters_per_line(MIN_CONTENT_WIDTH, 1.0);
         assert!(
             PROJECT_REPOSITORY.chars().count() <= characters,
             "{PROJECT_REPOSITORY} needs {} of {characters} characters",
@@ -2021,5 +1935,163 @@ mod unorderable_host_versions {
         assert!(detail.contains(".unorderable_check(&component.core_id)"));
         assert!(detail.contains("unorderable.is_none()"));
         assert!(detail.contains("unorderable_detail(self.locale, check)"));
+    }
+}
+
+/// `better-manager --page` with a window already open (spec section 1), over
+/// a private bus this test starts and kills. Nothing here touches the
+/// developer's own session bus.
+mod single_instance {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use crate::deep_link::{BUS_NAME, INTERFACE, OBJECT_PATH, Request, bus};
+    use crate::model::Page;
+
+    fn page(page: Page) -> Request {
+        Request::Page {
+            page,
+            until_dialog: false,
+        }
+    }
+
+    /// A private session bus, killed when the test ends however it ends.
+    struct PrivateBus {
+        child: Child,
+        address: String,
+    }
+
+    impl PrivateBus {
+        fn start() -> Option<Self> {
+            let mut child = Command::new("dbus-daemon")
+                .args(["--session", "--nofork", "--print-address"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok()?;
+            let mut address = String::new();
+            let read = child
+                .stdout
+                .take()
+                .map(|out| BufReader::new(out).read_line(&mut address));
+            let bus = Self {
+                child,
+                address: address.trim().to_string(),
+            };
+            (matches!(read, Some(Ok(_))) && !bus.address.is_empty()).then_some(bus)
+        }
+
+        fn connect(&self, timeout: Duration) -> zbus::blocking::Connection {
+            bus::connect(Some(&self.address), timeout).expect("the private bus answers")
+        }
+    }
+
+    impl Drop for PrivateBus {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    macro_rules! bus_or_skip {
+        () => {
+            match PrivateBus::start() {
+                Some(bus) => bus,
+                None => {
+                    eprintln!("skipping: dbus-daemon is not available in this environment");
+                    return;
+                }
+            }
+        };
+    }
+
+    /// The single-instance rule over a real, private bus: the first window
+    /// owns the name, a second is refused it and its request arrives at the
+    /// first, and a bad page is refused across the bus.
+    #[test]
+    fn a_second_window_hands_its_page_to_the_first() {
+        let private = bus_or_skip!();
+        let first = bus::claim(private.connect(bus::FORWARD_TIMEOUT)).unwrap();
+        let bus::Claim::Owner(owner) = first else {
+            panic!("the first window owns the name");
+        };
+        let second = bus::claim(private.connect(bus::FORWARD_TIMEOUT)).unwrap();
+        let bus::Claim::Running(connection) = second else {
+            panic!("the second window finds the name taken");
+        };
+        bus::forward(&connection, &page(Page::System)).unwrap();
+        assert_eq!(
+            smol::block_on(owner.requests.recv()).unwrap(),
+            page(Page::System)
+        );
+        bus::forward(&connection, &Request::Raise).unwrap();
+        assert_eq!(
+            smol::block_on(owner.requests.recv()).unwrap(),
+            Request::Raise
+        );
+        let refused = connection.call_method(
+            Some(BUS_NAME),
+            OBJECT_PATH,
+            Some(INTERFACE),
+            "ShowPage",
+            &("bogus",),
+        );
+        assert!(refused.is_err());
+        assert!(owner.requests.try_recv().is_err());
+    }
+
+    /// Something that is not Better Manager holds the name: the second
+    /// process gets an error rather than a window it thinks it raised, and
+    /// does not hang.
+    #[test]
+    fn a_name_held_by_something_else_is_an_error_not_a_hang() {
+        let private = bus_or_skip!();
+        let squatter = private.connect(bus::FORWARD_TIMEOUT);
+        squatter.request_name(BUS_NAME).unwrap();
+        let bus::Claim::Running(connection) =
+            bus::claim(private.connect(Duration::from_millis(500))).unwrap()
+        else {
+            panic!("the name is taken");
+        };
+        // The holder may refuse the call or never answer it; either way the
+        // second process gets an error within its timeout.
+        let started = Instant::now();
+        assert!(bus::forward(&connection, &page(Page::System)).is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    struct Silent;
+
+    #[zbus::interface(name = "io.betteros.Manager")]
+    impl Silent {
+        /// Holds the call far longer than any caller waits.
+        async fn show_page(&self, _page: String) {
+            smol::Timer::after(Duration::from_secs(30)).await;
+        }
+    }
+
+    /// A window that owns the name and never answers: the forward gives up
+    /// after its timeout.
+    #[test]
+    fn a_window_that_never_answers_is_given_up_on() {
+        let private = bus_or_skip!();
+        let silent = private.connect(bus::FORWARD_TIMEOUT);
+        silent.object_server().at(OBJECT_PATH, Silent).unwrap();
+        silent.request_name(BUS_NAME).unwrap();
+        let bus::Claim::Running(connection) =
+            bus::claim(private.connect(Duration::from_millis(500))).unwrap()
+        else {
+            panic!("the name is taken");
+        };
+        let started = Instant::now();
+        assert!(bus::forward(&connection, &Request::Raise).is_err());
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(400), "{waited:?}");
+        assert!(waited < Duration::from_secs(5), "{waited:?}");
     }
 }

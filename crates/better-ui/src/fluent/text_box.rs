@@ -98,6 +98,15 @@ pub struct TextBox {
     suffix: Option<gpui::AnyElement>,
     clearable: bool,
     on_search: Option<Handler>,
+    rows: Option<usize>,
+}
+
+/// How tall a multi-line text box of `rows` lines is: WinUI's 32px box
+/// grows by one 20px line per row past the first (`TextControlThemePadding`
+/// 10,5,6,6 around a Body line).
+pub fn multi_line_height(rows: usize) -> Pixels {
+    let rows = rows.max(1) as f32;
+    px(32.0 + (rows - 1.0) * 20.0)
 }
 
 impl TextBox {
@@ -114,7 +123,16 @@ impl TextBox {
             suffix: None,
             clearable: true,
             on_search: None,
+            rows: None,
         }
+    }
+
+    /// A multi-line box (`AcceptsReturn`) that shows `rows` lines. The
+    /// window creates its `InputState` with `.multi_line(true)`.
+    pub fn multi_line(mut self, rows: usize) -> Self {
+        self.rows = Some(rows);
+        self.clearable = false;
+        self
     }
 
     /// A password box. The window creates its `InputState` with
@@ -212,7 +230,8 @@ impl RenderOnce for TextBox {
         let mut field = div()
             .id(self.id.clone())
             .relative()
-            .h(size::CONTROL_HEIGHT)
+            .h(self.rows.map_or(size::CONTROL_HEIGHT, multi_line_height))
+            .when(self.rows.is_some(), |f| f.items_start())
             .when_some(self.width, |f, w| f.w(w))
             .when(self.width.is_none(), |f| f.w_full())
             .min_w(px(64.0))
@@ -232,6 +251,7 @@ impl RenderOnce for TextBox {
                 .appearance(false)
                 .disabled(disabled)
                 .h_full()
+                .when(self.rows.is_some(), |i| i.py(px(5.0)))
                 .pl(px(10.0))
                 .pr(px(6.0))
                 .flex_1(),

@@ -280,6 +280,15 @@ pub enum Leading {
     Glyph(IconName),
     /// An application's own icon, at the row's icon size.
     App(AppIcon),
+    /// A 16px glyph in a status color, for a row that reports how something
+    /// went (an activity log).
+    Status(IconName, super::info_bar::Severity),
+}
+
+/// The color a status glyph is drawn in: the severity's own color, which is
+/// the color an info bar gives its icon.
+pub fn status_glyph_color(severity: super::info_bar::Severity, p: &Palette) -> Rgba {
+    super::info_bar::severity_look(severity, p).1
 }
 
 /// The size an application icon is drawn at in a row: 24px beside one line,
@@ -352,6 +361,12 @@ impl ListRow {
 
     pub fn app_icon(mut self, icon: AppIcon) -> Self {
         self.leading = Some(Leading::App(icon));
+        self
+    }
+
+    /// A glyph in a status color at the leading edge.
+    pub fn status_glyph(mut self, icon: IconName, severity: super::info_bar::Severity) -> Self {
+        self.leading = Some(Leading::Status(icon, severity));
         self
     }
 
@@ -460,6 +475,14 @@ impl RenderOnce for ListRow {
                 .text_color(caption_color)
                 .into_any_element(),
             Leading::App(icon) => app_icon(&icon, row_icon_size(two_line), p),
+            Leading::Status(icon, severity) => Icon::new(icon)
+                .size(size::ICON)
+                .text_color(if disabled {
+                    p.text_disabled
+                } else {
+                    status_glyph_color(severity, p)
+                })
+                .into_any_element(),
         });
         row = row
             .children(leading.map(|leading| div().flex_none().child(leading)))
