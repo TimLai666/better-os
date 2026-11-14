@@ -747,6 +747,12 @@ mod tests {
         let s = service.settings_by(soon());
         while changes.try_recv().is_ok() {}
         assert!(service.get_by(&key(&s, false), soon()).is_some());
-        assert!(changes.try_recv().is_ok());
+        // `bump` wakes waiters before it tells subscribers, so the waiter
+        // above can return a moment before the message is sent.
+        let deadline = soon();
+        while changes.try_recv().is_err() {
+            assert!(Instant::now() < deadline, "no change was announced");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
