@@ -1,9 +1,12 @@
 //! The session-bus implementation of the single-instance rule.
 //!
 //! This is the transport under [`crate::activation`] and it holds none of the
-//! policy. It does three things: ask the bus for the well-known name, serve
-//! `org.freedesktop.Application` when it gets it, and call that interface on
-//! the running instance when it does not.
+//! policy. It does three things: serve `org.freedesktop.Application`, ask the
+//! bus for the well-known name, and call that interface on the running
+//! instance when it does not get it. The interface is served through the
+//! connection builder, so zbus has subscribed the object server to method
+//! calls before the name is requested and a click that arrives with the name
+//! is answered rather than dropped.
 //!
 //! `org.freedesktop.Application` rather than an interface of our own, because
 //! it is the interface a desktop entry marked `DBusActivatable` is activated
@@ -86,22 +89,49 @@ pub struct SessionBusRegistry {
     runtime: Runtime,
     connection: Connection,
     object_path: String,
+    /// The channel's receiving end, before the name is acquired. The interface
+    /// is served at connection time, so the channel exists before the name
+    /// does; [`SessionBusRegistry::take_inbox`] must still report `None` until
+    /// this process is the owner. Until then the only route in is this
+    /// connection's unique name, which nobody is told, and a process that does
+    /// not get the name forwards and exits; so nothing accumulates here.
+    /// `None` for a forward-only registry, which serves nothing.
+    pending_inbox: Mutex<Option<UnboundedReceiver<ActivationRequest>>>,
     inbox: Mutex<Option<UnboundedReceiver<ActivationRequest>>>,
+    /// Whether `org.freedesktop.Application` is served, so the name may be
+    /// owned.
+    serves: bool,
 }
 
 impl SessionBusRegistry {
-    /// Connects to the session bus this process was started in.
+    /// Connects to the session bus this process was started in, ready to own
+    /// the launcher's name: `org.freedesktop.Application` is served from the
+    /// start.
     pub fn connect() -> Result<Self, PlatformError> {
-        Self::build(None)
+        Self::build(None, true)
     }
 
     /// Connects to an explicit bus address. Only a test uses this, and only so
     /// it never touches the developer's own session bus.
     pub fn connect_to(address: &str) -> Result<Self, PlatformError> {
-        Self::build(Some(address))
+        Self::build(Some(address), true)
     }
 
-    fn build(address: Option<&str>) -> Result<Self, PlatformError> {
+    /// Connects for a process that only ever forwards to the launcher, such as
+    /// the gesture service: it serves no `org.freedesktop.Application` of its
+    /// own, so nothing on the bus mistakes it for a launcher, and it cannot
+    /// take the launcher's name ([`NameRegistry::request_name`] refuses).
+    pub fn connect_forward_only() -> Result<Self, PlatformError> {
+        Self::build(None, false)
+    }
+
+    /// [`SessionBusRegistry::connect_forward_only`] on an explicit bus
+    /// address, for a test.
+    pub fn connect_forward_only_to(address: &str) -> Result<Self, PlatformError> {
+        Self::build(Some(address), false)
+    }
+
+    fn build(address: Option<&str>, serves: bool) -> Result<Self, PlatformError> {
         // One worker: this runtime exists to dispatch a handful of method
         // calls, not to do work.
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -109,23 +139,37 @@ impl SessionBusRegistry {
             .enable_all()
             .build()
             .map_err(failed)?;
+        let object_path = SingleInstance::OBJECT_PATH.to_string();
+        let (sender, receiver) = unbounded_channel();
         let connection = runtime.block_on(async {
-            match address {
+            let builder = match address {
                 Some(address) => {
                     let address: zbus::Address = address.parse().map_err(failed)?;
-                    zbus::connection::Builder::address(address)
-                        .map_err(failed)?
-                        .build()
-                        .await
-                        .map_err(failed)
+                    zbus::connection::Builder::address(address).map_err(failed)?
                 }
-                None => Connection::session().await.map_err(failed),
+                None => zbus::connection::Builder::session().map_err(failed)?,
+            };
+            if !serves {
+                return builder.build().await.map_err(failed);
             }
+            // Served here rather than when the name is acquired:
+            // `Builder::build` waits until the object server has subscribed to
+            // method calls, which is what makes a call that arrives with the
+            // name answerable. Serving after `request_name` would leave a gap
+            // in which the caller waits for its timeout.
+            builder
+                .serve_at(object_path.as_str(), ActivationInterface { sender })
+                .map_err(failed)?
+                .build()
+                .await
+                .map_err(failed)
         })?;
         Ok(Self {
             runtime,
             connection,
-            object_path: SingleInstance::OBJECT_PATH.to_string(),
+            object_path,
+            pending_inbox: Mutex::new(serves.then_some(receiver)),
+            serves,
             inbox: Mutex::new(None),
         })
     }
@@ -145,8 +189,13 @@ impl SessionBusRegistry {
 
 impl NameRegistry for SessionBusRegistry {
     fn request_name(&self, name: &str) -> Result<NameOwnership, PlatformError> {
-        let path = self.object_path.clone();
-        let (sender, receiver) = unbounded_channel();
+        if !self.serves {
+            // Owning the name with nothing served behind it would answer
+            // every click with an unknown-object error.
+            return Err(PlatformError::ActivationFailed(format!(
+                "a forward-only registry cannot own {name}"
+            )));
+        }
         let acquired = self.runtime.block_on(async {
             // DoNotQueue: a launcher that silently became the owner later,
             // after the first instance quit, would be a process that looked
@@ -154,30 +203,32 @@ impl NameRegistry for SessionBusRegistry {
             // taken name as `Error::NameTaken` rather than as a reply, so
             // "someone else has it" arrives on both paths and both mean the
             // same thing here.
-            let acquired = match self
+            match self
                 .connection
                 .request_name_with_flags(name, RequestNameFlags::DoNotQueue.into())
                 .await
             {
-                Ok(reply) => matches!(
+                Ok(reply) => Ok(matches!(
                     reply,
                     RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner
-                ),
-                Err(zbus::Error::NameTaken) => false,
-                Err(error) => return Err(failed(error)),
-            };
-            if acquired {
-                self.connection
-                    .object_server()
-                    .at(path.as_str(), ActivationInterface { sender })
-                    .await
-                    .map_err(failed)?;
+                )),
+                Err(zbus::Error::NameTaken) => Ok(false),
+                Err(error) => Err(failed(error)),
             }
-            Ok::<_, PlatformError>(acquired)
         })?;
 
         if acquired {
-            *self.inbox.lock().expect("inbox lock") = Some(receiver);
+            // Only now does this process own the name, so only now is there an
+            // inbox to hand out. The interface itself was served when the
+            // connection was built.
+            if let Some(receiver) = self
+                .pending_inbox
+                .lock()
+                .expect("pending inbox lock")
+                .take()
+            {
+                *self.inbox.lock().expect("inbox lock") = Some(receiver);
+            }
             Ok(NameOwnership::Acquired)
         } else {
             Ok(NameOwnership::AlreadyOwned)

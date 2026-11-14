@@ -8,6 +8,8 @@ mod defaults_model;
 mod defaults_tests;
 #[cfg(test)]
 mod evidence_tests;
+#[cfg(test)]
+mod first_call_tests;
 mod home;
 mod i18n;
 mod layout;

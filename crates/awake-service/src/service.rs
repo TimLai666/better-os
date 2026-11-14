@@ -45,6 +45,25 @@ impl<B: InhibitorBackend + 'static> AwakeDbusService<B> {
     }
 }
 
+/// Serves `service` on a connection from `builder`, then owns `bus_name`.
+///
+/// Served and named from the builder: an object added to a running connection
+/// starts zbus's object server lazily, and a request that arrives before it
+/// has subscribed (a tray asking the moment the name appears, or the call
+/// that D-Bus-activated the service) would be dropped without a reply. The
+/// builder waits for the server to be reading before it asks for the name.
+pub async fn serve<B: InhibitorBackend + 'static>(
+    builder: zbus::connection::Builder<'_>,
+    bus_name: &str,
+    service: AwakeDbusService<B>,
+) -> zbus::Result<zbus::Connection> {
+    builder
+        .serve_at(OBJECT_PATH, service)?
+        .name(bus_name)?
+        .build()
+        .await
+}
+
 #[interface(name = "org.betteros.Awake1")]
 impl<B: InhibitorBackend + 'static> AwakeDbusService<B> {
     /// One request in, one reply out.

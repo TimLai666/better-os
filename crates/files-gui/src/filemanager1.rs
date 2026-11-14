@@ -85,6 +85,29 @@ impl FileManager1 {
     }
 }
 
+/// Serves the interface on a connection from `builder` and then asks for the
+/// name, without queueing behind another owner.
+///
+/// The interface goes in through the builder, so `build` returns only once
+/// zbus's object server is reading calls; an object added to a built
+/// connection starts that server lazily, and the "Show in folder" call that
+/// arrives with the name could be dropped with no reply (ticket 107). The
+/// connection is returned whether or not the name was granted, with the reply.
+pub fn serve_on(
+    builder: zbus::blocking::connection::Builder<'_>,
+    sender: Sender<StartTarget>,
+) -> zbus::Result<(
+    zbus::blocking::Connection,
+    zbus::Result<zbus::fdo::RequestNameReply>,
+)> {
+    let connection = builder
+        .serve_at(OBJECT_PATH, FileManager1 { sender })?
+        .build()?;
+    let reply = connection
+        .request_name_with_flags(BUS_NAME, zbus::fdo::RequestNameFlags::DoNotQueue.into());
+    Ok((connection, reply))
+}
+
 /// Serves the interface on the session bus from a thread of its own, sending
 /// each request to `sender`. Does nothing (and says so on stderr) when there
 /// is no session bus or another file manager owns the name: replacing it
@@ -94,23 +117,21 @@ pub fn serve(sender: Sender<StartTarget>) {
         .name("files-filemanager1".to_string())
         .spawn(move || {
             let built = zbus::blocking::connection::Builder::session()
-                .and_then(|builder| builder.serve_at(OBJECT_PATH, FileManager1 { sender }))
-                .and_then(|builder| builder.build());
+                .and_then(|builder| serve_on(builder, sender));
             let connection = match built {
-                Ok(connection) => connection,
+                Ok((connection, Ok(_))) => connection,
+                Ok((_, Err(error))) => {
+                    eprintln!("better-files: FileManager1 is someone else's: {error}");
+                    return;
+                }
                 Err(error) => {
                     eprintln!("better-files: no session bus for FileManager1: {error}");
                     return;
                 }
             };
-            if let Err(error) = connection
-                .request_name_with_flags(BUS_NAME, zbus::fdo::RequestNameFlags::DoNotQueue.into())
-            {
-                eprintln!("better-files: FileManager1 is someone else's: {error}");
-                return;
-            }
             // The connection serves on its own executor; this thread only
             // keeps it alive for the life of the process.
+            let _connection = connection;
             loop {
                 std::thread::park();
             }

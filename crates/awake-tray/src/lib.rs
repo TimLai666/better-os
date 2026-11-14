@@ -27,4 +27,6 @@ pub use labels::{Labels, Locale, LocaleLabels};
 pub use localtime::UtcOffset;
 pub use menu::{Menu, MenuAction, MenuItem, QuickOptions, build as build_menu};
 pub use notify::{DesktopNotifier, NotifyError, claim_notifications, handle_event};
-pub use sni::{ITEM_PATH, MENU_PATH, TrayAvailability, keep_registered, register_and_verify};
+pub use sni::{
+    ITEM_PATH, MENU_PATH, TrayAvailability, keep_registered, register_and_verify, serve,
+};

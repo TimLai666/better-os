@@ -10,10 +10,7 @@ use std::time::Duration;
 
 use monitor_service::MonitorClient;
 use monitor_tray::menu::{IconChoice, Locale, ServiceState, TrayReadings};
-use monitor_tray::{
-    DbusMenu, ITEM_PATH, MENU_PATH, StatusNotifierItem, Tray, TrayAvailability, TrayState,
-    language_path, register_and_verify,
-};
+use monitor_tray::{Tray, TrayAvailability, TrayState, language_path, register_and_verify};
 
 /// How often the readings are asked for. The icon is redrawn at most this
 /// often, and only when the drawing changed.
@@ -69,7 +66,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let connection = zbus::Connection::session().await?;
     let stored = language_path().and_then(|path| std::fs::read_to_string(path).ok());
     let lang = std::env::var("LANGUAGE")
         .ok()
@@ -84,15 +80,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_default();
     let tray = Tray::new(TrayState::new(locale, choice, choice_path));
 
-    connection
-        .object_server()
-        .at(ITEM_PATH, StatusNotifierItem::new(tray.clone()))
-        .await?;
-    connection
-        .object_server()
-        .at(MENU_PATH, DbusMenu::new(tray.clone()))
-        .await?;
-    tray.attach(connection.clone()).await;
+    // Both interfaces are served before the name is requested, and the builder
+    // waits for the object server to subscribe, so a panel call that arrives
+    // with the name is answered.
+    let connection =
+        monitor_tray::serve(zbus::connection::Builder::session()?, tray.clone()).await?;
 
     // One item per session. A copy that is still exiting (the one the unit's
     // ExecStartPre just ended, or one being replaced by an update) may hold the

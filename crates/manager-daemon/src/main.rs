@@ -13,7 +13,7 @@ use manager_daemon::authorize::PolkitAuthorizer;
 use manager_daemon::executor::Executor;
 use manager_daemon::health::SystemHealthProbe;
 use manager_daemon::host::SystemHostProbe;
-use manager_daemon::service::{BUS_NAME, ManagerService, OBJECT_PATH, wait_until_idle_or_replaced};
+use manager_daemon::service::{BUS_NAME, ManagerService, serve, wait_until_idle_or_replaced};
 use manager_daemon::store::{ArtifactStore, Journal};
 use manager_daemon::{ARCHIVE_DIR, STATE_DIR};
 
@@ -50,22 +50,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         journal: journal.clone(),
     });
 
-    let connection = zbus::connection::Builder::system()?.build().await?;
-    let service = ManagerService::new(
-        PolkitAuthorizer::new(connection.clone()),
-        executor,
-        artifacts,
-        journal,
-    )
-    // The daemon package's postinst restarts a running daemon after an
-    // upgrade only while this file is absent (ticket 105). /run is emptied at
-    // boot, and a file left by a daemon that died is removed here.
-    .with_busy_marker(manager_daemon::BUSY_MARKER);
+    // polkit is asked on a connection of its own. The served connection has
+    // to be built with the service already in it (see `serve`), and the
+    // service holds the authorizer, so the authorizer cannot use that one.
+    // polkit identifies the caller from the call's sender, not from the
+    // connection that asks.
+    let polkit = zbus::connection::Builder::system()?.build().await?;
+    let service = ManagerService::new(PolkitAuthorizer::new(polkit), executor, artifacts, journal)
+        // The daemon package's postinst restarts a running daemon after an
+        // upgrade only while this file is absent (ticket 105). /run is emptied
+        // at boot, and a file left by a daemon that died is removed here.
+        .with_busy_marker(manager_daemon::BUSY_MARKER);
 
     let activity = service.activity();
     let gate = service.gate();
-    connection.object_server().at(OBJECT_PATH, service).await?;
-    connection.request_name(BUS_NAME).await?;
+    let connection = serve(zbus::connection::Builder::system()?, BUS_NAME, service).await?;
 
     // Nothing to do but wait to be called, and never exit in the middle of a
     // transaction or a repair. D-Bus activation starts us again on the next

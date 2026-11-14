@@ -217,6 +217,25 @@ impl Tray {
     }
 }
 
+/// Serves the item and its menu on a new connection, then attaches the tray.
+///
+/// Both interfaces are added through the connection builder, so `build` waits
+/// for the object server task to subscribe before this returns. The caller
+/// requests the well-known name afterwards, which means the panel's first call
+/// after the name appears is dispatched rather than dropped.
+pub async fn serve(
+    builder: zbus::connection::Builder<'_>,
+    tray: Arc<Tray>,
+) -> zbus::Result<zbus::Connection> {
+    let connection = builder
+        .serve_at(ITEM_PATH, StatusNotifierItem::new(tray.clone()))?
+        .serve_at(MENU_PATH, DbusMenu::new(tray.clone()))?
+        .build()
+        .await?;
+    tray.attach(connection.clone()).await;
+    Ok(connection)
+}
+
 /// `org.kde.StatusNotifierItem`.
 pub struct StatusNotifierItem {
     tray: Arc<Tray>,

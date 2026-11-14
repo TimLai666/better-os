@@ -320,6 +320,32 @@ impl<C: DeviceControl + Clone + 'static> StorageService<C> {
     }
 }
 
+/// Serves the interface on a connection from `builder`, starts forwarding
+/// `updates` and watching departures, and only then owns `bus_name`.
+///
+/// The interface goes in through `Builder::serve_at`, so `build` returns only
+/// once zbus's object server is reading method calls: an object added to a
+/// connection that is already built starts the server lazily, and a call that
+/// arrives before it is reading (the one that D-Bus-activated the service,
+/// say) is dropped with no reply. Departures are watched before the name is
+/// taken, so no client can start an operation and leave before the service is
+/// listening for it. The two tasks are spawned on the caller's tokio runtime.
+pub async fn serve<C: DeviceControl + Clone + 'static>(
+    builder: zbus::connection::Builder<'_>,
+    bus_name: &str,
+    coordinator: Arc<Mutex<StorageCoordinator<C>>>,
+    updates: tokio::sync::broadcast::Receiver<crate::protocol::DeviceReport>,
+) -> zbus::Result<zbus::Connection> {
+    let connection = builder
+        .serve_at(OBJECT_PATH, StorageService::new(coordinator.clone()))?
+        .build()
+        .await?;
+    tokio::spawn(publish_updates::<C>(connection.clone(), updates));
+    tokio::spawn(watch_departures(&connection, coordinator).await?);
+    connection.request_name(bus_name).await?;
+    Ok(connection)
+}
+
 /// Subscribes to connections leaving the bus and returns the task that ends
 /// every operation a departed client started and never completed.
 ///
