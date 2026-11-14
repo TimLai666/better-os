@@ -24,17 +24,35 @@ impl FilesApp {
         let no_interrupted = interrupted.is_empty();
         let this = cx.entity().downgrade();
 
-        v_flex()
-            .id("operation-center")
-            .w(px(420.0))
-            .flex_shrink_0()
-            .h_full()
+        let width = self.pane_edge_width(crate::render::PaneEdgeKind::Operations);
+        let edge = self.pane_edge(crate::render::PaneEdgeKind::Operations, cx);
+        let follow = self.follow_edge(crate::render::PaneEdgeKind::Operations, cx);
+        let clear = {
+            let this = cx.entity().downgrade();
+            KitButton::subtle("operations-clear", c.clear_finished).on_click(move |_window, cx| {
+                let _ = this.update(cx, |app, cx| {
+                    app.session.clear_finished();
+                    cx.notify();
+                });
+            })
+        };
+        let list = v_flex()
+            .id("operation-center-list")
+            .size_full()
             .gap(px(8.0))
             .p(px(12.0))
+            .overflow_y_scroll();
+        let panel = div()
+            .id("operation-center")
+            .relative()
+            .w(px(width))
+            .flex_shrink_0()
+            .h_full()
             .border_l_1()
             .border_color(p.divider)
             .bg(p.window_background)
-            .overflow_y_scroll()
+            .on_drag_move(follow);
+        let list = list
             .child(
                 h_flex()
                     .w_full()
@@ -68,14 +86,20 @@ impl FilesApp {
             )
             .children(rows.into_iter().map(|row| self.job_card(row, cx)))
             .when(!finished.is_empty(), |panel| {
-                panel.child(div().pt(px(8.0)).child(fluent::label(
-                    c.completed_this_session,
-                    CAPTION,
-                    p.text_secondary,
-                )))
+                panel.child(
+                    h_flex()
+                        .w_full()
+                        .pt(px(8.0))
+                        .items_center()
+                        .child(
+                            fluent::label(c.completed_this_session, CAPTION, p.text_secondary)
+                                .flex_1(),
+                        )
+                        .child(clear),
+                )
             })
-            .children(finished.into_iter().map(|row| self.finished_card(row, cx)))
-            .into_any_element()
+            .children(finished.into_iter().map(|row| self.finished_card(row, cx)));
+        panel.child(list).child(edge).into_any_element()
     }
 
     /// A copy or move an earlier run did not finish: where it was going,
@@ -293,19 +317,79 @@ impl FilesApp {
             .into_any_element()
     }
 
+    /// A finished job, once: its title, how it ended, and a button that
+    /// dismisses it. A failed one also says what failed, and offers Retry
+    /// when the engine can retry it.
     fn finished_card(&self, row: JobRow, cx: &mut Context<Self>) -> AnyElement {
-        use better_ui::fluent::{self, CAPTION};
+        use better_ui::fluent::{self, CAPTION, button::Button as KitButton};
+        use gpui_component::IconName;
+        let c = copy(self.locale());
         let p = fluent::palette(cx);
-        h_flex()
+        let id = row.id;
+        let dismiss = {
+            let this = cx.entity().downgrade();
+            KitButton::icon_button(
+                SharedString::from(format!("finished-dismiss-{}", id.value())),
+                IconName::Close,
+                c.dismiss_finished,
+            )
+            .on_click(move |_window, cx| {
+                let _ = this.update(cx, |app, cx| {
+                    app.session.dismiss_finished(id);
+                    cx.notify();
+                });
+            })
+        };
+        let retry = row.controls.retry.then(|| {
+            let this = cx.entity().downgrade();
+            KitButton::standard(
+                SharedString::from(format!("finished-retry-{}", id.value())),
+                c.retry_failed,
+            )
+            .on_click(move |_window, cx| {
+                let _ = this.update(cx, |app, cx| {
+                    app.session.retry_job(id);
+                    cx.notify();
+                });
+            })
+        });
+        let failed = !row.failures.is_empty();
+        v_flex()
             .w_full()
+            .min_w_0()
             .px(px(8.0))
             .py(px(4.0))
-            .child(fluent::label(row.title.clone(), CAPTION, p.text_secondary).flex_1())
-            .child(fluent::label(
-                format!("{} · {}", row.items_label, row.state_label),
-                CAPTION,
-                p.text_secondary,
-            ))
+            .gap(px(4.0))
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap(px(8.0))
+                    .items_center()
+                    .child(
+                        fluent::label(row.title.clone(), CAPTION, p.text_secondary)
+                            .flex_1()
+                            .min_w_0(),
+                    )
+                    .child(fluent::label(
+                        format!("{} · {}", row.items_label, row.state_label),
+                        CAPTION,
+                        if failed { p.critical } else { p.text_secondary },
+                    ))
+                    .child(dismiss),
+            )
+            .when(failed, |card| {
+                card.children(row.failures.iter().take(5).map(|failure| {
+                    fluent::label(
+                        format!("{} — {}", failure.path.to_string_lossy(), failure.reason),
+                        CAPTION,
+                        p.text_secondary,
+                    )
+                    .w_full()
+                    .whitespace_normal()
+                }))
+            })
+            .children(retry.map(|retry| h_flex().child(retry)))
             .into_any_element()
     }
 

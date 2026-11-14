@@ -1,7 +1,9 @@
 //! The few glyphs the kit's icon set does not have, drawn in the same 24px,
 //! 2px-stroke grid as the rest (Lucide's shapes, ISC), and served beside
 //! the kit's own icons: a trash can, and one icon for each of the person's
-//! own folders so a compact sidebar tells them apart.
+//! own folders so a compact sidebar tells them apart, and the file operations
+//! panel (two arrows passing, where the kit's nearest was a spinner). The
+//! shared ones every window has (Refresh) come from `better_ui::fluent::glyphs`.
 
 use std::borrow::Cow;
 
@@ -14,6 +16,7 @@ pub const PICTURES: &str = "better-files/pictures.svg";
 pub const MUSIC: &str = "better-files/music.svg";
 pub const VIDEOS: &str = "better-files/videos.svg";
 pub const DESKTOP: &str = "better-files/desktop.svg";
+pub const OPERATIONS: &str = "better-files/operations.svg";
 
 const OPEN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#;
 
@@ -40,6 +43,10 @@ fn svg(path: &str) -> Option<String> {
         DESKTOP => {
             r#"<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>"#
         }
+        // Lucide's arrow-right-left: things moving between two places.
+        OPERATIONS => {
+            r#"<path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/>"#
+        }
         _ => return None,
     };
     Some(format!("{OPEN}{body}</svg>"))
@@ -52,6 +59,9 @@ impl AssetSource for FilesAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         if let Some(svg) = svg(path) {
             return Ok(Some(Cow::Owned(svg.into_bytes())));
+        }
+        if let Some(svg) = better_ui::fluent::glyphs::load(path) {
+            return Ok(Some(Cow::Borrowed(svg)));
         }
         gpui_component_assets::Assets.load(path)
     }
@@ -88,7 +98,7 @@ mod tests {
     #[test]
     fn every_glyph_is_served_and_is_an_svg() {
         for path in [
-            TRASH, DOCUMENTS, DOWNLOADS, PICTURES, MUSIC, VIDEOS, DESKTOP,
+            TRASH, DOCUMENTS, DOWNLOADS, PICTURES, MUSIC, VIDEOS, DESKTOP, OPERATIONS,
         ] {
             let bytes = FilesAssets.load(path).unwrap().expect(path);
             let text = std::str::from_utf8(&bytes).unwrap();
@@ -97,7 +107,13 @@ mod tests {
                 "{path}"
             );
         }
-        // The kit's own still come through.
+        // The shared ones and the kit's own still come through.
+        assert!(
+            FilesAssets
+                .load(better_ui::fluent::glyphs::REFRESH)
+                .unwrap()
+                .is_some()
+        );
         assert!(FilesAssets.load("icons/folder.svg").unwrap().is_some());
     }
 }

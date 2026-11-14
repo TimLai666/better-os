@@ -115,8 +115,12 @@ impl FilesApp {
             app.session.go_to_parent();
             app.after_location_change(window);
         }));
-        let reload = Button::icon_button("reload", IconName::Redo, c.reload)
-            .on_click(act(cx, |app, _, _| app.session.reload()));
+        let reload = Button::icon_button(
+            "reload",
+            gpui_component::Icon::empty().path(better_ui::fluent::glyphs::REFRESH),
+            c.reload,
+        )
+        .on_click(act(cx, |app, _, _| app.session.reload()));
 
         let address: AnyElement = if self.editing_path {
             div()
@@ -464,8 +468,11 @@ impl FilesApp {
                     } else {
                         SharedString::from(c.jobs_panel)
                     },
-                    IconName::LoaderCircle,
+                    IconName::ArrowRight,
                 )
+                .icon_path(crate::icons::OPERATIONS)
+                // While jobs run, how many is on the icon; none, nothing.
+                .badge((active_jobs > 0).then(|| active_jobs.to_string()))
                 .icon_only()
                 .checked(self.session.operations_open)
                 .shortcut("Ctrl+O")

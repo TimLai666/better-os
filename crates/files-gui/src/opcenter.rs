@@ -177,8 +177,15 @@ pub fn job_row(snapshot: &JobSnapshot, c: &'static Copy) -> JobRow {
 }
 
 /// Every job the engine knows about, newest first.
+///
+/// Only the jobs still under way: a finished one is shown once, in the
+/// finished list ([`SessionHistory`]), never also as a card here.
 pub fn job_rows(snapshots: &[JobSnapshot], c: &'static Copy) -> Vec<JobRow> {
-    let mut rows: Vec<JobRow> = snapshots.iter().map(|s| job_row(s, c)).collect();
+    let mut rows: Vec<JobRow> = snapshots
+        .iter()
+        .filter(|snapshot| !snapshot.state.is_terminal())
+        .map(|s| job_row(s, c))
+        .collect();
     rows.sort_by_key(|row| std::cmp::Reverse(row.id.value()));
     rows
 }
@@ -200,8 +207,16 @@ pub fn first_conflict(snapshots: &[JobSnapshot], c: &'static Copy) -> Option<Con
         .and_then(|snapshot| job_row(snapshot, c).conflict)
 }
 
+/// How many finished jobs the panel lists. Fifty is more than a screen of
+/// rows in the panel at any window height, so nothing a person could still be
+/// looking for scrolls away, and it bounds what a window that stays open for
+/// weeks keeps. A failed job is not counted out: it stays until dismissed,
+/// because it says what did not happen.
+pub const FINISHED_SHOWN: usize = 50;
+
 /// The jobs that finished during this session, which the panel keeps as
-/// history under the running ones.
+/// history under the running ones: the newest [`FINISHED_SHOWN`] that
+/// completed, every one that failed, each dismissable.
 #[derive(Clone, Debug, Default)]
 pub struct SessionHistory {
     finished: Vec<JobRow>,
@@ -218,6 +233,35 @@ impl SessionHistory {
             Some(existing) => *existing = row,
             None => self.finished.push(row),
         }
+        // The oldest row that did not fail goes first.
+        while self
+            .finished
+            .iter()
+            .filter(|entry| entry.state != JobState::Failed)
+            .count()
+            > FINISHED_SHOWN
+        {
+            let Some(oldest) = self
+                .finished
+                .iter()
+                .position(|entry| entry.state != JobState::Failed)
+            else {
+                break;
+            };
+            self.finished.remove(oldest);
+        }
+    }
+
+    /// Removes one row. Returns whether it was listed.
+    pub fn dismiss(&mut self, id: JobId) -> bool {
+        let before = self.finished.len();
+        self.finished.retain(|entry| entry.id != id);
+        self.finished.len() != before
+    }
+
+    /// Removes every row, returning which jobs they were.
+    pub fn clear(&mut self) -> Vec<JobId> {
+        self.finished.drain(..).map(|entry| entry.id).collect()
     }
 
     /// Newest first.

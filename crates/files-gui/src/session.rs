@@ -109,6 +109,11 @@ pub enum Notice {
     Mounting(String),
     /// A server could not be opened.
     MountFailed(crate::network::MountError),
+    /// The folder a view showed was deleted or moved away (its name); the
+    /// view went to the folder above it.
+    FolderGone(String),
+    /// Retry was asked of a job the engine no longer keeps.
+    RetryGone,
     /// What an undo (or redo, when `undoing` is false) did, or why it did
     /// not run.
     Undo {
@@ -175,7 +180,9 @@ impl Notice {
                 | DeviceEvent::DisconnectedWhileViewing { .. } => NoticeTone::Information,
                 _ => NoticeTone::Warning,
             },
-            Notice::WritingImage { .. } | Notice::Mounting(_) => NoticeTone::Information,
+            Notice::WritingImage { .. } | Notice::Mounting(_) | Notice::FolderGone(_) => {
+                NoticeTone::Information
+            }
             Notice::Launch(
                 LaunchReport::Started { .. }
                 | LaunchReport::Activated { .. }
@@ -188,6 +195,8 @@ impl Notice {
     pub fn message(&self, c: &'static Copy) -> String {
         match self {
             Notice::Path(rejection) => rejection.message(c).to_string(),
+            Notice::FolderGone(name) => c.folder_gone.replace("{folder}", name),
+            Notice::RetryGone => c.retry_gone.to_string(),
             Notice::Command(refusal) => match refusal {
                 CommandRefusal::NothingToActOn => c.nothing_selected.to_string(),
                 CommandRefusal::NotAFilesystemLocation => c.not_writable_here.to_string(),
@@ -387,6 +396,17 @@ pub struct FilesSession {
     pub interrupted: crate::interrupted::InterruptedJobs,
     pub jobs: Vec<JobSnapshot>,
     pub finished: SessionHistory,
+    /// The finished jobs already filed into `finished`, so a job the engine
+    /// still lists is filed (and its folders refreshed) once, not every frame.
+    /// Pruned to what the engine still lists, so it never grows with the
+    /// jobs of the past.
+    recorded: std::collections::HashSet<JobId>,
+    /// Each pane's folder watch (ticket 119).
+    watches: Vec<FolderWatch>,
+    /// Devices being ejected and the folders whose watches were let go of.
+    ejecting: Vec<(String, std::path::PathBuf)>,
+    /// This window's claim on the shared engine's finished jobs.
+    _engine_window: files_operations::WindowAttachment,
 
     // --- ticket 35 --------------------------------------------------------
     /// The shared application catalog. The same handle the reader lists the
@@ -505,6 +525,7 @@ impl FilesSession {
         let tabs = TabSet::with_preferences(start.clone(), view);
         let first = tabs.active().id();
         let pane = Pane::open(start, view, reader.as_ref());
+        let engine_window = engine.attach_window();
         Self {
             locale: Locale::from_preference(preferences.locale),
             preferences,
@@ -533,6 +554,10 @@ impl FilesSession {
             interrupted: crate::interrupted::InterruptedJobs::default(),
             jobs: Vec::new(),
             finished: SessionHistory::default(),
+            recorded: std::collections::HashSet::new(),
+            watches: Vec::new(),
+            ejecting: Vec::new(),
+            _engine_window: engine_window,
             catalog,
             defaults,
             spawner,
@@ -633,6 +658,7 @@ impl FilesSession {
         if self.tabs.activate(id).is_ok() {
             self.adopt_folder_view();
             self.resync_content();
+            self.refresh_if_polled(id);
         }
     }
 
@@ -725,6 +751,9 @@ impl FilesSession {
         self.search.clear();
         self.details = None;
         self.refresh_preview();
+        // The new folder's watch is asked for now, in the frame its listing
+        // started, not on the next pump.
+        self.pump_watches();
     }
 
     /// Takes what the user typed in the path field.
@@ -903,6 +932,12 @@ impl FilesSession {
         if let Err(error) = self.view_store.save(&self.views) {
             self.notice = Some(Notice::Key(format!("files.prefs.error.unwritable:{error}")));
         }
+    }
+
+    /// Stores the preferences now; for a change the window made itself, such
+    /// as a pane's width after its edge was dragged.
+    pub fn save_preferences(&mut self) {
+        self.persist_preferences();
     }
 
     fn persist_preferences(&mut self) {
@@ -1318,7 +1353,34 @@ impl FilesSession {
     /// stop using a device should never have to argue with the file manager
     /// about it.
     pub fn eject_device(&mut self, object_path: &str) {
+        if let Some(folder) = self
+            .devices
+            .get(object_path)
+            .and_then(|row| row.location())
+            .and_then(|location| {
+                location
+                    .as_local_path()
+                    .map(|path| path.as_path().to_path_buf())
+            })
+        {
+            // Every window's watches under the device go first; they come
+            // back if the eject does not happen.
+            files_platform::WatchHub::global().suspend_under(&folder);
+            self.ejecting.push((object_path.to_string(), folder));
+        }
         self.link.request_eject(object_path);
+    }
+
+    /// An eject ended, done or not: the watches it let go of are asked for
+    /// again (an unmounted folder answers that it is gone).
+    fn end_eject(&mut self, object_path: &str) {
+        let (ending, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.ejecting)
+            .into_iter()
+            .partition(|(path, _)| path == object_path);
+        self.ejecting = rest;
+        for (_, folder) in ending {
+            files_platform::WatchHub::global().resume_under(&folder);
+        }
     }
 
     pub fn refresh_devices(&mut self) {
@@ -1401,6 +1463,7 @@ impl FilesSession {
                 unmounted,
                 powered_off,
             } => {
+                self.end_eject(&object_path);
                 self.devices.clear_mount_point(&object_path);
                 let label = self.device_label(&object_path);
                 self.notice = Some(Notice::Device(Box::new(if unmounted && !powered_off {
@@ -1415,6 +1478,7 @@ impl FilesSession {
                 object_path,
                 detail,
             } => {
+                self.end_eject(&object_path);
                 self.notice = Some(Notice::Device(Box::new(DeviceEvent::EjectFailed {
                     label: self.device_label(&object_path),
                     detail,
@@ -1902,7 +1966,17 @@ impl FilesSession {
     }
 
     pub fn retry_job(&mut self, id: JobId) {
-        self.engine.retry_failed(id);
+        if self.engine.snapshot(id).is_none() {
+            // Let go of after more than `FINISHED_KEPT` other jobs finished.
+            self.notice = Some(Notice::RetryGone);
+            return;
+        }
+        if self.engine.retry_failed(id) {
+            // Running again: it leaves the finished list and is filed anew
+            // when it ends.
+            self.finished.dismiss(id);
+            self.recorded.remove(&id);
+        }
         self.refresh_jobs();
     }
 
@@ -1926,12 +2000,22 @@ impl FilesSession {
 
     /// Re-reads every job from the engine and files the finished ones into the
     /// session history.
+    ///
+    /// A job is filed once, the first frame it is seen finished, and that is
+    /// when every pane is brought up to date ([`Self::refresh_panes`]), so the
+    /// result of the person's own action shows at once rather than when a
+    /// watcher gets to it. The engine lets go of old finished jobs itself
+    /// ([`files_operations::FINISHED_KEPT`]), so this does work for the jobs
+    /// it still lists, never for every job of the session.
     pub fn refresh_jobs(&mut self) -> bool {
         let jobs = self.engine.jobs();
-        let changed = jobs != self.jobs;
+        let mut changed = jobs != self.jobs;
         let c = crate::i18n::copy(self.locale);
+        let mut finished_now = false;
         for snapshot in &jobs {
-            if snapshot.state.is_terminal() {
+            if snapshot.state.is_terminal() && self.recorded.insert(snapshot.id) {
+                finished_now = true;
+                self.engine.mark_recorded(snapshot.id);
                 self.finished.record(opcenter::job_row(snapshot, c));
                 if let Some(at) = self.undoable.iter().position(|(id, _)| *id == snapshot.id) {
                     let (_, operation) = self.undoable.remove(at);
@@ -1941,8 +2025,196 @@ impl FilesSession {
                 }
             }
         }
+        if self.recorded.len() > jobs.len() {
+            let listed: std::collections::HashSet<JobId> = jobs.iter().map(|job| job.id).collect();
+            self.recorded.retain(|id| listed.contains(id));
+        }
         self.jobs = jobs;
+        if finished_now {
+            self.refresh_panes();
+            changed = true;
+        }
         changed
+    }
+
+    /// Dismisses one finished job from the panel. A failed one is let go of
+    /// by the engine too, which ends its Retry.
+    pub fn dismiss_finished(&mut self, id: JobId) {
+        if self.finished.dismiss(id) {
+            self.engine.forget(id);
+            self.jobs.retain(|job| job.id != id);
+        }
+    }
+
+    /// The panel's Clear: every finished job leaves the list.
+    pub fn clear_finished(&mut self) {
+        for id in self.finished.clear() {
+            self.engine.forget(id);
+            self.jobs.retain(|job| job.id != id);
+        }
+    }
+
+    /// Brings every open pane up to date in place, keeping selection and
+    /// scroll (ticket 119). Used when a file operation or an undo finishes:
+    /// which folders it touched is not worth working out when a reading of
+    /// an unchanged folder changes nothing on screen.
+    pub fn refresh_panes(&mut self) {
+        let reader = self.reader.clone();
+        for (_, pane) in &mut self.panes {
+            if matches!(pane.location(), Location::Applications) {
+                continue;
+            }
+            pane.refresh(reader.as_ref());
+        }
+    }
+
+    /// Follows every pane's folder through the process's one watch
+    /// ([`files_platform::WatchHub`]): a watch is asked for as soon as a pane
+    /// shows a folder, rows the hub read off this thread are applied, and a
+    /// folder whose changes are not announced is read again now and then.
+    /// Returns whether the window has to redraw.
+    ///
+    /// Rows are applied only to a list that is settled. While the folder is
+    /// being listed or re-read, a change asks for one more reading instead:
+    /// applied now, it could be undone by a reading taken before it, or a
+    /// removal could come before the batch that carries the file.
+    pub(crate) fn pump_watches(&mut self) -> bool {
+        let reader = self.reader.clone();
+        let active = self.active_tab();
+        let panes = &self.panes;
+        self.watches
+            .retain(|watch| panes.iter().any(|(tab, _)| *tab == watch.tab));
+        let mut changed = false;
+        let mut gone: Vec<(TabId, Option<std::path::PathBuf>)> = Vec::new();
+        for (tab, pane) in &mut self.panes {
+            let index = match self.watches.iter().position(|watch| watch.tab == *tab) {
+                Some(index) if self.watches[index].folder == *pane.location() => index,
+                Some(index) => {
+                    // The old folder's subscription goes before the new one
+                    // is asked for.
+                    self.watches[index] = FolderWatch::new(*tab, pane.location(), &reader);
+                    index
+                }
+                None => {
+                    self.watches
+                        .push(FolderWatch::new(*tab, pane.location(), &reader));
+                    self.watches.len() - 1
+                }
+            };
+            let watch = &mut self.watches[index];
+            let updates = watch
+                .subscription
+                .as_ref()
+                .map(files_platform::Subscription::poll)
+                .unwrap_or_default();
+            for update in updates {
+                match update {
+                    files_platform::HubUpdate::Ready { polling } => {
+                        watch.polling = polling;
+                        watch.ready = true;
+                        // What changed between the listing and the watch is
+                        // unknown; one more reading closes that gap.
+                        pane.refresh(reader.as_ref());
+                    }
+                    files_platform::HubUpdate::Rows(rows) => {
+                        if pane.is_listing() || pane.is_refreshing() {
+                            pane.refresh(reader.as_ref());
+                        } else {
+                            changed |= apply_rows(pane, rows);
+                        }
+                    }
+                    files_platform::HubUpdate::Resynchronize => pane.refresh(reader.as_ref()),
+                    files_platform::HubUpdate::Gone { nearest } => gone.push((*tab, nearest)),
+                    files_platform::HubUpdate::Suspended => {}
+                }
+            }
+            let every = if *tab == active {
+                UNANNOUNCED_REFRESH
+            } else {
+                BACKGROUND_REFRESH
+            };
+            if watch.polling
+                && watch.last_read.elapsed() >= every
+                && !pane.is_listing()
+                && !pane.is_refreshing()
+            {
+                watch.last_read = std::time::Instant::now();
+                pane.refresh(reader.as_ref());
+            }
+        }
+        for (tab, nearest) in gone {
+            changed |= self.folder_gone(tab, nearest);
+        }
+        changed
+    }
+
+    /// The folder a pane shows was deleted or moved away: the pane goes to
+    /// the nearest folder above it that is still there, and says why.
+    fn folder_gone(&mut self, tab: TabId, nearest: Option<std::path::PathBuf>) -> bool {
+        let reader = self.reader.clone();
+        let home = self.home_location();
+        let Some((_, pane)) = self.panes.iter_mut().find(|(id, _)| *id == tab) else {
+            return false;
+        };
+        let name = pane
+            .location()
+            .as_local_path()
+            .and_then(|path| path.as_path().file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let target = nearest
+            .and_then(|path| Location::local(path).ok())
+            .unwrap_or(home);
+        pane.navigate_to(target, reader.as_ref());
+        // The old subscription is spent; the folder above gets a new one,
+        // and a folder made again at the same path will too.
+        self.watches.retain(|watch| watch.tab != tab);
+        self.sync_history(tab);
+        if tab == self.active_tab() {
+            self.notice = Some(Notice::FolderGone(name));
+            self.resync_content();
+        }
+        true
+    }
+
+    /// Reads a polled folder again when its tab comes forward.
+    fn refresh_if_polled(&mut self, id: TabId) {
+        let polled = self
+            .watches
+            .iter_mut()
+            .find(|watch| watch.tab == id && watch.polling);
+        let Some(watch) = polled else {
+            return;
+        };
+        watch.last_read = std::time::Instant::now();
+        let reader = self.reader.clone();
+        if let Some((_, pane)) = self.panes.iter_mut().find(|(tab, _)| *tab == id) {
+            pane.refresh(reader.as_ref());
+        }
+    }
+
+    /// The folders the hub holds a kernel watch on for this window's panes,
+    /// for tests.
+    #[cfg(test)]
+    pub(crate) fn watched_folders(&self) -> Vec<std::path::PathBuf> {
+        self.watches
+            .iter()
+            .filter(|watch| watch.ready)
+            .filter_map(|watch| watch.subscription.as_ref())
+            .map(|subscription| subscription.directory().to_path_buf())
+            .filter(|folder| files_platform::WatchHub::global().is_watching(folder))
+            .collect()
+    }
+
+    /// The panes, for tests that look past the active one.
+    #[cfg(test)]
+    pub(crate) fn panes_for_tests(&self) -> impl Iterator<Item = &Pane> {
+        self.panes.iter().map(|(_, pane)| pane)
+    }
+
+    /// Whether any pane is reading its folder again.
+    pub fn is_refreshing(&self) -> bool {
+        self.panes.iter().any(|(_, pane)| pane.is_refreshing())
     }
 
     /// The running jobs as rows.
@@ -1960,9 +2232,11 @@ impl FilesSession {
     /// when it is switched to rather than starting over.
     pub fn pump(&mut self) -> bool {
         let mut changed = false;
+        let reader = self.reader.clone();
         for (_, pane) in &mut self.panes {
-            changed |= pane.pump();
+            changed |= pane.pump_with(reader.as_ref());
         }
+        changed |= self.pump_watches();
         if changed {
             // Entries arriving move indices around. The cursor is re-derived
             // from the selection's identity, which is what keeps the focused
@@ -2483,7 +2757,7 @@ impl FilesSession {
             undoing: true,
             outcome: self.history.undo(),
         });
-        self.reload();
+        self.refresh_panes();
     }
 
     /// `Ctrl+Shift+Z` or `Ctrl+Y`.
@@ -2492,7 +2766,7 @@ impl FilesSession {
             undoing: false,
             outcome: self.history.redo(),
         });
-        self.reload();
+        self.refresh_panes();
     }
 
     fn begin_rename(&mut self) {
@@ -2564,4 +2838,69 @@ pub fn preview_program() -> String {
         .filter(|candidate| candidate.is_file())
         .map(|candidate| candidate.to_string_lossy().into_owned())
         .unwrap_or_else(|| "better-files-preview".to_string())
+}
+
+/// How often a visible folder whose changes are not announced (a network or
+/// FUSE mount, the Trash, Recents, or one no watch could be made for) is read
+/// again. Five seconds is soon enough that a file someone else added shows
+/// while the person still looks.
+pub const UNANNOUNCED_REFRESH: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The same, for a tab in the background: slower, and the tab is read again
+/// the moment it is switched to.
+pub const BACKGROUND_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// One pane's watch on the folder it shows (ticket 119).
+struct FolderWatch {
+    tab: TabId,
+    /// The location the watch was made for; a pane elsewhere gets a new one.
+    folder: Location,
+    /// The hub's subscription, for a local folder.
+    subscription: Option<files_platform::Subscription>,
+    /// Whether the folder is read again now and then instead of trusted to
+    /// a watch.
+    polling: bool,
+    /// The hub's `Ready` has been taken (and its reading asked for).
+    ready: bool,
+    last_read: std::time::Instant,
+}
+
+impl FolderWatch {
+    /// Asks the hub for a watch; nothing here touches the disk.
+    fn new(tab: TabId, location: &Location, reader: &FilesReader) -> Self {
+        let subscription = location.as_local_path().map(|path| {
+            files_platform::WatchHub::global()
+                .subscribe(path.as_path(), reader.local_config().clone())
+        });
+        Self {
+            tab,
+            folder: location.clone(),
+            polling: matches!(location, Location::Trash(_) | Location::Recent),
+            subscription,
+            ready: false,
+            last_read: std::time::Instant::now(),
+        }
+    }
+}
+
+/// Applies rows the hub read to a settled list. Returns whether it changed.
+fn apply_rows(pane: &mut Pane, rows: Vec<files_core::RefreshEvent>) -> bool {
+    let mut removed = Vec::new();
+    let mut entries = Vec::new();
+    for row in rows {
+        match row {
+            files_core::RefreshEvent::Removed(id) => removed.push(id),
+            files_core::RefreshEvent::Added(entry) | files_core::RefreshEvent::Modified(entry) => {
+                entries.push(*entry)
+            }
+            files_core::RefreshEvent::Resynchronize => {}
+        }
+    }
+    let model = pane.model_mut();
+    let mut changed = model.remove_many(&removed) > 0;
+    if !entries.is_empty() {
+        model.insert_batch(entries);
+        changed = true;
+    }
+    changed
 }

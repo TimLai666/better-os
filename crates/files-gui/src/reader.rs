@@ -193,6 +193,12 @@ impl FilesReader {
         self
     }
 
+    /// How local folders' rows are built, so a row a watcher reads has the
+    /// same type and icon as a listed one.
+    pub fn local_config(&self) -> &ReaderConfig {
+        self.local.config()
+    }
+
     pub fn catalog(&self) -> &CatalogHandle {
         &self.catalog
     }

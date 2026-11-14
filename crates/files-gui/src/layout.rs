@@ -21,6 +21,74 @@ pub const SIDEBAR_WIDTH: f32 = 236.0;
 /// Horizontal padding a sidebar row spends on its glyph, gap, and insets.
 pub const SIDEBAR_ROW_CHROME: f32 = 62.0;
 
+/// A pane whose edge the person can drag (ticket 119's operations panel,
+/// ticket 118's sidebar): the width it starts at, how narrow it may get, and
+/// how much of the window it may take. One policy for every such edge, so
+/// they clamp, remember and reset alike.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneEdge {
+    /// The width it has until dragged, and after a double-click.
+    pub default: f32,
+    /// Narrower than this and its labels stop being readable.
+    pub min: f32,
+    /// The most of the window it may take, so the folder keeps a usable
+    /// width.
+    pub max_fraction: f32,
+}
+
+impl PaneEdge {
+    /// The widest the pane may be in a window this wide; never below `min`.
+    pub fn max(&self, window_width: f32) -> f32 {
+        (window_width * self.max_fraction).max(self.min)
+    }
+
+    /// `width`, kept between the edge's limits for this window. Anything
+    /// that is not a width (not a number, below zero) is the default.
+    pub fn clamp(&self, width: f32, window_width: f32) -> f32 {
+        let width = if width.is_finite() && width > 0.0 {
+            width
+        } else {
+            self.default
+        };
+        width.clamp(self.min, self.max(window_width))
+    }
+
+    /// The width to draw from what was stored: the stored width when there
+    /// is one, the default otherwise, either clamped for this window.
+    pub fn resolve(&self, stored: Option<u32>, window_width: f32) -> f32 {
+        self.clamp(
+            stored.map_or(self.default, |width| width as f32),
+            window_width,
+        )
+    }
+
+    /// What a double-click on the edge stores: no width at all, so the pane
+    /// is drawn at its default whenever the window is wide enough, not at
+    /// whatever a narrow window clamped the default to.
+    pub fn reset(&self) -> Option<u32> {
+        None
+    }
+
+    /// What to store after a drag: the clamped width in whole pixels, or
+    /// nothing when it is the default.
+    pub fn store(&self, width: f32, window_width: f32) -> Option<u32> {
+        let width = self.clamp(width, window_width).round();
+        (width != self.default).then_some(width as u32)
+    }
+}
+
+/// The file operations panel (ticket 119): about what a job's title, its
+/// progress bar and a count need, and at most a third of the window.
+pub const OPERATIONS_EDGE: PaneEdge = PaneEdge {
+    default: 320.0,
+    min: 240.0,
+    max_fraction: 1.0 / 3.0,
+};
+
+/// How wide the strip a person grabs to drag a pane's edge is: wider than the
+/// 1px divider drawn in it, as in Windows 11 File Explorer.
+pub const PANE_EDGE_HIT_WIDTH: f32 = 8.0;
+
 /// Advance width of one Latin character at the body text size.
 const LATIN_ADVANCE: f32 = 7.6;
 /// Horizontal padding a table cell adds around its label.
@@ -141,4 +209,54 @@ pub fn visible_rows(viewport_height: f32, row_height: f32) -> usize {
         return 1;
     }
     ((viewport_height / row_height).ceil() as usize).max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pane_edge_clamps_between_readable_and_a_share_of_the_window() {
+        let edge = OPERATIONS_EDGE;
+        assert_eq!(edge.clamp(100.0, 1_200.0), edge.min);
+        assert_eq!(edge.clamp(900.0, 1_200.0), 400.0, "a third of the window");
+        assert_eq!(edge.clamp(300.0, 1_200.0), 300.0);
+        // At the window's minimum width a third is less than the default.
+        assert!((edge.resolve(None, MIN_WINDOW_WIDTH) - MIN_WINDOW_WIDTH / 3.0).abs() < 0.01);
+        // A tiny window still leaves the pane readable.
+        assert_eq!(edge.clamp(300.0, 300.0), edge.min);
+    }
+
+    #[test]
+    fn a_stored_width_comes_back_and_nonsense_is_the_default() {
+        let edge = OPERATIONS_EDGE;
+        assert_eq!(edge.resolve(Some(280), 1_200.0), 280.0);
+        assert_eq!(edge.resolve(None, 1_200.0), edge.default);
+        assert_eq!(edge.clamp(f32::NAN, 1_200.0), edge.default);
+        assert_eq!(edge.clamp(-5.0, 1_200.0), edge.default);
+        assert_eq!(edge.resolve(Some(0), 1_200.0), edge.default);
+        assert_eq!(edge.resolve(Some(u32::MAX), 1_200.0), 400.0);
+    }
+
+    #[test]
+    fn a_reset_in_the_narrowest_window_stores_the_default_not_the_clamp() {
+        let edge = OPERATIONS_EDGE;
+        let stored = edge.reset();
+        assert_eq!(stored, None);
+        // Drawn clamped at 880px, at the default once the window is wider.
+        assert!((edge.resolve(stored, MIN_WINDOW_WIDTH) - MIN_WINDOW_WIDTH / 3.0).abs() < 0.01);
+        assert_eq!(edge.resolve(stored, 1_400.0), edge.default);
+        // What the old reset did: the default dragged-to in a narrow window
+        // is stored as the clamp, which is why a reset does not go through
+        // `store`.
+        assert_eq!(edge.store(edge.default, MIN_WINDOW_WIDTH), Some(293));
+    }
+
+    #[test]
+    fn a_reset_is_stored_as_no_width_at_all() {
+        let edge = OPERATIONS_EDGE;
+        assert_eq!(edge.store(edge.default, 1_200.0), None);
+        assert_eq!(edge.store(280.4, 1_200.0), Some(280));
+        assert_eq!(edge.store(5_000.0, 1_200.0), Some(400));
+    }
 }

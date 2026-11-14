@@ -25,6 +25,21 @@ pub struct Pane {
     session: Option<ListingSession>,
     preferences: ViewPreferences,
     batch_size: Option<usize>,
+    /// A re-reading of the folder that is being gathered beside the list on
+    /// screen, to be reconciled into it when complete ([`Pane::refresh`]).
+    refreshing: Option<Refresh>,
+    /// A refresh was asked for while something else was being read; it
+    /// starts as soon as that finishes, so the newest state always wins.
+    refresh_queued: bool,
+    /// How many times the folder was read (listings and refreshes), so a
+    /// test can prove a burst of changes was not read once per file.
+    readings: u64,
+}
+
+/// A refresh in flight: its listing and what it has delivered so far.
+struct Refresh {
+    session: ListingSession,
+    entries: Vec<crate::entry::Entry>,
 }
 
 impl Pane {
@@ -40,6 +55,9 @@ impl Pane {
             session: None,
             preferences,
             batch_size: None,
+            refreshing: None,
+            refresh_queued: false,
+            readings: 0,
         };
         pane.start_listing(reader);
         pane
@@ -65,6 +83,9 @@ impl Pane {
             session: None,
             preferences,
             batch_size: None,
+            refreshing: None,
+            refresh_queued: false,
+            readings: 0,
         };
         pane.start_listing(reader);
         pane
@@ -158,6 +179,96 @@ impl Pane {
         self.start_listing(reader);
     }
 
+    /// Reads the folder again and brings the list up to date without
+    /// starting over: the rows on screen stay while the new reading is
+    /// gathered, and then only what differs changes. Selection, cursor and
+    /// scroll survive; an entry that is gone leaves the selection.
+    ///
+    /// This is what a folder whose changes are not announced (a network
+    /// mount, the Trash) and a finished file operation use. A refresh asked
+    /// for while another reading runs is queued behind it, never dropped, and
+    /// any number of requests in that time make one more reading.
+    pub fn refresh(&mut self, reader: &dyn DirectoryReader) {
+        if self.is_listing() || self.refreshing.is_some() {
+            self.refresh_queued = true;
+            return;
+        }
+        self.refresh_queued = false;
+        let mut request = ListingRequest::new(self.history.current().clone());
+        if let Some(batch_size) = self.batch_size {
+            request = request.with_batch_size(batch_size);
+        }
+        let (session, sink) = ListingSession::start(&request);
+        self.readings += 1;
+        self.refreshing = Some(Refresh {
+            session,
+            entries: Vec::new(),
+        });
+        reader.start(request, sink);
+    }
+
+    /// How many times this pane has read its folder: every listing and every
+    /// refresh.
+    pub fn readings(&self) -> u64 {
+        self.readings
+    }
+
+    /// Whether a refresh is being read or waits to be.
+    pub fn is_refreshing(&self) -> bool {
+        self.refreshing.is_some() || self.refresh_queued
+    }
+
+    /// Takes what a refresh delivered; reconciles once it is complete.
+    fn pump_refresh(&mut self, reader: Option<&dyn DirectoryReader>) -> bool {
+        let Some(refresh) = self.refreshing.as_mut() else {
+            if self.refresh_queued
+                && !self.is_listing()
+                && let Some(reader) = reader
+            {
+                self.refresh(reader);
+            }
+            return false;
+        };
+        let mut finished = None;
+        for event in refresh.session.drain() {
+            match event {
+                crate::listing::ListingEvent::Batch(batch) => {
+                    refresh.entries.extend(batch.entries);
+                }
+                crate::listing::ListingEvent::Complete(summary) => {
+                    finished = Some(Ok(summary.skipped));
+                }
+                crate::listing::ListingEvent::Failed { .. } => finished = Some(Err(true)),
+                crate::listing::ListingEvent::Cancelled { .. } => finished = Some(Err(false)),
+            }
+        }
+        let Some(outcome) = finished else {
+            return false;
+        };
+        let refresh = self.refreshing.take().expect("a refresh in flight");
+        match outcome {
+            Ok(skipped) => self.model.reconcile(refresh.entries, skipped),
+            // The folder itself can no longer be read (removed, unmounted):
+            // a real listing says so in the view, rather than the rows of a
+            // folder that is not there staying on screen.
+            Err(true) => match reader {
+                Some(reader) => {
+                    self.start_listing(reader);
+                    true
+                }
+                None => false,
+            },
+            Err(false) => false,
+        }
+    }
+
+    /// [`Pane::pump`], also taking a refresh's reading and starting a queued
+    /// one with `reader`.
+    pub fn pump_with(&mut self, reader: &dyn DirectoryReader) -> bool {
+        let changed = self.pump();
+        changed | self.pump_refresh(Some(reader))
+    }
+
     /// Changes the sort order. No listing is restarted: the entries are
     /// already here.
     pub fn set_order(&mut self, order: SortOrder) {
@@ -215,6 +326,11 @@ impl Pane {
             previous.cancel();
         }
         self.session = None;
+        // A refresh of what was on screen is obsolete once it is listed anew.
+        if let Some(refresh) = self.refreshing.take() {
+            refresh.session.cancel();
+        }
+        self.refresh_queued = false;
 
         let location = self.history.current().clone();
         let mut request = ListingRequest::new(location.clone());
@@ -224,6 +340,7 @@ impl Pane {
         self.model = DirectoryModel::new(location, self.preferences.order, self.preferences.hidden);
         self.model.restart(request.listing);
         let (session, sink) = ListingSession::start(&request);
+        self.readings += 1;
         self.session = Some(session);
         reader.start(request, sink);
     }
