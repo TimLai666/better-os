@@ -24,6 +24,14 @@ pub const DEVELOPER: &str = "better-files/developer.svg";
 /// The developer glyph's brackets alone, the mark the content view puts on a
 /// full-colour folder.
 pub const CODE_MARK: &str = "better-files/code-mark.svg";
+/// "This PC": a monitor on its stand (ticket 122).
+pub const COMPUTER: &str = "better-files/computer.svg";
+/// A removable drive: a USB stick.
+pub const USB_DRIVE: &str = "better-files/usb-drive.svg";
+/// A disc in an optical drive.
+pub const DISC: &str = "better-files/disc.svg";
+/// A phone or a camera.
+pub const PHONE: &str = "better-files/phone.svg";
 /// The kit's own, named here so every folder glyph is a path.
 pub const FOLDER: &str = "icons/folder.svg";
 pub const DEVICE: &str = "icons/hard-drive.svg";
@@ -74,6 +82,16 @@ fn svg(path: &str) -> Option<String> {
         DEVELOPER => {
             r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="m10 11-2.5 2.5L10 16"/><path d="m14 11 2.5 2.5L14 16"/>"#
         }
+        COMPUTER => {
+            r#"<rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>"#
+        }
+        USB_DRIVE => {
+            r#"<rect x="7" y="9" width="10" height="13" rx="2"/><path d="M9 9V3h6v6"/><path d="M11 5.5h.01"/><path d="M13 5.5h.01"/>"#
+        }
+        DISC => {
+            r#"<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/><path d="M7.5 8.5a6 6 0 0 1 3-2.2"/>"#
+        }
+        PHONE => r#"<rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/>"#,
         CODE_MARK => r#"<path d="m8 7-5 5 5 5"/><path d="m16 7 5 5-5 5"/><path d="m14 4-4 16"/>"#,
         _ => return None,
     };
@@ -281,6 +299,18 @@ pub fn folder_glyph(
     FolderGlyph::Folder
 }
 
+/// A drive's icon by its kind (ticket 122).
+pub fn drive_icon(kind: crate::drives::DriveKind) -> &'static str {
+    use crate::drives::DriveKind as K;
+    match kind {
+        K::System | K::Internal => DEVICE,
+        K::Removable => USB_DRIVE,
+        K::Optical => DISC,
+        K::Phone => PHONE,
+        K::Network => NETWORK,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,7 +319,7 @@ mod tests {
     fn every_glyph_is_served_and_is_an_svg() {
         for path in [
             TRASH, DOCUMENTS, DOWNLOADS, PICTURES, MUSIC, VIDEOS, DESKTOP, OPERATIONS, HOME,
-            TEMPLATES, PUBLIC, DEVELOPER, CODE_MARK,
+            TEMPLATES, PUBLIC, DEVELOPER, CODE_MARK, COMPUTER, USB_DRIVE, DISC, PHONE,
         ] {
             let bytes = FilesAssets.load(path).unwrap().expect(path);
             let text = std::str::from_utf8(&bytes).unwrap();

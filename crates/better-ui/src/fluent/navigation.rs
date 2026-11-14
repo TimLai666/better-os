@@ -83,6 +83,9 @@ pub struct NavItem {
     /// A small mark on the icon's bottom trailing corner, such as the star a
     /// pinned folder wears beside its own icon.
     pub emblem: Option<IconName>,
+    /// A slim bar under the label, such as how full a drive is: the share
+    /// filled (0.0 to 1.0), and whether it is drawn in the caution colour.
+    pub meter: Option<(f32, bool)>,
 }
 
 /// A trailing icon action on a navigation item.
@@ -121,6 +124,7 @@ impl NavItem {
             action: None,
             icon_path: None,
             emblem: None,
+            meter: None,
         }
     }
 
@@ -153,11 +157,24 @@ impl NavItem {
 
     /// The item's height in the open pane: one line, or two with a caption.
     pub fn height(&self) -> Pixels {
-        if self.caption.is_some() {
+        let base = if self.caption.is_some() {
             size::TWO_LINE_ROW_HEIGHT
         } else {
             size::ROW_HEIGHT
+        };
+        // The meter takes its own line: 4px and the gap above it.
+        if self.meter.is_some() {
+            base + px(10.0)
+        } else {
+            base
         }
+    }
+
+    /// A slim bar under the label: `fraction` filled, in the caution colour
+    /// when `warning`.
+    pub fn meter(mut self, fraction: f32, warning: bool) -> Self {
+        self.meter = Some((fraction.clamp(0.0, 1.0), warning));
+        self
     }
 
     pub fn badge(mut self, badge: Option<InfoBadge>) -> Self {
@@ -524,6 +541,18 @@ fn item_row(
                 .flex()
                 .flex_col()
                 .child(div().truncate().child(item.label.clone()))
+                .children(item.meter.map(|(fraction, warning)| {
+                    let fill = if warning { p.caution } else { p.accent };
+                    div()
+                        .mt(px(4.0))
+                        .mb(px(2.0))
+                        .w_full()
+                        .h(px(4.0))
+                        .rounded(px(2.0))
+                        .bg(p.strong_stroke_disabled)
+                        .overflow_hidden()
+                        .child(div().h_full().w(gpui::relative(fraction)).bg(fill))
+                }))
                 .children(item.caption.clone().map(|caption| {
                     text(div(), super::CAPTION)
                         .text_color(caption_color)

@@ -194,6 +194,24 @@ pub struct Copy {
     pub completed_this_session: &'static str,
     /// Clears the finished list in the operations panel.
     pub clear_finished: &'static str,
+    /// Under a drive: `{free}` and `{total}` in bytes.
+    pub drive_free_of: &'static str,
+    /// A drive with no label, named by its size.
+    pub drive_of_size: &'static str,
+    /// Under a drive that is not mounted, after its size.
+    pub drive_not_mounted: &'static str,
+    /// Under an encrypted drive that is still locked, after its size.
+    pub drive_locked: &'static str,
+    /// Title of the passphrase dialog; `{drive}` is its name.
+    pub drive_unlock_title: &'static str,
+    /// The passphrase dialog's button.
+    pub drive_unlock: &'static str,
+    /// The passphrase field's header.
+    pub drive_passphrase: &'static str,
+    /// The page of every drive as tiles.
+    pub this_pc: &'static str,
+    /// A drive could not be mounted or ejected; `{drive}` and `{detail}`.
+    pub drive_failed: &'static str,
     /// A folder on screen was deleted or moved; `{folder}` is its name.
     pub folder_gone: &'static str,
     /// Retry on a failed job the engine no longer keeps.
@@ -677,6 +695,15 @@ pub const EN_US: Copy = Copy {
     failures: "Failed items",
     completed_this_session: "Finished this session",
     clear_finished: "Clear",
+    drive_free_of: "{free} free of {total}",
+    drive_of_size: "{size} drive",
+    drive_not_mounted: "Not mounted",
+    drive_locked: "Encrypted",
+    drive_unlock_title: "Unlock {drive}",
+    drive_unlock: "Unlock",
+    drive_passphrase: "Passphrase",
+    this_pc: "This PC",
+    drive_failed: "Couldn't use {drive}: {detail}",
     folder_gone: "“{folder}” was moved or deleted, so this is the folder it was in.",
     retry_gone: "This job is too old to retry. Run the operation again.",
     dismiss_finished: "Dismiss",
@@ -1128,6 +1155,15 @@ pub const ZH_TW: Copy = Copy {
     failures: "失敗項目",
     completed_this_session: "這次工作階段已完成",
     clear_finished: "清除",
+    drive_free_of: "可用 {free}，共 {total}",
+    drive_of_size: "{size} 磁碟",
+    drive_not_mounted: "未掛載",
+    drive_locked: "已加密",
+    drive_unlock_title: "解鎖「{drive}」",
+    drive_unlock: "解鎖",
+    drive_passphrase: "密碼",
+    this_pc: "本機",
+    drive_failed: "無法使用「{drive}」：{detail}",
     folder_gone: "「{folder}」已被移動或刪除，所以改為顯示它原本所在的資料夾。",
     retry_gone: "這項工作太久以前了，無法重試，請重新執行一次。",
     dismiss_finished: "移除",

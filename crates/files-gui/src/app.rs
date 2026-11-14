@@ -87,6 +87,9 @@ pub struct FilesApp {
     pub(crate) search_short: bool,
     /// A plugin's own page, when one is open in the main pane.
     pub(crate) plugin_view: Option<crate::plugin_page::PluginPage>,
+    /// "This PC" is showing (ticket 122), over the folder it was opened
+    /// from; going anywhere else closes it.
+    pub(crate) drives_page: Option<files_core::Location>,
     /// The items opened from each plugin, most recent first, for sections
     /// that list only those.
     pub(crate) plugin_opened: std::collections::BTreeMap<String, Vec<String>>,
@@ -215,6 +218,8 @@ impl FilesApp {
             link: Box::new(crate::devices::SharedLink(link)),
             preview: PreviewPanel::default(),
         });
+        // The drives in the sidebar and on "This PC" (ticket 122).
+        session.set_drive_sources(crate::drives::DriveSources::from_env());
         session.preview.open = session.preferences.preview_open;
         session.search.include_hidden = session.preferences.search_hidden;
         // Work an earlier Better Files did not live to finish is offered
@@ -361,6 +366,7 @@ impl FilesApp {
                 _ => "en",
             }),
             plugin_view: None,
+            drives_page: None,
             search_short: false,
             plugin_opened: crate::plugins::opened_path()
                 .map(|path| crate::plugins::load_opened(&path))
@@ -900,6 +906,36 @@ impl FilesApp {
             self.begin_path_edit(window, cx);
             return;
         }
+        // "This PC" covers the folder it was opened over: nothing the keys
+        // would do to that folder's files happens out of sight. Going
+        // somewhere, tabs and windows still work; Escape and Back close the
+        // page and F5 reads the drives again.
+        if self.drives_page.is_some() {
+            use crate::keys::Command as K;
+            match command {
+                // Back (and Escape) return to the folder under it.
+                K::ClearSelection | K::GoBack => {
+                    self.drives_page = None;
+                    cx.notify();
+                    return;
+                }
+                K::Reload => {
+                    self.session.refresh_drives();
+                    return;
+                }
+                K::GoForward | K::GoToParent | K::GoHome => self.drives_page = None,
+                K::NewTab
+                | K::CloseTab
+                | K::RestoreClosedTab
+                | K::NextTab
+                | K::PreviousTab
+                | K::NewWindow
+                | K::SplitView
+                | K::ToggleOperations
+                | K::ShowShortcuts => {}
+                _ => return,
+            }
+        }
         match command {
             crate::keys::Command::FilterFolder => {
                 self.open_filter(window, cx);
@@ -1045,6 +1081,11 @@ impl FilesApp {
                     .update(cx, |state, cx| state.set_value("", window, cx));
                 Some(std::env::var("USER").unwrap_or_default())
             }
+            Some(PendingDialog::UnlockDrive { .. }) => {
+                self.password_input
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                None
+            }
             _ => None,
         };
         if let Some(initial) = initial {
@@ -1091,6 +1132,12 @@ impl FilesApp {
                         password,
                     }),
                 );
+                self.clear_password = true;
+            }
+            PendingDialog::UnlockDrive { key, .. } => {
+                // Read once, handed to UDisks2, and cleared from the field.
+                let passphrase = self.password_input.read(cx).value().to_string();
+                self.session.unlock_drive(&key, passphrase);
                 self.clear_password = true;
             }
         }
