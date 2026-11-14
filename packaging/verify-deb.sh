@@ -370,6 +370,10 @@ for package_name in \
                 printf 'The Better Manager desktop entry does not run the packaged window\n' >&2
                 exit 1
             }
+            printf '%s\n' "$depends" | grep -Eq '(^|,)[[:space:]]*libsecret-tools([[:space:]]|,|$)' || {
+                printf 'better-manager must depend on libsecret-tools (secret-tool)\n' >&2
+                exit 1
+            }
             ;;
         better-launcher)
             # Clicking a launcher icon opens the launcher. It must never be the

@@ -533,7 +533,13 @@ PACKAGE_DATA=(
     "packaging/manager/io.betteros.Manager.desktop:usr/share/applications/io.betteros.Manager.desktop"
     "packaging/icons/better-manager.svg:usr/share/icons/hicolor/scalable/apps/better-manager.svg"
 )
-PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
+# libsecret-tools is a desktop helper Better OS installs with the manager so
+# that everyday tools work without the person hunting for a package: its
+# `secret-tool` is how other programs read a key from the GNOME keyring (for
+# example Claude Desktop importing Chrome's cookies, which asks the person to
+# install it otherwise). A Depends, not a Recommends, because Better Manager
+# installs with --no-install-recommends.
+PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS" "libsecret-tools")
 PACKAGE_RECOMMENDS="better-manager-daemon (= $VERSION)"
 make_package better-manager \
     'Better OS manager desktop application' \
