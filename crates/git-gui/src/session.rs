@@ -32,6 +32,7 @@ use crate::changes::{self, Include, Inclusion};
 use crate::commit::CommitForm;
 use crate::dialogs::{BranchPurpose, CloneTab, Dialog};
 use crate::github::{Account, GhAnswer, GhCall, GhRequest, GhResult, SignIn, SignInProblem};
+use crate::graph::{Direction, Found, GraphJob, GraphOutcome, GraphView};
 use crate::notifications;
 use crate::repositories::RepositoryList;
 use crate::settings::Settings;
@@ -42,6 +43,8 @@ pub enum Tab {
     #[default]
     Changes,
     History,
+    /// Every branch's commits with their lanes ([`crate::graph`]).
+    Graph,
 }
 
 /// Which page fills the window.
@@ -771,6 +774,7 @@ pub struct Repo {
     pub whole_file: bool,
     pub form: CommitForm,
     pub history: HistoryView,
+    pub graph: GraphView,
     pub stash: Option<StashView>,
     pub compare: Option<CompareView>,
     /// The job running or waiting, for the progress shown.
@@ -804,6 +808,7 @@ impl Repo {
             whole_file: false,
             form: CommitForm::default(),
             history: HistoryView::default(),
+            graph: GraphView::default(),
             stash: None,
             compare: None,
             busy: None,
@@ -1041,6 +1046,10 @@ pub struct GitSession {
     background: Option<Job>,
     background_running: bool,
     background_cancel: Cancel,
+    /// The branch graph's next page reads beside the queue: `git log` takes
+    /// no lock, and a long history must never hold up a commit.
+    graph_job: Option<GraphJob>,
+    graph_running: bool,
     /// Stops the network jobs the person started (and those waiting);
     /// replaced after each cancel.
     cancel: Cancel,
@@ -1090,6 +1099,8 @@ impl GitSession {
             background: None,
             background_running: false,
             background_cancel: Cancel::new(),
+            graph_job: None,
+            graph_running: false,
             cancel: Cancel::new(),
             generation: 0,
             client_id: github_api::CLIENT_ID,
@@ -1232,6 +1243,9 @@ impl GitSession {
             } else if let Some(job) = self.next_job() {
                 let outcome = job.run(self.git.as_ref());
                 self.apply(outcome);
+            } else if let Some(job) = self.next_graph() {
+                let outcome = job.run(self.git.as_ref());
+                self.apply_graph(outcome);
             } else if let Some(request) = self.next_gh() {
                 let answer = request.run(crate::github::now());
                 self.apply_gh(answer);
@@ -1250,6 +1264,9 @@ impl GitSession {
             } else if let Some(job) = self.next_job() {
                 let outcome = job.run(self.git.as_ref());
                 self.apply(outcome);
+            } else if let Some(job) = self.next_graph() {
+                let outcome = job.run(self.git.as_ref());
+                self.apply_graph(outcome);
             } else {
                 break;
             }
@@ -1283,6 +1300,7 @@ impl GitSession {
     fn open_trusted(&mut self, path: PathBuf) {
         self.generation += 1;
         self.queue.clear();
+        self.graph_job = None;
         self.background = None;
         self.background_cancel.cancel();
         self.queue.push_back(Job {
@@ -1295,6 +1313,7 @@ impl GitSession {
     pub fn close_repository(&mut self) {
         self.generation += 1;
         self.queue.clear();
+        self.graph_job = None;
         self.background = None;
         self.background_cancel.cancel();
         self.repo = None;
@@ -1313,18 +1332,30 @@ impl GitSession {
         let Some(repo) = self.repo.as_mut() else {
             return;
         };
+        if tab == Tab::Graph {
+            repo.graph.resume();
+        } else {
+            // No `git log` runs for a graph nobody sees.
+            repo.graph.pause();
+        }
         repo.tab = tab;
         repo.diff = None;
         repo.stash = None;
         repo.compare = None;
-        if tab == Tab::History {
-            if !repo.history.loaded {
-                self.push_op(Op::Log { skip: 0 });
-            } else if let Some(index) = repo.history.selected {
-                self.select_commit(index);
+        match tab {
+            Tab::History => {
+                if !repo.history.loaded {
+                    self.push_op(Op::Log { skip: 0 });
+                } else if let Some(index) = repo.history.selected {
+                    self.select_commit(index);
+                }
             }
-        } else if let Some(path) = repo.selected_file.clone() {
-            self.select_file(&path);
+            Tab::Graph => self.show_graph(),
+            Tab::Changes => {
+                if let Some(path) = repo.selected_file.clone() {
+                    self.select_file(&path);
+                }
+            }
         }
     }
 
@@ -1465,6 +1496,11 @@ impl GitSession {
             (Tab::History, None) => {
                 if let Some(index) = repo.history.file {
                     self.select_commit_file(index);
+                }
+            }
+            (Tab::Graph, None) => {
+                if let Some(index) = repo.graph.file {
+                    self.select_graph_file(index);
                 }
             }
         }
@@ -1864,6 +1900,12 @@ impl GitSession {
         let Some(commit) = self.commit_at(index) else {
             return;
         };
+        self.revert_commit(&commit);
+    }
+
+    /// Reverts a commit given whole, from any list (History or Graph).
+    pub fn revert_commit(&mut self, commit: &Commit) {
+        let commit = commit.clone();
         self.edit(
             OpKind::Revert,
             HistoryEdit::Revert {
@@ -1877,10 +1919,15 @@ impl GitSession {
         let Some(commit) = self.commit_at(index) else {
             return;
         };
+        self.cherry_pick_sha(commit.sha, onto);
+    }
+
+    /// Cherry-picks a commit by hash, onto the current branch or `onto`.
+    pub fn cherry_pick_sha(&mut self, sha: String, onto: Option<String>) {
         self.edit(
             OpKind::CherryPick,
             HistoryEdit::CherryPick {
-                shas: vec![commit.sha],
+                shas: vec![sha],
                 onto,
             },
         );
@@ -1964,6 +2011,269 @@ impl GitSession {
             target: sha,
             changes: SwitchChanges::Carry,
         });
+    }
+
+    // --- the graph --------------------------------------------------------
+
+    /// The Graph tab was shown: read it the first time or when it went
+    /// stale, else show the selected commit again. History's first page is
+    /// read too, because dragging in the graph reorders and squashes through
+    /// History's rules.
+    fn show_graph(&mut self) {
+        let Some(repo) = self.repo.as_ref() else {
+            return;
+        };
+        if !repo.history.loaded && !self.queue.iter().any(|j| matches!(j.op, Op::Log { .. })) {
+            self.push_op(Op::Log { skip: 0 });
+        }
+        let repo = self.repo.as_ref().expect("checked above");
+        if !repo.graph.loaded || repo.graph.stale {
+            self.read_graph(true);
+        } else if let Some(index) = repo.graph.selected_index() {
+            self.select_graph_commit(index);
+        }
+    }
+
+    /// Reads the graph again from the top: as many commits as are shown
+    /// with `keep` (a refresh), one page without (a new filter).
+    pub fn read_graph(&mut self, keep: bool) {
+        let generation = self.generation;
+        let Some(repo) = self.repo.as_mut() else {
+            return;
+        };
+        repo.graph.fingerprint = Some(crate::graph::fingerprint(&repo.status, &repo.info));
+        let job = repo.graph.start(generation, repo.root.clone(), keep);
+        // A newer read replaces one still waiting; one already running
+        // finishes and is dropped by its stream.
+        self.graph_job = Some(job);
+    }
+
+    /// Reads the next page, when the list is near its end.
+    pub fn load_more_graph(&mut self) {
+        let generation = self.generation;
+        let Some(repo) = self.repo.as_mut() else {
+            return;
+        };
+        if self.graph_job.is_some() {
+            return;
+        }
+        if let Some(job) = repo.graph.more(generation, repo.root.clone()) {
+            self.graph_job = Some(job);
+        }
+    }
+
+    /// The graph's next page, to read beside the queue, when one is waiting
+    /// and none is running.
+    pub fn next_graph(&mut self) -> Option<GraphJob> {
+        if self.graph_running {
+            return None;
+        }
+        let job = self.graph_job.take()?;
+        self.graph_running = true;
+        Some(job)
+    }
+
+    pub fn is_graph_running(&self) -> bool {
+        self.graph_running
+    }
+
+    /// A page of the graph arrived.
+    pub fn apply_graph(&mut self, outcome: GraphOutcome) {
+        self.graph_running = false;
+        if outcome.generation != self.generation {
+            return;
+        }
+        let Some(repo) = self.repo.as_mut() else {
+            return;
+        };
+        let was_selected = repo.graph.selected.clone();
+        match repo.graph.apply(outcome) {
+            Ok(false) => return,
+            Ok(true) if repo.graph.moved => {
+                // Branches moved while the walk was stopped: read it again
+                // from the top, as many commits as were shown. A find
+                // waiting for more goes on once the new list is in.
+                repo.graph.moved = false;
+                self.read_graph(true);
+                return;
+            }
+            Ok(true) => {}
+            Err(error) => {
+                repo.graph.search_pending = None;
+                self.problem = Some(Problem::Git {
+                    kind: OpKind::Refresh,
+                    error,
+                });
+                return;
+            }
+        }
+        // The selected commit went away in the refresh: so does its diff.
+        if was_selected.is_some() && repo.graph.selected.is_none() && repo.tab == Tab::Graph {
+            repo.diff = None;
+        }
+        if let Some(direction) = repo.graph.search_pending.take() {
+            self.graph_find(direction);
+        }
+    }
+
+    pub fn select_graph_commit(&mut self, index: usize) {
+        let Some(repo) = self.repo.as_mut() else {
+            return;
+        };
+        let Some(commit) = repo.graph.commits.get(index) else {
+            return;
+        };
+        let sha = commit.sha.clone();
+        repo.graph.selected = Some(sha.clone());
+        repo.graph.files.clear();
+        repo.graph.file = None;
+        repo.diff = None;
+        self.push_op(Op::CommitFiles(sha));
+    }
+
+    pub fn select_graph_file(&mut self, index: usize) {
+        let options = self.diff_options();
+        let Some(repo) = self.repo.as_mut() else {
+            return;
+        };
+        let Some(sha) = repo.graph.selected.clone() else {
+            return;
+        };
+        let Some(file) = repo.graph.files.get(index).cloned() else {
+            return;
+        };
+        repo.graph.file = Some(index);
+        self.push_op(Op::Diff {
+            key: DiffKey::Commit {
+                sha,
+                path: file.path.clone(),
+            },
+            original: file.original_path.clone(),
+            options,
+            image: false,
+            conflicted: false,
+            file: Some(file),
+        });
+    }
+
+    /// Changes the filter, remembers it, and reads the graph again.
+    pub fn set_graph_query(&mut self, query: git_platform::GraphQuery) {
+        let Some(repo) = self.repo.as_mut() else {
+            return;
+        };
+        if repo.graph.query == query {
+            return;
+        }
+        repo.graph.query = query;
+        self.settings.graph_scope = query.scope.as_str().to_string();
+        self.settings.graph_remotes = query.remotes;
+        self.settings.graph_tags = query.tags;
+        self.save_settings();
+        self.read_graph(false);
+    }
+
+    pub fn open_graph_search(&mut self) {
+        if let Some(repo) = self.repo.as_mut() {
+            repo.graph.search_open = true;
+        }
+    }
+
+    pub fn close_graph_search(&mut self) {
+        if let Some(repo) = self.repo.as_mut() {
+            repo.graph.search_open = false;
+            repo.graph.search_pending = None;
+            repo.graph.not_found = false;
+        }
+    }
+
+    pub fn set_graph_search(&mut self, text: &str) {
+        if let Some(repo) = self.repo.as_mut() {
+            repo.graph.search = text.to_string();
+            repo.graph.not_found = false;
+            repo.graph.search_pending = None;
+        }
+    }
+
+    /// Finds the next (or previous) commit that matches the find field,
+    /// selects it, and asks the window to scroll to it. Forward, a match
+    /// not loaded yet is looked for in the next pages as they arrive.
+    pub fn graph_find(&mut self, direction: Direction) {
+        let Some(repo) = self.repo.as_mut() else {
+            return;
+        };
+        match repo.graph.find(direction) {
+            Found::At(index) => {
+                repo.graph.not_found = false;
+                repo.graph.scroll_to = Some(index);
+                self.select_graph_commit(index);
+            }
+            Found::NeedMore => {
+                repo.graph.search_pending = Some(direction);
+                self.load_more_graph();
+            }
+            Found::Nothing => repo.graph.not_found = true,
+        }
+    }
+
+    /// Where a graph commit sits in History's list, which is what reorder
+    /// and squash work on: the same commits from HEAD down, as long as no
+    /// merge lies between.
+    fn history_index(&self, sha: &str) -> Option<usize> {
+        self.repo
+            .as_ref()?
+            .history
+            .commits
+            .iter()
+            .position(|c| c.sha == sha)
+    }
+
+    /// Whether the graph commit may be reordered or squashed: History's
+    /// rule, for the same commit.
+    pub fn graph_can_rewrite(&self, sha: &str) -> bool {
+        self.history_index(sha)
+            .is_some_and(|index| self.can_rewrite(index))
+    }
+
+    /// The two commits' places in History's list when History's rules let
+    /// them be reordered or squashed. Otherwise the graph is told why, for
+    /// the pane to say. Dropping a commit on itself does nothing.
+    fn graph_rewrite_places(&mut self, from: &str, to: &str) -> Option<(usize, usize)> {
+        if from == to {
+            return None;
+        }
+        let (from, to) = (self.history_index(from), self.history_index(to));
+        let repo = self.repo.as_mut()?;
+        let ahead = repo
+            .status
+            .upstream
+            .as_ref()
+            .map(|_| repo.status.ahead_behind.map(|(a, _)| a).unwrap_or(0));
+        repo.graph.refusal = crate::graph::rewrite_refusal(&repo.history.commits, from, to, ahead);
+        if repo.graph.refusal.is_some() {
+            return None;
+        }
+        Some((from?, to?))
+    }
+
+    /// Dropping one graph commit on the top edge of another: moves it there
+    /// on the current branch.
+    pub fn graph_reorder(&mut self, from: &str, to: &str) {
+        if let Some((from, to)) = self.graph_rewrite_places(from, to) {
+            self.reorder(from, to);
+        }
+    }
+
+    /// Dropping one graph commit onto another: asks to squash them.
+    pub fn graph_squash(&mut self, from: &str, to: &str) {
+        if let Some((from, to)) = self.graph_rewrite_places(from, to) {
+            self.ask_squash(from, to);
+        }
+    }
+
+    pub fn dismiss_graph_refusal(&mut self) {
+        if let Some(repo) = self.repo.as_mut() {
+            repo.graph.refusal = None;
+        }
     }
 
     // --- branches ---------------------------------------------------------
@@ -2105,6 +2415,7 @@ impl GitSession {
             return;
         };
         let base = repo.branch().unwrap_or("HEAD").to_string();
+        repo.graph.pause();
         repo.tab = Tab::History;
         repo.compare = Some(CompareView {
             branch: branch.clone(),
@@ -2168,6 +2479,7 @@ impl GitSession {
         let Some(repo) = self.repo.as_mut() else {
             return;
         };
+        repo.graph.pause();
         repo.tab = Tab::Changes;
         repo.stash = Some(StashView {
             name: name.clone(),
@@ -2871,6 +3183,11 @@ impl GitSession {
                 Ok((status, info)) => {
                     self.remember_open(&root);
                     let mut repo = Repo::new(root, status, info);
+                    repo.graph = GraphView::new(crate::graph::query_from(
+                        &self.settings.graph_scope,
+                        self.settings.graph_remotes,
+                        self.settings.graph_tags,
+                    ));
                     if let Some(branch) = repo.branch() {
                         repo.recent_branches = vec![branch.to_string()];
                     }
@@ -2938,6 +3255,23 @@ impl GitSession {
                 let Some(repo) = self.repo.as_mut() else {
                     return;
                 };
+                if repo.tab == Tab::Graph {
+                    let mut first = false;
+                    if repo.graph.selected.as_deref() == Some(sha.as_str()) {
+                        match result {
+                            Ok(files) => {
+                                first = !files.is_empty();
+                                repo.graph.files = files;
+                            }
+                            Err(error) => self.problem = Some(read_failed(error)),
+                        }
+                    }
+                    self.idle();
+                    if first {
+                        self.select_graph_file(0);
+                    }
+                    return;
+                }
                 let current = repo
                     .history
                     .selected
@@ -3132,7 +3466,13 @@ impl GitSession {
             }
         }
         let after_branch = repo.branch().map(str::to_string);
-        let reload_history = repo.tab == Tab::History && !repo.history.loaded;
+        let reload_history = matches!(repo.tab, Tab::History | Tab::Graph) && !repo.history.loaded;
+        let graph_moved = repo.graph.loaded
+            && repo.graph.fingerprint != Some(crate::graph::fingerprint(&repo.status, &repo.info));
+        if graph_moved {
+            repo.graph.stale = true;
+        }
+        let reload_graph = graph_moved && repo.tab == Tab::Graph;
         let reselect = (repo.tab == Tab::Changes && repo.stash.is_none())
             .then(|| repo.selected_file.clone())
             .flatten();
@@ -3142,6 +3482,9 @@ impl GitSession {
         }
         if reload_history {
             self.push_op(Op::Log { skip: 0 });
+        }
+        if reload_graph {
+            self.read_graph(true);
         }
         if ok && before_branch != after_branch {
             if let Some(stash) = self.branch_stash() {

@@ -595,6 +595,12 @@ impl GitApp {
                 vec![
                     self.menu_item(c.show_changes, Action::ShowChanges, has, cx),
                     self.menu_item(c.show_history, Action::ShowHistory, has, cx),
+                    self.menu_item(
+                        crate::graph::graph_copy(self.locale).tab,
+                        Action::ShowGraph,
+                        has,
+                        cx,
+                    ),
                     self.menu_item(c.repository_list, Action::RepositoryList, true, cx),
                     self.menu_item(c.branch_list, Action::BranchList, has, cx),
                     self.menu_item(c.worktrees, Action::WorktreeList, has, cx),
@@ -1312,11 +1318,15 @@ impl GitApp {
     ) -> Div {
         let repo = self.session.repo.as_ref().expect("a repository is open");
         let narrow = window.viewport_size().width < px(1100.0);
+        // The graph needs the room: its list takes most of the window, and
+        // the commit's details and diff the rest, as History's do.
+        let graph = repo.tab == Tab::Graph;
         let pane = div()
             .flex()
             .flex_col()
             .flex_none()
-            .w(if narrow { px(300.0) } else { PANE_WIDTH })
+            .when(graph, |d| d.w(relative(crate::graph_pane::GRAPH_SHARE)))
+            .when(!graph, |d| d.w(if narrow { px(300.0) } else { PANE_WIDTH }))
             .h_full()
             .border_r_1()
             .border_color(p.divider)
@@ -1332,16 +1342,21 @@ impl GitApp {
                                 format!("{} {}", c.show_changes, repo.status.changes.len())
                             }),
                             SelectorItem::new(c.show_history),
+                            SelectorItem::new(crate::graph::graph_copy(self.locale).tab),
                         ],
-                        Some(if repo.tab == Tab::Changes { 0 } else { 1 }),
+                        Some(match repo.tab {
+                            Tab::Changes => 0,
+                            Tab::History => 1,
+                            Tab::Graph => 2,
+                        }),
                     )
                     .on_select(Self::act_with(
                         cx,
                         |this, index: usize, _, _| {
-                            this.session.set_tab(if index == 0 {
-                                Tab::Changes
-                            } else {
-                                Tab::History
+                            this.session.set_tab(match index {
+                                0 => Tab::Changes,
+                                1 => Tab::History,
+                                _ => Tab::Graph,
                             })
                         },
                     )),
@@ -1351,6 +1366,7 @@ impl GitApp {
                 (Tab::Changes, true) => self.conflicts_pane(repo, p, c, cx).into_any_element(),
                 (Tab::Changes, false) => self.changes_pane(repo, p, c, cx).into_any_element(),
                 (Tab::History, _) => self.history_pane(repo, p, c, cx).into_any_element(),
+                (Tab::Graph, _) => self.graph_pane(repo, p, c, window, cx).into_any_element(),
             });
         h_stack()
             .items_start()
@@ -2148,6 +2164,22 @@ impl GitApp {
                 cx,
                 |this, index| this.session.select_commit_file(index),
             ));
+        } else if repo.tab == Tab::Graph
+            && let Some(commit) = repo.graph.selected_commit()
+        {
+            pane = pane.child(self.commit_header(commit, repo, p, c, cx));
+            pane = pane.child(self.file_strip(
+                &repo.graph.files,
+                repo.graph.file,
+                "graph-file",
+                p,
+                cx,
+                |this, index| this.session.select_graph_file(index),
+            ));
+        } else if repo.tab == Tab::Graph && repo.stash.is_none() {
+            return pane.child(div().flex().flex_1().items_center().justify_center().child(
+                caption(crate::graph::graph_copy(self.locale).select_hint, p),
+            ));
         }
         pane.child(self.diff_view(repo, p, c, cx))
     }
@@ -2554,91 +2586,22 @@ impl GitApp {
                 entries
             }
             ContextTarget::Commit(index) => {
-                let index = *index;
-                let Some(commit) = repo.history.commits.get(index).cloned() else {
+                let Some(commit) = repo.history.commits.get(*index).cloned() else {
                     return Vec::new();
                 };
-                let newest = index == 0;
-                let (sha1, sha2, sha3, sha4) = (
-                    commit.sha.clone(),
-                    commit.sha.clone(),
-                    commit.sha.clone(),
-                    commit.sha.clone(),
-                );
-                let summary = commit.summary.clone();
-                let mut entries = Vec::new();
-                if newest && !repo.status.unborn {
-                    entries.push(self.item(c.undo_commit, cx, |this, _, _| {
-                        this.session.ask_undo_commit()
-                    }));
-                    entries.push(
-                        self.item(c.amend_commit, cx, |this, _, _| this.session.amend_last()),
-                    );
-                }
-                entries.push(self.item(c.reset_to, cx, move |this, _, _| {
-                    this.session.dialog = Some(Dialog::ResetTo {
-                        sha: sha1.clone(),
-                        summary: summary.clone(),
-                    })
-                }));
-                entries.push(self.item(c.checkout_commit, cx, move |this, _, _| {
-                    this.session.checkout_commit(sha2.clone())
-                }));
-                entries.push(self.item(c.revert, cx, move |this, _, _| this.session.revert(index)));
-                let branches: Vec<MenuEntry> = repo
-                    .info
-                    .branches
-                    .iter()
-                    .filter(|b| !b.remote && !b.current)
-                    .map(|b| {
-                        let name = b.name.clone();
-                        self.item(b.name.clone(), cx, move |this, _, _| {
-                            this.session.cherry_pick(index, Some(name.clone()))
-                        })
-                    })
-                    .collect();
-                if !branches.is_empty() {
-                    entries.push(MenuEntry::submenu(c.cherry_pick_to, branches));
-                }
-                entries.push(MenuEntry::Separator);
-                let label_text = commit.short_sha().to_string();
-                entries.push(self.item(c.create_branch_here, cx, move |this, _, _| {
-                    this.session.dialog = Some(Dialog::NewBranch {
-                        start: Some(sha3.clone()),
-                        start_label: Some(label_text.clone()),
-                    })
-                }));
-                entries.push(self.item(c.create_tag, cx, move |this, _, _| {
-                    this.session.dialog = Some(Dialog::CreateTag { sha: sha4.clone() })
-                }));
-                for tag in commit.tags() {
-                    let (delete, copy) = (tag.to_string(), tag.to_string());
-                    entries.push(self.item(
-                        fill(c.delete_tag, &[("tag", tag)]),
-                        cx,
-                        move |this, _, _| {
-                            this.session.dialog = Some(Dialog::DeleteTag {
-                                name: delete.clone(),
-                            })
-                        },
-                    ));
-                    entries.push(self.item(
-                        fill(c.copy_tag, &[("tag", tag)]),
-                        cx,
-                        move |this, _, cx| this.copy_text(copy.clone(), cx),
-                    ));
-                }
-                let sha = commit.sha.clone();
-                entries.push(self.item(c.copy_sha, cx, move |this, _, cx| {
-                    this.copy_text(sha.clone(), cx)
-                }));
-                if let Some(hosted) = &repo.hosted {
-                    let url = format!("{}/commit/{}", hosted.web_url(), commit.sha);
-                    entries.push(self.item(c.view_on_github_commit, cx, move |this, _, _| {
-                        this.open_url(&url)
-                    }));
-                }
-                entries
+                let menu = crate::commit_menu::CommitMenu {
+                    head: *index == 0 && !repo.status.unborn,
+                    // History lists HEAD and its ancestors only.
+                    ancestor: true,
+                    tags: commit.tags().into_iter().map(str::to_string).collect(),
+                };
+                self.commit_entries(&commit, menu, c, cx)
+            }
+            ContextTarget::GraphCommit(index) => self.graph_entries(*index, c, cx),
+            ContextTarget::GraphLabels(labels) => {
+                self.graph_label_entries(labels, c, cx, &|this, name, cx| {
+                    this.context_entries(&ContextTarget::Branch(name), c, cx)
+                })
             }
             ContextTarget::Branch(name) => {
                 let current = repo.branch() == Some(name.as_str());
@@ -3960,6 +3923,8 @@ fn shortcut_name(action: Action, c: &'static Copy) -> &'static str {
         Action::CloneRepository => c.clone_repository,
         Action::ShowChanges => c.show_changes,
         Action::ShowHistory => c.show_history,
+        Action::ShowGraph => crate::graph::graph_copy_for(c).tab,
+        Action::FindInGraph => crate::graph::graph_copy_for(c).shortcut_find,
         Action::RepositoryList => c.repository_list,
         Action::BranchList => c.branch_list,
         Action::WorktreeList => c.worktrees,

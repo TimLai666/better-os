@@ -14,6 +14,7 @@ use better_ui::fluent::auto_suggest::{AutoSuggestBox, Suggestion};
 use better_ui::fluent::badge::{Badge, InfoBadge};
 use better_ui::fluent::breadcrumb::BreadcrumbBar;
 use better_ui::fluent::button::{Button, ButtonKind, DropDownButton, SplitButton};
+use better_ui::fluent::chip::Chip;
 use better_ui::fluent::chrome::{CaptionButton, TitleBar};
 use better_ui::fluent::command_bar::{Command, CommandBar};
 use better_ui::fluent::dialog::{
@@ -21,6 +22,7 @@ use better_ui::fluent::dialog::{
 };
 use better_ui::fluent::hyperlink::HyperlinkButton;
 use better_ui::fluent::info_bar::{ErrorBar, ErrorReport, InfoBar, Severity};
+use better_ui::fluent::lanes::{LaneCell, LaneLine, LineKind, NodeStyle, lane_hue};
 use better_ui::fluent::list::ListRow;
 use better_ui::fluent::list::{Column, DetailsTable, ListItem, ListView, SortState};
 use better_ui::fluent::menu::{
@@ -433,6 +435,74 @@ fn matrix(
 }
 
 /// A labelled row that is not a state matrix.
+/// Five rows of a branch graph: a merge, the branch it merged, and the fork
+/// both came from, as Better Git draws them.
+fn graph_demo(p: &Palette) -> AnyElement {
+    let l = |kind, column, lane| LaneLine { kind, column, lane };
+    let rows: [(&str, u16, u32, NodeStyle, Vec<LaneLine>); 5] = [
+        (
+            "Merge feature/login",
+            0,
+            0,
+            NodeStyle::Head,
+            vec![l(LineKind::Out, 0, 0), l(LineKind::Out, 1, 1)],
+        ),
+        (
+            "Remember the last user",
+            1,
+            1,
+            NodeStyle::Commit,
+            vec![
+                l(LineKind::Pass, 0, 0),
+                l(LineKind::In, 1, 1),
+                l(LineKind::Out, 1, 1),
+            ],
+        ),
+        (
+            "Fix typo in README",
+            0,
+            0,
+            NodeStyle::Commit,
+            vec![
+                l(LineKind::Pass, 1, 1),
+                l(LineKind::In, 0, 0),
+                l(LineKind::Out, 0, 0),
+            ],
+        ),
+        (
+            "Add login form",
+            1,
+            1,
+            NodeStyle::Commit,
+            vec![
+                l(LineKind::Pass, 0, 0),
+                l(LineKind::In, 1, 1),
+                l(LineKind::Out, 1, 1),
+            ],
+        ),
+        (
+            "Set up the build",
+            0,
+            0,
+            NodeStyle::Commit,
+            vec![l(LineKind::In, 0, 0), l(LineKind::In, 1, 1)],
+        ),
+    ];
+    let mut list = div().w(px(480.0)).flex().flex_col();
+    for (summary, column, lane, node, lines) in rows {
+        list = list.child(
+            div()
+                .h(px(36.0))
+                .flex()
+                .items_center()
+                .gap(spacing::SM)
+                .child(LaneCell::new(column, lane, lines, 2).node(node))
+                .child(label(summary.to_string(), BODY, p.text_primary)),
+        );
+    }
+    list.into_any_element()
+}
+
 fn line(name: &str, p: &Palette, content: impl IntoElement) -> AnyElement {
     div()
         .flex()
@@ -2095,6 +2165,29 @@ impl Gallery {
                         .caption(self.t("Just now", "剛剛")),
                     ),
             )],
+        ));
+        sections.push(section(
+            self.t("Label chips and a branch graph", "標籤晶片與分支圖"),
+            p,
+            vec![
+                line(
+                    self.t("Chips", "標籤晶片"),
+                    p,
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(spacing::SM)
+                        .child(Chip::new("main").hue(lane_hue(0)).emphasized(true))
+                        .child(Chip::new("feature/login").hue(lane_hue(1)))
+                        .child(
+                            Chip::new("origin/main")
+                                .icon(IconName::Globe)
+                                .hue(lane_hue(0)),
+                        )
+                        .child(Chip::new("v1.0")),
+                ),
+                line(self.t("Branch graph", "分支圖"), p, graph_demo(p)),
+            ],
         ));
         sections
     }

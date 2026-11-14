@@ -42,6 +42,7 @@ pub mod branches;
 pub mod config;
 pub mod conflicts;
 pub mod credentials;
+pub mod graph;
 pub mod history;
 pub mod keyring;
 pub mod patch;
@@ -68,6 +69,7 @@ use git_core::{
 use thiserror::Error;
 
 pub use branches::SwitchChanges;
+pub use graph::{GraphQuery, GraphScope, GraphSource, MemorySource};
 pub use history::{CommitOptions, HistoryEdit, TodoAction};
 pub use patch::FileSelection;
 pub use remote::{Lease, PushRequest};
@@ -388,6 +390,27 @@ pub trait Git: Send + Sync {
     }
     fn edit_history(&self, repository: &Path, edit: &HistoryEdit) -> Result<(), GitError> {
         unsupported!("edit_history")
+    }
+    /// The commits the graph's walk starts from: the revisions `query`
+    /// names, resolved to ids. A graph that stops and starts again compares
+    /// them, and only carries on from where it stopped when they are the
+    /// same. A fake that pins nothing answers none.
+    fn graph_tips(&self, repository: &Path, query: &GraphQuery) -> Result<Vec<String>, GitError> {
+        Ok(Vec::new())
+    }
+    /// Every branch's commits for the branch graph, newest first in
+    /// topological order, read a page at a time from one `git log` that
+    /// starts from `tips` (from [`Git::graph_tips`]; the revisions `query`
+    /// names when there are none), after the first `skip` (a graph picking
+    /// up where it stopped).
+    fn graph(
+        &self,
+        repository: &Path,
+        query: &GraphQuery,
+        tips: &[String],
+        skip: usize,
+    ) -> Result<Box<dyn GraphSource>, GitError> {
+        unsupported!("graph")
     }
 
     // Branches
@@ -818,8 +841,9 @@ impl<'a> Run<'a> {
         self
     }
 
-    /// Runs git and captures what it printed.
-    pub(crate) fn capture(self) -> Result<Captured, GitError> {
+    /// `git` with the settings every command gets, up to the point where
+    /// `-C` and the command's own arguments follow.
+    fn base_command(&self) -> Command {
         // `--literal-pathspecs` stops a file name such as `*.txt` from
         // matching other paths as a pattern.
         let mut command = Command::new("git");
@@ -836,6 +860,47 @@ impl<'a> Run<'a> {
         for variable in REPOSITORY_VARIABLES {
             command.env_remove(variable);
         }
+        command
+    }
+
+    /// Starts git with its stdout and stderr as pipes for the caller to
+    /// read as it prints, for output too long to wait for whole (the
+    /// branch graph). Never a network command. Bytes given with
+    /// [`Run::stdin`] are written from a thread of their own, so git never
+    /// waits on its input while the caller waits on its output.
+    pub(crate) fn spawn_reading(self) -> Result<std::process::Child, GitError> {
+        let mut command = self.base_command();
+        for (key, value) in &self.env {
+            command.env(key, value);
+        }
+        let mut child = command
+            .arg("-C")
+            .arg(self.repository)
+            .args(&self.args)
+            .env("LC_ALL", "C")
+            .stdin(if self.stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| match error.kind() {
+                ErrorKind::NotFound => GitError::NotInstalled,
+                _ => io_failed(error),
+            })?;
+        if let Some(bytes) = self.stdin {
+            // Ends when everything is written or git closes its input (a
+            // stopped graph kills git); nothing waits for it.
+            drop(spawn_writer(&mut child, bytes));
+        }
+        Ok(child)
+    }
+
+    /// Runs git and captures what it printed.
+    pub(crate) fn capture(self) -> Result<Captured, GitError> {
+        let mut command = self.base_command();
         // Kept until git has exited: the helper reads the token from it.
         let mut _helper = None;
         if let Some(network) = &self.network {
@@ -1243,6 +1308,18 @@ impl Git for SystemGit {
 
     fn edit_history(&self, repository: &Path, edit: &HistoryEdit) -> Result<(), GitError> {
         history::edit(repository, edit)
+    }
+    fn graph_tips(&self, repository: &Path, query: &GraphQuery) -> Result<Vec<String>, GitError> {
+        graph::tips(repository, query)
+    }
+    fn graph(
+        &self,
+        repository: &Path,
+        query: &GraphQuery,
+        tips: &[String],
+        skip: usize,
+    ) -> Result<Box<dyn GraphSource>, GitError> {
+        graph::LogStream::start(repository, query, tips, skip)
     }
 
     fn create_branch(
