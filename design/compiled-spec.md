@@ -1,7 +1,7 @@
 # Better Git: the first window
 
 What the window looks like. What it does, and its exact states, are in
-`docs/tickets/77-better-git-first-window.md`; the visual rules are in
+`engineering/tickets/done/77-better-git-first-window.md`; the visual rules are in
 `DESIGN.md`. Where the two and this file differ, the ticket decides behaviour
 and `DESIGN.md` decides the look.
 

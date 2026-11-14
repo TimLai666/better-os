@@ -56,7 +56,7 @@ that copy.
   process wrote. Recovery never resumes a job anyway: the store's rule is that
   the user resubmits.
 - **The policy table** in `crates/files-operations/src/policy.rs` and in
-  `docs/files-operations-policy.md` now says hard links are preserved within a
+  `engineering/specs/files-operations-policy.md` now says hard links are preserved within a
   job, and on what conditions.
 
 Changed: `crates/files-operations/src/plan.rs`, `exec.rs`, `engine.rs`,

@@ -12,7 +12,7 @@
 //! first would have been the irreversible choice: a directory-keyed store has
 //! to decide eviction, what an unwritable directory does, and what a moved
 //! directory inherits, and none of those is answerable before there is a
-//! window to observe. `docs/files-gui-policy.md` records it.
+//! window to observe. `engineering/specs/files-gui-policy.md` records it.
 //!
 //! Nothing here fails loudly. A missing file is the defaults, and a corrupt
 //! file is the defaults plus a note the window can show — losing a sort order

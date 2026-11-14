@@ -196,3 +196,39 @@ world for every command. The full workspace gates run downstream after merge.
 - Inhibitor verification against a fake logind backend covering acquire, verify,
   lost-inhibitor, and release.
 - Idle CPU and memory for the tray and the service: **not measured.**
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Six new crates are on branch `ticket-25`: `awake-core`, `awake-ipc`,
+`awake-store`, `awake-service`, `awake-tray`, and `awake-gui`. Nothing outside
+them changed except the workspace member list, this file, and the ticket.
+
+The service owns the inhibitor and the tray is a pure client, so a session
+survives the tray being restarted — proved over a private session bus rather
+than asserted. The local protocol is JSON documents over a session-bus
+interface `org.betteros.Awake1`, the same shape ADR 0007 chose for the
+privileged daemon; the ticket records why, because Issue #13 defers the final
+choice to an ADR.
+
+`ksni` was evaluated but not adopted, and the evaluation is incomplete on
+purpose: this environment has no network access (crates.io answered HTTP 403),
+and `ksni` is in neither the lockfile nor the local cargo cache, so its license
+and maintenance could not be verified. The StatusNotifierItem and dbusmenu
+surfaces are therefore written directly on zbus — about 300 lines that a crate
+would replace without touching the menu model or the wording table. The ADR
+still needs a network-capable environment.
+
+Gates were run crate-scoped, because a workspace-wide run rebuilds the GPUI
+world for each command. `cargo fmt --all -- --check` passed across the whole
+workspace; check, test, and clippy `-D warnings` passed for the five non-GPUI
+crates (142 tests, 11 of them on a private session bus); `cargo check -p
+awake-gui` passed and the built binary stayed alive for 8 seconds under
+`ZED_HEADLESS=1`. The full workspace gates have not been run and should run
+downstream after merge.
+
+Not done in Phase 1 and named in the ticket: the battery provider behind the
+threshold, the rule engine the `自動規則` row disables itself for, packaging
+(desktop entry, systemd user unit, Better Manager manifest), icon artwork for
+the six states, and idle CPU/memory measurement for the two processes.

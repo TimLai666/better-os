@@ -129,7 +129,7 @@ pub trait PackageBackend {
 /// The privileged boundary itself, one package at a time.
 ///
 /// Superseded by [`PrivilegedTransactionExecutor`], which carries a whole
-/// transaction as ADR 0007 and `docs/architecture.md` require. It remains so
+/// transaction as ADR 0007 and `engineering/architecture.md` require. It remains so
 /// that the shipped refusal keeps its shape and its error key.
 pub trait PrivilegedExecutor {
     fn execute(&self, request: &PackageRequest) -> Result<PackageReceipt, PlatformError>;

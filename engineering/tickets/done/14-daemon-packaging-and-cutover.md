@@ -16,8 +16,8 @@
 - 執行模式預設切換為真實；mock 保留給測試與 demo，並在 smoke 測試中明寫。
 - 不變式重談：`no_shipped_backend_applies_a_package_change` 改為「沒有已核准的
   特權連線就沒有人能套用變更」，以執行期接線表達，不用 cargo feature 分叉。
-- 文件同步：AGENTS.md 的禁令與待決清單、ENG.md 測試矩陣、README 的能力描述、
-  `docs/architecture.md` 的交易步驟、`docs/security-and-rollback.md` 的現有保證。
+- 文件同步：AGENTS.md 的禁令與待決清單、`engineering/architecture.md` 測試矩陣、README 的能力描述、
+  `engineering/architecture.md` 的交易步驟、`engineering/specs/security-and-rollback.md` 的現有保證。
 - Chefer AppCipe 容器 e2e 腳本，帶 `BETTER_OS_E2E_CONTAINER=1` 守衛。
 
 ## Acceptance criteria
@@ -42,3 +42,31 @@
 
 - 套件簽章、公開 APT repository、release channels。
 - `dpkg --configure -a` 修復動作。
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Tickets 11 through 14 completed the real path. `manager-daemon` is a D-Bus
+system service authorized by polkit that revalidates every plan from scratch
+against the host, applies it through local APT, health-checks what it applied,
+and rolls back what it can. `manager-platform` fetches artifacts into a cache
+named by checksum and reads installed versions from dpkg. The GUI runs the
+transaction off the UI thread and offers cancellation only while it can still
+be honored. Real execution is the default for both front ends; demo mode is
+explicit and visible.
+
+Local `cargo fmt --all -- --check`, `cargo check --workspace --offline`,
+`cargo test --workspace` (21 suites, no failures), and `cargo clippy --workspace
+--all-targets -- -D warnings` all passed. `packaging/build-deb.sh` and
+`packaging/verify-deb.sh` built and verified all three packages for
+ubuntu-24.04 on amd64, including the daemon's unit, polkit policy, and bus
+config. A `ZED_HEADLESS=1` GUI launch stayed alive for the full smoke window.
+CLI smokes confirmed that real mode without a daemon reports
+`daemon.unavailable` and writes no state, that `--execution mock` still walks
+the old lifecycle, and that reconciliation detects a recorded component dpkg
+has never heard of and blocks planning for it.
+
+What has not run: `packaging/test-daemon-e2e.sh` inside a container, and the
+four-way release/architecture packaging matrix. The daemon has never faced a
+real polkit or a real dpkg. That is milestone M17.

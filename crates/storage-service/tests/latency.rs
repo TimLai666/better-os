@@ -8,7 +8,7 @@
 //!
 //! Real device throughput (exFAT, NTFS, ext4 across USB flash, external SSD,
 //! and external HDD) needs hardware and is recorded as a follow-up in
-//! `docs/tickets/31-direct-removal-storage.md`.
+//! `engineering/tickets/31-direct-removal-storage.md`.
 //!
 //! Run with `cargo test -p storage-service --test latency -- --nocapture` to
 //! see the numbers.

@@ -156,3 +156,24 @@ survived the move.
   ever reached a failure card it would show the untranslated key — the same
   position `platform.capability_unavailable` is already in. It cannot reach one
   today: a manager only exists after the host was identified.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Ticket 45 is merged into `main` and released as `v0.2.5`. It closes the
+follow-up ticket 44 left behind: `manager-gui` and `manager-cli` built their
+`Manager` from `MockPlatform::default()`, so every plan targeted Ubuntu 24.04
+amd64 no matter what the machine was. The client now reads the host, and the
+rules for reading it live in one place — `crates/better-core/src/host.rs`,
+called by both the daemon and the new `HostPlatform`, with `install.sh` keeping
+the matching shell copy it cannot share. The sidebar footer shows what was read
+rather than what was assumed: `zorin 24.04` over `amd64` on the machine it was
+written on. An unsupported host is an explicit refusal at both clients and never
+a fallback profile. The reasoning is in
+ticket 45`.
+
+The shape worth carrying out of it: the same rule written twice will be written
+a third time, and the third copy is where the drift starts. Ticket 43 fixed the
+os-release reading in the daemon because ticket 40's fix in `install.sh` had not
+reached it; this ticket refused to add a third and moved the rules instead.

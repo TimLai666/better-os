@@ -131,3 +131,18 @@ published manifests, and both rows changed together: 已是最新 · 剛剛更�
   locales, not by making a real fetch fail on the host: the run above had a
   working network, and the offline start proves the never-refreshed state
   rather than a refusal mid-check.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Ticket 46 is merged into `main` and released as `v0.2.6`. It is the third round
+of field reports from the same machine, and both halves are about a manager that
+knew something and said nothing. The version now has three places to appear — a
+Settings About section, the sidebar header, and `better-manager --version`, all
+reading the same `CARGO_PKG_VERSION` — and the Updates screen has an explicit
+檢查更新 button that runs the existing catalog refresh off the UI thread and
+then says what it found, or which list it is showing instead when the fetch did
+not land. The reasoning, including why the titlebar was left alone and why a
+failed refresh reports no count, is in
+ticket 46`.

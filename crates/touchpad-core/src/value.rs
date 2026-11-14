@@ -35,7 +35,7 @@ pub enum ValueError {
 /// The scale is `0.0` (slowest the backend offers) to `1.0` (fastest), with
 /// `0.5` meaning "leave the pointer where the session had it". It is a Better
 /// OS scale on purpose: a backend range is a backend detail, and
-/// `docs/touchpad-sensitivity-mapping.md` records how it maps onto GNOME's
+/// `engineering/specs/touchpad-sensitivity-mapping.md` records how it maps onto GNOME's
 /// `-1.0..=1.0` speed and what that mapping cannot promise.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]

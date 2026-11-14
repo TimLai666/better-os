@@ -7,7 +7,7 @@
 //! read `/proc`, call `syncfs` on a mount the session already owns — is
 //! available to the logged-in user, so the service runs unprivileged and there
 //! is no polkit action to write. What would need privilege is recorded in
-//! `docs/storage-safety-signals.md`; issue #5 defers that boundary to an ADR.
+//! `engineering/specs/storage-safety-signals.md`; issue #5 defers that boundary to an ADR.
 //!
 //! Documents cross as JSON for the same reason ADR 0007 gives: one definition,
 //! generated on both sides, rather than two hand-matched D-Bus signatures.

@@ -80,3 +80,17 @@ and semantic equality; locale overflow tests; headless GUI smoke.
   profile in force rather than always the global one, but the GNOME Shell
   adapter reports no device identity, so on a machine with two touchpads both
   pads perform the selected pad's profile.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Three things about that gesture path should be carried into 39 rather than
+rediscovered. Four fingers down maps to the current application's windows and
+GNOME 46 has no facility for it, so that row reports itself unsupported. Nothing
+animates: progress reaches the adapter on every phase and the action fires at the
+end, because the shell exposes no way to drive its own transition from outside.
+And the compositor cannot see a thumb, so thumb-and-three is matched as four
+contacts — which works for the shipped preset and would stop working if a
+four-finger pinch were configured beside it. Ticket 39's custom contact counts
+are exactly where that could happen.

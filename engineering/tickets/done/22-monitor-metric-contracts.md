@@ -55,11 +55,11 @@ sampling behavior，以及 unknown / unsupported / permission-denied / stale /
   另有手寫的 `synthetic-a` / `synthetic-b`（可算出精確期望值）、`truncated`、
   `malformed`、`no-psi`，共 597 個 fixture 檔。
 - `examples/overhead.rs` 與 `tests/overhead.rs` 實測整組 collector 取樣 N 次的
-  wall 與 CPU 成本，數字記在 `docs/monitor-collector-sources.md`。
+  wall 與 CPU 成本，數字記在 `engineering/specs/monitor-collector-sources.md`。
 
 ### Source traceability
 
-`docs/monitor-collector-sources.md` 逐一記錄每個 collector 的 upstream spec 與
+`engineering/specs/monitor-collector-sources.md` 逐一記錄每個 collector 的 upstream spec 與
 版本、adoption mode、與來源的語意差異、以及證明該解讀的測試名稱，另含 `sysinfo`
 的評估結論與實測 overhead 數字。
 
@@ -111,3 +111,45 @@ sampling behavior，以及 unknown / unsupported / permission-denied / stale /
 - 每個 process 的網路與 GPU 歸屬，issue #16 明確延後。
 - 多 socket 機器的 per-core 溫度封裝解析，目前沒有硬體可驗證。
 - 10,000 個 process 的大規模 benchmark 場景。
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Ticket 22 replaced Better Monitor's mock `Sample` with typed metric and
+capability contracts and added `monitor-collectors-linux`. A metric now carries
+its unit, semantic type, source, support state, and sampling behaviour, and an
+observation keeps unknown, unsupported, permission denied, stale, and a measured
+zero apart. Six collectors read `/proc` and `/sys` directly — CPU, memory, PSI,
+processes, storage throughput, and network interfaces — with no command
+execution and no CLI parsing anywhere.
+
+Every read goes through a `Roots` seam, so the tests drive the production path
+against 597 fixture files: two `/proc` and `/sys` snapshots captured from this
+machine three seconds apart, hand-authored synthetic pairs with exact expected
+deltas, plus truncated, malformed, and no-PSI trees. 157 tests pass — 26 in
+`monitor-core`, 117 collector unit tests, and 14 integration tests, two of which
+run against the live host.
+
+Four semantic traps the fixtures caught, all documented in
+`engineering/specs/monitor-collector-sources.md`: `/proc/net/dev` pads interface names into a
+fixed column so `tailscale0:` has no space before its first counter; `/proc/stat`
+already folds guest time into `user`, so summing the ten columns double counts;
+`/proc/vmstat`'s `pgpgin` counts kibibytes while `pswpin` in the same file counts
+pages; and the capture machine is AMD, where `k10temp` publishes only `Tctl`, so
+per-core temperature is genuinely unsupported rather than zero.
+
+Measured overhead on this machine with 1,359 tasks, 100 rounds in release: mean
+10.198 ms per full round, worst 12.209 ms, 99.0% CPU-bound. The process table is
+9.178 ms of that; everything else together is about 1 ms. The 10,000-process
+scenario from issue #16 has not been measured.
+
+Gates run for ticket 22 were crate-scoped to avoid rebuilding GPUI in the
+worktree: `cargo fmt --all -- --check`, `cargo check -p monitor-core -p
+monitor-collectors-linux`, `cargo test -p monitor-core -p
+monitor-collectors-linux`, `cargo clippy -p monitor-core -p
+monitor-collectors-linux --all-targets -- -D warnings`, and `cargo check -p
+monitor-gui`, all passing. `monitor-gui` was updated only far enough to speak
+the new contract and still renders a fixed demonstration round. The full
+workspace gate has not run on this branch and belongs on the main checkout after
+merge. That full workspace gate ran on `main` immediately after this merge.

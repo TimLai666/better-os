@@ -160,3 +160,40 @@ hard-coded final answer.
   and "data-table alternatives to charts" are met trivially: every page is
   already a table or a labelled figure. That stops being true the moment a
   chart is added.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Ticket 23 is done. Better Monitor is no longer observation-only: the window
+samples the real collectors on a background task once a second, and the
+Overview, Apps, and Processes pages render what they produce. Two new crates
+carry the work that must not live in GPUI — `monitor-views` for grouping and
+the table, apps, and overview models, and `monitor-actions-linux` as the only
+caller of `kill(2)` and `setpriority(2)` in the project. `monitor-core` gained
+a typed action contract whose refusals are data a button renders from rather
+than errors reported after the fact.
+
+The grouping engine merges processes only where the system recorded a
+relationship, and never because two executables share a name; that rule has its
+own test. Each group carries the evidence that produced it and the confidence
+of that evidence, and the precedence is configuration with Issue #16's order as
+the default, because the final order still needs an ADR.
+
+Gates that actually ran on this branch: `cargo fmt --all -- --check`,
+`cargo check --workspace`, `cargo test --workspace` (626 tests, all passing; 513 on `main` before this ticket),
+`cargo clippy --workspace --all-targets -- -D warnings`, an 8-second
+`ZED_HEADLESS=1` launch of `monitor-gui` that stayed alive with no output, and
+`cargo bench -p monitor-views` at 100, 1,000, and 10,000 processes. The
+collector overhead measurement was re-run because adding the per-process
+`/proc/[pid]/io` read made a round more expensive; the new number is published
+in `engineering/specs/monitor-collector-sources.md` rather than left at the old one.
+
+What ticket 23 did not close, and should not be assumed done: the narrow
+polkit-reviewed boundary for cross-user and elevated process actions is not
+built — those actions are refused with the owner named and no privileged helper
+is reached for. Rendered frame time and dropped frames are not measured; only
+the model-side cost is. Application grouping at 10,000 processes costs about
+one frame on the interface thread. Keyboard-only operation is not verified.
+"Open location" and "copy diagnostic details" from the ticket's deliverables
+are not implemented.

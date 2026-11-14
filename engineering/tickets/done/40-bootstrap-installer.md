@@ -28,7 +28,7 @@ inside Better Manager.
 - Idempotent: re-running upgrades or reports already-current.
 - `--uninstall` removes what it installed.
 - README quickstart section updated with the one-liner and what it does;
-  docs/release-packaging.md gains the installer contract (asset naming it
+  engineering/specs/release-packaging.md gains the installer contract (asset naming it
   depends on, per ADR 0002).
 - CI: a job (or an extension of the container e2e) that runs `install.sh
   --dry-run` plus a container run of the real install path against locally
@@ -84,7 +84,7 @@ path with `--from-dir`; workspace gates untouched or green if code changed.
   nothing.
 - **README and packaging spec.** The README quickstart carries the
   download-then-run one-liner and says why it is not `curl | sudo bash`.
-  `docs/release-packaging.md` gains the installer contract: the ADR 0002 asset
+  `engineering/specs/release-packaging.md` gains the installer contract: the ADR 0002 asset
   naming it depends on, the sidecar format, the release/architecture table it
   must be changed alongside, and where each half is verified.
 - **CI.** A new `installer` job runs `shellcheck install.sh`, a fixture table
@@ -111,3 +111,49 @@ path with `--from-dir`; workspace gates untouched or green if code changed.
 - `BETTER_OS_INSTALL_OS_RELEASE` exists so the detection table can be exercised
   against a machine's worth of fixtures. It chooses which published package is
   fetched and nothing else.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Branch `ticket-40`. `install.sh` at the repository root is the first command a
+person runs on a fresh Zorin or Ubuntu machine, and it installs exactly two
+packages — `better-manager` and `better-manager-daemon` — because everything
+else Better OS ships is installed from inside Better Manager.
+
+**A derivative is identified by its base, not its version number.** Zorin OS
+18.1 reports `VERSION_ID="18"`, which names nothing in the release matrix; the
+only field that says what it is built on is `UBUNTU_CODENAME=noble`. The
+detection therefore prefers the codename (`jammy` → 22.04, `noble` → 24.04) and
+falls back to `VERSION_ID` only for plain Ubuntu. `/etc/os-release` is read
+field by field rather than sourced. An unsupported system or architecture is
+refused with the values that were actually read.
+
+**Nothing is installed before both checksums match.** The latest release is
+resolved through the public GitHub API — no `gh`, no token, and `jq` only when
+it happens to be installed — the two `.deb`s and their `.sha256` sidecars are
+downloaded into a temporary directory, and both are verified before apt is
+reached. Root is asked for once, for a single `apt-get install` of the two
+verified files, and the command is printed verbatim before the password prompt.
+The README one-liner downloads the script to a file and then runs it, rather
+than piping a URL into a root shell.
+
+**Verified.** `bash -n` and the full flag surface on this host: the detection
+table against seven `/etc/os-release` fixtures (Zorin 17 and 18, Ubuntu 22.04
+with and without a codename, Ubuntu 20.04, Fedora, Linux Mint), release
+resolution against the live public API with and without `jq`, and twelve
+`--from-dir` cases including a tampered package, a missing sidecar, two
+candidates for one target, an empty directory, the already-current second run,
+`--uninstall`, and an unsupported architecture. Nothing was installed on the
+host. The apt half runs in the container end-to-end, which now installs both
+packages through `install.sh --from-dir`, refuses a tampered one, re-runs, and
+uninstalls.
+
+Not done, and stated rather than implied: **`shellcheck` did not run** — it is
+not installed on this host, installing it needs root, and AGENTS.md forbids
+mutating the host, so the CI `installer` job is the first place it will actually
+execute; `bash -n` is what ran here. The container e2e was also not run locally,
+because no Docker daemon is available in this worktree — that path is CI-only
+until a Chefer AppCipe run is done. The `sudo` branch is never exercised by CI
+either, since the container runs as root and the runner steps are dry runs, so
+what is tested is the command that gets built, not the prompt around it.

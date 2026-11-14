@@ -26,7 +26,7 @@
 //!   event shape, the threshold and cooldown policy, and a recognizer that is
 //!   tested against replayed samples. The only adapter in this build is a mock
 //!   one. Which adapter ships is
-//!   [ADR 0008](../../../docs/decisions/0008-launcher-gesture-integration.md).
+//!   [ADR 0008](../../../engineering/decisions/0008-launcher-gesture-integration.md).
 //!
 //! There is no GPUI dependency here, so all of it is tested with no display
 //! backend.

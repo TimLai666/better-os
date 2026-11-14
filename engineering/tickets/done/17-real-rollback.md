@@ -45,3 +45,43 @@
 - 為歷史上沒有 installed artifact record 的主機自動猜測或重建舊 artifact。
 - Docker、Chefer 或 CI 執行環境本身的權限設定。
 - package signing、公開 APT repository 與互動式 polkit authentication。
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Ticket 17 adds the durable installed-artifact mapping, strict rollback target
+matching, metadata synchronization after rollback, and a container fixture for
+an unhealthy update. The manager-daemon suite now passes with 42 unit tests and
+6 D-Bus tests, the workspace fmt/check/test/clippy gates pass, the e2e client
+builds, and the Debian package plus verifier pass.
+The real mutation-failure container check is still blocked by the Docker API
+permission failure described above.
+The requested Issue #23 body update was attempted through the GitHub connector,
+but the external mutation was rejected by the environment, so the issue remains
+unchanged and open.
+
+Ticket 17 fixed a rollback-target defect and proved the fix in a container. The
+daemon used to derive `previous_artifact` from the artifact it was about to
+install, so a failed update would have reinstalled the version that had just
+failed and reported `Restored`. It now keeps a durable installed-artifact record
+per component, written after each successful apply, and only uses it when its
+version matches what dpkg reports and the file is still cached.
+
+A rollback also verifies its own result now rather than trusting an exit code:
+a removal is only counted once dpkg no longer reports the package, and a
+reinstall only once dpkg reports the expected version.
+
+Local `cargo fmt --all -- --check`, `cargo test --workspace` (21 suites, no
+failures), `cargo clippy --workspace --all-targets -- -D warnings`, and the same
+clippy run with the `dbus-client` feature all passed. `docker run` of the
+container check passed on ubuntu-24.04/amd64: a deliberately unhealthy fixture
+package installs, fails the real health check, and is really removed; and a
+failed update over 0.0.9 ends with `dpkg-query` reporting 0.0.9 with the record
+pointing at the 0.0.9 artifact.
+
+CI run 30743821076 then ran the same change across all four supported
+combinations. Every one reached the new rollback scenarios: a real failed update
+ended with dpkg back at the previous version and the installed-artifact record
+pointing at the previous artifact, on ubuntu 22.04 and 24.04, amd64 and native
+arm64.

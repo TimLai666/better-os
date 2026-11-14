@@ -166,3 +166,54 @@ Not run, and not claimed:
 - **Per-provider re-sampling.** An edit re-reads every provider rather than only
   the ones the edited rule names. On a rule set small enough to fit a menu that
   is a handful of small file reads, so the simpler path was kept.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+One new crate is on branch `ticket-26`: `awake-platform`, the seam `engineering/architecture.md`
+already named. `awake-core`, `awake-ipc`, `awake-store`, `awake-service`,
+`awake-tray`, and `awake-gui` were extended rather than rewritten. Outside them,
+only the workspace member list, the new manifest and packaging files, ADR 0010,
+the ticket, and this file changed.
+
+Rules are data with a closed condition set, so there is no shape a shell command
+could take even if something tried to build one — that is the enforcement of
+Issue #13's rule, not a convention on top of a general type. Evaluation is
+three-valued: a provider that cannot be read produces unknown, which never
+becomes true and never becomes a silent false, so the rule editor can say which
+provider stopped a rule instead of showing it as simply not matching.
+
+Priority orders presentation and names the winner of a disagreement. It never
+weakens a protection: the battery threshold that stops first wins whatever the
+priorities say, and there is a test that a rule with priority 99 asking to stop
+at 5% loses to a rule with priority 1 asking for 40%.
+
+Nine of Issue #13's eleven providers work. Fullscreen reports itself unavailable
+naming the compositor adapter it would need; ADR 0010 records why an X11-only
+implementation was rejected on a Wayland default and why a GNOME Shell extension
+is not something this component can ship or verify. Audio works through ALSA and
+does not see Bluetooth sinks, which is written down rather than glossed.
+
+Two things were found by tests rather than by review, and both were real. The
+battery provider was only read when some rule mentioned the battery, which made
+a safety guarantee depend on what the user happened to write; power is now read
+on every pass regardless of the rules. And the history redaction had an
+exemption for a reason consisting of a single token, which let a bare path
+through — the commonest shape a leaked path takes. Both are fixed with a test
+naming the failure.
+
+Gates were run crate-scoped, because a workspace-wide run rebuilds the GPUI
+world for each command. `cargo fmt --all -- --check` passed across the whole
+workspace; check, test, and clippy `-D warnings` passed for all seven awake
+crates (401 tests, 11 of them on a private session bus); the built `awake-gui`
+binary stayed alive for 8 seconds under `ZED_HEADLESS=1`. The full workspace
+gates have not been run and should run downstream after merge.
+
+Not done and named in the ticket: the Better Manager uninstall smoke, because
+`packaging/build-deb.sh` builds no `better-awake` package — the manifest is
+validated on every test run but the component is not installable, the same
+position Better Launcher is in. A low-battery stop produces a history entry and
+a reported stop the service prints to stderr; the desktop notification belongs
+to the tray and is not wired. Idle CPU and memory for the two processes are
+still unmeasured, and the six indicator icons are still unpainted.

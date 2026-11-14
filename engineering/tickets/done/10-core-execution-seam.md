@@ -42,3 +42,21 @@ mock 結果；demo 與測試仍能走完全決定性的路徑。
 
 - 真實下載、dpkg 對帳、D-Bus client（票 12）。
 - GUI 非同步整合（票 13）。
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Tickets 09 through 14 are done. Ticket 10 is done. `Manager::advance` now consumes a `StageOutcome` a driver
+produced rather than one the caller scripted; `advance_mock` translates the old
+scripted vocabulary into the same outcomes, which is why the 20 existing
+lifecycle tests still pass unchanged in meaning. Plan steps, component records,
+and snapshots carry artifact identity, so a real transaction can say what it is
+installing and a restore has something verifiable to reinstall. State schema
+version 2 migrates version 1 files in place instead of quarantining them, and a
+version 1 restore point is honest that it does not know which artifact produced
+it: simulations still offer that restore, real transactions refuse it. Local
+`cargo fmt --all -- --check`, `cargo check --workspace --offline`, `cargo test
+--workspace --offline`, and `cargo clippy --workspace --all-targets --offline --
+-D warnings` all passed, along with CLI install and `--fail-at installing`
+lifecycle smokes against a disposable state file.

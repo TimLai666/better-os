@@ -54,7 +54,7 @@ health_checks:
   - launcher-activation-name-check
 # Every definition below names the workload the harness actually builds and the
 # number it actually prints. `cargo bench -p launcher-gui --bench launcher_suite`
-# is the harness; `docs/launcher-performance.md` records the measurements and the
+# is the harness; `engineering/performance/launcher-performance.md` records the measurements and the
 # hardware. `launcher_gui::BENCHMARKS` holds the same five rows and a test fails
 # if this list drifts from it, so a promised measurement cannot outlive the code
 # that takes it.

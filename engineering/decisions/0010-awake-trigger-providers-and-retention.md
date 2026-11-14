@@ -178,5 +178,5 @@ explainable rather than looking like a bug.
 ## Related
 
 - Issue #13, "Decisions deferred".
-- `docs/tickets/26-awake-application-and-rules.md`.
+- ticket 26`.
 - ADR 0005, the platform boundary these providers sit on.

@@ -7,7 +7,7 @@
 //!
 //! Times are formatted in UTC. There is no time-zone database in this
 //! workspace and inventing one from `TZ` would be wrong for half the year in
-//! most of the world; `docs/files-gui-policy.md` records this as the one
+//! most of the world; `engineering/specs/files-gui-policy.md` records this as the one
 //! display value that is not in the user's local time yet.
 
 use std::time::Duration;

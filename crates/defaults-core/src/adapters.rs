@@ -6,7 +6,7 @@
 //! `defaults-platform` at all: the GUI asks for a session and hands the engine
 //! what it gets back.
 //!
-//! [ADR 0009]: ../../../docs/decisions/0009-defaults-declarations-and-adapters.md
+//! [ADR 0009]: ../../../engineering/decisions/0009-defaults-declarations-and-adapters.md
 
 use std::io;
 use std::path::PathBuf;

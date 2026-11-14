@@ -80,7 +80,7 @@ Changed: `crates/files-platform/src/trash.rs` and `lib.rs`,
 `crates/files-operations/src/exec.rs`, `log.rs`, and `spec.rs` (doc only),
 `crates/files-core/src/entry.rs` (`EntryId::TrashItem` now holds a path),
 `crates/files-gui/src/reader.rs` and `commands.rs`, and three call sites in
-`crates/files-gui/src/session.rs`. `docs/files-operations-policy.md` now
+`crates/files-gui/src/session.rs`. `engineering/specs/files-operations-policy.md` now
 describes the behaviour.
 
 Tests: 12 in `files-platform` (top-directory walk, each `.Trash` rejection, the

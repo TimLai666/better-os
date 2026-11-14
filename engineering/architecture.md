@@ -1,6 +1,8 @@
-# Engineering Plan: Better OS
+# Architecture: Better OS
 
-## Architecture
+The system as it is now. Why each hard-to-reverse choice was made is in the decision records listed at the end.
+
+## Components and boundaries
 
 ```text
 component manifests ──> better-core validation ──> manager-core
@@ -29,7 +31,7 @@ packages stay in the build environment and are never a user installation
 prerequisite.
 ```
 
-## Component suite architecture
+### Component suite
 
 Tickets 18 through 35 expand the workspace from Better Manager alone to the
 full component suite. Two crates are shared infrastructure that several
@@ -83,7 +85,7 @@ defaults-core ──> defaults-platform ──> defaults-store ──> manager-g
 `better-ui` provides GPUI presentation primitives to every GUI crate in the
 suite, not only the two that exist today.
 
-## Component seams
+### Component seams
 
 - **The catalog is fetched, validated, and allowed to be stale out loud.** A
   manifest checksum can only exist after its release does, so a compiled-in
@@ -151,7 +153,7 @@ suite, not only the two that exist today.
   allocation limits, and catches a panicking parser. Every refusal produces a
   metadata preview with a stable reason key; there is no path that returns
   nothing and no path that draws an empty pane. This is a boundary, not a
-  sandbox, and `docs/files-preview-policy.md` says which is which.
+  sandbox, and `engineering/specs/files-preview-policy.md` says which is which.
 - **Search separates provider, ranking, and UI before it needs to.**
   `files-search` ships one provider — the current location, fed the entries the
   pane already holds, so searching where you are costs no I/O. `RunDemand` exists
@@ -231,6 +233,18 @@ suite, not only the two that exist today.
   not parse, cannot reach pointer movement or two-finger scrolling — which is
   asserted, not reasoned about.
 
+### Trust boundaries
+
+Manifest files, release metadata, collector output, and future remote data are
+untrusted. Parsing and validation happen before planning. A manifest also
+declares its own presentation and restart metadata, which is validated and
+restricted to a closed icon set before any screen uses it. The GUI never
+performs a privileged change itself; it asks the privileged service, which
+authorizes the caller through polkit and revalidates the plan against the host
+before acting. The service accepts an explicit, validated transaction plan and
+returns an execution log, health result, and rollback record. An executor
+without an authorized connection to it refuses every request.
+
 ## Data flow
 
 1. The CLI or GUI loads manifests from the catalog.
@@ -263,6 +277,58 @@ suite, not only the two that exist today.
    binaries for each supported target and architecture.
 9. A clean desktop environment installs the `.deb` through local APT and runs
    the manager and monitor launch smoke tests.
+
+### Manager transaction shape
+
+1. Resolve a component and its manifest dependencies.
+2. Verify target compatibility and artifact metadata against the profile
+   `manager-platform` reports.
+3. Resolve declared artifact download and disk requirements, reject an
+   insufficient mock profile, and produce a dry-run plan that requires a
+   current state revision at approval. Missing catalog or profile data stays
+   explicitly unavailable rather than becoming a guessed estimate.
+4. Advance the approved plan through download, install, settings, and health
+   stages, persisting each state as it goes. A driver decides what each stage
+   actually did: a simulation scripts it, a real transaction observes it.
+5. Record failure evidence and the restore outcome when verification fails.
+   Carry the declared replacements, enhancements, and the widest restart
+   requirement into the plan so a reviewer sees them before approving.
+6. For a real transaction, fetch and verify every artifact, hand each to the
+   privileged service over a file descriptor, and give it the whole plan. The
+   service revalidates independently, applies through local APT, health-checks
+   what it applied, and rolls back what it can. The executor was replaced
+   without changing the GUI or CLI contract: the same lifecycle stages, driven
+   by a different driver.
+
+Lifecycle descriptors remain data and are never interpreted as commands, on
+either side of the privileged boundary.
+
+### Monitor observation layers
+
+- Continuous: low-cost CPU, memory, PSI, process, storage, and network
+  collection.
+- Periodic: audits that refresh component and system state.
+- Event-triggered: a slowdown the service recognizes by itself (sustained
+  pressure, memory nearly gone while swapping, an out-of-memory kill, thermal
+  throttling, or the sampling loop itself freezing) is recorded as an
+  incident with the state around it (ticket 115). Nobody marks one by hand.
+
+Collectors read `/proc` and `/sys` directly. They never run a command or parse
+a tool's human-formatted output, because the kernel already publishes a stable
+structured interface for everything they collect. Every read goes through a
+root-path parameter, so tests exercise the production path against captured
+`/proc` snapshots.
+
+A reading is only meaningful next to its metric identity, which names the unit,
+the semantic type, the source file, and how the value has to be sampled. The
+absence of a reading is data too: unknown, unsupported, permission denied,
+stale, and a measured zero are five distinct states, so an unobserved subsystem
+can never be presented as an idle one.
+
+The monitor stores locally by default. Export is explicit, keeps the
+observation state of every reading, and redacts sensitive values before data
+leaves the local process. Process command lines are not collected unless
+collection is explicitly configured to include them.
 
 ## Test seams
 
@@ -378,7 +444,7 @@ suite, not only the two that exist today.
 - Localized layout coverage extends to every new GUI crate: `zh-TW` and `en-US`
   at 100%, 125%, and 150% scaling, the policy the manager GUI already follows.
 
-## Test matrix
+### Test matrix
 
 | Area | Required proof |
 | --- | --- |
@@ -409,15 +475,7 @@ suite, not only the two that exist today.
 | Files GUI | 100,000-entry progressive render, virtualized scroll frame time, bookmark persistence and reorder, missing-bookmark state, hidden toggle persistence |
 | Files integration | Applications location is not a directory or symlink farm, launch through the registered desktop definition, Open With routes to the chooser, all five device states in both locales, mount-on-open, disconnect cleanup leaving no history entry, unsafe-removal warning, preview cancellation and size limits and a caught parser panic, search streaming and its own hidden-file rule, manifest validation |
 
-## Migration plan
-
-No database or system migration is part of the initial scaffold. Better
-Manager uses a versioned local JSON file only for mock lifecycle state. A
-database remains unnecessary until concurrent multi-process history, query, or
-retention requirements are explicit. Local monitor history must remain
-replaceable until its storage decision is explicit.
-
-## Hidden assumptions
+## Standing assumptions
 
 - GitHub Release assets will later provide checksums and signatures, but the
   signature format is intentionally not chosen yet.
@@ -432,3 +490,56 @@ replaceable until its storage decision is explicit.
 - The final runtime dependency list is target- and architecture-specific and
   must be taken from the packaged binaries rather than copied from CI's
   build-time package list.
+
+### Storage
+
+No database or system migration is part of the initial scaffold. Better
+Manager uses a versioned local JSON file only for mock lifecycle state. A
+database remains unnecessary until concurrent multi-process history, query, or
+retention requirements are explicit. Local monitor history must remain
+replaceable until its storage decision is explicit.
+
+### Linux GUI prerequisites
+
+The GPUI desktop binaries use the Linux X11 and Wayland backends. A development
+machine needs `libfontconfig1-dev`, `libxcb1-dev`, `libxkbcommon-dev`, and
+`libxkbcommon-x11-dev` to link the binaries, and `libgstreamer1.0-dev` and
+`libgstreamer-plugins-base1.0-dev` for Better Files' media preview; its tests
+also need `gstreamer1.0-plugins-base` and `gstreamer1.0-plugins-good`. CI
+installs these packages before the workspace checks. `RUST_FONTCONFIG_DLOPEN=1` avoids requiring the
+fontconfig development metadata at compile time, but the runtime library is
+still required when a desktop binary starts. These `*-dev` packages are
+build-time dependencies only. The first release format is a `.deb`; its
+metadata must declare the runtime libraries so `apt install ./<package>.deb`
+works on a clean supported desktop without manual development-package setup.
+See [Release Packaging Specification](/engineering/specs/release-packaging.md) for the release
+verification contract.
+
+## Decisions
+
+- [ADR 0001: Initial Boundaries](decisions/0001-initial-boundaries.md)
+- [ADR 0002: Target-Specific Release Assets](decisions/0002-release-artifact-mapping.md)
+- [ADR 0003: GPL-3.0-or-later Root License](decisions/0003-project-license.md)
+- [ADR 0004: Dark-First Themeable Appearance](decisions/0004-dark-first-themeable-appearance.md)
+- [ADR 0005: Platform Boundary Crate](decisions/0005-platform-boundary.md)
+- [ADR 0006: Manifest-Declared Presentation and Restart Metadata](decisions/0006-manifest-declared-presentation.md)
+- [ADR 0007: Privileged Daemon IPC Protocol](decisions/0007-privileged-daemon-ipc.md)
+- [ADR 0008: Better Launcher Five-Finger Gesture Integration](decisions/0008-launcher-gesture-integration.md)
+- [ADR 0009: Better Defaults declarations, storage, and the first adapter set](decisions/0009-defaults-declarations-and-adapters.md)
+- [ADR 0010: Better Awake's trigger provider set, fullscreen detection, lid-closed policy, and history retention](decisions/0010-awake-trigger-providers-and-retention.md)
+- [ADR 0010: Better Touchpad ranges, configuration scope, and the dconf write path](decisions/0010-touchpad-ranges-and-dconf-writes.md)
+- [ADR 0011: Better Monitor history storage — interim engine and retention](decisions/0011-monitor-history-storage-interim.md)
+- [ADR 0012: The production gesture backend for Better Touchpad](decisions/0012-touchpad-gesture-backend.md)
+- [ADR 0013: The refreshable component catalog](decisions/0013-remote-catalog-refresh.md)
+- [ADR 0014: The privileged daemon repairs an interrupted dpkg run](decisions/0014-dpkg-interrupted-repair.md)
+- [ADR 0015: The touchpad adapter names the device behind each gesture](decisions/0015-touchpad-adapter-reports-the-device.md)
+- [ADR 0016: A Better Files job lives as long as the session](decisions/0016-files-job-lifetime.md)
+- [ADR 0017: One control center inside Better Manager](decisions/0017-one-control-center.md)
+- [ADR 0018: A shared Better OS GNOME Shell extension that only relays](decisions/0018-shared-shell-adapter-extension.md)
+- [ADR 0019: Every window follows the system appearance by default](decisions/0019-appearance-follows-system.md)
+- [ADR 0020: GPUI and gpui-component come from their Git repositories](decisions/0020-gpui-from-repository-sources.md)
+- [ADR 0021: Release packages are built per Ubuntu release and architecture on native runners](decisions/0021-release-build-environment.md)
+- [ADR 0022: Better Manager executes for real by default](decisions/0022-real-execution-by-default.md)
+- [ADR 0023: Better Monitor reads /proc and /sys itself and keeps five value states](decisions/0023-monitor-reads-proc-and-sys.md)
+- [ADR 0024: The installed-artifact record selects the rollback target](decisions/0024-installed-artifact-selects-rollback.md)
+- [ADR 0025: Better Launcher is one instance on org.betteros.Launcher1](decisions/0025-launcher-single-instance.md)

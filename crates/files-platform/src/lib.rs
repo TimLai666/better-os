@@ -9,7 +9,7 @@
 //!
 //! There is no desktop-entry parser here, and there will not be one. The
 //! Applications location is filled from the shared catalog through
-//! `files_core::applications`, which is the seam ENG.md calls "one catalog, no
+//! `files_core::applications`, which is the seam `engineering/architecture.md` calls "one catalog, no
 //! second scanner".
 
 pub mod hidden;

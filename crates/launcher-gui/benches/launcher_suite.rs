@@ -20,7 +20,7 @@
 //! and the application library is in the model — everything a first frame would
 //! draw, drawn by nothing. Compositor handoff, surface allocation, GPU upload,
 //! and present-to-photon are outside it and are not estimated here.
-//! `docs/launcher-performance.md` states this again beside the numbers, because
+//! `engineering/performance/launcher-performance.md` states this again beside the numbers, because
 //! a millisecond figure labelled "overlay open" invites being read as the whole
 //! thing.
 //!
@@ -773,6 +773,6 @@ fn main() {
     );
     println!(
         "Without a compositor there is no frame: `warm-overlay-open` ends at the first \
-         renderable model, not at a photon. See docs/launcher-performance.md."
+         renderable model, not at a photon. See engineering/performance/launcher-performance.md."
     );
 }

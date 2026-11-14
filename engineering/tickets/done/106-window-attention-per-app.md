@@ -231,6 +231,6 @@ the fallback for an older service).
 - The companion mechanism has not run against a real `apt-get` or a real
   release: `better-manager.yaml` can only name the adapter as a companion in
   the release that first publishes `better-shell-adapter`, with that release's
-  checksums (`docs/release-packaging.md`). Until then an in-app update
+  checksums (`engineering/specs/release-packaging.md`). Until then an in-app update
   installs the manager alone and `install.sh` installs the adapter.
 

@@ -262,7 +262,7 @@ launch and the window still opens.
 
 ## Gates
 
-Recorded in `delivery-status.md`. The two commands the report named were run
+Recorded in the delivery status record (since retired). The two commands the report named were run
 from the built binary on this host under a timeout, and the window was run on
 the real Wayland session before and after the zbus change — the panic is in the
 before log and the after log is empty.
@@ -286,3 +286,24 @@ before log and the after log is empty.
   point at. The others are named here rather than left for the next report.
 - A drifted component is only visible on its own page. The Components list shows
   its status but not the reason, and the Updates screen still simply omits it.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Ticket 49 is merged into `main` and released as `v0.2.7`. It is the fifth round
+of field reports from the same Zorin 18 machine and closes three of them:
+reconciliation self-heals a host that is ahead of the record instead of calling
+an external upgrade drift, a component whose drift still blocks planning says so
+on its own page and offers 採用系統版本 through `Manager::adopt_host_state`, and
+the two halves of the reported "CLI panic and hang" are fixed at their causes —
+the package now ships `better-manager-cli` and the window refuses a command line
+instead of opening a window, and zbus's tokio flavor is gone from the workspace
+so gpui's portal and accesskit stop panicking in every Better OS window.
+ticket 49` has the reasoning. What it
+owes is an observation: the self-heal was proved against the reporting machine's
+real state record copied to a scratch path, not on that machine, and nobody has
+watched it upgrade to 0.2.7 and find the update it had been refused. Five
+windows — Better Monitor, Better Files, Better Launcher, Better Touchpad, and
+Better Awake — still swallow their arguments and open, because none of them has
+a shipped command line to point a refusal at.

@@ -110,7 +110,7 @@ checkout after merge and has **not** been run here.
 - `cargo clippy -p files-core -p files-platform --all-targets -- -D warnings` —
   passed
 - `cargo bench -p files-core` — ran; numbers in
-  `docs/files-listing-performance.md`
+  `engineering/performance/files-listing-performance.md`
 - Cancellation is proved three ways: a `files-core` unit test whose fake reader
   counts entries it actually produced and produces none after cancellation, a
   `files-platform` test against a real 2,000-entry directory, and the
@@ -124,7 +124,7 @@ checkout after merge and has **not** been run here.
 100,000-entry flat directory: first batch of 256 entries visible in **1.6 ms**,
 full listing in **125 ms**, model memory **38.3 MB**, cancellation latency
 **0.021 ms**. Full table and the two performance bugs these numbers exposed are
-in `docs/files-listing-performance.md`.
+in `engineering/performance/files-listing-performance.md`.
 
 ### What is not covered
 
@@ -152,3 +152,64 @@ in `docs/files-listing-performance.md`.
   identity a mount table supports — volatile, never persistable — and says so.
   A consumer that has a real device identity from `storage-service` should
   prefer it.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Two new crates on branch `ticket-32`, which also carried the merge of
+`ticket-31`: `files-core` for the domain model and `files-platform` for the
+host. Nothing outside them changed except the workspace member list, this file,
+the ticket, and a new `engineering/performance/files-listing-performance.md`.
+
+The rule Issue #6 asks to be enforced from the first commit is enforced by the
+type system rather than by review. `Location` is a closed enum, and
+`as_local_path` — the only route to a `PathBuf` — answers `None` for
+Applications, Recent, Trash, network, and unsupported locations. A device
+location cannot produce a path at all until a caller supplies the mount point
+the device is currently at, because while it is unplugged there is no honest
+answer. An Applications row is an `EntryBody::Application` carrying a desktop
+ID, with no path accessor, no `From` impl, and no `Deref`; opening one yields a
+typed launch intent and the spawning stays in `app-catalog-platform`. A URI
+scheme this build does not understand becomes `Location::Unsupported` holding
+the original string verbatim, so a session saved by a later version survives
+being read by this one instead of silently opening the wrong directory.
+
+Listing is a stream, not a return value. A reader thread pushes into a
+`ListingSink` that checks a cancellation token on every push, so a producer
+cannot emit an entry without being cancellable; the check sits before each
+entry's `stat`, which is the expensive half. Dropping the consumer cancels the
+producer, and dropping a sink without finishing reports cancellation rather than
+leaving a view waiting forever.
+
+The benchmark found two performance bugs and both were fixed rather than
+published. The sort comparison allocated a `String` per digit run and an
+`EntryId` per tie-break, across tens of millions of comparisons. And merging
+every batch into a growing ordered list is quadratic: `apply` now stages and
+`commit` merges, and `Pane::pump` drains a frame's worth of batches and commits
+once. Assembling a 100,000-entry directory went from 5,794 ms to 356 ms. The
+benchmark still prints the merge-per-batch row so the difference stays visible.
+
+Numbers on the development host, warm cache: first batch of 256 entries visible
+in 1.6 ms, full 100,000-entry listing in 125 ms, model 38.3 MB, cancellation
+latency 0.021 ms with the reader stopped after 256 of 100,000 entries. Type
+detection is the most expensive thing a listing can be asked to do — about
+fifteen times slower on the mixed-media fixture — which is why it is off by
+default and name-based rather than content-sniffing.
+
+Gates were crate-scoped, to avoid rebuilding the GPUI world in the worktree.
+`cargo fmt --all -- --check` passed across the whole workspace; check, test, and
+clippy `-D warnings` passed for both crates, 145 tests. `cargo bench -p
+files-core` ran in full. The workspace gate has not run on this branch and
+belongs on the main checkout after merge.
+
+What this ticket did not do, and should not be assumed done: `Location::Recent`
+is modelled and reports as not listable, with nothing populating it; every
+network scheme is representable and none is implemented; the trash is read-only
+here, because restore and delete are ticket 33's durable jobs. A real
+over-`PATH_MAX` path is never created and a device is never really unplugged —
+both are covered by testing the kernel error translation, the same honest limit
+ticket 31 records. `MountTable` builds only the volatile identity a mount table
+supports and says so; a consumer holding a real identity from `storage-service`
+should prefer it. A frame can still cost about 28 ms while a 100,000-entry
+directory loads, and precomputing a sort key per entry is the named follow-up.

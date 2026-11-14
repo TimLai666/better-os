@@ -153,7 +153,7 @@ Two new crates and one new client, plus the integration in `files-gui`.
 - **Comparison benchmarks against Nautilus, COSMIC Files, and Windows File
   Explorer are not measured.** Producing one honestly needs a defined dataset and
   machine and a way to measure another program's time-to-first-content.
-  `docs/files-benchmarks.md` records what is missing; nothing is estimated.
+  `engineering/performance/files-benchmarks.md` records what is missing; nothing is estimated.
 - **Trashed items cannot be previewed.** `Entry::as_local_path` answers `None`
   for them by design, so the pane reports there is no file. Exposing a trashed
   entry's stored path is a `files-core` change.
@@ -170,7 +170,7 @@ at the top of this list.
 - `cargo test --workspace` — 1,942 tests, 0 failures
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean
 - `cargo bench -p files-gui --bench files_suite` — every named scenario, numbers
-  in `docs/files-benchmarks.md`
+  in `engineering/performance/files-benchmarks.md`
 - 8-second `ZED_HEADLESS=1` launch of `better-files` — stayed alive, no output
 - 6 private-session-bus tests of `StorageClient` against a real served
   interface: list, mount, eject, a refused policy change, and an operation
@@ -180,3 +180,86 @@ The device-disconnect coverage is driven through the fake link rather than
 through the service, because the service cannot be made to lose a device on
 demand. The state transitions behind it are ticket 31's own replayed event
 sequences.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Two new crates on branch `ticket-35`, which also carries the merge of
+`ticket-34`: `files-preview` and `files-search`. One new module in
+`storage-service` — the typed `StorageClient` ticket 31 did not build — and the
+integration itself in `files-gui`. `files-core` gained three small methods, each
+with a caller in this ticket and none of them speculative:
+`History::forget`/`Pane::forget_locations` for disconnect cleanup, and
+`DirectoryModel::iter_all` so a search can implement its own hidden-file rule
+rather than inheriting the view's.
+
+**Applications is a view over records.** `files-core` already forbade a path on
+an application row; what was missing was a real catalog behind it.
+`CatalogHandle` holds an `Arc<Catalog>` from `app-catalog-platform` — the same
+crate Better Launcher and Better App Chooser read — behind an `RwLock` that a
+listing snapshots and releases immediately, so a reload cannot block a location
+that is already streaming. A `CatalogWatcher` thread reloads on desktop-entry
+changes, collapsing everything inside its settle window into one reload. The
+`.desktop` file's path *is* shown, in the details panel, under a heading that
+says "Desktop entry": Issue #4 asks for source metadata to be revealed for
+diagnostics and forbids presenting the file as the application, and a labelled
+field no click acts on is the first and not the second.
+
+**Open With writes nothing here.** Double-click and Open With resolve through
+one function; the difference is only what happens when there is no answer. The
+embedded chooser is `app-chooser-gui`'s own component, and Always Use goes
+through `app-chooser-core`'s single-line `mimeapps.list` edit with its rollback
+record written first. That is why removing Better Files cannot erase an
+unrelated association: there is no code path in this component that rewrites the
+file wholesale. An association naming an uninstalled application is told apart
+from no association at all, because the two look identical to a user and are not
+the same problem.
+
+**Devices: service first, this process second, and the window says which.**
+`StorageLink` proves the service by reading its protocol version — building a
+proxy for an absent bus name succeeds, so the property read is the test — and
+falls back to running the same `storage-core` state machine here.
+`CollectionMode::InProcess` is drawn as a **warning** rather than a neutral note,
+and the reason is specific to storage: an in-process engine never sees the
+tracked-operation notices another application would have sent to a service, so a
+readiness claim built without them is weaker. Exactly two of the five states are
+styled as warnings, because Issue #5 asks for the idle state to stay quiet.
+
+**Disconnect cleanup happens twice on purpose.** A stranded pane forgets the
+device's locations, navigates home, and forgets again — because navigating
+pushes where it was onto the back stack, which is the very entry that was just
+dropped. A test asserts no history entry points at the mount point afterwards;
+the first version of the code passed everything except that one.
+
+**Preview treats the parser as a boundary and says what that buys.** The size
+limit is applied by the engine before any provider is called, `image::Limits`
+bounds the decode, dimensions are read from the header first, and
+`catch_unwind` turns a panicking decoder into one lost preview.
+`engineering/specs/files-preview-policy.md` states plainly what this is not: a sandbox needs
+a separate process and a seccomp profile, and that is the follow-up. `image` is
+compiled with four decoders and no default features, all already in the
+lockfile.
+
+**Search is three separable things.** The query and filters can express
+everything Issue #6 lists; the ranker decides order deterministically; the
+provider finds candidates. The current-location provider is *fed* the entries
+the pane already holds, so searching where you are costs no I/O — and
+`RunDemand` exists so an indexed provider can produce its own instead.
+
+Measured, on 100,000 entries: first visible content 3.7 ms, complete model
+155 ms, search keystroke p95 0.002 ms, all 90,000 matches in 55 ms of work
+spread over about 22 frames, a 1920×1080 PNG preview at 16.7 ms on the worker
+thread. The small-file copy is the honest weak spot at 24,335 files/s.
+`engineering/performance/files-benchmarks.md` carries the methodology, and states that the copy
+figures are page-cache figures and that no comparison against another file
+manager has been measured.
+
+Not done, and stated in the ticket rather than implied: `files-operations` does
+not notify the storage service on completion, because the job engine has no
+device identity for a destination path; Performance mode cannot be turned on
+from Better Files, because Issue #5 requires the trade-off explained first and
+no UI does that; trashed items cannot be previewed, because `files-core`
+deliberately does not expose a trashed entry's stored path; and keyboard
+movement through search results uses the model's visible list, so a hit the view
+is hiding can be clicked but not arrowed to.

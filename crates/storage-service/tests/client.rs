@@ -153,7 +153,7 @@ async fn the_client_reads_devices_and_their_states_through_the_service() {
     assert_eq!(device.object_path, OBJECT);
     assert_eq!(device.device_path, "/dev/sdb1");
     assert_eq!(device.policy, RemovalPolicy::DirectRemoval);
-    // Detected and not mounted. `docs/storage-safety-signals.md` states the
+    // Detected and not mounted. `engineering/specs/storage-safety-signals.md` states the
     // rule this exercises: an unmounted volume is ready without a flush,
     // because no filesystem is left owing the device anything and no tracked
     // operation is in flight.

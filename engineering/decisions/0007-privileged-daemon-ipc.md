@@ -12,10 +12,10 @@ installation or rollback is implemented.
 implementation. Every shipped backend refuses to apply a package change, so
 Better Manager can plan a transaction but cannot perform one.
 
-`docs/security-and-rollback.md` states the privileged executor must be a
+`engineering/specs/security-and-rollback.md` states the privileged executor must be a
 separately reviewed process or service that receives a typed plan, validates it
 again, restricts allowed operations, logs each step, runs health checks, and
-preserves enough state to restore the previous component. `docs/architecture.md`
+preserves enough state to restore the previous component. `engineering/architecture.md`
 names local APT as the execution path and requires the executor to be replaced
 without changing the GUI or CLI contract. Neither document chose a transport.
 
@@ -61,7 +61,7 @@ gated by polkit actions. Choosing it means the authentication prompt, the
 session/active/inactive distinction, the admin policy, and service activation
 are all provided and already audited, rather than reimplemented.
 
-`zbus` keeps the whole stack Rust, which `docs/language-policy.md` requires for
+`zbus` keeps the whole stack Rust, which `engineering/specs/language-policy.md` requires for
 daemons.
 
 ## Why not a custom Unix socket
@@ -127,7 +127,7 @@ fields, so a package cannot claim a name it does not have. It then compares
 `dpkg` state against the plan's expected prior version and refuses on drift.
 
 A refusal at this stage happens before any mutation and therefore writes no
-rollback record, which is what `docs/manager-ux-logic.md` requires.
+rollback record, which is what `engineering/specs/manager-ux-logic.md` requires.
 
 ## Systemd hardening
 

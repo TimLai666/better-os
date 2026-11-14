@@ -41,3 +41,16 @@
 - 真實下載、APT、特權 daemon、IPC 協定。
 - manifest 宣告文字的在地化。
 - 最終色票、強調色與高對比無障礙主題。
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+A branch audit against the Issue #8 text then found five gaps outside the
+acceptance-criteria list: no dark theme, no `manager-platform` crate,
+`replaces`/`enhances` never surfaced, component icon and purpose hardcoded to
+three component IDs, and a `RestartRequirement` with only `NotDeclared`. All
+five are closed under ticket 08, with ADRs 0004, 0005, and 0006 recording the
+decisions Issue #8 asked to be written down rather than made silently. The
+hardcoded-ID map also silently dropped any component outside that list from
+the GUI; presentation is now manifest-driven, so it does not.

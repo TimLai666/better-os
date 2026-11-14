@@ -49,7 +49,7 @@ gets dark Better OS windows (and, since ticket 108, dark window frames).
   and its `Settings`, and the Fluent gallery's options. Files, Launcher,
   Monitor, the app chooser, the Files previewer, and Touchpad read the shared
   one-word file. ADR 0019 records the decision and supersedes ADR 0004;
-  DESIGN.md, README.md, and delivery-status.md say so. AGENTS.md never said
+  DESIGN.md, README.md, and the delivery status record say so. AGENTS.md never said
   "dark-first", so it is unchanged.
 - **Old settings files, per app.**
   - Files, Launcher, Monitor, app chooser, Touchpad: the word file is written

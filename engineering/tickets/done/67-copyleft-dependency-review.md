@@ -8,7 +8,7 @@ copyleft dependency obliges before shipping another release · **Branch:**
 
 `AGENTS.md` asks for the license implications of every copyleft dependency to be
 reviewed before release, and no review exists. After this ticket
-`docs/copyleft-review.md` lists every dependency in the locked graph whose
+`engineering/specs/copyleft-review.md` lists every dependency in the locked graph whose
 license is copyleft or weak copyleft (GPL, LGPL, AGPL, MPL, EPL, CDDL, and
 similar), which shipped binaries link it, how it is linked, and what that
 obliges under the project's GPL-3.0-or-later license, with anything that needs
@@ -28,7 +28,7 @@ the owner's decision called out separately.
 
 ## What was built
 
-`docs/copyleft-review.md` is the review. It takes every package from
+`engineering/specs/copyleft-review.md` is the review. It takes every package from
 `cargo metadata --format-version 1 --locked --offline` against the lockfile the
 inventory pins, finds which shipped binary reaches each one with `cargo tree`
 over the same fifteen crates `packaging/build-deb.sh` builds, and checks the

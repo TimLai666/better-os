@@ -17,7 +17,7 @@ ADR 0015 records the widening first, as `AGENTS.md` requires.
 - [x] ADR 0015 states exactly what the extension may now report about a device
       (an identity the shell already exposes, nothing it computes or stores),
       and `crates/touchpad-session/tests/extension.rs` asserts the new bound.
-      *`docs/decisions/0015-touchpad-adapter-reports-the-device.md`;
+      *`engineering/decisions/0015-touchpad-adapter-reports-the-device.md`;
       `the_extension_reports_the_device_node_and_nothing_else_about_the_device`
       and `both_gesture_signals_have_the_shape_the_client_deserializes`.*
 - [x] Every swipe and pinch event carries the device identity when the shell

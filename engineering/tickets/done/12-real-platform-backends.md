@@ -10,7 +10,7 @@
 - `manager-platform::download`：`ArtifactCache`（XDG 快取，檔名即 sha256）與
   `HttpDownloader`（串流雜湊、`.part` 續傳、網路錯誤退避重試；雜湊不符不重試）。
 - `manager-platform::dpkg`：`PackageStateProbe` 與唯讀的 `dpkg-query` 實作。
-  唯讀查詢不是特權變更，這個界線寫進 ENG.md。
+  唯讀查詢不是特權變更，這個界線寫進 `engineering/architecture.md`。
 - `dbus-client` feature 下的 `DbusPrivilegedExecutor`，只能由已建立的授權連線建構。
 - `manager-core::exec::RealDriver`：Downloading 階段備齊並驗證所有 artifact，
   Installing 階段逐檔 `StageArtifact` 後一次 `ApplyTransaction`，

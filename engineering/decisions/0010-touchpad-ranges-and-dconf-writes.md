@@ -72,7 +72,7 @@ Pointer sensitivity is `0.0 ..= 1.0` with `0.5` neutral. Scroll factor is
 
 These are Better OS scales, not backend numbers, so that a backend change does
 not move the scale under the user, and `0.5`/`1.0` mean "leave it as the session
-has it" on any backend. `docs/touchpad-sensitivity-mapping.md` records the map
+has it" on any backend. `engineering/specs/touchpad-sensitivity-mapping.md` records the map
 onto GNOME's `-1.0 ..= 1.0` speed and the three things it cannot promise.
 
 The bounds ship as a **recorded starting point, not a settled curve**. What is

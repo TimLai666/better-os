@@ -90,3 +90,15 @@ Checked in a headless GNOME Shell 46 with the extension, against a fake Awake
 service and a sandboxed Monitor service: both submenus stayed open for over 30
 seconds with the lines inside and above them changing; before the fix both
 folded up within a second of the first change.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Implemented, not merged. A submenu in the Better Monitor or Better Awake tray
+menu no longer folds up when a reading or the countdown changes: a change that
+keeps the menu's items is sent as `ItemsPropertiesUpdated` naming only what
+changed, and a change of layout waits while the panel has a submenu open.
+Better Monitor's items have an id per role now. Reproduced before and checked
+after in a headless GNOME Shell with the AppIndicator extension; the ticket
+file says what was found.

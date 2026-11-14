@@ -200,3 +200,19 @@ Both lines in the footer truncate rather than widening the sidebar rail.
 The footer string is asserted by test from the real host probe's own output,
 for both locales and both host shapes. It has **not** been looked at on a
 running desktop in this worktree, and the container e2e has not been run here.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Ticket 47 is merged into `main` and released as `v0.2.6`. It is the fourth
+round of field reports from the same Zorin 18 machine: the health check derived
+`/usr/bin/<component>` from the package name, so Better Awake — and Better
+Storage, and the privileged service's own package — passed apt, failed the
+check, and were rolled back. The check now asks dpkg which files the package
+installed, and reads dpkg's path filters so a file dpkg was told not to unpack
+is not read as a missing one. ticket 47` has
+the reasoning. What it still owes is an observation rather than a fix: the
+container end-to-end check that installs `better-awake` through the privileged
+service has only ever run in CI, because no worktree here has a Docker daemon,
+and nobody has watched a real machine install Better Awake on 0.2.6.

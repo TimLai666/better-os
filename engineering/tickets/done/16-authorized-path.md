@@ -57,3 +57,31 @@ polkit rule 讓授權通過，換到的是第一次真正執行到 apt、真正�
 
 - polkit 認證代理本身的互動行為。
 - 桌面 session 上的手動驗證。
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Ticket 16 then closed that gap. With a test-only polkit rule granting
+authorization inside the container, the check now drives the real
+`DbusPrivilegedExecutor` through a real install and a real removal: apt runs,
+dpkg confirms the package arrived and later left, the reported version matches
+what dpkg holds, the health result is healthy, and the journal and rollback
+record land on disk. A plan naming a prior version dpkg disagrees with is
+refused and changes nothing.
+
+That run immediately found a deadlock in shipped client code.
+`execute_plan` watched `StepProgress` on a second thread, and that signal
+iterator does not end when the call returns, so `std::thread::scope` waited
+forever. Any real client — the CLI or the GUI — would have hung the moment it
+reached a live daemon. Every test against fakes had passed. It now reads the
+result from the outcome alone.
+
+What remains untested is a failure after a real mutation: forcing the real
+health check to fail would need a component built to fail it, and the catalog
+has none. Rollback is covered against `FakeAptDriver` for all three outcomes,
+but has never rolled back a real package.
+
+Interactive polkit authentication is deliberately out of scope: collecting a
+password is polkit's responsibility, and what this project has to prove is what
+happens after polkit says yes.

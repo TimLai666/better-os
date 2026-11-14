@@ -6,14 +6,33 @@ updated, verified, and rolled back through shared manager operations.
 
 ## Required artifacts
 
-- `delivery-status.md` — read first on arrival and update after each milestone,
-  blocker, or handoff.
-- `ENG.md` — read before changing crate boundaries, public contracts, test
-  seams, packaging, or privileged-operation design.
-- `docs/tickets/` — select the next ticket whose blockers are complete.
-- `docs/architecture.md` — read before changing the system decomposition.
-- `docs/component-manifest.md` — read before changing manifest fields or
-  validation rules.
+Read `AGENTS.md` before doing any project work; it is the project operating
+contract.
+
+- `engineering/README.md` — index of the engineering documents.
+  Read it first on arrival.
+- `engineering/handoff.md` — unfinished work that has no ticket. It exists only
+  while there is some. Read it on arrival, and write it when work without a
+  ticket stops unfinished.
+- `engineering/architecture.md` — how the system is built. Read it before
+  changing crate boundaries, public contracts, test seams, packaging,
+  privileged-operation design, or the system decomposition.
+- `engineering/decisions/` — why hard-to-reverse choices were made. Read the
+  relevant record before proposing to change such a choice; a later decision
+  gets a new record.
+- `engineering/specs/` — what each feature or policy promises and how to tell it
+  is done. Read the one for the feature before working on its tickets, and
+  update it before the code when a requirement changes.
+- `engineering/contracts/component-manifest.md` — the manifest schema. Read it
+  before changing manifest fields or validation rules.
+- `engineering/performance/` — benchmark methods and recorded numbers. Read the
+  file for a component before making or changing a performance claim.
+- `engineering/tickets/` — the work, one slice per ticket. Open tickets are at
+  the top level, tickets in progress in `doing/`, finished ones in `done/`; the
+  directory is the ticket's only state. Pick up an open ticket whose blockers
+  are all in `done/`, and move it to `done/` in the change that delivers it.
+- `docs/` holds only documentation for users: `docs/third-party-licenses.md`
+  ships in every package. No engineering document goes there.
 
 ## Working rules
 
@@ -143,11 +162,21 @@ updated, verified, and rolled back through shared manager operations.
 - `rust-version` in the workspace manifest is the oldest toolchain that builds
   the locked graph. A change that needs a newer compiler raises it in the same
   commit; the CI `msrv` job checks the workspace with exactly that version.
+- A rule that two places need (reading `/etc/os-release`, probing the host)
+  lives in one place both call. A fix applied at one call site of a rule copied
+  elsewhere is not a fix; find every copy first.
+- A fallback that turns "unknown" into a plausible value is a defect: when a
+  value is missing, show that it is missing rather than a default that reads as
+  a fact.
+- A container check runs without network: anything APT needs at test time is
+  installed into the image when it is built.
 
 ## Handoff
 
-Before handoff, update `delivery-status.md`, keep the next ticket accurate,
-record active blockers, and state which checks actually ran. Do not claim a
+Before handoff, put each ticket in the directory that matches its real state,
+keep `## Notes` current on each ticket in progress, give a blocked ticket its
+`**Blocked:**` line, write unfinished work that has no ticket to
+`engineering/handoff.md`, and state which checks actually ran. Do not claim a
 GUI or dependency compiles when the relevant command was not executed.
 
 ## Follow-ups
@@ -155,7 +184,7 @@ GUI or dependency compiles when the relevant command was not executed.
 - Build each supported Ubuntu release in a compatible base environment. The
   current Zorin 18 host produces `libc6 (>= 2.39)` and must not supply a 22.04
   release artifact.
-- `docs/copyleft-review.md` reviews every copyleft dependency and leaves four
+- `engineering/specs/copyleft-review.md` reviews every copyleft dependency and leaves four
   decisions to the owner: which FreeType license the Ubuntu 22.04 windows use,
   shipping the Apache-2.0 text (and the permissive licenses' texts generally),
   where the dependencies' Corresponding Source lives, and the license of two Zed
@@ -182,7 +211,7 @@ GUI or dependency compiles when the relevant command was not executed.
   seeded-secret test asserts the boundary; keep it passing.
 - Decide whether `sysinfo` becomes a dependency for battery, component naming,
   or disk identity. It was evaluated and not adopted for the `/proc`-backed
-  metrics; the reasoning is in `docs/monitor-collector-sources.md`.
+  metrics; the reasoning is in `engineering/specs/monitor-collector-sources.md`.
 - Decide the package signature format before offering a signed distribution
   channel. Checksums are currently the only integrity mechanism.
 - The daemon repairs a dpkg run a crash interrupted (ADR 0014): a method with
@@ -197,7 +226,7 @@ GUI or dependency compiles when the relevant command was not executed.
   planned from such a version would be a downgrade to apt.
 - Better Launcher is measured now: `cargo bench -p launcher-gui --bench
   launcher_suite` runs all five manifest benchmarks and
-  `docs/launcher-performance.md` records the numbers and the hardware. Two
+  `engineering/performance/launcher-performance.md` records the numbers and the hardware. Two
   limits travel with them. `warm-overlay-open` ends at the first renderable
   model, because `ZED_HEADLESS=1` has no compositor and therefore no frame — no
   Better OS component has a time-to-photon figure. And the idle CPU figure is a
@@ -291,7 +320,7 @@ GUI or dependency compiles when the relevant command was not executed.
   six are installed from inside Better Manager. It has no metadata to read but
   ADR 0002's asset names, so any change to the naming contract or the supported
   release/architecture matrix must change the script's tables in the same
-  commit. `docs/release-packaging.md` holds the contract.
+  commit. `engineering/specs/release-packaging.md` holds the contract.
 - The CI `rust` job now runs `packaging/generate-third-party-notices.sh --check`
   before anything is built. `docs/third-party-licenses.md` pins the `Cargo.lock`
   hash, so any lockfile change makes it stale; regenerate it in the same commit
@@ -302,7 +331,7 @@ GUI or dependency compiles when the relevant command was not executed.
   workspace since. One version number no longer names two payloads.
 - `better-touchpad` now has a manifest. Its health checks are the IDs
   `touchpad-core` emits and its benchmark baselines are the figures in
-  `docs/touchpad-sensitivity-mapping.md`, but nothing runs those benchmarks —
+  `engineering/specs/touchpad-sensitivity-mapping.md`, but nothing runs those benchmarks —
   the same unenforced-budget gap `better-files.yaml` carries. Its checksums are
   the published v0.2.13 ones.
 - A package installs its systemd user unit and does not enable it, matching
@@ -439,7 +468,7 @@ GUI or dependency compiles when the relevant command was not executed.
   change.
 - Preview treats a parser as a boundary, not a sandbox. The size limit, the
   decoder's own allocation limits, and a `catch_unwind` are what exist;
-  `docs/files-preview-policy.md` states what each one does and does not buy. A
+  `engineering/specs/files-preview-policy.md` states what each one does and does not buy. A
   real sandbox means a separate process with a seccomp profile, and it is the
   right shape before preview grows beyond image and text.
 - No Better Files performance claim may name Nautilus, COSMIC Files, or Windows

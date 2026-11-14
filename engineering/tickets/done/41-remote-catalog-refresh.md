@@ -141,3 +141,69 @@ not distinguishable from a real release without signing.
 The refresh is not scheduled. It happens at launch and on the button, so a
 window left open for a week shows a week-old catalog with its age on screen and
 does not go looking on its own.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Ticket 41 — the remote catalog refresh — was the previously remaining one.
+Tickets 18 through 40 are done: 38 closed Issue #3's phase 3 by building the GNOME Shell
+adapter the granted GJS exception allowed, so the Mac-style preset now reaches
+the desktop on GNOME 46 Wayland, and 40 put `install.sh` at the repository root
+so a fresh Zorin or Ubuntu machine reaches a checksum-verified Better Manager in
+one command.
+
+Ticket 41 inherits the gap the installer makes visible rather than closes. A
+published `better-manager` embeds the catalog as it stood when it was built, so
+the manifests it carries hold the *previous* release's checksums — the installer
+puts a working Better Manager on the machine, and the components that Better
+Manager then offers to install cannot be verified against the release the
+installer just fetched. Fetching the catalog rather than compiling it in is what
+41 is for.
+
+Branch `ticket-41`. `AGENTS.md` has carried the same structural follow-up since
+v0.2.0: a manifest checksum can only be written after its own release is public,
+so the catalog compiled into release N always describes release N-1's packages,
+and the follow-up ended by asking for a decision before the built-in catalog was
+treated as an install path for its own release. [ADR 0013](/engineering/decisions/0013-remote-catalog-refresh.md)
+takes it, and this ticket builds it.
+
+**The seven manifest files, not a generated bundle.** Both were considered. The
+files are already the source of truth a release edits and a reviewer reads, they
+need no generation step that could be stale for the length of a release branch —
+the exact failure this exists to remove — and a per-file fetch costs one
+component when one file is bad rather than the whole catalog. The exchange is
+written into the ADR: a bundle becomes the better answer the moment there is a
+signature to put on it.
+
+**A fetched manifest is untrusted in the same way a compiled-in one is.** The
+whole existing `better-core` validator runs, not a lighter path, plus three
+identity checks: the file name must match the component ID it declares, a lower
+version than the one already held is refused, and the resulting set must still
+assemble into a `ComponentCatalog`. Every refusal is individual, carries a stable
+machine key, and leaves the previously held manifest in place — a bad
+`better-monitor.yaml` costs Better Monitor's newer description and nothing else.
+
+**Four states, and no fifth that means "probably fine".** Never refreshed,
+refresh failed over a cache, refresh failed over the built-in catalog, and
+partially refreshed. Each has its own sentence in both locales, drawn as a
+warning rather than a note, because the catalog is what a person decides to
+install from. A refresh that adopted nothing writes no cache, so a failure never
+restamps a good file's fetch time.
+
+**One catalog definition, not three.** `manager-cli` and `manager-gui` each
+carried their own `include_str!` list of the seven manifests. Both now call
+`manager_core::catalog::built_in_catalog()`, which is also the base every
+refresh compares against.
+
+Not done, and stated rather than implied. The real-network proof is weaker than
+the ticket's wording: it ran against a `main` that carries the real published
+0.2.1 checksums, because v0.2.1 has shipped, so it proved fetch, validate, plan,
+and verify-against-a-real-artifact but not the placeholder state the ticket
+describes — that state exists only between a version bump and its release, and
+the next release branch is where it can be observed. Signing is unchanged and
+deferred, so HTTPS plus the artifact checksum is still the whole integrity
+story, and a `main` that was rolled back and re-bumped is not distinguishable
+from a real release. There is no scheduled refresh: a window left open for a week
+shows a week-old catalog with its age on screen and does not go looking on its
+own.

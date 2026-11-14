@@ -40,3 +40,18 @@
 - daemon 本體、polkit 政策檔、systemd unit（票 11）。
 - `manager-core` 的執行縫與 schema 變更（票 10）。
 - 真實下載與 APT（票 11、12）。
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Real system integration is planned as tickets 09 through 14. Ticket 09 is done:
+ADR 0007 records the D-Bus and polkit decision with its rejected alternatives
+and its accepted residual risk, ADR 0005 no longer claims the protocol is
+undecided, and `manager-ipc` holds the wire contract both halves will share.
+Local `cargo fmt --all -- --check`, `cargo check --workspace --offline`,
+`cargo test --workspace --offline`, and `cargo clippy --workspace --all-targets
+--offline -- -D warnings` all passed; `manager-ipc` contributes 24 tests, mostly
+rejection cases. No daemon, no download code, and no APT invocation exists yet,
+so nothing in this branch can still apply a package change and the shipped
+backends all continue to refuse.

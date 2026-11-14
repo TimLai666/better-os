@@ -189,7 +189,7 @@ to the privileged service's plan, an additive change to [ADR
 it, because that older path installs the manager's `.deb` alone. The manifest
 can name the companion only from the release that first publishes the adapter,
 with that release's checksums, in the same step that writes the manager's own
-(`docs/release-packaging.md`). Without the adapter the Window attention page
+(`engineering/specs/release-packaging.md`). Without the adapter the Window attention page
 says it is missing and GNOME keeps its own behaviour.
 
 ### The taskbar mark

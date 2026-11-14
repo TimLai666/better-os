@@ -34,3 +34,17 @@
 ## Out of scope
 
 - APT、sudo、下載、root daemon、IPC、真實 health collector、帳號、遙測與自動最佳化。
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Issue #8 now keeps the CLI and GPUI on the shared `manager-core` lifecycle API,
+persists mock state through `manager-store`, and localizes the GUI at runtime.
+The final disposable Chefer AppCipe passed `cargo fmt --all -- --check`,
+`cargo check --workspace --offline --quiet`, `cargo test --workspace --offline
+--quiet`, workspace clippy with `-D warnings`, CLI lifecycle smoke, and an
+8-second `ZED_HEADLESS=1` GUI launch smoke. No privileged command or real
+package mutation ran.
+The temporary `better-manager-gpui-complete/` directory was moved to the
+desktop trash after the destination file set was verified.

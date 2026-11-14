@@ -389,7 +389,7 @@ in release form.
   draw. "Since unplugged" is kept in memory and restarts with the service.
 - **The tray icon cannot be as wide as Stats'** (see above), and Numbers
   style shows two readings.
-- `delivery-status.md` was not updated (outside this ticket's files).
+- the delivery status record (since retired) was not updated (outside this ticket's files).
 
 ### Not verified
 

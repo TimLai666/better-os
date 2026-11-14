@@ -59,7 +59,7 @@ choice for: the final storage engine and downsampling format — SQLite is a
 candidate, not a default — the default retention duration and disk budget, and
 whether the historical service and the GUI ship in one package or several. The
 store must stay replaceable until the storage ADR lands, matching the existing
-ENG.md migration note.
+`engineering/architecture.md` migration note.
 
 ## Acceptance criteria
 
@@ -155,3 +155,82 @@ environment and `rusqlite` is in neither the lockfile nor the local cargo cache.
   started while a fallback window is open. The rule is one writer, and both the
   CLI and the window check for the service first, but nothing enforces it with
   a lock.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Five new crates are on branch `ticket-24`: `monitor-store`, `monitor-ipc`,
+`monitor-service`, `monitor-export`, and `monitor-cli`. `monitor-gui` changed
+substantially and nothing else outside those six did, apart from the workspace
+member list, `engineering/architecture.md`, `AGENTS.md`, this file, the ticket, and the new ADR.
+
+Collection no longer belongs to the window. `monitor-gui` has no sampler:
+`src/link.rs` reaches `monitor-service` over the session bus name
+`org.betteros.Monitor1`, and where there is no service it starts the same
+`MonitorEngine` inside the window process and says so in a banner on every
+stored-data page. Either way the collectors live behind the bridge and the
+render thread never waits on a bus or a disk. The old `sampling.rs` is deleted
+rather than left as a second path that could drift.
+
+The milestone signal is proved twice: once against the engine directly and once
+over a private session bus, where a client connects, reads, drops its
+connection, and a second client opening later finds the round counter and the
+store both grew with no gap recorded across the disconnect. The 8-second
+headless launch also proves it from the other end — the window's fallback
+engine wrote 34 KiB of history and captured an inventory in those 8 seconds.
+
+The store is an append log of length-and-checksum framed JSON records, three
+files with different lifetimes, a downsampler in front and a compaction pass
+behind. A torn final record is truncated and the hole is recorded as a gap; a
+file a newer Better Monitor wrote is refused and kept. ADR 0011 records this as
+the **interim** engine with the measured numbers behind it and states plainly
+that the final choice is still owed. SQLite could not be benchmarked: crates.io
+is unreachable from this environment and `rusqlite` is in neither the lockfile
+nor the local cargo cache, so the ADR records a baseline SQLite would have to
+beat rather than a comparison it did not run.
+
+Measured, on this machine, release profile: a durable append is 1.1 ms at p50
+and six hours of history is 4,320 samples in 35.7 MiB, which is where the
+64 MiB default budget came from. A five-minute query is 0.3 ms, a six-hour
+query is 50 ms, and reopening six hours takes 576 ms — the last is the weakest
+number and the one the final engine decision should be judged on. Writing an
+export of six hours takes 95 ms and produces 11.4 MiB.
+
+Redaction is a boundary rather than a filter. Command-line arguments are
+dropped whole rather than scanned, because arguments are where credentials
+live. The seeded-secret test plants a token in a process command line and in an
+incident note and searches every byte of every file in the produced package,
+including the schemas and the README.
+
+Gates that actually ran on this branch, all passing. Crate-scoped first,
+because a workspace-wide run rebuilds the GPUI world for each command:
+`cargo clippy --all-targets -- -D warnings` and `cargo test` for
+`monitor-store`, `monitor-ipc`, `monitor-export`, `monitor-service`,
+`monitor-cli`, `monitor-gui`, `monitor-core`, `monitor-collectors-linux`, and
+`monitor-views` — 426 tests across those nine, of which 166 are new.
+
+The full gate then ran as well, once the GPUI world was already built:
+`cargo fmt --all -- --check`, `cargo check --workspace`,
+`cargo test --workspace` (987 tests, all passing; 821 on `main` before this
+ticket), and `cargo clippy --workspace --all-targets -- -D warnings`.
+
+Also run: `cargo build -p monitor-gui`; an 8-second `ZED_HEADLESS=1` launch that
+stayed alive with no output and left 34 KiB of history and an inventory capture
+behind it, which is the fallback engine proving itself; `cargo bench -p
+monitor-store`; and `cargo bench -p monitor-export`.
+
+What ticket 24 did not do, and should not be assumed done: anomaly and
+regression detection, deep profiling, and the `anomalies.json` and `profiles/`
+parts of the export are out of scope and absent rather than stubbed. The export
+is a directory, not an archive, because the workspace has no compression
+dependency. Export is reachable from the CLI but there is no button for it in
+the window. Export progress is reported as completed or failed; nothing streams
+a percentage, because the work runs to completion before the reply is sent.
+Packaging is not written: no systemd user unit for the service, no desktop
+entry, no Better Manager manifest. Nothing enforces the single-writer rule with
+a lock — the CLI and the window both check for the service first, but starting
+the service while a fallback window is open would put two writers on one store.
+The GUI's command-line privacy toggle only takes effect in the fallback engine;
+against a running service it is refused with a stable key, because a window
+must not change what the session service is collecting.

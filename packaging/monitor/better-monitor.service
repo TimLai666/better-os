@@ -1,6 +1,6 @@
 [Unit]
 Description=Better Monitor session observation service
-Documentation=https://github.com/TimLai666/better-os/blob/main/docs/tickets/24-monitor-history-and-export.md
+Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/tickets/done/24-monitor-history-and-export.md
 PartOf=graphical-session.target
 After=graphical-session.target
 

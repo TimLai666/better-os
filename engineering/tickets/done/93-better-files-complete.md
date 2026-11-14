@@ -44,12 +44,12 @@ owner added on 2026-11-12:
   trash, hard links kept on copy, archive entry checks (tickets 50–56).
 
 The inventory with source references is in the session research report; the
-worker copies it into `docs/better-files-folio-parity.md` and ticks each item
+worker copies it into `engineering/specs/better-files-folio-parity.md` and ticks each item
 with the test or screenshot that proves it.
 
 ## Acceptance
 
-- [ ] Every line of `docs/better-files-folio-parity.md` ticked with evidence.
+- [ ] Every line of `engineering/specs/better-files-folio-parity.md` ticked with evidence.
 - [ ] Every audit finding F1–F14 fixed, each shown by a screenshot.
 - [ ] Light and dark, English and zh-TW, 1600 and 960 wide.
 - [ ] Tests never touch the person's real home, bookmarks, trash, drives, or
@@ -59,7 +59,7 @@ with the test or screenshot that proves it.
 
 ## What was built
 
-Five passes. `docs/better-files-folio-parity.md` ticks 108 of its 113 lines;
+Five passes. `engineering/specs/better-files-folio-parity.md` ticks 108 of its 113 lines;
 the other five are deliberately different, each with its reason there, and
 the owner accepted all five: no machine-translated languages, no
 right-to-left layout while no right-to-left language ships, the three folio

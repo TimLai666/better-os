@@ -16,7 +16,7 @@ deprecated Node.js 20 runtime.
 - [ ] `rust-version` equals the highest `rust_version` among locked packages,
       and every document that states the baseline says the same. (`Cargo.toml`
       now says 1.95, the version that actually builds, not the highest declared
-      1.92; `AGENTS.md` and `delivery-status.md` still say 1.85. See What was
+      1.92; `AGENTS.md` and the delivery status record (since retired) still say 1.85. See What was
       built.)
 - [x] CI gains a job or step that builds the workspace with exactly that
       toolchain, so the declaration cannot drift again.
@@ -73,5 +73,5 @@ contributors and releases use, and the MSRV job only checks rather than
 building and testing, which would double the CI time for little extra proof.
 
 Not verified: the new `msrv` job and the v7 actions have not run on GitHub yet.
-`AGENTS.md` and `delivery-status.md` still describe the 1.85 baseline and the
+`AGENTS.md` and the delivery status record (since retired) still describe the 1.85 baseline and the
 Node.js 20 follow-up; this ticket was not allowed to edit them.

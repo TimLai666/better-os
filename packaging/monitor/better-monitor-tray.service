@@ -1,6 +1,6 @@
 [Unit]
 Description=Better Monitor taskbar item
-Documentation=https://github.com/TimLai666/better-os/blob/main/docs/tickets/97-monitor-hardware-and-tray.md
+Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/tickets/done/97-monitor-hardware-and-tray.md
 PartOf=graphical-session.target
 After=graphical-session.target
 

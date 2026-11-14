@@ -32,7 +32,7 @@ ADR 0017.
   for the removed binary and the new command; `verify-deb.sh` asserts each
   shortcut entry's `Exec` names `better-manager --page`.
 - **Docs:** `AGENTS.md` (no more `awake-gui` or touchpad window; the control
-  center), `docs/architecture.md`, `delivery-status.md`, the touchpad and
+  center), `engineering/architecture.md`, the touchpad and
   awake release notes in their manifests.
 - **Release gate:** a test fails if any page is still the debug-only
   placeholder from ticket 84.

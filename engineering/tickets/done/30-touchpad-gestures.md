@@ -159,3 +159,79 @@ because no backend in this build produces real ones.
   session adapter
 - Gesture-recognition latency benchmarked, and dropped or reordered gesture
   frames counted
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Ticket 30 now inherits two decisions rather than a blank page: ADR 0008 compares
+the four gesture integration paths and adopts none, and ADR 0010 settles how a
+GNOME setting is actually written. The touchpad half of Issue #3 is finished, so
+30 starts from a control centre that already reads, applies, verifies, and
+restores.
+
+The gesture half exists and no gesture reaches the desktop. Both halves of that
+sentence are deliberate.
+
+What exists is everything above the backend. `better-actions` is a closed
+catalog of typed desktop actions with no variant that can carry a command, a
+path, or free text; the only user text in it is a keyboard shortcut whose key
+comes from a fixed table behind a private field, so "no configuration path can
+produce a shell string" is a property of the type rather than of a validator.
+`touchpad-gestures` holds the gesture model, the Mac-style preset exactly as
+Issue #3's table specifies it, conflict detection, the recognizer, and the
+apply plan. `touchpad-session` is the invocation boundary, and its trait takes
+`DesktopAction` values and a progress fraction — there is no method on it a
+configuration file could reach with a string.
+
+The recognizer is the part worth reading. It takes frames of labelled contact
+points in normalized pad coordinates and emits begin, progress,
+threshold-crossed, complete, and cancel, and it holds no clock: every frame
+carries its own timestamp, so the cooldown is replayed rather than slept
+through. Three rules in it are tested rather than argued: nothing is emitted
+until a gesture arms, so a hand resting on the pad cannot flap a surface; the
+value at release decides, so a gesture that went far and came back cancels; and
+a changed contact count cancels rather than degrading into a different gesture.
+A labelled thumb is what separates thumb-and-three from four fingers, which
+matters because the preset contains both at four contact points.
+
+**No adapter in this build reaches GNOME Shell.** ADR 0012 chooses the minimal
+GNOME Shell adapter as the direction, conditional on a language-policy
+exception that has not been granted, and records what would change the choice: a
+written security review would open the libinput path, an upstream Wayland
+gesture protocol would supersede both, and a refusal of the exception leaves
+Better Touchpad with gesture configuration and no gesture. The GUI renders that
+last state honestly rather than treating it as an error — the recording adapter
+says out loud that it performs no system action, the live-testing switch is
+disabled while that is true, and every unsupported action carries its reason.
+
+The one real route that exists is the launcher's.
+`LauncherActivationAdapter` sends the two launcher actions through
+`launcher-platform`'s own activation path, the same one a second launch and a
+dock use, and reports everything else unsupported.
+
+Applying the preset is a preview, then a decision per conflict, then a
+confirmation, and the gate is a type: `ApprovedGesturePlan` has private fields
+and one constructor, which refuses while any conflict is undecided and again
+without the confirmation flag. Against the GNOME 46 model the preset collides
+four times — both of the shell's swipe trackers accept three *and* four
+contacts — and choosing "use the Better OS gesture" reports the built-in half as
+something no backend in this build can change, rather than claiming it happened.
+
+The gesture configuration and its capture are two files of their own beside the
+pointer, scrolling, and clicking ones, written through `touchpad-core`'s
+existing atomic-write and write-once machinery. That is a safety property: a
+test applies a preset with a deliberately failing adapter and asserts the
+settings configuration and its backup are untouched. Three failed runs in a row
+turn the gesture integration off by itself and leave the bindings in place to be
+turned back on.
+
+Numbers, all over replayed synthetic frames because nothing produces real ones:
+104–126 ns to recognize one frame, and 1.1–2.1 µs for a four-finger swipe from
+begin to complete. Dropped and reordered frames are counted rather than assumed, and a
+reordered frame is dropped instead of dragging a gesture backwards.
+
+Not measured and not claimed: the thresholds. Activation 0.6, cancellation 0.25,
+cooldown 350 ms, and the travel distances in `RecognizerScale` are recorded
+starting values in one struct each, chosen to match `launcher-platform` where
+the two sides share a gesture. None of them has been tried against a hand.

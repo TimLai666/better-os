@@ -168,3 +168,131 @@ claimable. If any fails, the overview is still the working entry path and step
 - A test proving no network syscall path exists in the launcher binaries'
   dependency surface — done for every launcher crate, and honestly qualified
   for the toolkit. See `crates/launcher-gui/tests/dependencies.rs`.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Two new crates are on branch `ticket-21`: `launcher-platform` and
+`launcher-gui`. Nothing outside them changed except the workspace member list,
+the new manifest, ADR 0008, `engineering/specs/launcher-activation.md`, the packaging desktop
+entry, `engineering/contracts/component-manifest.md`, `engineering/architecture.md`, the ticket, and this file.
+
+The overlay is one window with two query-driven states, and that is a property
+of the model rather than something the screen remembers. `launcher-core` already
+made an empty query mean the application library; `OverlayModel` adds a
+selection and a load state on top and nothing else, so clearing the search row
+returns to the library by borrowing the browse model the index built once. It
+never rebuilds or re-clones it. The selection follows the application rather
+than the position, so a live catalog swap or a narrowing query keeps the
+selected application selected when it survived and falls back to the first row
+when it did not.
+
+Reading the application directories and watching them both run off the render
+thread. The watcher blocks on the kernel's notifications with a one-hour re-arm
+rather than re-reading on a timer, and it reports which backend `notify`
+actually selected instead of claiming to be event-driven. An index rebuild
+after an install shows a refreshing state and leaves the current rows on
+screen; blanking a list someone is using is worse than a slightly stale one.
+
+Activation is single-instance over the session bus. The first process owns
+`org.betteros.Launcher1` and serves `org.freedesktop.Application`; every later
+launch is refused the name, hands its request over, and exits. `Activate` opens
+and `ActivateAction("toggle")` toggles, which is what keeps a launcher icon
+from closing the launcher. That was checked twice: against a fake registry with
+no bus at all, and over a private `dbus-daemon` the test starts and kills. It
+was also checked end to end by hand — a second `better-launcher` returned in
+14 ms and the first process quit on the forwarded toggle.
+
+The gesture work is a boundary and a mock, deliberately. ADR 0008 compares the
+minimal GNOME Shell adapter, compositor integration, a Rust/libinput service,
+and the portal path, and adopts none: the GNOME path costs a GJS
+language-policy exception and the libinput path needs a security review, and
+neither belongs inside an implementation ticket. The recognizer takes the
+current time as an argument instead of reading a clock, so the cooldown that
+stops an accidental partial gesture from flapping the overlay is replayed in a
+test rather than slept through.
+
+Gates that actually ran on this branch: `cargo fmt --all -- --check`,
+`cargo check --workspace`, `cargo test --workspace` (894 tests, all passing;
+73 of them new), `cargo clippy --workspace --all-targets -- -D warnings`, and an
+8-second `ZED_HEADLESS=1` launch of `better-launcher` that stayed alive with no
+output. The manifest is validated through `better-core` on every test run, and
+one of those tests compares the settings it declares against the strings
+`launcher-platform::shortcut` names, so the declaration cannot drift from the
+code.
+
+Two acceptance criteria are honestly partial rather than met.
+
+The desktop entry exists as packaging data and works when installed by hand,
+but `packaging/build-deb.sh` builds no `better-launcher` package, so the
+manifest's artifact checksums are placeholders and the component is not
+release-eligible. `engineering/contracts/component-manifest.md` says so. The global shortcut is
+described down to the exact four GNOME settings and deliberately not applied:
+the key combination is a deferred decision and writing the setting belongs to
+Better Defaults.
+
+"The launcher performs no network request" is true of every launcher crate and
+there is a test that proves it. It is not true of the binary's dependency
+surface: `gpui-component-assets` depends on `zed-reqwest`, so hyper and rustls
+are linked into every Better OS desktop binary, not only this one. That is a
+finding, not something this ticket introduced, and it is asserted in
+`crates/launcher-gui/tests/dependencies.rs` as an exception with one named
+cause so it cannot quietly become two.
+
+What ticket 21 did not do, and should not be assumed done: none of the four
+benchmarks the manifest defines has been run, so warm overlay-open latency and
+idle CPU and memory are unmeasured. Keyboard-only operation is asserted at the
+model level and wired through a capture-phase key handler, but was not verified
+by hand in a live desktop session. The overlay is transient rather than
+resident, which was a choice made here and is recorded rather than settled.
+There is no animation, no category grouping, and no usage-weighted ranking; all
+three are deferred decisions with the data already in place for whoever takes
+them.
+
+Ticket 27 built the Better Defaults engine below the UI: manifest declarations,
+typed snapshots, adapter traits, the first real adapters, aggregate status, and
+CLI equivalents. Three crates are new — `defaults-core` (status, aggregation,
+plans, execution, verification), `defaults-store` (snapshot history), and
+`defaults-platform` (adapter traits and adapters) — and `better-core` gained a
+`default_integrations` manifest group with full rejection coverage.
+
+All eight aggregate states are produced and tested separately, and the per
+integration detail stays available underneath each one. Global and single
+component operations are the same planning call with a different selection, so
+there is no second path that could skip the read-before-write. An entry whose
+value moved after Better Manager last wrote or verified it is held back until
+that exact entry is confirmed, and confirming one confirms nothing else.
+
+Two production adapters ship, and they are not equally capable. `xdg-default-app`
+reads, writes, and verifies the user's `mimeapps.list` through
+`app-chooser-core`, so there is still exactly one editor for that file. The
+GNOME adapters read and verify real typed values out of the user's dconf
+database through a GVDB parser written for this ticket, and return Manual action
+required for a change: the dconf service owns that file and a write behind it is
+ignored or overwritten. Issue #10 allows that outcome over a guessed command.
+ADR 0009 records the three options weighed and names the D-Bus write path as the
+eventual answer. Two smaller limits are equally explicit at runtime: restoring an
+XDG default that previously had no owner reports Manual action required, and a
+handler group whose types currently disagree reads as unknown rather than being
+flattened into one owner.
+
+The shipped manifests in `components/manifests/` still declare no integrations,
+because which ones the initial catalog enables is a deferred decision in
+Issue #10. The schema is proven instead against a fixture declaring one
+integration of all nine kinds, and the CLI takes `--manifest` so a catalog can be
+supplied.
+
+119 tests pass across the touched crates: 35 in `better-core`, 39 in
+`defaults-core`, 11 in `defaults-store`, 29 in `defaults-platform`, and 5 CLI
+tests that run the shipped binary end to end. The dconf parser is tested against
+a fixture database `dconf compile` produced rather than one this repository
+invented.
+
+Gates for ticket 27 were crate-scoped to avoid rebuilding GPUI in the worktree:
+`cargo fmt --all -- --check`, then `cargo check`, `cargo test`, and
+`cargo clippy --all-targets -- -D warnings` for `better-core`, `defaults-core`,
+`defaults-store`, `defaults-platform`, `manager-cli`, and `manager-core`, all
+passing. The full workspace gate has not run on this branch and belongs on the
+main checkout after merge. `manager-gui` is untouched; the Defaults screens are
+ticket 28, which consumes `defaults-core` unchanged.

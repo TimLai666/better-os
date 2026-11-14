@@ -76,7 +76,7 @@ pointer reorder gesture inside the sidebar is not wired yet.
 ## Devices without the storage service
 
 Ticket 35 connected the Devices section to the storage layer, and
-`docs/files-integration-policy.md` records how. What remains true from this
+`engineering/specs/files-integration-policy.md` records how. What remains true from this
 ticket is the fallback underneath it.
 
 When neither the session service nor an in-process engine can produce device
@@ -103,7 +103,7 @@ dependency.
 rather than a path: a directory navigates, an application launches through its
 desktop id, a file opens with whatever its association resolves to. Ticket 35
 connected the second and third to `app-catalog-platform` and Better App Chooser;
-`docs/files-integration-policy.md` records how. There is still no second
+`engineering/specs/files-integration-policy.md` records how. There is still no second
 launcher and no second association lookup in this crate, which is the property
 the typed intent exists to keep.
 

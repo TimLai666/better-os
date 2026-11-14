@@ -67,7 +67,7 @@ to check what exists.
   `ProtectKernelTunables=yes`, which makes `/sys` read-only; the spec keeps it
   and opens the two attributes with `ReadWritePaths=`, to be proven in a VM
   first.
-- **ADR 0017**, `docs/decisions/0017-one-control-center.md`: one window; the
+- **ADR 0017**, `engineering/decisions/0017-one-control-center.md`: one window; the
   Awake and Touchpad packages keep their services, tray, extension, and
   safe-mode command and lose their windows; their desktop entries become
   shortcuts to the pages; the awake window's preferences move into the awake

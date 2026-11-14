@@ -11,7 +11,7 @@
 //! GNOME Shell, and this repository does not install one into the developer's
 //! session — `AGENTS.md` forbids touching host state. So the behaviour of the
 //! extension against a live shell is untested here, and
-//! `docs/tickets/38-gnome-gesture-adapter.md` records that honestly rather than
+//! `engineering/tickets/done/38-gnome-gesture-adapter.md` records that honestly rather than
 //! this file implying otherwise.
 
 use touchpad_session::gnome::{INTERFACE_NAME, METHODS, SIGNALS};

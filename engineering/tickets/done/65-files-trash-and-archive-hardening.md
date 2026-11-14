@@ -82,7 +82,7 @@ Each of the three gaps is closed where it was found: the Trash listing in
 Changed: `crates/files-platform/src/trash.rs` and `lib.rs`,
 `crates/files-gui/src/reader.rs`, `crates/files-operations/src/store.rs`,
 `engine.rs`, `extract.rs`, `error.rs`, `policy.rs`, `lib.rs`, and the new
-`zip_end.rs`, and `docs/files-operations-policy.md`. No dependency changed and
+`zip_end.rs`, and `engineering/specs/files-operations-policy.md`. No dependency changed and
 `Cargo.lock` is untouched.
 
 Tests, each seen failing before its fix:

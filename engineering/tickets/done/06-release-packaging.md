@@ -75,3 +75,31 @@
 - package signing implementation 或 signing format
 - privileged daemon IPC protocol
 - 實際 system optimizer 與 component lifecycle execution
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+The four-entry Ubuntu 22.04/24.04 amd64 and native arm64 package matrix passed
+in PR #11, including the native `dpkg`/`uname` checks, package build, runtime
+dependency checks, checksums, and artifact upload. Clean Ubuntu containers for
+all four target/architecture pairs installed the downloaded artifacts with APT,
+had no `*-dev` packages, resolved all dynamic libraries, and passed checksum
+verification. Both GUI binaries stayed alive in GPUI headless mode.
+The post-merge `main` CI run 30650287246 passed Rust checks and all four package
+jobs. PR #15 is merged into `main` at `3a6d98b`; the release artifact mapping
+decision is recorded in ADR 0002, and `main` validates schema v2 manifests and
+emits target-specific package filenames.
+The package payload also started both GUI binaries for 12 seconds in the host's
+Zorin OS 18.1 GNOME Wayland session with `ZED_HEADLESS` unset. Docker's Xvfb and
+host-socket tests still failed because they did not provide a usable compositor,
+but the direct host session passed. The public `v0.1.0` release contains eight
+target-specific `.deb` assets and eight sidecars, and all public sidecars were
+verified after re-download. Both release-eligible manifests now contain the
+actual package checksums. Local `cargo fmt`, `cargo check`, `cargo clippy`,
+workspace tests, package build, package verifier, and inventory freshness checks
+also passed.
+The approved Debian maintainer is `TimLai666 <tim930102@icloud.com>`, and the
+root project license is GPL-3.0-or-later.
+PR #9 is merged into `main` at `fb3520f`. PR #12 and PR #15 feature branches
+have been deleted from both the local checkout and GitHub.

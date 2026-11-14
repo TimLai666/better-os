@@ -189,7 +189,7 @@ Benchmarks that ran (synthetic, no hardware):
 - Write the ADR issue #5 asks for on the readiness algorithm and confidence
   threshold. The two values that need it are `EvidencePolicy`'s
   `require_complete_writer_scan` (default false) and `max_proof_age` (default
-  five minutes), both documented in `docs/storage-safety-signals.md`.
+  five minutes), both documented in `engineering/specs/storage-safety-signals.md`.
 - Write the ADR on the privileged boundary. Per-device writeback accounting, a
   device cache flush, and a complete open-writer scan all need privilege this
   service deliberately does not take.
@@ -199,3 +199,49 @@ Benchmarks that ran (synthetic, no hardware):
 - Package the component and add the uninstall smoke test.
 - Wire Better Files to `org.betteros.Storage1`: the sidebar, the device row, the
   Eject control, and the navigation cleanup after a disconnect. Ticket 35.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Ticket 31 added the three storage crates on branch `ticket-31`, since merged.
+`storage-core` is the whole decision: normalized device identity, the Direct
+Removal and Performance policies, six distinct states, the evidence model, the
+per-device preference model, and restore-default plans, with no D-Bus, UDisks2,
+`/proc`, or GPUI anywhere in it. The invariant everything else leans on is that
+`ReadyToUnplug` cannot be built without a `ReadinessProof`, a proof cannot be
+built without positive evidence, and the proof type has no `Deserialize`, so no
+client can hand the service a green light it never earned.
+
+Identity combines every stable identifier the platform reported — WWN, serial,
+partition UUID, filesystem UUID — and falls back to vendor, model, and the
+`by-path` port chain, which is honestly labelled weak. A device known only by
+`/dev/sdb1` is volatile and can never hold a preference. Two connected devices
+that report the same identity are both marked ambiguous and neither inherits the
+stored preference.
+
+`storage-platform` holds UDisks2 over zbus with real interface definitions,
+`syncfs` on a mount for the flush, `BLKFLSBUF` reported honestly as unsupported
+without privilege, per-backing-device writeback where debugfs allows it and the
+machine-wide `/proc/meminfo` figure as a heuristic fallback, and a
+`/proc/<pid>/fd` writer scan that counts what it could not inspect rather than
+implying it saw everything. Every one of those is a trait with a fake behind the
+`test-support` feature.
+
+`storage-service` owns the session-long state and publishes it over
+`org.betteros.Storage1` on the **session** bus — unprivileged, no polkit action,
+because everything it does is something the logged-in user could do directly.
+`engineering/specs/storage-safety-signals.md` records which signals are authoritative, which
+are heuristic, which are unavailable, and exactly what would need privilege;
+issue #5 defers that boundary to an ADR and nothing here pre-empts it.
+
+129 tests pass across the three crates, plus three `#[ignore]`d live checks. The
+probe binary run against this machine found 15 block devices, no external
+hot-pluggable device connected, writeback available only as the machine-wide
+figure, and 365 processes the writer scan could not inspect on `/` — which is
+the unprivileged picture the safety document describes rather than a limitation
+discovered later. Gates were crate-scoped to avoid rebuilding GPUI in the
+worktree; the workspace gate belongs on the main checkout after merge. Real
+device throughput across exFAT, NTFS, and ext4 on flash, SSD, and spinning
+external disks needs hardware and is recorded as a follow-up in the ticket, not
+approximated by the synthetic benchmarks.

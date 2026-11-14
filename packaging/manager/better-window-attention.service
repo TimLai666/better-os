@@ -1,6 +1,6 @@
 [Unit]
 Description=Better OS window attention choices
-Documentation=https://github.com/TimLai666/better-os/blob/main/docs/tickets/106-window-attention-per-app.md
+Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/tickets/done/106-window-attention-per-app.md
 PartOf=graphical-session.target
 After=graphical-session.target
 

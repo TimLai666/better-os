@@ -179,6 +179,80 @@ cached path costs nothing. A position index in `DirectoryModel` would remove it.
   from buttons and the keyboard; the pointer gesture inside the sidebar is not
   wired. Dragging a folder *into* Favorites is wired.
 - Modified times are shown in UTC. There is no time-zone dependency in the
-  workspace and `docs/files-gui-policy.md` records the gap.
+  workspace and `engineering/specs/files-gui-policy.md` records the gap.
 - Split view, column view, opening a terminal, per-folder preferences, preview,
   and search are out of scope and absent.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+One new crate on branch `ticket-34`, which also carries the merge of
+`ticket-33`: `files-gui`, plus the `better-files` binary. One line changed in
+`files-core` — `Pane::resume` — and nothing else outside the new crate except
+the workspace member list, this file, the ticket, and a new
+`engineering/specs/files-gui-policy.md`.
+
+The crate is split so that almost none of it needs a display server. `session`,
+`content`, `sidebar`, `toolbar`, `bookmarks`, `opcenter`, `commands`, `keys`,
+`prefs`, `layout`, and `format` hold every decision the file manager makes and
+mention no GPUI; `app`, `render`, `shell`, `views`, and `panels` are the layer
+that draws them. All 66 tests run against the same types the renderer uses, so
+"is Back enabled", "did the bookmark survive a restart", and "does a paused job
+offer Resume" are answered without a window.
+
+Three properties are held by ownership rather than by discipline.
+
+One engine serves the process. `files_gui::shared_engine` is a `OnceLock`
+handing out one `Arc<JobEngine>`, and `FilesSession` takes it as a parameter
+rather than building one. Milestone M37's test drops a whole session while an
+8 MB copy is running, then finds the copy completed, the destination the right
+size, and the engine's own snapshot still consistent. Closing a window is not an
+event the engine can observe.
+
+Both view modes are one `uniform_list`, and a row is formatted inside its range
+callback from the entries `DirectoryModel` already holds. Nothing is precomputed
+and nothing is cached, so a batch arriving mid-scroll costs a merge in the model
+and nothing in the view. The benchmark measures the contrast rather than
+asserting it: 0.011 ms for a screenful against 37.2 ms to format all 100,000
+rows, which is what a view that built every row would pay per frame.
+
+Incremental insertion cannot move the selection, because the selection names
+entries and the keyboard cursor is re-derived from the selection's own cursor
+identity whenever entries arrive. Twenty entries dropped above the cursor leave
+the same entry focused at its new index.
+
+Two defects came from the tests rather than from review. A permanent delete was
+refused outright when the session had no trash directory, although deleting a
+file by path needs no trash at all; only emptying an item out of the trash does.
+And the English "no external devices" empty state does not fit the sidebar at
+125%, which is why the empty-state sentences are drawn as wrapping prose and are
+asserted separately from the truncating row labels.
+
+The benchmark found the one number worth watching: rediscovering the focused
+entry's index by walking the visible list costs 11.2 ms on 100,000 entries. It
+is paid only when the cursor moved by something other than the view itself — the
+cached path is free — and a position index in `DirectoryModel` would remove it.
+That is the named follow-up.
+
+Gates were crate-scoped to avoid rebuilding the workspace in the worktree:
+`cargo fmt --all -- --check`, then `cargo check --all-targets`, `cargo test`,
+and `cargo clippy --all-targets -- -D warnings` for `files-core`,
+`files-platform`, `files-operations`, and `files-gui`, all passing, 356 tests.
+An 8-second `ZED_HEADLESS=1` launch of `better-files` stayed alive with no
+output. The workspace gate belongs on the main checkout after merge.
+
+What this ticket did not do, and should not be assumed done: the Applications
+location lists as not-listable and opening a file reports that no application is
+wired up yet, because the shared catalog and Better App Chooser are ticket 35.
+Device rows are built from the mount table and every one of them reads as
+`Unknown` removal state, which is the honest answer without the storage service
+and never reads as safe to unplug; ticket 35 owns that wiring. Dragging a folder
+*into* Favorites is a real GPUI drag; dragging a favourite *within* the sidebar
+to reorder is modelled and reachable from buttons and from `Alt+Up`/`Alt+Down`,
+but the pointer gesture inside the sidebar is not wired. Restoring a recently
+closed tab is implemented although the ticket's out-of-scope list defers it.
+Modified times are shown in UTC, because there is no time-zone dependency in the
+workspace and inventing one from `TZ` would be wrong for half the year. Split
+view, column view, opening a terminal, per-folder preferences, preview, and
+search are absent as the ticket says.

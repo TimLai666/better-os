@@ -37,3 +37,32 @@
 - 帶認證代理的完整授權路徑（見下）。
 - 容器裡沒有可互動的 polkit agent，所以這裡驗證的是「未授權必定被拒絕」，
   而不是「授權後會成功」。後者目前只對 fake authorizer 測過。
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Ticket 15 ran the end-to-end check for real. `chefer run
+packaging/e2e/appcipe.yml` builds a disposable Ubuntu 24.04 image and, inside
+it: installs `better-manager-daemon` and confirms the unit, bus config, polkit
+policy, and state directories land where they should; installs, removes, and
+reinstalls `better-monitor` through apt, asserting dpkg state each time; starts
+a real system bus and polkitd and the real service binary; confirms the service
+claims `org.betteros.Manager1` and reports protocol version 1 without
+authorization; confirms an unauthorized `ApplyTransaction` is refused and
+leaves no transaction journal; and confirms a purge removes
+`/var/lib/better-os` and `/var/cache/better-os`. It exits 0.
+
+Two things that run found. The daemon package installed into an image with no
+graphics libraries at all, which is the packaging split doing its job. And the
+Chefer sandbox has no network, so anything apt needs at test time has to be in
+the image already — the desktop libraries `better-monitor` depends on are
+installed at build time for that reason, not because the service needs them.
+
+Docker was not running on this machine; `systemctl --user start
+docker-desktop.service` started it, which needs no elevation and is reversible
+with the matching stop.
+
+CI run 30688730458 closed the remaining gap: the four-way packaging matrix and
+the container end-to-end check both passed on ubuntu 22.04 and 24.04 across
+amd64 and native arm64.

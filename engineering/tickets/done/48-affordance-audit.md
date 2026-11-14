@@ -197,3 +197,14 @@ components list and the health screen and navigated correctly in both.
 component that is currently the XDG default, so the Defaults screen only ever
 produced the `Verify` arm. That fix rests on the test and on the code, not on a
 photograph.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Ticket 48 is merged into `main` and released as `v0.2.6` beside 47. The
+affordance rule is a type in `better-ui` now — an Action has a handler and may
+wear an action fill, a Status has no hover, no cursor, and no saturated fill —
+so the solid red pill that made a real button look like decoration is gone.
+One case in it was never seen on screen: the Defaults row for a component that
+is already the XDG default, because no machine here has one.

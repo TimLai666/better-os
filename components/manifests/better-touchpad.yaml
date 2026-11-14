@@ -78,7 +78,7 @@ health_checks:
   - touchpad.safe_mode
   - touchpad.integration
 # Budgets, not measurements. Every baseline below is a figure recorded in
-# docs/touchpad-sensitivity-mapping.md ("Measurements"), taken on Zorin OS 18.1
+# engineering/specs/touchpad-sensitivity-mapping.md ("Measurements"), taken on Zorin OS 18.1
 # with GNOME Shell 46 on Wayland, and each budget is set above the worst number
 # in that band so a normally noisy run does not fail. No CI job runs these yet,
 # which is the same gap better-files.yaml's budgets have.

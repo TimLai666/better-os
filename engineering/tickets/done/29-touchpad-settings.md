@@ -94,7 +94,7 @@ bounds recorded as a starting point, not as a settled curve.
 - [x] Normal operation requires no root.
 - [x] Idle overhead and input latency are benchmarked and documented.
       Configuration, read-back, live apply, and startup are measured in
-      `docs/touchpad-sensitivity-mapping.md`. Idle overhead is zero by
+      `engineering/specs/touchpad-sensitivity-mapping.md`. Idle overhead is zero by
       construction — nothing polls — and pointer/scroll event latency is not
       measured because no Better OS code sits in the input path; a gesture
       adapter would, and those figures belong with ticket 30.
@@ -137,3 +137,65 @@ could not do:
 - The scroll-factor sliders cannot be live on GNOME 46. The key does not exist,
   so they are unavailable with the reason attached — which is the ticket's own
   rule applied to its own headline control.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Better Touchpad is a working control centre: it reads the touchpad, changes it,
+proves the change took by reading it back, and can put everything back the way
+it was. `touchpad-core` holds the configuration, the four states per setting,
+and the apply and restore plans, with no GPUI and no key name in it.
+`touchpad-platform` owns session detection, device enumeration, and the GNOME
+backend. `touchpad-gui` renders and decides nothing.
+
+The largest thing in it is the one ADR 0009 deferred. Better OS can now write a
+dconf key. The path is `ca.desrt.dconf.Writer.Change` on the session bus,
+unprivileged, with the change set encoded by hand in GVariant. Two details are
+worth carrying forward:
+
+- dconf's own change-set type is `(sa{smv})` — a prefix plus relative key names
+  — and sending that shape is *accepted*: the call returns a change tag and no
+  key moves. The blob the service actually acts on is `a{smv}` with absolute key
+  paths. That was found by watching what `dconf write` sends, not by reading a
+  header, and it is why the encoder's bytes are pinned against values GLib
+  produced rather than against itself.
+- A reset is an absent value in the change set, which removes the key so the
+  session's own default applies again. That is what restoring a setting the user
+  had never touched has to do, and it is why "nothing was set here" is a
+  distinct, restorable reading rather than a kind of unknown.
+
+`defaults-platform` can adopt the same path and turn its two GNOME adapters from
+"manual action required" into real applies. That is a behaviour change to Better
+Defaults and its tests, so it is a follow-up rather than something done in
+passing.
+
+Ten of the thirteen controls are live on GNOME 46. The other three are not, and
+this is the ticket's own rule applied to its own headline control: GNOME 46 has
+no touchpad scroll-factor key and no smooth-scroll setting, so vertical scroll
+factor, horizontal scroll factor, and smooth scrolling are shown as unavailable
+with the reason attached instead of as sliders that do nothing. The model
+carries both scroll axes as independent, linkable values and the mock backend
+applies and verifies both, so the behaviour is proven and one table row away
+from being live when GNOME grows the key.
+
+Numbers on the development host: reading every setting back 6.8 µs, staging a
+slider move 1.2 µs, building an apply plan 1.5 µs, migrating a version 1
+configuration 1.5 µs. Against the real dconf service, an apply and its verifying
+read take 3.6–6.0 ms and a restore 3.6–4.7 ms, which is why the GUI does that
+work on the calling thread instead of behind a task. A debug-build window is
+ready 99–134 ms after process start, of which 0.33–0.54 ms is reading the
+desktop. Nothing polls while idle.
+
+Not measured, and not claimed: pointer-event overhead and scroll-event latency.
+Better Touchpad sits in no input path — it writes a setting and the compositor
+does the rest — so there is no Better OS code between a finger and a pointer to
+measure. A gesture adapter would have both, and those figures belong with
+ticket 30.
+
+The default test suite mutates nothing. One `#[ignore]`d test changes a real
+setting, and it also refuses to run without `BETTER_TOUCHPAD_LIVE=1`, so
+`cargo test -- --ignored` on a developer's desktop does not quietly move their
+touchpad either. It covers all three GVariant shapes the backend writes — a
+boolean, a double, and an enumerated string — captures each setting first, and
+asserts the machine ends where it started.

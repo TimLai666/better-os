@@ -9,7 +9,7 @@
 //! No scanning happens here. A consumer injects a catalog snapshot — from
 //! `app-catalog-platform`, or a hand-built one in a test — and this module
 //! turns it into entries. `files-platform` never parses a desktop entry,
-//! which is the seam ENG.md calls "one catalog, no second scanner".
+//! which is the seam `engineering/architecture.md` calls "one catalog, no second scanner".
 //!
 //! Opening a row produces an [`OpenIntent`], not a process. Spawning stays in
 //! `app-catalog-platform`, so nothing in Better Files builds a command line.

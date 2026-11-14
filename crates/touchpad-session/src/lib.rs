@@ -30,7 +30,7 @@
 //!   the first route that declares it.
 //!
 //! Which backend reaches the desktop is [ADR
-//! 0012](../../../docs/decisions/0012-touchpad-gesture-backend.md); the GNOME
+//! 0012](../../../engineering/decisions/0012-touchpad-gesture-backend.md); the GNOME
 //! Shell adapter it chose is what this crate now implements.
 
 pub mod adapter;

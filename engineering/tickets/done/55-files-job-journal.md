@@ -59,7 +59,7 @@ one per checksum. The header holds nothing that grows with the item count.
 Changed: `crates/files-operations/src/store.rs` (format, replay, migration,
 `JournalCursor`), `engine.rs` (the incremental persist and the points that
 write whole), `lib.rs`, `benches/operations.rs` (`persist_bytes`), and
-`docs/files-operations-policy.md`.
+`engineering/specs/files-operations-policy.md`.
 
 Tests: 8 new in `store.rs` (appending leaves the existing bytes untouched and
 the header small, a torn final line, damage before the end, a status for an

@@ -10,7 +10,7 @@
 //! machine, this filesystem, warm page cache, debug-assertions-off release
 //! build. The copy figures in particular are page-cache figures: a large copy
 //! that reports gigabytes per second is measuring memory bandwidth, not a disk.
-//! `docs/files-benchmarks.md` records the methodology and the numbers.
+//! `engineering/performance/files-benchmarks.md` records the methodology and the numbers.
 //!
 //! **What is deliberately absent.** There is no comparison against Nautilus,
 //! COSMIC Files, or Windows File Explorer. Producing one needs a defined
@@ -137,7 +137,7 @@ fn main() {
     println!();
     println!(
         "Comparison against Nautilus, COSMIC Files, and Windows File Explorer: \
-         methodology needed, not measured. See docs/files-benchmarks.md."
+         methodology needed, not measured. See engineering/performance/files-benchmarks.md."
     );
 }
 

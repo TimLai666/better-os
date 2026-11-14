@@ -12,7 +12,7 @@
 //! ones is reported unsupported, because this route reaches the launcher and
 //! nothing else, and there is no adapter in this build that reaches the shell.
 //! Which adapter eventually does is
-//! [ADR 0012](../../../docs/decisions/0012-touchpad-gesture-backend.md).
+//! [ADR 0012](../../../engineering/decisions/0012-touchpad-gesture-backend.md).
 //!
 //! There is no continuous progress here. `org.freedesktop.Application` carries
 //! activation, not a progress stream, so the adapter acts on the end of a

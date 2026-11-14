@@ -27,7 +27,7 @@ Better Git becomes the ninth component, packaged the same way as the others.
 - `components/manifests/better-git.yaml`, schema v2, at the workspace version
   with placeholder checksums, like the other eight before a release.
 - Whatever lists the components by name (`manager-core` catalog, `install.sh`,
-  `docs/release-packaging.md`, `docs/component-manifest.md`, `AGENTS.md`)
+  `engineering/specs/release-packaging.md`, `engineering/contracts/component-manifest.md`, `AGENTS.md`)
   gains Better Git, with the asset counts corrected (36 packages, 74 assets).
 - A manifest test next to the others (`crates/git-gui/tests/manifest.rs`).
 
@@ -92,7 +92,7 @@ Better Git becomes the ninth component, packaged the same way as the others.
   `StartupWMClass` is the `app_id` in `src/app.rs`. `git-gui` gains
   `better-core` as a dev-dependency, so `Cargo.lock` and the license inventory
   moved together.
-- **Docs.** `docs/release-packaging.md`, `docs/component-manifest.md`,
+- **Docs.** `engineering/specs/release-packaging.md`, `engineering/contracts/component-manifest.md`,
   `AGENTS.md`, and `README.md` name Better Git and the next release's counts:
   nine packages, 36 `.deb` files, 74 assets. Past releases' counts are left as
   they were published.

@@ -94,7 +94,7 @@ symlink.
   budget somebody stands behind, and both now come from the code and the
   measurements rather than from invention: the health check IDs are the ones
   `touchpad_core::HealthReport::evaluate` emits, and every benchmark baseline is
-  a figure recorded in `docs/touchpad-sensitivity-mapping.md`. Its checksums are
+  a figure recorded in `engineering/specs/touchpad-sensitivity-mapping.md`. Its checksums are
   placeholders for the same reason as the four below.
   `crates/touchpad-platform/tests/manifest.rs` validates it the way the manager
   validates a manifest and fails if the declaration drifts from `GnomeBackend`'s

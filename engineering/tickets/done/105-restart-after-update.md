@@ -282,3 +282,20 @@ test covers it), Better Manager restarting itself in the middle of its own
 transaction through the window, and GNOME placing a restarted window — sway
 puts it on the focused workspace, and a Wayland client cannot choose its
 position.
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Implemented, not merged. Every Better OS window, the Awake tray, the user
+services, and the privileged daemon now run the new program within seconds of
+an update by apt or by Better Manager: windows `exec` themselves in place and
+come back with their view (`better_core::self_update`, `better_ui::restart`,
+one GPUI-free `restart` module per window), packages with user units restart
+each logged-in person's running units from their postinst
+(`packaging/maintainer/user-units.sh`, also from inside the daemon's sandbox),
+and the daemon's prerm no longer stops its own unit on upgrade, which was
+reproduced killing dpkg mid-upgrade. Checked in a disposable Ubuntu 24.04 VM
+across four package versions. Not seen live: the tray's restart, a unit new in
+an upgrade, and Better Manager restarting itself through its own window's
+transaction; the ticket file lists why.

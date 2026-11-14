@@ -133,7 +133,7 @@ The app is complete when it does what Windows 11 Task Manager does, on Linux:
   have no Network column.
 - **The gallery** does not show the new chart or the table additions
   (`crates/fluent-gallery` was outside this ticket's files).
-- `delivery-status.md` was not updated (outside this ticket's files).
+- the delivery status record (since retired) was not updated (outside this ticket's files).
 
 ### Not verified
 

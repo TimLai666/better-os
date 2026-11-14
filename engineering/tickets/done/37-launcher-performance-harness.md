@@ -58,7 +58,7 @@ two numbers.
 ## Results
 
 Development host, 2026-08-31. Full methodology, hardware, and limits in
-`docs/launcher-performance.md`.
+`engineering/performance/launcher-performance.md`.
 
 | Benchmark | Measurement | Result | Target |
 | --- | --- | --- | --- |
@@ -115,3 +115,57 @@ miss. Three results need reading rather than quoting:
 - `cargo bench -p launcher-gui --bench launcher_suite` — every row above, and 6
   `ZED_HEADLESS=1` launches of `better-launcher` in the course of it, each of
   which reached a focused search row and a fully indexed 5,000-entry library
+
+## Notes
+
+Carried over from the retired delivery status record.
+
+Branch `ticket-37`. `components/manifests/better-launcher.yaml` had declared four
+launcher-level benchmarks since ticket 21 and nothing ran any of them.
+`cargo bench -p launcher-gui --bench launcher_suite` now runs all of them, plus a
+fifth the harness needed, and `engineering/performance/launcher-performance.md` carries the
+methodology, the hardware, and the limits.
+
+**The binary times its own startup.** Three of the five measurements need a
+running process, and reimplementing the startup path inside a benchmark would
+have measured something adjacent to what ships. With
+`BETTER_LAUNCHER_TRACE_STARTUP=1` the binary prints two parseable stderr lines —
+`shell-ready` when the window callback returns and `library-ready` when the
+background read lands in the model — and prints nothing otherwise, so the
+headless launch smoke still expects silence. `better-touchpad` already published
+its startup figure this way; this follows it rather than inventing a second
+shape.
+
+**The manifest can no longer promise a measurement nobody takes.**
+`launcher_gui::BENCHMARKS` is one list of `(name, workload, metric)`, the harness
+labels its rows from it, and a new `launcher-gui/tests/manifest.rs` fails if the
+YAML disagrees. Every workload and metric string was rewritten to say what is
+actually built and printed. `idle-memory` was added as a fifth definition,
+because the idle window produces both a CPU figure and a resident-set figure and
+one metric string cannot carry two numbers.
+
+Measured on an AMD Ryzen AI 9 HX 370, 31 GiB, ext4 on NVMe, Zorin OS 18.1, warm
+cache, against a synthetic XDG directory of 5,000 generated entries written by
+the harness itself: warm search update p95 **0.989 ms** against Issue #2's 50 ms
+target; application-list update p95 **151.8 ms**, of which 150 ms is the
+watcher's deliberate burst-coalescing wait and **1.8 ms** is the notice, re-read,
+rebuild, and swap; warm overlay open p95 **206.2 ms** with **37.9 ms** to a
+focused search row; idle **0.0000 %** CPU and **52,992 kB** resident over a
+20-second window.
+
+Three of those need reading rather than quoting, and the harness prints each
+caveat beside the number rather than only in the document. The settle window is
+policy, not cost, so it has its own row. `warm-overlay-open` ends at the first
+renderable model, because `ZED_HEADLESS=1` means no compositor, no surface, and
+no frame — compositor handoff, GPU warm-up, and present-to-photon are outside it
+and are not estimated. And the idle zero is corroborated: both
+`/proc/[pid]/schedstat` and `/proc/[pid]/stat` read zero over the window, and the
+harness reports the 76.5 ms the same schedstat counter accumulated during startup
+so the zero is evidence about the process and not about a counter the kernel
+never populated.
+
+Not done, and stated in the ticket rather than implied: nothing enforces the
+manifest's regression budgets, because that needs a stored baseline and a CI job
+and this run is only the first candidate baseline; the headless idle figure is
+not a session idle figure, since nothing asks the window to repaint; and every
+number is one machine, warm cache, amd64.
