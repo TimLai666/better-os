@@ -322,6 +322,11 @@ impl GitApp {
             if window.is_window_active() {
                 this.session.refresh();
                 this.drive(window, cx);
+            } else if let Some(repo) = this.session.repo.as_mut()
+                && repo.graph.hover_off(std::time::Instant::now())
+            {
+                // The graph's tooltip does not outlive the window's focus.
+                cx.notify();
             }
         }));
 

@@ -187,6 +187,186 @@ fn the_graph_tab_reads_every_branch_with_lanes_labels_and_history() {
     assert!(session.repo.as_ref().unwrap().history.loaded);
 }
 
+/// Resting the pointer in the graph names what is under it, from a real
+/// repository: the merge curve, the fork curve, a line, and a dot, as the
+/// window's hit test finds them.
+#[test]
+fn resting_on_a_line_a_curve_or_a_dot_says_what_it_is() {
+    use git_core::EdgeKind;
+    use git_gui::graph::{GRAPH_EN_US, GRAPH_ZH_TW, GraphSpot, spot_at};
+    let s = branched();
+    let mut session = opened(&s);
+    session.set_tab(Tab::Graph);
+    session.run_git_jobs();
+    let view = graph(&session);
+    assert!(view.loaded && view.end, "{:?}", session.problem);
+    let at = |summary: &str| {
+        view.commits
+            .iter()
+            .position(|c| c.summary == summary)
+            .unwrap()
+    };
+    let row = |index: usize| view.rows.rows(index..index + 1).remove(0);
+    // Where a line of `kind` in another column than the node meets the
+    // row's edge, 1px inside it: the foot of a merge curve or the head of
+    // a fork curve.
+    let curve_end = |index: usize, kind: EdgeKind| {
+        let row = row(index);
+        let edge = row
+            .edges
+            .iter()
+            .find(|e| e.kind == kind && e.column != row.column)
+            .expect("a curve")
+            .column;
+        let x = 16.0 * edge as f32 + 8.0;
+        let y = if kind == EdgeKind::Out { 35.0 } else { 1.0 };
+        spot_at(&row, (x, y), 16.0, 36.0, 12).expect("the pointer is on it")
+    };
+    let say = |index: usize, spot: GraphSpot| view.describe(index, spot, &GRAPH_EN_US, 0).unwrap();
+    let merge = at("M");
+    let spot = curve_end(merge, EdgeKind::Out);
+    assert!(matches!(spot, GraphSpot::Merge { .. }), "{spot:?}");
+    assert_eq!(
+        say(merge, spot),
+        "“feature” merged into “main, origin/main”"
+    );
+    let base = at("a");
+    let spot = curve_end(base, EdgeKind::In);
+    assert!(matches!(spot, GraphSpot::Fork { .. }), "{spot:?}");
+    assert_eq!(
+        say(base, spot),
+        "“feature” branched from “main, origin/main”",
+        "a branch on main's lane names it before the tag on b"
+    );
+    assert_eq!(
+        view.describe(base, spot, &GRAPH_ZH_TW, 0).unwrap(),
+        "「feature」從「main、origin/main」分出"
+    );
+    // The commit on main beside the feature's line: the line passing it is
+    // feature's, and main's own line there is main's, past the tag v1 on
+    // that commit.
+    let b = at("b");
+    let beside = row(b);
+    let column = beside
+        .edges
+        .iter()
+        .find(|e| e.kind == EdgeKind::Pass)
+        .map(|e| e.column)
+        .expect("feature's line passes b, whichever of f and b comes first");
+    let spot = spot_at(&beside, (16.0 * column as f32 + 8.0, 4.0), 16.0, 36.0, 12).unwrap();
+    assert_eq!(say(b, spot), "Line of feature");
+    let main_line = spot_at(
+        &beside,
+        (16.0 * beside.column as f32 + 8.0, 34.0),
+        16.0,
+        36.0,
+        12,
+    )
+    .unwrap();
+    assert_eq!(say(b, main_line), "Line of main, origin/main");
+    // The dot.
+    let f = at("f");
+    let dot = row(f);
+    let spot = spot_at(&dot, (16.0 * dot.column as f32 + 8.0, 18.0), 16.0, 36.0, 12).unwrap();
+    assert!(matches!(spot, GraphSpot::Dot { .. }));
+    let text = say(f, spot);
+    let short = &s.sha("feature")[..7];
+    assert!(
+        text.starts_with(&format!("{short} f\nBetter Git Test · ")),
+        "{text}"
+    );
+}
+
+/// A back-merge, as gitflow makes one: develop merges main (whose merge
+/// commit M merged develop's older commit P), main fast-forwards to it, and
+/// develop carries on. M's line to P opens a lane that develop's own lane
+/// takes P from, so that lane never holds a commit of its own; it is still
+/// named, never "not loaded yet", and the tab change puts a hover away.
+#[test]
+fn a_merge_line_that_holds_no_commit_is_named_by_the_merged_commit() {
+    use git_core::EdgeKind;
+    use git_gui::graph::{GRAPH_EN_US, GraphSpot, HoverChange, Pointer};
+    let s = sandbox();
+    s.commit("a");
+    s.git(&["switch", "-q", "-c", "develop"]);
+    s.commit("d1");
+    s.commit("P");
+    s.git(&["branch", "hotfix"]);
+    s.git(&["switch", "-q", "main"]);
+    s.commit("m1");
+    s.git(&["merge", "-q", "--no-ff", "-m", "M", "develop"]);
+    s.git(&["switch", "-q", "develop"]);
+    s.commit("C1");
+    s.git(&["merge", "-q", "--no-ff", "-m", "M3", "main"]);
+    s.git(&["switch", "-q", "main"]);
+    s.git(&["merge", "-q", "--ff-only", "develop"]);
+    s.git(&["switch", "-q", "develop"]);
+    s.commit("C2");
+    let mut session = opened(&s);
+    session.set_tab(Tab::Graph);
+    session.run_git_jobs();
+    let check = |session: &GitSession, merged: &str, line: &str| {
+        let view = graph(session);
+        assert!(view.end, "{:?}", session.problem);
+        let m = view.commits.iter().position(|c| c.summary == "M").unwrap();
+        let row = view.rows.rows(m..m + 1).remove(0);
+        let curve = row
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Out && e.column != row.column)
+            .expect("M's line to P");
+        assert!(
+            !view.lanes.has_commits(curve.lane),
+            "the fixture no longer makes a lane without a commit"
+        );
+        let spot = GraphSpot::Merge {
+            from: curve.lane,
+            into: row.lane,
+        };
+        let said = view.describe(m, spot, &GRAPH_EN_US, 0).unwrap();
+        assert!(said.starts_with(merged), "{said}");
+        // The line under M on that lane.
+        let below = m + 1;
+        let line_spot = GraphSpot::Line {
+            lane: curve.lane,
+            into_node: false,
+        };
+        assert_eq!(
+            view.describe(below, line_spot, &GRAPH_EN_US, 0).unwrap(),
+            line
+        );
+    };
+    check(&session, "“hotfix” merged into ", "Line of hotfix");
+    let p = &s.sha("hotfix")[..7];
+    s.git(&["branch", "-q", "-D", "hotfix"]);
+    session.refresh();
+    session.run_git_jobs();
+    check(
+        &session,
+        &format!("{p} “P” merged into "),
+        &format!("Leads to {p} “P”"),
+    );
+    // A hover is put away when the tab changes.
+    let repo = session.repo.as_mut().unwrap();
+    let pointer = Pointer {
+        index: 0,
+        spot: GraphSpot::Dot { lane: 0 },
+        at: (0.0, 0.0),
+        scroll: (0.0, 0.0),
+    };
+    let now = std::time::Instant::now();
+    let HoverChange::Wait(epoch) = repo
+        .graph
+        .hover_pointer(Some(pointer), &GRAPH_EN_US, 0, now)
+    else {
+        panic!("a new hover waits");
+    };
+    assert!(repo.graph.hover_rested(epoch, true));
+    session.set_tab(Tab::History);
+    assert!(graph(&session).hover.current().is_none());
+    assert!(graph(&session).live_hover().is_none());
+}
+
 #[test]
 fn selecting_a_commit_shows_its_files_and_diff() {
     let s = branched();
@@ -691,6 +871,34 @@ fn a_hundred_thousand_commit_graph_shows_its_first_rows_in_under_a_second() {
     let lanes_per_frame = t.elapsed();
     assert_eq!(screen.len(), 30);
     eprintln!("lanes for 30 rows at row 77,777: {lanes_per_frame:?}");
+    // Resting the pointer on every line and dot of that screen, one after
+    // another: what each pointer move to a new line costs the UI thread.
+    let t = Instant::now();
+    let mut said = 0;
+    for (k, row) in screen.iter().enumerate() {
+        let index = 77_777 + k;
+        let spot = git_gui::graph::GraphSpot::Dot { lane: row.lane };
+        said += graph(&session)
+            .describe(index, spot, &git_gui::graph::GRAPH_EN_US, 0)
+            .is_some() as usize;
+        for edge in &row.edges {
+            let spot = git_gui::graph::GraphSpot::Line {
+                lane: edge.lane,
+                into_node: edge.kind == git_core::EdgeKind::In && edge.column == row.column,
+            };
+            let text = graph(&session)
+                .describe(index, spot, &git_gui::graph::GRAPH_EN_US, 0)
+                .unwrap();
+            assert!(
+                text == "Line of main" || text == "Line of feature" || text.starts_with("Leads to"),
+                "{text}"
+            );
+            said += 1;
+        }
+    }
+    let per_hover = t.elapsed() / said as u32;
+    eprintln!("a tooltip's words for one of {said} lines and dots at row 77,777: {per_hover:?}");
+    assert!(per_hover < Duration::from_millis(1), "{per_hover:?}");
     // A commit after the whole history was shown: everything is read again
     // off the window's thread and swapped in on it.
     s.git(&["commit", "-q", "--allow-empty", "-m", "newest"]);

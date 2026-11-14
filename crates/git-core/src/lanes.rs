@@ -25,6 +25,8 @@
 //!   number into a colour of its palette, so a lane keeps one colour for its
 //!   whole life.
 
+use std::collections::HashMap;
+
 /// How one line crosses a row.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EdgeKind {
@@ -450,5 +452,231 @@ impl GraphRows {
     fn ends_of(&self, index: usize) -> &[Edge] {
         let head = self.heads[index - self.base];
         &self.ends[head.start as usize..head.start as usize + head.len as usize]
+    }
+}
+
+/// No row: a lane with no named commit at or above a point.
+const NO_ROW: u32 = u32::MAX;
+
+/// What a commit's labels can name a lane by.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum LaneLabel {
+    /// No label, or only a detached `HEAD`.
+    #[default]
+    None,
+    /// Tags and no branch.
+    Tag,
+    /// A local or remote-tracking branch (and maybe tags too).
+    Branch,
+}
+
+/// The nearest labelled rows at or above a commit on its lane: any label,
+/// and a branch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Nearest {
+    any: u32,
+    branch: u32,
+}
+
+impl Nearest {
+    const NONE: Nearest = Nearest {
+        any: NO_ROW,
+        branch: NO_ROW,
+    };
+}
+
+/// Which commits each lane runs through, and for every commit the nearest
+/// commit at or above it on its lane that carries a branch, or failing that
+/// a tag: what a line in the graph is named after when the pointer rests on
+/// it.
+///
+/// It is built beside [`GraphRows`], from the same rows, off the window's
+/// thread: [`LaneRefs::push`] takes each row with what its commit's labels
+/// can name a lane by, under the graph's filter. Like [`GraphRows`], a page
+/// is laid out as a segment ([`LaneRefs::starting_at`], carrying
+/// [`LaneRefs::carry`] of the page before) and appended. It keeps about 12
+/// bytes a row (two row numbers for the commit, one in its lane's list) and
+/// about 50 to 60 bytes a lane, so a 100,000-commit history costs a little
+/// over a megabyte; a lookup is a binary search in one lane's list.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LaneRefs {
+    base: usize,
+    /// For every row from `base`: the nearest labelled rows at or above it
+    /// on its node's lane.
+    nearest: Vec<Nearest>,
+    /// Every lane's node rows, top to bottom.
+    nodes: HashMap<u32, Vec<u32>>,
+    /// Where a lane ended in another lane's commit (a fork), by row. A lane
+    /// a merge opened can end there without holding a commit of its own.
+    ends: HashMap<u32, u32>,
+    /// The lanes still open after the last row, with the nearest labelled
+    /// rows of their last node: what the next segment carries on from.
+    open: HashMap<u32, (u32, u32)>,
+}
+
+impl LaneRefs {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// An empty segment that carries on after `base` rows, with the open
+    /// lanes `carry` ([`LaneRefs::carry`] of the rows before it).
+    pub fn starting_at(base: usize, carry: HashMap<u32, (u32, u32)>) -> Self {
+        Self {
+            base,
+            open: carry,
+            ..Self::default()
+        }
+    }
+
+    /// What a segment laid out after these rows starts from.
+    pub fn carry(&self) -> &HashMap<u32, (u32, u32)> {
+        &self.open
+    }
+
+    /// How many rows are stored, segments before `base` included.
+    pub fn len(&self) -> usize {
+        self.base + self.nearest.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Adds the next row, as [`LaneLayout::push`] returned it, with what its
+    /// commit's labels can name a lane by.
+    ///
+    /// Expected results:
+    /// - A labelled commit is its own nearest labelled row (and its own
+    ///   nearest branch when one of its labels is a branch); otherwise the
+    ///   commit takes those of the commit above it on its lane, or none.
+    /// - A lane ending in the row (a fork into the node, or a root) is no
+    ///   longer carried; a lane continuing to the first parent is.
+    pub fn push(&mut self, row: &GraphRow, label: LaneLabel) {
+        let at = self.len() as u32;
+        let above = self
+            .open
+            .get(&row.lane)
+            .map_or(Nearest::NONE, |&(any, branch)| Nearest { any, branch });
+        let nearest = Nearest {
+            any: if label == LaneLabel::None {
+                above.any
+            } else {
+                at
+            },
+            branch: if label == LaneLabel::Branch {
+                at
+            } else {
+                above.branch
+            },
+        };
+        self.nearest.push(nearest);
+        self.nodes.entry(row.lane).or_default().push(at);
+        for edge in &row.edges {
+            if edge.kind == EdgeKind::In && edge.lane != row.lane {
+                self.open.remove(&edge.lane);
+                self.ends.insert(edge.lane, at);
+            }
+        }
+        let continues = row
+            .edges
+            .iter()
+            .any(|e| e.kind == EdgeKind::Out && e.column == row.column);
+        if continues {
+            self.open.insert(row.lane, (nearest.any, nearest.branch));
+        } else {
+            self.open.remove(&row.lane);
+        }
+    }
+
+    /// Adds a segment made with [`LaneRefs::starting_at`] for exactly the
+    /// rows after these.
+    pub fn append(&mut self, next: LaneRefs) {
+        debug_assert_eq!(next.base, self.len());
+        if next.base != self.len() {
+            return;
+        }
+        self.nearest.extend(next.nearest);
+        for (lane, rows) in next.nodes {
+            self.nodes.entry(lane).or_default().extend(rows);
+        }
+        self.ends.extend(next.ends);
+        self.open = next.open;
+    }
+
+    fn nearest_of(&self, row: u32) -> Option<Nearest> {
+        let index = (row as usize).checked_sub(self.base)?;
+        self.nearest.get(index).copied()
+    }
+
+    /// The row whose labels name `lane` at `row`: the nearest commit at or
+    /// above `row` on the lane that carries a branch, or failing that the
+    /// nearest that carries a tag. When the lane has no commit above `row`
+    /// (a line a merge opened, running down to its first commit), its
+    /// first commit's own labels name it; a lane that never held a commit
+    /// (it ended in another lane's) is named by the labels of the commit it
+    /// ended in, and only by that commit's own.
+    pub fn named_row(&self, lane: u32, row: usize) -> Option<usize> {
+        self.name_at(lane, row, true)
+    }
+
+    /// Like [`LaneRefs::named_row`] for the line running into the commit at
+    /// `row` from above, which is the edge from the commit above it on the
+    /// lane: the commit at `row` itself does not name it.
+    pub fn named_above(&self, lane: u32, row: usize) -> Option<usize> {
+        self.name_at(lane, row, false)
+    }
+
+    fn name_at(&self, lane: u32, row: usize, inclusive: bool) -> Option<usize> {
+        let found = |nearest: Nearest| {
+            [nearest.branch, nearest.any]
+                .into_iter()
+                .find(|&n| n != NO_ROW)
+                .map(|n| n as usize)
+        };
+        let Some(nodes) = self.nodes.get(&lane).filter(|n| !n.is_empty()) else {
+            // Only the end's own labels: what lies above it on its lane
+            // is another branch's history.
+            let end = *self.ends.get(&lane)?;
+            let own = self.nearest_of(end)?;
+            return found(Nearest {
+                any: if own.any == end { end } else { NO_ROW },
+                branch: if own.branch == end { end } else { NO_ROW },
+            });
+        };
+        let before = nodes.partition_point(|&n| {
+            if inclusive {
+                n as usize <= row
+            } else {
+                (n as usize) < row
+            }
+        });
+        let node = if before > 0 {
+            nodes[before - 1]
+        } else {
+            nodes[0]
+        };
+        found(self.nearest_of(node)?)
+    }
+
+    /// Whether `lane` holds a commit of its own.
+    pub fn has_commits(&self, lane: u32) -> bool {
+        self.nodes.get(&lane).is_some_and(|n| !n.is_empty())
+    }
+
+    /// The first (topmost) commit of `lane`: its tip; for a lane that never
+    /// held a commit, the commit it ended in.
+    pub fn tip(&self, lane: u32) -> Option<usize> {
+        match self.nodes.get(&lane).and_then(|n| n.first()) {
+            Some(&n) => Some(n as usize),
+            None => self.ends.get(&lane).map(|&n| n as usize),
+        }
+    }
+
+    /// The first commit of `lane` at or below `row`.
+    pub fn node_at_or_below(&self, lane: u32, row: usize) -> Option<usize> {
+        let nodes = self.nodes.get(&lane)?;
+        let at = nodes.partition_point(|&n| (n as usize) < row);
+        nodes.get(at).map(|&n| n as usize)
     }
 }
