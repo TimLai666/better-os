@@ -307,7 +307,11 @@ make_package() {
         esac
     done
     if ((${#user_units[@]} > 0)); then
-        write_user_unit_scripts "$staging_dir" "$package_name" "${user_units[*]}"
+        # Sorted bytewise so the list does not depend on the build machine's
+        # locale; verify-deb.sh compares against the same order.
+        local sorted_units
+        sorted_units="$(printf '%s\n' "${user_units[@]}" | LC_ALL=C sort | paste -sd' ' -)"
+        write_user_unit_scripts "$staging_dir" "$package_name" "$sorted_units"
     fi
 
     dpkg-deb --build --root-owner-group "$staging_dir" "$deb_path" >/dev/null
