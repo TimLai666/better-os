@@ -265,7 +265,8 @@ fn ticking_one_hunk_commits_only_that_hunk() {
     let repo = session.repo.as_ref().unwrap();
     assert_eq!(repo.form.summary, "", "the form empties");
     assert_eq!(repo.status.changes.len(), 2, "the rest is still there");
-    assert!(matches!(session.notice, Some(Notice::Done(OpKind::Commit))));
+    // No "done" bar: the emptied form and the list are the confirmation.
+    assert_eq!(session.notice, None);
 }
 
 #[test]
@@ -885,4 +886,410 @@ fn a_stuck_background_fetch_does_not_hold_up_a_commit_and_can_be_stopped() {
         session.problem.is_none(),
         "a background fetch fails quietly"
     );
+}
+
+// --- ticket 103 -----------------------------------------------------------
+
+/// "Amend last commit" right after opening, before the history was ever
+/// read: the form says it is reading, amend stays on, and the message and
+/// co-authors arrive from `git log -1`.
+#[test]
+fn amend_before_the_history_is_read_fills_the_form_from_the_last_commit() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    s.write("b.txt", "b\n");
+    s.git(&["add", "b.txt"]);
+    s.git(&[
+        "commit",
+        "-q",
+        "-m",
+        "second",
+        "-m",
+        "Body\n\nCo-authored-by: Ada <ada@example.invalid>",
+    ]);
+    let mut session = opened(&s);
+    assert!(!session.repo.as_ref().unwrap().history.loaded);
+    let before = session.repo.as_ref().unwrap().form.generation;
+    session.amend_last();
+    let form = &session.repo.as_ref().unwrap().form;
+    assert!(form.amend && form.reading_last, "ticked, and reading");
+    assert_eq!(form.summary, "");
+    session.run_git_jobs();
+    let form = &session.repo.as_ref().unwrap().form;
+    assert!(form.amend && !form.reading_last);
+    assert_eq!(
+        (form.summary.as_str(), form.description.as_str()),
+        ("second", "Body")
+    );
+    assert_eq!(form.co_authors, "Ada <ada@example.invalid>");
+    assert!(
+        form.generation > before,
+        "the window copies it into the fields"
+    );
+    // Unticked while reading: nothing is filled in afterwards.
+    session.stop_amending();
+    session.repo.as_mut().unwrap().form.summary.clear();
+    session.amend_last();
+    session.stop_amending();
+    session.run_git_jobs();
+    assert_eq!(session.repo.as_ref().unwrap().form.summary, "");
+}
+
+/// The same from the History tab's menu and the Repository menu, once the
+/// history has been read: the form fills in the same call.
+#[test]
+fn amend_after_the_history_is_read_fills_the_form_at_once_and_shows_changes() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let mut session = opened(&s);
+    session.set_tab(Tab::History);
+    session.run_git_jobs();
+    session.amend_last();
+    let repo = session.repo.as_ref().unwrap();
+    assert_eq!(repo.tab, Tab::Changes);
+    assert!(repo.form.amend && !repo.form.reading_last);
+    assert_eq!(repo.form.summary, "first");
+}
+
+fn without_identity(s: &Sandbox) -> PathBuf {
+    let config = s.home.join("gitconfig");
+    std::fs::write(&config, "[user]\n\tuseConfigOnly = true\n").unwrap();
+    // SAFETY: the sandbox holds `SERIAL`.
+    unsafe {
+        for key in [
+            "GIT_AUTHOR_NAME",
+            "GIT_COMMITTER_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_EMAIL",
+        ] {
+            std::env::remove_var(key);
+        }
+        std::env::set_var("GIT_CONFIG_GLOBAL", &config);
+    }
+    config
+}
+
+/// With no name or email, committing asks for them instead of showing
+/// Git's refusal; saving writes them to the global settings (here a file in
+/// the temporary home) and the commit goes ahead.
+#[test]
+fn a_commit_without_an_identity_asks_for_one_then_commits() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let config = without_identity(&s);
+    let mut session = opened(&s);
+    s.write("a.txt", "changed\n");
+    session.refresh();
+    session.run_git_jobs();
+    session.repo.as_mut().unwrap().form.summary = "Second".into();
+    session.commit();
+    session.run_git_jobs();
+    assert_eq!(session.dialog, Some(Dialog::Identity));
+    assert!(session.problem.is_none(), "{:?}", session.problem);
+    assert_eq!(s.subjects(), vec!["first"]);
+    // A bad email is refused, and nothing is written.
+    session.save_identity("Ada Lovelace", "not an address");
+    assert_eq!(session.dialog, Some(Dialog::Identity));
+    session.save_identity("Ada Lovelace", "ada@example.com");
+    session.run_git_jobs();
+    assert_eq!(session.dialog, None);
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(written.contains("name = Ada Lovelace"), "{written}");
+    assert!(written.contains("email = ada@example.com"), "{written}");
+    assert_eq!(s.subjects(), vec!["Second", "first"]);
+    assert_eq!(
+        s.git(&["log", "-1", "--format=%an <%ae>"]).trim(),
+        "Ada Lovelace <ada@example.com>"
+    );
+}
+
+/// Creating a repository with no identity asks first and creates it after;
+/// cancelling creates nothing.
+#[test]
+fn a_new_repository_without_an_identity_asks_then_is_created() {
+    let s = sandbox();
+    without_identity(&s);
+    let mut session = GitSession::new(Arc::new(SystemGit), files(&s));
+    let target = s.tmp.path().join("made");
+    let new = || git_platform::NewRepository {
+        path: target.clone(),
+        default_branch: "main".into(),
+        readme: Some("# made\n".into()),
+        gitignore: None,
+        license: None,
+    };
+    session.create_repository(new(), None, None);
+    session.run_git_jobs();
+    assert_eq!(session.dialog, Some(Dialog::Identity));
+    assert!(!target.exists(), "nothing is made before the identity");
+    session.cancel_dialog();
+    assert_eq!(session.identity_pending, None);
+
+    session.create_repository(new(), None, None);
+    session.run_git_jobs();
+    assert_eq!(session.dialog, Some(Dialog::Identity));
+    session.save_identity("Ada", "ada@example.com");
+    session.run_git_jobs();
+    assert!(target.join(".git").is_dir());
+    assert_eq!(
+        git_in(&target, &["log", "-1", "--format=%s %ae"]).trim(),
+        "Initial commit ada@example.com"
+    );
+    assert!(session.repo.is_some(), "it opens: {:?}", session.problem);
+    assert_eq!(session.notice, None, "no done bar");
+}
+
+/// A branch checked out in another worktree opens that worktree instead of
+/// failing in Git, and the repository list learns every repository's
+/// linked worktrees.
+#[test]
+fn worktrees_show_in_the_lists_and_their_branches_open_them() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let one = s.tmp.path().join("wt-one");
+    let two = s.tmp.path().join("wt-two");
+    s.git(&["worktree", "add", "-q", "-b", "one", one.to_str().unwrap()]);
+    s.git(&["worktree", "add", "-q", "-b", "two", two.to_str().unwrap()]);
+    let mut session = opened(&s);
+    let repo = session.repo.as_ref().unwrap();
+    let linked = git_gui::worktree_links::linked_rows(&repo.info.worktrees, Some(&repo.root));
+    assert_eq!(linked.len(), 2);
+    assert_eq!(linked[0].branch.as_deref(), Some("one"));
+    assert_eq!(
+        git_gui::worktree_links::checked_out_elsewhere("two", &repo.info.worktrees, &repo.root),
+        Some(two.canonicalize().unwrap())
+    );
+    assert_eq!(
+        git_gui::worktree_links::checked_out_elsewhere("main", &repo.info.worktrees, &repo.root),
+        None,
+        "the branch checked out here"
+    );
+
+    // The list's other repositories are read in the background.
+    session.read_worktrees();
+    session.run_git_jobs();
+    assert_eq!(session.worktrees_of.len(), 1);
+    assert_eq!(session.worktrees_for(&s.repo).len(), 3);
+
+    session.switch_branch("two");
+    assert!(
+        matches!(&session.dialog, Some(Dialog::Trust { path, .. }) if path.canonicalize().unwrap() == two.canonicalize().unwrap()),
+        "{:?}",
+        session.dialog
+    );
+    session.trust_and_open(two.clone());
+    session.run_git_jobs();
+    let repo = session.repo.as_ref().unwrap();
+    assert_eq!(repo.branch(), Some("two"));
+    assert!(session.problem.is_none(), "{:?}", session.problem);
+}
+
+/// Changes made from outside, with the window untouched: the watch sees a
+/// file created, edited, staged, and deleted, and the refresh it asks for
+/// lists them. Churn in an ignored folder (one that was there when the watch
+/// began, and one made afterwards) and in an ignored file asks for nothing.
+#[test]
+fn changes_made_outside_are_seen_without_a_click_and_ignored_ones_are_not() {
+    use git_gui::live;
+    use std::time::{Duration, Instant};
+
+    let s = sandbox();
+    s.write(".gitignore", "target/\nbuild/\n*.log\n");
+    s.write("target/debug/.keep", "");
+    s.commit_file("a.txt", "a\n", "first");
+    let mut session = opened(&s);
+    let watching =
+        live::start(Arc::new(SystemGit), &session.repo.as_ref().unwrap().root).expect("watch");
+    assert!(
+        watching
+            .plan
+            .folders()
+            .iter()
+            .all(|(folder, _)| !folder.starts_with(s.repo.join("target"))),
+        "an ignored folder gets no watch"
+    );
+
+    // Waits up to `limit` for the watch to report a change and its quiet
+    // time to pass.
+    let wait = |watching: &live::Watching, limit: Duration| {
+        let start = Instant::now();
+        let mut debounce = live::Debounce::default();
+        while start.elapsed() < limit {
+            let now = start.elapsed().as_millis() as u64;
+            if watching.take().changed {
+                debounce.changed(now);
+            }
+            if debounce.due(now) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    };
+    let seen = |watching: &live::Watching| wait(watching, Duration::from_secs(10));
+    let quiet = |watching: &live::Watching| !wait(watching, Duration::from_millis(1500));
+    let listed = |session: &mut GitSession, path: &str| {
+        session.refresh();
+        session.run_git_jobs();
+        session
+            .repo
+            .as_ref()
+            .unwrap()
+            .status
+            .changes
+            .iter()
+            .any(|c| c.path == Path::new(path))
+    };
+
+    std::fs::write(s.repo.join("target/debug/out.o"), "build output").unwrap();
+    std::fs::write(s.repo.join("debug.log"), "a log").unwrap();
+    assert!(
+        quiet(&watching),
+        "churn in target/ and in a log asks for nothing"
+    );
+    std::fs::create_dir_all(s.repo.join("build/obj")).unwrap();
+    std::fs::write(s.repo.join("build/obj/x.o"), "x").unwrap();
+    assert!(quiet(&watching), "a new ignored folder asks for nothing");
+
+    s.write("new.txt", "new\n");
+    assert!(seen(&watching), "a created file is seen");
+    assert!(listed(&mut session, "new.txt"));
+
+    s.write("a.txt", "edited\n");
+    assert!(seen(&watching), "an edit is seen");
+    assert!(listed(&mut session, "a.txt"));
+
+    s.git(&["add", "new.txt"]);
+    assert!(seen(&watching), "staging from a terminal is seen");
+
+    std::fs::remove_file(s.repo.join("new.txt")).unwrap();
+    assert!(seen(&watching), "a delete is seen");
+    s.git(&["reset", "-q", "--", "new.txt"]);
+    assert!(seen(&watching));
+    assert!(!listed(&mut session, "new.txt"));
+}
+
+/// A tracked file whose time is in the future makes `git status` want to
+/// rewrite the index on every run. Better Git watches the index, so a status
+/// that wrote it would start the next refresh, for ever. Its reads take no
+/// optional lock, so the refresh it asks for leaves the index alone.
+#[test]
+fn a_refresh_never_writes_the_index_it_watches() {
+    use git_gui::live;
+    use std::time::{Duration, Instant, SystemTime};
+
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    s.write("a.txt", "b\n");
+    std::fs::File::options()
+        .write(true)
+        .open(s.repo.join("a.txt"))
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(3600))
+        .unwrap();
+    let mut session = opened(&s);
+    let watching =
+        live::start(Arc::new(SystemGit), &session.repo.as_ref().unwrap().root).expect("watch");
+    let index = s.repo.join(".git/index");
+    let before = std::fs::metadata(&index).unwrap().modified().unwrap();
+    for _ in 0..3 {
+        session.refresh();
+        session.run_git_jobs();
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(500) {
+            assert!(
+                !watching.take().changed,
+                "the refresh changed what it watches"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    assert_eq!(
+        std::fs::metadata(&index).unwrap().modified().unwrap(),
+        before
+    );
+}
+
+/// A name Git already has is never replaced: the step writes only the
+/// missing email, whatever the name field held.
+#[test]
+fn the_identity_step_keeps_a_name_git_already_has() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let config = without_identity(&s);
+    std::fs::write(
+        &config,
+        "[user]\n\tuseConfigOnly = true\n\tname = Ada Existing\n",
+    )
+    .unwrap();
+    let mut session = opened(&s);
+    s.write("a.txt", "changed\n");
+    session.refresh();
+    session.run_git_jobs();
+    session.repo.as_mut().unwrap().form.summary = "Second".into();
+    session.commit();
+    session.run_git_jobs();
+    assert_eq!(session.dialog, Some(Dialog::Identity));
+    assert_eq!(
+        session.git_config.get("user.name"),
+        "Ada Existing",
+        "read before it opened"
+    );
+    session.save_identity("Someone Else", "ada@example.com");
+    session.run_git_jobs();
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(written.contains("name = Ada Existing"), "{written}");
+    assert!(!written.contains("Someone Else"), "{written}");
+    assert_eq!(
+        s.git(&["log", "-1", "--format=%an <%ae>"]).trim(),
+        "Ada Existing <ada@example.com>"
+    );
+}
+
+/// A new repository with nothing to commit needs no identity; one asked
+/// for while another repository is opened is not asked about afterwards.
+#[test]
+fn an_empty_new_repository_needs_no_identity() {
+    let s = sandbox();
+    without_identity(&s);
+    let mut session = GitSession::new(Arc::new(SystemGit), files(&s));
+    let target = s.tmp.path().join("bare-start");
+    session.create_repository(
+        git_platform::NewRepository {
+            path: target.clone(),
+            default_branch: "main".into(),
+            readme: None,
+            gitignore: None,
+            license: None,
+        },
+        None,
+        None,
+    );
+    session.run_git_jobs();
+    assert_eq!(session.dialog, None);
+    assert!(target.join(".git").is_dir());
+    assert!(session.repo.is_some(), "{:?}", session.problem);
+}
+
+/// A commit stopped for want of an identity while the person moved on to
+/// another repository asks nothing: the question would be about a commit
+/// that can no longer be made there.
+#[test]
+fn a_stale_identity_question_is_dropped() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    without_identity(&s);
+    let mut session = opened(&s);
+    s.write("a.txt", "changed\n");
+    session.refresh();
+    session.run_git_jobs();
+    session.repo.as_mut().unwrap().form.summary = "Second".into();
+    session.commit();
+    let job = session.next_job().expect("the commit");
+    let outcome = job.run(&SystemGit);
+    session.close_repository();
+    session.apply(outcome);
+    session.run_git_jobs();
+    assert_eq!(session.dialog, None);
+    assert_eq!(session.identity_pending, None);
 }

@@ -1287,3 +1287,210 @@ fn a_status_glyph_is_the_severity_color() {
         assert_eq!(status_glyph_color(Severity::Informational, p), p.accent);
     }
 }
+
+// --- light dismiss and hit areas (ticket 103) --------------------------------
+
+use super::hit_area::{self as hit, RowInset};
+use super::light_dismiss::{Opener, PressAt, press, three_presses};
+
+/// Every kit control with a light-dismiss panel: open with a press, close
+/// with a second press on the same control, open again with a third.
+#[test]
+fn every_light_dismiss_panel_closes_on_a_second_press_of_its_control() {
+    let controls = [
+        ("Flyout", Opener::Shielded),
+        ("ComboBox", Opener::Shielded),
+        ("MenuFlyout", Opener::Shielded),
+        ("SplitButton", Opener::Shielded),
+        ("DropDownButton", Opener::Shielded),
+        ("CommandBar More", Opener::Shielded),
+        ("BreadcrumbBar overflow", Opener::Shielded),
+        ("NavigationView floating pane", Opener::InsidePanel),
+        ("AutoSuggestBox", Opener::Field),
+    ];
+    for (name, opener) in controls {
+        assert_eq!(three_presses(opener), [true, false, true], "{name}");
+    }
+}
+
+#[test]
+fn a_press_outside_closes_the_panel_and_still_reaches_its_target() {
+    assert_eq!(
+        press(true, PressAt::Elsewhere),
+        super::light_dismiss::Press {
+            open: false,
+            reaches_target: true
+        }
+    );
+    // The closing press on the panel's own control is taken by the shield.
+    assert!(!press(true, PressAt::OwnControl).reaches_target);
+    assert!(press(true, PressAt::Panel).open);
+    // A press in a menu opened from the panel, past the panel's edge.
+    assert!(press(true, PressAt::ChildPanel).open);
+    assert!(press(true, PressAt::ChildPanel).reaches_target);
+    assert!(!press(false, PressAt::Elsewhere).open);
+}
+
+/// Every panel the kit closes on `on_mouse_down_out` either floats through
+/// `anchored_panel`, which shields its control, or is the one panel whose
+/// toggle is inside it.
+#[test]
+fn every_panel_that_closes_on_a_press_outside_shields_its_control() {
+    let sources = [
+        ("dialog.rs", include_str!("dialog.rs")),
+        ("menu.rs", include_str!("menu.rs")),
+        ("selection.rs", include_str!("selection.rs")),
+        ("navigation.rs", include_str!("navigation.rs")),
+    ];
+    for (name, source) in sources {
+        assert!(source.contains(".on_mouse_down_out("), "{name}");
+        let shielded = source.contains("anchored_panel(");
+        assert!(
+            shielded || name == "navigation.rs",
+            "{name} closes on a press outside without shielding its control"
+        );
+    }
+    // Every panel that closes on a press outside first asks whether the
+    // press was in a panel opened from it.
+    for (name, source) in sources {
+        assert!(source.contains("pointer_in_child_panel("), "{name}");
+        assert!(source.contains("panel_marker("), "{name}");
+    }
+    // The menu's context form has no control to shield; its flyout form does.
+    assert!(include_str!("menu.rs").contains("light_dismiss::anchored_panel(panel, self.edge)"));
+}
+
+#[test]
+fn a_press_in_the_suggestion_field_closes_the_list_and_the_next_opens_it() {
+    use super::auto_suggest::field_pressed;
+    let value = "git";
+    // Open: the press closes it for this text.
+    let dismissed = field_pressed(true, value, None);
+    assert_eq!(dismissed.as_deref(), Some(value));
+    assert!(!list_open(true, value, dismissed.as_deref()));
+    // Closed by that press: the next one opens it again.
+    let dismissed = field_pressed(false, value, dismissed.as_deref());
+    assert_eq!(dismissed, None);
+    assert!(list_open(true, value, dismissed.as_deref()));
+    // Closed for another text: a press keeps what it remembered.
+    assert_eq!(
+        field_pressed(false, value, Some("gi")).as_deref(),
+        Some("gi")
+    );
+}
+
+#[test]
+fn a_menu_items_highlight_goes_when_the_pointer_leaves_it() {
+    let mut menu = MenuOpen::detached();
+    menu.toggle();
+    menu.pointer_over(2);
+    assert_eq!(menu.highlight, Some(2));
+    menu.pointer_left(2);
+    assert_eq!(menu.highlight, None, "a row left behind looks clickable");
+    // The keyboard moved on while the pointer was still on row 2.
+    menu.pointer_over(2);
+    menu.highlight = Some(3);
+    menu.pointer_left(2);
+    assert_eq!(menu.highlight, Some(3));
+    // An open submenu keeps its row highlighted while the pointer goes to it.
+    menu.highlight = Some(4);
+    menu.submenu = Some(4);
+    menu.pointer_left(4);
+    assert_eq!(menu.highlight, Some(4));
+    menu.pointer_over_sub(1);
+    menu.pointer_left_sub(1);
+    assert_eq!(menu.sub_highlight, None);
+}
+
+/// The kit's rows, each with its inset, drawn height, and where its label
+/// ends and its trailing text starts, pressed at scale 1 and 2.
+#[test]
+fn every_kit_row_takes_a_click_anywhere_it_is_highlighted() {
+    /// A row's name, inset, drawn height, and label-to-trailing gap.
+    type KitRow = (&'static str, RowInset, f32, Option<(f32, f32)>);
+    let rows: [KitRow; 8] = [
+        // Label, then the shortcut 24px after it.
+        ("menu item", RowInset::MENU, 36.0, Some((90.0, 150.0))),
+        ("combo item", RowInset::COMBO, 32.0, None),
+        ("suggestion", RowInset::SUGGESTION, 32.0, None),
+        // Label, then a badge at the trailing edge.
+        (
+            "navigation item",
+            RowInset::NAVIGATION,
+            36.0,
+            Some((120.0, 250.0)),
+        ),
+        ("list row", RowInset::LIST, 36.0, Some((100.0, 200.0))),
+        ("two-line list row", RowInset::LIST, 48.0, None),
+        // Rows that fill their row already: no inset.
+        (
+            "table row",
+            RowInset { x: 0.0, y: 0.0 },
+            36.0,
+            Some((80.0, 200.0)),
+        ),
+        (
+            "settings card",
+            RowInset { x: 0.0, y: 0.0 },
+            68.0,
+            Some((150.0, 250.0)),
+        ),
+    ];
+    for (name, inset, height, gap) in rows {
+        let stack = hit::stack(inset, &[height, height, height], 300.0);
+        for scale in [1.0, 2.0] {
+            if let Err(problem) = hit::check_rows(&stack, gap, scale) {
+                panic!("{name}: {problem}");
+            }
+        }
+    }
+}
+
+/// The old way, margins outside the drawn item, fails the same test: the
+/// pixels between two items belong to no row.
+#[test]
+fn rows_drawn_with_margins_leave_dead_pixels_between_them() {
+    let inset = RowInset::MENU;
+    let looks: Vec<hit::RowGeometry> = hit::stack(inset, &[36.0, 36.0], 300.0)
+        .into_iter()
+        .map(|row| hit::RowGeometry {
+            hit: row.look,
+            look: row.look,
+        })
+        .collect();
+    for scale in [1.0, 2.0] {
+        assert!(hit::check_rows(&looks, None, scale).is_err());
+    }
+}
+
+/// Each row renderer builds its hit area from the inset the test reads.
+#[test]
+fn the_row_renderers_use_their_hit_area_inset() {
+    for (name, source, inset) in [
+        ("menu.rs", include_str!("menu.rs"), "RowInset::MENU"),
+        (
+            "selection.rs",
+            include_str!("selection.rs"),
+            "RowInset::COMBO",
+        ),
+        (
+            "auto_suggest.rs",
+            include_str!("auto_suggest.rs"),
+            "RowInset::SUGGESTION",
+        ),
+        (
+            "navigation.rs",
+            include_str!("navigation.rs"),
+            "RowInset::NAVIGATION",
+        ),
+        ("list.rs", include_str!("list.rs"), "RowInset::LIST"),
+    ] {
+        assert!(source.contains("hit_row("), "{name}");
+        assert!(source.contains(inset), "{name}");
+        // A margin of 2px above and below was the gap between rows.
+        assert!(
+            !source.contains(".my(px(2.0))"),
+            "{name} draws a row with margins again"
+        );
+    }
+}

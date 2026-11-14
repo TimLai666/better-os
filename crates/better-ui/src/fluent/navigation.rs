@@ -42,6 +42,7 @@ use gpui_component::{Icon, IconName};
 
 use super::badge::{Badge, InfoBadge};
 use super::button::{Button, ButtonKind};
+use super::hit_area::{ROW_GROUP, RowInset, hit_row};
 use super::words::Locale;
 use super::{
     BODY, BODY_STRONG, Interaction, Key, Palette, ShownState, keyed_focus, palette, radius,
@@ -326,11 +327,9 @@ fn item_row(
     let pressed_text = p.text_secondary;
     let mut row = text(
         div()
-            .id(ElementId::named_usize("nav-item", index))
+            .id("look")
             .relative()
             .h(px(36.0))
-            .mx(px(4.0))
-            .my(px(2.0))
             .flex()
             .flex_none()
             .items_center()
@@ -395,20 +394,27 @@ fn item_row(
     }
     if forced.is_none() {
         row = row
-            .hover(move |s| s.bg(hover))
-            .active(move |s| s.bg(pressed).text_color(pressed_text));
+            .group_hover(ROW_GROUP, move |s| s.bg(hover))
+            .group_active(ROW_GROUP, move |s| s.bg(pressed).text_color(pressed_text));
     }
+    // The inset item is drawn inside a hit area that fills the pane's width
+    // and meets the next item (`hit_area`): no dead pixel between two.
+    let mut hit = hit_row(
+        ElementId::named_usize("nav-item", index),
+        RowInset::NAVIGATION,
+    );
     if c.compact {
-        row = row.tooltip(super::dialog::tooltip_builder(item.label.clone()));
+        hit = hit.tooltip(super::dialog::tooltip_builder(item.label.clone()));
     }
     if !disabled && let Some(handler) = c.on_select.clone() {
         let focus = c.focus.clone();
-        row = row.on_click(move |_, window, cx| {
+        hit = hit.on_click(move |_, window, cx| {
             focus.focus(window, cx);
             handler(index, window, cx)
         });
     }
-    with_focus_ring(row, ring, radius::SM, p).into_any_element()
+    hit.child(with_focus_ring(row, ring, radius::SM, p))
+        .into_any_element()
 }
 
 fn divider(p: &Palette) -> AnyElement {
@@ -573,8 +579,16 @@ impl RenderOnce for NavigationView {
                 .border_color(p.flyout_stroke)
                 .rounded_r(radius::MD)
                 .shadow_lg();
+            // The search box's suggestions float past the pane's edge; a
+            // press in them is not a press outside (`light_dismiss`).
+            let order = super::light_dismiss::PanelOrder::default();
+            pane = pane.child(super::light_dismiss::panel_marker(&order));
             if let Some(toggle) = self.on_toggle.clone() {
-                pane = pane.on_mouse_down_out(move |_, window, cx| toggle(true, window, cx));
+                pane = pane.on_mouse_down_out(move |_, window, cx| {
+                    if !super::light_dismiss::pointer_in_child_panel(&order, window, cx) {
+                        toggle(true, window, cx)
+                    }
+                });
             }
         }
         let pane_focus = focus.clone();

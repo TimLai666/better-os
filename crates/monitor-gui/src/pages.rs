@@ -786,7 +786,9 @@ impl MonitorApp {
             None,
         ));
 
-        let mut list = div().flex().flex_col().gap(px(2.0));
+        // Rows 2px apart, the 2px inside each row's hit area (ticket 103), so
+        // a press between two tiles still lands on one.
+        let mut list = div().flex().flex_col();
         for (index, (resource, title, value, chart)) in tiles.into_iter().enumerate() {
             let selected = resource == self.resource;
             let fill = better_ui::fluent::list::row_fill(selected, Interaction::Rest, p);
@@ -818,8 +820,8 @@ impl MonitorApp {
                     .border_1()
                     .border_color(p.card_stroke),
             };
-            let mut tile = div()
-                .id(ElementId::named_usize("resource-tile", index))
+            let look = div()
+                .id("look")
                 .relative()
                 .flex()
                 .items_center()
@@ -827,13 +829,8 @@ impl MonitorApp {
                 .px(spacing::MD)
                 .py(spacing::SM)
                 .rounded(radius::SM)
-                .bg(fill)
-                .hover(move |s| s.bg(hover))
-                .active(move |s| s.bg(pressed))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.resource = target.clone();
-                    cx.notify();
-                }))
+                .bg(fill);
+            let mut tile = better_ui::fluent::hit_area::group_look(look, hover, pressed)
                 .child(thumbnail)
                 .child(
                     div()
@@ -855,7 +852,17 @@ impl MonitorApp {
                         .child(better_ui::fluent::list::selection_bar(p, false)),
                 );
             }
-            list = list.child(tile);
+            list = list.child(
+                better_ui::fluent::hit_area::hit_row(
+                    ElementId::named_usize("resource-tile", index),
+                    better_ui::fluent::hit_area::RowInset::LIST,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.resource = target.clone();
+                    cx.notify();
+                }))
+                .child(tile),
+            );
         }
         list.into_any_element()
     }

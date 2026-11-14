@@ -119,6 +119,27 @@ impl RenderOnce for BreadcrumbBar {
             .chain(shown.iter().map(|&i| Some(i)))
             .collect();
 
+        // The overflow menu hangs from the `…` item alone, so while it is open
+        // only that item is covered (`light_dismiss`), not the whole bar.
+        let mut overflow = menu_open.then(|| {
+            let entries = hidden
+                .iter()
+                .map(|&index| {
+                    let handler = self.on_click.clone();
+                    MenuItem::new(self.items[index].clone())
+                        .on_select(move |window, cx| {
+                            if let Some(handler) = handler.as_ref() {
+                                handler(index, window, cx);
+                            }
+                        })
+                        .entry()
+                })
+                .collect::<Vec<MenuEntry>>();
+            MenuFlyout::new(super::child_id(&self.id, "flyout"), entries)
+                .state(menu.clone())
+                .return_focus(focus.clone())
+        });
+
         let count_last = positions.len().checked_sub(1);
         let mut bar = text(
             div().id(self.id.clone()).flex().items_center().flex_wrap(),
@@ -158,8 +179,9 @@ impl RenderOnce for BreadcrumbBar {
                     }
                     None => {
                         let menu = menu.clone();
-                        item =
-                            item.on_click(move |_, window, cx| open_menu(&menu, None, window, cx));
+                        item = item
+                            .on_click(move |_, window, cx| open_menu(&menu, None, window, cx))
+                            .children(overflow.take());
                     }
                 }
             }
@@ -174,25 +196,6 @@ impl RenderOnce for BreadcrumbBar {
             }
             bar = bar.child(item);
         }
-
-        let overflow = menu_open.then(|| {
-            let entries = hidden
-                .iter()
-                .map(|&index| {
-                    let handler = self.on_click.clone();
-                    MenuItem::new(self.items[index].clone())
-                        .on_select(move |window, cx| {
-                            if let Some(handler) = handler.as_ref() {
-                                handler(index, window, cx);
-                            }
-                        })
-                        .entry()
-                })
-                .collect::<Vec<MenuEntry>>();
-            MenuFlyout::new(super::child_id(&self.id, "flyout"), entries)
-                .state(menu.clone())
-                .return_focus(focus.clone())
-        });
 
         let handler = self.on_click.clone();
         let count = positions.len();
@@ -231,6 +234,6 @@ impl RenderOnce for BreadcrumbBar {
                     _ => {}
                 }
             });
-        div().relative().child(bar).children(overflow)
+        div().relative().child(bar)
     }
 }

@@ -1,5 +1,6 @@
 //! Toolbar, tab strip, and sidebar.
 
+use better_ui::fluent::tabs::{Tab as FluentTab, TabView};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
@@ -354,68 +355,69 @@ impl FilesApp {
             .collect();
         let can_restore = self.session.tabs().can_restore();
 
+        // Closable document tabs are the kit's tab view (ticket 103), not a
+        // row of buttons.
+        let ids: Vec<files_core::TabId> = tabs.iter().map(|(id, _)| *id).collect();
+        let selected = ids.iter().position(|id| *id == active);
+        let view = cx.entity().downgrade();
+        let select_view = view.clone();
+        let select_ids = ids.clone();
+        let close_view = view.clone();
+        let close_ids = ids;
+        let strip = TabView::new(
+            "file-tabs",
+            tabs.into_iter()
+                .map(|(_, title)| FluentTab::new(title))
+                .collect(),
+            selected,
+        )
+        .tooltips(c.close_tab, c.new_tab)
+        .on_select(move |index, _, cx| {
+            if let Some(id) = select_ids.get(index).copied() {
+                let _ = select_view.update(cx, |this, cx| {
+                    this.session.activate_tab(id);
+                    cx.notify();
+                });
+            }
+        })
+        .on_close(move |index, _, cx| {
+            if let Some(id) = close_ids.get(index).copied() {
+                let _ = close_view.update(cx, |this, cx| {
+                    this.session.close_tab(id);
+                    cx.notify();
+                });
+            }
+        })
+        .on_add(move |_, cx| {
+            let _ = view.update(cx, |this, cx| {
+                let location = this.session.home_location();
+                this.session.open_tab(location, true);
+                cx.notify();
+            });
+        });
+
         h_flex()
             .w_full()
-            .px_3()
-            .py_1()
-            .gap_1()
-            .items_center()
-            .flex_wrap()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .children(tabs.into_iter().map(|(id, title)| {
-                let is_active = id == active;
-                h_flex()
-                    .id(SharedString::from(format!("tab-{}", id.value())))
-                    .gap_1()
-                    .px_2()
-                    .py_1()
-                    .rounded(cx.theme().radius)
-                    .when(is_active, |row| row.bg(cx.theme().accent))
-                    .child(div().text_sm().truncate().max_w(px(180.0)).child(title))
-                    .child(
-                        Button::new(SharedString::from(format!("tab-close-{}", id.value())))
-                            .icon(IconName::Close)
-                            .tooltip(c.close_tab)
-                            .xsmall()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.session.close_tab(id);
-                                cx.notify();
-                            })),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.session.activate_tab(id);
-                        cx.notify();
-                    }))
-                    // Middle-click closes, the same as every other tab strip.
-                    .on_mouse_down(
-                        MouseButton::Middle,
-                        cx.listener(move |this, _, _, cx| {
-                            this.session.close_tab(id);
-                            cx.notify();
-                        }),
-                    )
-            }))
-            .child(
-                Button::new("tab-new")
-                    .icon(IconName::Plus)
-                    .tooltip(c.new_tab)
-                    .xsmall()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let location = this.session.home_location();
-                        this.session.open_tab(location, true);
-                        cx.notify();
-                    })),
-            )
-            .when(can_restore, |strip| {
-                strip.child(
-                    Button::new("tab-restore")
-                        .label(c.reopen_closed_tab)
-                        .xsmall()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.session.restore_tab();
-                            cx.notify();
-                        })),
+            .items_end()
+            .child(div().flex_1().min_w_0().overflow_x_hidden().child(strip))
+            .when(can_restore, |row| {
+                row.child(
+                    div()
+                        .h(px(40.0))
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            Button::new("tab-restore")
+                                .label(c.reopen_closed_tab)
+                                .xsmall()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.session.restore_tab();
+                                    cx.notify();
+                                })),
+                        ),
                 )
             })
             .into_any_element()

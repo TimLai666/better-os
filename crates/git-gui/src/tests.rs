@@ -777,12 +777,7 @@ fn sign_in_polls_stores_the_token_and_reads_the_repository() {
     let account = session.github.account.clone().expect("signed in");
     assert_eq!(account.login, "octo");
     assert_eq!(session.github.sign_in, SignIn::Idle);
-    assert!(
-        matches!(
-            session.notice,
-            Some(Notice::SignedIn(_)) | Some(Notice::Done(_))
-        ) || session.notice.is_none()
-    );
+    assert!(matches!(session.notice, Some(Notice::SignedIn(_))) || session.notice.is_none());
     assert!(
         matches!(session.keyring_changes.last(), Some(KeyringChange::Store(a)) if a.login == "octo" && a.token.refresh_token.as_deref() == Some("ghr_1"))
     );
@@ -913,4 +908,604 @@ fn notification_text_is_never_read_as_markup() {
         crate::notifications::plain_text("<a href=\"x\">Fix</a> & <img src=y>\u{7}"),
         "&lt;a href=\"x\"&gt;Fix&lt;/a&gt; &amp; &lt;img src=y&gt;"
     );
+}
+
+// --- ticket 103: dialogs say why, identity, toasts, shortcuts, worktrees,
+// and live changes ---------------------------------------------------------
+
+use crate::dialog_check::{Blocked as DialogBlocked, Folder, check};
+
+fn new_repository() -> Dialog {
+    Dialog::NewRepository {
+        gitignore: None,
+        license: None,
+        readme: true,
+    }
+}
+
+fn three(a: &str, b: &str) -> Vec<String> {
+    vec![a.to_string(), b.to_string(), String::new()]
+}
+
+/// "Create" with an empty name, a name that is already a repository, and a
+/// folder that already has files: each has its reason, under the field it
+/// is about, and the button is off.
+#[test]
+fn a_new_repository_says_why_it_cannot_be_created() {
+    let free = |_: &Path| Folder::Free;
+    let dialog = new_repository();
+    assert_eq!(
+        check(&dialog, &three("", "/home/ada/Projects"), &[], &[], &free),
+        Some(DialogBlocked {
+            reason: Invalid::Empty,
+            field: Some(0)
+        })
+    );
+    assert_eq!(
+        check(&dialog, &three("site", "Projects"), &[], &[], &free),
+        Some(DialogBlocked {
+            reason: Invalid::NotAbsolute,
+            field: Some(1)
+        })
+    );
+    let looked = Mutex::new(Vec::new());
+    let repository = |path: &Path| {
+        looked.lock().unwrap().push(path.to_path_buf());
+        Folder::Repository
+    };
+    assert_eq!(
+        check(
+            &dialog,
+            &three("my site", "/home/ada/Projects"),
+            &[],
+            &[],
+            &repository
+        ),
+        Some(DialogBlocked {
+            reason: Invalid::AlreadyRepository,
+            field: Some(0)
+        })
+    );
+    assert_eq!(
+        looked.lock().unwrap().as_slice(),
+        [PathBuf::from("/home/ada/Projects/my-site")],
+        "the folder the repository would be made in, by its cleaned name"
+    );
+    let has_files = |_: &Path| Folder::HasFiles;
+    assert_eq!(
+        check(
+            &dialog,
+            &three("site", "/home/ada/Projects"),
+            &[],
+            &[],
+            &has_files
+        )
+        .map(|b| b.reason),
+        Some(Invalid::NotEmpty)
+    );
+    let file = |_: &Path| Folder::NotAFolder;
+    assert_eq!(
+        check(
+            &dialog,
+            &three("site", "/home/ada/Projects"),
+            &[],
+            &[],
+            &file
+        )
+        .map(|b| b.reason),
+        Some(Invalid::NotAFolder)
+    );
+    assert_eq!(
+        check(
+            &dialog,
+            &three("site", "/home/ada/Projects"),
+            &[],
+            &[],
+            &free
+        ),
+        None
+    );
+}
+
+#[test]
+fn the_disk_tells_a_free_folder_from_a_repository_or_files() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path();
+    assert_eq!(
+        crate::dialog_check::folder(&path.join("missing")),
+        Folder::Free
+    );
+    std::fs::create_dir(path.join("empty")).unwrap();
+    assert_eq!(
+        crate::dialog_check::folder(&path.join("empty")),
+        Folder::Free
+    );
+    std::fs::create_dir_all(path.join("full")).unwrap();
+    std::fs::write(path.join("full/notes.txt"), "x").unwrap();
+    assert_eq!(
+        crate::dialog_check::folder(&path.join("full")),
+        Folder::HasFiles
+    );
+    std::fs::create_dir_all(path.join("repo/.git")).unwrap();
+    assert_eq!(
+        crate::dialog_check::folder(&path.join("repo")),
+        Folder::Repository
+    );
+    assert_eq!(
+        crate::dialog_check::folder(&path.join("full/notes.txt")),
+        Folder::NotAFolder
+    );
+}
+
+/// Every reason is under the field it is about, so the person sees it
+/// where they are typing.
+#[test]
+fn each_dialog_reason_belongs_to_its_field() {
+    let free = |_: &Path| Folder::Free;
+    let worktree = Dialog::AddWorktree { create: true };
+    assert_eq!(
+        check(&worktree, &three("relative", "x"), &[], &[], &free).and_then(|b| b.field),
+        Some(0)
+    );
+    assert_eq!(
+        check(&worktree, &three("/abs/wt", ""), &[], &[], &free).and_then(|b| b.field),
+        Some(1)
+    );
+    let clone = Dialog::Clone {
+        tab: crate::dialogs::CloneTab::GitHub,
+        selected: None,
+    };
+    assert_eq!(
+        check(&clone, &three("", "/abs"), &[], &[], &free),
+        Some(DialogBlocked {
+            reason: Invalid::NoSelection,
+            field: None
+        }),
+        "nothing chosen in the list is about the dialog, not a field"
+    );
+    assert_eq!(
+        check(
+            &Dialog::Squash { from: 0, to: 1 },
+            &three("", ""),
+            &[],
+            &[],
+            &free
+        )
+        .and_then(|b| b.field),
+        Some(2)
+    );
+    assert_eq!(
+        check(&Dialog::Identity, &three("", "a@b.c"), &[], &[], &free),
+        Some(DialogBlocked {
+            reason: Invalid::Empty,
+            field: Some(0)
+        })
+    );
+    assert_eq!(
+        check(&Dialog::Identity, &three("Ada", "ada"), &[], &[], &free),
+        Some(DialogBlocked {
+            reason: Invalid::NotAnEmail,
+            field: Some(1)
+        })
+    );
+    assert_eq!(
+        check(
+            &Dialog::Identity,
+            &three("Ada", "ada@example.com"),
+            &[],
+            &[],
+            &free
+        ),
+        None
+    );
+}
+
+#[test]
+fn every_dialog_reason_has_words_in_both_languages() {
+    for reason in [
+        Invalid::Empty,
+        Invalid::BranchExists,
+        Invalid::BranchReserved,
+        Invalid::TagExists,
+        Invalid::TagTooLong,
+        Invalid::NotAbsolute,
+        Invalid::NoSelection,
+        Invalid::AlreadyRepository,
+        Invalid::NotEmpty,
+        Invalid::NotAFolder,
+        Invalid::NotAnEmail,
+    ] {
+        let en = EN_US.invalid_message(reason);
+        let zh = ZH_TW.invalid_message(reason);
+        assert!(!en.is_empty() && !zh.is_empty() && en != zh, "{reason:?}");
+    }
+}
+
+#[test]
+fn the_identity_step_never_tells_the_person_to_type_a_command() {
+    for copy in [&EN_US, &ZH_TW] {
+        for text in [
+            copy.identity_title(),
+            copy.identity_body(),
+            copy.identity_writes(),
+            copy.identity_email_hint(),
+        ] {
+            assert!(!text.contains("git config"), "{text}");
+            assert!(!text.is_empty());
+        }
+    }
+}
+
+#[test]
+fn git_refusing_for_want_of_a_name_is_an_identity_error() {
+    let refusal = |message: &str| GitError::Failed {
+        exit_code: Some(128),
+        message: message.to_string(),
+    };
+    assert!(crate::identity::is_identity_error(&refusal(
+        "Author identity unknown\n\n*** Please tell me who you are.\n\nRun\n\n  git config --global user.email \"you@example.com\"\n\nfatal: unable to auto-detect email address (got 'tim@host.(none)')"
+    )));
+    assert!(crate::identity::is_identity_error(&refusal(
+        "fatal: no email was given and auto-detection is disabled"
+    )));
+    assert!(crate::identity::is_identity_error(&refusal(
+        "fatal: empty ident name (for <a@b>) not allowed"
+    )));
+    assert!(!crate::identity::is_identity_error(&refusal(
+        "error: pathspec 'x' did not match any file(s) known to git"
+    )));
+    assert!(!crate::identity::is_identity_error(&GitError::NotInstalled));
+    assert!(crate::identity::known(Ok(true)));
+    assert!(!crate::identity::known(Ok(false)));
+    assert!(
+        crate::identity::known(Err(GitError::Unsupported("identity_known"))),
+        "a check that cannot run leaves the answer to Git"
+    );
+}
+
+#[test]
+fn the_identity_step_is_prefilled_from_git_then_the_github_account() {
+    use crate::identity::{Draft, prefill};
+    let user = github_api::User {
+        login: "octo".into(),
+        name: Some("Octo Cat".into()),
+        email: Some("octo@example.com".into()),
+    };
+    let github = Host::github();
+    assert_eq!(
+        prefill("", "", Some((&github, &user))),
+        Draft {
+            name: "Octo Cat".into(),
+            email: "octo@example.com".into()
+        }
+    );
+    let private = github_api::User {
+        login: "octo".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        prefill("", "", Some((&github, &private))),
+        Draft {
+            name: "octo".into(),
+            email: "octo@users.noreply.github.com".into()
+        },
+        "a hidden email becomes the private no-reply address"
+    );
+    let enterprise = Host::enterprise("git.example.com").unwrap();
+    assert_eq!(
+        prefill("", "", Some((&enterprise, &private))).email,
+        "octo@users.noreply.git.example.com"
+    );
+    assert_eq!(
+        prefill("Ada", "", Some((&github, &user))),
+        Draft {
+            name: "Ada".into(),
+            email: "octo@example.com".into()
+        },
+        "what Git already has wins"
+    );
+    assert_eq!(prefill("", "", None), Draft::default());
+}
+
+#[test]
+fn the_identity_step_checks_and_writes_two_settings() {
+    use crate::identity::{Problem as IdentityProblem, check as identity_check, writes};
+    assert_eq!(identity_check(" ", "a@b.c"), Some(IdentityProblem::NoName));
+    assert_eq!(identity_check("Ada", ""), Some(IdentityProblem::NoEmail));
+    for bad in [
+        "ada",
+        "@example.com",
+        "ada@",
+        "ada @example.com",
+        "a@b@c",
+        "<a@b>",
+    ] {
+        assert_eq!(
+            identity_check("Ada", bad),
+            Some(IdentityProblem::NotAnEmail),
+            "{bad}"
+        );
+    }
+    assert_eq!(identity_check("Ada", "ada@example.com"), None);
+    assert_eq!(IdentityProblem::NoName.field(), 0);
+    assert_eq!(IdentityProblem::NotAnEmail.field(), 1);
+    assert_eq!(
+        writes(" Ada ", " ada@example.com "),
+        vec![
+            ("user.name".to_string(), "Ada".to_string()),
+            ("user.email".to_string(), "ada@example.com".to_string())
+        ]
+    );
+}
+
+/// A toast hides itself about six seconds after it appears, never while the
+/// pointer is on it, and counts again from when the pointer leaves.
+#[test]
+fn a_toast_hides_itself_unless_the_pointer_is_on_it() {
+    use crate::toast::{SHOWN_FOR_MS, ToastClock};
+    let notice = Notice::Forked {
+        name: "ada/site".into(),
+    };
+    let mut clock = ToastClock::default();
+    clock.observe(None, 0);
+    assert!(!clock.expired(100_000), "nothing to hide");
+    clock.observe(Some(&notice), 1_000);
+    assert!(!clock.expired(1_000 + SHOWN_FOR_MS - 1));
+    assert!(clock.expired(1_000 + SHOWN_FOR_MS));
+    clock.hovered(true, 3_000);
+    assert!(
+        !clock.expired(60_000),
+        "it stays while the pointer is on it"
+    );
+    clock.hovered(false, 60_000);
+    assert!(!clock.expired(60_000 + SHOWN_FOR_MS - 1));
+    assert!(clock.expired(60_000 + SHOWN_FOR_MS));
+    // The same notice seen again does not restart it; a new one does.
+    clock.observe(Some(&notice), 70_000);
+    assert!(clock.expired(70_000));
+    let next = Notice::ChecksRerun(2);
+    clock.observe(Some(&next), 70_000);
+    assert!(!clock.expired(70_001));
+}
+
+#[test]
+fn a_toast_keeps_the_link_of_what_it_announces() {
+    use crate::toast::link;
+    assert_eq!(
+        link(&Notice::PullCreated {
+            number: 7,
+            url: "https://github.com/a/b/pull/7".into()
+        })
+        .as_deref(),
+        Some("https://github.com/a/b/pull/7")
+    );
+    assert_eq!(link(&Notice::ChecksRerun(1)), None);
+    assert_eq!(link(&Notice::WatchFallback), None);
+}
+
+/// No operation the window already shows has a "done" notice: the variant
+/// is gone, and every notice left carries something the window does not
+/// show by itself.
+#[test]
+fn every_notice_left_has_words_and_none_says_done() {
+    for copy in [&EN_US, &ZH_TW] {
+        for notice in [
+            Notice::PullCreated {
+                number: 1,
+                url: "u".into(),
+            },
+            Notice::IssueCreated {
+                number: 1,
+                url: "u".into(),
+            },
+            Notice::Published { url: "u".into() },
+            Notice::Forked { name: "n".into() },
+            Notice::ChecksRerun(1),
+            Notice::SignedIn("octo".into()),
+            Notice::StashWaiting("stash@{0}".into()),
+            Notice::WatchFallback,
+        ] {
+            let text = copy.notice(&notice);
+            assert!(!text.is_empty());
+            assert!(!text.contains("done") && !text.contains("完成"), "{text}");
+        }
+    }
+}
+
+#[test]
+fn the_toolbar_shortcuts_are_always_there_and_github_only_when_hosted() {
+    use crate::shortcuts::{Shortcut, compact, editor_name, shown};
+    assert_eq!(
+        shown(false),
+        vec![Shortcut::Editor, Shortcut::Files, Shortcut::Terminal]
+    );
+    assert_eq!(shown(true).last(), Some(&Shortcut::GitHub));
+    // Each is the menu's action, so its shortcut is the menu's.
+    assert_eq!(
+        crate::keys::label(Shortcut::Editor.action()),
+        "Ctrl+Shift+A"
+    );
+    assert_eq!(crate::keys::label(Shortcut::Files.action()), "Ctrl+Shift+F");
+    assert_eq!(crate::keys::label(Shortcut::Terminal.action()), "Ctrl+`");
+    assert_eq!(
+        crate::keys::label(Shortcut::GitHub.action()),
+        "Ctrl+Shift+G"
+    );
+    // Short names fit with labels in a wide window; the review's case, a
+    // long editor and long repository and branch names at 1210px, does not.
+    let short = vec![
+        "Open in Zed".to_string(),
+        "Show in Better Files".to_string(),
+        "Open in Terminal".to_string(),
+    ];
+    assert!(!compact(
+        1600.0,
+        [("Current repository", "site"), ("Current branch", "main")],
+        &short,
+        false
+    ));
+    let long = vec![
+        "Open in Visual Studio Code".to_string(),
+        "Show in Better Files".to_string(),
+        "Open in Terminal".to_string(),
+        "View on GitHub".to_string(),
+    ];
+    assert!(compact(
+        1210.0,
+        [
+            ("Current repository", "a-repository-with-a-long-name"),
+            ("Current branch", "feature/a-branch-with-a-long-name")
+        ],
+        &long,
+        false
+    ));
+    assert!(compact(
+        1270.0,
+        [("Current repository", "site"), ("Current branch", "main")],
+        &long,
+        true
+    ));
+    // Chinese labels are wider per character.
+    assert!(
+        crate::shortcuts::text_width("在終端機開啟") > crate::shortcuts::text_width("Terminal")
+    );
+    assert_eq!(crate::shortcuts::item_width("", ""), 200.0);
+    assert_eq!(crate::shortcuts::item_width("", &"x".repeat(80)), 300.0);
+    let none = |_: &str| false;
+    assert_eq!(
+        editor_name("gnome-text-editor", none).as_deref(),
+        Some("GNOME Text Editor")
+    );
+    assert_eq!(
+        editor_name("code --wait", none).as_deref(),
+        Some("Visual Studio Code")
+    );
+    assert_eq!(
+        editor_name("/opt/bin/helix", none).as_deref(),
+        Some("helix")
+    );
+    assert_eq!(
+        editor_name("", |p| p == "zed").as_deref(),
+        Some("Zed"),
+        "the first editor found when none is set"
+    );
+    assert_eq!(editor_name("", |p| p == "xdg-open"), None);
+    assert_eq!(editor_name("", none), None);
+}
+
+fn worktree(path: &str, branch: Option<&str>, main: bool) -> git_core::Worktree {
+    git_core::Worktree {
+        path: PathBuf::from(path),
+        head: Some("abc".into()),
+        branch: branch.map(str::to_string),
+        bare: false,
+        detached: branch.is_none(),
+        locked: false,
+        prunable: false,
+        main,
+    }
+}
+
+#[test]
+fn linked_worktrees_are_listed_under_their_repository_and_mark_their_branches() {
+    use crate::worktree_links::{checked_out_elsewhere, linked_rows};
+    let list = vec![
+        worktree("/r/main", Some("main"), true),
+        worktree("/r/one", Some("one"), false),
+        worktree("/r/loose", None, false),
+    ];
+    let rows = linked_rows(&list, Some(Path::new("/r/one")));
+    assert_eq!(rows.len(), 2, "the main worktree is the repository itself");
+    assert!(rows[0].current && rows[0].branch.as_deref() == Some("one"));
+    assert_eq!(rows[1].branch, None);
+    assert_eq!(
+        checked_out_elsewhere("one", &list, Path::new("/r/main")),
+        Some(PathBuf::from("/r/one"))
+    );
+    assert_eq!(
+        checked_out_elsewhere("one", &list, Path::new("/r/one")),
+        None
+    );
+    assert_eq!(
+        checked_out_elsewhere("other", &list, Path::new("/r/main")),
+        None
+    );
+}
+
+#[test]
+fn only_changes_the_window_shows_ask_for_a_refresh() {
+    use crate::live::WatchPlan;
+    let plan = WatchPlan::new(
+        Path::new("/r"),
+        PathBuf::from("/r/.git"),
+        PathBuf::from("/r/.git"),
+        &[PathBuf::from("node_modules"), PathBuf::from("build/out")],
+    );
+    for path in [
+        "/r/src/main.rs",
+        "/r/README.md",
+        "/r/.git/HEAD",
+        "/r/.git/index",
+        "/r/.git/MERGE_HEAD",
+        "/r/.git/refs/heads/feature/x",
+        "/r/.git/packed-refs",
+        "/r/.git/rebase-merge/done",
+    ] {
+        assert!(plan.matters(Path::new(path)), "{path}");
+    }
+    for path in [
+        "/r/node_modules/pkg/index.js",
+        "/r/build/out/a.o",
+        "/r/.git/index.lock",
+        "/r/.git/objects/ab/cdef",
+        "/r/.git/logs/HEAD",
+        "/r/.git/FETCH_HEAD",
+        "/r/vendor/lib/.git/HEAD",
+        "/elsewhere/file",
+    ] {
+        assert!(!plan.matters(Path::new(path)), "{path}");
+    }
+    // A linked worktree: its own git directory, and the shared refs.
+    let linked = WatchPlan::new(
+        Path::new("/w"),
+        PathBuf::from("/r/.git/worktrees/w"),
+        PathBuf::from("/r/.git"),
+        &[],
+    );
+    assert!(linked.matters(Path::new("/r/.git/worktrees/w/HEAD")));
+    assert!(linked.matters(Path::new("/r/.git/refs/heads/main")));
+    assert!(!linked.matters(Path::new("/w/.git")), "the pointer file");
+}
+
+#[test]
+fn a_refresh_waits_for_quiet_but_not_forever() {
+    use crate::live::{Debounce, MAX_WAIT_MS, QUIET_MS};
+    let mut debounce = Debounce::default();
+    assert!(!debounce.due(10_000), "nothing changed");
+    debounce.changed(0);
+    assert!(!debounce.due(QUIET_MS - 1));
+    assert!(debounce.due(QUIET_MS));
+    assert!(!debounce.due(QUIET_MS + 1), "once");
+    // Changes every 100 ms: the refresh still comes after a second.
+    let mut now = 0;
+    while now < MAX_WAIT_MS {
+        debounce.changed(now);
+        assert!(!debounce.due(now));
+        now += 100;
+    }
+    debounce.changed(now);
+    assert!(debounce.due(now));
+}
+
+#[test]
+fn a_window_that_cannot_watch_refreshes_every_three_seconds() {
+    use crate::live::{Live, POLL_MS};
+    let mut live = Live {
+        polling: true,
+        last_poll: 0,
+        ..Default::default()
+    };
+    assert_eq!(live.tick(POLL_MS - 1), (false, false));
+    assert_eq!(live.tick(POLL_MS), (true, false));
+    assert_eq!(live.tick(POLL_MS + 10), (false, false));
 }

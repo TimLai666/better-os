@@ -31,8 +31,10 @@ pub mod chart;
 pub mod chrome;
 pub mod command_bar;
 pub mod dialog;
+pub mod hit_area;
 pub mod hyperlink;
 pub mod info_bar;
+pub mod light_dismiss;
 pub mod list;
 pub mod menu;
 pub mod navigation;
@@ -44,6 +46,8 @@ pub mod text_box;
 pub mod theme;
 pub mod toggle;
 
+#[cfg(test)]
+mod interaction_tests;
 #[cfg(test)]
 mod tests;
 

@@ -23,13 +23,15 @@ use std::rc::Rc;
 
 use gpui::{
     App, Bounds, ElementId, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, anchored, canvas,
-    deferred, div, prelude::FluentBuilder as _, px, relative,
+    Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{Icon, IconName};
 
 use super::ValueHandler;
 use super::button::{self, ButtonKind};
+use super::hit_area::{RowInset, group_look, hit_row};
+use super::light_dismiss::{self, PanelEdge};
 use super::menu::panel_frame;
 use super::{
     BODY, Interaction, Key, Palette, ShownState, keyed_focus, paint, palette, radius, resolve,
@@ -218,12 +220,10 @@ fn combo_list(
         };
         let hover = p.subtle_fill;
         let pressed = p.subtle_fill_tertiary;
-        let mut row = text(
+        let mut look = text(
             div()
-                .id(ElementId::named_usize("combo-item", index))
+                .id("look")
                 .relative()
-                .mx(px(5.0))
-                .my(px(2.0))
                 .pt(px(5.0))
                 .pb(px(7.0))
                 .px(px(11.0))
@@ -235,7 +235,7 @@ fn combo_list(
         )
         .child(item.label.clone());
         if is_selected {
-            row = row.child(
+            look = look.child(
                 div()
                     .absolute()
                     .left_0()
@@ -246,21 +246,22 @@ fn combo_list(
                     .bg(p.accent),
             );
         }
+        // The inset item is drawn inside a hit area that fills the row
+        // (`hit_area`), so no pixel between two items is dead.
+        let mut row = hit_row(ElementId::named_usize("combo-item", index), RowInset::COMBO);
         if !item.disabled
             && let Some((state, handler, focus)) = interactive.clone()
         {
-            row = row
-                .hover(move |s| s.bg(hover))
-                .active(move |s| s.bg(pressed))
-                .on_click(move |_, window, cx| {
-                    close_combo(&state, cx);
-                    focus.focus(window, cx);
-                    if let Some(handler) = handler.as_ref() {
-                        handler(index, window, cx);
-                    }
-                });
+            look = group_look(look, hover, pressed);
+            row = row.on_click(move |_, window, cx| {
+                close_combo(&state, cx);
+                focus.focus(window, cx);
+                if let Some(handler) = handler.as_ref() {
+                    handler(index, window, cx);
+                }
+            });
         }
-        list = list.child(row);
+        list = list.child(row.child(look));
     }
     list
 }
@@ -404,6 +405,8 @@ impl RenderOnce for ComboBox {
             None
         } else if open.open && !disabled {
             let out_state = state.clone();
+            let order = light_dismiss::PanelOrder::default();
+            let out_order = order.clone();
             let list = combo_list(
                 &items,
                 self.selected,
@@ -412,22 +415,14 @@ impl RenderOnce for ComboBox {
                 Some((state.clone(), self.on_select.clone(), focus.clone())),
                 p,
             )
-            .on_mouse_down_out(move |_, _, cx| close_combo(&out_state, cx));
-            Some(
-                div()
-                    .absolute()
-                    .top(relative(1.0))
-                    .left_0()
-                    .child(
-                        deferred(
-                            anchored()
-                                .snap_to_window_with_margin(px(8.0))
-                                .child(div().mt(px(4.0)).child(list)),
-                        )
-                        .with_priority(1),
-                    )
-                    .into_any_element(),
-            )
+            .child(light_dismiss::panel_marker(&order))
+            .on_mouse_down_out(move |_, window, cx| {
+                if !light_dismiss::pointer_in_child_panel(&out_order, window, cx) {
+                    close_combo(&out_state, cx)
+                }
+            });
+            // Over the field too: a second press on it closes the list.
+            Some(light_dismiss::anchored_panel(list, PanelEdge::Left))
         } else {
             None
         };
