@@ -1,6 +1,6 @@
 # Ticket 120 — Better Files: a Developer folder icon, and favourites keep their own icon
 
-**Blocked by:** none · **Status:** open
+**Blocked by:** none · **Status:** merged, not released
 
 ## Why
 

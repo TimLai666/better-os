@@ -1,6 +1,6 @@
 # Ticket 121 — Better Files: reorder favourites by dragging, and applications show their icons
 
-**Blocked by:** none · **Status:** open
+**Blocked by:** none · **Status:** merged, not released
 
 ## Why
 
