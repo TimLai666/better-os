@@ -676,7 +676,7 @@ pub enum Problem {
 }
 
 /// Something the window does not otherwise show, in a toast that hides
-/// itself (`toast`). An operation whose result the window already shows
+/// itself (the window shows it with `better_ui::fluent::toast`). An operation whose result the window already shows
 /// has no notice.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Notice {
@@ -702,6 +702,22 @@ pub enum Notice {
     /// The repository's folders cannot be watched; the window checks for
     /// changes every few seconds instead (`live`).
     WatchFallback,
+}
+
+impl Notice {
+    /// The page a notice's toast offers to open, when it has one.
+    pub fn link(&self) -> Option<String> {
+        use crate::notifications::Notice as Pull;
+        match self {
+            Notice::PullCreated { url, .. }
+            | Notice::IssueCreated { url, .. }
+            | Notice::Published { url } => Some(url.clone()),
+            Notice::Pull(Pull::ChecksFailed { url, .. } | Pull::Reviewed { url, .. }) => {
+                Some(url.clone())
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1031,6 +1047,11 @@ pub struct GitSession {
     generation: u64,
     /// The client ID GitHub sign-in uses; empty disables sign-in.
     client_id: &'static str,
+    /// The view an update's restart handed over, until its repository has
+    /// opened (`crate::restart`).
+    pub(crate) restoring: Option<crate::restart::SessionView>,
+    /// The commit to select once history has loaded, for the same restart.
+    pub(crate) restoring_commit: Option<String>,
 }
 
 impl GitSession {
@@ -1072,6 +1093,8 @@ impl GitSession {
             cancel: Cancel::new(),
             generation: 0,
             client_id: github_api::CLIENT_ID,
+            restoring: None,
+            restoring_commit: None,
         }
     }
 
@@ -2859,6 +2882,7 @@ impl GitSession {
                     self.problem = None;
                     self.page = Page::Main;
                     self.refresh_github();
+                    self.restore_after_open();
                 }
                 Err(error) => self.problem = Some(read_failed(error)),
             },
@@ -2906,6 +2930,9 @@ impl GitSession {
                     Err(error) => self.problem = Some(read_failed(error)),
                 }
                 self.idle();
+                if skip == 0 {
+                    self.restore_after_log();
+                }
             }
             Answer::CommitFiles { sha, result } => {
                 let Some(repo) = self.repo.as_mut() else {

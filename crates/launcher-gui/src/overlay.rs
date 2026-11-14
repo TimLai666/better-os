@@ -153,6 +153,22 @@ pub struct LauncherOverlay {
     _load: Option<Task<()>>,
     _watch: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+    /// Watches for an update and restarts into it (ticket 105). Inactive
+    /// until [`LauncherOverlay::watch_for_updates`] is called, which only the
+    /// installed program does.
+    update_restart: better_ui::restart::UpdateRestart,
+}
+
+/// The window's application id, which the desktop entry is named after.
+pub const APP_ID: &str = "better-launcher";
+
+/// What the launcher carries over when an update restarts it: what was typed
+/// and which page was showing. Everything else is read again.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct LauncherView {
+    pub query: String,
+    pub all_apps: bool,
 }
 
 impl LauncherOverlay {
@@ -208,6 +224,7 @@ impl LauncherOverlay {
             _load: None,
             _watch: None,
             _subscriptions: vec![subscription],
+            update_restart: better_ui::restart::UpdateRestart::inactive(APP_ID, cx),
         };
         overlay._appearance = appearance.apply_and_follow(window, cx);
         // Issue #2's first requirement about focus: the search row has it
@@ -219,6 +236,36 @@ impl LauncherOverlay {
             overlay.start_watch(cx);
         }
         overlay
+    }
+
+    /// Starts watching for an update, and puts back what a restart after one
+    /// handed over.
+    pub fn watch_for_updates(
+        &mut self,
+        handoff: Option<&better_ui::restart::Handoff>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(view) = handoff.and_then(|h| h.state::<LauncherView>()) {
+            if view.all_apps {
+                self.model.open_all_apps();
+            }
+            if !view.query.is_empty() {
+                let query = view.query.clone();
+                self.search
+                    .update(cx, |state, cx| state.set_value(query, window, cx));
+                self.query_changed(view.query, cx);
+            }
+        }
+        self.update_restart = better_ui::restart::UpdateRestart::new(
+            APP_ID,
+            "Better Launcher",
+            "better-launcher",
+            env!("CARGO_PKG_VERSION"),
+            handoff,
+            window,
+            cx,
+        );
     }
 
     /// The search box changed: answer the query, and when it is a path, read
@@ -1452,6 +1499,7 @@ impl Render for LauncherOverlay {
             .capture_action(
                 cx.listener(|this, _: &MovePageDown, w, cx| this.capture(NavKey::PageDown, w, cx)),
             )
+            .relative()
             .size_full()
             .flex()
             .items_center()
@@ -1499,6 +1547,28 @@ impl Render for LauncherOverlay {
                     .child(bottom),
             )
             .children(menu)
+            .children(self.update_restart.toast_layer(self.locale.words(), cx))
+    }
+}
+
+impl better_ui::restart::Restartable for LauncherOverlay {
+    type State = LauncherView;
+
+    fn update_restart(&mut self) -> &mut better_ui::restart::UpdateRestart {
+        &mut self.update_restart
+    }
+
+    /// The overlay holds nothing a restart would lose: opening something
+    /// closes it, and what is typed is carried over.
+    fn restart_blocked(&self, _cx: &App) -> Option<better_ui::restart::Blocker> {
+        None
+    }
+
+    fn restart_state(&self, _window: &Window, cx: &App) -> LauncherView {
+        LauncherView {
+            query: self.search.read(cx).value().to_string(),
+            all_apps: self.model.page() == crate::model::Page::AllApps,
+        }
     }
 }
 
@@ -1705,5 +1775,23 @@ mod tests {
         );
         assert_eq!(observed.query, "cale");
         assert_eq!(observed.results, vec!["Calendar"]);
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::LauncherView;
+
+    #[test]
+    fn what_was_typed_and_the_page_come_back() {
+        let view = LauncherView {
+            query: "firef".into(),
+            all_apps: true,
+        };
+        let text = serde_json::to_string(&view).unwrap();
+        let read: LauncherView = serde_json::from_str(&text).unwrap();
+        assert_eq!(read, view);
+        let older: LauncherView = serde_json::from_str("{}").unwrap();
+        assert_eq!(older, LauncherView::default());
     }
 }

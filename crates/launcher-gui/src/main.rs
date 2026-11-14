@@ -59,10 +59,25 @@ fn main() {
             None
         }
     };
+    // A restart after an update puts back what was typed. Right after one the
+    // bus may not have noticed yet that the program this one replaced let its
+    // name go, so a restart asks again for a moment before treating the name
+    // as another launcher's.
+    let handoff = better_ui::restart::take_handoff(launcher_gui::overlay::APP_ID);
     let instance = SingleInstance::default();
     let mut inbox = None;
     if let Some(registry) = &registry {
-        match instance.acquire(registry, request) {
+        let mut attempts = if handoff.is_some() { 30 } else { 1 };
+        let role = loop {
+            attempts -= 1;
+            match instance.acquire(registry, request) {
+                Ok(InstanceRole::Secondary) | Err(_) if attempts > 0 => {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                other => break other,
+            }
+        };
+        match role {
             Ok(InstanceRole::Primary) => inbox = registry.take_inbox(),
             Ok(InstanceRole::Secondary) => return,
             Err(error) => {
@@ -87,7 +102,8 @@ fn main() {
         // The launcher draws no titlebar. It is dismissed with Escape or by
         // opening something, and `better_ui::window_chrome` records why.
         let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(width), px(height)), cx)),
+            window_bounds: better_ui::restart::window_bounds(handoff.as_ref())
+                .or_else(|| Some(WindowBounds::centered(size(px(width), px(height)), cx))),
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
             ..better_ui::window_chrome::overlay_window_options("better-launcher")
         };
@@ -97,7 +113,11 @@ fn main() {
             cx.open_window(window_options, |window, cx| {
                 // The overlay applies the stored appearance (dark unless the
                 // person chose light or the system's), ADR 0004.
-                let overlay = cx.new(|cx| LauncherOverlay::new(Locale::System, window, cx));
+                let overlay = cx.new(|cx| {
+                    let mut overlay = LauncherOverlay::new(Locale::System, window, cx);
+                    overlay.watch_for_updates(handoff.as_ref(), window, cx);
+                    overlay
+                });
                 cx.subscribe(&overlay, |_, event: &OverlayEvent, cx| match event {
                     OverlayEvent::Closed => cx.quit(),
                 })

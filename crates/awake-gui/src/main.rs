@@ -16,6 +16,7 @@ mod pages_records;
 mod pages_rules;
 mod pages_status;
 mod render;
+mod restart;
 mod settings;
 mod shell;
 #[cfg(test)]
@@ -75,15 +76,17 @@ fn main() {
         gpui_component::init(cx);
         cx.bind_keys(shell::key_bindings());
 
+        let handoff = better_ui::restart::take_handoff(app::APP_ID);
         let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1180.0), px(820.0)), cx)),
+            window_bounds: better_ui::restart::window_bounds(handoff.as_ref())
+                .or_else(|| Some(WindowBounds::centered(size(px(1180.0), px(820.0)), cx))),
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-            ..better_ui::window_chrome::window_options("better-awake")
+            ..better_ui::window_chrome::window_options(app::APP_ID)
         };
 
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
-                let view = cx.new(|cx| AwakeApp::new(window, cx));
+                let view = cx.new(|cx| AwakeApp::new(window, cx, handoff.as_ref()));
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("failed to open the Better Awake window");

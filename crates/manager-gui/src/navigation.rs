@@ -162,6 +162,22 @@ impl History {
         !self.back.is_empty()
     }
 
+    /// The pages, oldest first, for a restart to carry (ticket 105).
+    pub(crate) fn pages(&self) -> &[Page] {
+        &self.back
+    }
+
+    /// A history a restart carried, with the transient pages it can no longer
+    /// return to left out.
+    pub(crate) fn from_pages(pages: Vec<Page>) -> History {
+        let mut back: Vec<Page> = pages.into_iter().filter(|p| !is_transient(p)).collect();
+        if back.len() > HISTORY_LIMIT {
+            let excess = back.len() - HISTORY_LIMIT;
+            back.drain(..excess);
+        }
+        History { back }
+    }
+
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.back.len()

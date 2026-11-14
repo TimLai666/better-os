@@ -1238,49 +1238,50 @@ fn the_identity_step_checks_and_writes_two_settings() {
     );
 }
 
-/// A toast hides itself about six seconds after it appears, never while the
-/// pointer is on it, and counts again from when the pointer leaves.
+/// A notice is shown as the kit's toast (`better_ui::fluent::toast`), whose
+/// one timer rule is the window's: about six seconds, held while the pointer
+/// is on it, and resumed with what was left — never less than a second.
 #[test]
-fn a_toast_hides_itself_unless_the_pointer_is_on_it() {
-    use crate::toast::{SHOWN_FOR_MS, ToastClock};
-    let notice = Notice::Forked {
-        name: "ada/site".into(),
-    };
-    let mut clock = ToastClock::default();
-    clock.observe(None, 0);
-    assert!(!clock.expired(100_000), "nothing to hide");
-    clock.observe(Some(&notice), 1_000);
-    assert!(!clock.expired(1_000 + SHOWN_FOR_MS - 1));
-    assert!(clock.expired(1_000 + SHOWN_FOR_MS));
-    clock.hovered(true, 3_000);
+fn a_notice_toast_follows_the_kits_timer() {
+    use better_ui::fluent::toast::{TOAST_DURATION, TOAST_MIN_REMAINING, ToastQueue};
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    let mut queue = ToastQueue::default();
+    let forked = queue.push(
+        Notice::Forked {
+            name: "ada/site".into(),
+        },
+        Some(TOAST_DURATION),
+        start,
+    );
+    assert!(!queue.expire(start + TOAST_DURATION - Duration::from_millis(1)));
+    queue.hover(forked, true, start + Duration::from_secs(2));
     assert!(
-        !clock.expired(60_000),
+        !queue.expire(start + Duration::from_secs(60)),
         "it stays while the pointer is on it"
     );
-    clock.hovered(false, 60_000);
-    assert!(!clock.expired(60_000 + SHOWN_FOR_MS - 1));
-    assert!(clock.expired(60_000 + SHOWN_FOR_MS));
-    // The same notice seen again does not restart it; a new one does.
-    clock.observe(Some(&notice), 70_000);
-    assert!(clock.expired(70_000));
-    let next = Notice::ChecksRerun(2);
-    clock.observe(Some(&next), 70_000);
-    assert!(!clock.expired(70_001));
+    queue.hover(forked, false, start + Duration::from_secs(60));
+    assert!(!queue.expire(start + Duration::from_secs(63)));
+    assert!(
+        queue.expire(start + Duration::from_secs(64)),
+        "4 s were left"
+    );
+    assert!(TOAST_MIN_REMAINING >= Duration::from_secs(1));
 }
 
 #[test]
 fn a_toast_keeps_the_link_of_what_it_announces() {
-    use crate::toast::link;
     assert_eq!(
-        link(&Notice::PullCreated {
+        Notice::PullCreated {
             number: 7,
             url: "https://github.com/a/b/pull/7".into()
-        })
+        }
+        .link()
         .as_deref(),
         Some("https://github.com/a/b/pull/7")
     );
-    assert_eq!(link(&Notice::ChecksRerun(1)), None);
-    assert_eq!(link(&Notice::WatchFallback), None);
+    assert_eq!(Notice::ChecksRerun(1).link(), None);
+    assert_eq!(Notice::WatchFallback.link(), None);
 }
 
 /// No operation the window already shows has a "done" notice: the variant

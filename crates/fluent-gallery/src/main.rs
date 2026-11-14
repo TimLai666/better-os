@@ -1018,6 +1018,60 @@ impl Gallery {
                 ],
             ),
             section(
+                self.t("Toast", "快顯通知"),
+                p,
+                // The notices a window shows about an update (ticket 105),
+                // and a toast with an action, drawn in place rather than
+                // floating over the page.
+                {
+                    let locale = self.locale();
+                    let mut cards: Vec<AnyElement> = [
+                        better_ui::restart::Notice::Updated {
+                            version: env!("CARGO_PKG_VERSION").to_string(),
+                        },
+                        better_ui::restart::Notice::Waiting {
+                            app: "Better Files",
+                            blocker: better_ui::restart::Blocker::Dialog,
+                        },
+                        better_ui::restart::Notice::ReopenToUse,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, notice)| {
+                        let (severity, words) = notice.words(locale);
+                        let mut toast = better_ui::fluent::toast::Toast::new(
+                            ElementId::named_usize("toast", index),
+                            severity,
+                            words.title,
+                        )
+                        .locale(locale);
+                        if let Some(message) = words.message {
+                            toast = toast.message(message);
+                        }
+                        if notice.toast().closable {
+                            toast = toast.on_close(|_, _| {});
+                        }
+                        div().flex().child(toast).into_any_element()
+                    })
+                    .collect();
+                    cards.push(
+                        div()
+                            .flex()
+                            .child(
+                                better_ui::fluent::toast::Toast::new(
+                                    "toast-action",
+                                    Severity::Success,
+                                    self.t("Moved 3 items to the Trash", "已將 3 個項目移到垃圾桶"),
+                                )
+                                .locale(locale)
+                                .action(self.t("Undo", "復原"), |_, _| {}),
+                            )
+                            .into_any_element(),
+                    );
+                    cards
+                },
+            ),
+            section(
                 self.t("Error with details", "錯誤與詳細資料"),
                 p,
                 vec![
