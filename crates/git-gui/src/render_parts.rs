@@ -268,7 +268,7 @@ impl GitApp {
     pub(crate) fn worktree_rows(
         &self,
         worktrees: &[crate::repositories::WorktreeRow],
-        first_index: usize,
+        group: usize,
         p: &'static Palette,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
@@ -292,7 +292,10 @@ impl GitApp {
                     detail = format!("{detail} · {}", c.missing);
                 }
                 crate::render::row(
-                    ("repo-worktree", first_index + offset),
+                    gpui::ElementId::from((
+                        gpui::ElementId::from(("repo-worktree", group)),
+                        offset.to_string(),
+                    )),
                     w.current,
                     px(48.0),
                     p,

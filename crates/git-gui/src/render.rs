@@ -807,7 +807,7 @@ impl GitApp {
             }
             list = list.child(item);
             // Its worktrees, the main one first, under it.
-            let worktrees = self.worktree_rows(&r.worktrees, index * 100, p, cx);
+            let worktrees = self.worktree_rows(&r.worktrees, index, p, cx);
             list = list.children(worktrees);
         }
         Flyout::new("repository-flyout")

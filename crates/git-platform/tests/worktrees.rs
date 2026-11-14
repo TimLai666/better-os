@@ -177,3 +177,33 @@ fn add_rename_and_remove_worktrees() {
         .unwrap();
     assert_eq!(SystemGit.info(&s.repo).unwrap().worktrees.len(), 2);
 }
+
+/// `core.worktree` says where a submodule's working tree is; a plain
+/// repository has none.
+#[test]
+fn core_worktree_names_a_submodules_working_tree() {
+    let s = sandbox();
+    git_in(&s.repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    let sup = s.tmp.path().join("sup");
+    std::fs::create_dir_all(&sup).unwrap();
+    git_in(&sup, &["init", "-q", "-b", "main"]);
+    git_in(
+        &sup,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            s.repo.to_str().unwrap(),
+            "sub",
+        ],
+    );
+    let modules = sup.join(".git/modules/sub");
+    let found = SystemGit.core_worktree(&modules).unwrap().unwrap();
+    assert_eq!(
+        found.canonicalize().unwrap(),
+        sup.join("sub").canonicalize().unwrap()
+    );
+    assert_eq!(SystemGit.core_worktree(&s.repo.join(".git")).unwrap(), None);
+}

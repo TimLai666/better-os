@@ -52,18 +52,27 @@ repository as its main worktree: they share one git common directory
 ## What was built
 
 - **One entry per repository.** `repositories::Known` holds what Git said
-  about a folder: its common directory (`git rev-parse --git-common-dir`,
-  through the existing `Git::git_dirs`) and its worktrees. The repository's
-  folder is the main worktree, or the common directory when there is no main
-  worktree to show (a bare repository, or one whose git directory is kept
-  apart and whose main worktree was deleted; Git lists the common directory
-  itself as the main entry then).
+  about a folder: its common directory, its worktrees, and where its main
+  worktree is. Git lists the common directory itself as the main entry for
+  a submodule and a `--separate-git-dir` repository, so the main worktree is
+  the folder itself when its git directory is the common one, else
+  `core.worktree` (`Git::core_worktree`, new), else the main entry when it
+  is a working tree. The common directory stands for the repository only
+  when it is bare or its recorded main worktree is gone; when Git cannot
+  say (a linked worktree of a `--separate-git-dir` repository), the entry
+  is kept as it is.
+- **Only real answers count.** A read is accepted only when the folder is
+  the top of a repository (or a bare repository's own folder): Git walks up
+  from a plain folder to an enclosing repository, and that answer is about
+  another repository. A folder Git cannot read is left in the list exactly
+  as it was and drawn as missing.
 - **Opening a worktree saves its repository.** The open answer carries the
   common directory, and `RepositoryList::add_opened` stores the repository and
   turns an entry for the worktree itself into the repository's. The recent
   list keeps the worktree, so the one that was open is still the one marked.
-- **Old lists are merged on load.** The window reads the list's worktrees at
-  start (and whenever the dropdown opens, by click or Ctrl+T), and
+- **Old lists are merged on load.** The window reads the list's worktrees,
+  in a lane of its own beside the git queue (one read at a time, again
+  after it when asked meanwhile), at start (and whenever the dropdown opens, by click or Ctrl+T), and
   `RepositoryList::merge_worktrees` folds every entry that turned out to be a
   linked worktree into its repository's entry, in its place, and writes the
   file once. The repository's own alias wins; a worktree entry's alias carries
@@ -74,6 +83,11 @@ repository as its main worktree: they share one git common directory
   it, when it has linked worktrees, every worktree is a row named by its
   folder, with the branch, "Detached at <short sha>", "Main worktree", or
   "Can't be found" beneath, the open one marked and the whole row clickable.
+- **Drawing touches no disk.** Whether a folder is there is what the last
+  read found, and Git's canonical paths are compared as they are.
+- **A second window cannot undo a fold or a removal.** The file keeps the
+  folders dropped lately (up to 256), and a window merging the file into a
+  stale list drops them too; adding a folder again takes it off.
 - **Removing** a repository removes every saved entry that is it and the
   recent folders of its worktrees; nothing on disk is touched.
 - **The filter** matches a repository's name or folder (all its worktrees

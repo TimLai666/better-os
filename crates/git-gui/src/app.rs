@@ -473,6 +473,19 @@ impl GitApp {
             })
             .detach();
         }
+        if let Some(job) = self.session.next_list() {
+            let git = self.session.git();
+            let work = cx.background_spawn(async move { job.run(git.as_ref()) });
+            cx.spawn_in(window, async move |this, cx| {
+                let outcome = work.await;
+                this.update_in(cx, |app, window, cx| {
+                    app.session.apply_list(outcome);
+                    app.drive(window, cx);
+                })
+                .ok();
+            })
+            .detach();
+        }
         if let Some(job) = self.session.next_graph() {
             let git = self.session.git();
             let work = cx.background_spawn(async move { job.run(git.as_ref()) });

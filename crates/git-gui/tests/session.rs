@@ -1415,3 +1415,67 @@ fn linked_worktrees_saved_as_repositories_merge_into_their_repository() {
     assert!(reread.repositories.entries.is_empty());
     assert!(main.exists() && one.exists() && two.exists());
 }
+
+/// Ticket 113 review: a folder Git cannot read as a repository of its own
+/// (gone, or a plain folder inside another repository, which Git would
+/// answer for) is left in the list exactly as it was, and drawn as missing.
+#[test]
+fn a_failed_read_leaves_the_saved_entry_exactly_as_it_was() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let inner = s.repo.canonicalize().unwrap().join("inner");
+    std::fs::create_dir_all(&inner).unwrap();
+    let gone = s.tmp.path().join("gone");
+    let state = s.home.join("state/better-os");
+    std::fs::create_dir_all(&state).unwrap();
+    let file = state.join("git-repositories.json");
+    let saved = serde_json::json!({
+        "repositories": [
+            { "path": inner, "alias": "Dotfiles" },
+            { "path": gone },
+        ]
+    })
+    .to_string();
+    std::fs::write(&file, &saved).unwrap();
+
+    let mut session = GitSession::new(Arc::new(SystemGit), files(&s));
+    session.read_worktrees();
+    session.run_git_jobs();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        saved,
+        "not written"
+    );
+    assert_eq!(session.repositories.writes, 0);
+    let groups = session.repository_groups("");
+    assert_eq!(groups.len(), 2, "{groups:#?}");
+    assert!(groups.iter().all(|g| g.missing && g.worktrees.is_empty()));
+    assert!(groups.iter().any(|g| g.name == "Dotfiles"));
+}
+
+/// Ticket 113 review: a read that answers after its repository was removed
+/// puts nothing back.
+#[test]
+fn a_late_read_for_a_removed_repository_changes_nothing() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let one = s.tmp.path().canonicalize().unwrap().join("wt-one");
+    s.git(&["worktree", "add", "-q", "-b", "one", one.to_str().unwrap()]);
+    let mut session = opened(&s);
+    let main = session.repo.as_ref().unwrap().root.clone();
+    // Saved by an older version: the linked worktree as a repository.
+    session.repositories.add(&one).unwrap();
+    session.read_worktrees();
+    let job = session
+        .next_list()
+        .expect("the read waits beside the queue");
+    session.remove_repository(&main);
+    session.remove_repository(&one);
+    assert!(session.repositories.entries.is_empty());
+    let outcome = job.run(&SystemGit);
+    session.apply_list(outcome);
+    assert!(session.repositories.entries.is_empty(), "nothing came back");
+    let reread = GitSession::new(Arc::new(SystemGit), files(&s));
+    assert!(reread.repositories.entries.is_empty());
+    assert!(session.repository_groups("").is_empty());
+}
