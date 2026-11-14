@@ -343,6 +343,9 @@ impl GitApp {
                 }
             }
         }
+        // The list's worktrees are read once at the start, which also folds
+        // linked worktrees an older list saved as repositories into theirs.
+        session.read_worktrees();
         if let Some(view) = &restored {
             let filter = view.session.filter.clone();
             inputs
@@ -464,6 +467,19 @@ impl GitApp {
                 let outcome = work.await;
                 this.update_in(cx, |app, window, cx| {
                     app.session.apply_background(outcome);
+                    app.drive(window, cx);
+                })
+                .ok();
+            })
+            .detach();
+        }
+        if let Some(job) = self.session.next_list() {
+            let git = self.session.git();
+            let work = cx.background_spawn(async move { job.run(git.as_ref()) });
+            cx.spawn_in(window, async move |this, cx| {
+                let outcome = work.await;
+                this.update_in(cx, |app, window, cx| {
+                    app.session.apply_list(outcome);
                     app.drive(window, cx);
                 })
                 .ok();
@@ -944,7 +960,10 @@ impl GitApp {
             Action::FindInGraph if self.graph_find_allowed(window, cx) => {
                 self.open_graph_find(window, cx);
             }
-            Action::RepositoryList => self.flyout = Some(Flyout::Repositories),
+            Action::RepositoryList => {
+                self.session.read_worktrees();
+                self.flyout = Some(Flyout::Repositories);
+            }
             Action::BranchList if has_repo => {
                 self.flyout = Some(Flyout::Branches);
                 self.branch_tab = 0;

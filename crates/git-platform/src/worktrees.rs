@@ -1,6 +1,6 @@
 //! Worktrees: list, add, rename (move), and remove.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use git_core::{Worktree, parse_worktrees};
 
@@ -44,4 +44,22 @@ pub fn remove(repository: &Path, path: &Path, force: bool) -> Result<(), GitErro
         run = run.arg("--force");
     }
     run.arg(absolute(path)?).run()
+}
+
+/// `core.worktree` in a git directory: where its main worktree is, as Git
+/// records it for a submodule (relative to the git directory) or a
+/// repository whose working tree was moved. `None` when it is not set.
+pub fn core_worktree(git_dir: &Path) -> Result<Option<PathBuf>, GitError> {
+    match Run::new(git_dir, ["config", "--get", "core.worktree"]).output() {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out);
+            let value = text.trim_end_matches(['\n', '\r']);
+            Ok((!value.is_empty()).then(|| git_dir.join(value)))
+        }
+        // `git config --get` exits 1 when the key is not set.
+        Err(GitError::Failed {
+            exit_code: Some(1), ..
+        }) => Ok(None),
+        Err(error) => Err(error),
+    }
 }

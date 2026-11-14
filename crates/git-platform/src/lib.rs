@@ -611,6 +611,11 @@ pub trait Git: Send + Sync {
     fn git_dirs(&self, repository: &Path) -> Result<(PathBuf, PathBuf), GitError> {
         unsupported!("git_dirs")
     }
+    /// `core.worktree` in a git directory, joined to it: where Git records
+    /// the main worktree of a submodule or a moved working tree.
+    fn core_worktree(&self, git_dir: &Path) -> Result<Option<PathBuf>, GitError> {
+        unsupported!("core_worktree")
+    }
     /// The working tree's ignored directories, relative to its root.
     fn ignored_directories(&self, repository: &Path) -> Result<Vec<PathBuf>, GitError> {
         unsupported!("ignored_directories")
@@ -1524,6 +1529,10 @@ impl Git for SystemGit {
 
     fn git_dirs(&self, repository: &Path) -> Result<(PathBuf, PathBuf), GitError> {
         watching::git_dirs(repository)
+    }
+
+    fn core_worktree(&self, git_dir: &Path) -> Result<Option<PathBuf>, GitError> {
+        worktrees::core_worktree(git_dir)
     }
 
     fn ignored_directories(&self, repository: &Path) -> Result<Vec<PathBuf>, GitError> {
