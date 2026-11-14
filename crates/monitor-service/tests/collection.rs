@@ -311,106 +311,280 @@ async fn an_inventory_change_is_captured_and_diffable() {
     );
 }
 
-#[tokio::test]
-async fn marking_an_incident_captures_the_state_around_it() {
-    let directory = tempfile::tempdir().unwrap();
-    let engine = MonitorEngine::start(config(directory.path().to_path_buf())).unwrap();
-    tick(&engine, 8).await;
-
-    let response = engine
-        .handle(MonitorRequest::new(RequestBody::MarkIncident {
-            note: Some("everything froze while saving".into()),
-            window_before_seconds: 60,
-            window_after_seconds: 30,
-            about_pid: Some(1),
-        }))
-        .await;
-    let ResponseBody::IncidentWindow(document) = response.body else {
-        panic!("an incident window reply")
-    };
-    let incident = &document.incident;
-    assert_eq!(incident.id, 1);
-    assert_eq!(
-        incident.note.as_deref(),
-        Some("everything froze while saving")
-    );
-    assert_eq!(incident.about_pid, Some(1));
-    assert_eq!(incident.window.before_seconds, 60);
-    assert_eq!(incident.window.after_seconds, 30);
-
-    // The snapshot is the machine as it was at the marker: every collector's
-    // health, the entities, and the bounded process list.
-    assert!(!incident.snapshot.collectors.is_empty());
-    assert!(!incident.snapshot.processes.is_empty());
-    assert!(
-        incident.snapshot.processes.len() <= monitor_store::DEFAULT_TRACKED_PROCESSES,
-        "an incident must not capture an unbounded process list"
-    );
-    // Samples were recorded before the marker, so there is a baseline to
-    // compare against.
-    assert!(
-        !incident.baseline.is_empty(),
-        "the marker recorded no comparison with the preceding baseline"
-    );
-    assert!(!document.slice.samples.is_empty());
-    assert!(
-        document
-            .slice
-            .samples
-            .iter()
-            .all(|sample| sample.wall_unix_ms >= incident.marked_at_unix_ms - 60_000)
-    );
+/// The captured machine, copied so its pressure files can be rewritten
+/// between rounds: the fake readings a slowdown is made of.
+struct StalledMachine {
+    directory: tempfile::TempDir,
 }
 
-#[tokio::test]
-async fn an_incident_marked_before_anything_was_collected_is_honest_about_it() {
-    let directory = tempfile::tempdir().unwrap();
-    let engine = MonitorEngine::start(config(directory.path().to_path_buf())).unwrap();
-
-    let response = engine
-        .handle(MonitorRequest::new(RequestBody::MarkIncident {
-            note: None,
-            window_before_seconds: 60,
-            window_after_seconds: 30,
-            about_pid: None,
-        }))
-        .await;
-    let ResponseBody::IncidentWindow(document) = response.body else {
-        panic!("an incident window reply")
-    };
-    // No fabricated readings and no invented baseline.
-    assert!(document.incident.snapshot.metrics.is_empty());
-    assert!(document.incident.baseline.is_empty());
-    assert!(document.slice.samples.is_empty());
-}
-
-#[tokio::test]
-async fn an_incident_survives_a_restart_and_keeps_climbing_its_identifier() {
-    let directory = tempfile::tempdir().unwrap();
-    {
-        let engine = MonitorEngine::start(config(directory.path().to_path_buf())).unwrap();
-        tick(&engine, 2).await;
-        engine
-            .mark(Some("first"), Default::default(), None)
-            .await
-            .unwrap();
-        engine.shutdown().await.unwrap();
+impl StalledMachine {
+    fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        copy_tree(&fixture("snapshot-a"), directory.path());
+        Self { directory }
     }
-    let engine = MonitorEngine::start(config(directory.path().to_path_buf())).unwrap();
-    let second = engine
-        .mark(Some("second"), Default::default(), None)
-        .await
-        .unwrap();
-    assert_eq!(second, 2);
 
+    fn roots(&self) -> Roots {
+        Roots::at(self.directory.path())
+    }
+
+    /// Programs waiting for memory `some` percent of the time, every one of
+    /// them `full` percent.
+    fn memory_pressure(&self, some: f64, full: f64) {
+        std::fs::write(
+            self.directory.path().join("proc/pressure/memory"),
+            format!(
+                "some avg10={some:.2} avg60=0.00 avg300=0.00 total=2746439\n\
+                 full avg10={full:.2} avg60=0.00 avg300=0.00 total=2631951\n"
+            ),
+        )
+        .unwrap();
+    }
+}
+
+/// An engine on `machine` that treats any stall as a slowdown at once and
+/// any clear round as its end, so a test needs a few rounds rather than a
+/// minute. What counts is proved on synthetic streams in `monitor-store`.
+fn quick_config(store_root: PathBuf, machine: &StalledMachine) -> ServiceConfig {
+    let mut config = config(store_root);
+    config.roots = machine.roots();
+    config.slowdowns.onset_seconds = 0;
+    config.slowdowns.quiet_seconds = 0;
+    config
+}
+
+async fn incidents(engine: &MonitorEngine) -> Vec<monitor_store::Incident> {
     let response = engine
         .handle(MonitorRequest::new(RequestBody::QueryIncidents))
         .await;
     let ResponseBody::Incidents(document) = response.body else {
         panic!("an incidents reply")
     };
-    assert_eq!(document.incidents.len(), 2);
-    assert_eq!(document.incidents[0].note.as_deref(), Some("first"));
+    document.incidents
+}
+
+#[tokio::test]
+async fn a_slowdown_is_recorded_with_the_state_around_it_without_anyone_asking() {
+    let machine = StalledMachine::new();
+    let directory = tempfile::tempdir().unwrap();
+    let engine =
+        MonitorEngine::start(quick_config(directory.path().to_path_buf(), &machine)).unwrap();
+    tick(&engine, 8).await;
+    assert!(
+        incidents(&engine).await.is_empty(),
+        "a calm machine has none"
+    );
+
+    machine.memory_pressure(64.0, 31.0);
+    tick(&engine, 3).await;
+    let recorded = incidents(&engine).await;
+    assert_eq!(recorded.len(), 1, "one slowdown, one record");
+    let incident = &recorded[0];
+    assert!(!incident.marked_by_hand());
+    assert!(incident.note.is_none());
+    let detection = incident.detection.as_ref().unwrap();
+    assert!(detection.ongoing);
+    let cause = detection.leading().unwrap();
+    assert_eq!(cause.kind, monitor_store::SlowdownKind::MemoryPressure);
+    assert!((cause.worst - 64.0).abs() < 1e-9);
+    assert_eq!(
+        detection.processes_by,
+        monitor_store::SlowdownResource::Memory
+    );
+    assert!(!detection.processes.is_empty());
+    assert!(
+        detection
+            .processes
+            .windows(2)
+            .all(|pair| pair[0].memory_resident >= pair[1].memory_resident),
+        "ranked by memory"
+    );
+
+    // The snapshot is the machine as it was when the slowdown was
+    // recognized: every collector's health and the bounded process list.
+    assert!(!incident.snapshot.collectors.is_empty());
+    assert!(!incident.snapshot.processes.is_empty());
+    assert!(incident.snapshot.processes.len() <= monitor_store::DEFAULT_TRACKED_PROCESSES);
+    // Calm rounds were recorded before it, so there is a baseline.
+    assert!(!incident.baseline.is_empty());
+    assert!(
+        incident
+            .baseline
+            .values()
+            .all(|shift| shift.baseline_samples > 0)
+    );
+
+    // When it clears, the same record is finished rather than a new one made.
+    machine.memory_pressure(0.0, 0.0);
+    tick(&engine, 2).await;
+    let recorded = incidents(&engine).await;
+    assert_eq!(recorded.len(), 1);
+    let finished = recorded[0].detection.as_ref().unwrap();
+    assert!(!finished.ongoing);
+    assert!(finished.ended_at_unix_ms >= finished.started_at_unix_ms);
+
+    let window = engine
+        .handle(MonitorRequest::new(RequestBody::QueryIncidentWindow {
+            incident_id: recorded[0].id,
+        }))
+        .await;
+    let ResponseBody::IncidentWindow(document) = window.body else {
+        panic!("an incident window reply")
+    };
+    assert!(!document.slice.samples.is_empty());
+}
+
+#[tokio::test]
+async fn an_ongoing_slowdown_is_answered_as_it_stands_now() {
+    let machine = StalledMachine::new();
+    let directory = tempfile::tempdir().unwrap();
+    let engine =
+        MonitorEngine::start(quick_config(directory.path().to_path_buf(), &machine)).unwrap();
+    machine.memory_pressure(64.0, 31.0);
+    tick(&engine, 1).await;
+    let first = incidents(&engine).await[0].detection.clone().unwrap();
+    // The record on disk is brought up to date every few minutes; a query
+    // in between sees the slowdown as it is this second.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    tick(&engine, 1).await;
+    let now = incidents(&engine).await[0].detection.clone().unwrap();
+    assert!(now.ongoing);
+    assert!(
+        now.ended_at_unix_ms > first.ended_at_unix_ms,
+        "{} then {}",
+        first.ended_at_unix_ms,
+        now.ended_at_unix_ms
+    );
+}
+
+#[tokio::test]
+async fn a_slowdown_the_daily_cap_kept_out_is_counted_and_survives_a_restart() {
+    let machine = StalledMachine::new();
+    let directory = tempfile::tempdir().unwrap();
+    let capped = || {
+        let mut config = quick_config(directory.path().to_path_buf(), &machine);
+        config.slowdowns.max_per_day = 0;
+        config
+    };
+    {
+        let engine = MonitorEngine::start(capped()).unwrap();
+        machine.memory_pressure(64.0, 31.0);
+        tick(&engine, 2).await;
+        assert!(incidents(&engine).await.is_empty());
+        assert_eq!(engine.status(false).await.store.skipped_slowdowns, 1);
+        engine.shutdown().await.unwrap();
+    }
+    let engine = MonitorEngine::start(capped()).unwrap();
+    assert_eq!(engine.status(false).await.store.skipped_slowdowns, 1);
+}
+
+#[tokio::test]
+async fn a_slowdown_going_on_at_shutdown_ends_where_it_was_last_seen() {
+    let machine = StalledMachine::new();
+    let directory = tempfile::tempdir().unwrap();
+    {
+        let engine =
+            MonitorEngine::start(quick_config(directory.path().to_path_buf(), &machine)).unwrap();
+        machine.memory_pressure(64.0, 31.0);
+        tick(&engine, 3).await;
+        engine.shutdown().await.unwrap();
+    }
+    let engine =
+        MonitorEngine::start(quick_config(directory.path().to_path_buf(), &machine)).unwrap();
+    let recorded = incidents(&engine).await;
+    assert_eq!(recorded.len(), 1);
+    assert!(!recorded[0].detection.as_ref().unwrap().ongoing);
+
+    // The next slowdown is a new record, numbered after the first.
+    machine.memory_pressure(0.0, 0.0);
+    tick(&engine, 2).await;
+    machine.memory_pressure(64.0, 31.0);
+    tick(&engine, 2).await;
+    let recorded = incidents(&engine).await;
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(recorded[1].id, 2);
+}
+
+#[tokio::test]
+async fn a_slowdown_a_crashed_run_left_going_is_closed_when_the_service_starts() {
+    let machine = StalledMachine::new();
+    let directory = tempfile::tempdir().unwrap();
+    {
+        let engine =
+            MonitorEngine::start(quick_config(directory.path().to_path_buf(), &machine)).unwrap();
+        machine.memory_pressure(64.0, 31.0);
+        tick(&engine, 3).await;
+        // Dropped without a shutdown: the record still says it is going on.
+        let recorded = incidents(&engine).await;
+        assert!(recorded[0].detection.as_ref().unwrap().ongoing);
+    }
+    let engine =
+        MonitorEngine::start(quick_config(directory.path().to_path_buf(), &machine)).unwrap();
+    let recorded = incidents(&engine).await;
+    assert_eq!(recorded.len(), 1);
+    assert!(!recorded[0].detection.as_ref().unwrap().ongoing);
+}
+
+#[tokio::test]
+async fn an_incident_marked_by_hand_before_ticket_115_is_kept_and_shown_as_one() {
+    let directory = tempfile::tempdir().unwrap();
+    {
+        let mut store = monitor_store::HistoryStore::open(
+            directory.path(),
+            monitor_store::RetentionPolicy::default(),
+        )
+        .unwrap();
+        // The record a 0.2.13 window left: a note, a window, and no detection.
+        let marked: monitor_store::Incident = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "marked_at_unix_ms": 1_700_000_000_000u64,
+            "monotonic_ns": 5,
+            "note": "everything froze while saving",
+            "window": { "before_seconds": 300, "after_seconds": 120 },
+            "snapshot": {
+                "wall_unix_ms": 1_700_000_000_000u64,
+                "monotonic_ns": 5,
+                "rounds": 1,
+                "metrics": {},
+                "entities": [],
+                "processes": [],
+                "collectors": []
+            },
+            "baseline": {},
+            "about_pid": 4242
+        }))
+        .unwrap();
+        store.record_incident(marked).unwrap();
+    }
+    let engine = MonitorEngine::start(config(directory.path().to_path_buf())).unwrap();
+    tick(&engine, 2).await;
+    let recorded = incidents(&engine).await;
+    assert_eq!(recorded.len(), 1);
+    assert!(recorded[0].marked_by_hand());
+    assert_eq!(
+        recorded[0].note.as_deref(),
+        Some("everything froze while saving")
+    );
+}
+
+#[tokio::test]
+async fn marking_by_hand_is_refused_and_records_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let engine = MonitorEngine::start(config(directory.path().to_path_buf())).unwrap();
+    tick(&engine, 2).await;
+    let response = engine
+        .handle(MonitorRequest::new(RequestBody::MarkIncident {
+            note: Some("the system was just slow".into()),
+            window_before_seconds: 300,
+            window_after_seconds: 120,
+            about_pid: None,
+        }))
+        .await;
+    let ResponseBody::Rejected { error_key } = response.body else {
+        panic!("a refusal, got {:?}", response.body)
+    };
+    assert_eq!(error_key, "monitor.ipc.error.manual_marking_removed");
+    assert!(incidents(&engine).await.is_empty());
 }
 
 #[tokio::test]
@@ -446,6 +620,10 @@ async fn the_engine_refuses_what_the_protocol_refuses() {
         (
             r#"{"protocol_version":2,"body":{"request":"query_incident_window","incident_id":404}}"#,
             "monitor.ipc.error.unknown_incident",
+        ),
+        (
+            r#"{"protocol_version":2,"body":{"request":"mark_incident","note":null,"window_before_seconds":300,"window_after_seconds":120,"about_pid":null}}"#,
+            "monitor.ipc.error.manual_marking_removed",
         ),
     ] {
         let reply = engine.handle_document(document).await;

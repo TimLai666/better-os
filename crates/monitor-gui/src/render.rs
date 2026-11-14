@@ -245,13 +245,6 @@ impl MonitorApp {
                         .on_click(Self::act(cx, |this, _, cx| this.reload_services(cx))),
                 );
             }
-            Page::Events => {
-                commands.push(
-                    Command::new(c.mark_incident, IconName::Star)
-                        .disabled(!self.can_mark())
-                        .on_click(Self::act(cx, |this, _, cx| this.mark_incident(cx))),
-                );
-            }
             _ => {}
         }
         let live = matches!(

@@ -18,9 +18,7 @@ use clap::{Args, Parser, Subcommand};
 use monitor_export::{ExportRequest, Rule};
 use monitor_ipc::{ExportState, StatusDocument};
 use monitor_service::{ClientError, MonitorClient, MonitorEngine, ServiceConfig, now_unix_ms};
-use monitor_store::{
-    HistoryStore, Incident, IncidentWindow, Inventory, RetentionPolicy, StoreError, TimeRange,
-};
+use monitor_store::{HistoryStore, Inventory, RetentionPolicy, StoreError, TimeRange};
 
 /// The name the command line is installed under. `/usr/bin/better-monitor`
 /// is the window, so every name this crate prints is this one.
@@ -31,7 +29,7 @@ pub const PROGRAM: &str = "better-monitor-cli";
 #[command(
     name = PROGRAM,
     bin_name = PROGRAM,
-    about = "Inspect, record, mark, and export what Better Monitor observed",
+    about = "Inspect, record, and export what Better Monitor observed",
     version
 )]
 pub struct Cli {
@@ -60,13 +58,24 @@ pub enum Command {
     Inspect(InspectArgs),
     /// Collect into the store for a fixed time, without the service.
     Record(RecordArgs),
-    /// Mark this moment as an incident.
-    Mark(MarkArgs),
     /// Write a redacted diagnostics package.
     Export(ExportArgs),
     /// What works, what does not, and what cannot be observed here.
     Doctor,
+    /// Gone in ticket 115: slowdowns are recorded automatically. Kept, hidden,
+    /// so a script or a habit that still types it is told so rather than
+    /// shown a usage error.
+    #[command(hide = true)]
+    Mark {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        ignored: Vec<String>,
+    },
 }
+
+/// What `better-monitor-cli mark` says now.
+pub const MARK_IS_AUTOMATIC: &str = "Marking a slowdown by hand is gone: Better Monitor records \
+slowdowns by itself as they happen, and nothing was recorded for this command. `better-monitor-cli \
+inspect` shows how many there are.\n";
 
 #[derive(Debug, Args)]
 pub struct InspectArgs {
@@ -87,22 +96,6 @@ pub struct RecordArgs {
     /// paths, and an export redacts but cannot un-collect them.
     #[arg(long)]
     pub command_lines: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct MarkArgs {
-    /// A sentence about what happened.
-    #[arg(long)]
-    pub note: Option<String>,
-    /// Seconds of history before the marker that belong to the incident.
-    #[arg(long, default_value_t = monitor_store::DEFAULT_WINDOW_BEFORE_SECONDS)]
-    pub before: u64,
-    /// Seconds after the marker that belong to the incident.
-    #[arg(long, default_value_t = monitor_store::DEFAULT_WINDOW_AFTER_SECONDS)]
-    pub after: u64,
-    /// The process the marker is about.
-    #[arg(long)]
-    pub pid: Option<u32>,
 }
 
 #[derive(Debug, Args)]
@@ -214,9 +207,9 @@ pub async fn run(cli: &Cli) -> Result<String, CliError> {
     match &cli.command {
         Command::Inspect(args) => inspect(cli, args).await,
         Command::Record(args) => record(cli, args).await,
-        Command::Mark(args) => mark(cli, args).await,
         Command::Export(args) => export(cli, args).await,
         Command::Doctor => doctor(cli).await,
+        Command::Mark { .. } => Ok(MARK_IS_AUTOMATIC.to_string()),
     }
 }
 
@@ -338,91 +331,6 @@ async fn record(cli: &Cli, args: &RecordArgs) -> Result<String, CliError> {
             "not collected"
         }
     ))
-}
-
-async fn mark(cli: &Cli, args: &MarkArgs) -> Result<String, CliError> {
-    let window = IncidentWindow {
-        before_seconds: args.before,
-        after_seconds: args.after,
-    };
-    if !window.is_valid() {
-        return Err(CliError::Refused(format!(
-            "a window has to be between {} and {} seconds on each side",
-            monitor_store::MIN_WINDOW_SECONDS,
-            monitor_store::MAX_WINDOW_SECONDS
-        )));
-    }
-
-    if let Some(client) = reach_service(cli).await {
-        let document = client
-            .mark(args.note.clone(), args.before, args.after, args.pid)
-            .await?;
-        return Ok(mark_summary(
-            cli,
-            &document.incident,
-            document.slice.samples.len(),
-            Source::Service,
-        ));
-    }
-
-    // Without the service there is nothing collecting, so one round is taken
-    // here. It is a real round from the real collectors, not a placeholder,
-    // and the summary says the service was not running so nobody reads the
-    // marker as having a history behind it.
-    let mut config = ServiceConfig::system();
-    config.store_root = store_root(cli);
-    let engine = MonitorEngine::start(config)?;
-    engine.tick().await?;
-    let id = engine.mark(args.note.as_deref(), window, args.pid).await?;
-    engine.shutdown().await?;
-
-    let (incident, samples) = engine
-        .with_store(|store| {
-            let (incident, slice) = store
-                .incident_window(id)
-                .expect("the incident was just recorded");
-            (incident.clone(), slice.samples.len())
-        })
-        .await;
-    Ok(mark_summary(cli, &incident, samples, Source::StoreOnDisk))
-}
-
-fn mark_summary(cli: &Cli, incident: &Incident, samples: usize, source: Source) -> String {
-    if cli.json {
-        return json(&serde_json::json!({
-            "source": source.key(),
-            "incident": incident,
-            "samples_in_window": samples,
-        }));
-    }
-    let mut out = format!(
-        "incident         {}\n\
-         marked at        {} (unix ms)\n\
-         window           {} s before, {} s after\n\
-         samples in it    {}\n",
-        incident.id,
-        incident.marked_at_unix_ms,
-        incident.window.before_seconds,
-        incident.window.after_seconds,
-        samples
-    );
-    if let Some(note) = &incident.note {
-        out.push_str(&format!("note             {note}\n"));
-    }
-    let shifts = incident.largest_shifts(3);
-    if shifts.is_empty() {
-        out.push_str("baseline         none: there was no recorded history to compare this with\n");
-    } else {
-        out.push_str("largest shifts\n");
-        for (metric, shift) in shifts {
-            out.push_str(&format!(
-                "  {metric:<34} {:.3} -> {:.3} over {} samples\n",
-                shift.baseline, shift.at_marker, shift.baseline_samples
-            ));
-        }
-    }
-    out.push_str(&format!("recorded by      {}\n", source.label()));
-    out
 }
 
 async fn export(cli: &Cli, args: &ExportArgs) -> Result<String, CliError> {
@@ -755,11 +663,10 @@ mod tests {
     }
 
     #[test]
-    fn all_five_subcommands_the_ticket_names_are_reachable() {
+    fn every_subcommand_is_reachable() {
         for (arguments, matched) in [
             (vec!["better-monitor-cli", "inspect"], "inspect"),
             (vec!["better-monitor-cli", "record"], "record"),
-            (vec!["better-monitor-cli", "mark"], "mark"),
             (
                 vec!["better-monitor-cli", "export", "--to", "/tmp/x"],
                 "export",
@@ -770,9 +677,9 @@ mod tests {
             let name = match cli.command {
                 Command::Inspect(_) => "inspect",
                 Command::Record(_) => "record",
-                Command::Mark(_) => "mark",
                 Command::Export(_) => "export",
                 Command::Doctor => "doctor",
+                Command::Mark { .. } => "mark",
             };
             assert_eq!(name, matched);
         }
@@ -799,44 +706,25 @@ mod tests {
     }
 
     #[test]
-    fn the_incident_window_defaults_match_the_store() {
-        let cli = Cli::try_parse_from(["better-monitor-cli", "mark"]).unwrap();
-        let Command::Mark(args) = cli.command else {
-            unreachable!()
-        };
-        assert_eq!(args.before, monitor_store::DEFAULT_WINDOW_BEFORE_SECONDS);
-        assert_eq!(args.after, monitor_store::DEFAULT_WINDOW_AFTER_SECONDS);
-        assert!(
-            IncidentWindow {
-                before_seconds: args.before,
-                after_seconds: args.after
-            }
-            .is_valid()
-        );
-    }
-
-    #[tokio::test]
-    async fn an_impossible_window_is_refused_before_anything_is_written() {
-        let directory = tempfile::tempdir().unwrap();
-        let cli = Cli::try_parse_from([
-            "better-monitor-cli",
-            "--offline",
-            "--store",
-            directory.path().to_str().unwrap(),
-            "mark",
-            "--before",
-            "0",
-        ])
-        .unwrap();
-        let error = run(&cli).await.expect_err("a refusal");
-        assert!(matches!(error, CliError::Refused(_)));
-        assert!(
-            !directory
-                .path()
-                .join(monitor_store::INCIDENTS_FILE_NAME)
-                .exists(),
-            "a refused marker must not have written anything"
-        );
+    fn mark_is_hidden_and_only_says_that_marking_is_automatic() {
+        // Ticket 115: the service records slowdowns by itself.
+        for arguments in [
+            vec!["better-monitor-cli", "mark"],
+            vec![
+                "better-monitor-cli",
+                "mark",
+                "--note",
+                "slow",
+                "--before",
+                "60",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(arguments).expect("mark still parses");
+            assert!(matches!(cli.command, Command::Mark { .. }));
+        }
+        let help = Cli::command().render_help().to_string();
+        assert!(!help.contains("mark"), "{help}");
+        assert!(MARK_IS_AUTOMATIC.contains("by itself"));
     }
 
     #[test]

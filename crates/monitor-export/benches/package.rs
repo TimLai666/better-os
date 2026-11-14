@@ -59,6 +59,7 @@ fn sample(at_ms: u64) -> Sample {
             user: Some("tim".into()),
             cpu_utilization: Some(index as f64 / 10.0),
             memory_resident: Some(index as u64 * 1_048_576),
+            disk_bytes_rate: None,
         })
         .collect();
 
@@ -147,6 +148,7 @@ fn main() {
                 baseline: Default::default(),
                 snapshot: Box::new(sample(at)),
                 about_pid: Some(1_001),
+                detection: None,
             })
             .expect("an incident");
     }
