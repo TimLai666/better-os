@@ -114,6 +114,7 @@ fn plan(sha256: String) -> WirePlan {
                 sha256,
                 size_bytes: 64,
             }),
+            companions: Vec::new(),
         }],
     }
 }

@@ -1,7 +1,7 @@
 //! Where the control center is, where it has been, and how wide its pane is,
 //! with no GPUI in sight.
 //!
-//! The window has eight destinations in its navigation pane (spec section 1,
+//! The window has nine destinations in its navigation pane (spec section 1,
 //! "Navigation items"); a [`Page`] is a finer location inside one of them, such
 //! as a component's details inside Apps. The back button walks a history of
 //! pages, as Windows 11 Settings' does, and skips the screens of a running
@@ -22,6 +22,9 @@ pub(crate) const HISTORY_LIMIT: usize = 64;
 pub(crate) enum Route {
     Home,
     System,
+    /// Ticket 106's page, its own item until ticket 86's System page can
+    /// hold it as a section.
+    WindowAttention,
     Touchpad,
     KeepAwake,
     Apps,
@@ -33,9 +36,10 @@ pub(crate) enum Route {
 
 impl Route {
     /// The pane's items above the footer, top to bottom.
-    pub(crate) const PANE: [Route; 7] = [
+    pub(crate) const PANE: [Route; 8] = [
         Route::Home,
         Route::System,
+        Route::WindowAttention,
         Route::Touchpad,
         Route::KeepAwake,
         Route::Apps,
@@ -43,9 +47,10 @@ impl Route {
         Route::Fixes,
     ];
     /// Every route: the pane's items, then the footer.
-    pub(crate) const ALL: [Route; 8] = [
+    pub(crate) const ALL: [Route; 9] = [
         Route::Home,
         Route::System,
+        Route::WindowAttention,
         Route::Touchpad,
         Route::KeepAwake,
         Route::Apps,
@@ -72,6 +77,7 @@ impl Route {
         match page {
             Page::Home => Route::Home,
             Page::System => Route::System,
+            Page::WindowAttention => Route::WindowAttention,
             Page::Touchpad => Route::Touchpad,
             Page::KeepAwake => Route::KeepAwake,
             Page::Fixes => Route::Fixes,
@@ -99,6 +105,7 @@ impl Route {
         match self {
             Route::Home => Page::Home,
             Route::System => Page::System,
+            Route::WindowAttention => Page::WindowAttention,
             Route::Touchpad => Page::Touchpad,
             Route::KeepAwake => Page::KeepAwake,
             Route::Apps => Page::Components,
@@ -262,16 +269,16 @@ mod tests {
     }
 
     #[test]
-    fn the_pane_lists_the_eight_items_in_the_spec_order() {
-        assert_eq!(Route::ALL.len(), 8);
-        assert_eq!(Route::ALL[..7], Route::PANE);
-        assert_eq!(Route::ALL[7], Route::Settings);
+    fn the_pane_lists_the_nine_items_in_the_spec_order() {
+        assert_eq!(Route::ALL.len(), 9);
+        assert_eq!(Route::ALL[..8], Route::PANE);
+        assert_eq!(Route::ALL[8], Route::Settings);
         for (index, route) in Route::ALL.iter().enumerate() {
             assert_eq!(route.pane_index(), index);
             assert_eq!(Route::from_pane_index(index), Some(*route));
             assert_eq!(Route::of(&route.landing()), *route);
         }
-        assert_eq!(Route::from_pane_index(8), None);
+        assert_eq!(Route::from_pane_index(9), None);
     }
 
     #[test]

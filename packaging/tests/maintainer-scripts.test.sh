@@ -66,6 +66,13 @@ FAKE
 # the runtime directory systemd-run was told to give it.
 cat > "$FAKE_BIN/systemctl" <<'FAKE'
 #!/bin/sh
+# `systemctl --global VERB UNITS`: root's own, with no user manager; logged as
+# "global verb units" beside this script.
+if [ "$1" = --global ]; then
+    shift
+    printf 'global %s\n' "$*" >> "${0%/bin/systemctl}/global.log"
+    exit 0
+fi
 root="${XDG_RUNTIME_DIR%/run/user/*}"
 FAKE_UID="${XDG_RUNTIME_DIR##*/}"
 PATH=/usr/bin:/bin
@@ -85,7 +92,7 @@ done
 printf '%s %s %s\n' "$FAKE_UID" "$verb" "$unit" >> "$log"
 case "$verb" in
     is-enabled) grep -qxF "$unit" "$state/enabled" 2>/dev/null ;;
-    daemon-reload | try-restart | enable) exit 0 ;;
+    daemon-reload | try-restart | enable | start | disable) exit 0 ;;
     *) exit 4 ;;
 esac
 FAKE
@@ -125,6 +132,7 @@ run_script() {
         # The fakes find their state next to the scratch /run/user.
         better_os_package='better-awake'
         better_os_user_units="$units"
+        better_os_always_on_units="${ALWAYS_ON:-}"
         better_os_unit_dir="$WORK_DIR/root/units"
         better_os_run_user_root="$WORK_DIR/root/run/user"
         better_os_state_dir="$WORK_DIR/root/state-run"
@@ -136,9 +144,17 @@ run_script() {
         "$entry" "$@"
     )
     # The fake systemctl writes into the scratch root; gather it.
+    gather_logs
+}
+
+gather_logs() {
     if [[ -f "$WORK_DIR/root/systemctl.log" ]]; then
         cat "$WORK_DIR/root/systemctl.log" >> "$LOG"
         rm -f "$WORK_DIR/root/systemctl.log"
+    fi
+    if [[ -f "$WORK_DIR/global.log" ]]; then
+        cat "$WORK_DIR/global.log" >> "$LOG"
+        rm -f "$WORK_DIR/global.log"
     fi
 }
 
@@ -317,6 +333,88 @@ if grep -q -- "-p User=1000 -p RuntimeMaxSec=30 -E XDG_RUNTIME_DIR=$WORK_DIR/roo
 else
     fail "unexpected per-user run: $(cat "$SYSTEMD_RUN_LOG")"
 fi
+
+# --- an always-on unit runs for everyone from the install (ADR 0018) ---------
+WA=better-window-attention.service
+reset_world
+logged_in 1000
+logged_in 1001 "$WA"
+ALWAYS_ON="$WA" run_script "$WA" better_os_always_on_units_after_install
+expect_log "global enable $WA" "the unit is enabled for every user, so it starts at login"
+expect_log "1000 start $WA" "and started now for a person logged in"
+expect_log "1001 start $WA" "for everyone logged in"
+reset_world
+logged_in 1000
+run_script "$WA" better_os_always_on_units_after_install
+if [[ ! -s "$LOG" ]]; then
+    pass "a package with no always-on unit enables nothing for everyone"
+else
+    fail "an ordinary unit was enabled for everyone: $(cat "$LOG")"
+fi
+
+# --- the prerm of a package with an always-on unit ----------------------------
+make_prerm() {
+    {
+        printf '#!/bin/sh\nset -e\n'
+        printf "better_os_package='better-manager'\n"
+        printf "better_os_user_units='%s'\n" "$WA"
+        printf "better_os_always_on_units='%s'\n" "$WA"
+        printf "better_os_unit_dir='%s'\n" "$WORK_DIR/root/units"
+        printf "better_os_run_user_root='%s'\n" "$WORK_DIR/root/run/user"
+        printf "better_os_state_dir='%s'\n" "$WORK_DIR/root/state-run"
+        printf "better_os_path='%s'\n" "$FAKE_BIN"
+        printf "better_os_cgroup_file='%s'\n" "$WORK_DIR/root/cgroup"
+        cat "$LIBRARY"
+        # shellcheck disable=SC2016 # expanded by the generated script
+        printf 'better_os_user_units_prerm "$@" || true\n'
+    } > "$WORK_DIR/root/prerm"
+    chmod +x "$WORK_DIR/root/prerm"
+}
+
+reset_world
+: > "$SYSTEMD_RUN_LOG"
+logged_in 1000 "$WA"
+logged_in 1001
+printf '0::/user.slice/user-0.slice/session-3.scope\n' > "$WORK_DIR/root/cgroup"
+make_prerm
+PATH="$FAKE_BIN:$PATH" "$WORK_DIR/root/prerm" remove
+gather_logs
+expect_log "1000 disable $WA" "removal stops and disables the unit for a person logged in"
+expect_log "1001 disable $WA" "for everyone logged in"
+expect_log "global disable $WA" "and takes away its enablement for every user"
+if grep -q -- "-p User=1000 -p RuntimeMaxSec=30 .* systemctl --user disable --now $WA" "$SYSTEMD_RUN_LOG" \
+    && ! grep -q "PAMName" "$SYSTEMD_RUN_LOG"; then
+    pass "the prerm reaches each manager through systemd, with a deadline and no PAM session"
+else
+    fail "unexpected per-user run from the prerm: $(cat "$SYSTEMD_RUN_LOG")"
+fi
+
+for mode in upgrade deconfigure failed-upgrade; do
+    reset_world
+    logged_in 1000 "$WA"
+    make_prerm
+    PATH="$FAKE_BIN:$PATH" "$WORK_DIR/root/prerm" "$mode" 0.2.13
+    gather_logs
+    if [[ ! -s "$LOG" ]]; then
+        pass "a prerm $mode leaves the unit running"
+    else
+        fail "a prerm $mode touched a manager: $(cat "$LOG")"
+    fi
+done
+
+reset_world
+: > "$SYSTEMD_RUN_LOG"
+logged_in 1000 "$WA"
+printf '0::/system.slice/better-manager-daemon.service\n' > "$WORK_DIR/root/cgroup"
+make_prerm
+PATH="$FAKE_BIN:$PATH" "$WORK_DIR/root/prerm" remove
+gather_logs
+if grep -q "^systemd-run .*$WORK_DIR/root/prerm better-os-user-units-remove\$" "$SYSTEMD_RUN_LOG"; then
+    pass "inside the daemon's unit the prerm runs itself again outside it"
+else
+    fail "the prerm did not leave the daemon's sandbox: $(cat "$SYSTEMD_RUN_LOG")"
+fi
+expect_log "1000 disable $WA" "and the unit is stopped from there"
 
 # --- the daemon's postinst only holds a restart while the daemon is busy ------
 DAEMON_LIBRARY="$ROOT_DIR/packaging/maintainer/daemon.sh"

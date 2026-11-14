@@ -646,9 +646,10 @@ done
 rm -rf "$TAMPER_DIR"
 printf 'The installer refused a tampered package and installed nothing\n'
 
-# The real thing.
+# The real thing. better-shell-adapter comes with them: better-manager
+# recommends it (ADR 0018), and the installer puts it beside the manager.
 "$INSTALLER" --from-dir "$DIST_DIR"
-for package_name in better-manager better-manager-daemon; do
+for package_name in better-manager better-manager-daemon better-shell-adapter; do
     installer_reports_installed "$package_name" || {
         printf 'The installer did not install %s\n' "$package_name" >&2
         exit 1
@@ -657,6 +658,8 @@ done
 for required_file in \
     /usr/bin/better-manager \
     /usr/libexec/better-manager-daemon \
+    /usr/libexec/better-window-attention \
+    /usr/share/gnome-shell/extensions/shell-adapter@betteros.org/extension.js \
     /usr/share/polkit-1/actions/org.betteros.manager.policy; do
     [[ -s "$required_file" ]] || {
         printf 'Missing %s after the installer ran\n' "$required_file" >&2
@@ -669,7 +672,7 @@ if ldd /usr/bin/better-manager | grep -q 'not found'; then
     printf 'better-manager has an unresolved library after the installer ran\n' >&2
     exit 1
 fi
-printf 'The installer installed both packages\n'
+printf 'The installer installed the manager, its service, and the shell adapter\n'
 
 # Re-running must not reinstall. A user who pastes the command twice should be
 # told the machine is current, not asked for a password again.
@@ -686,7 +689,7 @@ grep -q 'already installed and current' /tmp/installer-rerun.log || {
 printf 'The installer is idempotent\n'
 
 "$INSTALLER" --uninstall
-for package_name in better-manager better-manager-daemon; do
+for package_name in better-manager better-manager-daemon better-shell-adapter; do
     if installer_reports_installed "$package_name"; then
         printf 'The installer did not remove %s\n' "$package_name" >&2
         exit 1

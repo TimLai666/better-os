@@ -5,6 +5,9 @@
 #
 #   better_os_package       the package's name
 #   better_os_user_units    the user units it ships, separated by spaces
+#   better_os_always_on_units  the units among them that run for everyone,
+#                           enabled for every user and started at install
+#                           (ADR 0018's window attention service), or empty
 #   better_os_unit_dir      /usr/lib/systemd/user
 #   better_os_run_user_root /run/user
 #   better_os_state_dir     /run/better-os/upgrade
@@ -15,7 +18,9 @@
 # puts a fake systemctl first on PATH. Nothing here ever starts a unit that a
 # person turned off: a running unit is restarted with try-restart, which does
 # nothing to a stopped one, and a unit that is new in this version is enabled
-# only for a person who has the component's other units enabled. Better
+# only for a person who has the component's other units enabled. The one
+# exception is an always-on unit, which has no off switch: it is enabled for
+# every user (`systemctl --global`) and started for everyone logged in. Better
 # Manager restarts the same units after it updates a component; the two never
 # disagree, because try-restart only ever restarts what is already running.
 #
@@ -49,6 +54,44 @@ better_os_user_systemctl() {
         -p User="$better_os_who" -p RuntimeMaxSec=30 \
         -E XDG_RUNTIME_DIR="$better_os_run_user_root/$better_os_who" \
         systemctl --user "$@"
+}
+
+# Runs `systemctl --global` with nothing inherited from this script. It only
+# writes the enablement links under /etc/systemd/user that every user's
+# manager reads at login.
+better_os_global_systemctl() {
+    env -i PATH="$better_os_path" systemctl --global "$@"
+}
+
+# postinst configure: an always-on unit is enabled for every user, so it
+# starts at each login, and started now for everyone already logged in.
+better_os_always_on_units_after_install() {
+    [ -n "${better_os_always_on_units:-}" ] || return 0
+    # shellcheck disable=SC2086 # a list of unit names, split on purpose
+    better_os_global_systemctl enable $better_os_always_on_units || true
+    for better_os_uid in $(better_os_logged_in_uids); do
+        better_os_user_systemctl "$better_os_uid" daemon-reload || continue
+        for better_os_unit in $better_os_always_on_units; do
+            better_os_user_systemctl "$better_os_uid" start --no-block \
+                "$better_os_unit" || true
+        done
+    done
+}
+
+# prerm remove: every unit of the package is stopped and disabled for everyone
+# logged in, and an always-on unit loses its enablement for every user, so
+# nothing the package started outlives it. An upgrade keeps everything.
+better_os_user_units_remove() {
+    for better_os_uid in $(better_os_logged_in_uids); do
+        for better_os_unit in $better_os_user_units; do
+            better_os_user_systemctl "$better_os_uid" disable --now \
+                "$better_os_unit" || true
+        done
+    done
+    if [ -n "${better_os_always_on_units:-}" ]; then
+        # shellcheck disable=SC2086 # a list of unit names, split on purpose
+        better_os_global_systemctl disable $better_os_always_on_units || true
+    fi
 }
 
 # preinst: remembers which of the package's user units the installed version
@@ -132,9 +175,29 @@ better_os_user_units_postinst() {
                     "$0" better-os-user-units "${2:-}" && return 0
             fi
             better_os_user_units_after_upgrade "${2:-}"
+            better_os_always_on_units_after_install
             ;;
         better-os-user-units)
             better_os_user_units_after_upgrade "${2:-}"
+            better_os_always_on_units_after_install
+            ;;
+    esac
+}
+
+# The prerm's entry point, for a package with an always-on unit. Only a
+# removal changes anything; from inside the daemon's sandbox it runs itself
+# again outside it, as the postinst does.
+better_os_user_units_prerm() {
+    case "$1" in
+        remove)
+            if better_os_inside_daemon_unit && command -v systemd-run >/dev/null 2>&1; then
+                systemd-run --quiet --wait --collect --service-type=exec \
+                    "$0" better-os-user-units-remove && return 0
+            fi
+            better_os_user_units_remove
+            ;;
+        better-os-user-units-remove)
+            better_os_user_units_remove
             ;;
     esac
 }

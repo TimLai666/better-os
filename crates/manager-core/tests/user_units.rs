@@ -387,6 +387,7 @@ fn a_restore_that_leaves_the_component_enabled_starts_its_units() {
             sha256: "a".repeat(64),
             release_asset: "better-awake_0.2.8_ubuntu-24.04_amd64.deb".to_string(),
             expected_bytes: Some(1024),
+            companions: Vec::new(),
         }),
     });
     let mut state = state_with(&awake(), snapshot_record);
@@ -871,6 +872,7 @@ fn a_restore_that_leaves_the_component_disabled_stops_its_units() {
             sha256: "a".repeat(64),
             release_asset: "better-awake_0.2.8_ubuntu-24.04_amd64.deb".to_string(),
             expected_bytes: Some(1024),
+            companions: Vec::new(),
         }),
     });
     let mut state = state_with(&awake(), snapshot_record);
@@ -1024,6 +1026,7 @@ fn a_restore_restarts_a_unit_that_was_already_running() {
             sha256: "a".repeat(64),
             release_asset: "better-awake_0.2.8_ubuntu-24.04_amd64.deb".to_string(),
             expected_bytes: Some(1024),
+            companions: Vec::new(),
         }),
     });
     let mut state = state_with(&awake(), snapshot_record);

@@ -21,6 +21,7 @@ mod pages_flow;
 mod pages_main;
 mod pages_settings;
 mod render;
+mod render_window_attention;
 mod restart;
 mod runner_end;
 mod search;
@@ -28,6 +29,9 @@ mod settings_page;
 mod shell;
 #[cfg(test)]
 mod tests;
+mod window_attention_app;
+mod window_attention_bus;
+mod window_attention_page;
 
 use app::ManagerApp;
 use better_ui::command_line::WindowCommandLine;
@@ -96,8 +100,8 @@ better-manager — Better OS 控制中心 / the Better OS control center
   better-manager --help       顯示這段說明 / print this help
 
 頁面 / Pages:
-  home, system, touchpad, keep-awake, keep-awake/until, apps, updates,
-  default-apps, fixes, settings
+  home, system, window-attention, touchpad, keep-awake, keep-awake/until,
+  apps, updates, default-apps, fixes, settings
 
 視窗已經開著時，會切換那個視窗並移到最前面，不會開第二個。
 With a window already open, that window switches page and comes to the front;
