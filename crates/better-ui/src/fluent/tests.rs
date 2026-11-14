@@ -1701,32 +1701,81 @@ fn record_paint(dark: bool, _: &mut gpui::Window, _: &mut gpui::App) {
 
 /// Ticket 110: a window opens before GPUI has heard the desktop's appearance
 /// from the portal, so GPUI reports light at first (its test window does the
-/// same). A stored `system` has to paint now and keep a subscription for the
-/// real answer; an explicit choice paints once and needs none.
+/// same). Following paints now and keeps the window subscribed, in the
+/// process's global, whatever the choice is.
 #[gpui::test]
-fn following_the_system_paints_now_and_keeps_listening(cx: &mut gpui::TestAppContext) {
+fn following_paints_now_and_keeps_the_window_subscribed(cx: &mut gpui::TestAppContext) {
     cx.update(gpui_component::init);
     let (_, cx) = cx.add_window_view(|_, _| Blank);
     cx.update(|window, cx| {
         assert_eq!(window.appearance(), gpui::WindowAppearance::Light);
+        assert!(!Appearance::is_following(window, cx));
+        assert_eq!(Appearance::current(cx), Appearance::System);
 
         PAINTED.with(|painted| painted.borrow_mut().clear());
-        let follow = Appearance::System.follow(window, cx, record_paint);
-        assert!(follow.is_some(), "system must keep following the desktop");
-        let dark = Appearance::Dark.follow(window, cx, record_paint);
-        assert!(dark.is_none());
-        let light = Appearance::Light.follow(window, cx, record_paint);
-        assert!(light.is_none());
+        Appearance::System.follow(window, cx, record_paint);
+        assert!(Appearance::is_following(window, cx));
+        Appearance::Dark.follow(window, cx, record_paint);
+        assert_eq!(Appearance::current(cx), Appearance::Dark);
+        Appearance::Light.follow(window, cx, record_paint);
         assert_eq!(
             PAINTED.with(|painted| painted.borrow().clone()),
             [false, true, false]
         );
+        assert!(Appearance::is_following(window, cx));
 
         // The Fluent windows' own call does the same and repaints the kit.
-        let follow = Appearance::System.apply_and_follow(window, cx);
-        assert!(follow.is_some());
+        Appearance::System.apply_and_follow(window, cx);
         assert!(!gpui_component::Theme::global(cx).mode.is_dark());
-        assert!(Appearance::Dark.apply_and_follow(window, cx).is_none());
+        Appearance::Dark.apply_and_follow(window, cx);
         assert!(gpui_component::Theme::global(cx).mode.is_dark());
+    });
+}
+
+/// Ticket 110 review: the theme is one per process, so the choice is too. A
+/// second window opened following the desktop must not repaint the first
+/// light after the person picked dark in it: when the desktop switches, every
+/// window repaints the process's choice, not the one it was opened with.
+#[gpui::test]
+fn a_choice_in_one_window_holds_in_every_window(cx: &mut gpui::TestAppContext) {
+    use gpui::AppContext as _;
+    cx.update(gpui_component::init);
+    let first: gpui::AnyWindowHandle = cx.add_window(|_, _| Blank).into();
+    let second: gpui::AnyWindowHandle = cx.add_window(|_, _| Blank).into();
+    let mut on = |window: gpui::AnyWindowHandle, f: &dyn Fn(&mut gpui::Window, &mut gpui::App)| {
+        cx.update_window(window, |_, window, cx| f(window, cx))
+            .expect("the window is open")
+    };
+    on(first, &|window, cx| {
+        Appearance::System.follow(window, cx, record_paint)
+    });
+    on(second, &|window, cx| {
+        Appearance::System.follow(window, cx, record_paint);
+        assert!(Appearance::is_following(window, cx));
+    });
+    // Dark picked in the first window.
+    on(first, &|window, cx| {
+        Appearance::Dark.follow(window, cx, record_paint)
+    });
+    on(second, &|window, cx| {
+        assert_eq!(Appearance::current(cx), Appearance::Dark);
+        // The desktop switches; the second window's subscription runs. It
+        // must leave dark alone rather than paint the desktop's light.
+        PAINTED.with(|painted| painted.borrow_mut().clear());
+        super::theme::repaint_for_desktop(record_paint, window, cx);
+        assert_eq!(
+            PAINTED.with(|painted| painted.borrow().clone()),
+            Vec::<bool>::new()
+        );
+    });
+    // Back to following: the subscription paints the desktop's appearance.
+    on(first, &|window, cx| {
+        Appearance::System.follow(window, cx, record_paint)
+    });
+    on(second, &|window, cx| {
+        PAINTED.with(|painted| painted.borrow_mut().clear());
+        super::theme::repaint_for_desktop(record_paint, window, cx);
+        assert_eq!(PAINTED.with(|painted| painted.borrow().clone()), [false]);
+        assert!(Appearance::is_following(window, cx));
     });
 }

@@ -1216,17 +1216,35 @@ mod version_and_update_check {
             (zh.restart_requirement, "完成後"),
             (en.restart_not_required, "Nothing needs restarting"),
             (zh.restart_not_required, "不需要重新啟動"),
-            (en.restart_application, "Reopens by itself"),
-            (zh.restart_application, "會自動重新開啟"),
+            (en.restart_application, "Reopens by itself if it is open"),
+            (zh.restart_application, "開著的話會自動重新開啟"),
+            (en.restart_next_open, "Takes effect the next time it opens"),
+            (zh.restart_next_open, "下次開啟時生效"),
+            (
+                en.update_check_none_in_list,
+                "No new versions in the current version list",
+            ),
+            (zh.update_check_none_in_list, "目前的版本清單裡沒有新版本"),
+            (
+                en.catalog_rejected_one,
+                "1 component entry failed its check and was left as it was.",
+            ),
+            (
+                zh.catalog_rejected_one,
+                "有 1 個元件的資訊沒有通過檢查，先維持原本的內容。",
+            ),
             (en.restart_log_out, "Log out and back in"),
             (zh.restart_log_out, "需要登出再登入"),
             (en.restart_reboot, "Restart the computer"),
             (zh.restart_reboot, "需要重新開機"),
             (
                 en.restart_note_application,
-                "Reopens by itself after the update",
+                "Reopens by itself after the update if it is open",
             ),
-            (zh.restart_note_application, "更新後會自動重新開啟"),
+            (
+                zh.restart_note_application,
+                "更新後，開著的話會自動重新開啟",
+            ),
             (
                 en.restart_note_log_out,
                 "Log out and back in after the update",
@@ -1281,7 +1299,7 @@ mod version_and_update_check {
             ),
             (
                 en.catalog_rejected,
-                "{n} component entry failed its check and was left as it was.",
+                "{n} component entries failed their checks and were left as they were.",
             ),
             (
                 zh.catalog_rejected,
@@ -1321,6 +1339,121 @@ mod version_and_update_check {
         }
     }
 
+    /// Ticket 110 review: the manifest's restart requirement is attached to
+    /// every operation, but only an update reopens a running app by itself.
+    #[test]
+    fn only_an_update_says_it_reopens_by_itself() {
+        use crate::components::restart_effect;
+        use manager_core::DesiredOperation as Op;
+        let app = RestartRequirement::RestartApplication;
+        for (locale, update, next) in [
+            (Locale::ZhTw, "開著的話會自動重新開啟", "下次開啟時生效"),
+            (
+                Locale::EnUs,
+                "Reopens by itself if it is open",
+                "Takes effect the next time it opens",
+            ),
+        ] {
+            assert_eq!(restart_effect(locale, Op::Update, app), Some(update));
+            for op in [Op::Install, Op::Enable, Op::Restore] {
+                assert_eq!(restart_effect(locale, op, app), Some(next), "{op:?}");
+            }
+            for op in [Op::Disable, Op::Remove, Op::Verify] {
+                assert_eq!(restart_effect(locale, op, app), None, "{op:?}");
+            }
+            // Logging out or restarting is the person's to do, whatever runs.
+            for op in [Op::Install, Op::Update, Op::Remove] {
+                assert_eq!(
+                    restart_effect(locale, op, RestartRequirement::LogOut),
+                    Some(copy(locale).restart_log_out)
+                );
+                assert_eq!(
+                    restart_effect(locale, op, RestartRequirement::Reboot),
+                    Some(copy(locale).restart_reboot)
+                );
+            }
+        }
+        // The review's summary row: an update only when every step is one.
+        use crate::app::plan_operation;
+        assert_eq!(plan_operation(&[Op::Update, Op::Update]), Op::Update);
+        assert_eq!(plan_operation(&[Op::Update, Op::Install]), Op::Install);
+        assert_eq!(plan_operation(&[Op::Remove, Op::Disable]), Op::Remove);
+        assert_eq!(plan_operation(&[]), Op::Install);
+    }
+
+    /// Ticket 110 review: an offline first launch has only the built-in list;
+    /// "up to date" would claim more than it can know.
+    #[test]
+    fn a_list_that_is_not_the_published_one_never_says_up_to_date() {
+        let never = CatalogStatus::built_in();
+        assert_ne!(
+            UpdateCheck::present(Locale::EnUs, false, false, &never, 0),
+            UpdateCheck::UpToDate
+        );
+        assert_eq!(
+            UpdateCheck::present(Locale::EnUs, false, false, &never, 0),
+            UpdateCheck::NoneInCurrentList
+        );
+        let failed = status(
+            CatalogSource::Cache,
+            Some(CatalogDegradation::RefreshFailedUsingCache),
+            Some(1_000_000),
+        );
+        assert_eq!(
+            UpdateCheck::present(Locale::ZhTw, false, false, &failed, 0),
+            UpdateCheck::NoneInCurrentList
+        );
+        // A refresh that succeeded, in full or in part, may say it.
+        let partial = status(
+            CatalogSource::Remote,
+            Some(CatalogDegradation::PartiallyRefreshed),
+            Some(1_000_000),
+        );
+        assert_eq!(
+            UpdateCheck::present(Locale::EnUs, false, false, &partial, 0),
+            UpdateCheck::UpToDate
+        );
+        let fetched = status(CatalogSource::Remote, None, Some(1_000_000));
+        assert_eq!(
+            UpdateCheck::present(Locale::EnUs, false, false, &fetched, 0),
+            UpdateCheck::UpToDate
+        );
+    }
+
+    /// Ticket 110 review: one refused entry is said in the singular.
+    #[test]
+    fn one_refused_entry_is_said_in_the_singular() {
+        let mut one = status(
+            CatalogSource::Remote,
+            Some(CatalogDegradation::PartiallyRefreshed),
+            Some(1_000_000),
+        );
+        one.rejections = vec![ManifestRejection {
+            file: "better-monitor.yaml".to_string(),
+            reason: RejectionReason::Unreachable,
+        }];
+        assert_eq!(
+            CatalogLine::present(Locale::EnUs, &one, 1_000_000).rejected_line(Locale::EnUs),
+            Some("1 component entry failed its check and was left as it was.".to_string())
+        );
+        assert_eq!(
+            CatalogLine::present(Locale::ZhTw, &one, 1_000_000).rejected_line(Locale::ZhTw),
+            Some("有 1 個元件的資訊沒有通過檢查，先維持原本的內容。".to_string())
+        );
+    }
+
+    /// Ticket 110 review: the age line is redrawn once a minute where it is
+    /// shown, so "moments ago" does not stay on screen for an hour.
+    #[test]
+    fn the_pages_with_the_age_line_redraw_every_minute() {
+        use crate::app::{AGE_REFRESH, shows_catalog_age};
+        use crate::model::Page;
+        assert_eq!(AGE_REFRESH, std::time::Duration::from_secs(60));
+        assert!(shows_catalog_age(&Page::Updates));
+        assert!(shows_catalog_age(&Page::Components));
+        assert!(!shows_catalog_age(&Page::Home));
+    }
+
     /// Ticket 111: a card says what happens after its update only when an
     /// update is waiting and something happens.
     #[test]
@@ -1334,7 +1467,7 @@ mod version_and_update_check {
                 ComponentStatus::UpdateAvailable,
                 RestartRequirement::RestartApplication
             ),
-            Some("更新後會自動重新開啟")
+            Some("更新後，開著的話會自動重新開啟")
         );
         assert_eq!(
             restart_note(

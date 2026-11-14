@@ -15,7 +15,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use better_ui::fluent::theme::Appearance;
-use gpui::{AppContext as _, Bounds, Context, Entity, Pixels, Subscription, Window};
+use gpui::{AppContext as _, Bounds, Context, Entity, Pixels, Window};
 use gpui_component::input::InputState;
 use gpui_component::slider::{SliderEvent, SliderState, SliderValue};
 use gpui_component::{Theme, ThemeMode};
@@ -50,12 +50,6 @@ pub struct TouchpadApp {
     /// is previewed.
     pub(crate) export_path: Entity<InputState>,
     pub(crate) import_path: Entity<InputState>,
-    /// The appearance the person picked, or the desktop's (ADR 0019), stored
-    /// as one word in `$XDG_CONFIG_HOME/better-os/touchpad/appearance`.
-    pub(crate) appearance: Appearance,
-    /// Repaints the window when the desktop switches, while the appearance
-    /// is `system`.
-    _follow_desktop: Option<Subscription>,
     /// Watches for an update and restarts into it (ticket 105).
     pub(crate) update_restart: better_ui::restart::UpdateRestart,
 }
@@ -75,11 +69,7 @@ pub(crate) fn stored_appearance(path: Option<&Path>) -> Appearance {
 /// keeps repainting while the subscription is held. GPUI hears the desktop's
 /// appearance only after the window has opened (ticket 110), so a single
 /// read at startup would open light on a dark desktop.
-fn apply_appearance(
-    appearance: Appearance,
-    window: &mut Window,
-    cx: &mut gpui::App,
-) -> Option<Subscription> {
+fn apply_appearance(appearance: Appearance, window: &mut Window, cx: &mut gpui::App) {
     appearance.follow(window, cx, |dark, window, cx| {
         let mode = if dark {
             ThemeMode::Dark
@@ -109,7 +99,7 @@ impl TouchpadApp {
             page,
         } = startup;
         let appearance = stored_appearance(appearance_path().as_deref());
-        let follow_desktop = apply_appearance(appearance, window, cx);
+        apply_appearance(appearance, window, cx);
 
         let mut sliders = Vec::new();
         for setting in SettingId::ALL {
@@ -193,8 +183,6 @@ impl TouchpadApp {
             gesture_store,
             export_path,
             import_path,
-            appearance,
-            _follow_desktop: follow_desktop,
             update_restart,
         }
     }
@@ -477,8 +465,7 @@ impl TouchpadApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.appearance = appearance;
-        self._follow_desktop = apply_appearance(appearance, window, cx);
+        apply_appearance(appearance, window, cx);
         if let Some(path) = appearance_path()
             && let Err(error) = appearance.save(&path)
         {

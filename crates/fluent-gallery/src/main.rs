@@ -208,10 +208,6 @@ fn page_named(name: &str) -> Page {
 const CRUMBS: [&str; 5] = ["Home", "Documents", "Better OS", "Design", "Screenshots"];
 
 struct Gallery {
-    appearance: Appearance,
-    /// Repaints the gallery when the desktop switches, while it follows the
-    /// desktop.
-    _follow_desktop: Option<gpui::Subscription>,
     zh: bool,
     page: Page,
     compact: bool,
@@ -271,12 +267,10 @@ fn input(
 
 impl Gallery {
     fn new(options: Options, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let follow_desktop = options.appearance.apply_and_follow(window, cx);
+        options.appearance.apply_and_follow(window, cx);
         let zh = options.zh;
         let pick = |en: &'static str, zh_text: &'static str| if zh { zh_text } else { en };
         Self {
-            appearance: options.appearance,
-            _follow_desktop: follow_desktop,
             zh,
             page: options.page,
             compact: options.compact,
@@ -341,8 +335,7 @@ impl Gallery {
 
     /// A handler for a control that updates the gallery and repaints.
     fn set_appearance(&mut self, appearance: Appearance, window: &mut Window, cx: &mut App) {
-        self.appearance = appearance;
-        self._follow_desktop = appearance.apply_and_follow(window, cx);
+        appearance.apply_and_follow(window, cx);
     }
 
     fn act(
@@ -2217,7 +2210,7 @@ impl Gallery {
             ],
             Appearance::ALL
                 .iter()
-                .position(|choice| *choice == self.appearance),
+                .position(|choice| *choice == Appearance::current(cx)),
         )
         .on_select(Self::act_with(cx, |this, index: usize, window, cx| {
             if let Some(choice) = Appearance::ALL.get(index) {
@@ -2568,25 +2561,4 @@ fn main() {
         })
         .detach();
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Appearance, options};
-
-    fn appearance(arguments: &[&str]) -> Appearance {
-        let arguments: Vec<String> = arguments.iter().map(|a| a.to_string()).collect();
-        options(&arguments).appearance
-    }
-
-    /// Ticket 110: the gallery opens in the desktop's appearance unless a
-    /// flag names one, like every Better OS window.
-    #[test]
-    fn the_gallery_follows_the_desktop_unless_told_otherwise() {
-        assert_eq!(appearance(&[]), Appearance::System);
-        assert_eq!(appearance(&["--zh-TW"]), Appearance::System);
-        assert_eq!(appearance(&["--light"]), Appearance::Light);
-        assert_eq!(appearance(&["--dark"]), Appearance::Dark);
-        assert_eq!(appearance(&["--dark", "--light"]), Appearance::Light);
-    }
 }

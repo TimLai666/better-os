@@ -96,12 +96,36 @@ gets dark Better OS windows (and, since ticket 108, dark window frames).
   subscription only for `system`; load defaults. Per app: Awake
   (`the_stored_theme_defaults_to_the_system_and_keeps_a_choice`), Git
   (`tests/invocation.rs`), Manager (`manager-core` and `manager-gui`), Monitor,
-  Launcher, Touchpad, and the gallery cover no file, a file without the
-  field, an unreadable value, and a kept `dark` and `light`; Files and the
-  app chooser call the same `Appearance::load` with nothing of their own and
-  are covered by the `better-ui` test. GPUI exposes no
+  Launcher, and Touchpad cover no file, a file without the field, an
+  unreadable value, and a kept `dark` and `light`; Files, the app chooser,
+  and the gallery call the same `Appearance::load` with nothing of their own
+  and are covered by the `better-ui` test. (The gallery's binary is built
+  with `test = false`, so a test placed in it would never run.) GPUI exposes no
   public way to change a test window's appearance, so the repaint on a
   desktop switch is shown by the sandbox screenshots, not a unit test.
 - **Screenshots** (`.shots/`, not committed): `nofile-light-*` and
   `nofile-dark-*` for all nine windows with no settings files,
   `stored-dark-on-light-better-touchpad.png` for a kept choice.
+- **After review.**
+  - The choice is one per process. gpui-component's `Theme` is a global, so
+    two windows of one process (Files' Ctrl+N, a second FileManager1 window)
+    each kept their own choice and fought: the one still following the
+    desktop repainted the other light after dark was picked in it. The
+    choice now lives in a GPUI global (`Appearance::current`), every window's
+    menu reads it there, and every window's subscription repaints the
+    process's choice. The subscriptions are kept in the same global, one per
+    window and dropped with closed windows, so no window can lose its own by
+    dropping a return value; the per-window fields are gone. One
+    subscription per window rather than one per process, because a
+    subscription belongs to the window it observes and would end with it.
+  - Git: an appearance that is not a word (`5`, `null`) reads as `system`
+    instead of discarding the whole settings file, which the next save then
+    overwrote. `--appearance` is no longer written into the stored settings
+    (`opening_appearance`); the settings page shows what the window is in.
+  - Tests: two windows in one process (`a_choice_in_one_window_holds_in_every_window`),
+    the subscription kept after construction for Launcher in a headless
+    window (the other apps read the person's real files when they
+    are built, so they are covered by the shared `Appearance::follow`), Git's
+    non-word values and command line, and `manager-store` keeping a state
+    whose theme it cannot read while still setting aside a broken field.
+

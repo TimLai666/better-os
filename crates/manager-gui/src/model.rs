@@ -51,11 +51,12 @@ impl CatalogLine {
 
     /// The count of refused manifests, as a line, when there were any.
     pub(crate) fn rejected_line(&self, locale: Locale) -> Option<String> {
-        (self.rejected > 0).then(|| {
-            copy(locale)
-                .catalog_rejected
-                .replace("{n}", &self.rejected.to_string())
-        })
+        let c = copy(locale);
+        match self.rejected {
+            0 => None,
+            1 => Some(c.catalog_rejected_one.to_string()),
+            n => Some(c.catalog_rejected.replace("{n}", &n.to_string())),
+        }
     }
 }
 
@@ -127,8 +128,12 @@ pub(crate) enum UpdateCheck {
     Failed(&'static str),
     /// How many components have a newer version, as a sentence.
     Found(String),
-    /// Nothing to update.
+    /// Nothing to update, according to a list fetched in full or in part.
     UpToDate,
+    /// Nothing to update in the list on screen, which is not the published
+    /// one (never fetched, or the fetch failed). "Up to date" would claim
+    /// more than that list can say.
+    NoneInCurrentList,
 }
 
 impl UpdateCheck {
@@ -158,7 +163,8 @@ impl UpdateCheck {
             // launch the count stands, with the list's warning under it.
             Some(reason) if requested => Self::Failed(reason),
             _ if updates > 0 => Self::Found(update_count(locale, updates)),
-            _ => Self::UpToDate,
+            Some(_) => Self::NoneInCurrentList,
+            None => Self::UpToDate,
         }
     }
 }

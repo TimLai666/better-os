@@ -126,7 +126,7 @@ impl ManagerApp {
                                     view.child(
                                         div()
                                             .text_sm()
-                                            .text_color(cx.theme().warning_foreground)
+                                            .text_color(cx.theme().warning)
                                             .child(warning),
                                     )
                                 })
@@ -176,6 +176,7 @@ impl ManagerApp {
             UpdateCheck::Failed(reason) => (c.update_check_failed.to_string(), Some(*reason)),
             UpdateCheck::Found(sentence) => (sentence.clone(), None),
             UpdateCheck::UpToDate => (c.update_check_up_to_date.to_string(), None),
+            UpdateCheck::NoneInCurrentList => (c.update_check_none_in_list.to_string(), None),
         };
         // A failed check already says which list is on screen; saying it a
         // second time as the list's warning would repeat it.
@@ -234,7 +235,7 @@ impl ManagerApp {
                                     view.child(
                                         div()
                                             .text_sm()
-                                            .text_color(cx.theme().warning_foreground)
+                                            .text_color(cx.theme().warning)
                                             .child(warning),
                                     )
                                 })
@@ -381,11 +382,22 @@ impl ManagerApp {
                         },
                         cx,
                     ))
-                    .child(self.key_value_row(
-                        c.restart_requirement,
-                        self.restart_requirement_label(component.restart_requirement),
-                        cx,
-                    ))
+                    // What happens after the update, and only while one is
+                    // waiting: there is nothing to restart about a component
+                    // that is not about to change (ticket 111).
+                    .when_some(
+                        (component.state == ComponentStatus::UpdateAvailable)
+                            .then(|| {
+                                self.restart_requirement_label(
+                                    DesiredOperation::Update,
+                                    component.restart_requirement,
+                                )
+                            })
+                            .flatten(),
+                        |view, label| {
+                            view.child(self.key_value_row(c.restart_requirement, label, cx))
+                        },
+                    )
                     // Two rows, never one. Folding them into a single "version"
                     // line meant a component that was never installed reported
                     // the catalog's version as its installed version.

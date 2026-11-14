@@ -646,7 +646,7 @@ impl FilesApp {
 
     fn appearance_menu(&self, c: &'static Copy, cx: &mut Context<Self>) -> MenuEntry {
         use better_ui::fluent::theme::Appearance;
-        let current = self.appearance;
+        let current = Appearance::current(cx);
         let item = |label: &'static str, choice: Appearance| {
             MenuItem::new(label)
                 .checked(current == choice)

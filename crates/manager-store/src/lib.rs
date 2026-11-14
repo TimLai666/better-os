@@ -603,4 +603,53 @@ mod tests {
         );
         fs::remove_dir_all(directory).unwrap();
     }
+
+    /// Ticket 110 review: a theme this version cannot read is the default,
+    /// and the state beside it (installed components, revision) stays where
+    /// it is. A field that is genuinely broken still sets the file aside.
+    #[test]
+    fn an_unknown_theme_keeps_the_state_and_a_broken_field_still_sets_it_aside() {
+        let directory = temporary_directory("theme");
+        let path = directory.join(STATE_FILE_NAME);
+        let state = |theme: &str, check_updates: &str| {
+            format!(
+                r#"{{"schema_version":2,"revision":7,"components":{{"better-monitor":{{"installed_version":"0.2.12","enabled":true,"health":"healthy","restore_snapshot":null,"failure":null,"recovery":null}}}},"settings":{{"release_channel":"stable","locale":"zh_tw","theme":{theme},"check_updates":{check_updates},"auto_download":false,"diagnostic_logs":true,"onboarding_complete":true,"component_filter":"all"}}}}"#
+            )
+        };
+
+        for theme in [r#""sepia""#, "5", "null"] {
+            fs::write(&path, state(theme, "true")).unwrap();
+            let outcome = JsonStore::at_path(&path).load().unwrap();
+            assert_eq!(outcome.recovered_corrupt_state, None, "{theme}");
+            assert!(path.exists(), "{theme} must not move the state aside");
+            assert_eq!(outcome.state.revision, 7);
+            assert_eq!(
+                outcome.state.settings.theme,
+                manager_core::StoredTheme::System
+            );
+            assert_eq!(
+                outcome.state.settings.locale,
+                manager_core::StoredLocale::ZhTw
+            );
+            let monitor = ComponentId::new("better-monitor").unwrap();
+            assert_eq!(
+                outcome
+                    .state
+                    .component(&monitor)
+                    .and_then(|record| record.installed_version.clone()),
+                Some("0.2.12".to_string())
+            );
+        }
+
+        // A broken field that is not the theme: still corrupt, still kept.
+        fs::write(&path, state(r#""dark""#, r#""yes""#)).unwrap();
+        let outcome = JsonStore::at_path(&path).load().unwrap();
+        let backup = outcome
+            .recovered_corrupt_state
+            .expect("a broken field sets the state aside");
+        assert!(!path.exists());
+        assert!(backup.exists());
+        assert_eq!(outcome.state, ManagerState::default());
+        fs::remove_dir_all(directory).unwrap();
+    }
 }

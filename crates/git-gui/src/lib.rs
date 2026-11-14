@@ -106,6 +106,13 @@ impl Appearance {
     }
 }
 
+/// The appearance the window opens in: the command line's when it named one,
+/// else the stored one. Only the stored one is ever saved; a `--appearance`
+/// is for this window and is never written into the settings.
+pub fn opening_appearance(command_line: Option<Appearance>, stored: &str) -> Appearance {
+    command_line.unwrap_or_else(|| Appearance::stored(stored))
+}
+
 /// What the window opens with.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StartOptions {

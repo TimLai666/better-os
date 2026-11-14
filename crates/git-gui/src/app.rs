@@ -127,9 +127,6 @@ pub struct GitApp {
     last_poll: i64,
     /// Watches for an update and restarts into it (ticket 105).
     pub(crate) update_restart: better_ui::restart::UpdateRestart,
-    /// Repaints the window when the desktop switches, while the appearance
-    /// is `system`.
-    follow_desktop: Option<Subscription>,
     /// The diff's scroll position a restart handed over, until a diff is
     /// on screen to scroll.
     restored_diff_scroll: Option<f32>,
@@ -176,13 +173,13 @@ impl GitApp {
                 .resolved(),
             other => other.resolved(),
         };
-        let appearance = options
-            .appearance
-            .unwrap_or_else(|| Appearance::stored(&session.settings.appearance));
-        let follow_desktop = crate::theme::apply(appearance, window, cx);
-        // The settings page shows what the window is in, including a choice
-        // made on the command line (which is not saved).
-        session.settings.appearance = appearance.as_str().to_string();
+        // The command line's appearance is this window's only: it is never
+        // written into the stored settings, which any later save would keep.
+        // The settings page shows what the window is in from the process's
+        // appearance instead.
+        let appearance =
+            crate::opening_appearance(options.appearance, &session.settings.appearance);
+        crate::theme::apply(appearance, window, cx);
         if options.locale != Locale::System {
             session.settings.language = match locale {
                 Locale::ZhTw => "zh-TW",
@@ -387,7 +384,6 @@ impl GitApp {
             config_loaded: false,
             last_poll: 0,
             update_restart,
-            follow_desktop,
             restored_diff_scroll: restored.as_ref().map(|view| view.diff_scroll),
             _subscriptions: subscriptions,
         };
@@ -1123,7 +1119,7 @@ impl GitApp {
     ) {
         self.session.settings.appearance = appearance.as_str().to_string();
         self.session.save_settings();
-        self.follow_desktop = crate::theme::apply(appearance, window, cx);
+        crate::theme::apply(appearance, window, cx);
     }
 
     pub(crate) fn set_locale(&mut self, locale: Locale) {

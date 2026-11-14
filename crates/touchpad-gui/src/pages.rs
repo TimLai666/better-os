@@ -535,7 +535,7 @@ impl TouchpadApp {
                         let button = Button::new(id).label(label).small().on_click(cx.listener(
                             move |this, _, window, cx| this.set_appearance(appearance, window, cx),
                         ));
-                        if appearance == self.appearance {
+                        if appearance == Appearance::current(cx) {
                             button.primary()
                         } else {
                             button.outline()

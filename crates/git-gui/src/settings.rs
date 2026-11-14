@@ -21,7 +21,10 @@ pub struct Settings {
     /// `system`, `light`, or `dark`. A file without it, or with a word this
     /// version does not know, follows the desktop (ADR 0019). The field is
     /// written with every save, so a stored `dark` is kept: it cannot be told
-    /// apart from one written as the old default.
+    /// apart from one written as the old default. A value that is not a
+    /// word (a number, `null`) reads as `system` rather than making the whole
+    /// file unreadable, which the next save would then overwrite.
+    #[serde(deserialize_with = "word_or_system")]
     pub appearance: String,
     /// `system`, `en-US`, or `zh-TW`.
     pub language: String,
@@ -79,6 +82,20 @@ impl Default for Settings {
             graph_tags: true,
         }
     }
+}
+
+/// The stored appearance word, or `system` when the value is not a string.
+fn word_or_system<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Field {
+        Word(String),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Field::deserialize(deserializer)? {
+        Field::Word(word) => word,
+        Field::Other(_) => "system".to_string(),
+    })
 }
 
 impl Settings {

@@ -3767,9 +3767,12 @@ impl GitApp {
                     );
             }
             3 => {
+                // What the window is in, which a command-line choice may
+                // differ from the stored one in.
+                let shown = better_ui::fluent::theme::Appearance::current(cx);
                 let theme = Appearance::ALL
                     .iter()
-                    .position(|a| *a == Appearance::stored(&s.appearance))
+                    .position(|a| a.fluent() == shown)
                     .unwrap_or(0);
                 let language = match Locale::from_argument(&s.language) {
                     Some(Locale::EnUs) => 1,

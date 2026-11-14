@@ -28,6 +28,10 @@ chooser, and the Fluent gallery).
   stored `dark` cannot be told from one written as the old default, so it is
   kept as dark. Where the appearance lives in its own one-word file, the file
   exists only once someone picked, so every stored value is a real choice.
+- The choice is one per process, because the theme it paints is one per
+  process: it lives in a GPUI global (`Appearance::current`), every window's
+  picker shows it, and every window's subscription repaints it. Two windows
+  of one process never disagree.
 - Every appearance picker lists the default first: "Use system setting"
   (跟隨系統), then Light, then Dark.
 

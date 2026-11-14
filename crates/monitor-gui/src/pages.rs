@@ -2360,7 +2360,7 @@ impl MonitorApp {
             ],
             Appearance::ALL
                 .iter()
-                .position(|choice| *choice == self.appearance),
+                .position(|choice| *choice == Appearance::current(cx)),
         )
         .min_width(px(200.0))
         .on_select(Self::act_with(cx, |this, index: usize, window, cx| {

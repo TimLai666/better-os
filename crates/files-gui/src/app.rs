@@ -50,11 +50,6 @@ pub(crate) struct OpenMenu {
 
 pub struct FilesApp {
     pub(crate) session: FilesSession,
-    /// The appearance the person chose, saved under
-    /// `$XDG_CONFIG_HOME/better-os/files/appearance`, or the desktop's when
-    /// nothing is stored (ADR 0019).
-    pub(crate) appearance: Appearance,
-    _follow_desktop: Option<Subscription>,
     /// The navigation pane's open or compact state when the person chose
     /// one with its toggle; `None` follows the window's width.
     pub(crate) nav_compact: Option<bool>,
@@ -252,7 +247,9 @@ impl FilesApp {
         let appearance = Appearance::default_path("files")
             .map(|path| Appearance::load(&path))
             .unwrap_or_default();
-        let follow = appearance.apply_and_follow(window, cx);
+        // A second window of the same process takes the same file, which a
+        // choice made in the first has already written.
+        appearance.apply_and_follow(window, cx);
 
         let locale_for_plugins = session.locale.resolved();
         let language = match session.locale.resolved() {
@@ -327,8 +324,6 @@ impl FilesApp {
 
         let mut app = Self {
             session,
-            appearance,
-            _follow_desktop: follow,
             nav_compact: None,
             context_menu: None,
             show_shortcuts: false,
@@ -551,8 +546,9 @@ impl FilesApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.appearance = appearance;
-        self._follow_desktop = appearance.apply_and_follow(window, cx);
+        // Every window of this process shows it: the choice is the process's
+        // (`Appearance::current`), not this window's.
+        appearance.apply_and_follow(window, cx);
         if let Some(path) = Appearance::default_path("files")
             && let Err(error) = appearance.save(&path)
         {

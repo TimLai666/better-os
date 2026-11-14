@@ -40,7 +40,6 @@ use gpui_component_assets::Assets;
 struct StandaloneChooser {
     chooser: Entity<AppChooser>,
     title: &'static str,
-    _appearance: Option<Subscription>,
     _observe: Subscription,
 }
 
@@ -54,6 +53,7 @@ impl StandaloneChooser {
         let appearance = Appearance::default_path("app-chooser")
             .map(|path| Appearance::load(&path))
             .unwrap_or_default();
+        appearance.apply_and_follow(window, cx);
         let observe = cx.observe_in(&chooser, window, |_, chooser, window, cx| {
             let chooser = chooser.read(cx);
             // Asked again on every change, not only when the height moved:
@@ -79,7 +79,6 @@ impl StandaloneChooser {
         Self {
             chooser,
             title,
-            _appearance: appearance.apply_and_follow(window, cx),
             _observe: observe,
         }
     }

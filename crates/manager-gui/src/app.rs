@@ -9,8 +9,7 @@ use manager_core::repair::{self, PackageSystemState, RepairResult};
 use manager_core::{
     ActivityKind, ActivityRecord, ComponentFilterPreference, ComponentStatus, DesiredOperation,
     DiskSpaceCheck, DoctorCheck, Manager, ManagerSettings, ManagerState, MockOutcome,
-    OperationProgress, OperationStage, PlanStep, RestartRequirement, StoredLocale, StoredTheme,
-    TransactionPlan,
+    OperationProgress, OperationStage, PlanStep, StoredLocale, StoredTheme, TransactionPlan,
 };
 use manager_platform::catalog_fetch::HttpManifestFetcher;
 use manager_platform::download::{ArtifactCache, HttpDownloader};
@@ -108,9 +107,6 @@ pub(crate) struct ManagerApp {
     /// Set when `keep-awake/until` asked for the "Until a time" dialog, for
     /// ticket 87's page to open and clear.
     pub(crate) until_dialog_requested: bool,
-    /// Keeps the window following the desktop while Appearance is "Use
-    /// system setting".
-    pub(crate) appearance_follow: Option<Subscription>,
     /// This window's hold on `io.betteros.Manager`; dropping it gives the
     /// name up.
     pub(crate) _bus_owner: Option<deep_link::bus::Owner>,
@@ -175,6 +171,9 @@ pub(crate) struct ManagerApp {
     pub(crate) _nav_search_subscription: Subscription,
     /// Takes requests a second `better-manager` sent over the bus.
     pub(crate) _bus_task: Option<Task<()>>,
+    /// Redraws once a minute while a page shows how long ago the version
+    /// list was checked, so "5 minutes ago" does not stay "just now".
+    _age_task: Task<()>,
     /// Watches for an update and restarts into it (ticket 105).
     pub(crate) update_restart: better_ui::restart::UpdateRestart,
 }
@@ -225,7 +224,7 @@ impl ManagerApp {
         // the point until it is resolved.
         let planning_error = host_error.or(planning_error);
         let locale = locale_from_stored(state.settings.locale);
-        let appearance_follow = appearance_of(state.settings.theme).apply_and_follow(window, cx);
+        appearance_of(state.settings.theme).apply_and_follow(window, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(copy(locale).search));
         let subscription = Self::subscribe_to_search(&search, window, cx);
         let nav_search = Self::nav_search_input(locale, "", window, cx);
@@ -271,7 +270,6 @@ impl ManagerApp {
             about_expanded: true,
             dark: true,
             until_dialog_requested: false,
-            appearance_follow,
             _bus_owner: bus_owner,
             locale,
             search,
@@ -304,6 +302,19 @@ impl ManagerApp {
             _subscriptions: vec![subscription],
             _nav_search_subscription: nav_search_subscription,
             _bus_task: bus_task,
+            _age_task: cx.spawn(async move |this, cx| {
+                loop {
+                    smol::Timer::after(AGE_REFRESH).await;
+                    let alive = this.update(cx, |app, cx| {
+                        if shows_catalog_age(&app.page) {
+                            cx.notify();
+                        }
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                }
+            }),
             update_restart: better_ui::restart::UpdateRestart::new(
                 crate::APP_ID,
                 "Better Manager",
@@ -762,9 +773,7 @@ impl ManagerApp {
             cx.notify();
             return;
         }
-        // Dropping the old subscription stops following the desktop when
-        // the person picks Dark or Light.
-        self.appearance_follow = appearance_of(theme).apply_and_follow(window, cx);
+        appearance_of(theme).apply_and_follow(window, cx);
         cx.notify();
     }
 
@@ -1333,12 +1342,18 @@ impl ManagerApp {
             .unwrap_or_default()
     }
 
-    /// The interruption the pending transaction as a whole would require.
-    pub(crate) fn pending_restart_requirement(&self) -> RestartRequirement {
-        self.pending_plan
-            .as_ref()
-            .map(|plan| plan.restart_requirement())
-            .unwrap_or(RestartRequirement::NotDeclared)
+    /// What the pending transaction as a whole leaves to happen afterwards,
+    /// for the review's summary row; `None` hides the row.
+    pub(crate) fn pending_restart_label(&self) -> Option<&'static str> {
+        let plan = self.pending_plan.as_ref()?;
+        let requirement = plan.restart_requirement();
+        let operations: Vec<DesiredOperation> = plan
+            .steps()
+            .iter()
+            .filter(|step| step.restart_requirement == requirement)
+            .map(|step| step.operation)
+            .collect();
+        crate::components::restart_effect(self.locale, plan_operation(&operations), requirement)
     }
 
     pub(crate) fn pending_disk_space(&self) -> DiskSpaceCheck {
@@ -1542,6 +1557,34 @@ impl ManagerApp {
 
 /// The kit's appearance for a stored choice. The choice is stored once, in
 /// the manager's settings, for every page (spec section 10).
+/// How often a page that says how long ago the version list was checked
+/// redraws: the coarsest unit that line uses below an hour is a minute.
+pub(crate) const AGE_REFRESH: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The pages that show the version list's age: Updates, and Apps' component
+/// list.
+pub(crate) fn shows_catalog_age(page: &Page) -> bool {
+    matches!(page, Page::Updates | Page::Components)
+}
+
+/// The operation whose wording a plan's summary row uses, from the
+/// operations of the steps that set its restart requirement: an update only
+/// when every one of them is an update, nothing to say only when every one
+/// takes the component away, and the neutral wording otherwise.
+pub(crate) fn plan_operation(operations: &[DesiredOperation]) -> DesiredOperation {
+    if !operations.is_empty() && operations.iter().all(|op| *op == DesiredOperation::Update) {
+        DesiredOperation::Update
+    } else if !operations.is_empty()
+        && operations
+            .iter()
+            .all(|op| matches!(op, DesiredOperation::Remove | DesiredOperation::Disable))
+    {
+        DesiredOperation::Remove
+    } else {
+        DesiredOperation::Install
+    }
+}
+
 pub(crate) fn appearance_of(theme: StoredTheme) -> Appearance {
     match theme {
         StoredTheme::Dark => Appearance::Dark,

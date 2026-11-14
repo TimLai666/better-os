@@ -93,3 +93,20 @@ On 2026-11-14 the owner found the Better Manager Updates page unclear
   `after111-{home,apps}-pending-zh.png`, and
   `after111-component-detail-zh.png`. "Checking" points the catalog URL at a
   non-routable address so the fetch stays in flight.
+- **After review.**
+  - The restart wording depends on the operation. `manager-core` attaches the
+    manifest's requirement to every operation, but only an update reopens a
+    running app by itself (ticket 105). An update says 「開著的話會自動重新開啟」;
+    installing, enabling, or restoring says 「下次開啟時生效」; disabling or
+    removing an app that only needed restarting shows no row. Logging out and
+    restarting the computer are shown for every operation. The card's note
+    reads 「更新後，開著的話會自動重新開啟」, and the detail page shows the
+    row only while an update is waiting. The review's summary row uses the
+    update wording only when every step is an update.
+  - An offline first launch (or a failed refresh) with nothing to update says
+    「目前的版本清單裡沒有新版本」, not 「所有元件都是最新版本」, which is kept for a
+    list fetched in full or in part.
+  - English says "1 component entry failed its check" in the singular.
+  - The Updates and Apps pages redraw once a minute, so 「剛剛檢查過新版本」
+    becomes 「5 分鐘前…」 while the window sits open.
+
