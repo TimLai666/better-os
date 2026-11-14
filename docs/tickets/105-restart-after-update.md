@@ -1,6 +1,6 @@
 # Ticket 105 — After an update, everything runs the new version
 
-**Blocked by:** none · **Status:** implemented, not merged
+**Blocked by:** none · **Status:** merged, not released
 
 ## Why
 
