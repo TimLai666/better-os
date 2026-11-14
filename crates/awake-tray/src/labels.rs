@@ -117,6 +117,9 @@ pub struct Labels {
     pub failed_end_in_the_past: &'static str,
     pub failed_too_many_sessions: &'static str,
     pub failed_other: &'static str,
+    /// An item greyed out because what it acted on changed while its
+    /// submenu was open.
+    pub failed_no_longer_applies: &'static str,
 }
 
 pub const ZH_TW: Labels = Labels {
@@ -197,6 +200,7 @@ pub const ZH_TW: Labels = Labels {
     failed_end_in_the_past: "選的時間已經過了，請改選其他長度。",
     failed_too_many_sessions: "同時進行的工作階段太多了，請先結束一些。",
     failed_other: "服務沒有接受這個要求，工作階段維持原狀。",
+    failed_no_longer_applies: "這個選項已經不適用了，請重新打開選單看看現在的狀態。",
 };
 
 pub const EN_US: Labels = Labels {
@@ -277,6 +281,7 @@ pub const EN_US: Labels = Labels {
     failed_end_in_the_past: "That time has already passed. Choose another length.",
     failed_too_many_sessions: "Too many sessions are running at once. End some first.",
     failed_other: "The service did not accept that, so the session is unchanged.",
+    failed_no_longer_applies: "That choice no longer applies. Open the menu again to see where things stand.",
 };
 
 /// The tray's wording for a locale. A trait because [`Locale`] is defined where
@@ -439,6 +444,7 @@ mod tests {
                 labels.failed_end_in_the_past,
                 labels.failed_too_many_sessions,
                 labels.failed_other,
+                labels.failed_no_longer_applies,
             ] {
                 assert!(!body.trim().is_empty());
                 // Plain words, never the error key the service answered with.

@@ -1072,13 +1072,25 @@ async fn a_tray_with_no_notifier_does_not_claim_the_notifications() {
 //   arrived while the menu was closed (`_doLayoutUpdate`);
 // - `LayoutUpdated` and `ItemsPropertiesUpdated` that arrive while the menu is
 //   closed are only remembered, and acted on when it next opens;
-// - opening the menu sends `AboutToShow(0)` and re-reads the layout if that
-//   answers true; unfolding a submenu sends `AboutToShow(id)`;
+// - opening the menu sends `Event(0, "opened")` and `AboutToShow(0)`, and
+//   re-reads the layout if that answers true; closing it sends
+//   `Event(0, "closed")`;
+// - unfolding a submenu sends `Event(id, "opened")` and `AboutToShow(id)`,
+//   folding it `Event(id, "closed")`;
+// - a row it is told `type` or `children-display` for, by a layout read or by
+//   `ItemsPropertiesUpdated`, changed or not, is destroyed and drawn again
+//   (`_onPropertyChanged` calls `_replaceSelf`); an unfolded submenu that is
+//   drawn again is folded, and says nothing about it;
 // - a click is `Event(id, "clicked", <i 0>, timestamp)`.
 //
 // Owner's machine, 2026-11-13: the tray reused ids 1..N for every layout, so
 // this cache kept the not-awake labels on the awake layout's ids. These tests
 // fail against that tray.
+
+/// Whether the extension rebuilds a row it is sent these properties for.
+fn rebuilds(properties: &HashMap<String, OwnedValue>) -> bool {
+    properties.contains_key("type") || properties.contains_key("children-display")
+}
 
 /// One child of a layout node, which arrives as a variant holding `(ia{sv}av)`.
 fn child_node(child: &OwnedValue) -> Node {
@@ -1122,6 +1134,10 @@ struct HostMenu {
     active: bool,
     layout_update_required: bool,
     items_update_required: bool,
+    /// The submenu unfolded now, if any.
+    unfolded: Option<i32>,
+    /// How many times an unfolded submenu was folded up by a rebuild.
+    collapses: usize,
 }
 
 fn string_property(properties: &HashMap<String, OwnedValue>, name: &str) -> Option<String> {
@@ -1154,6 +1170,8 @@ impl HostMenu {
             active: false,
             layout_update_required: false,
             items_update_required: false,
+            unfolded: None,
+            collapses: 0,
         };
         // `initAsync` reads the layout once, closed.
         host.layout_update().await;
@@ -1206,6 +1224,9 @@ impl HostMenu {
             self.merge(child, requested);
         }
         let ids: Vec<i32> = children.iter().map(|child| child.0).collect();
+        if self.items.contains_key(&node.0) && rebuilds(&node.1) {
+            self.rebuild(node.0);
+        }
         match self.items.get_mut(&node.0) {
             Some(item) => {
                 for (name, value) in &node.1 {
@@ -1260,6 +1281,49 @@ impl HostMenu {
             }
         }
         self.items.retain(|id, _| reachable.contains(id));
+        if self.unfolded.is_some_and(|id| !reachable.contains(&id)) {
+            self.rebuild(self.unfolded.unwrap());
+        }
+    }
+
+    /// A row destroyed and drawn again: an unfolded submenu folds up.
+    fn rebuild(&mut self, id: i32) {
+        if self.unfolded == Some(id) {
+            self.unfolded = None;
+            self.collapses += 1;
+        }
+    }
+
+    async fn event(&self, id: i32, event: &str) {
+        let _: () = self
+            .call(
+                "Event",
+                &(id, event, zbus::zvariant::Value::from(0i32), 0u32),
+            )
+            .await;
+    }
+
+    /// Unfolds the submenu with this label.
+    async fn unfold(&mut self, label: &str) {
+        let item = self.find(label);
+        assert_eq!(item.kind, "submenu", "{label:?} is not a submenu");
+        self.unfold_id(item.id).await;
+    }
+
+    async fn unfold_id(&mut self, id: i32) {
+        if let Some(open) = self.unfolded.take() {
+            self.event(open, "closed").await;
+        }
+        self.event(id, "opened").await;
+        let _: (bool,) = self.call("AboutToShow", &(id,)).await;
+        self.unfolded = Some(id);
+    }
+
+    /// Folds the unfolded submenu up.
+    async fn fold(&mut self) {
+        if let Some(open) = self.unfolded.take() {
+            self.event(open, "closed").await;
+        }
     }
 
     /// Handles every signal the tray has sent so far, as `_onSignal` does.
@@ -1298,6 +1362,9 @@ impl HostMenu {
                     let (updated, removed): (Updated, Removed) =
                         message.body().deserialize().unwrap();
                     for (id, properties) in updated {
+                        if self.items.contains_key(&id) && rebuilds(&properties) {
+                            self.rebuild(id);
+                        }
                         if let Some(item) = self.items.get_mut(&id) {
                             item.properties.extend(properties);
                         }
@@ -1326,6 +1393,7 @@ impl HostMenu {
             self.request_properties(ids).await;
             self.items_update_required = false;
         }
+        self.event(0, "opened").await;
         let changed: (bool,) = self.call("AboutToShow", &(0i32,)).await;
         if changed.0 {
             self.layout_update().await;
@@ -1334,7 +1402,9 @@ impl HostMenu {
     }
 
     async fn close(&mut self) {
+        self.fold().await;
         self.active = false;
+        self.event(0, "closed").await;
         self.pump().await;
     }
 
@@ -1405,14 +1475,10 @@ impl HostMenu {
                 .rev()
                 .find(|entry| entry.depth == item.depth - 1 && entry.kind == "submenu")
         {
-            let _: (bool,) = self.call("AboutToShow", &(parent.id,)).await;
+            let parent = parent.id;
+            self.unfold_id(parent).await;
         }
-        let _: () = self
-            .call(
-                "Event",
-                &(item.id, "clicked", zbus::zvariant::Value::from(0i32), 0u32),
-            )
-            .await;
+        self.event(item.id, "clicked").await;
         // A click closes the menu.
         self.close().await;
     }
@@ -2356,4 +2422,106 @@ async fn after_the_old_service_restarts_as_a_new_one_the_tray_speaks_version_3_a
             .collect::<Vec<_>>(),
         vec!["sleep:idle:handle-lid-switch"]
     );
+}
+
+// ---- Ticket 112: an unfolded submenu stays unfolded --------------------------
+
+/// The panel showing the awake menu of a session with an end, so it has an
+/// "Extend session" submenu, with the menu open.
+async fn open_on_a_timed_session(
+    bus: &PrivateBus,
+) -> (Service, zbus::Connection, Arc<TrayController>, HostMenu) {
+    let service = serve_service(bus).await.unwrap();
+    let (tray, controller) = serve_following_tray(bus).await;
+    client(bus)
+        .await
+        .send(start(WireEnd::Duration { seconds: 3_600 }))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let mut host = HostMenu::attach(bus, &tray).await;
+    host.open().await;
+    assert!(host.shows("Extend session"), "{:#?}", host.drawn());
+    (service, tray, controller, host)
+}
+
+/// The session ends somewhere else (the window, or its end time), which
+/// changes the menu's layout.
+async fn end_elsewhere(bus: &PrivateBus) {
+    let end = awake_tray::client::menu_request(awake_tray::MenuAction::EndSession).unwrap();
+    client(bus).await.send(end).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+}
+
+#[tokio::test]
+async fn an_unfolded_submenu_stays_unfolded_while_the_session_ends_and_the_layout_follows_it() {
+    let bus = bus_or_skip!();
+    let (_service, tray, controller, mut host) = open_on_a_timed_session(&bus).await;
+    host.unfold("Extend session").await;
+    let extend = host.unfolded.unwrap();
+
+    end_elsewhere(&bus).await;
+    host.pump().await;
+    assert_eq!(host.unfolded, Some(extend), "the submenu folded up");
+    assert_eq!(host.collapses, 0);
+    // What would extend the ended session is greyed out where it is.
+    let fifteen = host.find("15 min");
+    assert!(!fifteen.enabled, "{fifteen:?}");
+    // A click that raced the greying is refused in words, not dropped.
+    assert_eq!(
+        controller.activate(fifteen.id).await,
+        awake_tray::Activation::Failed(awake_tray::ClientError::Rejected(
+            awake_tray::controller::NO_LONGER_APPLIES.to_string()
+        ))
+    );
+
+    // Folded: after the settle time the new layout goes out on its own.
+    host.fold().await;
+    tokio::time::sleep(awake_tray::controller::SUBMENU_SETTLE * 2).await;
+    host.pump().await;
+    assert!(host.shows("Start a session"), "{:#?}", host.drawn());
+    assert_eq!(as_drawn_labels(&host), intended(&bus, &tray).await);
+    host.assert_well_formed();
+}
+
+#[tokio::test]
+async fn the_next_submenu_unfolded_right_after_the_first_is_not_folded_by_the_held_layout() {
+    let bus = bus_or_skip!();
+    let (_service, _tray, _controller, mut host) = open_on_a_timed_session(&bus).await;
+    host.unfold("Extend session").await;
+    end_elsewhere(&bus).await;
+    host.pump().await;
+
+    // GNOME folds one submenu just before it unfolds the next.
+    host.unfold("Current settings").await;
+    let settings = host.unfolded.unwrap();
+    tokio::time::sleep(awake_tray::controller::SUBMENU_SETTLE * 2).await;
+    host.pump().await;
+    assert_eq!(host.unfolded, Some(settings));
+    assert_eq!(host.collapses, 0);
+    assert!(
+        !host.shows("Start a session"),
+        "the layout went out under it"
+    );
+}
+
+#[tokio::test]
+async fn opening_the_menu_again_sends_a_layout_held_for_a_row_that_never_said_it_closed() {
+    let bus = bus_or_skip!();
+    let (_service, tray, _controller, mut host) = open_on_a_timed_session(&bus).await;
+    host.unfold("Extend session").await;
+    end_elsewhere(&bus).await;
+    host.pump().await;
+    assert!(!host.shows("Start a session"));
+
+    // The row went away without a `closed` (a destroyed row says nothing),
+    // and the panel asks before showing the menu again.
+    host.unfolded = None;
+    host.active = false;
+    let changed: (bool,) = host.call("AboutToShow", &(0i32,)).await;
+    assert!(changed.0, "the held layout was not sent");
+    host.active = true;
+    host.layout_update().await;
+    assert!(host.shows("Start a session"), "{:#?}", host.drawn());
+    assert_eq!(as_drawn_labels(&host), intended(&bus, &tray).await);
 }

@@ -127,9 +127,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // watcher: it watches for one and registers each time one appears. The
     // watch is set up before the first attempt, so a watcher that appears in
     // between is not missed.
+    // A watcher that appears is a panel that started or restarted: it has
+    // no submenu of ours open, so a layout held for one goes out.
     let rewatch = {
-        let watch =
-            monitor_tray::keep_registered(connection.clone(), unique.clone(), report).await?;
+        let host_tray = tray.clone();
+        let watch = monitor_tray::keep_registered(
+            connection.clone(),
+            unique.clone(),
+            move |availability| {
+                report(availability);
+                let tray = host_tray.clone();
+                tokio::spawn(async move { tray.host_changed().await });
+            },
+        )
+        .await?;
         tokio::spawn(watch)
     };
     report(register_and_verify(&connection, &unique).await);

@@ -163,6 +163,19 @@ fn subtree(menu: &Menu, parent_id: i32, depth: i32, wanted: &[String]) -> Layout
     )
 }
 
+/// Who called and where the call stands among that caller's calls: its bus
+/// name and its D-Bus serial, which only grows on one connection. See
+/// [`crate::controller::OpenSubmenus`].
+fn order_of(header: &zbus::message::Header<'_>) -> (String, u64) {
+    (
+        header
+            .sender()
+            .map(|sender| sender.to_string())
+            .unwrap_or_default(),
+        u64::from(header.primary().serial_num().get()),
+    )
+}
+
 #[interface(name = "com.canonical.dbusmenu")]
 impl DbusMenu {
     /// `recursion_depth` of -1 means the whole tree, which is what every panel
@@ -205,21 +218,43 @@ impl DbusMenu {
 
     /// The panel telling us something happened to an item.
     ///
-    /// Only `clicked` does anything. Hover and open events are reported by some
-    /// hosts and must not start a session.
+    /// Only `clicked` runs anything. `opened` and `closed` say which submenus
+    /// the panel has open, which decides when a new layout may be sent; they
+    /// never start a session. Hover events change nothing.
     async fn event(
         &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         id: i32,
         event_id: String,
         _data: Value<'_>,
         _timestamp: u32,
     ) -> zbus::fdo::Result<()> {
-        if event_id == "clicked" {
-            let controller = self.controller.clone();
-            self.runtime
-                .spawn(async move { controller.activate(id).await })
-                .await
-                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        match event_id.as_str() {
+            "clicked" => {
+                let controller = self.controller.clone();
+                self.runtime
+                    .spawn(async move { controller.activate(id).await })
+                    .await
+                    .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+            }
+            "opened" | "closed" => {
+                let (host, order) = order_of(&header);
+                let controller = self.controller.clone();
+                let retry = self
+                    .runtime
+                    .spawn(async move { controller.menu_event(id, &event_id, &host, order).await })
+                    .await
+                    .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+                if let Some(delay) = retry {
+                    // Not awaited: the reply does not wait for the layout.
+                    let controller = self.controller.clone();
+                    self.runtime.spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        controller.release_layout().await;
+                    });
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -228,17 +263,25 @@ impl DbusMenu {
     /// as a result, which makes the host read it again.
     ///
     /// Only the whole menu opening refreshes from the service; that is how
-    /// the countdown in it stays right. A submenu opening does not: GNOME
-    /// asks for each one as it unfolds, and a layout that changed under an
-    /// unfolding submenu would rebuild it closed under the pointer.
-    async fn about_to_show(&self, id: i32) -> bool {
+    /// the countdown in it stays right. Nothing inside it is open yet, so a
+    /// layout held while a submenu was open goes out too. A submenu opening
+    /// does not: GNOME asks for each one as it unfolds, and a layout that
+    /// changed under an unfolding submenu would rebuild it closed under the
+    /// pointer.
+    async fn about_to_show(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        id: i32,
+    ) -> bool {
         if id != 0 {
             return false;
         }
+        let (host, order) = order_of(&header);
         let controller = self.controller.clone();
         self.runtime
             .spawn(async move {
                 let before = controller.revision().await;
+                controller.menu_event(0, "opened", &host, order).await;
                 let _ = controller.refresh().await;
                 controller.revision().await != before
             })
