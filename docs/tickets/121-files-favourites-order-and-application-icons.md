@@ -43,12 +43,49 @@ The owner reported on 2026-11-14:
 
 ## Acceptance
 
-- [ ] Unit tests: drag from index a to b for every pair on a list with
+- [x] Unit tests: drag from index a to b for every pair on a list with
       foreign lines between; drop-to-pin at a position; the context menu
       moves; icon resolution against a fixture icon theme (themed name,
       inherited theme, hicolor, pixmaps, absolute path, SVG, missing).
-- [ ] Sandbox evidence: before and after screenshots of the Applications
+- [x] Sandbox evidence: before and after screenshots of the Applications
       location with fixture desktop entries and a fixture icon theme; a
       favourite dragged to a new place and still there after a restart.
-- [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests and
+- [x] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests and
       the license check pass.
+
+## What was built
+
+- **Why every application had the same icon.** The content view asked the
+  icon theme for the generic `application-x-executable` for every
+  Applications row and never looked at the row's own `Icon=`, which the
+  catalog had carried all along (`ApplicationFacts::icon`). Nothing was
+  dropped and no lookup failed: the lookup was never called.
+- **Shared lookup, nothing moved.** Better Launcher's lookup already lived
+  in `better_ui::icons::IconSearch::resolve` (the desktop's theme and what
+  it inherits, Adwaita, `hicolor`, pixmaps, absolute paths, SVG and PNG),
+  and the app chooser already used it. Better Files now resolves each
+  row's `Icon=` with it on a thread of its own, once per value, and draws
+  the theme's generic application icon until it is found or when it
+  cannot be. When the desktop's icon theme changes, every icon is looked
+  up again. Better Manager's Default apps page draws no application icons
+  at all (its choices are text buttons), so it has no missing icon to fix.
+- **Favourites move by dragging.** A favourite row drags within its
+  section; an accent line shows where it will land; the drop writes the new
+  order to the shared bookmarks file (other programs' lines stay, in their
+  order); Escape cancels any drag. A folder dragged from the content view
+  onto a favourite is pinned at that place (or moved there if already
+  pinned) instead of at the end. The menu gains Move to top and Move to
+  bottom beside Move up and Move down; Alt+Up and Alt+Down stay and are on
+  the shortcuts sheet. The kit's `NavigationView` gained `decorate_rows`
+  for this.
+
+Tests (`tests.rs`): every from/to pair on a list with foreign lines between,
+a drop pinned at a position (and an already pinned one moved), Move to top
+and to bottom through the menu, the shared lookup against a fixture theme
+(themed, inherited, `hicolor`, pixmaps, absolute path, SVG, missing), and a
+row's icon arriving from the resolving thread. Screenshots in `.shots/`,
+with fixture desktop entries and a fixture icon theme:
+`t121-applications-before.png` (every row the generic icon),
+`t121-applications-after.png` (each its own; the one whose icon does not
+exist keeps the fallback), `t121-favourite-dragging.png` (the line above
+the target), `t121-favourite-after-restart.png` (the new order kept).

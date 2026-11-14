@@ -607,6 +607,11 @@ impl FilesSession {
         self.pane().location()
     }
 
+    /// What the folder at `location` is, for its icon (ticket 120).
+    pub fn folder_glyph(&self, location: &Location) -> crate::icons::FolderGlyph {
+        crate::icons::folder_glyph(location, &self.directories, &self.mounts)
+    }
+
     /// Opens a tab. `activate` false is "open in background", which is what
     /// middle-clicking a folder does.
     pub fn open_tab(&mut self, location: Location, activate: bool) -> TabId {
@@ -1750,6 +1755,25 @@ impl FilesSession {
         }
     }
 
+    /// Pins a folder dropped on the Favourites at `position` (ticket 121),
+    /// rather than at the end; a folder already pinned moves there instead.
+    pub fn pin_at(&mut self, location: &Location, position: usize) {
+        let existing = (0..self.bookmarks.len()).find(|index| {
+            self.bookmarks
+                .get(*index)
+                .is_some_and(|bookmark| bookmark.location() == location)
+        });
+        if let Some(from) = existing {
+            self.move_bookmark_to(from, position);
+            return;
+        }
+        let before = self.bookmarks.len();
+        self.pin(location);
+        if self.bookmarks.len() > before {
+            self.move_bookmark_to(before, position.min(before));
+        }
+    }
+
     /// A drop between two favourites.
     pub fn move_bookmark_to(&mut self, from: usize, to: usize) {
         if self.bookmarks.move_to(from, to) {
@@ -2519,6 +2543,17 @@ impl FilesSession {
                         self.move_bookmark_down(index);
                     }
                 }
+                M::MoveBookmarkToTop => {
+                    if let Some(index) = row.bookmark_index {
+                        self.move_bookmark_to(index, 0);
+                    }
+                }
+                M::MoveBookmarkToBottom => {
+                    if let Some(index) = row.bookmark_index {
+                        let last = self.bookmarks.len().saturating_sub(1);
+                        self.move_bookmark_to(index, last);
+                    }
+                }
                 M::RemoveBookmark | M::Unpin => {
                     if let Some(index) = row.bookmark_index {
                         self.remove_bookmark(index);
@@ -2568,6 +2603,8 @@ impl FilesSession {
             M::RenameBookmark
             | M::MoveBookmarkUp
             | M::MoveBookmarkDown
+            | M::MoveBookmarkToTop
+            | M::MoveBookmarkToBottom
             | M::RemoveBookmark
             | M::Eject
             | M::Mount

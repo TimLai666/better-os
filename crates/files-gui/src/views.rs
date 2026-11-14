@@ -50,7 +50,15 @@ pub struct DraggedEntry {
 
 /// The little card that follows the pointer during a drag.
 pub struct DragPreview {
-    label: String,
+    pub(crate) label: String,
+}
+
+/// A favourite being dragged to a new place in its section (ticket 121):
+/// its position, and its name for the card under the pointer.
+#[derive(Clone, Debug)]
+pub struct FavouriteDrag {
+    pub index: usize,
+    pub label: String,
 }
 
 impl Render for DragPreview {
@@ -166,10 +174,91 @@ impl Thumbnails {
     }
 }
 
-/// Themed icon files, looked up once per name.
+/// Themed icon files, looked up once per name; applications' own icons,
+/// resolved on a thread of their own (ticket 121).
 pub struct IconCache {
     search: better_ui::icons::IconSearch,
     found: RefCell<HashMap<(&'static str, String), Option<PathBuf>>>,
+    applications: ApplicationIcons,
+}
+
+/// An application's `Icon=` resolved the way Better Launcher and the app
+/// chooser resolve it (`better_ui::icons::IconSearch::resolve`: the theme
+/// and what it inherits, Adwaita, `hicolor`, pixmaps, an absolute path; SVG
+/// or PNG), off the UI thread and once per value.
+pub struct ApplicationIcons {
+    known: std::sync::Arc<std::sync::Mutex<HashMap<String, Option<PathBuf>>>>,
+    asked: RefCell<std::collections::HashSet<String>>,
+    queue: Option<std::sync::mpsc::Sender<String>>,
+    /// Set when an icon arrived, so the window draws again.
+    pub ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ApplicationIcons {
+    /// Starts the resolving thread over `search`.
+    pub fn start(search: better_ui::icons::IconSearch) -> Self {
+        use std::sync::{Arc, Mutex, atomic::AtomicBool, mpsc};
+        let known: Arc<Mutex<HashMap<String, Option<PathBuf>>>> = Arc::default();
+        let ready = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel::<String>();
+        let queue = {
+            let known = Arc::clone(&known);
+            let ready = Arc::clone(&ready);
+            std::thread::Builder::new()
+                .name("files-app-icons".to_string())
+                .spawn(move || {
+                    for icon in receiver {
+                        let found = application_icon_file(&search, &icon);
+                        if let Ok(mut known) = known.lock() {
+                            known.insert(icon, found);
+                        }
+                        ready.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                })
+                .ok()
+                .map(|_| sender)
+        };
+        Self {
+            known,
+            asked: RefCell::default(),
+            queue,
+            ready,
+        }
+    }
+
+    /// The file for an application's icon when it has been resolved; asks
+    /// for it otherwise and answers `None` until it is.
+    pub fn get(&self, icon: &app_catalog_core::IconReference) -> Option<PathBuf> {
+        let value = icon_value(icon);
+        if let Some(found) = self
+            .known
+            .lock()
+            .ok()
+            .and_then(|known| known.get(&value).cloned())
+        {
+            return found;
+        }
+        if self.asked.borrow_mut().insert(value.clone())
+            && let Some(queue) = &self.queue
+        {
+            let _ = queue.send(value);
+        }
+        None
+    }
+}
+
+/// An `Icon=` value as the desktop entry wrote it: a name or a path.
+fn icon_value(icon: &app_catalog_core::IconReference) -> String {
+    match icon {
+        app_catalog_core::IconReference::Name(name) => name.clone(),
+        app_catalog_core::IconReference::Path(path) => path.display().to_string(),
+    }
+}
+
+/// The file an application's `Icon=` names, by the shared lookup. Reads
+/// the disk: only the resolving thread and tests call it.
+pub fn application_icon_file(search: &better_ui::icons::IconSearch, icon: &str) -> Option<PathBuf> {
+    search.resolve(icon)
 }
 
 impl IconCache {
@@ -184,9 +273,12 @@ impl IconCache {
                 search.themes.push(fallback.to_string());
             }
         }
+        let applications =
+            ApplicationIcons::start(better_ui::icons::IconSearch::from_environment());
         Self {
             search,
             found: RefCell::new(HashMap::new()),
+            applications,
         }
     }
 
@@ -207,6 +299,72 @@ impl IconCache {
             }
         }
         None
+    }
+
+    /// An application's own icon, once resolved.
+    pub fn application(&self, icon: &app_catalog_core::IconReference) -> Option<PathBuf> {
+        self.applications.get(icon)
+    }
+
+    /// Whether an application icon arrived since the last call.
+    pub fn take_ready(&self) -> bool {
+        self.applications
+            .ready
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+}
+
+/// The icon a content row draws: a file, and a mark on it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RowIcon {
+    pub file: Option<PathBuf>,
+    pub emblem: Option<&'static str>,
+}
+
+impl FilesApp {
+    /// What a row in the content view draws: an application's own icon; a
+    /// folder's icon by what it is (ticket 120: its themed icon, or the plain
+    /// folder with an emblem); a file's by its type.
+    pub(crate) fn row_icon(
+        &self,
+        entry: &files_core::Entry,
+        icon_names: &dyn Fn(&str) -> Vec<String>,
+    ) -> RowIcon {
+        if let files_core::EntryBody::Application(facts) = &entry.body {
+            // Its own icon; until that is found, or when it cannot be, the
+            // theme's generic application icon.
+            let own = facts
+                .icon
+                .as_ref()
+                .and_then(|icon| self.icons.application(icon));
+            return RowIcon {
+                file: own.or_else(|| self.icons.first(&icon_candidates(entry, icon_names))),
+                emblem: None,
+            };
+        }
+        if entry.kind == files_core::EntryKind::Directory
+            && let Some(path) = entry.as_local_path()
+        {
+            let glyph = self
+                .session
+                .folder_glyph(&files_core::Location::Local(path.clone()));
+            let mut names = glyph.theme_names();
+            let plain = names.pop();
+            if let Some(own) = self.icons.first(&names) {
+                return RowIcon {
+                    file: Some(own),
+                    emblem: None,
+                };
+            }
+            return RowIcon {
+                file: plain.and_then(|plain| self.icons.first(&[plain])),
+                emblem: glyph.emblem(),
+            };
+        }
+        RowIcon {
+            file: self.icons.first(&icon_candidates(entry, icon_names)),
+            emblem: None,
+        }
     }
 }
 
@@ -293,6 +451,9 @@ impl FilesApp {
                 let hover = fluent::list::row_fill(selected, Interaction::PointerOver, p);
                 let path = entry.path.clone();
                 let is_folder = entry.is_folder;
+                let folder_glyph = files_core::Location::local(&entry.path)
+                    .map(|location| self.session.folder_glyph(&location))
+                    .unwrap_or(crate::icons::FolderGlyph::Folder);
                 div()
                     .id(SharedString::from(format!(
                         "column-entry-{}",
@@ -318,11 +479,11 @@ impl FilesApp {
                         )
                     })
                     .child(
-                        Icon::new(if is_folder {
-                            IconName::Folder
+                        if is_folder {
+                            Icon::empty().path(folder_glyph.svg())
                         } else {
-                            IconName::File
-                        })
+                            Icon::new(IconName::File)
+                        }
                         .size(px(16.0))
                         .text_color(p.text_secondary),
                     )
@@ -615,7 +776,7 @@ impl FilesApp {
                                 c,
                                 &describe,
                             );
-                            let icon = app.icons.first(&icon_candidates(entry, &icon_names));
+                            let icon = app.row_icon(entry, &icon_names);
                             let location = entry
                                 .as_local_path()
                                 .cloned()
@@ -649,9 +810,13 @@ impl FilesApp {
                                     let path = entry.as_local_path()?;
                                     app.thumbnails.for_file(path.as_path(), mime.as_str())
                                 });
-                                let icon = thumbnail.or_else(|| {
-                                    app.icons.first(&icon_candidates(entry, &icon_names))
-                                });
+                                let icon = match thumbnail {
+                                    Some(file) => RowIcon {
+                                        file: Some(file),
+                                        emblem: None,
+                                    },
+                                    None => app.row_icon(entry, &icon_names),
+                                };
                                 let location = entry
                                     .as_local_path()
                                     .cloned()
@@ -800,12 +965,7 @@ impl FilesApp {
     }
 }
 
-fn entry_icon(
-    icon: Option<PathBuf>,
-    fallback: FallbackIcon,
-    size: f32,
-    p: &fluent::Palette,
-) -> AnyElement {
+fn entry_icon(icon: RowIcon, fallback: FallbackIcon, size: f32, p: &fluent::Palette) -> AnyElement {
     let color = p.text_secondary;
     let fallback_icon = move || {
         Icon::new(match fallback {
@@ -817,7 +977,7 @@ fn entry_icon(
         .text_color(color)
         .into_any_element()
     };
-    match icon {
+    let picture = match icon.file {
         Some(path) => img(path)
             .size(px(size))
             .flex_none()
@@ -825,7 +985,41 @@ fn entry_icon(
             .with_fallback(fallback_icon)
             .into_any_element(),
         None => fallback_icon(),
-    }
+    };
+    let Some(emblem) = icon.emblem else {
+        return picture;
+    };
+    // The mark sits on the icon's lower right on a disc of the dialog fill,
+    // half the icon's size, so it reads at every scale.
+    let mark = (size * 0.5).max(10.0);
+    div()
+        .relative()
+        .flex_none()
+        .size(px(size))
+        .child(picture)
+        .child(
+            div()
+                .absolute()
+                .right(px(-mark * 0.15))
+                .bottom(px(-mark * 0.1))
+                .size(px(mark))
+                .rounded_full()
+                // Opaque, so the mark reads over the folder in both
+                // appearances.
+                .bg(p.dialog)
+                .border_1()
+                .border_color(p.stroke)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    Icon::empty()
+                        .path(emblem)
+                        .size(px(mark * 0.7))
+                        .text_color(p.text_primary),
+                ),
+        )
+        .into_any_element()
 }
 
 /// One row of the detailed list.
@@ -833,7 +1027,7 @@ fn list_row(
     entity: &Entity<FilesApp>,
     index: usize,
     row: crate::content::RenderedRow,
-    icon: Option<PathBuf>,
+    icon: RowIcon,
     location: Option<files_core::Location>,
     (scale, columns): (crate::prefs::ItemScale, &[ListColumn]),
     cx: &App,
@@ -917,7 +1111,7 @@ fn grid_tile(
     entity: &Entity<FilesApp>,
     index: usize,
     row: crate::content::RenderedRow,
-    icon: Option<PathBuf>,
+    icon: RowIcon,
     location: Option<files_core::Location>,
     scale: crate::prefs::ItemScale,
     cx: &App,

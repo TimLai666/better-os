@@ -78,6 +78,8 @@ pub fn after_close(selected: Option<usize>, closed: usize, len: usize) -> Option
 pub struct Tab {
     pub title: SharedString,
     pub icon: Option<IconName>,
+    /// The window's own SVG, drawn instead of `icon`.
+    pub icon_path: Option<SharedString>,
     pub closable: bool,
     pub shown: ShownState,
 }
@@ -87,6 +89,7 @@ impl Tab {
         Self {
             title: title.into(),
             icon: None,
+            icon_path: None,
             closable: true,
             shown: ShownState::Live,
         }
@@ -94,6 +97,12 @@ impl Tab {
 
     pub fn icon(mut self, icon: IconName) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// Draws the window's own SVG at `path` (a glyph the kit lacks).
+    pub fn icon_path(mut self, path: impl Into<SharedString>) -> Self {
+        self.icon_path = Some(path.into());
         self
     }
 
@@ -285,11 +294,14 @@ impl RenderOnce for TabView {
                     .active(move |s| s.bg(pressed).text_color(pressed_text));
             }
             item = item
-                .children(tab.icon.clone().map(|icon| {
-                    div()
-                        .mr(px(10.0))
-                        .child(Icon::new(icon).size(super::size::ICON))
-                }))
+                .children(
+                    match (&tab.icon_path, &tab.icon) {
+                        (Some(path), _) => Some(Icon::empty().path(path.clone())),
+                        (None, Some(icon)) => Some(Icon::new(icon.clone())),
+                        (None, None) => None,
+                    }
+                    .map(|icon| div().mr(px(10.0)).child(icon.size(super::size::ICON))),
+                )
                 .child(div().flex_1().min_w_0().truncate().child(tab.title.clone()));
             if tab.closable {
                 let mut close =

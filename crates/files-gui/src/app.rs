@@ -59,6 +59,8 @@ pub struct FilesApp {
     /// The file type names and themed icons, read once per type.
     pub(crate) type_names: Arc<files_platform::MimeDescriptions>,
     pub(crate) icons: crate::views::IconCache,
+    /// The desktop's icon theme the icons were looked up in.
+    pub(crate) icon_theme: Option<String>,
     pub(crate) thumbnails: crate::views::Thumbnails,
     /// Split view: the right pane, a Better Files of its own.
     pub(crate) split: Option<Entity<FilesApp>>,
@@ -99,6 +101,9 @@ pub struct FilesApp {
     pub(crate) path_input: Entity<InputState>,
     pub(crate) dialog_input: Entity<InputState>,
     pub(crate) focus_handle: FocusHandle,
+    /// The keyboard stops of the sidebar's, the preview's and the
+    /// operations panel's edges (ticket 118), in that order.
+    pub(crate) edge_focus: [FocusHandle; 3],
     /// True while the path field is being edited, so the frame does not
     /// overwrite what is being typed with the current location.
     pub(crate) editing_path: bool,
@@ -339,6 +344,7 @@ impl FilesApp {
             weak: cx.entity().downgrade(),
             type_names: Arc::new(files_platform::MimeDescriptions::from_env(language)),
             icons: crate::views::IconCache::from_env(),
+            icon_theme: None,
             thumbnails: crate::views::Thumbnails::from_env(),
             split: None,
             embedded: false,
@@ -362,6 +368,7 @@ impl FilesApp {
             path_input,
             dialog_input,
             focus_handle: cx.focus_handle(),
+            edge_focus: [cx.focus_handle(), cx.focus_handle(), cx.focus_handle()],
             editing_path: false,
             apply_to_remaining: false,
             viewport: size(px(1_200.0), px(800.0)),
@@ -430,6 +437,21 @@ impl FilesApp {
                         .swap(false, std::sync::atomic::Ordering::AcqRel)
                     {
                         cx.notify();
+                    }
+                    if app.icons.take_ready() {
+                        cx.notify();
+                    }
+                    // The desktop's icon theme changed: every icon is looked
+                    // up again in the new one.
+                    let theme = better_ui::system_frame::service::FrameService::global()
+                        .settings()
+                        .icon_theme;
+                    if theme != app.icon_theme {
+                        if app.icon_theme.is_some() {
+                            app.icons = crate::views::IconCache::from_env();
+                            cx.notify();
+                        }
+                        app.icon_theme = theme;
                     }
                     if app.plugins.take_changed() {
                         cx.notify();
@@ -603,7 +625,11 @@ impl FilesApp {
     /// The navigation pane's width, which every width this pane computes
     /// subtracts from its viewport.
     pub(crate) fn nav_width(&self) -> f32 {
-        if self.nav_compact() { 48.0 } else { 320.0 }
+        if self.nav_compact() {
+            48.0
+        } else {
+            self.pane_edge_width(crate::render::PaneEdgeKind::Sidebar)
+        }
     }
 
     /// What every navigation does afterwards: the address box shows the new
@@ -763,6 +789,13 @@ impl FilesApp {
         // it, must not act on them a second time.
         if self.embedded {
             cx.stop_propagation();
+        }
+        // Escape during a drag (a favourite, a file, a pane's edge) puts
+        // it back where it was.
+        if event.keystroke.key == "escape" && cx.has_active_drag() {
+            cx.stop_active_drag(window);
+            cx.notify();
+            return;
         }
         // The Performance mode confirmation is answered with its own buttons;
         // Escape is Cancel, and nothing else reaches the window behind it.

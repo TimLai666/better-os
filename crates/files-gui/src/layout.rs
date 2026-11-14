@@ -85,6 +85,24 @@ pub const OPERATIONS_EDGE: PaneEdge = PaneEdge {
     max_fraction: 1.0 / 3.0,
 };
 
+/// The navigation pane (ticket 118): WinUI's 320px list pane by default;
+/// at 200px a section label and a folder name still read; at most two
+/// fifths of the window, so the folder keeps the rest.
+pub const SIDEBAR_EDGE: PaneEdge = PaneEdge {
+    default: 320.0,
+    min: 200.0,
+    max_fraction: 0.4,
+};
+
+/// The preview pane and the application details in its place (ticket
+/// 118): 320px as before, from 240px (a thumbnail and its caption) to a
+/// third of the window.
+pub const PREVIEW_EDGE: PaneEdge = PaneEdge {
+    default: 320.0,
+    min: 240.0,
+    max_fraction: 1.0 / 3.0,
+};
+
 /// How wide the strip a person grabs to drag a pane's edge is: wider than the
 /// 1px divider drawn in it, as in Windows 11 File Explorer.
 pub const PANE_EDGE_HIT_WIDTH: f32 = 8.0;
@@ -258,5 +276,23 @@ mod tests {
         assert_eq!(edge.store(edge.default, 1_200.0), None);
         assert_eq!(edge.store(280.4, 1_200.0), Some(280));
         assert_eq!(edge.store(5_000.0, 1_200.0), Some(400));
+    }
+
+    #[test]
+    fn the_sidebar_and_preview_edges_keep_the_folder_usable() {
+        // Ticket 118: the sidebar from 200px to two fifths of the window,
+        // reset to 320; an unreadable stored width is the default.
+        let edge = SIDEBAR_EDGE;
+        assert_eq!(edge.resolve(None, 1_400.0), 320.0);
+        assert_eq!(edge.clamp(120.0, 1_400.0), 200.0);
+        assert_eq!(edge.clamp(900.0, 1_400.0), 560.0);
+        assert_eq!(edge.resolve(Some(0), 1_400.0), 320.0);
+        assert_eq!(edge.resolve(Some(260), 1_400.0), 260.0);
+        assert_eq!(edge.store(260.4, 1_400.0), Some(260));
+        assert_eq!(edge.reset(), None);
+        // At the window's minimum the folder keeps at least three fifths.
+        assert!(edge.max(MIN_WINDOW_WIDTH) <= MIN_WINDOW_WIDTH * 0.4 + 0.01);
+        assert_eq!(PREVIEW_EDGE.resolve(None, 1_400.0), 320.0);
+        assert_eq!(PREVIEW_EDGE.clamp(100.0, 1_400.0), 240.0);
     }
 }

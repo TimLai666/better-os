@@ -28,12 +28,20 @@ impl Render for FilesApp {
         // The desktop's frame draws its shadow inside the surface; a pane's
         // share of the window is a share of what the person sees.
         self.frame_inset = window.client_inset().unwrap_or_default();
-        self.viewport = window_size;
+        // What the person sees: the surface less the frame's shadow on each
+        // side. Measuring the surface made every width a little too wide,
+        // which is how the command bar's last buttons ran off the window's
+        // edge at about 1,190px instead of moving behind `…`.
+        let inset = self.frame_inset * 2.0;
+        self.viewport = size(
+            (window_size.width - inset).max(px(0.0)),
+            (window_size.height - inset).max(px(0.0)),
+        );
         if let Some(width) = self.pane_width.filter(|_| self.embedded) {
             self.viewport.width = px(self.nav_width() + width);
         } else if let Some(right) = &self.split {
             let nav = self.nav_width();
-            let own = crate::layout::split_viewport_width(f32::from(window_size.width), nav);
+            let own = crate::layout::split_viewport_width(f32::from(self.viewport.width), nav);
             self.viewport.width = px(own);
             let compact = self.nav_compact;
             right.update(cx, |right, _| {
@@ -126,20 +134,20 @@ impl Render for FilesApp {
         let operations = self
             .session
             .operations_open
-            .then(|| self.operation_center(cx));
+            .then(|| self.operation_center(window, cx));
         let dialog = self.dialog(cx);
         let policy_dialog = self.policy_dialog(cx);
         let search_bar = self.session.search.is_active().then(|| self.search_bar(cx));
         // The preview pane and the details panel are the same slot: both are a
         // column about the selected item, and showing two of them would leave
         // the content area a sliver on a laptop screen.
-        let details = self.application_details(cx);
+        let details = self.application_details(window, cx);
         // A plugin's page shows its own details; the preview is the folder's.
         let preview = (details.is_none()
             && self.session.preview.open
             && !compact
             && self.plugin_view.is_none())
-        .then(|| self.preview_pane(cx));
+        .then(|| self.preview_pane(window, cx));
         let chooser = self.chooser_overlay(cx);
         let menu = self.context_menu_element(cx);
         let sheet = self.show_shortcuts.then(|| self.shortcut_sheet(cx));
@@ -197,7 +205,7 @@ impl Render for FilesApp {
         let shell = if self.embedded {
             page
         } else {
-            self.navigation(page, cx)
+            self.navigation(page, window, cx)
         };
 
         // Mutter gives an `xdg-toplevel` client no decorations, so this window
@@ -766,12 +774,34 @@ impl FilesApp {
 pub(crate) enum PaneEdgeKind {
     /// The file operations panel, whose edge is on its left.
     Operations,
+    /// The navigation pane (the sidebar), whose edge is on its right
+    /// (ticket 118).
+    Sidebar,
+    /// The preview pane and the application details in its place, whose
+    /// edge is on its left.
+    Preview,
 }
 
 impl PaneEdgeKind {
     fn policy(self) -> crate::layout::PaneEdge {
         match self {
             PaneEdgeKind::Operations => crate::layout::OPERATIONS_EDGE,
+            PaneEdgeKind::Sidebar => crate::layout::SIDEBAR_EDGE,
+            PaneEdgeKind::Preview => crate::layout::PREVIEW_EDGE,
+        }
+    }
+
+    /// Whether the pane lies to the left of its edge, so it grows as the
+    /// pointer moves right.
+    fn grows_rightwards(self) -> bool {
+        matches!(self, PaneEdgeKind::Sidebar)
+    }
+
+    fn slot(self) -> usize {
+        match self {
+            PaneEdgeKind::Sidebar => 0,
+            PaneEdgeKind::Preview => 1,
+            PaneEdgeKind::Operations => 2,
         }
     }
 }
@@ -792,6 +822,8 @@ impl FilesApp {
     pub(crate) fn pane_edge_width(&self, kind: PaneEdgeKind) -> f32 {
         let stored = match kind {
             PaneEdgeKind::Operations => self.session.preferences.operations_width,
+            PaneEdgeKind::Sidebar => self.session.preferences.sidebar_width,
+            PaneEdgeKind::Preview => self.session.preferences.preview_width,
         };
         kind.policy().resolve(stored, self.visible_width())
     }
@@ -806,6 +838,8 @@ impl FilesApp {
         let stored = kind.policy().store(width, self.visible_width());
         match kind {
             PaneEdgeKind::Operations => self.session.preferences.operations_width = stored,
+            PaneEdgeKind::Sidebar => self.session.preferences.sidebar_width = stored,
+            PaneEdgeKind::Preview => self.session.preferences.preview_width = stored,
         }
         self.edge_dirty = true;
     }
@@ -817,6 +851,8 @@ impl FilesApp {
         let stored = kind.policy().reset();
         match kind {
             PaneEdgeKind::Operations => self.session.preferences.operations_width = stored,
+            PaneEdgeKind::Sidebar => self.session.preferences.sidebar_width = stored,
+            PaneEdgeKind::Preview => self.session.preferences.preview_width = stored,
         }
         self.edge_dirty = true;
     }
@@ -825,9 +861,16 @@ impl FilesApp {
     /// draws, a resize pointer, the divider in accent while hovered or
     /// dragged, and a double-click back to the default width. The pane it
     /// sits in is `relative()` and takes the drag with [`Self::follow_edge`].
-    pub(crate) fn pane_edge(&self, kind: PaneEdgeKind, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn pane_edge(
+        &self,
+        kind: PaneEdgeKind,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = fluent::palette(cx);
         let dragging = cx.has_active_drag() && self.dragging_edge == Some(kind);
+        let focus = self.edge_focus[kind.slot()].clone();
+        let lit = dragging || focus.contains_focused(window, cx);
         let half = crate::layout::PANE_EDGE_HIT_WIDTH / 2.0;
         let group = SharedString::from(format!("pane-edge-{kind:?}"));
         div()
@@ -846,7 +889,7 @@ impl FilesApp {
                     .bottom_0()
                     .left(px(half - 1.0))
                     .w(px(2.0))
-                    .when(dragging, |line| line.bg(p.accent))
+                    .when(lit, |line| line.bg(p.accent))
                     .group_hover(group, |line| line.bg(p.accent)),
             )
             .on_mouse_down(
@@ -868,6 +911,27 @@ impl FilesApp {
                     cx.new(|_| EdgeDrag(drag.0))
                 }
             })
+            // A keyboard stop like the rest of the window's controls: Left
+            // and Right move the edge 16px, Enter puts it back.
+            .track_focus(&focus.tab_index(0).tab_stop(true))
+            .on_key_down(cx.listener(move |app, event: &KeyDownEvent, _, cx| {
+                let now = app.pane_edge_width(kind);
+                let outward = if kind.grows_rightwards() { 1.0 } else { -1.0 };
+                let width = match event.keystroke.key.as_str() {
+                    "right" => now + 16.0 * outward,
+                    "left" => now - 16.0 * outward,
+                    "enter" => {
+                        cx.stop_propagation();
+                        app.reset_pane_edge(kind);
+                        cx.notify();
+                        return;
+                    }
+                    _ => return,
+                };
+                cx.stop_propagation();
+                app.set_pane_edge_width(kind, width);
+                cx.notify();
+            }))
             .into_any_element()
     }
 
@@ -884,7 +948,11 @@ impl FilesApp {
             if event.drag(cx).0 != kind {
                 return;
             }
-            let width = f32::from(event.bounds.right() - event.event.position.x);
+            let width = if kind.grows_rightwards() {
+                f32::from(event.event.position.x - event.bounds.left())
+            } else {
+                f32::from(event.bounds.right() - event.event.position.x)
+            };
             let _ = this.update(cx, |app, cx| {
                 app.set_pane_edge_width(kind, width);
                 cx.notify();

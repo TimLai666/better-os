@@ -80,6 +80,9 @@ pub struct NavItem {
     /// An SVG the window's own asset source serves, drawn instead of `icon`
     /// for a glyph the kit's set does not have (a trash can).
     pub icon_path: Option<SharedString>,
+    /// A small mark on the icon's bottom trailing corner, such as the star a
+    /// pinned folder wears beside its own icon.
+    pub emblem: Option<IconName>,
 }
 
 /// A trailing icon action on a navigation item.
@@ -117,12 +120,19 @@ impl NavItem {
             caption_warning: false,
             action: None,
             icon_path: None,
+            emblem: None,
         }
     }
 
     /// Draws this SVG (served by the window's asset source) as the icon.
     pub fn icon_path(mut self, path: impl Into<SharedString>) -> Self {
         self.icon_path = Some(path.into());
+        self
+    }
+
+    /// Puts a small mark on the icon's corner; the item keeps its own icon.
+    pub fn emblem(mut self, emblem: IconName) -> Self {
+        self.emblem = Some(emblem);
         self
     }
 
@@ -289,7 +299,17 @@ pub struct NavigationView {
     on_toggle: Option<ValueHandler<bool>>,
     on_search_open: Option<Handler>,
     on_context: Option<ContextHandler>,
+    /// The open pane's width when the window lets the person set it, and
+    /// the grab strip drawn on its trailing edge.
+    open_width: Option<Pixels>,
+    edge: Option<AnyElement>,
+    decorate: Option<RowDecorator>,
 }
+
+/// Adds behaviour to an item's row (by its index in the pane), such as
+/// dragging it to reorder or taking a drop onto it. The window owns what is
+/// dragged; the kit only draws the rows.
+pub type RowDecorator = Rc<dyn Fn(usize, gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div>>;
 
 /// Called with the item's index and the pointer position on a right click,
 /// or the item's own position for the keyboard's menu key.
@@ -314,7 +334,34 @@ impl NavigationView {
             on_toggle: None,
             on_search_open: None,
             on_context: None,
+            open_width: None,
+            edge: None,
+            decorate: None,
         }
+    }
+
+    /// Adds behaviour to every item's row: `decorate(index, row)`.
+    pub fn decorate_rows(
+        mut self,
+        decorate: impl Fn(usize, gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> + 'static,
+    ) -> Self {
+        self.decorate = Some(Rc::new(decorate));
+        self
+    }
+
+    /// The open pane's width, for a window whose pane edge can be dragged
+    /// (Better Files' sidebar). The compact pane stays 48px.
+    pub fn open_width(mut self, width: Pixels) -> Self {
+        self.open_width = Some(width);
+        self
+    }
+
+    /// An element drawn on the open pane's trailing edge, centred on it:
+    /// the strip that drags it. Not drawn while the pane is compact or
+    /// floats over the content.
+    pub fn edge(mut self, edge: impl IntoElement) -> Self {
+        self.edge = Some(edge.into_any_element());
+        self
     }
 
     /// A search box above the items, usually an
@@ -399,6 +446,7 @@ struct RowContext<'a> {
     focus: gpui::FocusHandle,
     on_select: Option<IndexHandler>,
     on_context: Option<ContextHandler>,
+    decorate: Option<RowDecorator>,
     p: &'a Palette,
 }
 
@@ -440,11 +488,30 @@ fn item_row(
     )
     .child(
         div().w(px(40.0)).flex_none().flex().justify_center().child(
-            match &item.icon_path {
-                Some(path) => Icon::empty().path(path.clone()),
-                None => Icon::new(item.icon.clone()),
-            }
-            .size(size::ICON),
+            div()
+                .relative()
+                .child(
+                    match &item.icon_path {
+                        Some(path) => Icon::empty().path(path.clone()),
+                        None => Icon::new(item.icon.clone()),
+                    }
+                    .size(size::ICON),
+                )
+                .children(item.emblem.clone().map(|emblem| {
+                    // On a disc of the pane's own fill, so the mark reads
+                    // over the icon's strokes.
+                    div()
+                        .absolute()
+                        .right(px(-5.0))
+                        .bottom(px(-4.0))
+                        .size(px(11.0))
+                        .rounded_full()
+                        .bg(p.window_background)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(Icon::new(emblem).size(px(9.0)).text_color(p.accent_text))
+                })),
         ),
     )
     .when(!c.compact, |row| {
@@ -548,6 +615,9 @@ fn item_row(
             handler(index, window, cx)
         });
     }
+    if let Some(decorate) = &c.decorate {
+        hit = decorate(index, hit);
+    }
     hit.child(with_focus_ring(row, ring, radius::SM, p))
         .into_any_element()
 }
@@ -565,7 +635,7 @@ fn divider(p: &Palette) -> AnyElement {
 }
 
 impl RenderOnce for NavigationView {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
         let focus = keyed_focus(self.id.clone(), window, cx);
         let ring = shows_focus(&focus, self.shown, window);
@@ -586,6 +656,7 @@ impl RenderOnce for NavigationView {
             focus: focus.clone(),
             on_select: self.on_select.clone(),
             on_context: self.on_context.clone(),
+            decorate: self.decorate.clone(),
             p,
         };
 
@@ -613,6 +684,11 @@ impl RenderOnce for NavigationView {
             });
 
         let floating = floats_over_content(compact, self.overlay);
+        let width = match self.open_width {
+            Some(width) if !compact => width,
+            _ => pane_width(compact),
+        };
+        let edge = self.edge.take().filter(|_| !compact && !floating);
         let search_row = match (search_slot(self.search.is_some(), compact), self.search) {
             (SearchSlot::Field, Some((field, _))) => Some(
                 div()
@@ -718,7 +794,7 @@ impl RenderOnce for NavigationView {
         let selected = self.selected;
         let mut pane = div()
             .id(self.id.clone())
-            .w(pane_width(compact))
+            .w(width)
             .h_full()
             .flex()
             .flex_col()
@@ -833,7 +909,15 @@ impl RenderOnce for NavigationView {
                         .child(content)
                         .child(pane)
                 } else {
-                    root.child(pane).child(content)
+                    root.child(pane).child(content).children(edge.map(|edge| {
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(width)
+                            .w(px(0.0))
+                            .child(edge)
+                    }))
                 }
             })
     }

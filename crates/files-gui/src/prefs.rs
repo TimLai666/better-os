@@ -200,6 +200,12 @@ pub struct FilesPreferences {
     /// The file operations panel's width in logical pixels, when the person
     /// dragged its edge; `None` is the default ([`crate::layout::OPERATIONS_EDGE`]).
     pub operations_width: Option<u32>,
+    /// The navigation pane's open width, when dragged (ticket 118);
+    /// `None` is [`crate::layout::SIDEBAR_EDGE`]'s default.
+    pub sidebar_width: Option<u32>,
+    /// The preview pane's width, shared by the application details that
+    /// take its place; `None` is [`crate::layout::PREVIEW_EDGE`]'s default.
+    pub preview_width: Option<u32>,
     sort_key: StoredSortKey,
     sort_direction: StoredSortDirection,
 }
@@ -217,6 +223,8 @@ impl Default for FilesPreferences {
             preview_open: false,
             search_hidden: false,
             operations_width: None,
+            sidebar_width: None,
+            preview_width: None,
             sort_key: StoredSortKey::from_key(order.key),
             sort_direction: StoredSortDirection::Ascending,
         }

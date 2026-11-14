@@ -13,7 +13,11 @@ use files_operations::Resolution;
 impl FilesApp {
     /// The panel listing every job the shared engine knows about, in the
     /// Fluent kit: a card per job with a `ProgressBar` and standard buttons.
-    pub(crate) fn operation_center(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn operation_center(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         use better_ui::fluent::{self, BODY, BODY_STRONG, CAPTION, button::Button as KitButton};
         use gpui_component::IconName;
         let c = copy(self.locale());
@@ -25,7 +29,7 @@ impl FilesApp {
         let this = cx.entity().downgrade();
 
         let width = self.pane_edge_width(crate::render::PaneEdgeKind::Operations);
-        let edge = self.pane_edge(crate::render::PaneEdgeKind::Operations, cx);
+        let edge = self.pane_edge(crate::render::PaneEdgeKind::Operations, window, cx);
         let follow = self.follow_edge(crate::render::PaneEdgeKind::Operations, cx);
         let clear = {
             let this = cx.entity().downgrade();
@@ -521,13 +525,47 @@ impl FilesApp {
     ///
     /// Everything drawn here was produced on the preview worker thread. This
     /// method formats a value; it opens no file and decodes nothing.
-    pub(crate) fn preview_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    /// The column beside the folder (the preview pane, or the application
+    /// details that take its place), with an edge that drags its width
+    /// (ticket 118); both share the one width, as they share the slot.
+    pub(crate) fn side_slot(
+        &mut self,
+        inner: AnyElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let kind = crate::render::PaneEdgeKind::Preview;
+        let width = self.pane_edge_width(kind);
+        let edge = self.pane_edge(kind, window, cx);
+        let follow = self.follow_edge(kind, cx);
+        div()
+            .id("side-slot")
+            .relative()
+            .w(px(width))
+            .flex_shrink_0()
+            .h_full()
+            .on_drag_move(follow)
+            .child(inner)
+            .child(edge)
+            .into_any_element()
+    }
+
+    pub(crate) fn preview_pane(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let inner = self.preview_column(cx);
+        self.side_slot(inner, window, cx)
+    }
+
+    fn preview_column(&mut self, cx: &mut Context<Self>) -> AnyElement {
         use better_ui::fluent::{self, BODY, BODY_STRONG, CAPTION};
         let c = crate::i18n::copy(self.locale());
         let p = fluent::palette(cx);
         let mut column = v_flex()
             .id("preview-pane")
-            .w(px(320.0))
+            .size_full()
             .flex_shrink_0()
             .h_full()
             .gap(px(8.0))
@@ -697,7 +735,11 @@ impl FilesApp {
     /// The desktop entry's path is here, under a heading that says what it is.
     /// It is a diagnostic, never the application's identity and never something
     /// a click opens.
-    pub(crate) fn application_details(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn application_details(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         use better_ui::fluent::{self, BODY, BODY_STRONG, CAPTION, button::Button as KitButton};
         let c = crate::i18n::copy(self.locale());
         let p = fluent::palette(cx);
@@ -706,7 +748,7 @@ impl FilesApp {
         let line = |text: String| fluent::label(text, CAPTION, p.text_secondary);
         let mut column = v_flex()
             .id("app-details")
-            .w(px(360.0))
+            .size_full()
             .flex_shrink_0()
             .h_full()
             .gap(px(8.0))
@@ -781,7 +823,8 @@ impl FilesApp {
                 p.caution,
             ));
         }
-        Some(column.into_any_element())
+        let inner = column.into_any_element();
+        Some(self.side_slot(inner, window, cx))
     }
 
     /// Better App Chooser, embedded.
