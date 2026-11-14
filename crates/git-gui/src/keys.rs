@@ -125,3 +125,16 @@ pub fn label(action: Action) -> &'static str {
         .map(|(_, _, label)| *label)
         .unwrap_or("")
 }
+
+/// Where the arrow keys move a dropdown's highlighted row among `len` rows:
+/// the first press goes to the first row (Down) or the last (Up), and the
+/// highlight stops at either end.
+pub fn step(highlight: Option<usize>, len: usize, down: bool) -> Option<usize> {
+    let last = len.checked_sub(1)?;
+    Some(match (highlight.map(|i| i.min(last)), down) {
+        (None, true) => 0,
+        (None, false) => last,
+        (Some(i), true) => (i + 1).min(last),
+        (Some(i), false) => i.saturating_sub(1),
+    })
+}

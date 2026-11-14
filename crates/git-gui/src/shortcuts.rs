@@ -89,6 +89,66 @@ pub fn compact<'a>(
     fixed + buttons > window_width
 }
 
+/// Roughly how wide a line of Caption text (12px) is: Latin letters about
+/// 6.5px, CJK characters a full 12px em. Generous, as [`text_width`] is.
+pub fn caption_width(text: &str) -> f32 {
+    text.chars()
+        .map(|c| if c.is_ascii() { 6.5 } else { 12.0 })
+        .sum()
+}
+
+/// How narrow a drop-down item gets with its caption shown: the caption
+/// whole, with the item's padding, icon, gaps, and chevron. Only the value
+/// line shrinks (ellipsis) down to here.
+pub fn item_min_width(caption: &str) -> f32 {
+    (16.0 + 16.0 + 12.0 + caption_width(caption) + 12.0 + 12.0 + 16.0).max(ITEM_MIN_BARE)
+}
+
+/// How narrow a drop-down item gets with its caption hidden: its icon, a
+/// few letters before the ellipsis, and its chevron.
+pub const ITEM_MIN_BARE: f32 = 112.0;
+/// How narrow the sync button gets: its icon and "Fetch origin".
+pub const SYNC_MIN: f32 = 152.0;
+/// The checks item at its narrowest: its icon, a few letters, the re-run
+/// button as an icon, and the pull request's number.
+const CHECKS_MIN: f32 = 180.0;
+
+/// The shortcut buttons as icons: 16px of padding and border, then 32px
+/// buttons 4px apart.
+fn icons_width(buttons: usize) -> f32 {
+    17.0 + 36.0 * buttons as f32
+}
+
+/// Whether the drop-down items keep their captions ("Current repository")
+/// in a window this wide: when every item fits at [`item_min_width`] beside
+/// the narrowest sync button, the checks item, the shortcut buttons as
+/// icons, and Settings. Otherwise the captions are hidden and the items
+/// shrink to [`ITEM_MIN_BARE`], so no caption is ever cut.
+pub fn captions_fit<'a>(
+    window_width: f32,
+    captions: impl IntoIterator<Item = &'a str>,
+    buttons: usize,
+    checks: bool,
+) -> bool {
+    let cells: f32 = captions.into_iter().map(item_min_width).sum();
+    cells
+        + SYNC_MIN
+        + if checks { CHECKS_WIDTH } else { 0.0 }
+        + icons_width(buttons)
+        + SETTINGS_WIDTH
+        <= window_width
+}
+
+/// The toolbar at its narrowest, captions hidden and the shortcut buttons
+/// as icons: what the minimum window width has to hold.
+pub fn narrowest(items: usize, buttons: usize, checks: bool) -> f32 {
+    ITEM_MIN_BARE * items as f32
+        + SYNC_MIN
+        + if checks { CHECKS_MIN } else { 0.0 }
+        + icons_width(buttons)
+        + SETTINGS_WIDTH
+}
+
 /// The editor's name for "Open in {editor}": the command from Settings, or
 /// the first editor found, under the name people know it by. `None` when
 /// the editor is the desktop's default handler, which has no name.

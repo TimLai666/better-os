@@ -6,13 +6,13 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, div, px,
+    AnyElement, App, Context, Div, Focusable as _, InteractiveElement as _, IntoElement,
+    ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, px,
 };
+use gpui_component::input;
 use gpui_component::{Icon, IconName};
-use std::path::PathBuf;
 
-use better_ui::fluent::button::{Button, ButtonKind};
+use better_ui::fluent::button::{Button, ButtonKind, DropDownButton};
 use better_ui::fluent::dialog::Flyout;
 use better_ui::fluent::info_bar::Severity;
 use better_ui::fluent::menu::{MenuEntry, MenuItem};
@@ -268,11 +268,12 @@ impl GitApp {
 
     /// The toolbar's worktree dropdown (ticket 116): the open repository's
     /// worktrees, each named by its folder with its branch (or the commit
-    /// it is detached at) beneath, the main one and the open one marked, a
-    /// filter, and every worktree action: add from the header; open, show
-    /// in Better Files, copy the path, move, and remove from each row's
-    /// More button or its context menu. The whole row opens it; a missing
-    /// one opens nothing.
+    /// it is detached at) beneath, the main one, locked ones, and the open
+    /// one marked, a filter, and the worktree actions: add from the header;
+    /// open, show in Better Files, copy the path, move, and remove from each
+    /// row's More button or its context menu. The whole row opens it; a
+    /// missing one opens nothing. The filter has focus; Up and Down walk
+    /// the rows, Enter opens one, Tab reaches the More buttons and Add.
     pub(crate) fn worktree_flyout(
         &self,
         p: &'static Palette,
@@ -281,10 +282,7 @@ impl GitApp {
     ) -> AnyElement {
         let query = self.inputs.worktree_search.read(cx).value().to_string();
         let rows = self.session.worktree_rows(&query);
-        let only_main = self
-            .session
-            .open_names()
-            .is_some_and(|names| names.only_main);
+        let only_main = self.names.as_ref().is_some_and(|names| names.only_main);
         let mut list = div()
             .flex()
             .flex_col()
@@ -301,46 +299,82 @@ impl GitApp {
         for (index, w) in rows.iter().enumerate() {
             list = list.child(self.worktree_row(index, w, p, c, cx));
         }
-        Flyout::new("worktree-flyout")
-            .on_dismiss(Self::act(cx, |this, _, _| this.flyout = None))
+        let content = div()
+            .flex()
+            .flex_col()
+            .w(px(400.0))
+            .gap(spacing::SM)
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .w(px(400.0))
+                    .items_center()
                     .gap(spacing::SM)
+                    .child(div().flex_1().child(TextBox::search(
+                        "worktree-search",
+                        &self.inputs.worktree_search,
+                    )))
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(spacing::SM)
-                            .child(div().flex_1().child(TextBox::search(
-                                "worktree-search",
-                                &self.inputs.worktree_search,
-                            )))
-                            .child(
-                                Button::standard("worktree-add", c.add_worktree)
-                                    .icon(IconName::Plus)
-                                    .on_click(Self::act(cx, |this, _, _| {
-                                        this.flyout = None;
-                                        this.session.dialog =
-                                            Some(crate::dialogs::Dialog::AddWorktree {
-                                                create: true,
-                                            });
-                                    })),
-                            ),
-                    )
-                    .child(label(c.worktrees_title, CAPTION, p.text_secondary))
-                    .child(list)
-                    .when(only_main && query.trim().is_empty(), |d| {
-                        d.child(div().px(spacing::MD).child(label(
-                            c.only_main_worktree(),
-                            CAPTION,
-                            p.text_secondary,
-                        )))
-                    }),
+                        Button::standard("worktree-add", c.add_worktree)
+                            .icon(IconName::Plus)
+                            .on_click(Self::act(cx, |this, _, _| {
+                                this.flyout = None;
+                                this.session.dialog =
+                                    Some(crate::dialogs::Dialog::AddWorktree { create: true });
+                            })),
+                    ),
             )
+            .child(label(c.worktrees_title, CAPTION, p.text_secondary))
+            .child(list)
+            .when(only_main && query.trim().is_empty(), |d| {
+                d.child(div().px(spacing::MD).child(label(
+                    c.only_main_worktree(),
+                    CAPTION,
+                    p.text_secondary,
+                )))
+            });
+        Flyout::new("worktree-flyout")
+            .initial_focus(self.inputs.worktree_search.focus_handle(cx))
+            .on_dismiss(Self::act(cx, |this, _, _| this.flyout = None))
+            .child(self.flyout_keys(content, cx))
             .into_any_element()
+    }
+
+    /// The arrow keys and Enter of a dropdown's search box walk its rows
+    /// instead of its text (they are the box's own cursor actions, taken on
+    /// their way down, as Better Launcher takes them).
+    pub(crate) fn flyout_keys(&self, content: Div, cx: &mut Context<Self>) -> Div {
+        content
+            .capture_action(cx.listener(|this, _: &input::MoveDown, _, cx| {
+                if this.flyout_step(true, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &input::MoveUp, _, cx| {
+                if this.flyout_step(false, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &input::Enter, window, cx| {
+                if this.flyout_enter(window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+    }
+
+    /// The ring around the row the arrow keys are on: WinUI's focus visual,
+    /// 2px in primary text color, inset in the row.
+    pub(crate) fn highlight_ring(&self, index: usize, p: &Palette) -> Option<Div> {
+        (self.highlight == Some(index)).then(|| {
+            div()
+                .absolute()
+                .top(px(1.0))
+                .bottom(px(1.0))
+                .left(px(4.0))
+                .right(px(4.0))
+                .rounded(radius::SM)
+                .border_2()
+                .border_color(p.text_primary)
+        })
     }
 
     /// One row of the worktree dropdown.
@@ -360,15 +394,24 @@ impl GitApp {
         if w.main {
             detail = format!("{detail} · {}", c.worktree_main);
         }
+        if w.locked {
+            detail = format!("{detail} · {}", c.worktree_locked());
+        }
         if w.missing {
             detail = format!("{detail} · {}", c.missing);
         }
-        let (open, menu, more) = (w.path.clone(), w.path.clone(), w.path.clone());
+        let (open, menu) = (w.path.clone(), w.clone());
         let current = w.current;
+        let entries = self.worktree_entries(w, c, cx);
+        // No path tooltip over a menu opened from the row.
+        let menu_open = self.context_menu.read(cx).is_open();
         crate::render::row(("worktree", index), w.current, px(48.0), p)
-            .tooltip(better_ui::fluent::dialog::tooltip_builder(
-                w.path.display().to_string().into(),
-            ))
+            .when(!menu_open, |row| {
+                row.tooltip(better_ui::fluent::dialog::tooltip_builder(
+                    w.path.display().to_string().into(),
+                ))
+            })
+            .children(self.highlight_ring(index, p))
             .child(
                 if w.missing {
                     Icon::new(IconName::TriangleAlert)
@@ -403,38 +446,25 @@ impl GitApp {
                     .child(label(detail, CAPTION, p.text_secondary).truncate()),
             )
             .child(
-                // Its own press, so the row under it does not open.
+                // Its own press, so the row under it does not open. Its menu
+                // hangs from the button, whether a click or a key opened it.
                 div()
                     .flex_none()
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
-                        Button::icon_button(
-                            ("worktree-more", index),
-                            IconName::Ellipsis,
-                            c.worktree_actions(),
-                        )
-                        .on_click(Self::act(
-                            cx,
-                            move |this, window, cx| {
-                                this.context = Some((
-                                    crate::app::ContextTarget::Worktree(more.clone()),
-                                    window.mouse_position(),
-                                ));
-                                better_ui::fluent::menu::open_menu(
-                                    &this.context_menu,
-                                    None,
-                                    window,
-                                    cx,
-                                );
-                            },
-                        )),
+                        DropDownButton::more(("worktree-more", index), c.worktree_actions())
+                            .entries(entries)
+                            .align_right(),
                     ),
             )
             .on_mouse_down(
                 gpui::MouseButton::Right,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    if this.worktree_entries(&menu, c, cx).is_empty() {
+                        return;
+                    }
                     this.context = Some((
-                        crate::app::ContextTarget::Worktree(menu.clone()),
+                        crate::app::ContextTarget::Worktree(menu.path.clone()),
                         event.position,
                     ));
                     better_ui::fluent::menu::open_menu(&this.context_menu, None, window, cx);
@@ -458,82 +488,103 @@ impl GitApp {
             .into_any_element()
     }
 
-    /// The worktree dropdown's actions for one worktree, for its More
-    /// button and its context menu: what the worktrees dialog offered
-    /// before (open, move, remove) and what the repository list offers for
-    /// a folder (show in Better Files, copy the path).
-    pub(crate) fn worktree_entries(
+    /// The context menu for a worktree the dropdown shows, found again by
+    /// its folder; none for one that is no longer there.
+    pub(crate) fn worktree_context(
         &self,
-        path: PathBuf,
+        path: &std::path::Path,
         c: &'static Copy,
         cx: &mut Context<Self>,
     ) -> Vec<MenuEntry> {
-        let row = self
+        match self
             .session
             .worktree_rows("")
-            .into_iter()
-            .find(|w| w.path == path);
-        let (current, main, missing) = row
-            .as_ref()
-            .map(|w| (w.current, w.main, w.missing))
-            .unwrap_or((false, false, true));
-        let item = |text: &'static str, cx: &mut Context<Self>, f: MenuAction| -> MenuEntry {
+            .iter()
+            .find(|w| w.path == path)
+        {
+            Some(row) => self.worktree_entries(row, c, cx),
+            None => Vec::new(),
+        }
+    }
+
+    /// The menu entries for one worktree: [`WorktreeRow::actions`], each
+    /// worded and wired. Move and Remove of a locked worktree are shown off,
+    /// saying it must be unlocked first.
+    ///
+    /// [`WorktreeRow::actions`]: crate::repositories::WorktreeRow::actions
+    pub(crate) fn worktree_entries(
+        &self,
+        row: &crate::repositories::WorktreeRow,
+        c: &'static Copy,
+        cx: &mut Context<Self>,
+    ) -> Vec<MenuEntry> {
+        use crate::repositories::WorktreeAction;
+        let item = |text: &'static str, enabled: bool, cx: &mut Context<Self>, f: MenuAction| {
             MenuItem::new(text)
+                .disabled(!enabled)
                 .on_select(Self::act(cx, move |this, window, cx| f(this, window, cx)))
                 .entry()
         };
         let mut entries = Vec::new();
-        if !current && !missing {
-            let open = path.clone();
-            entries.push(item(
-                c.worktree_open,
-                cx,
-                Box::new(move |this, _, _| {
-                    this.flyout = None;
-                    this.session.open(open.clone())
-                }),
-            ));
-        }
-        if !missing {
-            let files = path.clone();
-            entries.push(item(
-                c.show_in_files,
-                cx,
-                Box::new(move |this, _, _| this.show_in_files(Some(files.clone()))),
-            ));
-        }
-        let text = path.display().to_string();
-        entries.push(item(
-            c.copy_folder_path(),
-            cx,
-            Box::new(move |this, _, cx| this.copy_text(text.clone(), cx)),
-        ));
-        if !main {
-            let (rename, remove) = (path.clone(), path.clone());
-            entries.push(MenuEntry::Separator);
-            if !missing {
-                entries.push(item(
-                    c.rename_worktree_title,
+        for (action, enabled) in row.actions() {
+            let path = row.path.clone();
+            let entry = match action {
+                WorktreeAction::Open => item(
+                    c.worktree_open,
+                    enabled,
                     cx,
                     Box::new(move |this, _, _| {
                         this.flyout = None;
-                        this.session.dialog = Some(crate::dialogs::Dialog::RenameWorktree {
-                            path: rename.clone(),
-                        })
+                        this.session.open(path.clone())
                     }),
-                ));
-            }
-            entries.push(item(
-                c.remove_worktree_title,
-                cx,
-                Box::new(move |this, _, _| {
-                    this.flyout = None;
-                    this.session.dialog = Some(crate::dialogs::Dialog::RemoveWorktree {
-                        path: remove.clone(),
-                        force: false,
-                    })
-                }),
-            ));
+                ),
+                WorktreeAction::ShowInFiles => item(
+                    c.show_in_files,
+                    enabled,
+                    cx,
+                    Box::new(move |this, _, _| this.show_in_files(Some(path.clone()))),
+                ),
+                WorktreeAction::CopyPath => {
+                    let text = path.display().to_string();
+                    item(
+                        c.copy_folder_path(),
+                        enabled,
+                        cx,
+                        Box::new(move |this, _, cx| this.copy_text(text.clone(), cx)),
+                    )
+                }
+                WorktreeAction::Move => {
+                    entries.push(MenuEntry::Separator);
+                    item(
+                        if enabled {
+                            c.rename_worktree_title
+                        } else {
+                            c.move_locked_worktree()
+                        },
+                        enabled,
+                        cx,
+                        Box::new(move |this, _, _| {
+                            this.flyout = None;
+                            this.session.dialog =
+                                Some(crate::dialogs::Dialog::RenameWorktree { path: path.clone() })
+                        }),
+                    )
+                }
+                WorktreeAction::Remove => item(
+                    if row.locked {
+                        c.remove_locked_worktree()
+                    } else {
+                        c.remove_worktree_title
+                    },
+                    enabled,
+                    cx,
+                    Box::new(move |this, _, _| {
+                        this.flyout = None;
+                        this.session.ask_remove_worktree(path.clone())
+                    }),
+                ),
+            };
+            entries.push(entry);
         }
         entries
     }

@@ -156,7 +156,7 @@ impl Copy {
 
     /// The "More" button at the end of a worktree row.
     pub fn worktree_actions(&self) -> &'static str {
-        self.t("More actions", "更多動作")
+        self.t("More options", "更多選項")
     }
 
     pub fn copy_folder_path(&self) -> &'static str {
@@ -168,6 +168,53 @@ impl Copy {
         self.t(
             "This repository has only its main worktree. Add one to work on another branch in its own folder.",
             "這個儲存庫只有主要工作樹。加入一個工作樹，就能在另一個資料夾處理別的分支。",
+        )
+    }
+
+    /// After the branch of a worktree `git worktree lock` holds.
+    pub fn worktree_locked(&self) -> &'static str {
+        self.t("Locked", "已鎖定")
+    }
+
+    /// Remove, off, for a locked worktree.
+    pub fn remove_locked_worktree(&self) -> &'static str {
+        self.t(
+            "Remove worktree (unlock it first)",
+            "移除工作樹（要先解除鎖定）",
+        )
+    }
+
+    /// Move, off, for a locked worktree.
+    pub fn move_locked_worktree(&self) -> &'static str {
+        self.t(
+            "Move worktree (unlock it first)",
+            "移動工作樹（要先解除鎖定）",
+        )
+    }
+
+    /// The remove confirmation while the worktree's files are counted.
+    pub fn worktree_changes_reading(&self) -> &'static str {
+        self.t("Checking it for changes…", "正在檢查裡面的變更…")
+    }
+
+    pub fn worktree_changes_none(&self) -> &'static str {
+        self.t(
+            "It has no changed or untracked files.",
+            "裡面沒有變更或未追蹤的檔案。",
+        )
+    }
+
+    pub fn worktree_changes_some(&self) -> &'static str {
+        self.t(
+            "It has {changed} changed and {untracked} untracked files. Removing it deletes them.",
+            "裡面有 {changed} 個變更過、{untracked} 個未追蹤的檔案，移除後會一起刪除。",
+        )
+    }
+
+    pub fn worktree_changes_unknown(&self) -> &'static str {
+        self.t(
+            "Better Git couldn't check it for changes.",
+            "Better Git 無法檢查裡面的變更。",
         )
     }
 

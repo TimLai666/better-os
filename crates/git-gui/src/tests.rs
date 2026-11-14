@@ -1510,3 +1510,53 @@ fn a_window_that_cannot_watch_refreshes_every_three_seconds() {
     assert_eq!(live.tick(POLL_MS), (true, false));
     assert_eq!(live.tick(POLL_MS + 10), (false, false));
 }
+
+/// Ticket 116: the toolbar holds three drop-down items. At the minimum
+/// window width the shortcut buttons are icons, the captions show whole
+/// when they fit and are hidden otherwise, and the narrowest toolbar fits.
+#[test]
+fn the_toolbar_fits_the_minimum_width_with_three_items() {
+    use crate::i18n::{EN_US, ZH_TW};
+    use crate::shortcuts::{captions_fit, compact, item_min_width, narrowest};
+    let width = crate::app::MIN_WINDOW_WIDTH;
+    let labels = vec![
+        "Open in Visual Studio Code".to_string(),
+        "Show in Better Files".to_string(),
+        "Open in Terminal".to_string(),
+        "View on GitHub".to_string(),
+    ];
+    for c in [&EN_US, &ZH_TW] {
+        let captions = [c.current_repository, c.current_worktree(), c.current_branch];
+        assert!(compact(
+            width,
+            [
+                (captions[0], "better-os"),
+                (captions[1], "ticket-116-git-toolbar-names-the-repository"),
+                (captions[2], "feature/git-toolbar-names-the-repository"),
+            ],
+            &labels,
+            false
+        ));
+        // Without the checks item the captions fit whole.
+        assert!(captions_fit(width, captions, 4, false), "{}", captions[0]);
+        // With it they are hidden, and still nothing overflows.
+        assert!(!captions_fit(width, captions, 4, true));
+        for caption in captions {
+            assert!(item_min_width(caption) >= crate::shortcuts::caption_width(caption) + 84.0);
+        }
+    }
+    assert!(narrowest(3, 4, true) <= width, "{}", narrowest(3, 4, true));
+}
+
+#[test]
+fn the_arrow_keys_walk_a_dropdown_and_stop_at_its_ends() {
+    use crate::keys::step;
+    assert_eq!(step(None, 0, true), None);
+    assert_eq!(step(None, 3, true), Some(0));
+    assert_eq!(step(None, 3, false), Some(2));
+    assert_eq!(step(Some(0), 3, true), Some(1));
+    assert_eq!(step(Some(2), 3, true), Some(2));
+    assert_eq!(step(Some(0), 3, false), Some(0));
+    // A search that left fewer rows: from the last one.
+    assert_eq!(step(Some(7), 3, false), Some(1));
+}

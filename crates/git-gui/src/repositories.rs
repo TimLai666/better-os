@@ -222,6 +222,48 @@ pub struct WorktreeRow {
     pub current: bool,
     /// Its folder is gone; Git would prune it.
     pub missing: bool,
+    /// `git worktree lock`ed: Git will not move or remove it.
+    pub locked: bool,
+}
+
+/// Something the worktree dropdown offers for one worktree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorktreeAction {
+    Open,
+    ShowInFiles,
+    CopyPath,
+    Move,
+    Remove,
+}
+
+impl WorktreeRow {
+    /// Whether it can be removed from here: not the main worktree, not the
+    /// one open in the window (its folder would go from under it), not
+    /// locked (Git refuses), and still there (Git cannot remove a folder
+    /// that is gone).
+    pub fn removable(&self) -> bool {
+        !self.main && !self.current && !self.locked && !self.missing
+    }
+
+    /// What its More button and context menu offer, each with whether it
+    /// can be chosen. Moving or removing the open worktree is not offered:
+    /// the window's own folder would go from under it, so another worktree
+    /// is opened first. A locked one shows Remove, off, saying why.
+    pub fn actions(&self) -> Vec<(WorktreeAction, bool)> {
+        let mut actions = Vec::new();
+        if !self.current && !self.missing {
+            actions.push((WorktreeAction::Open, true));
+        }
+        if !self.missing {
+            actions.push((WorktreeAction::ShowInFiles, true));
+        }
+        actions.push((WorktreeAction::CopyPath, true));
+        if !self.main && !self.current && !self.missing {
+            actions.push((WorktreeAction::Move, !self.locked));
+            actions.push((WorktreeAction::Remove, self.removable()));
+        }
+        actions
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -615,16 +657,13 @@ type Members<'a> = Vec<(&'a Entry, Option<Known>)>;
 /// The rows of the toolbar's worktree dropdown for the repository `info`
 /// describes: the main one first and marked, then the linked ones in Git's
 /// order, the open one (`current`) marked. The search matches a worktree's
-/// folder name, its branch, or its folder. Drawing it touches no disk.
+/// folder name or its branch, not the rest of its path, where every
+/// worktree shares the same words. Drawing it touches no disk.
 pub fn worktree_list(info: &Known, current: Option<&Path>, query: &str) -> Vec<WorktreeRow> {
     let query = query.trim().to_lowercase();
     let matches = |text: &str| query.is_empty() || text.to_lowercase().contains(&query);
     let mut rows = worktree_rows(info, &|path: &Path| current == Some(path));
-    rows.retain(|w| {
-        matches(&w.name)
-            || w.branch.as_deref().is_some_and(matches)
-            || matches(&w.path.to_string_lossy())
-    });
+    rows.retain(|w| matches(&w.name) || w.branch.as_deref().is_some_and(matches));
     rows
 }
 
@@ -652,6 +691,7 @@ fn worktree_rows(info: &Known, is_current: &impl Fn(&Path) -> bool) -> Vec<Workt
                 main: w.main,
                 current: is_current(&path),
                 missing: w.prunable,
+                locked: w.locked,
                 path,
             })
         })
@@ -1117,6 +1157,97 @@ mod tests {
             Some(f.linked[2].clone())
         );
         assert_eq!(opens(&[f.linked[1].clone()]), Some(f.main.clone()));
+    }
+
+    #[test]
+    fn the_worktree_search_ignores_the_shared_path() {
+        let f = Fixture::new();
+        let info = f.known(&f.main).unwrap();
+        // Every worktree's path holds "wt"; none is named so.
+        assert!(worktree_list(&info, None, "wt").is_empty());
+        let tmp = f
+            .tmp
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(worktree_list(&info, None, &tmp).is_empty());
+    }
+
+    #[test]
+    fn a_worktree_row_offers_only_what_can_be_done_to_it() {
+        use super::{WorktreeAction as A, WorktreeRow};
+        let row = |main: bool, current: bool, missing: bool, locked: bool| WorktreeRow {
+            path: PathBuf::from("/r/w"),
+            name: "w".into(),
+            branch: Some("w".into()),
+            short_sha: None,
+            main,
+            current,
+            missing,
+            locked,
+        };
+        let offered = |r: &WorktreeRow| r.actions();
+        // Another linked worktree: everything.
+        assert_eq!(
+            offered(&row(false, false, false, false)),
+            [
+                (A::Open, true),
+                (A::ShowInFiles, true),
+                (A::CopyPath, true),
+                (A::Move, true),
+                (A::Remove, true)
+            ]
+        );
+        // The main worktree is never moved or removed.
+        let main = row(true, false, false, false);
+        assert!(!main.removable());
+        assert!(
+            offered(&main)
+                .iter()
+                .all(|(a, _)| !matches!(a, A::Move | A::Remove))
+        );
+        // The open one is neither opened again, moved, nor removed.
+        let current = row(false, true, false, false);
+        assert!(!current.removable());
+        assert_eq!(
+            offered(&current),
+            [(A::ShowInFiles, true), (A::CopyPath, true)]
+        );
+        // A missing one cannot be opened, shown, moved, or removed.
+        let missing = row(false, false, true, false);
+        assert!(!missing.removable());
+        assert_eq!(offered(&missing), [(A::CopyPath, true)]);
+        // A locked one shows Move and Remove, off.
+        let locked = row(false, false, false, true);
+        assert!(!locked.removable());
+        assert!(offered(&locked).contains(&(A::Move, false)));
+        assert!(offered(&locked).contains(&(A::Remove, false)));
+        assert!(offered(&locked).contains(&(A::Open, true)));
+    }
+
+    #[test]
+    fn a_locked_worktree_is_marked() {
+        let f = Fixture::new();
+        git(
+            &f.home,
+            &f.main,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "on a stick",
+                f.linked[1].to_str().unwrap(),
+            ],
+        );
+        let rows = worktree_list(&f.known(&f.main).unwrap(), None, "");
+        let locked: Vec<&str> = rows
+            .iter()
+            .filter(|w| w.locked)
+            .map(|w| w.name.as_str())
+            .collect();
+        assert_eq!(locked, ["ticket-102"]);
     }
 
     #[test]

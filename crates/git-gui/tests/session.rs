@@ -1579,6 +1579,7 @@ fn a_bare_repository_names_its_worktree_after_itself() {
     assert_eq!(names.repository, "site.git");
     assert_eq!(names.worktree, "site-work");
     assert!(names.linked);
+    assert!(!names.only_main, "a bare repository has no main worktree");
     assert_eq!(
         session.window_title("Better Git"),
         "site.git · site-work — Better Git"
@@ -1586,4 +1587,75 @@ fn a_bare_repository_names_its_worktree_after_itself() {
     let rows = session.worktree_rows("");
     assert_eq!(rows.len(), 1, "{rows:#?}");
     assert!(rows[0].current && !rows[0].main);
+}
+
+/// Ticket 116 review: the open worktree cannot be removed from its own
+/// window, and the confirmation for another one says what it holds, read
+/// in the background.
+#[test]
+fn removing_a_worktree_says_what_it_holds_and_never_the_open_one() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let root = s.tmp.path().canonicalize().unwrap();
+    let one = root.join("wt-one");
+    s.git(&["worktree", "add", "-q", "-b", "one", one.to_str().unwrap()]);
+    std::fs::write(one.join("a.txt"), "changed\n").unwrap();
+    std::fs::write(one.join("new.txt"), "new\n").unwrap();
+    let mut session = opened(&s);
+    let main = session.repo.as_ref().unwrap().root.clone();
+
+    session.ask_remove_worktree(main.clone());
+    assert!(session.dialog.is_none(), "the main and open one: no");
+    session.ask_remove_worktree(one.clone());
+    assert!(matches!(
+        &session.dialog,
+        Some(Dialog::RemoveWorktree { path, force: false }) if *path == one
+    ));
+    assert_eq!(session.worktree_changes_for(&one), None, "being read");
+    session.run_git_jobs();
+    let found = session.worktree_changes_for(&one).unwrap().unwrap();
+    assert_eq!((found.changed, found.untracked), (1, 1));
+
+    // From the linked worktree itself, it cannot be removed.
+    session.dialog = None;
+    session.open(one.clone());
+    session.trust_and_open(one.clone());
+    session.run_git_jobs();
+    session.ask_remove_worktree(one.clone());
+    assert!(session.dialog.is_none());
+    assert!(one.exists());
+}
+
+/// Ticket 116 review: every window writes the recently opened list; each
+/// starts from the file, so two windows keep what both opened.
+#[test]
+fn two_windows_share_the_recent_list() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let root = s.tmp.path().canonicalize().unwrap();
+    let one = root.join("wt-one");
+    s.git(&["worktree", "add", "-q", "-b", "one", one.to_str().unwrap()]);
+    let main = s.repo.canonicalize().unwrap();
+    let mut first = opened(&s);
+    let mut second = GitSession::new(Arc::new(SystemGit), files(&s));
+    assert_eq!(second.recent, std::slice::from_ref(&main), "read at start");
+    let file = s.home.join("state/better-os/git-recent.json");
+    assert!(file.exists(), "opening wrote it");
+
+    // The second window opens the linked worktree; the first one then
+    // opens the main one again, and keeps the second window's too.
+    second.open(one.clone());
+    second.trust_and_open(one.clone());
+    second.run_git_jobs();
+    first.open(main.clone());
+    first.run_git_jobs();
+    assert_eq!(first.recent, [main.clone(), one.clone()]);
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(
+        saved["repositories"],
+        serde_json::json!([main.to_str().unwrap(), one.to_str().unwrap()])
+    );
+    // And the second one sees it when its dropdown opens.
+    second.read_worktrees();
+    assert_eq!(second.recent, [main, one]);
 }

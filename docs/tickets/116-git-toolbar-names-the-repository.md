@@ -98,3 +98,34 @@ worktree, with an alias, choosing the repository again; a bare repository's
 worktree). Screenshots in a headless GNOME Shell with fixture repositories,
 both dropdowns, main and linked worktree, both languages, 1280px and 960px.
 
+
+## Review changes
+
+- **The open worktree is not moved or removed from its own window**, nor the
+  main one; a locked one shows Move and Remove off ("unlock it first"), and a
+  missing one offers only Copy folder path (`WorktreeRow::actions`). The
+  remove confirmation names the folder and says how many changed and
+  untracked files it holds, read in the background (`Op::WorktreeChanges`).
+  A row that is gone gets no menu.
+- **Keyboard.** Opening any of the three dropdowns empties and focuses its
+  filter (`Flyout::initial_focus`, focused once as it opens); Up and Down
+  walk a highlighted row (the focus visual), Enter opens it, Escape closes,
+  Tab reaches each row's More button and Add. The More button is a
+  `DropDownButton`, so its menu hangs from it whether a click or a key opened
+  it. Focus left on a closed dropdown's controls, or on a closed context
+  menu, comes back to the window or the dropdown's filter.
+- **Locked worktrees** are marked "Locked".
+- **Minimum width.** Captions are never cut: an item keeps its caption whole
+  and only the value shrinks, and when the captions cannot all fit (a checks
+  item at 960px) they are hidden; the checks item clips and its re-run button
+  becomes an icon. A full-width button's label ends in an ellipsis, and the
+  commit button's tooltip has it whole.
+- The worktree filter matches folder names and branches only; a bare
+  repository with one linked worktree is not "only the main worktree"; every
+  write of the recent list starts from the file, which is also re-read when
+  the repository dropdown opens; the names are worked out once per frame.
+
+Not built: showing git's lock reason, and Lock, Unlock, and Prune. They need
+`git worktree lock`, `unlock`, and `prune` in `crates/git-platform` and the
+reason parsed in `crates/git-core/src/worktree.rs`, which this ticket's
+change list does not include.

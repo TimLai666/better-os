@@ -111,6 +111,15 @@ pub struct GitApp {
     pub(crate) graph: crate::graph_pane::GraphUi,
     pub(crate) focus_handle: FocusHandle,
     pub(crate) flyout: Option<Flyout>,
+    /// The row of the open dropdown the arrow keys are on.
+    pub(crate) highlight: Option<usize>,
+    /// What held focus while a dropdown was open, so focus left on one of
+    /// its controls when it closes comes back to the window.
+    pub(crate) flyout_focus: Vec<FocusHandle>,
+    /// How the open repository and worktree are named, worked out once per
+    /// frame (`GitSession::open_names`) for the toolbar, the title, and the
+    /// worktree dropdown.
+    pub(crate) names: Option<crate::session::OpenNames>,
     /// 0 branches, 1 pull requests.
     pub(crate) branch_tab: usize,
     /// File, View, Repository, Branch.
@@ -147,6 +156,134 @@ pub struct GitApp {
     /// on screen to scroll.
     restored_diff_scroll: Option<f32>,
     _subscriptions: Vec<Subscription>,
+}
+
+impl GitApp {
+    /// Opens a toolbar dropdown with its search box empty and focused, so
+    /// typing filters at once and the arrow keys walk the rows.
+    pub(crate) fn open_flyout(
+        &mut self,
+        which: Flyout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if which == Flyout::Repositories {
+            self.session.read_worktrees();
+        }
+        self.flyout = Some(which);
+        self.highlight = None;
+        let search = match which {
+            Flyout::Repositories => &self.inputs.repo_search,
+            Flyout::Worktrees => &self.inputs.worktree_search,
+            Flyout::Branches => &self.inputs.branch_search,
+        };
+        // Each opening starts with every row, as GitHub Desktop's does.
+        search.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+            state.focus(window, cx)
+        });
+        self.highlight = None;
+    }
+
+    /// The toolbar cell's press: opens its dropdown, or closes it.
+    pub(crate) fn toggle_flyout(
+        &mut self,
+        which: Flyout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.flyout == Some(which) {
+            self.flyout = None;
+        } else {
+            self.open_flyout(which, window, cx);
+        }
+    }
+
+    /// The rows the open dropdown's keyboard walks, as what Enter does
+    /// with each: `None` for a row that opens nothing.
+    fn flyout_targets(&self, cx: &App) -> Vec<Option<FlyoutTarget>> {
+        match self.flyout {
+            Some(Flyout::Repositories) => {
+                let query = self.inputs.repo_search.read(cx).value().to_string();
+                self.session
+                    .repository_groups(&query)
+                    .into_iter()
+                    .map(|g| g.opens.map(FlyoutTarget::Open))
+                    .collect()
+            }
+            Some(Flyout::Worktrees) => {
+                let query = self.inputs.worktree_search.read(cx).value().to_string();
+                self.session
+                    .worktree_rows(&query)
+                    .into_iter()
+                    .map(|w| match (w.missing, w.current) {
+                        (true, _) => None,
+                        (false, true) => Some(FlyoutTarget::Close),
+                        (false, false) => Some(FlyoutTarget::Open(w.path)),
+                    })
+                    .collect()
+            }
+            Some(Flyout::Branches) if self.branch_tab == 0 => {
+                let Some(repo) = self.session.repo.as_ref() else {
+                    return Vec::new();
+                };
+                let query = self.inputs.branch_search.read(cx).value().to_string();
+                let default = repo.default_branch();
+                crate::branches::rows(
+                    &repo.info.branches,
+                    default.as_deref(),
+                    &repo.recent_branches,
+                    &query,
+                )
+                .into_iter()
+                .map(|b| Some(FlyoutTarget::Switch(b.name)))
+                .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Up or Down in an open dropdown. Says whether it took the key.
+    pub(crate) fn flyout_step(&mut self, down: bool, cx: &mut Context<Self>) -> bool {
+        let len = self.flyout_targets(cx).len();
+        if self.flyout.is_none() || len == 0 {
+            return false;
+        }
+        self.highlight = crate::keys::step(self.highlight, len, down);
+        cx.notify();
+        true
+    }
+
+    /// Enter in an open dropdown: does what a press on the highlighted row
+    /// does. Says whether it took the key.
+    pub(crate) fn flyout_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self.highlight else {
+            return false;
+        };
+        let Some(target) = self.flyout_targets(cx).into_iter().nth(index) else {
+            return false;
+        };
+        let Some(target) = target else {
+            return true;
+        };
+        self.flyout = None;
+        self.highlight = None;
+        match target {
+            FlyoutTarget::Open(path) => self.session.open(path),
+            FlyoutTarget::Switch(name) => self.session.switch_branch(&name),
+            FlyoutTarget::Close => {}
+        }
+        self.drive(window, cx);
+        cx.notify();
+        true
+    }
+}
+
+/// What Enter on a dropdown row does.
+enum FlyoutTarget {
+    Open(PathBuf),
+    Switch(String),
+    Close,
 }
 
 /// The window's application id, which the desktop entry is named after.
@@ -328,7 +465,11 @@ impl GitApp {
                 &input,
                 window,
                 |this, _, event: &InputEvent, window, cx| match event {
-                    InputEvent::Change => cx.notify(),
+                    InputEvent::Change => {
+                        // A new search starts the keyboard highlight over.
+                        this.highlight = None;
+                        cx.notify()
+                    }
                     InputEvent::PressEnter { .. } if this.session.dialog.is_some() => {
                         this.confirm_dialog(window, cx)
                     }
@@ -393,6 +534,9 @@ impl GitApp {
             graph,
             focus_handle: cx.focus_handle(),
             flyout: None,
+            highlight: None,
+            flyout_focus: Vec::new(),
+            names: None,
             branch_tab: 0,
             app_menu: [new_state(cx), new_state(cx), new_state(cx), new_state(cx)],
             context_menu: new_state(cx),
@@ -662,7 +806,7 @@ impl GitApp {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
         let repo = self.session.repo.as_ref();
-        let names = self.session.open_names();
+        let names = self.names.clone();
         let one = |s: String| [s, String::new(), String::new()];
         match &self.session.dialog {
             Some(Dialog::Clone { .. }) | Some(Dialog::NewRepository { .. }) => {
@@ -989,12 +1133,9 @@ impl GitApp {
             Action::FindInGraph if self.graph_find_allowed(window, cx) => {
                 self.open_graph_find(window, cx);
             }
-            Action::RepositoryList => {
-                self.session.read_worktrees();
-                self.flyout = Some(Flyout::Repositories);
-            }
+            Action::RepositoryList => self.open_flyout(Flyout::Repositories, window, cx),
             Action::BranchList if has_repo => {
-                self.flyout = Some(Flyout::Branches);
+                self.open_flyout(Flyout::Branches, window, cx);
                 self.branch_tab = 0;
             }
             Action::PullRequest if has_repo => {
@@ -1007,7 +1148,7 @@ impl GitApp {
                     });
                 }
             }
-            Action::WorktreeList if has_repo => self.flyout = Some(Flyout::Worktrees),
+            Action::WorktreeList if has_repo => self.open_flyout(Flyout::Worktrees, window, cx),
             Action::GoToSummary => {
                 self.inputs
                     .summary
