@@ -1,6 +1,6 @@
 # Ticket 108 — Windows have the system's frame and window buttons
 
-**Blocked by:** 80 (done) · **Status:** ready
+**Blocked by:** 80 (done) · **Status:** implemented, not merged
 
 ## Why
 
@@ -99,3 +99,119 @@ and the caption buttons, rather than imitating the theme.
 - [ ] Tests never change the person's real GNOME settings.
 - [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
       and the license check pass.
+
+## What was built
+
+### GTK draws the frame
+
+`crates/better-ui/src/system_frame/gtk.rs` opens `libgtk-4.so.1` with
+`dlopen` (and `libadwaita-1.so.0` when it is installed, since GNOME's own
+applications are libadwaita applications and libadwaita, Zorin's build
+included, decides how their frame looks). Nothing links GTK: every symbol,
+GTK's, GLib's, GSK's, and Cairo's, is looked up at run time. GTK is
+initialised once, on its own thread, which also runs GLib's default main
+context so GTK's display connection is read and libadwaita sees theme
+changes. GTK never creates a window. Each CSS node is an unrealized `GtkBox`
+with the node's name, classes, and state, as Chromium builds them
+(`AppendCssNodeToStyleContextImpl`), and every part is drawn with
+`gtk_render_background` and `gtk_render_frame` into a Cairo image surface at
+the window's whole scale (a fractional scale is drawn at the next one up):
+
+- the frame around a `2 × 64` px window, focused and in the background, with
+  square bottom corners as in Chromium (`window.background.csd`, plus
+  `.maximized` or `.tiled`);
+- the header bar background, cut by the window's top corner radius, focused
+  and in the background (`headerbar`, as libadwaita applications show it in a
+  toolbar view);
+- minimize, maximize, restore, and close (`windowcontrols > button.titlebutton.*
+  > image`), normal, hover, and pressed, focused and in the background, with the
+  symbolic icon from the current icon theme in the image's colour.
+
+The shadow's reach on each side and the top corner radius are measured from
+the drawn pixels, as Chromium does, because GTK 4 cannot report CSS values.
+`system_frame/service.rs` keeps one drawing per theme, icon theme, light or
+dark, scale, and maximized or tiled state, and follows
+`gsettings monitor org.gnome.desktop.interface` and `… wm.preferences`: a
+change to the theme, the icon theme, the colour scheme, or `button-layout`
+redraws every window within a fifth of a second. Nothing writes a setting.
+
+### The kit paints it
+
+`better_ui::window_chrome::root` replaces `gpui_component::Root::new` in every
+framed window (Better Git, Files and its preview, Manager, Monitor, Awake,
+Touchpad, the app chooser, and the Fluent gallery); Launcher and Monitor's
+pop-up are overlays and keep no frame. `fluent::window_frame::FramedView`
+paints the four corners and four stretched edges around the content, sets the
+client inset to the widest side of the shadow (kept while maximized so
+restoring does not resize), takes input only on the window and GTK 4's 12px
+resize handle around it, and starts a resize from every edge and from 24px
+corners, as `gtk/gtkwindow.c` does. The window background is painted there
+with the desktop's top corners, so app roots no longer paint one.
+
+`fluent::chrome::TitleBar` is as tall as GTK's header bar, paints GTK's header
+background and buttons, puts them where `button-layout` says (start, end,
+both, or none), and keeps the app's own controls (back button, icon, title,
+menus, search) between the two groups. Double, middle, and right clicks on its
+empty space do what `action-*-click-titlebar` say (a dialog never maximizes);
+dragging moves the window and the compositor restores a maximized one. The
+frame is drawn in the window's own appearance (the owner's decision,
+2026-11-14), which is the desktop's
+`color-scheme` when the person chose "system". When the GTK theme names an
+accent (`accent_bg_color`, `accent_fg_color`) the Fluent accent takes it.
+`window_chrome::title_bar` now returns this bar, so the older windows that used
+gpui-component's bar have the system's too.
+
+Without GTK 4, or with `BETTER_OS_FRAME=adwaita`, the kit draws libadwaita
+1.5's frame itself, from values read out of libadwaita's own stylesheet:
+12px corners, a 47px header with its shade, and round title buttons.
+
+### Evidence
+
+Headless GNOME Shell 46 (`--headless --wayland --virtual-monitor 1600x1000`,
+private D-Bus session, HOME/XDG/dconf in a temporary directory, pointer and
+keyboard through `org.gnome.Mutter.RemoteDesktop`), GNOME Text Editor beside
+the Fluent gallery: Adwaita and ZorinBlue, light and dark, focused, in the
+background, and maximized. Corners, shadow, border, header colour and height,
+and button size, position, colours, and icons match at the pixel; the
+difference is the bottom corners, which are square, as in Chromium and Claude
+Desktop, because GPUI cannot clip content to a rounded shape. Each of the four
+button layouts drew correctly and changed live; all eight edges and corners
+resized; double click maximized (and minimized when set to `minimize`), middle
+click followed `toggle-maximize` when set, right click opened Mutter's window
+menu, dragging moved the window and restored a maximized one, and the three
+buttons minimized, maximized, restored, and closed.
+
+### After review
+
+- A drawing request never blocks a window: the render thread sleeps in GLib's
+  own poll (GTK's descriptors plus a wake pipe), so an idle process has no
+  frame-related wakeups; it gives up for good, and windows stop waiting, if it
+  cannot start, cannot open GTK, or ends for any reason.
+- After a window's first drawing, its maximized, tiled, and other-appearance
+  drawings are made at once, and a window keeps its last drawing until a new
+  one is ready, so maximizing or switching light and dark never shows the
+  fallback. The first frame waits at most one second, for the settings and the
+  drawing together; the settings are read off the UI thread with one
+  `gsettings list-recursively` per schema.
+- A drawing made for a theme that has just been replaced is dropped; a new
+  theme or icon theme drops every drawing and takes its images out of the GPU
+  atlas, while a new colour scheme keeps them.
+- The accent reaches gpui-component's controls at once (focus rings,
+  selection, switches, sliders, links), goes back to Windows' blue when the
+  theme has none or GTK is unavailable, and Better Launcher follows it too.
+- Title bar presses become moves only past GTK's 8px drag threshold. A
+  fullscreen window has no frame. The inset never shrinks, and the fallback
+  reserves the most GTK may need, so GTK arriving late does not resize the
+  window; on X11, where the input region cannot be narrowed, it stays within
+  20px. A window the compositor decorates still gets its background.
+- `gsettings monitor` is started again, up to five times with a growing pause,
+  if it exits.
+- Every package with a window recommends `libgtk-4-1` and `libadwaita-1-0`, and
+  `verify-deb.sh` checks it; the license inventory lists GTK 4, libadwaita, and
+  Cairo as libraries loaded at run time.
+
+### Not done here
+
+- GTK 3 is not a second drawing path: GTK 4 is on every GNOME this targets
+  (42 and later), and without it the built-in Adwaita drawing is used.
+- The bottom corners are square: GPUI clips content only to rectangles.

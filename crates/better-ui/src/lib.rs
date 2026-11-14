@@ -5,6 +5,7 @@
 pub mod command_line;
 pub mod fluent;
 pub mod restart;
+pub mod system_frame;
 
 use better_core::ComponentManifest;
 use gpui::{
@@ -16,43 +17,30 @@ use gpui_component::*;
 /// The window chrome every first-party Better OS window draws for itself.
 ///
 /// GNOME's Mutter offers no server-side decorations to an `xdg-toplevel`
-/// client, so on the Wayland session a person actually runs, a GPUI window has
-/// no close, minimize or maximize button and cannot be dragged unless the
-/// application draws them. Every first-party window therefore carries this bar.
-///
-/// The behaviour — dragging, double-click to maximize, and the three controls —
-/// comes from `gpui_component::TitleBar`, which already talks to the
-/// compositor through `start_window_move`, `zoom_window`, `minimize_window` and
-/// `remove_window`. This wrapper exists so the icon, the title and the spacing
-/// are the same in all seven windows rather than seven near-copies.
+/// client, so a window has no frame, no close, minimize or maximize button and
+/// cannot be dragged or resized unless the application draws them. Since
+/// ticket 108 the kit draws them the way the desktop does: GTK renders the
+/// frame, shadow, header, and window buttons from the current theme
+/// ([`crate::system_frame`]), [`root`] puts the frame around a window's view,
+/// and [`fluent::chrome::TitleBar`] is the title bar.
 pub mod window_chrome {
     use super::*;
 
-    /// The height of the shared titlebar, re-exported so a window that has to
-    /// reason about its own content height does not guess.
-    pub use gpui_component::TITLE_BAR_HEIGHT;
+    pub use crate::fluent::window_frame::{follow_desktop_accent, root, watch_desktop};
 
-    /// The titlebar itself: the application's glyph, its localized window
-    /// title, and the platform's window controls.
+    /// The titlebar for a window whose header is its glyph and title: the
+    /// kit's [`fluent::chrome::TitleBar`], with the desktop's buttons.
     ///
     /// `icon` is an element rather than a name so each application passes the
-    /// glyph it already uses in its own header, and the bar never grows a
-    /// table of application identities of its own.
+    /// glyph it already uses, and the bar never grows a table of application
+    /// identities of its own. The title takes the header's own text colour, so
+    /// `_foreground` is no longer used; it stays so callers need not change.
     pub fn title_bar(
         icon: impl IntoElement,
         title: impl Into<SharedString>,
-        foreground: Hsla,
-    ) -> TitleBar {
-        TitleBar::new().child(
-            h_flex().min_w_0().items_center().gap_2().child(icon).child(
-                div()
-                    .min_w_0()
-                    .text_sm()
-                    .font_medium()
-                    .text_color(foreground)
-                    .child(title.into()),
-            ),
-        )
+        _foreground: Hsla,
+    ) -> fluent::chrome::TitleBar {
+        fluent::chrome::TitleBar::new(title).icon(icon)
     }
 
     /// The window options every decorated first-party window opens with.
@@ -67,8 +55,11 @@ pub mod window_chrome {
     /// `app_id` must be the desktop entry's file name without its `.desktop`
     /// suffix, or the match silently fails.
     pub fn window_options(app_id: impl Into<String>) -> WindowOptions {
+        // Start reading the theme now, so GTK has drawn the frame by the
+        // window's first frame.
+        crate::system_frame::service::FrameService::warm_up();
         WindowOptions {
-            titlebar: Some(TitleBar::title_bar_options()),
+            titlebar: Some(gpui_component::TitleBar::title_bar_options()),
             window_decorations: Some(WindowDecorations::Client),
             app_id: Some(app_id.into()),
             ..Default::default()

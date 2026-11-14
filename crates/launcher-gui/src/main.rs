@@ -116,6 +116,7 @@ fn main() {
                 let overlay = cx.new(|cx| {
                     let mut overlay = LauncherOverlay::new(Locale::System, window, cx);
                     overlay.watch_for_updates(handoff.as_ref(), window, cx);
+                    overlay.follow_desktop(cx);
                     overlay
                 });
                 cx.subscribe(&overlay, |_, event: &OverlayEvent, cx| match event {

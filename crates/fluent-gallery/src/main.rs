@@ -15,7 +15,7 @@ use better_ui::fluent::badge::{Badge, InfoBadge};
 use better_ui::fluent::breadcrumb::BreadcrumbBar;
 use better_ui::fluent::button::{Button, ButtonKind, DropDownButton, SplitButton};
 use better_ui::fluent::chip::Chip;
-use better_ui::fluent::chrome::{CaptionButton, TitleBar};
+use better_ui::fluent::chrome::{ButtonLayout, TitleBar, WindowButton};
 use better_ui::fluent::command_bar::{Command, CommandBar};
 use better_ui::fluent::dialog::{
     ContentDialog, DefaultButton, DialogButtons, DialogResult, Flyout, tooltip_inline,
@@ -2319,52 +2319,109 @@ impl Gallery {
                 .size(px(16.0))
                 .text_color(p.accent)
         };
-        let frame = |bar: TitleBar| {
-            div()
-                .w(px(720.0))
-                .rounded(radius::MD)
-                .border_1()
-                .border_color(p.surface_stroke)
-                .overflow_hidden()
-                .child(bar)
-                .child(div().h(px(24.0)).bg(p.layer))
+        // The header and its buttons are the desktop's (ticket 108): GTK draws
+        // them from the current theme. Each sample is drawn in one appearance
+        // with a strip of that appearance's window under it.
+        let frame = |bar: TitleBar, dark: bool| {
+            div().w(px(720.0)).child(bar.appearance(dark)).child(
+                div()
+                    .h(px(24.0))
+                    .bg(better_ui::fluent::palette_for(dark).window_background),
+            )
         };
         let title = self.t("Better Files — Documents", "Better Files — 文件");
         let bar = || TitleBar::new(title).icon(icon());
+        let right = || ButtonLayout::parse("appmenu:minimize,maximize,close");
+        let left = || ButtonLayout::parse("close,maximize,minimize:appmenu");
         vec![section(
             self.t("Titlebar and type", "標題列與字型"),
             p,
             vec![
-                line(self.t("Active", "作用中"), p, frame(bar())),
+                line(
+                    self.t("Buttons on the right, light", "按鈕在右側（淺色）"),
+                    p,
+                    frame(bar().layout(right()), false),
+                ),
+                line(
+                    self.t("Buttons on the right, dark", "按鈕在右側（深色）"),
+                    p,
+                    frame(bar().layout(right()), true),
+                ),
+                line(
+                    self.t("Buttons on the left, light", "按鈕在左側（淺色）"),
+                    p,
+                    frame(bar().layout(left()), false),
+                ),
+                line(
+                    self.t("Buttons on the left, dark", "按鈕在左側（深色）"),
+                    p,
+                    frame(bar().layout(left()), true),
+                ),
+                line(
+                    self.t("Close only", "只有關閉"),
+                    p,
+                    frame(
+                        bar().layout(ButtonLayout::parse("appmenu:close")),
+                        self.dark,
+                    ),
+                ),
+                line(
+                    self.t("The desktop's layout", "桌面目前的配置"),
+                    p,
+                    frame(bar(), self.dark),
+                ),
                 line(
                     self.t("Back button", "返回按鈕"),
                     p,
-                    frame(bar().back(self.locale(), |_, _| {})),
+                    frame(
+                        bar().layout(right()).back(self.locale(), |_, _| {}),
+                        self.dark,
+                    ),
                 ),
                 line(
                     self.t("Minimize, pointer over", "最小化（指標停留）"),
                     p,
-                    frame(bar().shown(CaptionButton::Minimize, ShownState::PointerOver)),
+                    frame(
+                        bar()
+                            .layout(right())
+                            .shown(WindowButton::Minimize, ShownState::PointerOver),
+                        self.dark,
+                    ),
                 ),
                 line(
                     self.t("Maximize, pressed", "最大化（按下）"),
                     p,
-                    frame(bar().shown(CaptionButton::Maximize, ShownState::Pressed)),
+                    frame(
+                        bar()
+                            .layout(right())
+                            .shown(WindowButton::Maximize, ShownState::Pressed),
+                        self.dark,
+                    ),
                 ),
                 line(
                     self.t("Close, pointer over", "關閉（指標停留）"),
                     p,
-                    frame(bar().shown(CaptionButton::Close, ShownState::PointerOver)),
+                    frame(
+                        bar()
+                            .layout(right())
+                            .shown(WindowButton::Close, ShownState::PointerOver),
+                        self.dark,
+                    ),
                 ),
                 line(
                     self.t("Close, pressed", "關閉（按下）"),
                     p,
-                    frame(bar().shown(CaptionButton::Close, ShownState::Pressed)),
+                    frame(
+                        bar()
+                            .layout(right())
+                            .shown(WindowButton::Close, ShownState::Pressed),
+                        self.dark,
+                    ),
                 ),
                 line(
                     self.t("Inactive window", "非作用中視窗"),
                     p,
-                    frame(bar().inactive()),
+                    frame(bar().layout(right()).inactive(), self.dark),
                 ),
                 line(
                     self.t("Type ramp", "字型層級"),
@@ -2506,7 +2563,8 @@ impl Render for Gallery {
             .size_full()
             .flex()
             .flex_col()
-            .bg(p.window_background)
+            // The window frame paints the window background, with the
+            // desktop's top corners (ticket 108).
             .text_color(p.text_primary)
             .child(
                 TitleBar::new(self.t("Better Fluent Gallery", "Better Fluent 控制項庫")).icon(
@@ -2536,7 +2594,7 @@ fn main() {
             cx.open_window(window_options, move |window, cx| {
                 let options = options.take().expect("the gallery opens one window");
                 let view = cx.new(|cx| Gallery::new(options, window, cx));
-                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                cx.new(|cx| better_ui::window_chrome::root(view, window, cx))
             })
             .expect("failed to open the gallery window");
         })

@@ -48,6 +48,7 @@ pub mod text_box;
 pub mod theme;
 pub mod toast;
 pub mod toggle;
+pub mod window_frame;
 
 #[cfg(test)]
 mod interaction_tests;
@@ -55,6 +56,7 @@ mod interaction_tests;
 mod tests;
 
 pub use theme::{apply_to_component_theme, set_appearance};
+pub use window_frame::root;
 
 use gpui::{
     App, Div, FontWeight, InteractiveElement, Keystroke, ParentElement, Pixels, Rgba, Stateful,
@@ -350,9 +352,85 @@ pub const fn palette_for(dark: bool) -> &'static Palette {
     if dark { &DARK } else { &LIGHT }
 }
 
-/// The palette for the appearance gpui-component is in right now.
+/// The palette for the appearance gpui-component is in right now, with the
+/// desktop's accent when the GTK theme has one (see [`set_system_accent`]).
 pub fn palette(cx: &App) -> &'static Palette {
-    palette_for(cx.theme().is_dark())
+    palette_with_system_accent(cx.theme().is_dark())
+}
+
+/// The desktop's accent fill and the text drawn on it, as the GTK theme
+/// names them (`accent_bg_color`, `accent_fg_color`), while one is known.
+static SYSTEM_ACCENT: std::sync::RwLock<Option<(Rgba, Rgba)>> = std::sync::RwLock::new(None);
+
+/// Palettes built for a system accent, kept for the life of the process: a
+/// desktop has a handful of accents, and every control holds a `&'static`.
+static ACCENTED: std::sync::Mutex<Vec<(bool, [u32; 2], &'static Palette)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Follows the desktop's accent, as ticket 108 asks: the window frame reads
+/// it from the GTK theme and sets it here; `None` goes back to Windows 11's
+/// blue. The accent is still only the primary action, the selection, and
+/// focus.
+pub fn set_system_accent(accent: Option<(Rgba, Rgba)>) {
+    if let Ok(mut current) = SYSTEM_ACCENT.write() {
+        *current = accent;
+    }
+}
+
+/// The accent [`set_system_accent`] last set.
+pub fn system_accent() -> Option<(Rgba, Rgba)> {
+    SYSTEM_ACCENT.read().ok().and_then(|a| *a)
+}
+
+/// Sets the system accent and, when it changed, points gpui-component's own
+/// controls (focus rings, selection, switches, sliders, links) at it and
+/// repaints every window, so the whole window changes at once rather than at
+/// the next light/dark switch. `None` goes back to Windows 11's blue.
+pub fn follow_system_accent(accent: Option<(Rgba, Rgba)>, cx: &mut App) {
+    let packed = |a: Option<(Rgba, Rgba)>| a.map(|(fill, on)| [pack(fill), pack(on)]);
+    if packed(system_accent()) == packed(accent) {
+        return;
+    }
+    set_system_accent(accent);
+    theme::apply_to_component_theme(gpui_component::Theme::global_mut(cx));
+    cx.refresh_windows();
+}
+
+fn pack(color: Rgba) -> u32 {
+    let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    (c(color.r) << 24) | (c(color.g) << 16) | (c(color.b) << 8) | c(color.a)
+}
+
+/// `palette_for(dark)` with the system accent, when one is set.
+pub fn palette_with_system_accent(dark: bool) -> &'static Palette {
+    let accent = system_accent();
+    let Some((fill, on_fill)) = accent else {
+        return palette_for(dark);
+    };
+    let key = [pack(fill), pack(on_fill)];
+    let Ok(mut built) = ACCENTED.lock() else {
+        return palette_for(dark);
+    };
+    if let Some((_, _, palette)) = built.iter().find(|(d, k, _)| *d == dark && *k == key) {
+        return palette;
+    }
+    let palette: &'static Palette =
+        Box::leak(Box::new(with_accent(palette_for(dark), fill, on_fill)));
+    built.push((dark, key, palette));
+    palette
+}
+
+/// `base` with its accent roles taken from a desktop accent.
+pub fn with_accent(base: &Palette, fill: Rgba, on_fill: Rgba) -> Palette {
+    Palette {
+        accent: fill,
+        accent_secondary: with_alpha(fill, 0.9),
+        accent_tertiary: with_alpha(fill, 0.8),
+        accent_text: fill,
+        text_on_accent: on_fill,
+        text_on_accent_secondary: with_alpha(on_fill, 0.8),
+        ..*base
+    }
 }
 
 impl Palette {

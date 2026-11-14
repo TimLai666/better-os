@@ -850,6 +850,8 @@ dependencies = [
  "better-core",
  "gpui",
  "gpui-component",
+ "image",
+ "libc",
  "serde",
  "smol",
 ]

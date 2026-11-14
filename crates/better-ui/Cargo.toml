@@ -11,6 +11,8 @@ gpui.workspace = true
 gpui-component.workspace = true
 serde.workspace = true
 smol = "2"
+image = { version = "0.25", default-features = false }
+libc.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

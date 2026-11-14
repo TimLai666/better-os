@@ -23,10 +23,9 @@ use app_chooser_gui::{
     MIN_WINDOW_WIDTH, dialog_height,
 };
 use better_ui::fluent::chrome::TitleBar;
-use better_ui::fluent::palette;
 use better_ui::fluent::theme::Appearance;
 use gpui::*;
-use gpui_component::{Icon, IconName, Root};
+use gpui_component::{Icon, IconName};
 use gpui_component_assets::Assets;
 
 /// The standalone window around the reusable chooser: a dialog window,
@@ -85,15 +84,15 @@ impl StandaloneChooser {
 }
 
 impl Render for StandaloneChooser {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         // Mutter gives an `xdg-toplevel` client no decorations, so this window
         // draws its own or it cannot be closed or moved.
-        let p = palette(cx);
         div()
             .size_full()
             .flex()
             .flex_col()
-            .bg(p.window_background)
+            // The window frame paints the window background, with the
+            // desktop's top corners (ticket 108).
             .child(
                 TitleBar::new(self.title)
                     .icon(Icon::new(IconName::ExternalLink).size(px(16.0)))
@@ -141,7 +140,7 @@ fn main() {
                     ChooserMode::ChooseExecutable => c.executable_title,
                 };
                 let root = cx.new(|cx| StandaloneChooser::new(chooser, title, window, cx));
-                cx.new(|cx| Root::new(root, window, cx))
+                cx.new(|cx| better_ui::window_chrome::root(root, window, cx))
             })
             .expect("failed to open the Better App Chooser window");
         })

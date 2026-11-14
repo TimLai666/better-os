@@ -311,6 +311,16 @@ for package_name in \
         fi
     done
 
+    # The window frame is drawn by GTK 4 and libadwaita, loaded at run time
+    # (ticket 108), so they are recommended rather than derived.
+    recommends="$(dpkg-deb -f "$deb_path" Recommends)"
+    for recommended in libgtk-4-1 libadwaita-1-0; do
+        if ! printf '%s\n' "$recommends" | grep -Eq "(^|,)[[:space:]]*${recommended}([[:space:]]|,|$)"; then
+            printf 'Missing recommended library for %s: %s\n' "$package_name" "$recommended" >&2
+            exit 1
+        fi
+    done
+
     dpkg-deb --extract "$deb_path" "$extract_dir"
 
     executables=()
