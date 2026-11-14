@@ -1,6 +1,6 @@
 # Ticket 104 — Better Git shows the branch graph
 
-**Blocked by:** 92 (done) · **Status:** implemented, not merged
+**Blocked by:** 92 (done) · **Status:** merged, not released
 
 ## Why
 
