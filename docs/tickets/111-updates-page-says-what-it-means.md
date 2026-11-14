@@ -1,6 +1,6 @@
 # Ticket 111 — The Updates page says what each part means
 
-**Blocked by:** none · **Status:** done
+**Blocked by:** none · **Status:** merged, not released
 
 ## Why
 

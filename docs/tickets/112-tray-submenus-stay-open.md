@@ -1,6 +1,6 @@
 # Ticket 112 — Tray submenus stay open
 
-**Blocked by:** none · **Status:** implemented, not merged
+**Blocked by:** none · **Status:** merged, not released
 
 ## Why
 

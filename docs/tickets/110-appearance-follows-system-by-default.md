@@ -1,6 +1,6 @@
 # Ticket 110 — Every app follows the system appearance by default
 
-**Blocked by:** none · **Status:** done
+**Blocked by:** none · **Status:** merged, not released
 
 ## Why
 
