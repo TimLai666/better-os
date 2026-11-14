@@ -1,6 +1,6 @@
 # Ticket 93 — Better Files does everything folio does, in Fluent
 
-**Blocked by:** 80 (done) · **Status:** implemented, not merged
+**Blocked by:** 80 (done) · **Status:** merged, not released
 
 ## Why
 
