@@ -34,10 +34,11 @@ use better_ui::fluent::selection::{ComboBox, ComboItem, Slider, SliderModel};
 use better_ui::fluent::settings_card::{DeviceBanner, SettingsCard, SettingsExpander, SettingsRow};
 use better_ui::fluent::tabs::{SelectorBar, SelectorItem, Tab, TabView, after_close};
 use better_ui::fluent::text_box::{NumberBox, NumberModel, TextBox};
+use better_ui::fluent::theme::Appearance;
 use better_ui::fluent::toggle::{CheckBox, CheckState, RadioButtons, RadioOption, ToggleSwitch};
 use better_ui::fluent::words::Locale;
 use better_ui::fluent::{
-    self, BODY, BODY_STRONG, CAPTION, Palette, SUBTITLE, ShownState, TITLE, label, palette, radius,
+    BODY, BODY_STRONG, CAPTION, Palette, SUBTITLE, ShownState, TITLE, label, palette, radius,
     spacing,
 };
 use gpui::{
@@ -53,7 +54,7 @@ Usage: better-fluent-gallery [--light | --dark] [--zh-TW] [--page NAME] [--compa
 
 Shows every better_ui::fluent control in every state.
 
-  --light, --dark   Start in that appearance (dark is the default).
+  --light, --dark   Start in that appearance (the desktop's is the default).
   --zh-TW           Label the controls in Taiwan Mandarin.
   --page NAME       Open a page: buttons, text, selection, status, dialogs,
                     collections, navigation, settings, window.
@@ -154,7 +155,7 @@ impl Page {
 }
 
 struct Options {
-    dark: bool,
+    appearance: Appearance,
     zh: bool,
     page: Page,
     compact: bool,
@@ -163,7 +164,7 @@ struct Options {
 
 fn options(arguments: &[String]) -> Options {
     let mut options = Options {
-        dark: true,
+        appearance: Appearance::default(),
         zh: false,
         page: Page::Buttons,
         compact: false,
@@ -172,8 +173,8 @@ fn options(arguments: &[String]) -> Options {
     let mut iter = arguments.iter();
     while let Some(argument) = iter.next() {
         match argument.as_str() {
-            "--light" => options.dark = false,
-            "--dark" => options.dark = true,
+            "--light" => options.appearance = Appearance::Light,
+            "--dark" => options.appearance = Appearance::Dark,
             "--zh-TW" => options.zh = true,
             "--compact" => options.compact = true,
             "--dialog" => options.dialog = true,
@@ -192,6 +193,11 @@ fn options(arguments: &[String]) -> Options {
     options
 }
 
+/// Whether the gallery is drawn dark right now.
+fn shows_dark(cx: &App) -> bool {
+    gpui_component::Theme::global(cx).mode.is_dark()
+}
+
 fn page_named(name: &str) -> Page {
     PAGES
         .into_iter()
@@ -202,7 +208,10 @@ fn page_named(name: &str) -> Page {
 const CRUMBS: [&str; 5] = ["Home", "Documents", "Better OS", "Design", "Screenshots"];
 
 struct Gallery {
-    dark: bool,
+    appearance: Appearance,
+    /// Repaints the gallery when the desktop switches, while it follows the
+    /// desktop.
+    _follow_desktop: Option<gpui::Subscription>,
     zh: bool,
     page: Page,
     compact: bool,
@@ -262,11 +271,12 @@ fn input(
 
 impl Gallery {
     fn new(options: Options, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        fluent::set_appearance(options.dark, Some(window), cx);
+        let follow_desktop = options.appearance.apply_and_follow(window, cx);
         let zh = options.zh;
         let pick = |en: &'static str, zh_text: &'static str| if zh { zh_text } else { en };
         Self {
-            dark: options.dark,
+            appearance: options.appearance,
+            _follow_desktop: follow_desktop,
             zh,
             page: options.page,
             compact: options.compact,
@@ -330,6 +340,11 @@ impl Gallery {
     }
 
     /// A handler for a control that updates the gallery and repaints.
+    fn set_appearance(&mut self, appearance: Appearance, window: &mut Window, cx: &mut App) {
+        self.appearance = appearance;
+        self._follow_desktop = appearance.apply_and_follow(window, cx);
+    }
+
     fn act(
         cx: &Context<Self>,
         f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
@@ -2196,14 +2211,18 @@ impl Gallery {
         let combo = ComboBox::new(
             "settings-combo",
             vec![
-                ComboItem::new(self.t("Dark", "深色")),
+                ComboItem::new(self.t("Use system setting", "跟隨系統")),
                 ComboItem::new(self.t("Light", "淺色")),
+                ComboItem::new(self.t("Dark", "深色")),
             ],
-            Some(if self.dark { 0 } else { 1 }),
+            Appearance::ALL
+                .iter()
+                .position(|choice| *choice == self.appearance),
         )
         .on_select(Self::act_with(cx, |this, index: usize, window, cx| {
-            this.dark = index == 0;
-            fluent::set_appearance(this.dark, Some(window), cx);
+            if let Some(choice) = Appearance::ALL.get(index) {
+                this.set_appearance(*choice, window, cx);
+            }
         }));
         let cards = div()
             .flex()
@@ -2419,24 +2438,31 @@ impl Render for Gallery {
             Page::Settings => self.settings_page(p, cx),
             Page::Window => self.window_page(p),
         };
+        let shown_dark = shows_dark(cx);
         let bar = CommandBar::new("gallery-bar")
             .locale(self.locale())
             .command(
                 Command::new(
-                    if self.dark {
+                    if shown_dark {
                         self.t("Light", "淺色")
                     } else {
                         self.t("Dark", "深色")
                     },
-                    if self.dark {
+                    if shown_dark {
                         IconName::Sun
                     } else {
                         IconName::Moon
                     },
                 )
                 .on_click(Self::act(cx, |this, window, cx| {
-                    this.dark = !this.dark;
-                    fluent::set_appearance(this.dark, Some(window), cx);
+                    // Switches to the other one for good, as a person
+                    // looking at the opposite appearance means to.
+                    let next = if shows_dark(cx) {
+                        Appearance::Light
+                    } else {
+                        Appearance::Dark
+                    };
+                    this.set_appearance(next, window, cx);
                 })),
             )
             .command(
@@ -2542,4 +2568,25 @@ fn main() {
         })
         .detach();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Appearance, options};
+
+    fn appearance(arguments: &[&str]) -> Appearance {
+        let arguments: Vec<String> = arguments.iter().map(|a| a.to_string()).collect();
+        options(&arguments).appearance
+    }
+
+    /// Ticket 110: the gallery opens in the desktop's appearance unless a
+    /// flag names one, like every Better OS window.
+    #[test]
+    fn the_gallery_follows_the_desktop_unless_told_otherwise() {
+        assert_eq!(appearance(&[]), Appearance::System);
+        assert_eq!(appearance(&["--zh-TW"]), Appearance::System);
+        assert_eq!(appearance(&["--light"]), Appearance::Light);
+        assert_eq!(appearance(&["--dark"]), Appearance::Dark);
+        assert_eq!(appearance(&["--dark", "--light"]), Appearance::Light);
+    }
 }

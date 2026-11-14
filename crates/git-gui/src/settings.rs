@@ -18,7 +18,10 @@ fn yes() -> bool {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 pub struct Settings {
-    /// `dark`, `light`, or `system`.
+    /// `system`, `light`, or `dark`. A file without it, or with a word this
+    /// version does not know, follows the desktop (ADR 0019). The field is
+    /// written with every save, so a stored `dark` is kept: it cannot be told
+    /// apart from one written as the old default.
     pub appearance: String,
     /// `system`, `en-US`, or `zh-TW`.
     pub language: String,
@@ -57,7 +60,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            appearance: "dark".into(),
+            appearance: "system".into(),
             language: "system".into(),
             editor: String::new(),
             terminal: String::new(),

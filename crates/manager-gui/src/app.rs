@@ -650,7 +650,6 @@ impl ManagerApp {
             self.catalog_refreshing,
             &self.catalog_status,
             self.update_plan_count(),
-            now_unix_seconds(),
         )
     }
 

@@ -1370,9 +1370,9 @@ impl LauncherOverlay {
         let status = (self.model.load_state() == LoadState::Refreshing)
             .then(|| label(c.refreshing, CAPTION, p.text_secondary));
         let entries: Vec<MenuEntry> = [
-            (Appearance::Dark, c.appearance_dark),
-            (Appearance::Light, c.appearance_light),
             (Appearance::System, c.appearance_system),
+            (Appearance::Light, c.appearance_light),
+            (Appearance::Dark, c.appearance_dark),
         ]
         .into_iter()
         .map(|(appearance, name)| {

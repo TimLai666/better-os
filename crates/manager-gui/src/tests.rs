@@ -13,7 +13,7 @@ use manager_core::catalog::{
 };
 use manager_core::{
     ComponentStatus, DesiredOperation, ManagerSettings, ManagerState, RestartRequirement,
-    StoredTheme, SystemProfile,
+    StoredLocale, StoredTheme, SystemProfile,
 };
 use manager_platform::{SystemCapabilities, host::HostPlatform};
 
@@ -172,12 +172,12 @@ fn a_transaction_reports_the_widest_interruption_it_requires() {
 }
 
 #[test]
-fn an_unconfigured_manager_opens_dark() {
-    assert_eq!(ManagerSettings::default().theme, StoredTheme::Dark);
+fn an_unconfigured_manager_follows_the_desktop() {
+    assert_eq!(ManagerSettings::default().theme, StoredTheme::System);
 }
 
 #[test]
-fn state_saved_before_the_theme_setting_existed_loads_dark() {
+fn state_saved_before_the_theme_setting_existed_follows_the_desktop() {
     let legacy = serde_json::json!({
         "schema_version": 1,
         "revision": 3,
@@ -197,7 +197,52 @@ fn state_saved_before_the_theme_setting_existed_loads_dark() {
 
     let state: ManagerState =
         serde_json::from_value(legacy).expect("a pre-theme state file must still load");
-    assert_eq!(state.settings.theme, StoredTheme::Dark);
+    assert_eq!(state.settings.theme, StoredTheme::System);
+}
+
+#[test]
+fn a_theme_this_version_cannot_read_keeps_the_rest_of_the_state() {
+    let state: ManagerState = serde_json::from_value(serde_json::json!({
+        "schema_version": 2,
+        "revision": 3,
+        "settings": {
+            "release_channel": "stable",
+            "locale": "zh_tw",
+            "theme": "sepia",
+            "check_updates": true,
+            "auto_download": false,
+            "diagnostic_logs": true,
+            "onboarding_complete": true,
+            "component_filter": "all"
+        }
+    }))
+    .expect("an unknown theme must not make the state unreadable");
+    assert_eq!(state.settings.theme, StoredTheme::System);
+    assert_eq!(state.settings.locale, StoredLocale::ZhTw);
+    assert_eq!(state.revision, 3);
+}
+
+#[test]
+fn a_stored_theme_choice_is_kept() {
+    for theme in StoredTheme::ALL {
+        let mut state = ManagerState::default();
+        state.settings.theme = theme;
+        let text = serde_json::to_string(&state).unwrap();
+        let loaded: ManagerState = serde_json::from_str(&text).unwrap();
+        assert_eq!(loaded.settings.theme, theme);
+    }
+}
+
+#[test]
+fn the_appearance_card_says_the_desktop_is_the_default() {
+    assert_eq!(
+        crate::i18n::shell(Locale::EnUs).appearance_description,
+        "Follows your desktop's light or dark mode unless you pick one."
+    );
+    assert_eq!(
+        crate::i18n::shell(Locale::ZhTw).appearance_description,
+        "預設跟著桌面切換淺色或深色，也可以固定用其中一種。"
+    );
 }
 
 #[test]
@@ -566,7 +611,6 @@ mod catalog_state {
     fn a_binary_that_has_never_refreshed_is_shown_as_possibly_outdated() {
         for locale in [Locale::EnUs, Locale::ZhTw] {
             let line = CatalogLine::present(locale, &CatalogStatus::built_in(), 1_000_000);
-            assert_eq!(line.source, copy(locale).catalog_source_built_in);
             assert_eq!(line.age, copy(locale).catalog_never_updated);
             assert!(line.is_degraded());
             assert_eq!(line.warning, Some(copy(locale).catalog_degraded_never));
@@ -578,7 +622,7 @@ mod catalog_state {
         for locale in [Locale::EnUs, Locale::ZhTw] {
             let line =
                 CatalogLine::present(locale, &status(CatalogSource::Remote, None), 1_000_000);
-            assert_eq!(line.source, copy(locale).catalog_source_remote);
+            assert_eq!(line.age, copy(locale).catalog_updated_just_now);
             assert!(!line.is_degraded());
             assert_eq!(line.warning, None);
         }
@@ -626,12 +670,51 @@ mod catalog_state {
         let base = status(CatalogSource::Cache, None);
         let at = |now: u64| CatalogLine::present(Locale::EnUs, &base, now).age;
 
-        assert_eq!(at(1_000_030), "Updated moments ago");
-        assert_eq!(at(1_000_000 + 5 * 60), "Updated 5 minutes ago");
-        assert_eq!(at(1_000_000 + 3 * 3600), "Updated 3 hours ago");
-        assert_eq!(at(1_000_000 + 4 * 86_400), "Updated 4 days ago");
+        assert_eq!(at(1_000_030), "Checked for new versions moments ago");
+        assert_eq!(at(1_000_000 + 60), "Checked for new versions a minute ago");
+        assert_eq!(
+            at(1_000_000 + 5 * 60),
+            "Checked for new versions 5 minutes ago"
+        );
+        assert_eq!(at(1_000_000 + 3600), "Checked for new versions an hour ago");
+        assert_eq!(
+            at(1_000_000 + 3 * 3600),
+            "Checked for new versions 3 hours ago"
+        );
+        assert_eq!(at(1_000_000 + 86_400), "Checked for new versions a day ago");
+        assert_eq!(
+            at(1_000_000 + 4 * 86_400),
+            "Checked for new versions 4 days ago"
+        );
         // A clock that moved backwards reads as recent, never as negative.
-        assert_eq!(at(999_000), "Updated moments ago");
+        assert_eq!(at(999_000), "Checked for new versions moments ago");
+
+        let zh = |now: u64| CatalogLine::present(Locale::ZhTw, &base, now).age;
+        assert_eq!(zh(1_000_030), "剛剛檢查過新版本");
+        assert_eq!(zh(1_000_000 + 60), "1 分鐘前檢查過新版本");
+        assert_eq!(zh(1_000_000 + 5 * 60), "5 分鐘前檢查過新版本");
+        assert_eq!(zh(1_000_000 + 3 * 3600), "3 小時前檢查過新版本");
+        assert_eq!(zh(1_000_000 + 4 * 86_400), "4 天前檢查過新版本");
+    }
+
+    /// Ticket 111: the line says when the list was checked, once. It used to
+    /// read "Catalog downloaded just now · Updated moments ago".
+    #[test]
+    fn the_catalog_line_says_when_it_was_checked_once() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            for source in [CatalogSource::Remote, CatalogSource::Cache] {
+                let line = CatalogLine::present(locale, &status(source, None), 1_000_000);
+                assert_eq!(line.age, copy(locale).catalog_updated_just_now);
+            }
+        }
+        assert_eq!(
+            CatalogLine::present(Locale::ZhTw, &CatalogStatus::built_in(), 1).age,
+            "還沒上網檢查過新版本"
+        );
+        assert_eq!(
+            CatalogLine::present(Locale::EnUs, &CatalogStatus::built_in(), 1).age,
+            "Not checked for new versions yet"
+        );
     }
 
     #[test]
@@ -672,13 +755,13 @@ mod catalog_state {
         for locale in [Locale::EnUs, Locale::ZhTw] {
             let c = copy(locale);
             for value in [
-                c.catalog_source_built_in,
-                c.catalog_source_cache,
-                c.catalog_source_remote,
                 c.catalog_never_updated,
                 c.catalog_updated_just_now,
+                c.catalog_updated_minute,
                 c.catalog_updated_minutes,
+                c.catalog_updated_hour,
                 c.catalog_updated_hours,
+                c.catalog_updated_day,
                 c.catalog_updated_days,
                 c.catalog_degraded_never,
                 c.catalog_degraded_failed_cache,
@@ -927,7 +1010,6 @@ mod version_and_update_check {
                 false,
                 &status(CatalogSource::Remote, None, Some(1_000_000)),
                 3,
-                1_000_000,
             );
             let UpdateCheck::Found(sentence) = check else {
                 panic!("{locale:?} must report the count: {check:?}");
@@ -935,6 +1017,26 @@ mod version_and_update_check {
             assert!(sentence.contains('3'), "{sentence}");
             assert!(!sentence.contains("{n}"), "{sentence}");
         }
+    }
+
+    /// Ticket 111: a count says what it counts, in both languages and in the
+    /// singular too.
+    #[test]
+    fn the_count_of_updates_names_components_and_new_versions() {
+        let found = |locale, n| match UpdateCheck::present(
+            locale,
+            false,
+            false,
+            &status(CatalogSource::Remote, None, Some(1_000_000)),
+            n,
+        ) {
+            UpdateCheck::Found(sentence) => sentence,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(found(Locale::ZhTw, 8), "8 個元件有新版本");
+        assert_eq!(found(Locale::EnUs, 8), "8 components have new versions");
+        assert_eq!(found(Locale::ZhTw, 1), "1 個元件有新版本");
+        assert_eq!(found(Locale::EnUs, 1), "1 component has a new version");
     }
 
     #[test]
@@ -945,22 +1047,17 @@ mod version_and_update_check {
             false,
             &status(CatalogSource::Remote, None, Some(1_000_000)),
             0,
-            1_000_000 + 5 * 60,
         );
-        assert_eq!(check, UpdateCheck::UpToDate("Updated 5 minutes ago".into()));
-
-        // A catalog nothing has ever fetched says that instead of a fake age.
-        let never = UpdateCheck::present(
-            Locale::EnUs,
-            true,
-            false,
-            &status(CatalogSource::BuiltIn, None, None),
-            0,
-            1_000_000,
-        );
+        assert_eq!(check, UpdateCheck::UpToDate);
+        // The age goes on the line under it, from the same status.
         assert_eq!(
-            never,
-            UpdateCheck::UpToDate(copy(Locale::EnUs).catalog_never_updated.to_string())
+            CatalogLine::present(
+                Locale::EnUs,
+                &status(CatalogSource::Remote, None, Some(1_000_000)),
+                1_000_000 + 5 * 60
+            )
+            .age,
+            "Checked for new versions 5 minutes ago"
         );
     }
 
@@ -995,7 +1092,6 @@ mod version_and_update_check {
                     false,
                     &status(source, Some(degradation), Some(1_000_000)),
                     2,
-                    1_000_000,
                 );
                 assert_eq!(check, UpdateCheck::Failed(expected));
             }
@@ -1017,22 +1113,38 @@ mod version_and_update_check {
                 Some(1_000_000),
             ),
             1,
-            1_000_000,
         );
         assert!(matches!(check, UpdateCheck::Found(_)), "{check:?}");
     }
 
     #[test]
-    fn nothing_is_claimed_before_a_check_is_asked_for_or_while_one_runs() {
+    fn the_launch_check_reports_its_count_and_a_running_one_claims_nothing() {
+        // The refresh at launch is a check too: its count is the answer, not
+        // the page's title repeated (ticket 111).
         let current = status(CatalogSource::Remote, None, Some(1_000_000));
+        assert!(matches!(
+            UpdateCheck::present(Locale::EnUs, false, false, &current, 4),
+            UpdateCheck::Found(_)
+        ));
         assert_eq!(
-            UpdateCheck::present(Locale::EnUs, false, false, &current, 4, 1_000_000),
-            UpdateCheck::NotRun
+            UpdateCheck::present(Locale::EnUs, false, false, &current, 0),
+            UpdateCheck::UpToDate
         );
+        // A launch refresh that failed keeps the count, with the list's
+        // warning under it; only a check the person asked for is "failed".
+        let failed = status(
+            CatalogSource::Cache,
+            Some(CatalogDegradation::RefreshFailedUsingCache),
+            Some(1_000_000),
+        );
+        assert!(matches!(
+            UpdateCheck::present(Locale::EnUs, false, false, &failed, 4),
+            UpdateCheck::Found(_)
+        ));
         // Running outranks the previous result: a stale count under a spinner
         // reads as this check's answer.
         assert_eq!(
-            UpdateCheck::present(Locale::EnUs, true, true, &current, 4, 1_000_000),
+            UpdateCheck::present(Locale::EnUs, true, true, &current, 4),
             UpdateCheck::Running
         );
     }
@@ -1044,9 +1156,13 @@ mod version_and_update_check {
             for value in [
                 c.check_updates,
                 c.checking_updates,
+                c.check_again,
+                c.update_check_found_one,
                 c.update_check_found,
                 c.update_check_up_to_date,
                 c.update_check_failed,
+                c.updates_subtitle,
+                c.review_and_update_all,
             ] {
                 assert!(!value.trim().is_empty(), "{locale:?} is missing a string");
             }
@@ -1057,12 +1173,203 @@ mod version_and_update_check {
         for (english, chinese) in [
             (en.check_updates, zh.check_updates),
             (en.checking_updates, zh.checking_updates),
+            (en.check_again, zh.check_again),
+            (en.update_check_found_one, zh.update_check_found_one),
             (en.update_check_found, zh.update_check_found),
             (en.update_check_up_to_date, zh.update_check_up_to_date),
             (en.update_check_failed, zh.update_check_failed),
+            (en.updates_subtitle, zh.updates_subtitle),
+            (en.review_and_update_all, zh.review_and_update_all),
         ] {
             assert_ne!(english, chinese);
         }
+    }
+
+    /// Ticket 111: every string the Updates page and its neighbours changed,
+    /// word for word in both languages, so a regression to the old wording
+    /// ("等待確認", "確認變更", "重新啟動需求") fails here.
+    #[test]
+    fn the_updates_page_says_what_each_part_means() {
+        let en = copy(Locale::EnUs);
+        let zh = copy(Locale::ZhTw);
+        let cases = [
+            (
+                en.updates_subtitle,
+                "New versions of the Better OS components on this computer.",
+            ),
+            (zh.updates_subtitle, "這台電腦上 Better OS 元件的新版本。"),
+            (en.review_and_update_all, "Review and update all"),
+            (zh.review_and_update_all, "檢視並全部更新"),
+            (en.check_again, "Check again"),
+            (zh.check_again, "再檢查一次"),
+            (en.checking_updates, "Checking for new versions…"),
+            (zh.checking_updates, "正在檢查有沒有新版本…"),
+            (en.update_check_up_to_date, "All components are up to date"),
+            (zh.update_check_up_to_date, "所有元件都是最新版本"),
+            (en.update_check_failed, "Couldn't check for new versions"),
+            (zh.update_check_failed, "無法檢查有沒有新版本"),
+            (en.catalog_refresh, "Check for updates"),
+            (zh.catalog_refresh, "檢查更新"),
+            (en.catalog_refreshing, "Checking…"),
+            (zh.catalog_refreshing, "正在檢查…"),
+            (en.restart_requirement, "Afterwards"),
+            (zh.restart_requirement, "完成後"),
+            (en.restart_not_required, "Nothing needs restarting"),
+            (zh.restart_not_required, "不需要重新啟動"),
+            (en.restart_application, "Reopens by itself"),
+            (zh.restart_application, "會自動重新開啟"),
+            (en.restart_log_out, "Log out and back in"),
+            (zh.restart_log_out, "需要登出再登入"),
+            (en.restart_reboot, "Restart the computer"),
+            (zh.restart_reboot, "需要重新開機"),
+            (
+                en.restart_note_application,
+                "Reopens by itself after the update",
+            ),
+            (zh.restart_note_application, "更新後會自動重新開啟"),
+            (
+                en.restart_note_log_out,
+                "Log out and back in after the update",
+            ),
+            (zh.restart_note_log_out, "更新後需要登出再登入"),
+            (
+                en.restart_note_reboot,
+                "Restart the computer after the update",
+            ),
+            (zh.restart_note_reboot, "更新後需要重新開機"),
+            (en.restore_none_title, "Restore a component"),
+            (zh.restore_none_title, "還原元件"),
+            (
+                en.restore_nothing_failed,
+                "No component has a failed check on record, so there is nothing to restore.",
+            ),
+            (
+                zh.restore_nothing_failed,
+                "目前沒有元件檢查失敗，不需要還原。",
+            ),
+            (
+                en.catalog_degraded_never,
+                "This version list may be outdated. It ships with the app and cannot know about versions released since.",
+            ),
+            (
+                zh.catalog_degraded_never,
+                "這份版本清單可能不是最新的。它是跟著應用程式一起發佈的，不會知道之後才推出的版本。",
+            ),
+            (
+                en.catalog_degraded_failed_cache,
+                "This version list may be outdated. The latest one could not be downloaded, so the one from the last check is shown.",
+            ),
+            (
+                zh.catalog_degraded_failed_cache,
+                "這份版本清單可能不是最新的。下載不到最新的清單，所以顯示上次檢查時的版本。",
+            ),
+            (
+                en.catalog_degraded_failed_built_in,
+                "This version list may be outdated. The latest one could not be downloaded, so the one built into the app is shown.",
+            ),
+            (
+                zh.catalog_degraded_failed_built_in,
+                "這份版本清單可能不是最新的。下載不到最新的清單，所以顯示應用程式內建的版本。",
+            ),
+            (
+                en.catalog_degraded_partial,
+                "This version list may be partly outdated. Some components' entries could not be downloaded and are shown as they were.",
+            ),
+            (
+                zh.catalog_degraded_partial,
+                "這份版本清單可能有部分不是最新的。有些元件的資訊沒有下載成功，先維持原本的內容。",
+            ),
+            (
+                en.catalog_rejected,
+                "{n} component entry failed its check and was left as it was.",
+            ),
+            (
+                zh.catalog_rejected,
+                "有 {n} 個元件的資訊沒有通過檢查，先維持原本的內容。",
+            ),
+        ];
+        for (actual, expected) in cases {
+            assert_eq!(actual, expected);
+        }
+        let es = crate::i18n::shell(Locale::EnUs);
+        let zs = crate::i18n::shell(Locale::ZhTw);
+        let shell_cases = [
+            (
+                es.attention_updates_header,
+                "{n} components have new versions",
+            ),
+            (zs.attention_updates_header, "{n} 個元件有新版本"),
+            (
+                es.attention_update_header_one,
+                "1 component has a new version",
+            ),
+            (zs.attention_update_header_one, "1 個元件有新版本"),
+            (es.apps_updates_count, "{n} components have new versions"),
+            (zs.apps_updates_count, "{n} 個元件有新版本"),
+            (es.apps_update_count_one, "1 component has a new version"),
+            (zs.apps_update_count_one, "1 個元件有新版本"),
+            (
+                es.attention_catalog_header,
+                "The version list may be out of date",
+            ),
+            (zs.attention_catalog_header, "版本清單可能不是最新的"),
+            (es.attention_catalog_action, "Check for updates"),
+            (zs.attention_catalog_action, "檢查更新"),
+        ];
+        for (actual, expected) in shell_cases {
+            assert_eq!(actual, expected);
+        }
+    }
+
+    /// Ticket 111: a card says what happens after its update only when an
+    /// update is waiting and something happens.
+    #[test]
+    fn a_card_says_what_its_update_will_do_only_when_it_matters() {
+        use crate::components::restart_note;
+        use manager_core::ComponentStatus;
+        let zh = Locale::ZhTw;
+        assert_eq!(
+            restart_note(
+                zh,
+                ComponentStatus::UpdateAvailable,
+                RestartRequirement::RestartApplication
+            ),
+            Some("更新後會自動重新開啟")
+        );
+        assert_eq!(
+            restart_note(
+                zh,
+                ComponentStatus::UpdateAvailable,
+                RestartRequirement::LogOut
+            ),
+            Some("更新後需要登出再登入")
+        );
+        assert_eq!(
+            restart_note(
+                zh,
+                ComponentStatus::UpdateAvailable,
+                RestartRequirement::Reboot
+            ),
+            Some("更新後需要重新開機")
+        );
+        for quiet in [
+            RestartRequirement::NotRequired,
+            RestartRequirement::NotDeclared,
+        ] {
+            assert_eq!(
+                restart_note(zh, ComponentStatus::UpdateAvailable, quiet),
+                None
+            );
+        }
+        // Nothing to update, nothing to say.
+        assert_eq!(
+            restart_note(
+                zh,
+                ComponentStatus::Healthy,
+                RestartRequirement::RestartApplication
+            ),
+            None
+        );
     }
 
     /// The check button and the About rows never make a row worse than what is
@@ -1071,12 +1378,19 @@ mod version_and_update_check {
     fn the_new_labels_lay_out_no_worse_than_the_ones_already_shipped() {
         for locale in [Locale::EnUs, Locale::ZhTw] {
             let c = copy(locale);
-            let new_longest = [c.check_updates, c.checking_updates]
-                .iter()
-                .map(|label| label.chars().count())
-                .max()
-                .unwrap();
-            let shipped_longest = [c.install_updates, c.restore_previous, c.catalog_refreshing]
+            // Ticket 111's buttons: the check, its running state, and the
+            // review that updates everything.
+            let new_longest = [
+                c.check_updates,
+                c.check_again,
+                c.catalog_refreshing,
+                c.review_and_update_all,
+            ]
+            .iter()
+            .map(|label| label.chars().count())
+            .max()
+            .unwrap();
+            let shipped_longest = [c.install_updates, c.restore_previous]
                 .iter()
                 .map(|label| label.chars().count())
                 .max()

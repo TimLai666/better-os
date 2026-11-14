@@ -102,15 +102,41 @@ pub enum StoredLocale {
     ZhTw,
 }
 
-/// Better OS is dark-first: a manager that has never been configured opens
-/// dark, and the other two values are explicit user choices.
+/// Better OS follows the desktop's appearance (ADR 0019): a manager that has
+/// never been configured opens in the desktop's light or dark, and the other
+/// two values are explicit choices.
+///
+/// A stored `dark` is kept. Every save has always written the field, so a
+/// dark written as the old default cannot be told apart from a chosen one.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StoredTheme {
     #[default]
-    Dark,
-    Light,
     System,
+    Light,
+    Dark,
+}
+
+impl StoredTheme {
+    /// In the order a picker lists them: the default first.
+    pub const ALL: [StoredTheme; 3] = [StoredTheme::System, StoredTheme::Light, StoredTheme::Dark];
+}
+
+/// A theme this version cannot read is the default, rather than a reason to
+/// set the whole state file aside as corrupt.
+fn theme_or_default<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<StoredTheme, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Field {
+        Known(StoredTheme),
+        Unknown(serde::de::IgnoredAny),
+    }
+    Ok(match Field::deserialize(deserializer)? {
+        Field::Known(theme) => theme,
+        Field::Unknown(_) => StoredTheme::default(),
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -128,8 +154,8 @@ pub enum ComponentFilterPreference {
 pub struct ManagerSettings {
     pub release_channel: ReleaseChannel,
     pub locale: StoredLocale,
-    /// Older state files predate the theme choice and load as dark-first.
-    #[serde(default)]
+    /// Older state files predate the theme choice and follow the desktop.
+    #[serde(default, deserialize_with = "theme_or_default")]
     pub theme: StoredTheme,
     pub check_updates: bool,
     pub auto_download: bool,
@@ -143,7 +169,7 @@ impl Default for ManagerSettings {
         Self {
             release_channel: ReleaseChannel::Stable,
             locale: StoredLocale::System,
-            theme: StoredTheme::Dark,
+            theme: StoredTheme::System,
             check_updates: true,
             auto_download: false,
             diagnostic_logs: true,
@@ -2645,6 +2671,52 @@ mod tests {
             StateValidationError::UnsupportedSchemaVersion(2).to_string(),
             "manager.state.unsupported_schema:2"
         );
+    }
+
+    /// Ticket 110: what a stored theme loads as.
+    fn settings_with(theme_field: &str) -> ManagerSettings {
+        let text = format!(
+            r#"{{"release_channel":"stable","locale":"system"{theme_field},"check_updates":true,"auto_download":false,"diagnostic_logs":true,"onboarding_complete":true,"component_filter":"all"}}"#
+        );
+        serde_json::from_str(&text).expect("the settings stay readable")
+    }
+
+    #[test]
+    fn the_theme_follows_the_system_unless_one_was_stored() {
+        assert_eq!(StoredTheme::default(), StoredTheme::System);
+        assert_eq!(ManagerSettings::default().theme, StoredTheme::System);
+        assert_eq!(ManagerState::default().settings.theme, StoredTheme::System);
+        assert_eq!(StoredTheme::ALL[0], StoredTheme::default());
+        // A state file from before the setting existed.
+        assert_eq!(settings_with("").theme, StoredTheme::System);
+        // A word or a value this version cannot read: the default, and the
+        // rest of the settings are kept.
+        let unknown = settings_with(r#","theme":"sepia""#);
+        assert_eq!(unknown.theme, StoredTheme::System);
+        assert!(unknown.onboarding_complete);
+        assert_eq!(settings_with(r#","theme":3"#).theme, StoredTheme::System);
+        assert_eq!(settings_with(r#","theme":null"#).theme, StoredTheme::System);
+        // A stored choice stays. A dark written as the old default cannot be
+        // told from a chosen one, so it stays dark too.
+        assert_eq!(settings_with(r#","theme":"dark""#).theme, StoredTheme::Dark);
+        assert_eq!(
+            settings_with(r#","theme":"light""#).theme,
+            StoredTheme::Light
+        );
+        assert_eq!(
+            settings_with(r#","theme":"system""#).theme,
+            StoredTheme::System
+        );
+        // And it is written back as the same word.
+        let json = serde_json::to_string(&settings_with(r#","theme":"light""#)).unwrap();
+        assert!(json.contains(r#""theme":"light""#), "{json}");
+    }
+
+    #[test]
+    fn a_state_file_without_settings_follows_the_system() {
+        let state: ManagerState =
+            serde_json::from_str(r#"{"schema_version":2,"revision":4}"#).unwrap();
+        assert_eq!(state.settings.theme, StoredTheme::System);
     }
 }
 

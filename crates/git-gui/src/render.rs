@@ -3767,11 +3767,10 @@ impl GitApp {
                     );
             }
             3 => {
-                let theme = match Appearance::from_argument(&s.appearance).unwrap_or_default() {
-                    Appearance::Dark => 0,
-                    Appearance::Light => 1,
-                    Appearance::System => 2,
-                };
+                let theme = Appearance::ALL
+                    .iter()
+                    .position(|a| *a == Appearance::stored(&s.appearance))
+                    .unwrap_or(0);
                 let language = match Locale::from_argument(&s.language) {
                     Some(Locale::EnUs) => 1,
                     Some(Locale::ZhTw) => 2,
@@ -3784,18 +3783,16 @@ impl GitApp {
                             RadioButtons::new(
                                 "theme-choice",
                                 vec![
-                                    RadioOption::new(c.theme_dark),
-                                    RadioOption::new(c.theme_light),
                                     RadioOption::new(c.theme_system),
+                                    RadioOption::new(c.theme_light),
+                                    RadioOption::new(c.theme_dark),
                                 ],
                                 Some(theme),
                             )
                             .on_select(Self::act_with(
                                 cx,
                                 |this, i: usize, window, cx| {
-                                    let a =
-                                        [Appearance::Dark, Appearance::Light, Appearance::System]
-                                            [i.min(2)];
+                                    let a = Appearance::ALL[i.min(2)];
                                     this.set_appearance(a, window, cx);
                                 },
                             )),

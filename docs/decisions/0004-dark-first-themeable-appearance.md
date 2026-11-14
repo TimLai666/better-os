@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted for Better Manager.
+Superseded on 2026-11-14 by [ADR 0019](0019-appearance-follows-system.md):
+every window now follows the system appearance by default. Accepted for
+Better Manager until then.
 
 ## Decision
 

@@ -284,7 +284,7 @@ impl PreviewApp {
         let (files, at) = viewer::siblings(&file);
         let search =
             cx.new(|cx| InputState::new(window, cx).placeholder(copy(locale).preview_search_pdf));
-        let subscriptions = vec![cx.subscribe_in(
+        let mut subscriptions = vec![cx.subscribe_in(
             &search,
             window,
             |app, state, event: &InputEvent, _window, cx| {
@@ -294,6 +294,12 @@ impl PreviewApp {
                 }
             },
         )];
+        // The same appearance as Better Files, kept in step with the desktop
+        // while it is `system` (ticket 110).
+        let appearance = better_ui::fluent::theme::Appearance::default_path("files")
+            .map(|path| better_ui::fluent::theme::Appearance::load(&path))
+            .unwrap_or_default();
+        subscriptions.extend(appearance.apply_and_follow(window, cx));
         let mut app = Self {
             files,
             at,
@@ -1024,10 +1030,6 @@ fn main() {
         };
         cx.spawn(async move |cx| {
             let _ = cx.open_window(options, |window, cx| {
-                let appearance = better_ui::fluent::theme::Appearance::default_path("files")
-                    .map(|path| better_ui::fluent::theme::Appearance::load(&path))
-                    .unwrap_or_default();
-                appearance.apply(window, cx);
                 let view = cx.new(|cx| PreviewApp::new(file, window, cx));
                 cx.new(|cx| gpui_component::Root::new(view, window, cx))
             });

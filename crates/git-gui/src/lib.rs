@@ -58,18 +58,36 @@ use crate::i18n::Locale;
 
 pub use app::run;
 
-/// Which appearance the window opens in. Dark unless asked, as every Better
-/// OS window (ADR 0004).
+/// Which appearance the window opens in. The desktop's unless asked, as
+/// every Better OS window (ADR 0019).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Appearance {
+    /// The desktop's, and it keeps following the desktop while open.
     #[default]
-    Dark,
-    Light,
-    /// Whatever the desktop reports when the window opens.
     System,
+    Light,
+    Dark,
 }
 
 impl Appearance {
+    /// In the order the settings page lists them: the default first.
+    pub const ALL: [Appearance; 3] = [Appearance::System, Appearance::Light, Appearance::Dark];
+
+    /// The stored setting, or the default when it is empty or a word this
+    /// version does not know.
+    pub fn stored(setting: &str) -> Self {
+        Self::from_argument(setting).unwrap_or_default()
+    }
+
+    /// The same choice in the shared kit, which paints and follows it.
+    pub fn fluent(self) -> better_ui::fluent::theme::Appearance {
+        use better_ui::fluent::theme::Appearance as Fluent;
+        match self {
+            Self::System => Fluent::System,
+            Self::Light => Fluent::Light,
+            Self::Dark => Fluent::Dark,
+        }
+    }
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Dark => "dark",

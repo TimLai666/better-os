@@ -485,16 +485,14 @@ impl ManagerApp {
                                 ),
                             )
                         })
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(format!(
-                                    "{}: {}",
-                                    c.restart_requirement,
-                                    self.restart_requirement_label(component.restart_requirement)
-                                )),
-                        )
+                        .when_some(self.restart_note(component), |row, note| {
+                            row.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(note),
+                            )
+                        })
                         .child(action)
                         .child(overflow),
                 ),
@@ -698,6 +696,15 @@ impl ManagerApp {
         }
     }
 
+    /// What happens after this component's update, said on its card only
+    /// when an update is waiting and only when something happens (ticket
+    /// 111). Since ticket 105 a restarted application reopens by itself, so
+    /// that is no longer something the person has to do; logging out and
+    /// restarting the computer still are.
+    pub(crate) fn restart_note(&self, component: &ComponentInfo) -> Option<&'static str> {
+        restart_note(self.locale, component.state, component.restart_requirement)
+    }
+
     pub(crate) fn restart_requirement_label(
         &self,
         requirement: RestartRequirement,
@@ -764,5 +771,24 @@ fn format_byte_count(bytes: u64) -> String {
         format!("{} KiB", bytes / KIB)
     } else {
         format!("{bytes} B")
+    }
+}
+
+/// The card's restart note: only for a waiting update, and only when the
+/// update does something the person would notice.
+pub(crate) fn restart_note(
+    locale: Locale,
+    state: ComponentStatus,
+    requirement: RestartRequirement,
+) -> Option<&'static str> {
+    if state != ComponentStatus::UpdateAvailable {
+        return None;
+    }
+    let c = copy(locale);
+    match requirement {
+        RestartRequirement::RestartApplication => Some(c.restart_note_application),
+        RestartRequirement::LogOut => Some(c.restart_note_log_out),
+        RestartRequirement::Reboot => Some(c.restart_note_reboot),
+        RestartRequirement::NotDeclared | RestartRequirement::NotRequired => None,
     }
 }

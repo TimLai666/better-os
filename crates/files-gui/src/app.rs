@@ -51,7 +51,8 @@ pub(crate) struct OpenMenu {
 pub struct FilesApp {
     pub(crate) session: FilesSession,
     /// The appearance the person chose, saved under
-    /// `$XDG_CONFIG_HOME/better-os/files/appearance` (ADR 0004).
+    /// `$XDG_CONFIG_HOME/better-os/files/appearance`, or the desktop's when
+    /// nothing is stored (ADR 0019).
     pub(crate) appearance: Appearance,
     _follow_desktop: Option<Subscription>,
     /// The navigation pane's open or compact state when the person chose
@@ -246,8 +247,8 @@ impl FilesApp {
             InputState::new(window, cx).placeholder(crate::i18n::copy(locale).filter_placeholder)
         });
 
-        // Better OS is dark-first; the person's own choice wins. The kit
-        // repaints gpui-component in the Fluent palette.
+        // The desktop's appearance unless the person picked one (ADR 0019).
+        // The kit repaints gpui-component in the Fluent palette.
         let appearance = Appearance::default_path("files")
             .map(|path| Appearance::load(&path))
             .unwrap_or_default();

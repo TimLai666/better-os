@@ -87,6 +87,9 @@ pub(crate) struct AwakeApp {
     pub(crate) offset: UtcOffset,
     pub(crate) busy: bool,
     _work: Option<Task<()>>,
+    /// Repaints the window when the desktop switches, while the stored theme
+    /// is `system`.
+    _follow_desktop: Option<Subscription>,
     /// Watches for an update and restarts into it (ticket 105).
     pub(crate) update_restart: better_ui::restart::UpdateRestart,
 }
@@ -103,7 +106,7 @@ impl AwakeApp {
         let store = PreferencesStore::from_default_path();
         let (preferences, readable) = store.load();
         let locale = preferences.locale();
-        apply_theme(preferences.theme, window, cx);
+        let follow_desktop = apply_theme(preferences.theme, window, cx);
 
         let section = handoff
             .and_then(|h| h.state::<crate::restart::AwakeView>())
@@ -131,6 +134,7 @@ impl AwakeApp {
             offset: UtcOffset::UTC,
             busy: true,
             _work: None,
+            _follow_desktop: follow_desktop,
             update_restart: better_ui::restart::UpdateRestart::new(
                 APP_ID,
                 "Better Awake",
@@ -318,7 +322,7 @@ impl AwakeApp {
         cx: &mut Context<Self>,
     ) {
         self.preferences.theme = theme;
-        apply_theme(theme, window, cx);
+        self._follow_desktop = apply_theme(theme, window, cx);
         self.commit_preferences(cx);
     }
 
@@ -808,12 +812,23 @@ impl AwakeApp {
     }
 }
 
-pub(crate) fn apply_theme(theme: StoredTheme, window: &mut Window, cx: &mut App) {
-    match theme {
-        StoredTheme::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
-        StoredTheme::Light => Theme::change(ThemeMode::Light, Some(window), cx),
-        StoredTheme::System => Theme::sync_system_appearance(Some(window), cx),
-    }
+/// Paints the window in the stored theme, in gpui-component's own palette.
+/// For `system` it keeps repainting while the returned subscription is held:
+/// the desktop's appearance reaches GPUI only after the window has opened
+/// (ticket 110), so reading it once at startup opened light on a dark desktop.
+pub(crate) fn apply_theme(
+    theme: StoredTheme,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Subscription> {
+    theme.appearance().follow(window, cx, |dark, window, cx| {
+        let mode = if dark {
+            ThemeMode::Dark
+        } else {
+            ThemeMode::Light
+        };
+        Theme::change(mode, Some(window), cx);
+    })
 }
 
 impl better_ui::restart::Restartable for AwakeApp {

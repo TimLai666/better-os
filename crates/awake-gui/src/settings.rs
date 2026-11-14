@@ -62,12 +62,50 @@ impl PresetLength {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// The window's appearance. `system` is the default (ADR 0019): a file
+/// written before the setting existed, or holding a word this version does not
+/// know, follows the desktop. A stored `dark` stays dark: the field has always
+/// been written with every save, so a dark nobody picked cannot be told apart
+/// from one somebody did.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum StoredTheme {
-    Dark,
-    Light,
+    #[default]
     System,
+    Light,
+    Dark,
+}
+
+impl StoredTheme {
+    /// In the order the Settings section lists them: the default first.
+    pub(crate) const ALL: [StoredTheme; 3] =
+        [StoredTheme::System, StoredTheme::Light, StoredTheme::Dark];
+
+    pub(crate) fn appearance(self) -> better_ui::fluent::theme::Appearance {
+        use better_ui::fluent::theme::Appearance;
+        match self {
+            StoredTheme::System => Appearance::System,
+            StoredTheme::Light => Appearance::Light,
+            StoredTheme::Dark => Appearance::Dark,
+        }
+    }
+}
+
+/// An unreadable theme is the default, not a reason to discard the presets
+/// and session defaults stored beside it.
+fn theme_or_default<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<StoredTheme, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Field {
+        Known(StoredTheme),
+        Unknown(serde::de::IgnoredAny),
+    }
+    Ok(match Field::deserialize(deserializer)? {
+        Field::Known(theme) => theme,
+        Field::Unknown(_) => StoredTheme::default(),
+    })
 }
 
 /// What a new session is given when nothing else says otherwise.
@@ -100,6 +138,7 @@ pub(crate) struct Preferences {
     pub(crate) defaults: SessionDefaults,
     /// A locale key: `system`, `en-US`, or `zh-TW`.
     pub(crate) locale: String,
+    #[serde(default, deserialize_with = "theme_or_default")]
     pub(crate) theme: StoredTheme,
 }
 
@@ -111,9 +150,8 @@ impl Default for Preferences {
             default_preset: 1,
             defaults: SessionDefaults::default(),
             locale: Locale::System.as_key().to_string(),
-            // Better OS is dark-first. An unconfigured window opens dark rather
-            // than taking the toolkit's own light default.
-            theme: StoredTheme::Dark,
+            // Follow the desktop until the person picks (ADR 0019).
+            theme: StoredTheme::System,
         }
     }
 }

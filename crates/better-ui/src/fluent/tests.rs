@@ -920,9 +920,13 @@ fn the_menu_key_and_shift_f10_ask_for_a_context_menu() {
 }
 
 #[test]
-fn the_appearance_is_stored_as_a_word_and_defaults_to_dark() {
-    // ADR 0004: dark, light, or system; dark by default.
-    assert_eq!(Appearance::default(), Appearance::Dark);
+fn the_appearance_is_stored_as_a_word_and_defaults_to_the_system() {
+    // ADR 0019: system, light, or dark; the system by default, listed first.
+    assert_eq!(Appearance::default(), Appearance::System);
+    assert_eq!(Appearance::ALL[0], Appearance::System);
+    assert!(Appearance::System.follows_desktop());
+    assert!(!Appearance::Dark.follows_desktop());
+    assert!(!Appearance::Light.follows_desktop());
     for appearance in Appearance::ALL {
         assert_eq!(Appearance::parse(appearance.as_str()), Some(appearance));
     }
@@ -934,11 +938,15 @@ fn the_appearance_is_stored_as_a_word_and_defaults_to_dark() {
 
     let dir = std::env::temp_dir().join(format!("fluent-appearance-{}", std::process::id()));
     let path = dir.join("nested").join("appearance");
-    assert_eq!(Appearance::load(&path), Appearance::Dark);
+    // No file: the person never picked.
+    assert_eq!(Appearance::load(&path), Appearance::System);
     Appearance::Light.save(&path).expect("save");
     assert_eq!(Appearance::load(&path), Appearance::Light);
-    std::fs::write(&path, "nonsense").expect("write");
+    // A dark someone picked stays dark.
+    Appearance::Dark.save(&path).expect("save");
     assert_eq!(Appearance::load(&path), Appearance::Dark);
+    std::fs::write(&path, "nonsense").expect("write");
+    assert_eq!(Appearance::load(&path), Appearance::System);
     std::fs::remove_dir_all(&dir).expect("clean up");
 
     assert_eq!(
@@ -1668,4 +1676,57 @@ fn the_row_renderers_use_their_hit_area_inset() {
             "{name} draws a row with margins again"
         );
     }
+}
+
+/// A window with nothing in it, to apply an appearance to.
+struct Blank;
+
+impl gpui::Render for Blank {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        gpui::div()
+    }
+}
+
+thread_local! {
+    static PAINTED: std::cell::RefCell<Vec<bool>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn record_paint(dark: bool, _: &mut gpui::Window, _: &mut gpui::App) {
+    PAINTED.with(|painted| painted.borrow_mut().push(dark));
+}
+
+/// Ticket 110: a window opens before GPUI has heard the desktop's appearance
+/// from the portal, so GPUI reports light at first (its test window does the
+/// same). A stored `system` has to paint now and keep a subscription for the
+/// real answer; an explicit choice paints once and needs none.
+#[gpui::test]
+fn following_the_system_paints_now_and_keeps_listening(cx: &mut gpui::TestAppContext) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|_, _| Blank);
+    cx.update(|window, cx| {
+        assert_eq!(window.appearance(), gpui::WindowAppearance::Light);
+
+        PAINTED.with(|painted| painted.borrow_mut().clear());
+        let follow = Appearance::System.follow(window, cx, record_paint);
+        assert!(follow.is_some(), "system must keep following the desktop");
+        let dark = Appearance::Dark.follow(window, cx, record_paint);
+        assert!(dark.is_none());
+        let light = Appearance::Light.follow(window, cx, record_paint);
+        assert!(light.is_none());
+        assert_eq!(
+            PAINTED.with(|painted| painted.borrow().clone()),
+            [false, true, false]
+        );
+
+        // The Fluent windows' own call does the same and repaints the kit.
+        let follow = Appearance::System.apply_and_follow(window, cx);
+        assert!(follow.is_some());
+        assert!(!gpui_component::Theme::global(cx).mode.is_dark());
+        assert!(Appearance::Dark.apply_and_follow(window, cx).is_none());
+        assert!(gpui_component::Theme::global(cx).mode.is_dark());
+    });
 }

@@ -59,13 +59,16 @@ fn search_entries(locale: Locale) -> Vec<SearchEntry> {
     ]
 }
 
-/// The appearance choices, in the spec's order.
-pub(crate) const APPEARANCES: [StoredTheme; 3] =
-    [StoredTheme::Dark, StoredTheme::Light, StoredTheme::System];
+/// The appearance choices, the default first (ADR 0019).
+pub(crate) const APPEARANCES: [StoredTheme; 3] = StoredTheme::ALL;
 
 pub(crate) fn appearance_labels(locale: Locale) -> [&'static str; 3] {
     let s = shell(locale);
-    [s.appearance_dark, s.appearance_light, s.appearance_system]
+    APPEARANCES.map(|theme| match theme {
+        StoredTheme::System => s.appearance_system,
+        StoredTheme::Light => s.appearance_light,
+        StoredTheme::Dark => s.appearance_dark,
+    })
 }
 
 pub(crate) fn appearance_index(theme: StoredTheme) -> usize {
@@ -118,15 +121,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn appearance_is_dark_light_or_the_system_in_the_spec_words() {
+    fn appearance_is_the_system_light_or_dark_with_the_default_first() {
         assert_eq!(
             appearance_labels(Locale::ZhTw),
-            ["深色", "淺色", "跟隨系統"]
+            ["跟隨系統", "淺色", "深色"]
         );
         assert_eq!(
             appearance_labels(Locale::EnUs),
-            ["Dark", "Light", "Use system setting"]
+            ["Use system setting", "Light", "Dark"]
         );
+        assert_eq!(APPEARANCES[0], StoredTheme::default());
         for (index, theme) in APPEARANCES.iter().enumerate() {
             assert_eq!(appearance_index(*theme), index);
         }

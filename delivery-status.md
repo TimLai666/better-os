@@ -25,7 +25,8 @@ privileged mutation out of the GUI and CLI.
 - Shared manifest schema and validation
 - Manager dry-run planning and CLI
 - Better Manager GPUI shell, shared mock lifecycle, persistence, and acceptance coverage
-- Manifest-declared presentation, platform boundary, and dark-first appearance
+- Manifest-declared presentation, platform boundary, and themeable appearance
+  (system-follow by default since ADR 0019)
 - Monitor metric contracts and Linux collectors
 - Release packaging contract, clean-install verification, and license notices
 - Privileged daemon IPC contract, real artifact download, and APT execution
@@ -627,6 +628,13 @@ restores.
   because the key combination is a deferred decision
   timestamp: 2026-08-30
   impacted_ticket_ids: [21, 27]
+- decision: every Better OS window follows the system appearance by default;
+  light and dark stay stored choices, and a stored dark is kept
+  rationale: the owner's decision of 2026-11-14, superseding ADR 0004's
+  dark default; under it a light desktop got dark windows and, since ticket
+  108, dark frames; see ADR 0019
+  timestamp: 2026-11-14
+  impacted_ticket_ids: [110]
 
 ## Source Links
 
@@ -648,10 +656,11 @@ restores.
 - [Release packaging](docs/release-packaging.md)
 - [ADR 0002: Target-specific release assets](docs/decisions/0002-release-artifact-mapping.md)
 - [ADR 0003: GPL-3.0-or-later root license](docs/decisions/0003-project-license.md)
-- [ADR 0004: Dark-first themeable appearance](docs/decisions/0004-dark-first-themeable-appearance.md)
+- [ADR 0004: Dark-first themeable appearance](docs/decisions/0004-dark-first-themeable-appearance.md) (superseded by ADR 0019)
 - [ADR 0005: Platform boundary crate](docs/decisions/0005-platform-boundary.md)
 - [ADR 0006: Manifest-declared presentation](docs/decisions/0006-manifest-declared-presentation.md)
 - [ADR 0007: Privileged daemon IPC protocol](docs/decisions/0007-privileged-daemon-ipc.md)
+- [ADR 0019: Every window follows the system appearance by default](docs/decisions/0019-appearance-follows-system.md)
 - [Third-party license inventory](docs/third-party-licenses.md)
 - [Pull request #15](https://github.com/TimLai666/better-os/pull/15)
 - [v0.1.0 release](https://github.com/TimLai666/better-os/releases/tag/v0.1.0)

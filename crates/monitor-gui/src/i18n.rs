@@ -669,7 +669,7 @@ pub(crate) const EN: Copy = Copy {
 
     appearance_and_language: "Appearance and language",
     appearance: "Appearance",
-    appearance_description: "Choose dark, light, or follow your desktop",
+    appearance_description: "Follows your desktop's light or dark mode unless you pick one",
     dark_theme: "Dark",
     light_theme: "Light",
     system_theme: "Use system setting",
@@ -996,10 +996,10 @@ pub(crate) const ZH: Copy = Copy {
 
     appearance_and_language: "外觀與語言",
     appearance: "外觀",
-    appearance_description: "選擇深色、淺色，或跟隨桌面設定",
+    appearance_description: "預設跟著桌面切換淺色或深色，也可以固定用其中一種",
     dark_theme: "深色",
     light_theme: "淺色",
-    system_theme: "跟隨系統設定",
+    system_theme: "跟隨系統",
     language: "語言",
     language_description: "系統監控使用的語言",
     system_default: "跟隨系統設定",

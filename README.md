@@ -65,8 +65,8 @@ components installed through Better Manager alone.
   change goes through the service.
 - `monitor-core` defines samples, incidents, inventory, and redacted exports.
 - `better-ui`, `manager-gui`, and `monitor-gui` provide the GPUI application
-  boundary. Better Manager is dark by default and also offers light and system
-  appearances. It runs real transactions by default; a demo mode simulates them
+  boundary. Every window follows the desktop's light or dark appearance by default
+  and also offers light and dark as fixed choices. It runs real transactions by default; a demo mode simulates them
   and says so on screen.
 
 ## Development

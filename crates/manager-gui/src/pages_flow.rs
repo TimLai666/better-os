@@ -494,12 +494,14 @@ impl ManagerApp {
         let Some((component, failure)) = self.current_failure() else {
             return v_flex()
                 .gap_5()
-                .child(self.page_heading(c.restore_title, c.restore_subtitle, false, compact))
+                // Nothing failed, so the heading does not say a component
+                // failed, and the detail is not the Updates page's (ticket 111).
+                .child(self.page_heading(c.restore_none_title, c.restore_subtitle, false, compact))
                 .child(
                     self.empty_state(
                         IconName::Check,
                         c.all_checks_passed,
-                        c.no_updates_subtitle,
+                        c.restore_nothing_failed,
                         Button::new("restore-overview")
                             .label(c.back_to_overview)
                             .on_click(cx.listener(|this, _, _, cx| {

@@ -163,9 +163,9 @@ fn main() {
     let app = gpui_platform::application().with_assets(Assets);
 
     app.run(move |cx| {
-        // gpui-component installs its light theme here. Better OS is
-        // dark-first, so the stored appearance is applied once the window
-        // exists and the saved settings have been read.
+        // gpui-component installs its light theme here. The stored
+        // appearance (the desktop's, unless the person picked) is applied
+        // once the window exists and the saved settings have been read.
         gpui_component::init(cx);
 
         // `io.betteros.Manager` is the desktop entry's file name without its

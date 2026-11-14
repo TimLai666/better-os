@@ -1,22 +1,24 @@
 use crate::app::ComponentTranslation;
 use crate::i18n::{Locale, copy};
 use better_core::{ComponentIcon, ComponentId, ComponentManifest, ComponentType};
-use manager_core::catalog::{CatalogDegradation, CatalogSource, CatalogStatus};
+use manager_core::catalog::{CatalogDegradation, CatalogStatus};
 use manager_core::{
     ComponentRecord, ComponentStatus, DriftKind, FailureRecord, HealthState, InstallProvenance,
     RestartRequirement, SystemProfile,
 };
 
-/// The one status line the Components screen shows about the catalog itself.
+/// The one line the Updates and Apps screens show about the version list:
+/// when it was last checked, and what is wrong with it, if anything.
 ///
-/// It is built here, with no GPUI in sight, because whether a catalog is
+/// It is built here, with no GPUI in sight, because whether a list is
 /// presented as current or as possibly outdated is a decision and not a
-/// rendering detail. The screen draws what this says.
+/// rendering detail. The screen draws what this says. Where the list came
+/// from is not repeated beside its age (ticket 111): a list fetched just now
+/// was "downloaded just now · updated moments ago", the same fact twice, and
+/// a list that is not the published one already says so in its warning.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CatalogLine {
-    /// Where the catalog came from, in the user's words.
-    pub(crate) source: &'static str,
-    /// How old it is, or that it has never been fetched.
+    /// When the version list was last checked online, or that it never was.
     pub(crate) age: String,
     /// What is wrong with it, if anything. `None` means it was fetched in full
     /// during this session.
@@ -29,11 +31,6 @@ impl CatalogLine {
     pub(crate) fn present(locale: Locale, status: &CatalogStatus, now_unix_seconds: u64) -> Self {
         let c = copy(locale);
         Self {
-            source: match status.source {
-                CatalogSource::BuiltIn => c.catalog_source_built_in,
-                CatalogSource::Cache => c.catalog_source_cache,
-                CatalogSource::Remote => c.catalog_source_remote,
-            },
             age: match status.fetched_at_unix_seconds {
                 None => c.catalog_never_updated.to_string(),
                 Some(fetched_at) => age_phrase(locale, now_unix_seconds.saturating_sub(fetched_at)),
@@ -62,18 +59,44 @@ impl CatalogLine {
     }
 }
 
-/// How long ago a fetch happened, in the coarsest unit that still says
+/// When the list was last checked, in the coarsest unit that still says
 /// something. A clock that ran backwards produces "just now" rather than a
 /// negative age.
 fn age_phrase(locale: Locale, seconds: u64) -> String {
     let c = copy(locale);
-    let (template, value) = match seconds {
+    let (one, many, value) = match seconds {
         0..=59 => return c.catalog_updated_just_now.to_string(),
-        60..=3599 => (c.catalog_updated_minutes, seconds / 60),
-        3600..=86_399 => (c.catalog_updated_hours, seconds / 3600),
-        _ => (c.catalog_updated_days, seconds / 86_400),
+        60..=3599 => (
+            c.catalog_updated_minute,
+            c.catalog_updated_minutes,
+            seconds / 60,
+        ),
+        3600..=86_399 => (
+            c.catalog_updated_hour,
+            c.catalog_updated_hours,
+            seconds / 3600,
+        ),
+        _ => (
+            c.catalog_updated_day,
+            c.catalog_updated_days,
+            seconds / 86_400,
+        ),
     };
-    template.replace("{n}", &value.to_string())
+    if value == 1 {
+        one.to_string()
+    } else {
+        many.replace("{n}", &value.to_string())
+    }
+}
+
+/// "8 components have new versions": a count always says what it counts.
+pub(crate) fn update_count(locale: Locale, count: usize) -> String {
+    let c = copy(locale);
+    if count == 1 {
+        c.update_check_found_one.to_string()
+    } else {
+        c.update_check_found.replace("{n}", &count.to_string())
+    }
 }
 
 /// The version of the manager this window is, taken from the package it was
@@ -85,17 +108,18 @@ pub(crate) const MANAGER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// did nothing would be worse than one that does not pretend.
 pub(crate) const PROJECT_REPOSITORY: &str = "https://github.com/TimLai666/better-os";
 
-/// What the manual "Check for updates" button has to say.
+/// What the Updates page's summary card says.
 ///
 /// The check is a catalog refresh followed by a recount, so its result can only
-/// be one of four things: it has not been asked for, it is running, the refresh
-/// did not reach the published catalog, or it finished and the count is what it
-/// is. A refresh that came back partly refused is not a failure — the newer
-/// manifests were adopted — and the catalog line beside this one already says
-/// what was refused.
+/// be one of four things: it is running, the refresh the person asked for did
+/// not reach the published catalog, or the count is what it is. The refresh
+/// the window runs at launch is a check too, so a count is shown as the answer
+/// without waiting for a click; how old the list behind it is goes on the line
+/// under it. A refresh that came back partly refused is not a failure — the
+/// newer manifests were adopted — and the list's own warning says what was
+/// refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum UpdateCheck {
-    NotRun,
     Running,
     /// The refresh fell back to the cache or to the built-in catalog. Carries
     /// that state's own sentence, so the person is told which list they are
@@ -103,8 +127,8 @@ pub(crate) enum UpdateCheck {
     Failed(&'static str),
     /// How many components have a newer version, as a sentence.
     Found(String),
-    /// Nothing to update, and how old the list that says so is.
-    UpToDate(String),
+    /// Nothing to update.
+    UpToDate,
 }
 
 impl UpdateCheck {
@@ -114,35 +138,27 @@ impl UpdateCheck {
         running: bool,
         status: &CatalogStatus,
         updates: usize,
-        now_unix_seconds: u64,
     ) -> Self {
         let c = copy(locale);
         if running {
             return Self::Running;
         }
-        if !requested {
-            return Self::NotRun;
-        }
-        match status.degraded {
-            Some(CatalogDegradation::NeverRefreshed) => Self::Failed(c.catalog_degraded_never),
+        let failed = match status.degraded {
+            Some(CatalogDegradation::NeverRefreshed) => Some(c.catalog_degraded_never),
             Some(CatalogDegradation::RefreshFailedUsingCache) => {
-                Self::Failed(c.catalog_degraded_failed_cache)
+                Some(c.catalog_degraded_failed_cache)
             }
             Some(CatalogDegradation::RefreshFailedUsingBuiltIn) => {
-                Self::Failed(c.catalog_degraded_failed_built_in)
+                Some(c.catalog_degraded_failed_built_in)
             }
-            Some(CatalogDegradation::PartiallyRefreshed) | None => {
-                if updates > 0 {
-                    Self::Found(c.update_check_found.replace("{n}", &updates.to_string()))
-                } else {
-                    Self::UpToDate(match status.fetched_at_unix_seconds {
-                        None => c.catalog_never_updated.to_string(),
-                        Some(fetched_at) => {
-                            age_phrase(locale, now_unix_seconds.saturating_sub(fetched_at))
-                        }
-                    })
-                }
-            }
+            Some(CatalogDegradation::PartiallyRefreshed) | None => None,
+        };
+        match failed {
+            // Only a check the person asked for is reported as failed; at
+            // launch the count stands, with the list's warning under it.
+            Some(reason) if requested => Self::Failed(reason),
+            _ if updates > 0 => Self::Found(update_count(locale, updates)),
+            _ => Self::UpToDate,
         }
     }
 }

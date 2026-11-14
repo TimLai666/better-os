@@ -658,9 +658,9 @@ impl FilesApp {
         MenuEntry::submenu(
             c.appearance,
             vec![
+                item(c.theme_system, Appearance::System),
                 item(c.light_theme, Appearance::Light),
                 item(c.dark_theme, Appearance::Dark),
-                item(c.theme_system, Appearance::System),
             ],
         )
     }

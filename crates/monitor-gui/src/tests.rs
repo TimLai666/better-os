@@ -2042,3 +2042,39 @@ fn stores_left_by_crashed_windows_are_swept_and_live_ones_kept() {
     assert!(own.exists());
     assert!(other.exists());
 }
+
+/// Ticket 110: the appearance the window opens in, read from the word file
+/// beside the language one.
+#[test]
+fn the_appearance_follows_the_desktop_unless_one_was_picked() {
+    use better_ui::fluent::theme::Appearance;
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory
+        .path()
+        .join("better-os")
+        .join("monitor")
+        .join("appearance");
+    // Nothing picked yet.
+    assert_eq!(Appearance::load(&path), Appearance::System);
+    // A word this version does not know.
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "sepia\n").unwrap();
+    assert_eq!(Appearance::load(&path), Appearance::System);
+    // The file is written only when a person picks, so what is in it stays.
+    for picked in [Appearance::Dark, Appearance::Light, Appearance::System] {
+        picked.save(&path).unwrap();
+        assert_eq!(Appearance::load(&path), picked);
+    }
+    // The settings combo box lists the default first, in both languages.
+    assert_eq!(Appearance::ALL[0], Appearance::default());
+    assert_eq!(copy(Locale::EnUs).system_theme, "Use system setting");
+    assert_eq!(copy(Locale::ZhTw).system_theme, "跟隨系統");
+    assert_eq!(
+        copy(Locale::EnUs).appearance_description,
+        "Follows your desktop's light or dark mode unless you pick one"
+    );
+    assert_eq!(
+        copy(Locale::ZhTw).appearance_description,
+        "預設跟著桌面切換淺色或深色，也可以固定用其中一種"
+    );
+}

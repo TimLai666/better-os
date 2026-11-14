@@ -27,7 +27,7 @@ fn refused(start: Start) -> String {
 }
 
 #[test]
-fn no_argument_opens_an_empty_dark_window() {
+fn no_argument_opens_an_empty_window_in_the_stored_appearance() {
     let options = opened(run(&[]));
     assert_eq!(options.path, None);
     assert_eq!(options.locale, Locale::System);
@@ -92,4 +92,51 @@ fn unknown_flags_second_paths_and_unknown_values_are_refused() {
 fn a_flag_with_no_value_keeps_its_default() {
     let options = opened(run(&["--lang"]));
     assert_eq!(options.locale, Locale::System);
+}
+
+/// Ticket 110: the appearance the window opens in when no flag names one.
+fn stored(file: Option<&str>) -> Appearance {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("git.json");
+    if let Some(text) = file {
+        std::fs::write(&path, text).expect("write the settings file");
+    }
+    let settings = git_gui::settings::Settings::load(Some(&path));
+    Appearance::stored(&settings.appearance)
+}
+
+#[test]
+fn the_stored_appearance_defaults_to_the_system_and_keeps_a_choice() {
+    assert_eq!(Appearance::default(), Appearance::System);
+    // No settings file.
+    assert_eq!(stored(None), Appearance::System);
+    // A file from before the setting existed.
+    assert_eq!(stored(Some(r#"{"language":"zh-TW"}"#)), Appearance::System);
+    // A word this version does not know.
+    assert_eq!(
+        stored(Some(r#"{"appearance":"sepia"}"#)),
+        Appearance::System
+    );
+    assert_eq!(stored(Some(r#"{"appearance":""}"#)), Appearance::System);
+    // A stored choice stays; a stored dark cannot be told from one written
+    // as the old default, so it stays dark too.
+    assert_eq!(stored(Some(r#"{"appearance":"dark"}"#)), Appearance::Dark);
+    assert_eq!(stored(Some(r#"{"appearance":"light"}"#)), Appearance::Light);
+    assert_eq!(
+        stored(Some(r#"{"appearance":"system"}"#)),
+        Appearance::System
+    );
+}
+
+#[test]
+fn the_settings_page_lists_the_default_first_and_only_it_follows_the_desktop() {
+    assert_eq!(Appearance::ALL[0], Appearance::default());
+    for appearance in Appearance::ALL {
+        assert_eq!(
+            appearance.fluent().follows_desktop(),
+            appearance == Appearance::System,
+            "{appearance:?}"
+        );
+        assert_eq!(appearance.fluent().as_str(), appearance.as_str());
+    }
 }

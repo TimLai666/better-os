@@ -14,8 +14,9 @@
 //! launched in a headless smoke test with nothing else installed.
 //!
 //! The window takes the appearance stored for it
-//! (`$XDG_CONFIG_HOME/better-os/app-chooser/appearance`: dark, light, or
-//! system), dark when none is stored, as ADR 0004 sets for every window.
+//! (`$XDG_CONFIG_HOME/better-os/app-chooser/appearance`: system, light, or
+//! dark), and follows the desktop when none is stored, as ADR 0019 sets for
+//! every window.
 
 use app_chooser_gui::cli::{parse_arguments, target_from};
 use app_chooser_gui::{

@@ -16,7 +16,7 @@ use gpui_component::{
 
 use crate::{
     app::AwakeApp,
-    i18n::{Locale, copy, fill},
+    i18n::{Copy, Locale, copy, fill},
     model::{HistoryRow, Section, provider_label},
     settings::StoredTheme,
 };
@@ -351,29 +351,9 @@ impl AwakeApp {
                                 .text_color(cx.theme().muted_foreground)
                                 .child(c.appearance_description),
                         )
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .flex_wrap()
-                                .child(self.theme_button(
-                                    "theme-dark",
-                                    StoredTheme::Dark,
-                                    c.dark_theme,
-                                    cx,
-                                ))
-                                .child(self.theme_button(
-                                    "theme-light",
-                                    StoredTheme::Light,
-                                    c.light_theme,
-                                    cx,
-                                ))
-                                .child(self.theme_button(
-                                    "theme-system",
-                                    StoredTheme::System,
-                                    c.system_default,
-                                    cx,
-                                )),
-                        ),
+                        .child(h_flex().gap_2().flex_wrap().children(
+                            StoredTheme::ALL.map(|theme| self.theme_button(theme, c, cx)),
+                        )),
                     cx,
                 ),
             )
@@ -405,13 +385,12 @@ impl AwakeApp {
             .on_click(cx.listener(move |this, _, _, cx| this.set_locale(locale, cx)))
     }
 
-    fn theme_button(
-        &self,
-        id: &'static str,
-        theme: StoredTheme,
-        label: &'static str,
-        cx: &mut Context<Self>,
-    ) -> Button {
+    fn theme_button(&self, theme: StoredTheme, c: &Copy, cx: &mut Context<Self>) -> Button {
+        let (id, label) = match theme {
+            StoredTheme::System => ("theme-system", c.system_theme),
+            StoredTheme::Light => ("theme-light", c.light_theme),
+            StoredTheme::Dark => ("theme-dark", c.dark_theme),
+        };
         Button::new(id)
             .label(label)
             .selected(self.preferences.theme == theme)

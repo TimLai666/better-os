@@ -125,20 +125,21 @@ pub fn apply_to_component_theme(theme: &mut Theme) {
     theme.tokens = ThemeTokens::from(&theme.colors);
 }
 
-/// The appearance a person chose, stored as `dark`, `light`, or `system`
-/// (ADR 0004). Better OS opens dark: a missing or unreadable choice is
-/// [`Appearance::Dark`].
+/// The appearance a person chose, stored as `system`, `light`, or `dark`
+/// (ADR 0019). Better OS follows the desktop: a missing or unreadable choice
+/// is [`Appearance::System`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub enum Appearance {
-    #[default]
-    Dark,
-    Light,
     /// Follow the desktop, and keep following it while the window is open.
+    #[default]
     System,
+    Light,
+    Dark,
 }
 
 impl Appearance {
-    pub const ALL: [Appearance; 3] = [Appearance::Dark, Appearance::Light, Appearance::System];
+    /// In the order a picker lists them: the default first.
+    pub const ALL: [Appearance; 3] = [Appearance::System, Appearance::Light, Appearance::Dark];
 
     /// The stored word.
     pub fn as_str(self) -> &'static str {
@@ -172,8 +173,9 @@ impl Appearance {
         }
     }
 
-    /// The choice stored at `path`, or dark when there is none or it cannot
-    /// be read.
+    /// The choice stored at `path`, or [`Appearance::System`] when there is
+    /// none or it cannot be read. The file is written only when a person
+    /// picks, so a stored word is always a choice they made.
     pub fn load(path: &std::path::Path) -> Appearance {
         std::fs::read_to_string(path)
             .ok()
@@ -213,10 +215,41 @@ impl Appearance {
     /// whenever the desktop switches. Keep the subscription for as long as
     /// the choice stands; drop it when the person picks another.
     pub fn apply_and_follow(self, window: &mut Window, cx: &mut App) -> Option<gpui::Subscription> {
-        self.apply(window, cx);
-        (self == Appearance::System).then(|| {
-            window.observe_window_appearance(|window, cx| Appearance::System.apply(window, cx))
+        self.follow(window, cx, |dark, window, cx| {
+            set_appearance(dark, Some(window), cx)
         })
+    }
+
+    /// Calls `paint` with whether to draw dark now, and for
+    /// [`Appearance::System`] again every time the desktop's appearance
+    /// changes, for a window that paints itself in something other than the
+    /// Fluent palette.
+    ///
+    /// Following is not optional for `System`. When a window opens, GPUI on
+    /// Linux has not heard from the desktop yet: it asks the XDG desktop
+    /// portal in the background and reports light until the answer arrives,
+    /// so a window that reads the desktop only once opens light on a dark
+    /// desktop (ticket 110). The answer arrives as an appearance change,
+    /// which only the returned subscription sees; keep it for as long as the
+    /// choice stands.
+    pub fn follow(
+        self,
+        window: &mut Window,
+        cx: &mut App,
+        paint: fn(bool, &mut Window, &mut App),
+    ) -> Option<gpui::Subscription> {
+        paint(self.is_dark(window.appearance()), window, cx);
+        self.follows_desktop().then(|| {
+            window.observe_window_appearance(move |window, cx| {
+                paint(Appearance::System.is_dark(window.appearance()), window, cx)
+            })
+        })
+    }
+
+    /// Whether this choice keeps changing with the desktop, so the window has
+    /// to hold the subscription [`Appearance::follow`] returns.
+    pub fn follows_desktop(self) -> bool {
+        self == Appearance::System
     }
 }
 
