@@ -301,6 +301,15 @@ fn build(store: &HistoryStore, request: &ExportRequest, now_unix_ms: u64) -> Bui
                 request.include_processes,
                 &mut redactor,
             ));
+            // A detected slowdown names the processes that were using the
+            // most; they get the same treatment as a sample's.
+            if let Some(detection) = redacted.detection.as_mut() {
+                detection.processes = redact_processes(
+                    &detection.processes,
+                    request.include_processes,
+                    &mut redactor,
+                );
+            }
             redacted
         })
         .collect();
@@ -392,26 +401,33 @@ fn build(store: &HistoryStore, request: &ExportRequest, now_unix_ms: u64) -> Bui
 
 fn redact_sample(sample: &Sample, include_processes: bool, redactor: &mut Redactor) -> Sample {
     let mut redacted = sample.clone();
-    if include_processes {
-        redacted.processes = sample
-            .processes
-            .iter()
-            .map(|process| ProcessSample {
-                pid: process.pid,
-                name: redactor.apply(&process.name),
-                command_line: process
-                    .command_line
-                    .as_deref()
-                    .map(|line| redactor.apply_command_line(line)),
-                user: redactor.apply_optional(process.user.as_deref()),
-                cpu_utilization: process.cpu_utilization,
-                memory_resident: process.memory_resident,
-            })
-            .collect();
-    } else {
-        redacted.processes.clear();
-    }
+    redacted.processes = redact_processes(&sample.processes, include_processes, redactor);
     redacted
+}
+
+fn redact_processes(
+    processes: &[ProcessSample],
+    include_processes: bool,
+    redactor: &mut Redactor,
+) -> Vec<ProcessSample> {
+    if !include_processes {
+        return Vec::new();
+    }
+    processes
+        .iter()
+        .map(|process| ProcessSample {
+            pid: process.pid,
+            name: redactor.apply(&process.name),
+            command_line: process
+                .command_line
+                .as_deref()
+                .map(|line| redactor.apply_command_line(line)),
+            user: redactor.apply_optional(process.user.as_deref()),
+            cpu_utilization: process.cpu_utilization,
+            memory_resident: process.memory_resident,
+            disk_bytes_rate: process.disk_bytes_rate,
+        })
+        .collect()
 }
 
 fn collector_health(samples: &[Sample]) -> CollectorHealthFile {
@@ -537,15 +553,33 @@ fn schema_documents() -> Vec<(&'static str, String)> {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Better Monitor incident",
         "description":
-            "A moment a person marked, with the state captured at that moment and how far \
-             the readings had moved from the preceding baseline.",
+            "A slowdown Better Monitor recorded by itself, with the state captured when it \
+             was recognized and how far the readings had moved from the preceding baseline. \
+             An incident without `detection` is a moment a person marked by hand with a \
+             version from before slowdowns were recorded automatically.",
         "type": "object",
         "required": ["id", "marked_at_unix_ms", "monotonic_ns", "window", "snapshot"],
         "properties": {
+            "marked_at_unix_ms": {
+                "type": "integer",
+                "description": "When the slowdown began, or the moment a person marked."
+            },
             "window": {
                 "type": "object",
-                "description": "How much history before and after the marker belongs to this \
-                                incident, in seconds, as it was set when the marker was made."
+                "description": "How much history before and after `marked_at_unix_ms` belongs \
+                                to this incident, in seconds, as it was set when it was recorded."
+            },
+            "detection": {
+                "type": "object",
+                "description": "What the service saw: when the slowdown began and ended, \
+                                whether it was still going on, its causes (the one that \
+                                explains it best first: memory, disk, or CPU pressure, memory \
+                                nearly gone while swapping, a program ended for memory, \
+                                thermal throttling, or the machine freezing, each with how \
+                                many seconds it held, its worst reading, and a count for the \
+                                event kinds), and the \
+                                processes using the most of the leading cause's resource. \
+                                Absent on an incident marked by hand."
             },
             "baseline": {
                 "type": "object",
@@ -695,6 +729,7 @@ mod tests {
                 user: Some("tim".into()),
                 cpu_utilization: Some(0.9),
                 memory_resident: Some(1_048_576),
+                disk_bytes_rate: None,
             }],
             collectors: vec![CollectorState {
                 collector: CollectorId::new("linux.cpu").unwrap(),
@@ -743,6 +778,39 @@ mod tests {
                 baseline: Default::default(),
                 snapshot: Box::new(sample(130_000)),
                 about_pid: Some(4242),
+                detection: None,
+            })
+            .unwrap();
+        // One the service recorded by itself, whose busiest process carries
+        // the seeded secret and a home path in its name.
+        store
+            .record_incident(monitor_store::Incident {
+                id: 2,
+                marked_at_unix_ms: 140_000,
+                monotonic_ns: 140_000_000_000,
+                note: None,
+                window: monitor_store::IncidentWindow::default(),
+                baseline: Default::default(),
+                snapshot: Box::new(sample(140_000)),
+                about_pid: None,
+                detection: Some(monitor_store::Detection {
+                    started_at_unix_ms: 140_000,
+                    ended_at_unix_ms: 150_000,
+                    ongoing: false,
+                    causes: vec![monitor_store::SlowdownCause {
+                        kind: monitor_store::SlowdownKind::MemoryPressure,
+                        seconds: 10,
+                        worst: 40.0,
+                        count: 0,
+                    }],
+                    processes_by: monitor_store::SlowdownResource::Memory,
+                    processes: vec![ProcessSample {
+                        pid: 4343,
+                        name: "/home/tim/bin/ghp_S3cretT0kenValue000001".into(),
+                        memory_resident: Some(4_000_000_000),
+                        ..ProcessSample::default()
+                    }],
+                }),
             })
             .unwrap();
         (directory, store)
@@ -785,7 +853,10 @@ mod tests {
             );
         }
         assert_eq!(outcome.samples, 12);
-        assert_eq!(outcome.incidents, 1);
+        assert_eq!(
+            outcome.incidents, 2,
+            "one marked by hand, one recorded by itself"
+        );
         assert!(outcome.files.iter().any(|file| file.starts_with("schema/")));
     }
 
@@ -795,8 +866,8 @@ mod tests {
         let destination = target.path().join("better-monitor-export");
         export(ExportRequest::new(TimeRange::all(), &destination));
 
-        // The secret was planted in a process command line and in an incident
-        // note. Every byte of the package is searched, not only the files that
+        // The secret was planted in a process command line, in an incident
+        // note, and in the name of a detected slowdown's busiest process. Every byte of the package is searched, not only the files that
         // were expected to carry it.
         let secret = "ghp_S3cretT0kenValue000001";
         let mut checked = 0usize;
@@ -940,6 +1011,12 @@ mod tests {
 
         let samples = std::fs::read_to_string(destination.join(SAMPLES_FILE)).unwrap();
         assert!(!samples.contains("curl"));
+        let incidents = std::fs::read_to_string(destination.join(INCIDENTS_FILE)).unwrap();
+        assert!(!incidents.contains("curl"));
+        assert!(
+            !incidents.contains("4343"),
+            "a detected slowdown's process list is withheld too"
+        );
         assert_eq!(
             outcome.report.withheld_data_classes,
             vec!["process_identities".to_string()]

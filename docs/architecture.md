@@ -86,8 +86,10 @@ either side of the privileged boundary.
 - Continuous: low-cost CPU, memory, PSI, process, storage, and network
   collection.
 - Periodic: audits that refresh component and system state.
-- Event-triggered: deeper profiling around a user-marked incident or detected
-  regression.
+- Event-triggered: a slowdown the service recognizes by itself (sustained
+  pressure, memory nearly gone while swapping, an out-of-memory kill, thermal
+  throttling, or the sampling loop itself freezing) is recorded as an
+  incident with the state around it (ticket 115). Nobody marks one by hand.
 
 Collectors read `/proc` and `/sys` directly. They never run a command or parse
 a tool's human-formatted output, because the kernel already publishes a stable

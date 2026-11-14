@@ -228,35 +228,89 @@ async fn a_refused_request_comes_back_as_a_document_not_a_bus_error() {
     assert!(client.status(false).await.is_ok());
 }
 
+/// Copy a fixture so a test can rewrite its readings.
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    for entry in std::fs::read_dir(from).expect("a readable fixture") {
+        let entry = entry.expect("a readable entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("a file type").is_dir() {
+            std::fs::create_dir_all(&target).expect("a writable directory");
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("a copyable file");
+        }
+    }
+}
+
 #[tokio::test]
-async fn an_incident_marked_by_one_client_is_visible_to_the_next() {
+async fn a_slowdown_appears_without_any_client_asking_and_marking_is_refused() {
     let bus = bus_or_skip!();
+    // The captured machine with memory stalled: fake readings, so nothing on
+    // this computer has to be put under pressure.
+    let machine = tempfile::tempdir().unwrap();
+    copy_tree(&fixture("snapshot-a"), machine.path());
+    std::fs::write(
+        machine.path().join("proc/pressure/memory"),
+        "some avg10=58.00 avg60=20.00 avg300=5.00 total=2746439\n\
+         full avg10=33.00 avg60=10.00 avg300=2.00 total=2631951\n",
+    )
+    .unwrap();
     let directory = tempfile::tempdir().unwrap();
-    let engine = MonitorEngine::start(config(directory.path().to_path_buf())).unwrap();
-    engine.tick().await.unwrap();
-    engine.tick().await.unwrap();
-    let _served = serve(&bus, engine).await.expect("a served object");
+    let mut config = config(directory.path().to_path_buf());
+    config.roots = Roots::at(machine.path());
+    // Recognized at the first stalled round rather than after ten seconds,
+    // so the test is short; the thresholds are the shipped ones.
+    config.slowdowns.onset_seconds = 0;
+    let engine = MonitorEngine::start(config).unwrap();
+    let _served = serve(&bus, engine.clone()).await.expect("a served object");
+    let sampling = monitor_service::spawn_sampling(engine.clone());
 
-    let marked = {
-        let first = client(&bus).await;
-        first
-            .mark(Some("the system was just slow".into()), 300, 120, None)
+    // Nobody asks for anything: the service records it on its own.
+    let watcher = client(&bus).await;
+    let mut recorded = Vec::new();
+    for _ in 0..100 {
+        recorded = watcher
+            .incidents()
             .await
-            .expect("an incident")
-    };
-    assert_eq!(marked.incident.id, 1);
+            .expect("the incident list")
+            .incidents;
+        if !recorded.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(recorded.len(), 1, "one slowdown, one record");
+    let detection = recorded[0].detection.as_ref().expect("a detected incident");
     assert_eq!(
-        marked.incident.note.as_deref(),
-        Some("the system was just slow")
+        detection.leading().unwrap().kind,
+        monitor_store::SlowdownKind::MemoryPressure
     );
+    assert!(!detection.processes.is_empty());
 
-    let second = client(&bus).await;
-    let incidents = second.incidents().await.expect("the incident list");
-    assert_eq!(incidents.incidents.len(), 1);
-    assert_eq!(incidents.incidents[0].id, 1);
+    // A window from before ticket 115 still sends this. It is told no, and
+    // nothing is recorded for it.
+    let error = watcher
+        .send(MonitorRequest::new(RequestBody::MarkIncident {
+            note: Some("the system was just slow".into()),
+            window_before_seconds: 300,
+            window_after_seconds: 120,
+            about_pid: None,
+        }))
+        .await
+        .expect_err("marking by hand is refused");
+    assert!(
+        matches!(&error, monitor_service::ClientError::Rejected(key)
+            if key == "monitor.ipc.error.manual_marking_removed"),
+        "unexpected error: {error}"
+    );
+    let after = watcher.incidents().await.expect("the incident list");
+    sampling.abort();
+    assert_eq!(after.incidents.len(), 1, "the refusal recorded nothing");
 
-    let window = second.incident_window(1).await.expect("the window");
-    assert_eq!(window.incident.id, 1);
+    let window = watcher
+        .incident_window(recorded[0].id)
+        .await
+        .expect("the window");
     assert!(!window.incident.snapshot.collectors.is_empty());
 }
 

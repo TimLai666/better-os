@@ -1,4 +1,4 @@
-//! All five subcommands, end to end, against a disposable store.
+//! Every subcommand, end to end, against a disposable store.
 //!
 //! Everything runs `--offline`, so the developer's own service is never
 //! consulted and the test never depends on one being installed. That also
@@ -77,34 +77,24 @@ async fn record_writes_history_and_the_other_subcommands_read_it() {
 }
 
 #[tokio::test]
-async fn mark_records_an_incident_and_says_where_it_came_from() {
+async fn mark_only_says_that_slowdowns_are_recorded_automatically() {
+    // Ticket 115: the service records slowdowns by itself; `mark` is kept,
+    // hidden, to say so, and writes nothing.
     let store = tempfile::tempdir().unwrap();
-    cli(
+    let said = cli(
         store.path(),
-        &["record", "--seconds", "1", "--resolution", "0"],
+        &["mark", "--note", "the system was just slow"],
     )
     .await;
-
-    let marked = cli(
-        store.path(),
-        &[
-            "mark",
-            "--note",
-            "the system was just slow",
-            "--before",
-            "60",
-            "--after",
-            "30",
-        ],
-    )
-    .await;
-    assert!(marked.contains("incident         1"));
-    assert!(marked.contains("note             the system was just slow"));
-    assert!(marked.contains("window           60 s before, 30 s after"));
-    assert!(marked.contains("the service is not running"));
-
-    let inspected = cli(store.path(), &["inspect"]).await;
-    assert!(inspected.contains("incidents        1"));
+    assert!(said.contains("records"), "{said}");
+    assert!(said.contains("by itself"), "{said}");
+    assert!(
+        !store
+            .path()
+            .join(monitor_store::INCIDENTS_FILE_NAME)
+            .exists(),
+        "nothing was recorded"
+    );
 }
 
 #[tokio::test]
@@ -115,7 +105,6 @@ async fn export_previews_before_it_writes_and_writes_a_whole_package() {
         &["record", "--seconds", "1", "--resolution", "0"],
     )
     .await;
-    cli(store.path(), &["mark", "--note", "slow"]).await;
 
     let target = tempfile::tempdir().unwrap();
     let destination = target.path().join("package");

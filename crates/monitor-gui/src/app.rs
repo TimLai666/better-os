@@ -225,9 +225,11 @@ pub(crate) struct MonitorApp {
     pub(crate) inventory: Option<Inventory>,
     pub(crate) inventory_captures: u32,
     pub(crate) inventory_diff: Option<InventoryDiff>,
-    /// The incident the person marked most recently, kept so the Events page
-    /// can confirm what was captured rather than only that something was.
-    pub(crate) last_marked: Option<u64>,
+    /// When the Events page last asked for the incident list, so a slowdown
+    /// the service recorded while the page is open shows up on it.
+    pub(crate) incidents_asked_at_unix_ms: u64,
+    /// The store's incident revision when the list was last asked for.
+    pub(crate) incidents_asked_revision: Option<u64>,
     pub(crate) last_failure: Option<String>,
 
     pub(crate) apps: AppsModel,
@@ -249,6 +251,9 @@ pub(crate) struct MonitorApp {
     /// Which settings expanders are open.
     pub(crate) grouping_open: bool,
     pub(crate) sources_open: bool,
+    /// The Events page's rules expander, once the person opened or closed
+    /// it. Until then it is open while there is nothing recorded to show.
+    pub(crate) slowdown_rules_open: Option<bool>,
 
     pub(crate) dialog: Option<Dialog>,
     pub(crate) menu: Option<OpenMenu>,
@@ -281,6 +286,41 @@ pub(crate) enum Collection {
 }
 
 /// Where the language choice is kept, beside the appearance.
+/// How often the Events page asks again while a slowdown it shows is still
+/// going on, so its length and its end appear without leaving the page.
+pub(crate) const ONGOING_REFRESH_MS: u64 = 10_000;
+
+/// Whether the Events page's list is behind the service: the store recorded
+/// or changed an incident since the list was asked for (which the number of
+/// incidents alone cannot tell once the store is at its bound), it holds a
+/// different number, or the list shows a slowdown still going on and has not
+/// been asked for a while.
+pub(crate) fn incidents_are_stale(app: &MonitorApp, status: &StatusDocument) -> bool {
+    list_is_stale(
+        &app.incidents,
+        (status.store.incidents, status.store.incidents_revision),
+        (app.incidents_asked_revision, app.incidents_asked_at_unix_ms),
+        status.now_unix_ms,
+    )
+}
+
+pub(crate) fn list_is_stale(
+    shown: &[Incident],
+    (stored, revision): (u64, u64),
+    (asked_revision, asked_at_unix_ms): (Option<u64>, u64),
+    now_unix_ms: u64,
+) -> bool {
+    let ongoing = shown.iter().any(|incident| {
+        incident
+            .detection
+            .as_ref()
+            .is_some_and(|detection| detection.ongoing)
+    });
+    asked_revision != Some(revision)
+        || shown.len() as u64 != stored
+        || ongoing && now_unix_ms.saturating_sub(asked_at_unix_ms) >= ONGOING_REFRESH_MS
+}
+
 pub(crate) fn language_path() -> Option<PathBuf> {
     Appearance::default_path("monitor").map(|path| path.with_file_name("language"))
 }
@@ -333,7 +373,8 @@ impl MonitorApp {
             inventory: None,
             inventory_captures: 0,
             inventory_diff: None,
-            last_marked: None,
+            incidents_asked_at_unix_ms: 0,
+            incidents_asked_revision: None,
             last_failure: None,
             apps: AppsModel::new(Vec::new(), GroupingPrecedence::default()),
             app_sort: (AppColumn::Cpu, false),
@@ -350,6 +391,7 @@ impl MonitorApp {
             services_sort: None,
             grouping_open: false,
             sources_open: false,
+            slowdown_rules_open: None,
             dialog: None,
             menu: None,
             menu_state,
@@ -427,6 +469,11 @@ impl MonitorApp {
                     self.now_unix_ms = status.now_unix_ms;
                     self.adopt_round(round.clone(), cx);
                 }
+                if self.page == Page::Events && incidents_are_stale(self, &status) {
+                    self.incidents_asked_at_unix_ms = status.now_unix_ms;
+                    self.incidents_asked_revision = Some(status.store.incidents_revision);
+                    self.ask(LinkRequest::Incidents);
+                }
                 self.status = Some(*status);
             }
             LinkUpdate::Embedded(detail) => {
@@ -442,13 +489,6 @@ impl MonitorApp {
                 self.inventory_captures = inventory.captures;
                 self.inventory = inventory.inventory;
                 self.inventory_diff = diff.diff;
-            }
-            LinkUpdate::Marked(document) => {
-                self.last_marked = Some(document.incident.id);
-                self.last_failure = None;
-                // The list the page draws has to include what was just
-                // marked, so it is refreshed rather than appended to blindly.
-                self.ask(LinkRequest::Incidents);
             }
             LinkUpdate::Export(_) => {}
             LinkUpdate::Failed(detail) => self.last_failure = Some(detail),
@@ -559,7 +599,14 @@ impl MonitorApp {
             Page::History => self.ask(LinkRequest::History {
                 seconds: self.history_seconds,
             }),
-            Page::Events => self.ask(LinkRequest::Incidents),
+            Page::Events => {
+                self.incidents_asked_at_unix_ms = self.now_unix_ms;
+                self.incidents_asked_revision = self
+                    .status
+                    .as_ref()
+                    .map(|status| status.store.incidents_revision);
+                self.ask(LinkRequest::Incidents);
+            }
             Page::SystemInfo | Page::Performance => self.ask(LinkRequest::Inventory),
             Page::Startup => self.reload_startup(cx),
             Page::Services => self.reload_services(cx),
@@ -580,22 +627,9 @@ impl MonitorApp {
         cx.notify();
     }
 
-    /// "The computer was just slow."
-    ///
-    /// The window sends the marker and nothing else. What is captured around
-    /// it is decided where the readings are, not here.
-    pub(crate) fn mark_incident(&mut self, cx: &mut Context<Self>) {
-        self.ask(LinkRequest::Mark {
-            note: None,
-            before_seconds: monitor_store::DEFAULT_WINDOW_BEFORE_SECONDS,
-            after_seconds: monitor_store::DEFAULT_WINDOW_AFTER_SECONDS,
-            about_pid: self.selected_pid,
-        });
-        cx.notify();
-    }
-
-    /// Whether marking is possible at all right now.
-    pub(crate) fn can_mark(&self) -> bool {
+    /// Whether something is recording, and so recording slowdowns, right
+    /// now.
+    pub(crate) fn is_recording(&self) -> bool {
         matches!(
             self.collection,
             Collection::Service | Collection::InProcess { .. }
@@ -1073,6 +1107,7 @@ impl MonitorApp {
         }
         self.grouping_open = view.grouping_open;
         self.sources_open = view.sources_open;
+        self.slowdown_rules_open = view.slowdown_rules_open;
         if !view.filter.is_empty() {
             self.processes.set_filter(view.filter.clone());
             self.apps.set_filter(view.filter.clone());
@@ -1121,6 +1156,7 @@ impl better_ui::restart::Restartable for MonitorApp {
             history_seconds: Some(self.history_seconds),
             grouping_open: self.grouping_open,
             sources_open: self.sources_open,
+            slowdown_rules_open: self.slowdown_rules_open,
         }
     }
 }

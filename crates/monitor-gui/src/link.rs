@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use monitor_collectors_linux::ProcessPrivacy;
 use monitor_ipc::{
-    ExportDocument, HistoryDocument, IncidentWindowDocument, IncidentsDocument,
-    InventoryDiffDocument, InventoryDocument, StatusDocument,
+    ExportDocument, HistoryDocument, IncidentsDocument, InventoryDiffDocument, InventoryDocument,
+    StatusDocument,
 };
 use monitor_service::{MonitorClient, MonitorEngine, ServiceConfig};
 
@@ -45,12 +45,6 @@ pub(crate) enum LinkRequest {
     },
     Incidents,
     Inventory,
-    Mark {
-        note: Option<String>,
-        before_seconds: u64,
-        after_seconds: u64,
-        about_pid: Option<u32>,
-    },
     /// Only the embedded engine can honour this. A running service collects
     /// under its own configuration, and a window must not be able to change
     /// what another user's session is recording.
@@ -74,7 +68,6 @@ pub(crate) enum LinkUpdate {
     History(Box<crate::stored::HistoryView>),
     Incidents(Box<IncidentsDocument>),
     Inventory(Box<InventoryDocument>, Box<InventoryDiffDocument>),
-    Marked(Box<IncidentWindowDocument>),
     #[allow(dead_code)]
     Export(Box<ExportDocument>),
     /// A request was refused or the transport failed. A stable key.
@@ -605,18 +598,6 @@ async fn handle_service(client: &MonitorClient, request: LinkRequest) -> LinkUpd
             };
             LinkUpdate::Inventory(Box::new(inventory), Box::new(diff))
         }
-        LinkRequest::Mark {
-            note,
-            before_seconds,
-            after_seconds,
-            about_pid,
-        } => match client
-            .mark(note, before_seconds, after_seconds, about_pid)
-            .await
-        {
-            Ok(document) => LinkUpdate::Marked(Box::new(document)),
-            Err(error) => LinkUpdate::Failed(error.to_string()),
-        },
         // The service collects under its own configuration. Refusing here is
         // the honest answer; pretending the toggle worked would leave the user
         // believing command lines had stopped being collected.
@@ -665,41 +646,6 @@ async fn handle_embedded(engine: &Arc<MonitorEngine>, request: LinkRequest) -> L
                 }),
                 Box::new(InventoryDiffDocument { diff }),
             )
-        }
-        LinkRequest::Mark {
-            note,
-            before_seconds,
-            after_seconds,
-            about_pid,
-        } => {
-            let window = monitor_store::IncidentWindow {
-                before_seconds,
-                after_seconds,
-            };
-            if !window.is_valid() {
-                return LinkUpdate::Failed("monitor.ipc.error.invalid_window".to_string());
-            }
-            match engine.mark(note.as_deref(), window, about_pid).await {
-                Ok(id) => {
-                    let document = engine
-                        .with_store(|store| {
-                            store.incident_window(id).map(|(incident, slice)| {
-                                IncidentWindowDocument {
-                                    incident: incident.clone(),
-                                    slice,
-                                }
-                            })
-                        })
-                        .await;
-                    match document {
-                        Some(document) => LinkUpdate::Marked(Box::new(document)),
-                        None => {
-                            LinkUpdate::Failed("monitor.ipc.error.unknown_incident".to_string())
-                        }
-                    }
-                }
-                Err(error) => LinkUpdate::Failed(error.to_string()),
-            }
         }
         LinkRequest::SetPrivacy(privacy) => {
             engine.set_privacy(privacy).await;
