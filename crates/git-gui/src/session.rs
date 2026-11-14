@@ -1396,6 +1396,8 @@ impl GitSession {
         let Some(repo) = self.repo.as_mut() else {
             return;
         };
+        // A tooltip and highlight belong to the tab the pointer was on.
+        repo.graph.hover_off(std::time::Instant::now());
         if tab == Tab::Graph {
             repo.graph.resume();
         } else {

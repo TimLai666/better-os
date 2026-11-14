@@ -36,7 +36,7 @@ pub use diff::{
 };
 pub use graph::{RecordReader, RefKind, RefLabel, ref_labels};
 pub use image::{ImageKind, image_kind, sniff_image};
-pub use lanes::{Edge, EdgeKind, GraphRow, GraphRows, LaneLayout};
+pub use lanes::{Edge, EdgeKind, GraphRow, GraphRows, LaneLabel, LaneLayout, LaneRefs};
 pub use log::{Commit, CommitFile, parse_log, parse_log_record, parse_name_status};
 pub use patch::{PatchMode, RawDiff};
 pub use remote::{
