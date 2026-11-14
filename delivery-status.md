@@ -1903,3 +1903,14 @@ reproduced killing dpkg mid-upgrade. Checked in a disposable Ubuntu 24.04 VM
 across four package versions. Not seen live: the tray's restart, a unit new in
 an upgrade, and Better Manager restarting itself through its own window's
 transaction; the ticket file lists why.
+
+## Tray submenus stay open (ticket 112)
+
+Implemented, not merged. A submenu in the Better Monitor or Better Awake tray
+menu no longer folds up when a reading or the countdown changes: a change that
+keeps the menu's items is sent as `ItemsPropertiesUpdated` naming only what
+changed, and a change of layout waits while the panel has a submenu open.
+Better Monitor's items have an id per role now. Reproduced before and checked
+after in a headless GNOME Shell with the AppIndicator extension; the ticket
+file says what was found.
+

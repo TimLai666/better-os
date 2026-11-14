@@ -5,7 +5,7 @@
 //! own: everything it knows came from the service, and everything it changes it
 //! changes by asking the service.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -26,14 +26,24 @@ use crate::sni::{ITEM_PATH, MENU_PATH, item_status};
 /// was on its way, still does what the person saw.
 const RETIRED_LAYOUTS: usize = 3;
 
+/// How long a held layout waits after the host's last open submenu closed.
+/// GNOME closes one submenu just before it opens the next, and a layout sent
+/// in between would rebuild the next one closed.
+pub const SUBMENU_SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// What changed when the menu was rebuilt, which decides what the host is told.
 #[derive(Debug, PartialEq)]
 enum MenuUpdate {
     Unchanged,
-    /// Same items, different wording or state: `ItemsPropertiesUpdated`.
+    /// Same items, different wording or state: `ItemsPropertiesUpdated`,
+    /// carrying only the properties that changed.
     Properties(Vec<(i32, HashMap<String, OwnedValue>)>),
     /// Different items: `LayoutUpdated`, under ids the host has never seen.
     Layout(u32),
+    /// Different items while the host has a submenu open: held until it
+    /// closes, because the AppIndicator extension rebuilds every row it
+    /// knows on `LayoutUpdated`, and a rebuilt submenu row is a closed one.
+    Deferred,
 }
 
 /// The binary the tray opens for anything that needs a window: the time picker,
@@ -79,6 +89,10 @@ struct State {
     next_id: i32,
     /// The layouts replaced most recently, newest first.
     retired: VecDeque<Menu>,
+    /// A rebuilt menu with a different layout, held while a submenu is open.
+    deferred: Option<Menu>,
+    /// The submenus the host says are open.
+    open: BTreeSet<i32>,
     revision: u32,
     offset: UtcOffset,
     /// The tray-local half of the two-step override.
@@ -87,11 +101,17 @@ struct State {
 
 impl State {
     /// Puts a freshly built menu in place and says what the host must be told.
+    ///
+    /// A menu shaped like the one the host has is a change of properties and
+    /// goes out at once, whatever is open. A different shape waits while the
+    /// host has a submenu open; the menu the host has stays served, so its
+    /// ids and actions stay true, until [`State::release`].
     fn install(&mut self, built: Menu) -> MenuUpdate {
-        if built == self.built {
-            return MenuUpdate::Unchanged;
-        }
         if built.shape() == self.built.shape() {
+            self.deferred = None;
+            if built == self.built {
+                return MenuUpdate::Unchanged;
+            }
             let menu = built.clone().renumbered(self.first_id);
             let mut changed = Vec::new();
             for (old, new) in self.menu.items.iter().zip(&menu.items) {
@@ -101,7 +121,43 @@ impl State {
             self.menu = menu;
             return MenuUpdate::Properties(changed);
         }
+        if !self.open.is_empty() {
+            if self.deferred.as_ref() == Some(&built) {
+                return MenuUpdate::Unchanged;
+            }
+            self.deferred = Some(built);
+            return MenuUpdate::Deferred;
+        }
+        self.deferred = None;
+        self.replace_layout(built)
+    }
 
+    /// The held layout, once no submenu is open.
+    fn release(&mut self) -> MenuUpdate {
+        if !self.open.is_empty() {
+            return MenuUpdate::Unchanged;
+        }
+        match self.deferred.take() {
+            Some(built) => self.replace_layout(built),
+            None => MenuUpdate::Unchanged,
+        }
+    }
+
+    /// The host says a menu opened (`true`) or closed: id 0 is the whole
+    /// menu, any other id a submenu. The whole menu opening or closing means
+    /// no submenu is open.
+    fn track(&mut self, id: i32, opened: bool) {
+        if id == 0 {
+            self.open.clear();
+        } else if opened {
+            self.open.insert(id);
+        } else {
+            self.open.remove(&id);
+        }
+    }
+
+    /// A new layout under ids the host has never seen.
+    fn replace_layout(&mut self, built: Menu) -> MenuUpdate {
         let count = i32::try_from(built.len()).unwrap_or(i32::MAX / 2);
         if self.next_id > i32::MAX - count - 1 {
             // Two billion ids in, start again from the bottom. The layouts that
@@ -133,14 +189,22 @@ impl State {
 }
 
 /// Collects, for two items with the same shape, every id whose properties
-/// differ.
+/// differ, with only the properties that changed.
+///
+/// Never the whole set: the AppIndicator extension rebuilds a row it is sent
+/// `type` or `children-display` for, even unchanged, and a rebuilt submenu
+/// row is a closed one.
 fn changed_properties(
     old: &MenuItem,
     new: &MenuItem,
     changed: &mut Vec<(i32, HashMap<String, OwnedValue>)>,
 ) {
-    let properties = all_properties(new);
-    if all_properties(old) != properties {
+    let before = all_properties(old);
+    let properties: HashMap<String, OwnedValue> = all_properties(new)
+        .into_iter()
+        .filter(|(name, value)| before.get(name) != Some(value))
+        .collect();
+    if !properties.is_empty() {
         changed.push((new.id, properties));
     }
     for (old, new) in old.children.iter().zip(&new.children) {
@@ -183,6 +247,8 @@ impl TrayController {
                 first_id: 1,
                 next_id,
                 retired: VecDeque::new(),
+                deferred: None,
+                open: BTreeSet::new(),
                 revision: 1,
                 offset,
                 override_confirmation: OverrideConfirmation::default(),
@@ -241,6 +307,36 @@ impl TrayController {
     /// Waits until something asks the tray to quit.
     pub async fn quit_requested(&self) {
         self.quit.notified().await;
+    }
+
+    /// The host opened (`opened`) or closed a menu. Returns whether a
+    /// submenu closing left none open, in which case the caller asks for
+    /// [`Self::release_layout`] after [`SUBMENU_SETTLE`].
+    pub async fn menu_event(&self, id: i32, event: &str) -> bool {
+        let opened = match event {
+            "opened" => true,
+            "closed" => false,
+            _ => return false,
+        };
+        if id == 0 {
+            // The whole menu: nothing inside it is open, so a held layout
+            // goes out now, before anything can be unfolded.
+            {
+                self.state.lock().await.track(0, opened);
+            }
+            self.release_layout().await;
+            return false;
+        }
+        let mut state = self.state.lock().await;
+        state.track(id, opened);
+        !opened && state.open.is_empty() && state.deferred.is_some()
+    }
+
+    /// Sends a layout held while a submenu was open, if none is open now.
+    pub async fn release_layout(&self) {
+        let _announcing = self.announcing.lock().await;
+        let update = { self.state.lock().await.release() };
+        self.announce_menu(update).await;
     }
 
     /// Asks the service what is true now.
@@ -625,7 +721,7 @@ impl TrayController {
             return;
         };
         let _ = match update {
-            MenuUpdate::Unchanged => return,
+            MenuUpdate::Unchanged | MenuUpdate::Deferred => return,
             MenuUpdate::Properties(changed) if changed.is_empty() => return,
             MenuUpdate::Properties(changed) => {
                 connection
@@ -814,6 +910,8 @@ mod tests {
             first_id: 1,
             next_id,
             retired: VecDeque::new(),
+            deferred: None,
+            open: BTreeSet::new(),
             revision: 1,
             offset: UtcOffset::UTC,
             override_confirmation: OverrideConfirmation::default(),
@@ -859,6 +957,67 @@ mod tests {
         assert_eq!(remaining.label, "Remaining: 50 min");
 
         assert_eq!(state.install(built(&awake(3_000))), MenuUpdate::Unchanged);
+    }
+
+    #[test]
+    fn a_wording_change_sends_only_the_changed_property() {
+        let mut state = state(awake(3_600));
+        let MenuUpdate::Properties(changed) = state.install(built(&awake(3_000))) else {
+            panic!("a new countdown is not a new layout");
+        };
+        let names: Vec<&str> = changed[0].1.keys().map(String::as_str).collect();
+        // Never `type` or `children-display`: the AppIndicator extension
+        // rebuilds a row it is sent either of, and a rebuilt submenu row is
+        // a closed one.
+        assert_eq!(names, ["label"]);
+    }
+
+    #[test]
+    fn a_layout_change_while_a_submenu_is_open_waits_until_it_closes() {
+        let mut state = state(awake(3_600));
+        let served = state.menu.clone();
+        let extend = served.find_by_label("Extend session").unwrap().id;
+        state.track(extend, true);
+
+        // The session ended: a different layout. The host keeps what it has.
+        assert_eq!(state.install(built(&inactive())), MenuUpdate::Deferred);
+        assert_eq!(state.menu, served);
+        assert_eq!(state.revision, 1);
+        assert_eq!(state.install(built(&inactive())), MenuUpdate::Unchanged);
+        assert_eq!(state.release(), MenuUpdate::Unchanged, "still open");
+
+        state.track(extend, false);
+        assert_eq!(state.release(), MenuUpdate::Layout(2));
+        assert!(state.menu.find_by_label("Start a session").is_some());
+        assert_eq!(state.release(), MenuUpdate::Unchanged, "sent once");
+    }
+
+    #[test]
+    fn a_wording_change_still_goes_out_while_a_submenu_is_open() {
+        let mut state = state(awake(3_600));
+        let extend = state.menu.find_by_label("Extend session").unwrap().id;
+        state.track(extend, true);
+        assert_eq!(state.install(built(&inactive())), MenuUpdate::Deferred);
+        // Back to the shape the host has, with a new countdown: that is sent
+        // now, and the held layout is no longer true.
+        assert!(matches!(
+            state.install(built(&awake(3_000))),
+            MenuUpdate::Properties(_)
+        ));
+        state.track(extend, false);
+        assert_eq!(state.release(), MenuUpdate::Unchanged);
+    }
+
+    #[test]
+    fn the_whole_menu_opening_or_closing_means_no_submenu_is_open() {
+        for opened in [true, false] {
+            let mut state = state(awake(3_600));
+            let extend = state.menu.find_by_label("Extend session").unwrap().id;
+            state.track(extend, true);
+            assert_eq!(state.install(built(&inactive())), MenuUpdate::Deferred);
+            state.track(0, opened);
+            assert_eq!(state.release(), MenuUpdate::Layout(2));
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Ticket 112 — Tray submenus stay open
 
-**Blocked by:** none · **Status:** open
+**Blocked by:** none · **Status:** implemented, not merged
 
 ## Why
 
@@ -34,14 +34,42 @@ ids.
 
 ## Acceptance
 
-- [ ] Reproduced in a headless GNOME Shell with the AppIndicator extension
+- [x] Reproduced in a headless GNOME Shell with the AppIndicator extension
       before the fix: a submenu of each tray that has one collapses within a
       reading interval; screenshots or a recording frame sequence in `.shots/`.
-- [ ] After the fix, the submenu stays open for at least 30 seconds while the
+- [x] After the fix, the submenu stays open for at least 30 seconds while the
       readings or countdown keep changing, and the changed lines update in
       place.
-- [ ] Unit tests: a reading change produces a properties update and no layout
+- [x] Unit tests: a reading change produces a properties update and no layout
       update; a structural change produces a layout update; a layout change
       while a submenu is open is deferred until it closes.
-- [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests and
+- [x] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests and
       the license check pass.
+
+## What was found
+
+The extension (`zorin-appindicator@zorinos.com/dbusMenu.js`) rebuilds a row
+whenever it is told a `type` or `children-display` property, changed or not
+(`_onPropertyChanged` calls `_replaceSelf`). On `LayoutUpdated` it reads
+exactly those two properties for every item, so every submenu row is rebuilt
+closed. It also keeps the labels it has for ids it already knows, so before
+the fix the Monitor menu's readings stopped changing while the menu was open.
+
+- Better Monitor sent `LayoutUpdated` for every new reading. Its items now have
+  an id per role, a new reading is an `ItemsPropertiesUpdated` naming only the
+  properties that changed, and a reading that appears or goes away is a layout
+  change held while a submenu is open: the rows the panel has keep showing new
+  values, and the layout follows at the first poll after the submenu closes, or
+  at once when the whole menu opens or closes.
+- Better Awake already sent wording changes as properties, but the whole set,
+  `type` included; it now sends only what changed. Its layout changes (a
+  session ending, a second reason, a rule starting) collapsed an open submenu;
+  they are now held while a submenu is open and sent 300 ms after the last one
+  closes, or at once when the whole menu opens or closes. Awake keeps giving a
+  new layout new ids, as before: its items have no identity across layouts, so
+  only the ids of an unchanged layout are stable.
+
+Checked in a headless GNOME Shell 46 with the extension, against a fake Awake
+service and a sandboxed Monitor service: both submenus stayed open for over 30
+seconds with the lines inside and above them changing; before the fix both
+folded up within a second of the first change.

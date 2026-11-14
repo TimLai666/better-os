@@ -544,6 +544,27 @@ impl MenuItem {
         Self::new("", ItemKind::Separator, None)
     }
 
+    fn with_id(mut self, id: i32) -> Self {
+        self.id = id;
+        self
+    }
+
+    /// This item's id and its children's, in order: two menus with the same
+    /// skeleton differ in their properties only.
+    fn skeleton(&self, out: &mut Vec<(i32, usize)>) {
+        out.push((self.id, self.children.len()));
+        for child in &self.children {
+            child.skeleton(out);
+        }
+    }
+
+    fn walk_mut(&mut self, visit: &mut impl FnMut(&mut MenuItem)) {
+        visit(self);
+        for child in &mut self.children {
+            child.walk_mut(visit);
+        }
+    }
+
     fn walk<'a>(&'a self, visit: &mut impl FnMut(&'a MenuItem)) {
         visit(self);
         for child in &self.children {
@@ -580,6 +601,38 @@ impl Menu {
             });
         }
         found
+    }
+
+    /// Every id in order, each with how many children it has. Equal
+    /// skeletons mean the same items in the same places, so moving from one
+    /// menu to the other changes properties and never the layout.
+    pub fn skeleton(&self) -> Vec<(i32, usize)> {
+        let mut out = Vec::new();
+        for item in &self.items {
+            item.skeleton(&mut out);
+        }
+        out
+    }
+
+    /// This menu's items in this menu's places, each showing what `newer`
+    /// says about the same id. An item `newer` no longer has keeps what it
+    /// said last. This is what a host with a submenu open is shown while a
+    /// change of layout waits for the submenu to close.
+    pub fn showing(&self, newer: &Menu) -> Menu {
+        let mut merged = self.clone();
+        for item in &mut merged.items {
+            item.walk_mut(&mut |item| {
+                if let Some(update) = newer.find(item.id)
+                    && std::mem::discriminant(&update.kind) == std::mem::discriminant(&item.kind)
+                {
+                    item.label.clone_from(&update.label);
+                    item.kind = update.kind.clone();
+                    item.enabled = update.enabled;
+                    item.action = update.action;
+                }
+            });
+        }
+        merged
     }
 
     pub fn labels(&self) -> Vec<&str> {
@@ -623,9 +676,41 @@ impl ServiceState {
     }
 }
 
+/// The id each item of the menu always has, whatever else the menu holds.
+///
+/// A panel caches items by id, and the GNOME AppIndicator extension rebuilds
+/// every row it already knows when the layout changes, which closes an open
+/// submenu. So an item keeps its id when a reading line above it appears or
+/// goes away, and a new reading is a change of properties only.
+mod ids {
+    /// The reading lines, one per [`super::Reading`] in its fixed order.
+    pub const READING: i32 = 1;
+    pub const FAN: i32 = 8;
+    pub const SERVICE: i32 = 9;
+    pub const AFTER_READINGS: i32 = 10;
+    pub const SHOW_ALL: i32 = 11;
+    pub const OPEN_WINDOW: i32 = 12;
+    pub const SHOW: i32 = 13;
+    /// The check boxes under [`SHOW`], one per reading in the same order.
+    pub const SHOW_READING: i32 = 14;
+    pub const AFTER_SHOW_READINGS: i32 = 21;
+    pub const STYLE_BARS: i32 = 22;
+    pub const STYLE_NUMBERS: i32 = 23;
+    pub const BEFORE_QUIT: i32 = 24;
+    pub const QUIT: i32 = 25;
+}
+
+fn reading_offset(reading: Reading) -> i32 {
+    Reading::ALL
+        .iter()
+        .position(|candidate| *candidate == reading)
+        .and_then(|index| i32::try_from(index).ok())
+        .expect("every reading is in Reading::ALL")
+}
+
 /// The right-click menu: the readings as text, then what the icon shows,
-/// then opening the window and quitting. Ids are given in order, so the same
-/// readings always produce the same ids.
+/// then opening the window and quitting. Every item has the id of its role
+/// (see [`ids`]), so a reading that comes or goes moves no other item.
 pub fn build(
     readings: Option<&TrayReadings>,
     choice: &IconChoice,
@@ -637,86 +722,92 @@ pub fn build(
         Some(r) => {
             for reading in Reading::ALL {
                 if let Some(line) = reading_line(reading, r, locale) {
-                    items.push(MenuItem::new(line, ItemKind::Info, None));
+                    items.push(
+                        MenuItem::new(line, ItemKind::Info, None)
+                            .with_id(ids::READING + reading_offset(reading)),
+                    );
                 }
             }
             if let Some(line) = fan_line(r, locale) {
-                items.push(MenuItem::new(line, ItemKind::Info, None));
+                items.push(MenuItem::new(line, ItemKind::Info, None).with_id(ids::FAN));
             }
         }
-        None => items.push(MenuItem::new(
-            service.sentence(locale),
-            ItemKind::Info,
-            None,
-        )),
+        None => items.push(
+            MenuItem::new(service.sentence(locale), ItemKind::Info, None).with_id(ids::SERVICE),
+        ),
     }
-    items.push(MenuItem::separator());
-    items.push(MenuItem::new(
-        locale.pick("Show all readings", "顯示所有讀數"),
-        ItemKind::Standard,
-        Some(MenuAction::OpenPopup),
-    ));
-    items.push(MenuItem::new(
-        locale.pick("Open Better Monitor", "開啟系統監控"),
-        ItemKind::Standard,
-        Some(MenuAction::OpenWindow),
-    ));
+    items.push(MenuItem::separator().with_id(ids::AFTER_READINGS));
+    items.push(
+        MenuItem::new(
+            locale.pick("Show all readings", "顯示所有讀數"),
+            ItemKind::Standard,
+            Some(MenuAction::OpenPopup),
+        )
+        .with_id(ids::SHOW_ALL),
+    );
+    items.push(
+        MenuItem::new(
+            locale.pick("Open Better Monitor", "開啟系統監控"),
+            ItemKind::Standard,
+            Some(MenuAction::OpenWindow),
+        )
+        .with_id(ids::OPEN_WINDOW),
+    );
     let mut show = MenuItem::new(
         locale.pick("Show in the taskbar", "在工作列顯示"),
         ItemKind::Submenu,
         None,
-    );
+    )
+    .with_id(ids::SHOW);
     for reading in Reading::ALL {
         let checked = choice.shown.contains(&reading);
         let mut item = MenuItem::new(
             locale.reading_name(reading),
             ItemKind::Checkmark { checked },
             Some(MenuAction::Toggle(reading)),
-        );
+        )
+        .with_id(ids::SHOW_READING + reading_offset(reading));
         // The last reading shown cannot be hidden: an empty icon is a
         // missing icon.
         item.enabled =
             !(checked && choice.shown.len() == 1) && readings.is_none_or(|r| r.has(reading));
         show.children.push(item);
     }
-    show.children.push(MenuItem::separator());
-    for (style, label) in [
+    show.children
+        .push(MenuItem::separator().with_id(ids::AFTER_SHOW_READINGS));
+    for (style, label, id) in [
         (
             crate::icon::IconStyle::Bars,
             locale.pick("As bars", "以長條顯示"),
+            ids::STYLE_BARS,
         ),
         (
             crate::icon::IconStyle::Numbers,
             locale.pick("As numbers (the first two)", "以數字顯示（前兩項）"),
+            ids::STYLE_NUMBERS,
         ),
     ] {
-        show.children.push(MenuItem::new(
-            label,
-            ItemKind::Radio {
-                checked: choice.style == style,
-            },
-            Some(MenuAction::Style(style)),
-        ));
+        show.children.push(
+            MenuItem::new(
+                label,
+                ItemKind::Radio {
+                    checked: choice.style == style,
+                },
+                Some(MenuAction::Style(style)),
+            )
+            .with_id(id),
+        );
     }
     items.push(show);
-    items.push(MenuItem::separator());
-    items.push(MenuItem::new(
-        locale.pick("Quit taskbar item", "結束工作列圖示"),
-        ItemKind::Standard,
-        Some(MenuAction::Quit),
-    ));
-
-    let mut next = 1;
-    fn number(item: &mut MenuItem, next: &mut i32) {
-        item.id = *next;
-        *next += 1;
-        for child in &mut item.children {
-            number(child, next);
-        }
-    }
-    for item in &mut items {
-        number(item, &mut next);
-    }
+    items.push(MenuItem::separator().with_id(ids::BEFORE_QUIT));
+    items.push(
+        MenuItem::new(
+            locale.pick("Quit taskbar item", "結束工作列圖示"),
+            ItemKind::Standard,
+            Some(MenuAction::Quit),
+        )
+        .with_id(ids::QUIT),
+    );
     Menu { items }
 }
 
@@ -872,6 +963,33 @@ mod tests {
             ServiceState::Answering,
         );
         assert!(menu.labels().contains(&"處理器：12% · 2.01 GHz"));
+    }
+
+    #[test]
+    fn an_item_keeps_its_id_when_a_reading_above_it_comes_or_goes() {
+        let without = build(
+            Some(&TrayReadings {
+                battery: None,
+                ..readings()
+            }),
+            &IconChoice::default(),
+            Locale::English,
+            ServiceState::Answering,
+        );
+        let with = build(
+            Some(&readings()),
+            &IconChoice::default(),
+            Locale::English,
+            ServiceState::Answering,
+        );
+        assert_ne!(without.skeleton(), with.skeleton());
+        for label in ["Show in the taskbar", "Quit taskbar item", "As bars"] {
+            assert_eq!(
+                without.find_by_label(label).unwrap().id,
+                with.find_by_label(label).unwrap().id,
+                "{label}"
+            );
+        }
     }
 
     #[test]

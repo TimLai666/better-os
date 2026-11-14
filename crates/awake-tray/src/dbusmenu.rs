@@ -10,7 +10,7 @@ use std::sync::Arc;
 use zbus::interface;
 use zbus::zvariant::{OwnedValue, Type, Value};
 
-use crate::controller::TrayController;
+use crate::controller::{SUBMENU_SETTLE, TrayController};
 use crate::menu::{ItemKind, Menu, MenuItem};
 
 /// `(ia{sv}av)`: an id, its properties, and its children as variants. The
@@ -205,8 +205,9 @@ impl DbusMenu {
 
     /// The panel telling us something happened to an item.
     ///
-    /// Only `clicked` does anything. Hover and open events are reported by some
-    /// hosts and must not start a session.
+    /// Only `clicked` runs anything. `opened` and `closed` say which submenus
+    /// the panel has open, which decides when a new layout may be sent; they
+    /// never start a session. Hover events change nothing.
     async fn event(
         &self,
         id: i32,
@@ -214,12 +215,31 @@ impl DbusMenu {
         _data: Value<'_>,
         _timestamp: u32,
     ) -> zbus::fdo::Result<()> {
-        if event_id == "clicked" {
-            let controller = self.controller.clone();
-            self.runtime
-                .spawn(async move { controller.activate(id).await })
-                .await
-                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        match event_id.as_str() {
+            "clicked" => {
+                let controller = self.controller.clone();
+                self.runtime
+                    .spawn(async move { controller.activate(id).await })
+                    .await
+                    .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+            }
+            "opened" | "closed" => {
+                let controller = self.controller.clone();
+                let settle = self
+                    .runtime
+                    .spawn(async move { controller.menu_event(id, &event_id).await })
+                    .await
+                    .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+                if settle {
+                    // Not awaited: the reply does not wait for the layout.
+                    let controller = self.controller.clone();
+                    self.runtime.spawn(async move {
+                        tokio::time::sleep(SUBMENU_SETTLE).await;
+                        controller.release_layout().await;
+                    });
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -228,9 +248,11 @@ impl DbusMenu {
     /// as a result, which makes the host read it again.
     ///
     /// Only the whole menu opening refreshes from the service; that is how
-    /// the countdown in it stays right. A submenu opening does not: GNOME
-    /// asks for each one as it unfolds, and a layout that changed under an
-    /// unfolding submenu would rebuild it closed under the pointer.
+    /// the countdown in it stays right. Nothing inside it is open yet, so a
+    /// layout held while a submenu was open goes out too. A submenu opening
+    /// does not: GNOME asks for each one as it unfolds, and a layout that
+    /// changed under an unfolding submenu would rebuild it closed under the
+    /// pointer.
     async fn about_to_show(&self, id: i32) -> bool {
         if id != 0 {
             return false;
@@ -239,6 +261,7 @@ impl DbusMenu {
         self.runtime
             .spawn(async move {
                 let before = controller.revision().await;
+                controller.menu_event(0, "opened").await;
                 let _ = controller.refresh().await;
                 controller.revision().await != before
             })

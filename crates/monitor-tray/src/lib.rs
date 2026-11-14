@@ -18,7 +18,7 @@ pub mod icon;
 pub mod menu;
 pub mod popup;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -46,7 +46,13 @@ pub struct TrayState {
     pub choice: IconChoice,
     pub choice_path: Option<PathBuf>,
     pub icon: Vec<Pixmap>,
+    /// The menu as the panel was last told about it.
     pub menu: Menu,
+    /// A menu with a different layout, held back while the panel has a
+    /// submenu open (see [`TrayState::redraw`]).
+    pub pending: Option<Menu>,
+    /// The submenus the panel says are open.
+    pub open: BTreeSet<i32>,
     pub revision: u32,
     pub launcher: PopupLauncher,
     pub service: ServiceState,
@@ -55,11 +61,17 @@ pub struct TrayState {
 }
 
 /// What changed when new readings arrived, so only that is announced.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Changes {
     pub icon: bool,
+    /// Anything in the menu the panel shows changed.
     pub menu: bool,
     pub tooltip: bool,
+    /// Items were added, removed or moved: `LayoutUpdated`.
+    pub layout: bool,
+    /// Items the panel already has, each with the names of the properties
+    /// that changed: `ItemsPropertiesUpdated`.
+    pub properties: Vec<(i32, Vec<String>)>,
 }
 
 impl TrayState {
@@ -71,6 +83,8 @@ impl TrayState {
             choice_path,
             icon: Vec::new(),
             menu: Menu::default(),
+            pending: None,
+            open: BTreeSet::new(),
             revision: 1,
             launcher: PopupLauncher::new(),
             service: ServiceState::Answering,
@@ -83,6 +97,14 @@ impl TrayState {
     /// Redraw from the current readings and choice. The icon and the menu
     /// are replaced only when they differ, which is what keeps an idle
     /// machine from repainting the panel every second.
+    ///
+    /// A new reading keeps every item where it was, so it is announced as a
+    /// change of properties. The GNOME AppIndicator extension rebuilds each
+    /// row it knows on `LayoutUpdated`, which folds an open submenu up under
+    /// the pointer; so a change of layout (a reading that appears or goes
+    /// away) waits while the panel has a submenu open. Until then the panel
+    /// keeps its rows and they show the new values, and the layout follows
+    /// at the first redraw after the submenu closes.
     pub fn redraw(&mut self) -> Changes {
         let empty = TrayReadings::default();
         let readings = self.readings.as_ref().unwrap_or(&empty);
@@ -94,22 +116,83 @@ impl TrayState {
             self.service,
         );
         let tooltip = menu::tooltip(self.readings.as_ref(), self.locale, self.service);
-        let changes = Changes {
-            icon: icon != self.icon,
-            menu: menu != self.menu,
-            tooltip: tooltip != self.tooltip,
-        };
+        let mut changes = self.install(menu);
+        changes.icon = icon != self.icon;
+        changes.tooltip = tooltip != self.tooltip;
         if changes.tooltip {
             self.tooltip = tooltip;
         }
         if changes.icon {
             self.icon = icon;
         }
-        if changes.menu {
-            self.menu = menu;
+        changes
+    }
+
+    /// Puts a freshly built menu in front of the panel, or holds its layout
+    /// back while a submenu is open, and says what the panel must be told.
+    fn install(&mut self, built: Menu) -> Changes {
+        if self.open.is_empty() || built.skeleton() == self.menu.skeleton() {
+            self.pending = None;
+            return self.replace(built);
+        }
+        let showing = self.menu.showing(&built);
+        self.pending = Some(built);
+        self.replace(showing)
+    }
+
+    /// Replaces the menu the panel is shown.
+    fn replace(&mut self, menu: Menu) -> Changes {
+        if menu == self.menu {
+            return Changes::default();
+        }
+        let layout = menu.skeleton() != self.menu.skeleton();
+        let properties = changed_properties(&self.menu, &menu);
+        self.menu = menu;
+        if layout {
             self.revision = self.revision.wrapping_add(1);
         }
-        changes
+        Changes {
+            menu: true,
+            layout,
+            properties,
+            ..Changes::default()
+        }
+    }
+
+    /// The panel says a menu opened: id 0 is the whole menu, any other id a
+    /// submenu. The whole menu opening means no submenu is open yet, so a
+    /// held layout is put in place at once, before the person can open one.
+    pub fn opened(&mut self, id: i32) -> Changes {
+        if id == 0 {
+            self.open.clear();
+            return self.release();
+        }
+        self.open.insert(id);
+        Changes::default()
+    }
+
+    /// The panel says a menu closed. A submenu closing releases nothing at
+    /// once: the panel closes one submenu just before opening the next, so
+    /// a held layout waits for the next redraw, by when the next one would
+    /// have said it opened. The whole menu closing releases it now.
+    pub fn closed(&mut self, id: i32) -> Changes {
+        if id == 0 {
+            self.open.clear();
+            return self.release();
+        }
+        self.open.remove(&id);
+        Changes::default()
+    }
+
+    /// Puts a held layout in place when no submenu is open.
+    fn release(&mut self) -> Changes {
+        match self.pending.take() {
+            Some(built) if self.open.is_empty() => self.replace(built),
+            held => {
+                self.pending = held;
+                Changes::default()
+            }
+        }
     }
 
     pub fn adopt(&mut self, readings: Option<TrayReadings>) -> Changes {
@@ -144,6 +227,31 @@ impl TrayState {
         }
         self.redraw()
     }
+}
+
+/// The items both menus have whose properties differ, each with the names
+/// of the properties that changed. Only those names are sent: the GNOME
+/// AppIndicator extension rebuilds a row when it is sent `type` or
+/// `children-display`, even unchanged, and a rebuilt submenu row is a
+/// closed one.
+fn changed_properties(old: &Menu, new: &Menu) -> Vec<(i32, Vec<String>)> {
+    let mut changed = Vec::new();
+    for id in new.skeleton().into_iter().map(|(id, _)| id) {
+        let (Some(before), Some(after)) = (old.find(id), new.find(id)) else {
+            continue;
+        };
+        let before = properties(before, &[]);
+        let mut names: Vec<String> = properties(after, &[])
+            .into_iter()
+            .filter(|(name, value)| before.get(name) != Some(value))
+            .map(|(name, _)| name)
+            .collect();
+        if !names.is_empty() {
+            names.sort();
+            changed.push((id, names));
+        }
+    }
+    changed
 }
 
 /// The shared state and what the item does with a click or a menu event.
@@ -181,12 +289,50 @@ impl Tray {
                 let _ = StatusNotifierItem::new_tool_tip(&emitter).await;
             }
         }
-        if changes.menu
+        if (changes.layout || !changes.properties.is_empty())
             && let Ok(emitter) = SignalEmitter::new(&connection, MENU_PATH)
         {
-            let revision = self.state.lock().await.revision;
-            let _ = DbusMenu::layout_updated(&emitter, revision, 0).await;
+            // Read under the lock together, so the values sent are the ones
+            // a `GetLayout` at this revision would return.
+            let (revision, updated) = {
+                let state = self.state.lock().await;
+                let updated: Vec<(i32, HashMap<String, OwnedValue>)> = changes
+                    .properties
+                    .iter()
+                    .filter_map(|(id, names)| {
+                        state
+                            .menu
+                            .find(*id)
+                            .map(|item| (*id, properties(item, names)))
+                    })
+                    .filter(|(_, values)| !values.is_empty())
+                    .collect();
+                (state.revision, updated)
+            };
+            if !updated.is_empty() {
+                let _ = DbusMenu::items_properties_updated(&emitter, updated, Vec::new()).await;
+            }
+            if changes.layout {
+                let _ = DbusMenu::layout_updated(&emitter, revision, 0).await;
+            }
         }
+    }
+
+    /// The panel opened (`opened`) or closed a menu; see
+    /// [`TrayState::opened`] and [`TrayState::closed`]. Returns whether a
+    /// held layout went out, which `AboutToShow` answers with.
+    pub async fn menu_event(&self, id: i32, event: &str) -> bool {
+        let changes = {
+            let mut state = self.state.lock().await;
+            match event {
+                "opened" => state.opened(id),
+                "closed" => state.closed(id),
+                _ => return false,
+            }
+        };
+        let layout = changes.layout;
+        self.announce(changes).await;
+        layout
     }
 
     pub async fn activate_menu(&self, id: i32) {
@@ -468,7 +614,8 @@ impl DbusMenu {
             .ok_or_else(|| zbus::fdo::Error::InvalidArgs(format!("no property {name} on {id}")))
     }
 
-    /// Only `clicked` does anything; hover and open events change nothing.
+    /// `clicked` runs the item. `opened` and `closed` say which submenus
+    /// the panel has open, which decides when a new layout may be sent.
     async fn event(
         &self,
         id: i32,
@@ -476,14 +623,21 @@ impl DbusMenu {
         _data: Value<'_>,
         _timestamp: u32,
     ) -> zbus::fdo::Result<()> {
-        if event_id == "clicked" {
-            self.tray.activate_menu(id).await;
+        match event_id.as_str() {
+            "clicked" => self.tray.activate_menu(id).await,
+            "opened" | "closed" => {
+                self.tray.menu_event(id, &event_id).await;
+            }
+            _ => {}
         }
         Ok(())
     }
 
-    async fn about_to_show(&self, _id: i32) -> bool {
-        false
+    /// The whole menu about to open puts a held layout in place, and the
+    /// answer says whether the panel must read it again. A submenu asking
+    /// changes nothing.
+    async fn about_to_show(&self, id: i32) -> bool {
+        id == 0 && self.tray.menu_event(0, "opened").await
     }
 
     #[zbus(property)]
@@ -511,6 +665,13 @@ impl DbusMenu {
         emitter: &SignalEmitter<'_>,
         revision: u32,
         parent: i32,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn items_properties_updated(
+        emitter: &SignalEmitter<'_>,
+        updated: Vec<(i32, HashMap<String, OwnedValue>)>,
+        removed: Vec<(i32, Vec<String>)>,
     ) -> zbus::Result<()>;
 }
 
@@ -694,6 +855,122 @@ mod tests {
         assert_eq!(state.choice.style, IconStyle::Numbers);
         let changes = state.choose(MenuAction::Toggle(Reading::Gpu));
         assert!(changes.menu);
+    }
+
+    fn cpu(fraction: f64) -> TrayReadings {
+        TrayReadings {
+            cpu: Some(fraction),
+            memory_used: Some(1.0),
+            memory_total: Some(4.0),
+            ..TrayReadings::default()
+        }
+    }
+
+    fn show_id(state: &TrayState) -> i32 {
+        state.menu.find_by_label("Show in the taskbar").unwrap().id
+    }
+
+    #[test]
+    fn a_new_reading_is_a_change_of_properties_and_not_of_layout() {
+        let mut state = state();
+        state.adopt(Some(cpu(0.2)));
+        let revision = state.revision;
+        let line = state.menu.find_by_label("Processor: 20%").unwrap().id;
+
+        let changes = state.adopt(Some(cpu(0.6)));
+        assert!(changes.menu);
+        assert!(!changes.layout);
+        assert_eq!(state.revision, revision);
+        assert_eq!(changes.properties, vec![(line, vec!["label".to_string()])]);
+        assert_eq!(state.menu.find(line).unwrap().label, "Processor: 60%");
+    }
+
+    #[test]
+    fn a_reading_that_appears_is_a_change_of_layout() {
+        let mut state = state();
+        state.adopt(Some(cpu(0.2)));
+        let revision = state.revision;
+        let changes = state.adopt(Some(TrayReadings {
+            gpu: Some(0.5),
+            ..cpu(0.2)
+        }));
+        assert!(changes.layout);
+        assert_eq!(state.revision, revision + 1);
+        assert!(state.menu.find_by_label("Graphics card: 50%").is_some());
+    }
+
+    #[test]
+    fn a_layout_change_while_a_submenu_is_open_waits_until_it_closes() {
+        let mut state = state();
+        state.adopt(Some(cpu(0.2)));
+        let revision = state.revision;
+        let show = show_id(&state);
+        assert_eq!(state.opened(show), Changes::default());
+
+        // The graphics reading appears and the processor moves. The rows the
+        // panel has show the new processor value; the new row waits.
+        let changes = state.adopt(Some(TrayReadings {
+            gpu: Some(0.5),
+            ..cpu(0.6)
+        }));
+        assert!(!changes.layout, "{changes:?}");
+        assert_eq!(state.revision, revision);
+        assert!(state.menu.find_by_label("Processor: 60%").is_some());
+        assert!(state.menu.find_by_label("Graphics card: 50%").is_none());
+        // The graphics check box under the open submenu can be ticked now.
+        let graphics = state.menu.find_by_label("Graphics card").unwrap().id;
+        assert!(
+            changes
+                .properties
+                .contains(&(graphics, vec!["enabled".to_string()]))
+        );
+        assert!(state.menu.find(graphics).unwrap().enabled);
+        assert!(state.pending.is_some());
+
+        // Closing it releases nothing at once (the next submenu may be
+        // opening); the next redraw does.
+        assert_eq!(state.closed(show), Changes::default());
+        let changes = state.redraw();
+        assert!(changes.layout);
+        assert_eq!(state.revision, revision + 1);
+        assert!(state.menu.find_by_label("Graphics card: 50%").is_some());
+        assert!(state.pending.is_none());
+    }
+
+    #[test]
+    fn the_whole_menu_opening_or_closing_releases_a_held_layout() {
+        for opened in [true, false] {
+            let mut state = state();
+            state.adopt(Some(cpu(0.2)));
+            let show = show_id(&state);
+            state.opened(show);
+            state.adopt(Some(TrayReadings {
+                gpu: Some(0.5),
+                ..cpu(0.2)
+            }));
+            let changes = if opened {
+                state.opened(0)
+            } else {
+                state.closed(0)
+            };
+            assert!(changes.layout);
+            assert!(state.open.is_empty());
+            assert!(state.menu.find_by_label("Graphics card: 50%").is_some());
+        }
+    }
+
+    #[test]
+    fn an_unchanged_submenu_row_is_never_sent_its_type_again() {
+        let mut state = state();
+        state.adopt(Some(cpu(0.2)));
+        let show = show_id(&state);
+        let changes = state.choose(MenuAction::Toggle(Reading::Gpu));
+        assert!(!changes.layout);
+        assert!(
+            changes.properties.iter().all(|(id, names)| *id != show
+                && !names.iter().any(|n| n == "type" || n == "children-display")),
+            "{changes:?}"
+        );
     }
 
     #[test]
