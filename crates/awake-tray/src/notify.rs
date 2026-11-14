@@ -27,7 +27,7 @@ use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::zvariant::Value;
 
 use crate::client::{LowBatteryStop, ServiceEvent, service_event};
-use crate::labels::Locale;
+use crate::labels::{Locale, LocaleLabels};
 
 #[zbus::proxy(
     interface = "org.freedesktop.Notifications",
@@ -140,6 +140,35 @@ impl DesktopNotifier {
     }
 }
 
+impl DesktopNotifier {
+    /// Says that a menu action was refused, and why, in plain words. The tray
+    /// has no window to put an error in, and a click that does nothing visible
+    /// reads as a broken menu.
+    pub async fn action_failed(&self, body: &str) -> Result<u32, NotifyError> {
+        let labels = self.locale.labels();
+        let hints = HashMap::new();
+        let call = self.proxy.notify(
+            labels.application_name,
+            0,
+            ACTION_FAILED_ICON,
+            labels.action_failed,
+            body,
+            &[],
+            &hints,
+            DEFAULT_EXPIRY,
+        );
+        match tokio::time::timeout(self.timeout, call).await {
+            Ok(Ok(id)) => Ok(id),
+            Ok(Err(error)) => Err(NotifyError::Call(error.to_string())),
+            Err(_) => Err(NotifyError::TimedOut),
+        }
+    }
+}
+
+/// The icon a refused-action notification carries: the component's own, which
+/// the package installs.
+pub const ACTION_FAILED_ICON: &str = "better-awake";
+
 /// Takes over the low-battery notification from the service, by owning
 /// [`TRAY_BUS_NAME`] on `connection`. Returns the notifier this tray will
 /// notify with, or `None` when it will not notify.
@@ -153,32 +182,53 @@ impl DesktopNotifier {
 /// A tray with no notifier does not take the name, and neither does a second
 /// tray while a first one holds it; two trays notifying would be two
 /// notifications for one stop. The name is asked for without replacing or
-/// queueing, so the first tray keeps it until it goes.
+/// queueing, so the first tray keeps it until it goes; it is asked for again a
+/// few times over [`CLAIM_ATTEMPTS`] × [`CLAIM_RETRY`], so a tray that is only
+/// still exiting does not keep it from the one replacing it.
 pub async fn claim_notifications(
     connection: &zbus::Connection,
     notifier: Option<DesktopNotifier>,
 ) -> Option<DesktopNotifier> {
+    claim_notifications_within(connection, notifier, CLAIM_ATTEMPTS, CLAIM_RETRY).await
+}
+
+/// How many times the name is asked for, and how long apart. A tray that was
+/// just replaced (an update restarting the unit, a window bringing the tray
+/// back) can still be holding the name for a moment while it exits; the new
+/// tray must not give the notification away to nobody because of that.
+pub const CLAIM_ATTEMPTS: u32 = 6;
+pub const CLAIM_RETRY: Duration = Duration::from_millis(500);
+
+/// [`claim_notifications`] with the retry spelled out, so a test can keep it
+/// short.
+pub async fn claim_notifications_within(
+    connection: &zbus::Connection,
+    notifier: Option<DesktopNotifier>,
+    attempts: u32,
+    retry: Duration,
+) -> Option<DesktopNotifier> {
     let notifier = notifier?;
-    match connection
-        .request_name_with_flags(TRAY_BUS_NAME, RequestNameFlags::DoNotQueue.into())
-        .await
-    {
-        Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => Some(notifier),
-        Ok(reply) => {
-            eprintln!(
-                "better-awake-tray: another tray already raises the low-battery notification \
-                 ({reply:?}), so this one will not"
-            );
-            None
+    let mut last = String::new();
+    for attempt in 0..attempts.max(1) {
+        if attempt > 0 {
+            tokio::time::sleep(retry).await;
         }
-        Err(error) => {
-            eprintln!(
-                "better-awake-tray: another tray already raises the low-battery notification, \
-                 or the name could not be taken ({error}), so this one will not"
-            );
-            None
+        match connection
+            .request_name_with_flags(TRAY_BUS_NAME, RequestNameFlags::DoNotQueue.into())
+            .await
+        {
+            Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => {
+                return Some(notifier);
+            }
+            Ok(reply) => last = format!("{reply:?}"),
+            Err(error) => last = error.to_string(),
         }
     }
+    eprintln!(
+        "better-awake-tray: another tray already raises the low-battery notification ({last}), \
+         so this one will not"
+    );
+    None
 }
 
 /// Handles one event the service pushed.

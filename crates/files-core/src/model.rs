@@ -80,6 +80,10 @@ pub struct DirectoryModel {
     visible: Vec<u32>,
     order: SortOrder,
     hidden: HiddenPreference,
+    /// Type-to-filter: only names containing this text, compared without
+    /// case, are visible. Empty shows everything. A view setting like the
+    /// hidden one, so it never reloads.
+    name_filter: String,
     selection: Selection,
     skipped: Vec<SkippedEntry>,
 }
@@ -99,6 +103,7 @@ impl DirectoryModel {
             visible: Vec::new(),
             order,
             hidden,
+            name_filter: String::new(),
             selection: Selection::new(),
             skipped: Vec::new(),
         }
@@ -360,6 +365,27 @@ impl DirectoryModel {
         self.rebuild_visible();
     }
 
+    /// Type-to-filter. Narrows what is visible to names containing `text`,
+    /// ignoring case; an empty text shows everything again. Selected entries
+    /// the filter hides are deselected, so an action never reaches a file the
+    /// person cannot see.
+    pub fn set_name_filter(&mut self, text: &str) {
+        let text = text.to_lowercase();
+        if self.name_filter == text {
+            return;
+        }
+        self.commit();
+        self.name_filter = text;
+        self.rebuild_visible();
+        let visible: std::collections::HashSet<EntryId> =
+            self.iter_visible().map(Entry::id).collect();
+        self.selection.retain(|id| visible.contains(id));
+    }
+
+    pub fn name_filter(&self) -> &str {
+        &self.name_filter
+    }
+
     /// Points the model at a new listing, keeping the location.
     ///
     /// Everything from the previous run is dropped, including the selection:
@@ -440,15 +466,69 @@ impl DirectoryModel {
 
     fn rebuild_visible(&mut self) {
         let hidden = self.hidden;
+        let filter = &self.name_filter;
         self.visible.clear();
         self.visible.reserve(self.ordered.len());
         for slot in &self.ordered {
             if let Some(entry) = &self.storage[*slot as usize]
                 && hidden.accepts(entry.hidden)
+                && (filter.is_empty() || entry.name.to_lowercase().contains(filter.as_str()))
             {
                 self.visible.push(*slot);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    use crate::entry::EntryKind;
+    use crate::location::LocalPath;
+
+    fn listed(names: &[&str]) -> DirectoryModel {
+        let location = Location::local("/d").unwrap();
+        let mut model =
+            DirectoryModel::new(location, SortOrder::default(), HiddenPreference::default());
+        let entries = names
+            .iter()
+            .map(|name| {
+                Entry::file(
+                    *name,
+                    LocalPath::new(format!("/d/{name}")).unwrap(),
+                    EntryKind::File,
+                )
+            })
+            .collect();
+        model.insert_batch(entries);
+        model.commit();
+        model
+    }
+
+    fn names(model: &DirectoryModel) -> Vec<String> {
+        model
+            .iter_visible()
+            .map(|entry| entry.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn typing_narrows_the_folder_to_names_containing_the_text_without_case() {
+        let mut model = listed(&["Report.pdf", "notes.txt", "REPORT-2.txt", "photo.png"]);
+        model.set_name_filter("rep");
+        assert_eq!(names(&model), ["REPORT-2.txt", "Report.pdf"]);
+        model.set_name_filter("");
+        assert_eq!(model.visible_len(), 4);
+    }
+
+    #[test]
+    fn a_selected_entry_the_filter_hides_is_no_longer_selected() {
+        let mut model = listed(&["a.txt", "b.txt"]);
+        let a = model.visible(0).unwrap().id();
+        model.selection_mut().select_only(a.clone());
+        model.set_name_filter("b");
+        assert!(!model.selection().contains(&a));
+        assert_eq!(model.name_filter(), "b");
     }
 }
 

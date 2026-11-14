@@ -49,6 +49,7 @@ pub mod remote;
 pub mod stash;
 pub mod tags;
 pub mod trust;
+pub mod watching;
 pub mod worktrees;
 
 use std::ffi::{OsStr, OsString};
@@ -568,6 +569,37 @@ pub trait Git: Send + Sync {
     fn set_global_config(&self, key: &str, value: &str) -> Result<(), GitError> {
         unsupported!("set_global_config")
     }
+
+    // Keeping a window current (`watching`)
+    /// Whether a commit made here would know its author and committer.
+    fn identity_known(&self, repository: &Path) -> Result<bool, GitError> {
+        unsupported!("identity_known")
+    }
+    /// Git's own words when a commit made here would have no author or
+    /// committer, or `None` when it would.
+    fn identity_refusal(&self, repository: &Path) -> Result<Option<String>, GitError> {
+        unsupported!("identity_refusal")
+    }
+    /// The repository's worktrees, the main one first.
+    fn worktrees(&self, repository: &Path) -> Result<Vec<Worktree>, GitError> {
+        unsupported!("worktrees")
+    }
+    /// This worktree's git directory and the one all its worktrees share.
+    fn git_dirs(&self, repository: &Path) -> Result<(PathBuf, PathBuf), GitError> {
+        unsupported!("git_dirs")
+    }
+    /// The working tree's ignored directories, relative to its root.
+    fn ignored_directories(&self, repository: &Path) -> Result<Vec<PathBuf>, GitError> {
+        unsupported!("ignored_directories")
+    }
+    /// Which of these paths Git ignores.
+    fn ignored_paths(
+        &self,
+        repository: &Path,
+        paths: &[PathBuf],
+    ) -> Result<Vec<PathBuf>, GitError> {
+        unsupported!("ignored_paths")
+    }
 }
 
 /// Runs the `git` found on `PATH`.
@@ -827,6 +859,12 @@ impl<'a> Run<'a> {
             .arg(self.repository)
             .args(&self.args)
             .env("LC_ALL", "C")
+            // A read (status, diff) must not rewrite the index to refresh
+            // its stat cache: Better Git watches the index, and a status
+            // that writes it would start the next refresh, for ever, when a
+            // file's time is in the future. Locks a command needs are not
+            // optional and are still taken.
+            .env("GIT_OPTIONAL_LOCKS", "0")
             .stdin(if self.stdin.is_some() {
                 Stdio::piped()
             } else {
@@ -1393,5 +1431,33 @@ impl Git for SystemGit {
 
     fn set_global_config(&self, key: &str, value: &str) -> Result<(), GitError> {
         config::set_global(key, value)
+    }
+
+    fn identity_known(&self, repository: &Path) -> Result<bool, GitError> {
+        watching::identity_known(repository)
+    }
+
+    fn identity_refusal(&self, repository: &Path) -> Result<Option<String>, GitError> {
+        watching::identity_refusal(repository)
+    }
+
+    fn worktrees(&self, repository: &Path) -> Result<Vec<Worktree>, GitError> {
+        worktrees::list(repository)
+    }
+
+    fn git_dirs(&self, repository: &Path) -> Result<(PathBuf, PathBuf), GitError> {
+        watching::git_dirs(repository)
+    }
+
+    fn ignored_directories(&self, repository: &Path) -> Result<Vec<PathBuf>, GitError> {
+        watching::ignored_directories(repository)
+    }
+
+    fn ignored_paths(
+        &self,
+        repository: &Path,
+        paths: &[PathBuf],
+    ) -> Result<Vec<PathBuf>, GitError> {
+        watching::ignored_paths(repository, paths)
     }
 }

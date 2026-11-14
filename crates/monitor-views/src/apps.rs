@@ -72,6 +72,11 @@ pub struct AppRow {
     pub memory_swap: Aggregate,
     pub read_rate: Aggregate,
     pub write_rate: Aggregate,
+    pub network_receive_rate: Aggregate,
+    pub network_send_rate: Aggregate,
+    pub gpu_utilization: Aggregate,
+    pub gpu_memory: Aggregate,
+    pub energy_power: Aggregate,
     /// Indices into the model's process list, in the order the detail view
     /// should show them.
     pub member_indices: Vec<usize>,
@@ -246,6 +251,31 @@ impl AppsModel {
                         write_rate: aggregate(
                             members(),
                             |process| &process.write_rate,
+                            |value| value,
+                        ),
+                        network_receive_rate: aggregate(
+                            members(),
+                            |process| &process.network_receive_rate,
+                            |value| value,
+                        ),
+                        network_send_rate: aggregate(
+                            members(),
+                            |process| &process.network_send_rate,
+                            |value| value,
+                        ),
+                        gpu_utilization: aggregate(
+                            members(),
+                            |process| &process.gpu_utilization,
+                            |value| value,
+                        ),
+                        gpu_memory: aggregate(
+                            members(),
+                            |process| &process.gpu_memory,
+                            |value| value as f64,
+                        ),
+                        energy_power: aggregate(
+                            members(),
+                            |process| &process.energy_power,
                             |value| value,
                         ),
                         group: group.clone(),

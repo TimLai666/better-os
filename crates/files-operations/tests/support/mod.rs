@@ -18,11 +18,28 @@ pub fn local(path: impl AsRef<Path>) -> LocalPath {
     LocalPath::new(path.as_ref()).expect("an absolute path")
 }
 
+/// An engine whose Replace and Merge send what they displace to a trash of
+/// this test binary's own, never the person's.
 pub fn engine() -> JobEngine {
+    engine_with_trash(&test_trash())
+}
+
+/// This test binary's own trash, so no test ever reaches the person's.
+pub fn test_trash() -> PathBuf {
+    static TRASH: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    TRASH
+        .get_or_init(|| tempfile::tempdir().expect("a scratch trash"))
+        .path()
+        .join("Trash")
+}
+
+/// An engine that sends displaced items to `trash`.
+pub fn engine_with_trash(trash: &Path) -> JobEngine {
     JobEngine::new(EngineConfig {
         workers: 2,
         store: None,
         conflicts: files_operations::ConflictPolicy::new(),
+        displaced_trash: Some(trash.to_path_buf()),
     })
 }
 

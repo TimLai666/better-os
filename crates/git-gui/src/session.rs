@@ -261,6 +261,10 @@ pub enum Op {
     Init(NewRepository),
     ReadGitConfig,
     SetGitConfig(Vec<(String, String)>),
+    /// The last commit, for "Amend last commit" before the history is read.
+    LastCommit,
+    /// The worktrees of these repositories, for the repository list.
+    ReadWorktrees(Vec<PathBuf>),
 }
 
 impl Op {
@@ -359,6 +363,16 @@ pub enum Answer {
         result: Result<(), GitError>,
     },
     GitConfig(Result<Vec<(String, Option<String>)>, GitError>),
+    /// Git does not know who is committing; the job did not run. It runs
+    /// again after the identity step. `refusal` is Git's own words.
+    IdentityMissing {
+        job: Box<Job>,
+        refusal: String,
+    },
+    LastCommit(Result<Vec<Commit>, GitError>),
+    /// Each repository's worktrees; a repository that could not be read is
+    /// left out.
+    Worktrees(Vec<(PathBuf, Vec<git_core::Worktree>)>),
     /// The last commit was undone (or not); `last` is the commit it was,
     /// read from git just before.
     Undone {
@@ -411,6 +425,22 @@ impl Job {
     /// git, and it touches nothing but its own arguments, so it is safe on
     /// any thread.
     pub fn run(self, git: &dyn Git) -> Outcome {
+        // Before a commit, ask Git in the repository itself (its own and
+        // `includeIf` settings count) whether it knows who is committing, so
+        // a missing name or email is a question for the person and not Git's
+        // refusal telling them to type a command (`identity`). A new
+        // repository asks the same inside the new folder, in `init`.
+        if matches!(self.op, Op::Commit { .. })
+            && let Ok(Some(refusal)) = git.identity_refusal(&self.repository)
+        {
+            return Outcome {
+                generation: self.generation,
+                answer: Answer::IdentityMissing {
+                    job: Box::new(self),
+                    refusal,
+                },
+            };
+        }
         let root = self.repository.as_path();
         let changed = |kind: OpKind, result: Result<(), GitError>| Answer::Changed {
             kind,
@@ -542,12 +572,36 @@ impl Job {
                 result: git.clone_repository(&url, &destination, &network),
                 path: destination,
             },
-            Op::Init(new) => Answer::Created {
-                kind,
-                result: git.init_repository(&new),
-                path: new.path,
+            Op::Init(new) => match git.init_repository(&new) {
+                Err(GitError::Failed { message, .. })
+                    if crate::identity::is_identity_error(&GitError::Failed {
+                        exit_code: None,
+                        message: message.clone(),
+                    }) =>
+                {
+                    Answer::IdentityMissing {
+                        job: Box::new(Job {
+                            generation: self.generation,
+                            repository: self.repository.clone(),
+                            op: Op::Init(new),
+                        }),
+                        refusal: message,
+                    }
+                }
+                result => Answer::Created {
+                    kind,
+                    result,
+                    path: new.path,
+                },
             },
             Op::ReadGitConfig => Answer::GitConfig(read_config(git)),
+            Op::LastCommit => Answer::LastCommit(git.log(root, "HEAD", 0, 1)),
+            Op::ReadWorktrees(paths) => Answer::Worktrees(
+                paths
+                    .into_iter()
+                    .filter_map(|path| git.worktrees(&path).ok().map(|list| (path, list)))
+                    .collect(),
+            ),
             Op::SetGitConfig(values) => Answer::GitConfig(
                 values
                     .iter()
@@ -621,10 +675,11 @@ pub enum Problem {
     NoClientId,
 }
 
-/// Good news, shown briefly.
+/// Something the window does not otherwise show, in a toast that hides
+/// itself (`toast`). An operation whose result the window already shows
+/// has no notice.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Notice {
-    Done(OpKind),
     PullCreated {
         number: u64,
         url: String,
@@ -644,6 +699,9 @@ pub enum Notice {
     Pull(notifications::Notice),
     /// A stash is waiting for the branch just switched to.
     StashWaiting(String),
+    /// The repository's folders cannot be watched; the window checks for
+    /// changes every few seconds instead (`live`).
+    WatchFallback,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -872,6 +930,8 @@ fn hosted_of(info: &RepositoryInfo) -> Option<HostedRepository> {
 #[derive(Clone, Debug, Default)]
 pub struct GitHub {
     pub account: Option<Account>,
+    /// The signed-in account's profile, for the identity step's prefill.
+    pub profile: Option<github_api::User>,
     pub sign_in: SignIn,
     /// The host sign-in is for.
     pub host: Option<Host>,
@@ -944,6 +1004,14 @@ pub struct GitSession {
     pub dialog: Option<Dialog>,
     pub github: GitHub,
     pub git_config: GitConfig,
+    /// What was about to run when Git turned out to have no identity.
+    pub identity_pending: Option<Job>,
+    /// What Git said when it refused, and for which kind of job.
+    identity_refusal: Option<(OpKind, String)>,
+    /// Git's settings are being read for the identity step.
+    identity_reading: bool,
+    /// The worktrees of the repositories in the list, as last read.
+    pub worktrees_of: Vec<(PathBuf, Vec<git_core::Worktree>)>,
     /// For the window: keyring writes and desktop notifications to send.
     pub keyring_changes: Vec<KeyringChange>,
     pub desktop_notices: Vec<notifications::Notice>,
@@ -987,6 +1055,10 @@ impl GitSession {
             dialog: None,
             github: GitHub::default(),
             git_config: GitConfig::default(),
+            identity_pending: None,
+            identity_refusal: None,
+            identity_reading: false,
+            worktrees_of: Vec::new(),
             keyring_changes: Vec::new(),
             desktop_notices: Vec::new(),
             pull_notices: notifications::Seen::default(),
@@ -1046,7 +1118,9 @@ impl GitSession {
             // fetch rather than racing it.
             self.background_cancel.cancel();
         }
-        if kind != OpKind::BackgroundFetch && !matches!(op, Op::Refresh | Op::Diff { .. }) {
+        if kind != OpKind::BackgroundFetch
+            && !matches!(op, Op::Refresh | Op::Diff { .. } | Op::LastCommit)
+        {
             repo.busy = Some(kind);
         }
         self.queue.push_back(Job {
@@ -1431,16 +1505,166 @@ impl GitSession {
 
     /// "Amend last commit": the form takes the last commit's message and
     /// the next commit replaces it.
+    ///
+    /// The form fills at once from the history when it has been read. When
+    /// it has not, the form says it is reading the last commit, asks git for
+    /// that one commit (`git log -1`), and fills when it arrives; amend
+    /// stays on meanwhile.
     pub fn amend_last(&mut self) {
         let Some(repo) = self.repo.as_mut() else {
             return;
         };
-        let Some(last) = repo.history.commits.first().cloned() else {
+        if repo.status.unborn {
             return;
-        };
-        repo.form.restore(&last.summary, &last.body);
+        }
         repo.form.amend = true;
-        repo.tab = Tab::Changes;
+        let known = repo
+            .history
+            .loaded
+            .then(|| repo.history.commits.first().cloned())
+            .flatten();
+        let to_changes = repo.tab != Tab::Changes;
+        match known {
+            Some(last) => {
+                repo.form.reading_last = false;
+                repo.form.restore(&last.summary, &last.body);
+            }
+            None => {
+                repo.form.reading_last = true;
+                self.push_op(Op::LastCommit);
+            }
+        }
+        if to_changes {
+            self.set_tab(Tab::Changes);
+        }
+    }
+
+    /// Turns amend off, and stops waiting for the last commit's message.
+    pub fn stop_amending(&mut self) {
+        if let Some(repo) = self.repo.as_mut() {
+            repo.form.amend = false;
+            repo.form.reading_last = false;
+        }
+    }
+
+    // --- the identity step ------------------------------------------------
+
+    /// The person gave a name and email: write the ones Git's global
+    /// settings do not have yet (a value already there is kept, never
+    /// replaced), then run what was waiting for them.
+    pub fn save_identity(&mut self, name: &str, email: &str) {
+        if crate::identity::check(name, email).is_some() {
+            return;
+        }
+        self.dialog = None;
+        let writes = crate::identity::writes_missing(
+            name,
+            email,
+            self.git_config.get("user.name"),
+            self.git_config.get("user.email"),
+        );
+        if !writes.is_empty() {
+            self.queue.push_back(Job {
+                generation: self.generation,
+                repository: PathBuf::from("/"),
+                op: Op::SetGitConfig(writes),
+            });
+        }
+        if let Some(mut job) = self.identity_pending.take() {
+            // A new repository bumped the generation when it was asked for;
+            // it is still what the person asked for.
+            if matches!(job.op, Op::Init(_)) {
+                job.generation = self.generation;
+            }
+            if job.generation == self.generation {
+                if let (Op::Commit { .. }, Some(repo)) = (&job.op, self.repo.as_mut()) {
+                    repo.busy = Some(OpKind::Commit);
+                }
+                self.queue.push_back(job);
+            }
+        }
+    }
+
+    /// Git's settings are read: open the identity step, unless Git already
+    /// has a name and an email. Then the step would have nothing to write
+    /// and could only ask again; Git's own refusal is shown instead.
+    fn identity_asked(&mut self) {
+        let nothing_missing = crate::identity::writes_missing(
+            "",
+            "",
+            self.git_config.get("user.name"),
+            self.git_config.get("user.email"),
+        )
+        .is_empty();
+        if !nothing_missing {
+            self.dialog = Some(Dialog::Identity);
+            return;
+        }
+        self.identity_pending = None;
+        if let Some((kind, message)) = self.identity_refusal.take() {
+            self.problem = Some(Problem::Git {
+                kind,
+                error: GitError::Failed {
+                    exit_code: None,
+                    message,
+                },
+            });
+        }
+    }
+
+    /// Reads Git's settings again, and opens the identity step once they
+    /// are read: it is prefilled from them, and what is there is kept.
+    fn ask_identity(&mut self, pending: Option<Job>) {
+        self.identity_pending = pending;
+        self.identity_reading = true;
+        self.queue.push_back(Job {
+            generation: self.generation,
+            repository: PathBuf::from("/"),
+            op: Op::ReadGitConfig,
+        });
+    }
+
+    // --- worktrees in the lists --------------------------------------------
+
+    /// Reads the worktrees of every repository in the list that is there.
+    pub fn read_worktrees(&mut self) {
+        if self
+            .queue
+            .iter()
+            .any(|job| matches!(job.op, Op::ReadWorktrees(_)))
+        {
+            return;
+        }
+        let paths: Vec<PathBuf> = self
+            .repositories
+            .entries
+            .iter()
+            .map(|e| e.path.clone())
+            .filter(|p| p.exists())
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        self.queue.push_back(Job {
+            generation: self.generation,
+            repository: PathBuf::from("/"),
+            op: Op::ReadWorktrees(paths),
+        });
+    }
+
+    /// The worktrees known for a repository in the list: the open one's
+    /// from its own snapshot, the others' from the last read.
+    pub fn worktrees_for(&self, path: &Path) -> &[git_core::Worktree] {
+        if let Some(repo) = self.repo.as_ref()
+            && (repo.root == path || repo.info.worktrees.iter().any(|w| w.main && w.path == path))
+        {
+            return &repo.info.worktrees;
+        }
+        self.worktrees_of
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, list)| list.as_slice())
+            .unwrap_or(&[])
     }
 
     // --- discarding and ignoring ------------------------------------------
@@ -1741,6 +1965,14 @@ impl GitSession {
             return;
         };
         if repo.branch() == Some(target) {
+            return;
+        }
+        // Git refuses a branch another worktree has checked out: open that
+        // worktree instead.
+        if let Some(path) =
+            crate::worktree_links::checked_out_elsewhere(target, &repo.info.worktrees, &repo.root)
+        {
+            self.open(path);
             return;
         }
         if repo.has_changes() {
@@ -2314,6 +2546,12 @@ impl GitSession {
         if let Some(Dialog::SignIn { .. }) = self.dialog {
             self.github.sign_in = SignIn::Idle;
         }
+        if let Some(Dialog::Identity) = self.dialog {
+            self.identity_pending = None;
+            if let Some(repo) = self.repo.as_mut() {
+                repo.busy = None;
+            }
+        }
         self.dialog = None;
     }
 
@@ -2334,6 +2572,8 @@ impl GitSession {
     /// Restores the account the window read from the keyring.
     pub fn restore_account(&mut self, account: Account) {
         self.github.account = Some(account);
+        // The profile's name and email prefill the identity step.
+        self.push_gh(GhCall::User);
         self.refresh_github();
     }
 
@@ -2554,20 +2794,46 @@ impl GitSession {
     pub fn apply(&mut self, outcome: Outcome) {
         self.running = false;
         if let Answer::GitConfig(result) = outcome.answer {
+            let asking = std::mem::take(&mut self.identity_reading);
             match result {
                 Ok(values) => {
                     self.git_config = GitConfig {
                         values,
                         loaded: true,
+                    };
+                    if asking {
+                        self.identity_asked();
                     }
                 }
                 Err(error) => {
+                    // Without the settings the step could replace a value
+                    // the person has; it does not open.
+                    if asking {
+                        self.identity_pending = None;
+                    }
                     self.problem = Some(Problem::Git {
                         kind: OpKind::GitConfig,
                         error,
                     })
                 }
             }
+            return;
+        }
+        if let Answer::Worktrees(list) = outcome.answer {
+            self.worktrees_of = list;
+            return;
+        }
+        if let Answer::IdentityMissing { job, refusal } = outcome.answer {
+            if matches!(job.op, Op::Commit { .. }) {
+                self.idle();
+            }
+            // The person opened another repository meanwhile: no question
+            // about a commit that can no longer be made here.
+            if job.generation != self.generation {
+                return;
+            }
+            self.identity_refusal = Some((job.op.kind(), refusal));
+            self.ask_identity(Some(*job));
             return;
         }
         if outcome.generation != self.generation {
@@ -2704,16 +2970,33 @@ impl GitSession {
             }
             Answer::Created { kind, path, result } => match result {
                 Ok(()) => {
-                    // Made here, so trusted.
+                    // Made here, so trusted. The repository opening is the
+                    // confirmation; no bar says so.
                     if let Err(error) = self.trust.trust(&path) {
                         self.problem = Some(Problem::Io(error.to_string()));
                     }
-                    self.notice = Some(Notice::Done(kind));
                     self.open_trusted(path);
                 }
                 Err(error) => self.problem = Some(Problem::Git { kind, error }),
             },
-            Answer::GitConfig(_) => {}
+            Answer::LastCommit(result) => {
+                let Some(repo) = self.repo.as_mut() else {
+                    return;
+                };
+                let reading = std::mem::take(&mut repo.form.reading_last);
+                match result {
+                    Ok(commits) => {
+                        if let (true, true, Some(last)) =
+                            (reading, repo.form.amend, commits.first())
+                        {
+                            repo.form.restore(&last.summary, &last.body);
+                        }
+                    }
+                    Err(error) => self.problem = Some(read_failed(error)),
+                }
+                self.idle();
+            }
+            Answer::GitConfig(_) | Answer::IdentityMissing { .. } | Answer::Worktrees(_) => {}
         }
     }
 
@@ -2757,16 +3040,20 @@ impl GitSession {
         let ok = result.is_ok();
         let conflicts = matches!(result, Err(GitError::Conflicts(_)));
         match result {
+            // No "done" bar: the toolbar, the lists, and the history the
+            // window redraws are the confirmation, as in GitHub Desktop.
             Ok(()) => {
-                if !matches!(
-                    kind,
-                    OpKind::Refresh | OpKind::BackgroundFetch | OpKind::Resolve
-                ) {
-                    self.notice = Some(Notice::Done(kind));
-                }
                 if matches!(self.problem, Some(Problem::Git { .. })) {
                     self.problem = None;
                 }
+            }
+            // Git has no name or email (a commit that got past the check):
+            // ask for them rather than show Git's text.
+            Err(error) if kind == OpKind::Commit && crate::identity::is_identity_error(&error) => {
+                if let GitError::Failed { message, .. } = &error {
+                    self.identity_refusal = Some((kind, message.clone()));
+                }
+                self.ask_identity(None);
             }
             Err(error) => {
                 // A background fetch fails quietly; the next one retries.
@@ -2872,7 +3159,10 @@ impl GitSession {
             }
             GhResult::Poll(poll) => self.polled(poll),
             GhResult::User(user) => {
-                if let Some(account) = self.github.account.as_mut() {
+                self.github.profile = Some(user.clone());
+                if let Some(account) = self.github.account.as_mut()
+                    && account.login != user.login
+                {
                     account.login = user.login.clone();
                     self.keyring_changes
                         .push(KeyringChange::Store(account.clone()));

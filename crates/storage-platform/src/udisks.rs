@@ -13,7 +13,7 @@
 //! with a stick plugged in costs one open D-Bus connection and nothing else.
 
 use crate::model::{BlockInfo, DeviceAddress, DriveInfo, PlatformDevice, PlatformEvent};
-use crate::traits::{DeviceControl, EjectOutcome, PlatformError};
+use crate::traits::{DeviceControl, EjectOutcome, FormatRequest, ImageProgress, PlatformError};
 use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -50,6 +50,13 @@ pub trait Block {
     fn read_only(&self) -> zbus::Result<bool>;
     #[zbus(property)]
     fn size(&self) -> zbus::Result<u64>;
+    #[zbus(property)]
+    fn crypto_backing_device(&self) -> zbus::Result<OwnedObjectPath>;
+    fn format(&self, kind: &str, options: HashMap<&str, Value<'_>>) -> zbus::Result<()>;
+    fn open_for_restore(
+        &self,
+        options: HashMap<&str, Value<'_>>,
+    ) -> zbus::Result<zbus::zvariant::OwnedFd>;
 }
 
 #[zbus::proxy(
@@ -61,6 +68,8 @@ pub trait Partition {
     fn uuid(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn number(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn table(&self) -> zbus::Result<OwnedObjectPath>;
 }
 
 #[zbus::proxy(
@@ -194,6 +203,12 @@ impl UDisks2 {
                 .iter()
                 .map(|raw| decode_path(raw))
                 .collect(),
+            crypto_backing: block
+                .crypto_backing_device()
+                .await
+                .ok()
+                .map(|path| path.as_str().to_string())
+                .filter(|path| path != "/"),
         };
 
         let drive_path = block.drive().await.ok();
@@ -206,6 +221,7 @@ impl UDisks2 {
                     .await
                 {
                     Ok(drive) => Some(DriveInfo {
+                        object_path: path.as_str().to_string(),
                         removable: drive.removable().await.unwrap_or(false),
                         media_removable: drive.media_removable().await.unwrap_or(false),
                         connection_bus: drive.connection_bus().await.unwrap_or_default(),
@@ -452,6 +468,131 @@ impl DeviceControl for UDisks2 {
             detail,
         })
     }
+
+    async fn format(
+        &self,
+        address: &DeviceAddress,
+        request: &FormatRequest,
+    ) -> Result<(), PlatformError> {
+        request
+            .validate()
+            .map_err(|detail| PlatformError::Refused {
+                operation: "format".to_string(),
+                device: address.object_path.clone(),
+                detail,
+            })?;
+        let block = BlockProxy::builder(&self.connection)
+            .path(address.object_path.clone())
+            .map_err(unreachable)?
+            .build()
+            .await
+            .map_err(unreachable)?;
+        if block.hint_system().await.unwrap_or(true) {
+            return Err(PlatformError::Refused {
+                operation: "format".to_string(),
+                device: address.object_path.clone(),
+                detail: "it belongs to the running system".to_string(),
+            });
+        }
+        let mut options: HashMap<&str, Value<'_>> = HashMap::new();
+        options.insert("label", Value::from(request.label.trim()));
+        // UDisks2 unmounts and tears down what is on the volume itself.
+        options.insert("tear-down", Value::from(true));
+        options.insert("update-partition-type", Value::from(true));
+        block
+            .format(request.kind.udisks_type(), options)
+            .await
+            .map_err(|error| PlatformError::Refused {
+                operation: "format".to_string(),
+                device: address.object_path.clone(),
+                detail: error.to_string(),
+            })
+    }
+
+    async fn write_image(
+        &self,
+        drive: &DeviceAddress,
+        image: &std::path::Path,
+        progress: ImageProgress,
+    ) -> Result<u64, PlatformError> {
+        let disk = drive.object_path.clone();
+        let refuse = |detail: String| PlatformError::Refused {
+            operation: "write image".to_string(),
+            device: disk.clone(),
+            detail,
+        };
+        // A whole drive only: a partition answers for its number.
+        if let Ok(partition) = PartitionProxy::builder(&self.connection)
+            .path(disk.clone())
+            .map_err(unreachable)?
+            .build()
+            .await
+            && partition.number().await.is_ok()
+        {
+            return Err(refuse("it is a partition, not a whole drive".to_string()));
+        }
+        let block = BlockProxy::builder(&self.connection)
+            .path(disk.clone())
+            .map_err(unreachable)?
+            .build()
+            .await
+            .map_err(unreachable)?;
+        if block.hint_system().await.unwrap_or(true) {
+            return Err(refuse("it belongs to the running system".to_string()));
+        }
+        let capacity = block.size().await.unwrap_or(0);
+        let length = std::fs::metadata(image)
+            .map_err(|error| refuse(error.to_string()))?
+            .len();
+        if capacity > 0 && length > capacity {
+            return Err(refuse("the image is larger than the drive".to_string()));
+        }
+        let fd = block
+            .open_for_restore(HashMap::new())
+            .await
+            .map_err(|error| refuse(error.to_string()))?;
+        let image = image.to_path_buf();
+        let fd: std::os::fd::OwnedFd = fd.into();
+        // A thread of its own, not tokio's blocking pool: the storage
+        // service runs this on zbus's executor, where there is no tokio
+        // runtime to ask.
+        let (done, finished) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("storage-image-write".to_string())
+            .spawn(move || {
+                let _ = done.send(copy_image(&image, fd, &*progress));
+            })
+            .map_err(|error| refuse(error.to_string()))?;
+        finished
+            .await
+            .map_err(|error| refuse(error.to_string()))?
+            .map_err(|error| refuse(error.to_string()))
+    }
+}
+
+/// Copies an image into an opened block device and waits for it to reach
+/// the medium.
+fn copy_image(
+    image: &std::path::Path,
+    device: std::os::fd::OwnedFd,
+    progress: &(dyn Fn(u64) + Send + Sync),
+) -> std::io::Result<u64> {
+    use std::io::{Read, Write};
+    let mut source = std::fs::File::open(image)?;
+    let mut target = std::fs::File::from(device);
+    let mut buffer = vec![0u8; 4 * 1024 * 1024];
+    let mut written = 0u64;
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        target.write_all(&buffer[..read])?;
+        written += read as u64;
+        progress(written);
+    }
+    target.sync_all()?;
+    Ok(written)
 }
 
 #[cfg(test)]

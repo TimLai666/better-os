@@ -13,6 +13,8 @@ pub struct CommitForm {
     pub show_co_authors: bool,
     /// Replace the last commit.
     pub amend: bool,
+    /// Amend is on and the last commit's message is being read.
+    pub reading_last: bool,
     pub no_verify: bool,
     pub allow_empty: bool,
     pub push_after: bool,

@@ -16,22 +16,31 @@ pub mod changes;
 pub mod clone;
 pub mod commit;
 pub mod conflicts;
+pub mod dialog_check;
 pub mod dialogs;
 pub mod github;
 pub mod history;
 pub mod i18n;
+pub mod identity;
 pub mod keys;
+pub mod live;
 pub mod notifications;
+pub mod phrases;
 pub mod publish;
 pub mod recent;
 pub mod remote;
 pub mod repositories;
 pub mod session;
 pub mod settings;
+pub mod shortcuts;
+pub mod toast;
 pub mod trust;
+pub mod worktree_links;
 
 mod app;
+mod live_window;
 mod render;
+mod render_parts;
 mod theme;
 
 #[cfg(test)]

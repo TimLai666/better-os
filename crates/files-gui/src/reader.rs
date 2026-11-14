@@ -116,6 +116,10 @@ pub struct FilesReader {
     /// Follows the window's hidden-entry preference, because a `NoDisplay`
     /// application is hidden in the same sense a dotfile is.
     include_hidden_applications: AtomicBool,
+    /// The shared recently-used list Recents reads (`None` lists nothing),
+    /// and how its files' types are told.
+    recent_list: Option<PathBuf>,
+    recent_mime: Option<Arc<dyn files_platform::MimeDetector>>,
 }
 
 impl FilesReader {
@@ -132,6 +136,8 @@ impl FilesReader {
             probing: Arc::new(Mutex::new(HashSet::new())),
             catalog,
             include_hidden_applications: AtomicBool::new(false),
+            recent_list: None,
+            recent_mime: None,
         }
     }
 
@@ -140,8 +146,9 @@ impl FilesReader {
     /// probe of every network and FUSE filesystem, and an empty catalog that
     /// the window fills from a background thread.
     pub fn from_env() -> Self {
+        let mime = files_platform::detector_from_env();
         Self::new(
-            ReaderConfig::new().with_mime(files_platform::detector_from_env()),
+            ReaderConfig::new().with_mime(mime.clone()),
             TrashDirectory::home_from_env(),
             CatalogHandle::empty(app_catalog_platform::SessionEnvironment::from_env()),
         )
@@ -165,6 +172,7 @@ impl FilesReader {
                 })
                 .collect()
         })
+        .with_recent_list(files_platform::recent::recent_file_from_env(), Some(mime))
     }
 
     /// Where the local device trashes listed beside the home trash come from.
@@ -187,6 +195,19 @@ impl FilesReader {
 
     pub fn catalog(&self) -> &CatalogHandle {
         &self.catalog
+    }
+
+    /// Reads Recents from `list` (the session's
+    /// `$XDG_DATA_HOME/recently-used.xbel` in the window, a scratch file in a
+    /// test).
+    pub fn with_recent_list(
+        mut self,
+        list: Option<PathBuf>,
+        mime: Option<Arc<dyn files_platform::MimeDetector>>,
+    ) -> Self {
+        self.recent_list = list;
+        self.recent_mime = mime;
+        self
     }
 
     /// Follows `Ctrl+H` into the Applications location.
@@ -371,6 +392,27 @@ impl DirectoryReader for FilesReader {
                         // reports the cancellation.
                     });
             }
+            Location::Recent => {
+                let list = self.recent_list.clone();
+                let mime = self.recent_mime.clone();
+                let _ = thread::Builder::new()
+                    .name("files-recent-listing".to_string())
+                    .spawn(move || {
+                        let mut sink = sink;
+                        let entries = list
+                            .as_deref()
+                            .map(|list| {
+                                files_platform::recent::recent_entries(list, mime.as_deref())
+                            })
+                            .unwrap_or_default();
+                        for entry in entries {
+                            if sink.push(entry).is_err() {
+                                return;
+                            }
+                        }
+                        let _ = sink.finish();
+                    });
+            }
             other => {
                 let kind = other.kind();
                 sink.fail(ListingError::NotListable(kind));
@@ -445,6 +487,51 @@ mod tests {
             EntryBody::Trashed(facts) => facts.stored_path.as_path().to_path_buf(),
             other => panic!("expected a trashed entry, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn recents_lists_the_shared_list_newest_first() {
+        let root = tempfile::tempdir().unwrap();
+        let older = root.path().join("older.txt");
+        let newer = root.path().join("newer.md");
+        fs::write(&older, b"a").unwrap();
+        fs::write(&newer, b"b").unwrap();
+        let list = root.path().join("recently-used.xbel");
+        fs::write(
+            &list,
+            format!(
+                "<xbel><bookmark href=\"file://{}\" visited=\"2026-01-01T00:00:00Z\"/>\
+                 <bookmark href=\"file://{}\" visited=\"2026-02-01T00:00:00Z\"/></xbel>",
+                older.display(),
+                newer.display()
+            ),
+        )
+        .unwrap();
+        let reader = FilesReader::new(
+            ReaderConfig::new(),
+            None,
+            CatalogHandle::empty(Default::default()),
+        )
+        .with_recent_list(Some(list), None);
+        let request = ListingRequest::new(Location::Recent);
+        let (mut session, sink) = ListingSession::start(&request);
+        reader.start(request, sink);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut names = Vec::new();
+        'wait: loop {
+            for event in session.drain() {
+                match event {
+                    ListingEvent::Batch(batch) => {
+                        names.extend(batch.entries.into_iter().map(|entry| entry.name))
+                    }
+                    event if event.is_terminal() => break 'wait,
+                    _ => {}
+                }
+            }
+            assert!(Instant::now() < deadline, "the listing never finished");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(names, ["newer.md", "older.txt"]);
     }
 
     #[test]

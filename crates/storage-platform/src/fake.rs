@@ -7,8 +7,8 @@
 
 use crate::model::{DeviceAddress, PlatformDevice};
 use crate::traits::{
-    DeviceControl, EjectOutcome, FlushBackend, FlushReport, OpenUseInspector, PlatformError,
-    WritebackInspector,
+    DeviceControl, EjectOutcome, FlushBackend, FlushReport, FormatRequest, ImageProgress,
+    OpenUseInspector, PlatformError, WritebackInspector,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,6 +22,14 @@ pub struct FakeDeviceControl {
     calls: Arc<Mutex<Vec<String>>>,
     /// Object paths whose drive cannot be powered off.
     no_power_off: Arc<Mutex<Vec<String>>>,
+    /// What each fake drive holds after an image was written to it. Nothing
+    /// here ever touches a real device.
+    written: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    /// Object paths whose unmount is refused, as a busy volume's is.
+    no_unmount: Arc<Mutex<Vec<String>>>,
+    /// While set, an image write waits here after its first chunk, so a
+    /// test can try other operations on the drive meanwhile.
+    image_gate: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
 }
 
 impl FakeDeviceControl {
@@ -52,6 +60,31 @@ impl FakeDeviceControl {
             .lock()
             .expect("power lock")
             .push(address.object_path.clone());
+    }
+
+    /// Makes unmounting this volume fail, as a busy one does.
+    pub fn refuse_unmount(&self, address: &DeviceAddress) {
+        self.no_unmount
+            .lock()
+            .expect("unmount lock")
+            .push(address.object_path.clone());
+    }
+
+    /// Holds the next image write after its first chunk until the returned
+    /// sender is used (or dropped).
+    pub fn hold_image_write(&self) -> std::sync::mpsc::Sender<()> {
+        let (release, gate) = std::sync::mpsc::channel();
+        *self.image_gate.lock().expect("gate lock") = Some(gate);
+        release
+    }
+
+    /// The bytes an image write left on a fake drive.
+    pub fn written(&self, address: &DeviceAddress) -> Option<Vec<u8>> {
+        self.written
+            .lock()
+            .expect("written lock")
+            .get(&address.object_path)
+            .cloned()
     }
 
     /// The operations that reached this control, in order.
@@ -105,6 +138,18 @@ impl DeviceControl for FakeDeviceControl {
 
     async fn unmount(&self, address: &DeviceAddress) -> Result<(), PlatformError> {
         self.record(format!("unmount {}", address.object_path));
+        if self
+            .no_unmount
+            .lock()
+            .expect("unmount lock")
+            .contains(&address.object_path)
+        {
+            return Err(PlatformError::Refused {
+                operation: "unmount".to_string(),
+                device: address.object_path.clone(),
+                detail: "target is busy".to_string(),
+            });
+        }
         let mut devices = self.devices.lock().expect("device lock");
         let device = devices
             .get_mut(&address.object_path)
@@ -134,6 +179,92 @@ impl DeviceControl for FakeDeviceControl {
                 "unmounted and powered off".to_string()
             },
         })
+    }
+
+    async fn format(
+        &self,
+        address: &DeviceAddress,
+        request: &FormatRequest,
+    ) -> Result<(), PlatformError> {
+        request
+            .validate()
+            .map_err(|detail| PlatformError::Refused {
+                operation: "format".to_string(),
+                device: address.object_path.clone(),
+                detail,
+            })?;
+        self.record(format!(
+            "format {} {} {}",
+            address.object_path,
+            request.kind.udisks_type(),
+            request.label.trim()
+        ));
+        let mut devices = self.devices.lock().expect("device lock");
+        let device = devices
+            .get_mut(&address.object_path)
+            .ok_or_else(|| PlatformError::UnknownDevice(address.object_path.clone()))?;
+        device.mount_point = None;
+        device.block.id_type = Some(request.kind.udisks_type().to_string());
+        device.block.id_label = Some(request.label.trim().to_string());
+        Ok(())
+    }
+
+    async fn write_image(
+        &self,
+        address: &DeviceAddress,
+        image: &Path,
+        progress: ImageProgress,
+    ) -> Result<u64, PlatformError> {
+        let bytes = std::fs::read(image).map_err(|error| PlatformError::Refused {
+            operation: "write image".to_string(),
+            device: address.object_path.clone(),
+            detail: error.to_string(),
+        })?;
+        {
+            let mut devices = self.devices.lock().expect("device lock");
+            let device = devices
+                .get_mut(&address.object_path)
+                .ok_or_else(|| PlatformError::UnknownDevice(address.object_path.clone()))?;
+            if device.block.partition_number.is_some() {
+                return Err(PlatformError::Refused {
+                    operation: "write image".to_string(),
+                    device: address.object_path.clone(),
+                    detail: "it is a partition, not a whole drive".to_string(),
+                });
+            }
+            if device.block.size > 0 && bytes.len() as u64 > device.block.size {
+                return Err(PlatformError::Refused {
+                    operation: "write image".to_string(),
+                    device: address.object_path.clone(),
+                    detail: "the image is larger than the drive".to_string(),
+                });
+            }
+            device.mount_point = None;
+        }
+        self.record(format!(
+            "write image {} {}",
+            address.object_path,
+            image.display()
+        ));
+        let length = bytes.len() as u64;
+        // Two chunks, so progress is heard before the end; a held write
+        // waits between them.
+        progress(length / 2);
+        let gate = self.image_gate.lock().expect("gate lock").take();
+        if let Some(gate) = gate {
+            let (done, released) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = gate.recv();
+                let _ = done.send(());
+            });
+            let _ = released.await;
+        }
+        progress(length);
+        self.written
+            .lock()
+            .expect("written lock")
+            .insert(address.object_path.clone(), bytes);
+        Ok(length)
     }
 }
 
@@ -295,6 +426,7 @@ pub fn usb_stick(object_path: &str, device_path: &str, uuid: &str) -> PlatformDe
             ..BlockInfo::default()
         },
         drive: Some(DriveInfo {
+            object_path: format!("/org/freedesktop/UDisks2/drives/SN_{uuid}"),
             removable: true,
             connection_bus: "usb".to_string(),
             serial: Some(format!("SN-{uuid}")),
@@ -305,6 +437,73 @@ pub fn usb_stick(object_path: &str, device_path: &str, uuid: &str) -> PlatformDe
             ..DriveInfo::default()
         }),
         mount_point: None,
+    }
+}
+
+/// A USB drive's own block device (the whole disk, no filesystem of its
+/// own), on the drive `drive_object`.
+pub fn usb_disk(object_path: &str, device_path: &str, drive_object: &str) -> PlatformDevice {
+    let mut disk = usb_stick(object_path, device_path, "disk");
+    disk.block.id_uuid = None;
+    disk.block.id_label = None;
+    disk.block.id_type = None;
+    disk.block.partition_number = None;
+    disk.block.symlinks = Vec::new();
+    if let Some(drive) = disk.drive.as_mut() {
+        drive.object_path = drive_object.to_string();
+        drive.serial = Some(drive_object.rsplit('/').next().unwrap_or("").to_string());
+    }
+    disk
+}
+
+/// A partition with a filesystem on the drive `drive_object`.
+pub fn usb_partition(
+    object_path: &str,
+    device_path: &str,
+    uuid: &str,
+    drive_object: &str,
+) -> PlatformDevice {
+    let mut partition = usb_stick(object_path, device_path, uuid);
+    if let Some(drive) = partition.drive.as_mut() {
+        drive.object_path = drive_object.to_string();
+        drive.serial = Some(drive_object.rsplit('/').next().unwrap_or("").to_string());
+    }
+    partition
+}
+
+/// An unlocked LUKS volume: a mapper device with no drive of its own, backed
+/// by `backing` (a partition's object path), mounted at `mount_point`.
+pub fn luks_cleartext(
+    object_path: &str,
+    device_path: &str,
+    backing: &str,
+    mount_point: &str,
+) -> PlatformDevice {
+    use crate::model::BlockInfo;
+    PlatformDevice {
+        address: DeviceAddress {
+            object_path: object_path.to_string(),
+            device_path: device_path.to_string(),
+        },
+        block: BlockInfo {
+            device_path: device_path.to_string(),
+            id_type: Some("ext4".to_string()),
+            crypto_backing: Some(backing.to_string()),
+            ..BlockInfo::default()
+        },
+        drive: None,
+        mount_point: Some(PathBuf::from(mount_point)),
+    }
+}
+
+/// Whether a fake device is mounted now.
+impl FakeDeviceControl {
+    pub fn mount_point(&self, address: &DeviceAddress) -> Option<PathBuf> {
+        self.devices
+            .lock()
+            .expect("device lock")
+            .get(&address.object_path)
+            .and_then(|device| device.mount_point.clone())
     }
 }
 

@@ -19,29 +19,46 @@
 
 pub mod apps;
 pub mod bookmarks;
+pub mod columns;
 pub mod commands;
 pub mod content;
+pub mod context_menu;
 pub mod devicelink;
 pub mod devices;
+pub mod errors;
+pub mod filemanager1;
 pub mod format;
 pub mod i18n;
+pub mod icons;
+pub mod interrupted;
 pub mod keys;
 pub mod launch;
 pub mod layout;
+pub mod localsend;
+pub mod network;
 pub mod opcenter;
 pub mod openwith;
+pub mod pathbar;
+pub mod plugin_host;
+pub mod plugins;
 pub mod policy;
 pub mod prefs;
 pub mod preview;
 pub mod reader;
 pub mod search;
 pub mod session;
+pub mod settings_store;
+pub mod share;
+pub mod shortcuts;
 pub mod sidebar;
+pub mod terminal;
 pub mod toolbar;
 pub mod tracking;
+pub mod undo;
 
 mod app;
 mod panels;
+mod plugin_page;
 mod render;
 mod shell;
 mod views;
@@ -66,18 +83,30 @@ use files_operations::{EngineConfig, JobEngine, JobStore};
 /// Every job it runs is reported to [`shared_tracker`], which is how a copy to
 /// an external disk reaches the storage layer as a tracked operation.
 pub fn shared_engine() -> Arc<JobEngine> {
-    static ENGINE: OnceLock<Arc<JobEngine>> = OnceLock::new();
-    ENGINE
-        .get_or_init(|| {
-            Arc::new(JobEngine::with_observer(
-                EngineConfig {
-                    store: Some(JobStore::new(job_store_root())),
-                    ..EngineConfig::default()
-                },
-                shared_tracker(),
-            ))
-        })
-        .clone()
+    ENGINE.get_or_init(start_engine).0.clone()
+}
+
+/// The copies and moves an earlier Better Files left unfinished, read once
+/// when the engine starts (before it writes a record of its own, so none
+/// of this process's jobs can be mistaken for an interrupted one).
+pub fn interrupted_jobs() -> interrupted::InterruptedJobs {
+    ENGINE.get_or_init(start_engine).1.clone()
+}
+
+static ENGINE: OnceLock<(Arc<JobEngine>, interrupted::InterruptedJobs)> = OnceLock::new();
+
+fn start_engine() -> (Arc<JobEngine>, interrupted::InterruptedJobs) {
+    let store = JobStore::new(job_store_root());
+    let interrupted =
+        interrupted::InterruptedJobs::from_recovery(store.recover(), Some(store.clone()));
+    let engine = Arc::new(JobEngine::with_observer(
+        EngineConfig {
+            store: Some(store),
+            ..EngineConfig::default()
+        },
+        shared_tracker(),
+    ));
+    (engine, interrupted)
 }
 
 /// The one job tracker this process runs, beside the one engine. The window

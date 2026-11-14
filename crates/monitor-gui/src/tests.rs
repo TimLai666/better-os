@@ -85,7 +85,6 @@ fn every_visible_string(c: &'static Copy) -> Vec<&'static str> {
         c.not_available,
         c.not_read,
         c.gpu_not_found,
-        c.battery_not_read,
         c.apps_section,
         c.background_processes,
         c.nothing_matches,
@@ -191,12 +190,78 @@ fn every_visible_string(c: &'static Copy) -> Vec<&'static str> {
         c.link_speed,
         c.wired,
         c.other_connection,
-        c.not_read_yet_title,
-        c.gpu_not_read,
-        c.graphics_cards,
         c.processor_temperature,
-        c.temperature_not_found,
-        c.fans_not_read,
+        c.column_network,
+        c.column_gpu_memory,
+        c.column_power,
+        c.network_column_tooltip,
+        c.sensors,
+        c.dedicated_memory,
+        c.shared_memory,
+        c.gpu_clock,
+        c.memory_clock,
+        c.power,
+        c.driver,
+        c.location,
+        c.programs_using,
+        c.busy_from_clients,
+        c.gpu_apps,
+        c.gpu_busy_unreported,
+        c.firmware,
+        c.power_state,
+        c.npu_asleep,
+        c.npu_running,
+        c.awake_time,
+        c.npu_no_busy,
+        c.npu_idle,
+        c.charge,
+        c.battery_charging,
+        c.battery_discharging,
+        c.battery_full,
+        c.battery_not_charging,
+        c.battery_unknown,
+        c.time_left,
+        c.time_to_full,
+        c.battery_health,
+        c.full_capacity,
+        c.design_capacity,
+        c.charge_cycles,
+        c.not_reported_by_firmware,
+        c.voltage,
+        c.charge_limit,
+        c.charging_at,
+        c.drawing,
+        c.battery_model,
+        c.chargers,
+        c.connected,
+        c.not_connected,
+        c.power_adapter,
+        c.usb_c_port,
+        c.battery_charge_chart,
+        c.battery_use_title,
+        c.battery_use_now,
+        c.battery_use_since,
+        c.battery_use_note,
+        c.battery_use_plugged,
+        c.battery_use_never,
+        c.battery_use_nothing,
+        c.column_energy,
+        c.no_battery,
+        c.temperatures_heading,
+        c.fans,
+        c.voltages,
+        c.currents,
+        c.power_readings,
+        c.clocks,
+        c.no_fans,
+        c.no_sensors,
+        c.critical_at,
+        c.hottest,
+        c.fan_speed,
+        c.open_full_window,
+        c.popup_last_minutes,
+        c.collection_version_mismatch,
+        c.collection_component_off,
         c.startup_hint,
         c.enabled,
         c.disabled,
@@ -255,6 +320,7 @@ fn every_visible_string(c: &'static Copy) -> Vec<&'static str> {
         c.disk_budget,
         c.gaps_title,
         c.no_gaps,
+        c.set_aside_title,
         c.gap_service_stopped,
         c.gap_missed_cadence,
         c.gap_interrupted_write,
@@ -405,7 +471,7 @@ fn every_details_heading_fits_its_column_at_960_pixels_in_both_languages() {
     for locale in LOCALES {
         let c = copy(locale);
         let mut fixed = Vec::new();
-        for column in tables::detail_columns(false) {
+        for column in tables::detail_columns(false, true) {
             let title = tables::column_title(column, c);
             if let Some(width) = tables::detail_width(column) {
                 assert!(
@@ -571,8 +637,11 @@ fn ending_a_tree_ends_the_children_before_their_parents() {
 
 #[test]
 fn the_details_table_hides_command_lines_until_they_are_turned_on() {
-    assert!(!tables::detail_columns(false).contains(&ProcessColumn::CommandLine));
-    assert!(tables::detail_columns(true).contains(&ProcessColumn::CommandLine));
+    assert!(!tables::detail_columns(false, true).contains(&ProcessColumn::CommandLine));
+    assert!(tables::detail_columns(true, true).contains(&ProcessColumn::CommandLine));
+    // No graphics card, no GPU column.
+    assert!(!tables::detail_columns(false, false).contains(&ProcessColumn::Gpu));
+    assert!(tables::detail_columns(false, true).contains(&ProcessColumn::Gpu));
     let mut model = ProcessTableModel::new(vec![ProcessFacts::synthetic(1, "systemd")]);
     assert!(!model.columns().contains(&ProcessColumn::CommandLine));
     model.set_show_command_line(true);
@@ -1656,4 +1725,320 @@ fn a_failed_switch_never_leads_with_systemctl_or_a_debug_string() {
         ),
         "Unit is masked."
     );
+}
+
+fn hardware_round() -> Vec<monitor_core::CollectorReport> {
+    let at = Timestamp {
+        unix_ms: 1_700_000_000_000,
+        monotonic_ns: 1,
+    };
+    let m = |pairs: &[(&str, Observation)]| -> MetricSet {
+        pairs
+            .iter()
+            .map(|(id, o)| (MetricId::new(*id).unwrap(), o.clone()))
+            .collect()
+    };
+    let mut gpu = monitor_core::CollectorReport::new(CollectorId::new("linux.gpu").unwrap(), at);
+    gpu.entities.push(Entity::new(
+        EntityId::new(EntityKind::Gpu, "0000:63:00.0"),
+        m(&[
+            ("gpu.card", Observation::text("card1")),
+            ("gpu.vendor", Observation::text("AMD")),
+            ("gpu.utilization", Observation::float(0.06)),
+            ("gpu.temperature", Observation::float(57.0)),
+        ]),
+    ));
+    let mut battery =
+        monitor_core::CollectorReport::new(CollectorId::new("linux.battery").unwrap(), at);
+    battery.metrics.insert(
+        MetricId::new("power.on_battery").unwrap(),
+        Observation::boolean(true),
+    );
+    battery.entities.push(Entity::new(
+        EntityId::new(EntityKind::Battery, "BAT1"),
+        m(&[
+            ("battery.charge", Observation::float(0.56)),
+            ("battery.status", Observation::text("discharging")),
+            (
+                "battery.time.remaining",
+                Observation::float(2.0 * 3600.0 + 10.0 * 60.0),
+            ),
+            ("battery.peripheral", Observation::boolean(false)),
+        ]),
+    ));
+    let mut sensors =
+        monitor_core::CollectorReport::new(CollectorId::new("linux.sensors").unwrap(), at);
+    for (key, chip, label, kind, metric, value) in [
+        (
+            "k10temp/temp1",
+            "k10temp",
+            "Tctl",
+            "temperature",
+            "sensor.temperature",
+            77.75,
+        ),
+        (
+            "nvme/temp1",
+            "nvme",
+            "Composite",
+            "temperature",
+            "sensor.temperature",
+            60.85,
+        ),
+        (
+            "asus/fan1",
+            "asus",
+            "cpu_fan",
+            "fan",
+            "sensor.fan.speed",
+            6000.0,
+        ),
+        (
+            "acpi_fan/fan1",
+            "acpi_fan",
+            "fan1",
+            "fan",
+            "sensor.fan.speed",
+            6091.0,
+        ),
+    ] {
+        sensors.entities.push(Entity::new(
+            EntityId::new(EntityKind::Sensor, key),
+            m(&[
+                ("sensor.chip", Observation::text(chip)),
+                ("sensor.label", Observation::text(label)),
+                ("sensor.kind", Observation::text(kind)),
+                (metric, Observation::float(value)),
+            ]),
+        ));
+    }
+    vec![gpu, battery, sensors]
+}
+
+#[test]
+fn the_hardware_pages_read_the_graphics_card_battery_and_sensors() {
+    let readings = Readings::from_reports(&hardware_round(), 1_700_000_000.0);
+    let gpu = readings.primary_gpu().expect("a card");
+    assert_eq!(gpu.utilization, Some(0.06));
+    assert_eq!(
+        i18n::gpu_title(
+            gpu,
+            Some("AMD Ryzen AI 9 HX 370 w/ Radeon 890M"),
+            Locale::EnUs
+        ),
+        "AMD Radeon 890M"
+    );
+    assert_eq!(
+        i18n::gpu_title(gpu, None, Locale::EnUs),
+        "AMD graphics (card1)"
+    );
+    assert_eq!(
+        i18n::gpu_title(gpu, None, Locale::ZhTw),
+        "AMD 顯示卡（card1）"
+    );
+    let battery = readings.system_battery().expect("a battery");
+    assert_eq!(
+        i18n::battery_line(battery, Locale::EnUs),
+        "On battery, about 2 h 10 min left"
+    );
+    assert_eq!(
+        i18n::battery_line(battery, Locale::ZhTw),
+        "使用電池中，剩下約 2 小時 10 分鐘"
+    );
+    assert_eq!(readings.on_battery, Some(true));
+    let hottest = readings.hottest().expect("a temperature");
+    assert_eq!(
+        i18n::sensor_title(hottest, Locale::EnUs),
+        "Processor · Tctl"
+    );
+    assert_eq!(readings.fastest_fan(), Some(6091.0));
+    let fans: Vec<String> = readings
+        .sensors_of("fan")
+        .map(|s| i18n::sensor_title(s, Locale::EnUs))
+        .collect();
+    // A label that is only the input's name adds nothing to the chip's.
+    assert!(fans.contains(&"Fan (ACPI)".to_string()), "{fans:?}");
+    assert!(
+        fans.contains(&"ASUS embedded controller · Processor fan".to_string()),
+        "{fans:?}"
+    );
+}
+
+#[test]
+fn sensor_values_carry_their_units() {
+    assert_eq!(i18n::sensor_value("temperature", 77.75), "78 °C");
+    assert_eq!(i18n::sensor_value("fan", 6091.0), "6,091 RPM");
+    assert_eq!(i18n::sensor_value("voltage", 15.842), "15.84 V");
+    assert_eq!(i18n::sensor_value("current", 1.718), "1.72 A");
+    assert_eq!(i18n::sensor_value("power", 27.407), "27.4 W");
+    assert_eq!(i18n::sensor_value("power", 0.35), "350 mW");
+    assert_eq!(i18n::sensor_value("frequency", 1.22e9), "1.22 GHz");
+    assert_eq!(i18n::sensor_value("frequency", 600e6), "600 MHz");
+    assert_eq!(i18n::chip_title("mt7921_phy0", Locale::EnUs), "Wi-Fi");
+    assert_eq!(i18n::chip_title("k10temp", Locale::ZhTw), "處理器");
+    assert_eq!(i18n::chip_title("some_chip", Locale::EnUs), "some_chip");
+}
+
+#[test]
+fn the_overview_shows_a_card_only_for_hardware_the_machine_has() {
+    let none = crate::charts::overview_hardware(&Readings::from_reports(&[], 0.0));
+    assert!(!none.gpu && !none.battery);
+    let all = crate::charts::overview_hardware(&Readings::from_reports(&hardware_round(), 0.0));
+    assert!(all.gpu && all.battery);
+}
+
+#[test]
+fn a_machine_without_a_battery_or_card_has_no_reading_for_them() {
+    let readings = Readings::from_reports(&[], 0.0);
+    assert!(readings.system_battery().is_none());
+    assert!(readings.primary_gpu().is_none());
+    assert!(readings.hottest().is_none());
+    assert_eq!(readings.on_battery, None);
+}
+
+#[test]
+fn the_live_history_keeps_the_hardware_series() {
+    let readings = Readings::from_reports(&hardware_round(), 1_700_000_000.0);
+    let mut live = LiveHistory::default();
+    live.record(&readings);
+    assert_eq!(
+        live.values(&SeriesKey::Gpu("0000:63:00.0".into())),
+        vec![Some(6.0)]
+    );
+    let charge = live.values(&SeriesKey::BatteryCharge("BAT1".into()));
+    assert!((charge[0].unwrap() - 56.0).abs() < 1e-9);
+    assert_eq!(
+        live.values(&SeriesKey::Sensor("asus/fan1".into())),
+        vec![Some(6000.0)]
+    );
+}
+
+#[test]
+fn every_collector_has_a_name_in_both_languages() {
+    for collector in monitor_collectors_linux::LinuxCollectors::collector_names() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let name = i18n::collector_name(collector, locale);
+            assert!(
+                name != "Other source" && name != "其他來源",
+                "{collector} has no words"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_switched_off_component_is_not_started_from_the_window() {
+    use crate::link::{ServicePlan, service_plan};
+    use crate::startup::{ServiceError, Systemctl, component_on, unit_enabled};
+    struct Answer(Result<String, ServiceError>);
+    impl Systemctl for Answer {
+        fn run(&self, arguments: &[&str]) -> Result<String, ServiceError> {
+            assert_eq!(arguments, ["is-enabled", "--", "better-monitor.service"]);
+            self.0.clone()
+        }
+    }
+    let unit = "better-monitor.service";
+    assert_eq!(
+        unit_enabled(&Answer(Ok("enabled\n".into())), unit),
+        Some(true)
+    );
+    assert_eq!(
+        unit_enabled(&Answer(Err(ServiceError::Refused("disabled".into()))), unit),
+        Some(false)
+    );
+    assert_eq!(
+        unit_enabled(&Answer(Err(ServiceError::NoManager("no bus".into()))), unit),
+        None
+    );
+    // Installed and disabled: off. Not installed (a development build), or a
+    // user manager that cannot be asked: on.
+    assert!(!component_on(true, Some(false)));
+    assert!(component_on(false, Some(false)));
+    assert!(component_on(true, None));
+    // Off and not running: the window collects for itself. Off but running
+    // anyway: it is used, since nothing has to start.
+    assert_eq!(service_plan(false, Some(false)), ServicePlan::CollectHere);
+    assert_eq!(service_plan(false, None), ServicePlan::CollectHere);
+    assert_eq!(service_plan(false, Some(true)), ServicePlan::Connect);
+    assert_eq!(service_plan(true, Some(false)), ServicePlan::Connect);
+}
+
+#[test]
+fn a_window_collecting_for_itself_keeps_out_of_the_services_way() {
+    use crate::link::{EmbeddedStore, embedded_store, handover};
+    // Better Monitor off: no service will want the shared store, so the
+    // window records into it. On: the window keeps a store of its own so the
+    // service can open the shared one whenever it starts.
+    assert_eq!(embedded_store(false), EmbeddedStore::Shared);
+    assert_eq!(embedded_store(true), EmbeddedStore::Private);
+    // Hand over when the service is on the bus, or when the component was
+    // switched on since; not every few seconds to a service that keeps failing.
+    assert!(handover(false, false, Some(true)));
+    assert!(handover(false, true, Some(false)));
+    assert!(!handover(true, true, Some(false)));
+    assert!(!handover(false, false, None));
+}
+
+#[test]
+fn records_kept_aside_are_counted_in_both_languages() {
+    use crate::i18n::set_aside_sentence;
+    assert!(set_aside_sentence(1, Locale::EnUs).starts_with("1 record is"));
+    assert!(set_aside_sentence(3, Locale::EnUs).starts_with("3 records are"));
+    assert!(set_aside_sentence(3, Locale::ZhTw).contains("3 筆"));
+}
+
+#[test]
+fn the_gpu_column_shows_only_when_a_program_has_a_gpu_reading() {
+    let mut quiet = ProcessFacts::synthetic(1, "shell");
+    quiet.gpu_utilization = Field::Unsupported(monitor_core::UnsupportedReason::InterfaceMissing {
+        path: "/proc/1/fdinfo".into(),
+    });
+    // A card is present, but its driver reports nothing per program.
+    assert!(!tables::shows_gpu_column(std::slice::from_ref(&quiet)));
+    assert!(!tables::shows_gpu_column(&[]));
+    let mut drawing = ProcessFacts::synthetic(2, "compositor");
+    drawing.gpu_utilization = Field::Value(0.0);
+    assert!(tables::shows_gpu_column(&[quiet, drawing]));
+}
+
+#[test]
+fn a_private_store_is_made_unguessable_and_for_this_user_only() {
+    use crate::link::create_private_root;
+    use std::os::unix::fs::PermissionsExt as _;
+    let runtime = tempfile::tempdir().unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    let first = create_private_root(Some(runtime.path()), temporary.path()).unwrap();
+    let second = create_private_root(Some(runtime.path()), temporary.path()).unwrap();
+    assert!(first.starts_with(runtime.path().join("better-monitor")));
+    assert_ne!(first, second, "each store gets a fresh random name");
+    for path in [&first, &runtime.path().join("better-monitor")] {
+        let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{}", path.display());
+    }
+    // Without a runtime directory it goes in the temporary one, still 0700.
+    let fallback = create_private_root(None, temporary.path()).unwrap();
+    assert!(fallback.starts_with(temporary.path()));
+    let mode = std::fs::metadata(&fallback).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+}
+
+#[test]
+fn stores_left_by_crashed_windows_are_swept_and_live_ones_kept() {
+    use crate::link::sweep_private_roots;
+    let parent = tempfile::tempdir().unwrap();
+    let make = |name: &str| {
+        let path = parent.path().join(name);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("history.log"), b"x").unwrap();
+        path
+    };
+    let crashed = make("better-monitor-window-4000001-abc");
+    let running = make("better-monitor-window-4000002-def");
+    let own = make(&format!("better-monitor-window-{}-ghi", std::process::id()));
+    let other = make("something-else-4000001-abc");
+    sweep_private_roots(parent.path(), |pid| pid == 4_000_002);
+    assert!(!crashed.exists());
+    assert!(running.exists());
+    assert!(own.exists());
+    assert!(other.exists());
 }

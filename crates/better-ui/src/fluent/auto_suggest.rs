@@ -17,11 +17,12 @@ use std::rc::Rc;
 
 use gpui::{
     App, ElementId, Entity, Focusable as _, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
-    anchored, deferred, div, prelude::FluentBuilder as _, px, relative,
+    ParentElement, Pixels, RenderOnce, SharedString, Styled, Window, anchored, deferred, div,
+    prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::input::{self, InputState};
 
+use super::hit_area::{RowInset, group_look, hit_row};
 use super::menu::panel_frame;
 use super::text_box::TextBox;
 use super::{BODY, CAPTION, Handler, Key, ValueHandler, palette, text, with_alpha};
@@ -88,6 +89,19 @@ pub fn suggest_key(open: bool, highlight: Option<usize>, len: usize, key: Key) -
 /// has not closed the list for exactly this text.
 pub fn list_open(focused: bool, value: &str, dismissed_for: Option<&str>) -> bool {
     focused && !value.trim().is_empty() && dismissed_for != Some(value)
+}
+
+/// What a press in the field does to the list's memory: a press while the
+/// list is open closes it for this text, as a second press on any
+/// light-dismiss control does; the next press opens it again.
+pub fn field_pressed(open: bool, value: &str, dismissed_for: Option<&str>) -> Option<String> {
+    if open {
+        Some(value.to_string())
+    } else if dismissed_for == Some(value) {
+        None
+    } else {
+        dismissed_for.map(str::to_string)
+    }
 }
 
 /// The box's own memory between frames.
@@ -250,6 +264,9 @@ impl RenderOnce for AutoSuggestBox {
         let list =
             (open && (!self.suggestions.is_empty() || self.empty_text.is_some())).then(|| {
                 let mut list = panel_frame(div().id("suggestions"), p)
+                    .child(super::light_dismiss::panel_marker(
+                        &super::light_dismiss::PanelOrder::default(),
+                    ))
                     .py(px(4.0))
                     .when_some(self.width, |l, w| l.w(w))
                     .when(self.width.is_none(), |l| l.min_w(px(240.0)));
@@ -273,42 +290,48 @@ impl RenderOnce for AutoSuggestBox {
                     };
                     let choose = wiring.clone();
                     let value_now = value.clone();
+                    // The inset shape is drawn inside a hit area that fills
+                    // the row (`hit_area`): no dead pixels between two.
+                    let look = div()
+                        .id("look")
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .rounded(super::radius::SM)
+                        .bg(fill)
+                        .flex()
+                        .flex_col()
+                        .child(
+                            text(div(), BODY)
+                                .text_color(p.text_primary)
+                                .whitespace_normal()
+                                .child(suggestion.title.clone()),
+                        )
+                        .children(suggestion.caption.clone().map(|caption| {
+                            text(div(), CAPTION)
+                                .text_color(p.text_secondary)
+                                .whitespace_normal()
+                                .child(caption)
+                        }));
                     list = list.child(
-                        div()
-                            .id(ElementId::named_usize("suggestion", index))
-                            .mx(px(4.0))
-                            .my(px(2.0))
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .rounded(super::radius::SM)
-                            .bg(fill)
-                            .hover(move |s| s.bg(hover))
-                            .active(move |s| s.bg(pressed))
-                            .flex()
-                            .flex_col()
-                            .child(
-                                text(div(), BODY)
-                                    .text_color(p.text_primary)
-                                    .whitespace_normal()
-                                    .child(suggestion.title.clone()),
-                            )
-                            .children(suggestion.caption.clone().map(|caption| {
-                                text(div(), CAPTION)
-                                    .text_color(p.text_secondary)
-                                    .whitespace_normal()
-                                    .child(caption)
-                            }))
-                            // A press, not a click: the field keeps its focus
-                            // until the choice is made, so the list is still
-                            // there when the button comes up.
-                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        hit_row(
+                            ElementId::named_usize("suggestion", index),
+                            RowInset::SUGGESTION,
+                        )
+                        .child(group_look(look, hover, pressed))
+                        // A press, not a click: the field keeps its focus
+                        // until the choice is made, so the list is still
+                        // there when the button comes up.
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            move |_, window, cx| {
                                 cx.stop_propagation();
                                 window.prevent_default();
                                 choose.close(value_now.clone(), cx);
                                 if let Some(handler) = choose.on_choose.as_ref() {
                                     handler(index, window, cx);
                                 }
-                            }),
+                            },
+                        ),
                     );
                 }
                 div().absolute().top(relative(1.0)).left_0().child(
@@ -321,6 +344,21 @@ impl RenderOnce for AutoSuggestBox {
                 )
             });
 
+        let press_memory = wiring.memory.clone();
+        let press_value = value.clone();
+        let field = div()
+            .id(super::child_id(&self.id, "press"))
+            .capture_any_mouse_down(move |event, _, cx| {
+                if event.button != MouseButton::Left {
+                    return;
+                }
+                press_memory.update(cx, |memory, cx| {
+                    memory.dismissed_for =
+                        field_pressed(open, &press_value, memory.dismissed_for.as_deref());
+                    cx.notify();
+                });
+            })
+            .child(field);
         let down = wiring.clone();
         let up = wiring.clone();
         let enter = wiring.clone();

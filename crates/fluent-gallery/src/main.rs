@@ -13,7 +13,7 @@ use better_ui::command_line::{WindowCommandLine, WindowOption};
 use better_ui::fluent::auto_suggest::{AutoSuggestBox, Suggestion};
 use better_ui::fluent::badge::{Badge, InfoBadge};
 use better_ui::fluent::breadcrumb::BreadcrumbBar;
-use better_ui::fluent::button::{Button, SplitButton};
+use better_ui::fluent::button::{Button, ButtonKind, DropDownButton, SplitButton};
 use better_ui::fluent::chrome::{CaptionButton, TitleBar};
 use better_ui::fluent::command_bar::{Command, CommandBar};
 use better_ui::fluent::dialog::{
@@ -578,6 +578,21 @@ impl Gallery {
                 .into_any_element(),
         ));
         rows.push(matrix(
+            self.t("Drop-down button", "下拉按鈕"),
+            p,
+            |s| {
+                DropDownButton::new(sid("dropdown", s), ButtonKind::Standard)
+                    .label(self.t("Sort", "排序"))
+                    .entries(split_entries())
+                    .shown(s)
+                    .into_any_element()
+            },
+            DropDownButton::new("dropdown-live", ButtonKind::Standard)
+                .label(self.t("Sort", "排序"))
+                .entries(split_entries())
+                .into_any_element(),
+        ));
+        rows.push(matrix(
             self.t("Check box", "核取方塊"),
             p,
             |s| {
@@ -700,6 +715,25 @@ impl Gallery {
             TextBox::new("text-live", &self.text_input)
                 .header(self.t("Display name", "顯示名稱"))
                 .description(self.t("Shown on the lock screen.", "會顯示在鎖定畫面。"))
+                .width(px(260.0))
+                .into_any_element(),
+        ));
+        let required = self.t("Enter a name.", "請輸入名稱。");
+        let empty = self.text_input.read(cx).value().trim().is_empty();
+        rows.push(matrix(
+            self.t("With a reason", "顯示原因"),
+            p,
+            |s| {
+                TextBox::new(sid("text-error", s), pick(s))
+                    .width(px(COLUMN))
+                    .error(Some(required))
+                    .shown(s)
+                    .into_any_element()
+            },
+            TextBox::new("text-error-live", &self.text_input)
+                .header(self.t("Display name", "顯示名稱"))
+                .description(self.t("Shown on the lock screen.", "會顯示在鎖定畫面。"))
+                .error(empty.then_some(required))
                 .width(px(260.0))
                 .into_any_element(),
         ));

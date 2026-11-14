@@ -52,15 +52,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Locale::from_environment(),
     );
 
-    let connection = zbus::connection::Builder::session()?.build().await?;
-    connection
-        .object_server()
-        .at(
+    // Served and named from the builder: an object added to a running
+    // connection starts zbus's object server lazily, and a request that
+    // arrives before it has subscribed (a tray asking the moment the name
+    // appears) would be dropped without a reply.
+    let connection = zbus::connection::Builder::session()?
+        .serve_at(
             OBJECT_PATH,
             AwakeDbusService::new(engine.clone()).with_notifier(notifier.clone()),
-        )
+        )?
+        .name(BUS_NAME)?
+        .build()
         .await?;
-    connection.request_name(BUS_NAME).await?;
 
     let emitter = SignalEmitter::new(&connection, OBJECT_PATH)?.into_owned();
     let ticking = engine.clone();

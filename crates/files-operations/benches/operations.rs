@@ -261,6 +261,8 @@ fn persistence_cost(root: &Path, sizes: &Sizes) {
         workers: 1,
         store: Some(store.clone()),
         conflicts: ConflictPolicy::new(),
+        // No job here answers a clash; nothing is displaced.
+        displaced_trash: None,
     });
     let destination = fresh(root, "persist-destination");
     let started = Instant::now();
@@ -416,6 +418,8 @@ fn synthetic_record(root: &Path, id: u64, count: usize) -> files_operations::Job
         log,
         updated_at: 1,
         checksums: Vec::new(),
+        resume: None,
+        folder_answers: Vec::new(),
     }
 }
 
@@ -467,6 +471,8 @@ fn time_job(operation: Operation, policy: CopyPolicy) -> Duration {
         workers: 1,
         store: None,
         conflicts: ConflictPolicy::new(),
+        // No job here answers a clash; nothing is displaced.
+        displaced_trash: None,
     });
     let started = Instant::now();
     let handle = engine

@@ -100,6 +100,18 @@ pub struct GitApp {
     pub(crate) show_commit_options: bool,
     /// The settings page's section.
     pub(crate) settings_page: usize,
+    /// When the toast on screen appeared, and whether the pointer is on it.
+    pub(crate) toast: crate::toast::ToastClock,
+    /// Which dialog fields the person has typed in since the dialog opened.
+    pub(crate) dialog_touched: [bool; 3],
+    /// The last dialog check, so the disk is looked at when the dialog or
+    /// its text changes and not on every frame.
+    pub(crate) dialog_check: std::cell::RefCell<Option<crate::render_parts::DialogCheck>>,
+    /// The editor's name for "Open in {editor}", with the setting it was
+    /// found for, so `PATH` is searched when the setting changes only.
+    pub(crate) editor_name: std::cell::RefCell<Option<(String, Option<String>)>>,
+    /// The open repository's folders being watched for changes.
+    pub(crate) live: crate::live::Live,
     /// The dialog the dialog fields were last filled for.
     dialog_seen: Option<Dialog>,
     form_generation: u64,
@@ -254,6 +266,19 @@ impl GitApp {
                 },
             ),
         ];
+        // A dialog field that has been typed in may say it is empty; one
+        // the person has not reached yet does not.
+        for (index, input) in inputs.dialog.clone().into_iter().enumerate() {
+            subscriptions.push(cx.subscribe_in(
+                &input,
+                window,
+                move |this, _, event: &InputEvent, _, _| {
+                    if let InputEvent::Change = event {
+                        this.dialog_touched[index] = true;
+                    }
+                },
+            ));
+        }
         for input in [
             inputs.repo_search.clone(),
             inputs.branch_search.clone(),
@@ -297,6 +322,11 @@ impl GitApp {
             show_filter: false,
             show_commit_options: false,
             settings_page: 0,
+            toast: crate::toast::ToastClock::default(),
+            dialog_touched: [false; 3],
+            dialog_check: std::cell::RefCell::new(None),
+            editor_name: std::cell::RefCell::new(None),
+            live: crate::live::Live::default(),
             dialog_seen: None,
             form_generation: 0,
             config_loaded: false,
@@ -393,13 +423,18 @@ impl GitApp {
             })
             .detach();
         }
+        // A click or key that changed the session reaches the text fields in
+        // the same frame, not only a finished job (amend fills the form at
+        // once).
+        self.after_change(window, cx);
         self.sync_dialog(window, cx);
+        self.follow_repository(window, cx);
         cx.notify();
     }
 
     /// What follows any answer: the keyring, desktop notifications, and the
     /// text fields the session changed.
-    fn after_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn after_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for change in std::mem::take(&mut self.session.keyring_changes) {
             self.write_keyring(change, cx);
         }
@@ -470,6 +505,8 @@ impl GitApp {
         for (input, value) in self.inputs.dialog.clone().iter().zip(values) {
             Self::set_input(input, &value, window, cx);
         }
+        // Filling the fields is not the person typing in them.
+        self.dialog_touched = [false; 3];
         // After the dialog has drawn once: the dialog takes focus for its
         // own trap on its first frame, and the first field takes it next.
         if crate::dialogs::field_count(self.session.dialog.as_ref().expect("opened")) > 0 {
@@ -516,6 +553,28 @@ impl GitApp {
                 .map(|p| p.display().to_string())
                 .unwrap_or_default()),
             Some(Dialog::RenameWorktree { path }) => one(path.display().to_string()),
+            Some(Dialog::Identity) => {
+                // The account's profile when it has been read, its login
+                // otherwise.
+                let github = &self.session.github;
+                let user = github.account.as_ref().map(|account| {
+                    github
+                        .profile
+                        .clone()
+                        .filter(|user| user.login == account.login)
+                        .unwrap_or_else(|| github_api::User {
+                            login: account.login.clone(),
+                            ..Default::default()
+                        })
+                });
+                let account = github.account.as_ref().map(|a| &a.host).zip(user.as_ref());
+                let draft = crate::identity::prefill(
+                    self.session.git_config.get("user.name"),
+                    self.session.git_config.get("user.email"),
+                    account,
+                );
+                [draft.name, draft.email, String::new()]
+            }
             Some(Dialog::CreatePull { .. }) => one(repo
                 .and_then(|r| r.history.commits.first().map(|c| c.summary.clone()))
                 .or_else(|| repo.and_then(|r| r.branch().map(str::to_string)))
@@ -563,6 +622,10 @@ impl GitApp {
         }
         if self.session.fetch_due(now) {
             self.session.fetch(true, now);
+            changed = true;
+        }
+        if self.toast.expired(crate::toast::now_ms()) {
+            self.session.dismiss_notice();
             changed = true;
         }
         if changed {
@@ -747,16 +810,14 @@ impl GitApp {
         let Some(dialog) = self.session.dialog.clone() else {
             return;
         };
-        let texts = self.dialog_texts(cx);
-        let (branches, tags) = self
-            .session
-            .repo
-            .as_ref()
-            .map(|r| (r.info.branches.clone(), r.info.tags.clone()))
-            .unwrap_or_default();
-        if crate::dialogs::validate(&dialog, &texts, &branches, &tags).is_some() {
+        // The button is off and the field says why (every field, now that
+        // the person tried); Enter does nothing more.
+        if self.dialog_blocked(cx).is_some() {
+            self.dialog_touched = [true; 3];
+            cx.notify();
             return;
         }
+        let texts = self.dialog_texts(cx);
         crate::render::confirm(self, dialog, texts, window, cx);
         self.drive(window, cx);
     }

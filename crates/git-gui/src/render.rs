@@ -35,7 +35,7 @@ use better_ui::fluent::{
 
 use crate::app::{BRANCH_ICON, ContextTarget, Flyout as Open, GitApp};
 use crate::changes::{Badge, Row as ChangeRow};
-use crate::dialogs::{BranchPurpose, CloneTab, Dialog, Invalid};
+use crate::dialogs::{BranchPurpose, CloneTab, Dialog};
 use crate::github::SignIn;
 use crate::i18n::{Copy, Locale, fill};
 use crate::keys::{self, Action};
@@ -97,30 +97,49 @@ fn badge(kind: Badge, p: &Palette) -> Div {
         .child(label(kind.letter(), CAPTION, color).font_weight(FontWeight::BOLD))
 }
 
-/// A list row: the subtle fill, the accent bar when selected.
-fn row(id: impl Into<ElementId>, selected: bool, height: Pixels, p: &Palette) -> Stateful<Div> {
+/// A list row: the subtle fill, the accent bar when selected. The row is
+/// the click target edge to edge and down to the next row; the fill is drawn
+/// inset inside it (4px from the sides, 1px from the next row), so the
+/// pixels between two rows still belong to one of them (`hit_area`).
+pub(crate) fn row(
+    id: impl Into<ElementId>,
+    selected: bool,
+    height: Pixels,
+    p: &Palette,
+) -> Stateful<Div> {
+    let inset = better_ui::fluent::hit_area::RowInset { x: 4.0, y: 1.0 };
     let hover = row_fill(selected, Interaction::PointerOver, p);
     let pressed = row_fill(selected, Interaction::Pressed, p);
+    let group = better_ui::fluent::hit_area::ROW_GROUP;
     div()
         .id(id)
+        .group(group)
         .relative()
         .flex()
         .flex_none()
         .items_center()
         .gap(spacing::SM)
-        .h(height)
-        .px(spacing::MD)
-        .mx(px(4.0))
-        .rounded(radius::SM)
-        .bg(row_fill(selected, Interaction::Rest, p))
-        .hover(move |s| s.bg(hover))
-        .active(move |s| s.bg(pressed))
+        .h(height + px(2.0 * inset.y))
+        .px(spacing::MD + px(inset.x))
+        .child(
+            div()
+                .id("look")
+                .absolute()
+                .top(px(inset.y))
+                .bottom(px(inset.y))
+                .left(px(inset.x))
+                .right(px(inset.x))
+                .rounded(radius::SM)
+                .bg(row_fill(selected, Interaction::Rest, p))
+                .group_hover(group, move |s| s.bg(hover))
+                .group_active(group, move |s| s.bg(pressed)),
+        )
         .when(selected, |r| {
             r.child(
                 div()
                     .absolute()
-                    .left_0()
-                    .top(px((f32::from(height) - 16.0) / 2.0))
+                    .left(px(inset.x))
+                    .top(px((f32::from(height) - 16.0) / 2.0 + inset.y))
                     .child(selection_bar(p, false)),
             )
         })
@@ -196,6 +215,9 @@ impl Render for GitApp {
         };
         let dialog = self.dialog(p, c, window, cx);
         let context = self.context_menu(c, cx);
+        self.toast
+            .observe(self.session.notice.as_ref(), crate::toast::now_ms());
+        let toast = self.toast(p, cx);
         div()
             .id("better-git")
             .relative()
@@ -216,6 +238,7 @@ impl Render for GitApp {
                     .middle(self.menu_bar(c, cx)),
             )
             .child(content)
+            .children(toast)
             .children(dialog)
             .children(context)
     }
@@ -296,6 +319,7 @@ impl GitApp {
             .border_color(p.divider)
             .bg(p.layer);
 
+        let repo_label = repo_name.clone();
         let repos = self
             .toolbar_item(
                 "toolbar-repository",
@@ -305,13 +329,14 @@ impl GitApp {
                 self.flyout == Some(Open::Repositories),
                 p,
             )
-            .on_click(cx.listener(|this, _, _, cx| {
+            .on_click(cx.listener(|this, _, window, cx| {
                 this.flyout = if this.flyout == Some(Open::Repositories) {
                     None
                 } else {
+                    this.session.read_worktrees();
                     Some(Open::Repositories)
                 };
-                cx.notify();
+                this.drive(window, cx);
             }))
             .when(self.flyout == Some(Open::Repositories), |d| {
                 d.child(self.repository_flyout(p, c, cx))
@@ -348,11 +373,29 @@ impl GitApp {
         }
 
         bar = bar.child(div().flex_1());
+        let branch_name = repo
+            .map(|r| {
+                r.branch()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| c.detached.to_string())
+            })
+            .unwrap_or_default();
+        let labels: Vec<String> = self.shortcut_labels().into_iter().map(|(_, l)| l).collect();
+        let compact = crate::shortcuts::compact(
+            f32::from(window.viewport_size().width),
+            [
+                (c.current_repository, &repo_label),
+                (c.current_branch, &branch_name),
+            ],
+            &labels,
+            repo.is_some_and(|r| r.github.checks.is_some()),
+        );
+        bar = bar.child(self.shortcut_buttons(compact, p, cx));
         if let Some(repo) = repo {
             bar = bar.children(self.checks_item(repo, p, c, cx));
         }
         bar.child(
-            div().px(spacing::SM).child(
+            div().flex_none().px(spacing::SM).child(
                 Button::icon_button("settings-button", IconName::Settings, c.settings)
                     .on_click(Self::act(cx, |this, _, _| this.session.open_settings())),
             ),
@@ -574,6 +617,10 @@ impl GitApp {
                     self.menu_item(c.push_origin, Action::Push, on_branch, cx),
                     self.menu_item(c.pull_origin, Action::Pull, on_branch, cx),
                     self.menu_item(c.fetch_origin, Action::Fetch, has, cx),
+                    MenuItem::new(c.amend_commit)
+                        .disabled(!repo.is_some_and(|r| !r.status.unborn))
+                        .on_select(Self::act(cx, |this, _, _| this.session.amend_last()))
+                        .entry(),
                     self.menu_item(c.remove_repository, Action::RemoveRepository, has, cx),
                     MenuEntry::Separator,
                     self.menu_item(c.view_on_github, Action::ViewOnGitHub, hosted, cx),
@@ -668,7 +715,6 @@ impl GitApp {
                 .repositories
                 .rows(&query, current, &self.session.recent, Path::exists);
         let mut list = v_stack()
-            .gap(px(2.0))
             .max_h(px(420.0))
             .id("repo-list")
             .overflow_y_scroll();
@@ -758,6 +804,9 @@ impl GitApp {
                 }));
             }
             list = list.child(item);
+            // Its linked worktrees, under it.
+            let worktrees = self.worktree_rows(&r.path, index * 100, p, cx);
+            list = list.children(worktrees);
         }
         Flyout::new("repository-flyout")
             .on_dismiss(Self::act(cx, |this, _, _| this.flyout = None))
@@ -839,7 +888,6 @@ impl GitApp {
                 &query,
             );
             let mut list = v_stack()
-                .gap(px(2.0))
                 .max_h(px(420.0))
                 .id("branch-list")
                 .overflow_y_scroll();
@@ -881,6 +929,25 @@ impl GitApp {
                             .truncate(),
                         )
                         .when(b.remote_only, |r| r.child(caption("remote", p)))
+                        .children(
+                            crate::worktree_links::checked_out_elsewhere(
+                                &b.name,
+                                &repo.info.worktrees,
+                                &repo.root,
+                            )
+                            .map(|path| {
+                                caption(c.open_in_its_worktree(), p)
+                                    .id(("branch-worktree", index))
+                                    .text_color(p.accent_text)
+                                    .tooltip(better_ui::fluent::dialog::tooltip_builder(
+                                        fill(
+                                            c.checked_out_in(),
+                                            &[("path", &path.display().to_string())],
+                                        )
+                                        .into(),
+                                    ))
+                            }),
+                        )
                         .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                             if event.is_keyboard() {
                                 return;
@@ -943,7 +1010,6 @@ impl GitApp {
             caption(c.no_pulls, p).p(spacing::MD).into_any_element()
         } else {
             let mut list = v_stack()
-                .gap(px(2.0))
                 .max_h(px(420.0))
                 .id("pull-list")
                 .overflow_y_scroll();
@@ -1042,38 +1108,6 @@ impl GitApp {
                 .on_close(Self::act(cx, |this, _, _| this.session.dismiss_problem()));
             if let Some(action) = self.next_step_button(problem, c, cx) {
                 bar = bar.next_step(action);
-            }
-            bars.push(bar.into_any_element());
-        }
-        if let Some(notice) = &self.session.notice {
-            let mut bar = InfoBar::new("notice", Severity::Success, c.notice(notice))
-                .locale(words)
-                .on_close(Self::act(cx, |this, _, _| this.session.dismiss_notice()));
-            let url = match notice {
-                crate::session::Notice::PullCreated { url, .. }
-                | crate::session::Notice::IssueCreated { url, .. }
-                | crate::session::Notice::Published { url } => Some(url.clone()),
-                crate::session::Notice::Pull(crate::notifications::Notice::ChecksFailed {
-                    url,
-                    ..
-                })
-                | crate::session::Notice::Pull(crate::notifications::Notice::Reviewed {
-                    url,
-                    ..
-                }) => Some(url.clone()),
-                _ => None,
-            };
-            if let Some(url) = url {
-                bar = bar.action(
-                    Button::standard("notice-open", c.open_link)
-                        .on_click(Self::act(cx, move |this, _, _| this.open_url(&url))),
-                );
-            }
-            if let crate::session::Notice::StashWaiting(name) = notice {
-                let name = name.clone();
-                bar = bar.action(Button::standard("notice-restore", c.restore).on_click(
-                    Self::act(cx, move |this, _, _| this.session.view_stash(name.clone())),
-                ));
             }
             bars.push(bar.into_any_element());
         }
@@ -1207,7 +1241,7 @@ impl GitApp {
                     })),
             );
         }
-        let mut recent = v_stack().gap(px(2.0)).w(px(360.0));
+        let mut recent = v_stack().w(px(360.0));
         for (index, path) in self.session.recent.iter().enumerate() {
             let open = path.clone();
             recent = recent.child(
@@ -1372,7 +1406,7 @@ impl GitApp {
                         this.show_filter = !this.show_filter
                     })),
             );
-        let mut list = v_stack().gap(px(2.0)).py(px(2.0));
+        let mut list = v_stack().py(px(1.0));
         for (index, r) in rows.iter().enumerate() {
             list = list.child(self.change_row(index, r, p, cx));
         }
@@ -1526,7 +1560,9 @@ impl GitApp {
                 .locale(self.words()),
             );
         }
-        if form.amend {
+        if form.reading_last {
+            form_view = form_view.child(caption(c.reading_last_commit(), p));
+        } else if form.amend {
             form_view = form_view.child(caption(c.amending, p).text_color(p.accent));
         }
         if self.show_commit_options {
@@ -1549,17 +1585,8 @@ impl GitApp {
                             .on_change(Self::act_with(cx, |this, s: CheckState, _, _| {
                                 if s == CheckState::Checked {
                                     this.session.amend_last();
-                                    if this
-                                        .session
-                                        .repo
-                                        .as_ref()
-                                        .is_some_and(|r| !r.history.loaded)
-                                    {
-                                        this.session.set_tab(Tab::History);
-                                        this.session.set_tab(Tab::Changes);
-                                    }
-                                } else if let Some(r) = this.session.repo.as_mut() {
-                                    r.form.amend = false;
+                                } else {
+                                    this.session.stop_amending();
                                 }
                             })),
                     )
@@ -1818,7 +1845,7 @@ impl GitApp {
             Some(compare) => &compare.ahead,
             None => &repo.history.commits,
         };
-        let mut list = v_stack().gap(px(2.0)).py(px(2.0));
+        let mut list = v_stack().py(px(1.0));
         for (index, commit) in commits.iter().enumerate() {
             let selected = repo.compare.is_none() && repo.history.selected == Some(index);
             let (n, unit) = crate::history::age(now, commit.author_time);
@@ -1961,7 +1988,6 @@ impl GitApp {
         let dragging = cx.has_active_drag();
         let drop_branches = dragging.then(|| {
             let mut strip = v_stack()
-                .gap(px(2.0))
                 .p(spacing::SM)
                 .border_b_1()
                 .border_color(p.divider)
@@ -2137,7 +2163,7 @@ impl GitApp {
         cx: &mut Context<Self>,
         select: fn(&mut GitApp, usize),
     ) -> impl IntoElement {
-        let mut list = v_stack().gap(px(2.0)).py(px(2.0));
+        let mut list = v_stack().py(px(1.0));
         for (index, file) in files.iter().enumerate() {
             let kind = match file.kind {
                 git_core::ChangeKind::Added => Badge::Added,
@@ -2718,18 +2744,20 @@ impl GitApp {
         let dialog = self.session.dialog.clone()?;
         let texts = self.dialog_texts(cx);
         let repo = self.session.repo.as_ref();
-        let (branches, tags) = repo
-            .map(|r| (r.info.branches.clone(), r.info.tags.clone()))
-            .unwrap_or_default();
-        let invalid = crate::dialogs::validate(&dialog, &texts, &branches, &tags);
+        // Why the primary button is off, under the field it is about.
+        let blocked = self.dialog_blocked(cx);
+        let errors = self.field_errors(blocked);
         let fields = &self.inputs.dialog;
         let field = |i: usize, header: &str| {
-            TextBox::new(("dialog-field", i), &fields[i]).header(header.to_string())
+            TextBox::new(("dialog-field", i), &fields[i])
+                .header(header.to_string())
+                .error(errors[i])
         };
         let area = |header: &str| {
             TextBox::new("dialog-area", &fields[2])
                 .header(header.to_string())
                 .multi_line(4)
+                .error(errors[2])
         };
         let mut primary: Option<&str>;
         let mut destructive = false;
@@ -2798,7 +2826,7 @@ impl GitApp {
                         None => push(caption(c.loading, p).into_any_element()),
                         Some(repos) => {
                             let query = texts[0].clone();
-                            let mut list = v_stack().gap(px(2.0));
+                            let mut list = v_stack();
                             for (i, r) in crate::clone::filter(repos, &query)
                                 .into_iter()
                                 .take(200)
@@ -3072,7 +3100,7 @@ impl GitApp {
                     BranchPurpose::Compare => c.compare,
                 });
                 push(TextBox::search("pick-search", &fields[0]).into_any_element());
-                let mut list = v_stack().gap(px(2.0));
+                let mut list = v_stack();
                 let purpose = *purpose;
                 if let Some(repo) = repo {
                     let rows = crate::branches::rows(
@@ -3542,20 +3570,27 @@ impl GitApp {
                 destructive = true;
                 push(label(c.drop_stash_body, BODY, p.text_primary).into_any_element());
             }
-        }
-        if let Some(reason) = invalid.filter(|i| *i != Invalid::Empty && *i != Invalid::NoSelection)
-        {
-            let text = match reason {
-                Invalid::BranchExists => "A branch with this name exists. / 已有同名分支。",
-                Invalid::BranchReserved => "HEAD is reserved. / HEAD 是保留名稱。",
-                Invalid::TagExists => "A tag with this name exists. / 已有同名標籤。",
-                Invalid::TagTooLong => "The name is too long. / 名稱太長。",
-                Invalid::NotAbsolute => {
-                    "Use a full path starting with /. / 請用 / 開頭的完整路徑。"
+            Dialog::Identity => {
+                title = c.identity_title().into();
+                primary = Some(c.identity_save());
+                for element in self.identity_content(
+                    &texts,
+                    field(0, c.identity_name()),
+                    field(1, c.identity_email()),
+                    p,
+                    c,
+                ) {
+                    push(element);
                 }
-                _ => "",
-            };
-            content.push(caption(text, p).text_color(p.critical).into_any_element());
+            }
+        }
+        // A reason about the dialog as a whole (nothing chosen in a list).
+        if let Some(reason) = blocked.filter(|b| b.field.is_none()) {
+            content.push(
+                caption(c.invalid_message(reason.reason), p)
+                    .text_color(p.critical)
+                    .into_any_element(),
+            );
         }
         let _ = (window, destructive);
         let buttons = DialogButtons {
@@ -3570,6 +3605,7 @@ impl GitApp {
         };
         let mut dialog_view = ContentDialog::new("dialog", title)
             .buttons(buttons)
+            .primary_enabled(blocked.is_none())
             .on_result(Self::act_with(
                 cx,
                 |this, result: DialogResult, window, cx| {
@@ -3599,7 +3635,8 @@ impl GitApp {
             .child(
                 div().flex_1().child(
                     TextBox::new(("folder-field", index), &self.inputs.dialog[index])
-                        .header(header.to_string()),
+                        .header(header.to_string())
+                        .error(self.field_errors(self.dialog_blocked(cx))[index]),
                 ),
             )
             .child(
@@ -4284,5 +4321,6 @@ pub(crate) fn confirm(
         Dialog::MarkResolved { path } => s.mark_resolved(path),
         Dialog::Fork => s.fork(),
         Dialog::DropStash { name } => s.drop_stash(name),
+        Dialog::Identity => s.save_identity(&text(0), &text(1)),
     }
 }

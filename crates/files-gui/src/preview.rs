@@ -112,7 +112,9 @@ impl PreviewPanel {
             }
             return;
         };
-        let key = format!("{:?}", entry.id());
+        // The entry and the folder it is in: two folders each holding a
+        // `notes.txt` are two different previews.
+        let key = format!("{:?} in {:?}", entry.id(), location);
         if self.last_target.as_deref() == Some(key.as_str()) {
             return;
         }
