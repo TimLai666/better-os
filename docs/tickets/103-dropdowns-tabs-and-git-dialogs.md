@@ -1,6 +1,6 @@
 # Ticket 103 — Dropdowns close on a second click, tabs look like tabs, and Better Git's dialogs say what is wrong
 
-**Blocked by:** none · **Status:** implemented, not merged
+**Blocked by:** none · **Status:** merged, not released
 
 ## Why
 
