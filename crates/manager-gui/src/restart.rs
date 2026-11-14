@@ -28,6 +28,7 @@ use crate::model::{ActivityFilter, DetailTab, Page};
 pub(crate) enum PageKey {
     Home,
     System,
+    WindowAttention,
     Touchpad,
     KeepAwake,
     Fixes,
@@ -54,6 +55,7 @@ impl PageKey {
         match page {
             Page::Home => PageKey::Home,
             Page::System => PageKey::System,
+            Page::WindowAttention => PageKey::WindowAttention,
             Page::Touchpad => PageKey::Touchpad,
             Page::KeepAwake => PageKey::KeepAwake,
             Page::Fixes => PageKey::Fixes,
@@ -91,6 +93,7 @@ impl PageKey {
         match self {
             PageKey::Home => Page::Home,
             PageKey::System => Page::System,
+            PageKey::WindowAttention => Page::WindowAttention,
             PageKey::Touchpad => Page::Touchpad,
             PageKey::KeepAwake => Page::KeepAwake,
             PageKey::Fixes => Page::Fixes,
@@ -247,6 +250,7 @@ mod tests {
         vec![
             Page::Home,
             Page::System,
+            Page::WindowAttention,
             Page::Touchpad,
             Page::KeepAwake,
             Page::Fixes,

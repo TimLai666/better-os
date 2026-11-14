@@ -59,3 +59,9 @@ paths:
   # a theme name with nothing behind it, which is what draws a blank tile.
   - /usr/share/applications/io.betteros.Manager.desktop
   - /usr/share/icons/hicolor/scalable/apps/better-manager.svg
+  # The window attention service behind the Window attention page (ticket
+  # 106, ADR 0018). Its GNOME Shell extension ships in better-shell-adapter,
+  # which this package recommends and which is not a catalog component.
+  - /usr/libexec/better-window-attention
+  - /usr/lib/systemd/user/better-window-attention.service
+  - /usr/share/dbus-1/services/org.betteros.WindowAttention1.service

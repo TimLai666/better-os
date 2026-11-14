@@ -86,9 +86,16 @@ impl Executor {
 
             // The point of no return for this component: record how to undo it
             // before doing it.
-            let record = self.rollback_record_for(plan, step)?;
+            let record = self.rollback_record_for(plan, &step.component)?;
             self.journal.write_rollback(&record)?;
             rollback_records.push(record);
+            // A companion is changed by the same APT transaction, so it gets
+            // its own way back too.
+            for companion in &step.companions {
+                let record = self.rollback_record_for(plan, &companion.package)?;
+                self.journal.write_rollback(&record)?;
+                rollback_records.push(record);
+            }
 
             progress(step_index, ExecutionStage::Applying);
             let run = self.apply(step)?;
@@ -122,7 +129,10 @@ impl Executor {
 
             progress(step_index, ExecutionStage::CheckingHealth);
             let applied_version = self.apt.installed_version(&step.component)?;
-            if let Err(error) = self.record_applied_artifact(step, applied_version.as_deref()) {
+            let recorded = self
+                .record_applied_artifact(step, applied_version.as_deref())
+                .and_then(|()| self.record_applied_companions(step));
+            if let Err(error) = recorded {
                 reports.push(StepReport {
                     component: step.component.clone(),
                     action: step.action,
@@ -141,12 +151,30 @@ impl Executor {
                 );
             }
 
-            let health = health::check(
+            let mut health = health::check(
                 &step.component,
                 step.action,
                 self.apt.as_ref(),
                 self.health.as_ref(),
             );
+            // A companion that did not arrive healthy fails the step as its
+            // own package would: they were one transaction.
+            let mut unhealthy_package = step.component.clone();
+            if matches!(health, HealthResult::Healthy) {
+                for companion in &step.companions {
+                    let companion_health = health::check(
+                        &companion.package,
+                        step.action,
+                        self.apt.as_ref(),
+                        self.health.as_ref(),
+                    );
+                    if !matches!(companion_health, HealthResult::Healthy) {
+                        health = companion_health;
+                        unhealthy_package = companion.package.clone();
+                        break;
+                    }
+                }
+            }
             let healthy = matches!(health, HealthResult::Healthy);
             reports.push(StepReport {
                 component: step.component.clone(),
@@ -163,7 +191,7 @@ impl Executor {
                     rollback_records,
                     Some(step_index),
                     DaemonError::HealthFailed {
-                        component: step.component.clone(),
+                        component: unhealthy_package,
                     },
                 );
             }
@@ -229,9 +257,14 @@ impl Executor {
                 let artifact = step.artifact.as_ref().ok_or(DaemonError::ArtifactMissing {
                     component: step.component.clone(),
                 })?;
-                let path = self.artifacts.path_for(&artifact.filename)?;
+                let mut paths = vec![self.artifacts.path_for(&artifact.filename)?];
+                for companion in &step.companions {
+                    paths.push(self.artifacts.path_for(&companion.artifact.filename)?);
+                }
+                let paths: Vec<&std::path::Path> =
+                    paths.iter().map(|path| path.as_path()).collect();
                 self.apt
-                    .install_local_deb(&path, revalidate::allows_downgrade(action))
+                    .install_local_debs(&paths, revalidate::allows_downgrade(action))
             }
         }
     }
@@ -262,14 +295,37 @@ impl Executor {
         })
     }
 
-    /// What it would take to undo this step, or an honest statement that the
-    /// component was not installed before.
+    /// Records each companion's installed artifact, so a later rollback of it
+    /// can reinstall exactly these bytes.
+    fn record_applied_companions(&self, step: &WireStep) -> Result<(), DaemonError> {
+        for companion in &step.companions {
+            let version = self
+                .apt
+                .installed_version(&companion.package)?
+                .ok_or_else(|| {
+                    DaemonError::Storage(format!(
+                        "no installed version for {} after apply",
+                        companion.package
+                    ))
+                })?;
+            self.journal.write_installed_artifact(&InstalledArtifact {
+                component: companion.package.clone(),
+                version,
+                filename: companion.artifact.filename.clone(),
+                sha256: companion.artifact.sha256.clone(),
+            })?;
+        }
+        Ok(())
+    }
+
+    /// What it would take to undo a package's change, or an honest statement
+    /// that it was not installed before.
     fn rollback_record_for(
         &self,
         plan: &WirePlan,
-        step: &WireStep,
+        package: &str,
     ) -> Result<RollbackRecord, DaemonError> {
-        let previous_version = self.apt.installed_version(&step.component)?;
+        let previous_version = self.apt.installed_version(package)?;
         // Only a version we can actually reinstall counts. A previously
         // installed version whose .deb is no longer cached is recorded as a
         // version without an artifact, so a rollback attempt reports that it
@@ -277,9 +333,9 @@ impl Executor {
         let previous_artifact = match previous_version.as_deref() {
             Some(previous_version) => self
                 .journal
-                .read_installed_artifact(&step.component)?
+                .read_installed_artifact(package)?
                 .filter(|installed| {
-                    installed.component == step.component
+                    installed.component == package
                         && manager_ipc::strip_epoch(&installed.version)
                             == manager_ipc::strip_epoch(previous_version)
                         && self.artifacts.contains(&installed.filename)
@@ -297,7 +353,7 @@ impl Executor {
         };
 
         Ok(RollbackRecord {
-            component: step.component.clone(),
+            component: package.to_string(),
             previous_version,
             previous_artifact,
             transaction_id: plan.transaction_id.clone(),
@@ -366,6 +422,21 @@ impl Executor {
     }
 
     fn rollback_remove(&self, record: &RollbackRecord) -> bool {
+        // Not installed now: APT failed before it unpacked anything, as it does
+        // when one package of a transaction cannot be installed. That already
+        // is the state from before the step, and `apt-get remove` of a package
+        // dpkg has never heard of fails, which would call a restored host
+        // broken.
+        match self.apt.installed_version(&record.component) {
+            Ok(None) => {
+                return self
+                    .journal
+                    .remove_installed_artifact(&record.component)
+                    .is_ok();
+            }
+            Ok(Some(_)) => {}
+            Err(_) => return false,
+        }
         let removed = self
             .apt
             .remove(&record.component)
@@ -410,7 +481,7 @@ impl Executor {
         }
         let installed = self
             .apt
-            .install_local_deb(&path, true)
+            .install_local_debs(&[path.as_path()], true)
             .map(|run| run.succeeded())
             .unwrap_or(false)
             && self
@@ -555,7 +626,197 @@ mod tests {
                 sha256,
                 size_bytes: 64,
             }),
+            companions: Vec::new(),
         }
+    }
+
+    const MANAGER_DEB: &str = "better-manager_0.1.0_ubuntu-24.04_amd64.deb";
+    const ADAPTER_DEB: &str = "better-shell-adapter_0.1.0_ubuntu-24.04_amd64.deb";
+
+    fn with_adapter(mut step: WireStep, sha256: String) -> WireStep {
+        step.companions.push(manager_ipc::WireCompanion {
+            package: "better-shell-adapter".to_string(),
+            artifact: WireArtifact {
+                filename: ADAPTER_DEB.to_string(),
+                sha256,
+                size_bytes: 64,
+            },
+        });
+        step
+    }
+
+    fn manager_and_adapter(label: &str) -> Harness {
+        Harness::new(
+            label,
+            FakeAptDriver::new()
+                .with_deb(MANAGER_DEB, fields("better-manager"))
+                .with_deb(ADAPTER_DEB, fields("better-shell-adapter"))
+                .with_files("better-shell-adapter", &["/usr/bin/adapter-file"], &[]),
+            vec!["better-manager", "adapter-file"],
+        )
+    }
+
+    /// ADR 0018: Better Manager's own update carries the shell adapter, and
+    /// both go to APT in one transaction, so the adapter is never missing
+    /// beside a manager that recommends it.
+    #[test]
+    fn a_companion_is_installed_in_the_same_apt_transaction() {
+        let harness = manager_and_adapter("companion");
+        let manager = harness.stage(MANAGER_DEB);
+        let adapter = harness.stage(ADAPTER_DEB);
+        let plan = plan(vec![with_adapter(
+            install_step("better-manager", MANAGER_DEB, manager),
+            adapter.clone(),
+        )]);
+
+        let outcome = harness.executor().execute(&plan, &mut |_, _| {}).unwrap();
+
+        assert_eq!(outcome.status, OutcomeStatus::Succeeded);
+        let installs: Vec<String> = harness
+            .apt
+            .calls()
+            .into_iter()
+            .filter(|call| call.starts_with("install:"))
+            .collect();
+        assert_eq!(
+            installs,
+            ["install:better-manager+better-shell-adapter:downgrade=false"]
+        );
+        assert_eq!(
+            harness
+                .journal
+                .read_installed_artifact("better-shell-adapter")
+                .unwrap()
+                .map(|installed| (installed.filename, installed.sha256)),
+            Some((ADAPTER_DEB.to_string(), adapter))
+        );
+        // The restore points the transaction keeps: one for each package it
+        // changed, neither installed before.
+        let points: Vec<(&str, Option<&str>)> = outcome
+            .rollback_records
+            .iter()
+            .map(|record| {
+                (
+                    record.component.as_str(),
+                    record.previous_version.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            points,
+            [("better-manager", None), ("better-shell-adapter", None)]
+        );
+        assert_eq!(
+            harness
+                .apt
+                .installed_version("better-shell-adapter")
+                .unwrap(),
+            Some("0.1.0".to_string())
+        );
+    }
+
+    #[test]
+    fn a_failing_companion_fails_the_step_and_both_are_undone() {
+        let harness = manager_and_adapter("companion-fails");
+        harness.apt.fail_install("better-shell-adapter");
+        let manager = harness.stage(MANAGER_DEB);
+        let adapter = harness.stage(ADAPTER_DEB);
+        let plan = plan(vec![with_adapter(
+            install_step("better-manager", MANAGER_DEB, manager),
+            adapter,
+        )]);
+
+        let outcome = harness.executor().execute(&plan, &mut |_, _| {}).unwrap();
+
+        // APT failed before unpacking either package, so neither was ever
+        // installed: that is a full restore, not a partial one.
+        assert!(
+            matches!(
+                outcome.status,
+                OutcomeStatus::Failed {
+                    recovery: Some(WireRecovery::Restored),
+                    ..
+                }
+            ),
+            "{:?}",
+            outcome.status
+        );
+        assert!(
+            !harness
+                .apt
+                .calls()
+                .iter()
+                .any(|call| call.starts_with("remove:")),
+            "nothing to remove: {:?}",
+            harness.apt.calls()
+        );
+        assert_eq!(
+            harness.apt.installed_version("better-manager").unwrap(),
+            None
+        );
+        assert_eq!(
+            harness
+                .apt
+                .installed_version("better-shell-adapter")
+                .unwrap(),
+            None
+        );
+        let undone: Vec<&str> = outcome
+            .rollback_records
+            .iter()
+            .map(|record| record.component.as_str())
+            .collect();
+        assert_eq!(undone, ["better-manager", "better-shell-adapter"]);
+    }
+
+    /// Only a Better OS package may ride along with root's authority.
+    #[test]
+    fn a_companion_that_is_not_a_better_os_package_is_refused() {
+        let mut step = install_step("better-manager", MANAGER_DEB, "a".repeat(64));
+        step.companions.push(manager_ipc::WireCompanion {
+            package: "gnome-shell".to_string(),
+            artifact: WireArtifact {
+                filename: "gnome-shell_0.1.0_ubuntu-24.04_amd64.deb".to_string(),
+                sha256: "b".repeat(64),
+                size_bytes: 64,
+            },
+        });
+        let host = FixedHostProbe::ubuntu_2404().facts().unwrap();
+        let refused = revalidate::check_plan(&plan(vec![step]), &host);
+        assert!(
+            matches!(&refused, Err(DaemonError::PlanRejected(reason)) if reason.contains("gnome-shell")),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_companion_that_is_not_the_package_it_names_is_refused_before_apt() {
+        let harness = Harness::new(
+            "companion-lies",
+            FakeAptDriver::new()
+                .with_deb(MANAGER_DEB, fields("better-manager"))
+                .with_deb(ADAPTER_DEB, fields("better-monitor")),
+            vec!["better-manager"],
+        );
+        let manager = harness.stage(MANAGER_DEB);
+        let adapter = harness.stage(ADAPTER_DEB);
+        let plan = plan(vec![with_adapter(
+            install_step("better-manager", MANAGER_DEB, manager),
+            adapter,
+        )]);
+
+        let outcome = harness.executor().execute(&plan, &mut |_, _| {}).unwrap();
+
+        assert!(matches!(outcome.status, OutcomeStatus::Failed { .. }));
+        assert!(
+            !harness
+                .apt
+                .calls()
+                .iter()
+                .any(|call| call.starts_with("install:")),
+            "{:?}",
+            harness.apt.calls()
+        );
     }
 
     /// The field failure this replaces: `better-awake` installs fine and ships
@@ -681,13 +942,59 @@ mod tests {
         assert_eq!(*step_index, Some(0));
         assert_eq!(error_key, "daemon.error.apt_failed:better-monitor");
         // It was not installed before, so putting the host back means it is not
-        // installed now either.
+        // installed now either. APT failed before unpacking it, so that is
+        // already true: there is nothing to remove, and `apt-get remove` of a
+        // package dpkg does not know would fail and report the restore as
+        // partial.
         assert_eq!(*recovery, Some(WireRecovery::Restored));
+        assert_eq!(
+            harness.apt.installed_version("better-monitor").unwrap(),
+            None
+        );
+        assert!(
+            !harness
+                .apt
+                .calls()
+                .contains(&"remove:better-monitor".to_string())
+        );
+    }
+
+    /// The other half: a package APT did unpack before the step failed is
+    /// still removed.
+    #[test]
+    fn an_unhealthy_new_component_is_removed_to_restore_the_host() {
+        let apt = FakeAptDriver::new().with_deb(MONITOR_DEB, fields("better-monitor"));
+        // Installed, but its binary is missing, so the health check fails.
+        let harness = Harness::new(
+            "unhealthy-install",
+            apt.with_files("better-monitor", &["/usr/bin/better-monitor"], &[]),
+            Vec::new(),
+        );
+        let checksum = harness.stage(MONITOR_DEB);
+        let plan = plan(vec![install_step("better-monitor", MONITOR_DEB, checksum)]);
+
+        let outcome = harness.executor().execute(&plan, &mut |_, _| {}).unwrap();
+
+        assert!(
+            matches!(
+                outcome.status,
+                OutcomeStatus::Failed {
+                    recovery: Some(WireRecovery::Restored),
+                    ..
+                }
+            ),
+            "{:?}",
+            outcome.status
+        );
         assert!(
             harness
                 .apt
                 .calls()
                 .contains(&"remove:better-monitor".to_string())
+        );
+        assert_eq!(
+            harness.apt.installed_version("better-monitor").unwrap(),
+            None
         );
     }
 

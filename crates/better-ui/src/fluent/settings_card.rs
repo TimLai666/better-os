@@ -40,13 +40,19 @@ pub fn card_fill(clickable: bool, state: Interaction, p: &Palette) -> gpui::Rgba
     }
 }
 
+/// The size of what stands at a card's leading edge: a 20px glyph, as the
+/// toolkit's `SettingsCard` draws its `HeaderIcon`.
+pub const LEADING_SIZE: Pixels = px(20.0);
+
 /// What stands at a card's leading edge.
-#[derive(Clone)]
 enum CardLeading {
     Icon(IconName),
     /// The info bar's status icon, for a card that reports a state (Home's
     /// attention cards).
     Status(Severity),
+    /// Anything else drawn in the glyph's 20px square, such as an
+    /// application's own icon on a card about that application.
+    Element(AnyElement),
 }
 
 fn header_block(
@@ -73,10 +79,17 @@ fn header_block(
                     .text_color(title)
                     .into_any_element(),
                 CardLeading::Status(severity) => severity_icon(severity, p).into_any_element(),
+                CardLeading::Element(element) => div()
+                    .size(LEADING_SIZE)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(element)
+                    .into_any_element(),
             };
             div()
                 .mr(px(20.0))
-                .w(px(20.0))
+                .w(LEADING_SIZE)
                 .flex_none()
                 .flex()
                 .justify_center()
@@ -134,6 +147,14 @@ impl SettingsCard {
     /// reports something: an error, a warning, that all is well.
     pub fn status(mut self, severity: Severity) -> Self {
         self.icon = Some(CardLeading::Status(severity));
+        self
+    }
+
+    /// An element in place of the glyph, drawn in the glyph's
+    /// [`LEADING_SIZE`] square: an application's own icon on a card about
+    /// that application.
+    pub fn leading(mut self, element: impl IntoElement) -> Self {
+        self.icon = Some(CardLeading::Element(element.into_any_element()));
         self
     }
 

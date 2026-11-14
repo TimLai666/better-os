@@ -1,0 +1,27 @@
+[package]
+name = "window-attention-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "window_attention_service"
+path = "src/lib.rs"
+
+[[bin]]
+name = "better-window-attention"
+path = "src/main.rs"
+
+[dependencies]
+window-attention-core.workspace = true
+serde.workspace = true
+# The blocking API on zbus's default async-io flavor: the service reads one
+# signal stream and answers one method, so it needs no runtime of its own.
+zbus.workspace = true
+# sigwait for SIGTERM and SIGINT, so the service can take back its taskbar
+# marks before it ends.
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

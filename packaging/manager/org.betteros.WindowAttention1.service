@@ -1,0 +1,6 @@
+[D-BUS Service]
+Name=org.betteros.WindowAttention1
+Exec=/usr/libexec/better-window-attention
+# Session bus. Better Manager's Window attention page asks the service for its
+# status, which starts it through its user unit where it is not running yet.
+SystemdService=better-window-attention.service

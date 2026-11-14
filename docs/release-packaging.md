@@ -128,6 +128,19 @@ schema fixture，不列入正式 release matrix。
 檢查，第一次發佈在 v0.2.9。從這一版起每個 release 有九個套件、36 個 `.deb` 與
 36 個 `.deb.sha256`，加上 `LICENSE` 與 `third-party-licenses.md` 共 74 個 assets。以下各 release 的數字描述的是當時發佈的內容，不隨之改寫。
 
+ticket 106 加了第十個套件 `better-shell-adapter`：Better OS 共用的 GNOME Shell
+擴充（ADR 0018），只有三個檔案、沒有執行檔，不是 catalog 裡的元件，沒有
+manifest。`better-manager` 以 Recommends 帶 `better-shell-adapter (= 版本)`（用 Depends 會讓 Better Manager 透過特權服務的自我更新失敗，因為那裡只裝一個 `.deb`，adapter 也不在任何 apt 來源裡），並自己帶
+window attention 服務（`/usr/libexec/better-window-attention`、user unit 與
+session D-Bus activation file）。`install.sh` 在 release 有這個套件時一起安裝，
+release 沒有時（v0.2.12 以前）照舊只裝兩個。第一個發佈 `better-shell-adapter` 的
+release，要在 `components/manifests/better-manager.yaml` 每個 artifact 底下加上
+`companions`（`package: better-shell-adapter`、該 release 的 URL、checksum 與
+asset 名稱），和 checksum 一樣在 release 公開、重新下載驗證後才寫回；之後 Better
+Manager 的應用程式內更新就會透過特權服務，在同一個 apt 交易裡一起安裝 adapter
+（ADR 0018）。下一個帶它的 release 會有 40 個
+`.deb`、40 個 `.deb.sha256`，共 82 個 assets。
+
 第一個 release 發布於
 [`v0.1.0`](https://github.com/TimLai666/better-os/releases/tag/v0.1.0)，由
 merge commit `3a6d98b73b838c5a2c0d94404ae9313844009e56` 的 post-merge CI run

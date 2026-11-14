@@ -9,7 +9,7 @@
 use gpui::{App, Hsla, Window, px};
 use gpui_component::{Theme, ThemeMode, ThemeTokens};
 
-use super::{BODY, Palette, palette_for, radius, with_alpha};
+use super::{BODY, Palette, palette_with_system_accent, radius, with_alpha};
 
 /// Switches gpui-component to light or dark and applies the Fluent tokens
 /// over it. Call this instead of `Theme::change`, which reloads the
@@ -42,7 +42,7 @@ fn h(color: gpui::Rgba) -> Hsla {
 /// Call it after every `Theme::change`: that call reloads the library's own
 /// colors and would otherwise put them back. [`set_appearance`] does both.
 pub fn apply_to_component_theme(theme: &mut Theme) {
-    let p: &Palette = palette_for(theme.is_dark());
+    let p: &Palette = palette_with_system_accent(theme.is_dark());
     theme.radius = radius::SM;
     theme.radius_lg = radius::MD;
     theme.shadow = false;

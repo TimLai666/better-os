@@ -850,6 +850,8 @@ dependencies = [
  "better-core",
  "gpui",
  "gpui-component",
+ "image",
+ "libc",
  "serde",
  "smol",
 ]
@@ -4508,6 +4510,8 @@ dependencies = [
 name = "manager-gui"
 version = "0.2.13"
 dependencies = [
+ "app-catalog-core",
+ "app-catalog-platform",
  "better-core",
  "better-ui",
  "defaults-core",
@@ -4524,6 +4528,7 @@ dependencies = [
  "smol",
  "tempfile",
  "uuid",
+ "window-attention-core",
  "zbus",
 ]
 
@@ -9132,6 +9137,27 @@ name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+
+[[package]]
+name = "window-attention-core"
+version = "0.2.13"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "window-attention-service"
+version = "0.2.13"
+dependencies = [
+ "libc",
+ "serde",
+ "tempfile",
+ "window-attention-core",
+ "zbus",
+]
 
 [[package]]
 name = "windows"

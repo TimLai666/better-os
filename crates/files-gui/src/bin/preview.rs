@@ -981,7 +981,8 @@ impl Render for PreviewApp {
             .size_full()
             .flex()
             .flex_col()
-            .bg(p.window_background)
+            // The window frame paints the window background, with the
+            // desktop's top corners (ticket 108).
             .text_color(p.text_primary)
             .track_focus(&self.focus)
             .on_key_down(
@@ -1031,7 +1032,7 @@ fn main() {
         cx.spawn(async move |cx| {
             let _ = cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| PreviewApp::new(file, window, cx));
-                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                cx.new(|cx| better_ui::window_chrome::root(view, window, cx))
             });
         })
         .detach();

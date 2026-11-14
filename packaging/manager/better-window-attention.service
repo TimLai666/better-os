@@ -1,0 +1,36 @@
+[Unit]
+Description=Better OS window attention choices
+Documentation=https://github.com/TimLai666/better-os/blob/main/docs/tickets/106-window-attention-per-app.md
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# Type=dbus: the service owns org.betteros.WindowAttention1 as soon as it has
+# connected, and owning that name is what tells the Better OS shell adapter
+# extension to hand attention requests to it. Until then GNOME keeps its own
+# banner, so there is nothing to wait for beyond the name.
+Type=dbus
+BusName=org.betteros.WindowAttention1
+ExecStart=/usr/libexec/better-window-attention
+Restart=on-failure
+
+# Hardening for an unprivileged user unit, chosen the same way
+# better-storage.service was. It reads and writes two small files under the
+# user's own config directory and speaks only to the session bus.
+#   ProtectHome is absent: those files live in the user's home.
+#   PrivateTmp and ProtectSystem are absent: both are mount namespace options
+#   that depend on unprivileged user namespaces in a --user manager.
+NoNewPrivileges=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+# Installed, not enabled by the package. Better Manager enables and starts it
+# for its own record (manager-core's user unit pass), the split every Better
+# OS user unit uses.
+WantedBy=graphical-session.target

@@ -150,6 +150,10 @@ pub struct LauncherOverlay {
     results_scroll: ScrollHandle,
     _load: Option<Task<()>>,
     _watch: Option<Task<()>>,
+    /// Repaints when the desktop's theme changes, so the accent follows it
+    /// (ticket 108). Only the installed program follows the desktop; tests
+    /// never start GTK or read the person's settings.
+    _desktop: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     /// Watches for an update and restarts into it (ticket 105). Inactive
     /// until [`LauncherOverlay::watch_for_updates`] is called, which only the
@@ -219,6 +223,7 @@ impl LauncherOverlay {
             results_scroll: ScrollHandle::new(),
             _load: None,
             _watch: None,
+            _desktop: None,
             _subscriptions: vec![subscription],
             update_restart: better_ui::restart::UpdateRestart::inactive(APP_ID, cx),
         };
@@ -236,6 +241,12 @@ impl LauncherOverlay {
 
     /// Starts watching for an update, and puts back what a restart after one
     /// handed over.
+    /// Follows the desktop's accent, as every framed window does. Called by
+    /// the program, never by tests.
+    pub fn follow_desktop(&mut self, cx: &mut Context<Self>) {
+        self._desktop = Some(better_ui::window_chrome::watch_desktop(cx));
+    }
+
     pub fn watch_for_updates(
         &mut self,
         handoff: Option<&better_ui::restart::Handoff>,
@@ -1422,7 +1433,10 @@ impl Focusable for LauncherOverlay {
 }
 
 impl Render for LauncherOverlay {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self._desktop.is_some() {
+            better_ui::window_chrome::follow_desktop_accent(window, cx);
+        }
         let p = palette(cx);
         // The search box's clear button empties it without a change event;
         // the box's text is the query either way.

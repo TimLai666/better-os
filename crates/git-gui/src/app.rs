@@ -1170,7 +1170,7 @@ pub fn run(options: StartOptions) {
             cx.open_window(window_options, |window, cx| {
                 let view = cx.new(|cx| GitApp::new(window, cx, options, handoff));
                 view.update(cx, |app, cx| app.drive(window, cx));
-                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                cx.new(|cx| better_ui::window_chrome::root(view, window, cx))
             })
             .expect("failed to open the Better Git window");
         })

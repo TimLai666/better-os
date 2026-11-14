@@ -16,7 +16,6 @@
 //! works even when the configuration itself is the thing that is broken.
 
 use gpui::*;
-use gpui_component::Root;
 use gpui_component_assets::Assets;
 use touchpad_core::TouchpadStore;
 use touchpad_gui::{
@@ -81,7 +80,7 @@ fn main() {
                 let startup = Startup::run(options);
                 let read_in = assembled.elapsed();
                 let app = cx.new(|cx| TouchpadApp::new(startup, handoff.as_ref(), window, cx));
-                let root = cx.new(|cx| Root::new(app, window, cx));
+                let root = cx.new(|cx| better_ui::window_chrome::root(app, window, cx));
                 if trace {
                     eprintln!(
                         "better-touchpad: window ready in {:?} ({read_in:?} reading the desktop)",

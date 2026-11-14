@@ -114,14 +114,18 @@ updated, verified, and rolled back through shared manager operations.
   Tauri, or GTK application code. **One bounded exception exists**, granted by
   the project owner on 2026-08-31 and recorded in ADR 0012: GJS is permitted
   inside the Better Touchpad GNOME Shell adapter extension
-  (`adapters/gnome-shell-touchpad/`) and nowhere else. Inside it, JavaScript may
-  only bridge typed events and typed actions — reporting what the compositor
-  saw, and invoking something GNOME Shell already exposes. It may hold no
-  threshold, no cooldown, no cancellation rule, no conflict decision, no
-  configuration, and no gesture decision, it may execute nothing, and no method
-  it serves may take free text. `crates/touchpad-session/tests/extension.rs`
-  asserts those bounds against the file. Widening them needs a new ADR, not a
-  commit.
+  (`adapters/gnome-shell-touchpad/`) and inside the shared Better OS shell
+  adapter extension (`adapters/gnome-shell-adapter/`, ADR 0018, proposed), and
+  nowhere else. Inside them, JavaScript may only bridge typed events and typed
+  actions — reporting what the compositor saw, and invoking something GNOME
+  Shell already exposes. It may hold no threshold, no cooldown, no cancellation
+  rule, no conflict decision, no configuration, no per-application rule, and no
+  decision of any kind, it may store nothing, it may execute nothing, and no
+  method it serves may take free text. Each relay of the shared extension acts
+  only while its Rust counterpart owns its bus name and otherwise leaves GNOME's
+  own behaviour in place. `crates/touchpad-session/tests/extension.rs` and
+  `crates/window-attention-service/tests/extension.rs` assert those bounds
+  against the files. Widening them needs a new ADR, not a commit.
 - Use GPUI with `gpui-component` for first-party desktop GUIs. `better-ui` owns
   shared presentation primitives.
 - Treat manifests as untrusted input: validate schema, targets, artifacts,
@@ -228,10 +232,18 @@ GUI or dependency compiles when the relevant command was not executed.
   package with a message that named the component rather than the leftover. Only
   the top-level package files go; the scratch subdirectories under `dist/`
   belong to other tools and must survive.
-- Every Better OS window draws its own titlebar through
-  `better_ui::window_chrome`, because Mutter offers no server-side decorations
-  to an `xdg-toplevel` client — without it a window has no close button and
-  cannot be dragged. Better Launcher is the one deliberate exception, recorded
+- Every Better OS window draws its own frame, because Mutter offers no
+  server-side decorations to an `xdg-toplevel` client — without it a window has
+  no close button and cannot be dragged or resized. Since ticket 108 it is the
+  desktop's frame: open the window with `better_ui::window_chrome::window_options`
+  and `window_chrome::root`, and put `fluent::chrome::TitleBar` first in the
+  view. `better_ui::system_frame` dlopens GTK 4 (and libadwaita) at run time and
+  has it draw the frame, shadow, header, and window buttons from the current
+  theme, as Chromium does; without GTK the kit draws Adwaita's frame. Do not
+  paint a background on a view's root (the frame paints it with the desktop's
+  corners), and do not draw frames or window buttons in an app. The frame was
+  compared pixel by pixel with GNOME Text Editor in a headless GNOME Shell 46
+  only, not on the owner's desktop. Better Launcher is the one deliberate exception, recorded
   in code: a Start-menu panel (ticket 82) dismissed by Escape gets no titlebar, but
   it still sets `app_id` like every other window, which is what lets a dock or
   an application grid match a window to its desktop entry. Escape on Better

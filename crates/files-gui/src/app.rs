@@ -1103,7 +1103,7 @@ pub(crate) fn open_window_at(folder: Option<files_core::LocalPath>, cx: &mut App
     cx.spawn(async move |cx| {
         let _ = cx.open_window(options, |window, cx| {
             let view = cx.new(|cx| FilesApp::new(window, cx, start, None));
-            cx.new(|cx| gpui_component::Root::new(view, window, cx))
+            cx.new(|cx| better_ui::window_chrome::root(view, window, cx))
         });
     })
     .detach();
@@ -1125,7 +1125,7 @@ pub fn run(start: StartPlan) {
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
                 let view = cx.new(|cx| FilesApp::new(window, cx, start, handoff));
-                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                cx.new(|cx| better_ui::window_chrome::root(view, window, cx))
             })
             .expect("failed to open Better Files window");
         })
@@ -1149,7 +1149,7 @@ pub fn run(start: StartPlan) {
                         cx.spawn(async move |cx| {
                             let _ = cx.open_window(options, |window, cx| {
                                 let view = cx.new(|cx| FilesApp::new(window, cx, start, None));
-                                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                                cx.new(|cx| better_ui::window_chrome::root(view, window, cx))
                             });
                         })
                         .detach();

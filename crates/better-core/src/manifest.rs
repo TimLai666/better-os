@@ -198,6 +198,33 @@ impl ComponentManifest {
             if artifact.download_size_bytes == Some(0) || artifact.required_disk_bytes == Some(0) {
                 return Err(ManifestError::InvalidArtifactSize);
             }
+            if artifact.companions.len() > MAX_COMPANIONS {
+                return Err(ManifestError::InvalidArtifact);
+            }
+            let mut packages = vec![&self.id];
+            for companion in &artifact.companions {
+                let expected_asset = format!(
+                    "{}_{}_ubuntu-{}_{}.deb",
+                    companion.package, self.version, artifact.release, artifact.architecture
+                );
+                if packages.contains(&&companion.package)
+                    || !companion.package.as_str().starts_with("better-")
+                    || !companion.url.starts_with("https://")
+                    || !companion.url.ends_with(&companion.release_asset)
+                    || companion.release_asset != expected_asset
+                    || companion.sha256.len() != 64
+                    || !companion
+                        .sha256
+                        .chars()
+                        .all(|character| character.is_ascii_hexdigit())
+                {
+                    return Err(ManifestError::InvalidArtifact);
+                }
+                if companion.download_size_bytes == Some(0) {
+                    return Err(ManifestError::InvalidArtifactSize);
+                }
+                packages.push(&companion.package);
+            }
         }
 
         for release in &self.targets.releases {
@@ -257,7 +284,29 @@ pub struct Artifact {
     pub required_disk_bytes: Option<u64>,
     #[serde(default)]
     pub signature: Option<String>,
+    /// Packages installed in the same APT transaction as this one (ADR 0018):
+    /// first-party packages the component's package recommends that no APT
+    /// source carries, built from the same tree at the same version. Empty
+    /// for every component but those that need one. A manager from before
+    /// this field ignores it and installs the component's own package alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub companions: Vec<CompanionArtifact>,
 }
+
+/// One package that travels with a component's own (ADR 0018).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CompanionArtifact {
+    /// The Debian package name, which also names the release asset.
+    pub package: ComponentId,
+    pub url: String,
+    pub sha256: String,
+    pub release_asset: String,
+    #[serde(default)]
+    pub download_size_bytes: Option<u64>,
+}
+
+/// Most companions one artifact may carry, the same limit the daemon applies.
+pub const MAX_COMPANIONS: usize = 4;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Lifecycle {
@@ -383,6 +432,20 @@ impl ComponentCatalog {
     }
 
     fn validate_graph(&self) -> Result<(), ManifestError> {
+        // A companion rides along with root's authority under another
+        // component's plan, so it can never be a component of its own: that
+        // would let one plan change a component without a step for it.
+        for manifest in self.manifests.values() {
+            for artifact in &manifest.artifacts {
+                if artifact
+                    .companions
+                    .iter()
+                    .any(|companion| self.manifests.contains_key(&companion.package))
+                {
+                    return Err(ManifestError::InvalidArtifact);
+                }
+            }
+        }
         for manifest in self.manifests.values() {
             for dependency in &manifest.dependencies {
                 if !self.manifests.contains_key(&dependency.id) {
@@ -433,6 +496,67 @@ impl ComponentCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn with_companion(asset: &str, package: &str) -> String {
+        yaml("better-manager", None, None).replace(
+            "    release_asset: better-manager_1.0.0_ubuntu-24.04_amd64.deb\n",
+            &format!(
+                "    release_asset: better-manager_1.0.0_ubuntu-24.04_amd64.deb\n    companions:\n      - package: {package}\n        url: https://example.com/{asset}\n        sha256: {hash}\n        release_asset: {asset}\n",
+                hash = "b".repeat(64)
+            ),
+        )
+    }
+
+    /// ADR 0018: a companion is a first-party package built from the same
+    /// tree, named like the component's own asset, at the same version.
+    #[test]
+    fn a_companion_artifact_is_named_and_versioned_like_its_component() {
+        let manifest = ComponentManifest::parse_yaml(&with_companion(
+            "better-shell-adapter_1.0.0_ubuntu-24.04_amd64.deb",
+            "better-shell-adapter",
+        ))
+        .unwrap();
+        assert_eq!(manifest.artifacts[0].companions.len(), 1);
+        assert_eq!(
+            manifest.artifacts[0].companions[0].package.as_str(),
+            "better-shell-adapter"
+        );
+        for (asset, package) in [
+            // Another version.
+            (
+                "better-shell-adapter_0.9.0_ubuntu-24.04_amd64.deb",
+                "better-shell-adapter",
+            ),
+            // Not a Better OS package.
+            ("gnome-shell_1.0.0_ubuntu-24.04_amd64.deb", "gnome-shell"),
+            // The component itself.
+            (
+                "better-manager_1.0.0_ubuntu-24.04_amd64.deb",
+                "better-manager",
+            ),
+        ] {
+            assert!(
+                ComponentManifest::parse_yaml(&with_companion(asset, package)).is_err(),
+                "{package} {asset}"
+            );
+        }
+        // Without the field, nothing changes.
+        let plain = ComponentManifest::parse_yaml(&yaml("better-manager", None, None)).unwrap();
+        assert!(plain.artifacts[0].companions.is_empty());
+
+        // A companion that is a component of the catalog is refused there.
+        let carries_monitor = ComponentManifest::parse_yaml(&with_companion(
+            "better-monitor_1.0.0_ubuntu-24.04_amd64.deb",
+            "better-monitor",
+        ))
+        .unwrap();
+        let monitor = ComponentManifest::parse_yaml(&yaml("better-monitor", None, None)).unwrap();
+        assert!(matches!(
+            ComponentCatalog::from_manifests(vec![carries_monitor.clone(), monitor]),
+            Err(ManifestError::InvalidArtifact)
+        ));
+        assert!(ComponentCatalog::from_manifests(vec![carries_monitor]).is_ok());
+    }
 
     fn yaml(id: &str, dependency: Option<&str>, conflict: Option<&str>) -> String {
         let dependency = dependency

@@ -7,7 +7,8 @@ use super::badge::{InfoBadge, MAX_SHOWN_COUNT};
 use super::breadcrumb::{clicked, fold};
 use super::button::{ButtonKind, colors};
 use super::chrome::{
-    CLOSE_RED, CaptionButton, back_tooltip, caption_buttons, caption_colors, is_back_shortcut,
+    ButtonLayout, WindowButton, back_tooltip, bar_buttons, bar_response, forced_button_state,
+    is_back_shortcut,
 };
 use super::command_bar::{fit_count, split_primary};
 use super::dialog::{DefaultButton, DialogButtons, DialogResult};
@@ -24,7 +25,7 @@ use super::navigation::{
 };
 use super::progress::{fraction, indeterminate_arc, indeterminate_segment};
 use super::selection::{ComboOutcome, SliderModel, combo_key};
-use super::settings_card::card_fill;
+use super::settings_card::{LEADING_SIZE, card_fill};
 use super::tabs::{SelectorItem, TabOutcome, after_close, selector_step, tab_key};
 use super::text_box::{NumberModel, field_colors, multi_line_height};
 use super::theme::{Appearance, config_home};
@@ -842,19 +843,34 @@ fn settings_cards_change_fill_only_when_clickable() {
     );
 }
 
+/// An application's own icon takes the glyph's place at the glyph's size,
+/// so a list of cards about applications lines up with every other card.
 #[test]
-fn the_close_caption_button_turns_red() {
-    let (fill, glyph) = caption_colors(CaptionButton::Close, Interaction::PointerOver, true, &DARK);
-    assert_eq!((fill, glyph), (CLOSE_RED, hex(0xffffff)));
-    let (_, idle) = caption_colors(CaptionButton::Minimize, Interaction::Rest, false, &LIGHT);
-    assert_eq!(idle, LIGHT.text_tertiary);
-    let (fill, _) = caption_colors(
-        CaptionButton::Maximize,
-        Interaction::PointerOver,
-        true,
-        &LIGHT,
+fn a_card_s_leading_element_is_the_glyph_s_size() {
+    assert_eq!(LEADING_SIZE, gpui::px(20.0));
+    let source = include_str!("settings_card.rs");
+    assert!(source.contains(
+        "CardLeading::Element(element) => div()\n                    .size(LEADING_SIZE)"
+    ));
+    assert!(source.contains(".w(LEADING_SIZE)"));
+}
+
+#[test]
+fn the_gallery_forces_a_window_button_into_each_state() {
+    use crate::system_frame::ButtonState;
+    assert_eq!(forced_button_state(ShownState::Live), None);
+    assert_eq!(
+        forced_button_state(ShownState::PointerOver),
+        Some(ButtonState::Hover)
     );
-    assert_eq!(fill, LIGHT.subtle_fill);
+    assert_eq!(
+        forced_button_state(ShownState::Pressed),
+        Some(ButtonState::Pressed)
+    );
+    assert_eq!(
+        forced_button_state(ShownState::Rest),
+        Some(ButtonState::Normal)
+    );
 }
 
 #[test]
@@ -1022,16 +1038,45 @@ fn tiles_and_rows_draw_application_icons_at_windows_sizes() {
 }
 
 #[test]
-fn a_dialog_window_has_only_a_close_button() {
-    assert_eq!(caption_buttons(true), [CaptionButton::Close]);
+fn a_dialog_window_has_only_a_close_button_where_the_desktop_puts_close() {
+    let zorin = ButtonLayout::parse("appmenu:minimize,maximize,close");
+    assert_eq!(bar_buttons(&zorin, false), zorin);
+    let dialog = bar_buttons(&zorin, true);
+    assert!(dialog.start.is_empty());
+    assert_eq!(dialog.end, [WindowButton::Close]);
+    let left = bar_buttons(&ButtonLayout::parse("close,minimize:"), true);
+    assert_eq!(left.start, [WindowButton::Close]);
+    assert!(left.end.is_empty());
+}
+
+#[test]
+fn a_dialog_does_not_maximize_on_a_double_click() {
+    use crate::system_frame::TitlebarResponse;
     assert_eq!(
-        caption_buttons(false),
-        [
-            CaptionButton::Minimize,
-            CaptionButton::Maximize,
-            CaptionButton::Close
-        ]
+        bar_response(TitlebarResponse::ToggleMaximize, true),
+        TitlebarResponse::Nothing
     );
+    assert_eq!(
+        bar_response(TitlebarResponse::ToggleMaximize, false),
+        TitlebarResponse::ToggleMaximize
+    );
+    assert_eq!(
+        bar_response(TitlebarResponse::WindowMenu, true),
+        TitlebarResponse::WindowMenu
+    );
+}
+
+#[test]
+fn a_desktop_accent_replaces_only_the_accent_roles() {
+    let fill = hex(0x3584e4);
+    let on = hex(0xffffff);
+    let p = super::with_accent(&LIGHT, fill, on);
+    assert_eq!(p.accent, fill);
+    assert_eq!(p.accent_text, fill);
+    assert_eq!(p.text_on_accent, on);
+    assert_eq!(p.window_background, LIGHT.window_background);
+    assert_eq!(p.text_primary, LIGHT.text_primary);
+    assert!(!p.is_dark());
 }
 
 /// A dragged tile over another lights that tile's edge. The edge has to be

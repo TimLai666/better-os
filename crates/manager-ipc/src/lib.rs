@@ -34,6 +34,9 @@ pub const MAX_STEPS: usize = 32;
 /// Largest artifact the daemon will stage, enforced while streaming.
 pub const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Most companion packages one step may carry (ADR 0018).
+pub const MAX_COMPANIONS: usize = 4;
+
 /// Longest command output kept per execution log entry. Longer output is
 /// truncated rather than dropped, so a failure still carries its tail.
 pub const MAX_LOG_OUTPUT_BYTES: usize = 64 * 1024;
@@ -102,6 +105,21 @@ pub struct WireStep {
     pub after_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact: Option<WireArtifact>,
+    /// Packages installed in the same APT transaction as the step's own, at
+    /// the same version: a first-party package the component's package
+    /// recommends and no APT source carries (ADR 0018). Absent from the
+    /// document when empty, so every plan without one reads exactly as
+    /// protocol version 1 always did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub companions: Vec<WireCompanion>,
+}
+
+/// A package that travels with a step's own package.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WireCompanion {
+    pub package: String,
+    pub artifact: WireArtifact,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -179,6 +197,16 @@ impl WirePlan {
                 });
             }
             seen.push(step.component.as_str());
+            // A package is changed once per plan: a companion cannot also be
+            // a step, or ride along with two steps.
+            for companion in &step.companions {
+                if seen.contains(&companion.package.as_str()) {
+                    return Err(IpcError::DuplicateComponent {
+                        component: companion.package.clone(),
+                    });
+                }
+                seen.push(companion.package.as_str());
+            }
         }
         Ok(())
     }
@@ -212,7 +240,13 @@ impl WireStep {
         }
 
         let Some(artifact) = &self.artifact else {
-            // Remove carries no target version to check.
+            // Remove carries no target version to check, and no companion.
+            if !self.companions.is_empty() {
+                return Err(IpcError::UnexpectedArtifact {
+                    component: self.component.clone(),
+                    action: self.action,
+                });
+            }
             return Ok(());
         };
 
@@ -233,6 +267,39 @@ impl WireStep {
                 expected,
                 found: artifact.filename.clone(),
             });
+        }
+
+        if self.companions.len() > MAX_COMPANIONS {
+            return Err(IpcError::TooManyPackages {
+                found: self.companions.len(),
+                limit: MAX_COMPANIONS,
+            });
+        }
+        let mut packages: Vec<&str> = vec![self.component.as_str()];
+        for companion in &self.companions {
+            // A companion is named like a component: the daemon resolves its
+            // file and its dpkg record by this name and nothing else.
+            let package = ComponentId::new(companion.package.clone()).map_err(|_| {
+                IpcError::InvalidPackageName {
+                    package: companion.package.clone(),
+                }
+            })?;
+            if packages.contains(&companion.package.as_str()) {
+                return Err(IpcError::DuplicateComponent {
+                    component: companion.package.clone(),
+                });
+            }
+            packages.push(companion.package.as_str());
+            companion.artifact.validate()?;
+            // Built from the same tree, so it carries the step's version.
+            let expected = release_asset_name(&package, after_version, release, architecture);
+            if companion.artifact.filename != expected {
+                return Err(IpcError::ArtifactNameMismatch {
+                    component: companion.package.clone(),
+                    expected,
+                    found: companion.artifact.filename.clone(),
+                });
+            }
         }
         Ok(())
     }
@@ -825,6 +892,7 @@ mod tests {
             before_version: None,
             after_version: Some("0.1.0".to_string()),
             artifact: Some(artifact()),
+            companions: Vec::new(),
         }
     }
 
@@ -962,6 +1030,158 @@ mod tests {
         assert!(matches!(
             plan.validate(),
             Err(IpcError::InvalidArtifactSize { .. })
+        ));
+    }
+
+    fn companion(filename: &str) -> WireCompanion {
+        WireCompanion {
+            package: "better-shell-adapter".to_string(),
+            artifact: WireArtifact {
+                filename: filename.to_string(),
+                sha256: "b".repeat(64),
+                size_bytes: 1024,
+            },
+        }
+    }
+
+    const ADAPTER_DEB: &str = "better-shell-adapter_0.1.0_ubuntu-24.04_amd64.deb";
+
+    /// A plan without companions is the same document protocol version 1
+    /// always was, so a daemon from before ADR 0018 reads it unchanged.
+    #[test]
+    fn a_plan_without_companions_is_written_as_it_always_was() {
+        let json = plan().to_json().unwrap();
+        assert!(!json.contains("companions"), "{json}");
+        let mut with = plan();
+        with.steps[0].companions.push(companion(ADAPTER_DEB));
+        let json = with.to_json().unwrap();
+        assert_eq!(WirePlan::from_json(&json).unwrap(), with);
+    }
+
+    /// What a privileged service from before ADR 0018 answers a plan with a
+    /// companion: its step type refused unknown fields, and serde names the
+    /// field. `manager-core` recognises exactly this to resend the plan
+    /// without companions.
+    #[test]
+    fn an_older_step_type_names_the_companions_field_it_refuses() {
+        #[derive(Debug, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct OldStep {
+            component: String,
+            action: WireAction,
+            #[serde(default)]
+            before_version: Option<String>,
+            #[serde(default)]
+            after_version: Option<String>,
+            #[serde(default)]
+            artifact: Option<WireArtifact>,
+        }
+        let mut step = step();
+        step.companions.push(companion(ADAPTER_DEB));
+        let json = serde_json::to_string(&step).unwrap();
+        let error = serde_json::from_str::<OldStep>(&json).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field `companions`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_companion_is_named_and_versioned_like_the_step() {
+        let mut plan = plan();
+        plan.steps[0].companions.push(companion(
+            "better-shell-adapter_0.0.9_ubuntu-24.04_amd64.deb",
+        ));
+        assert!(matches!(
+            plan.validate(),
+            Err(IpcError::ArtifactNameMismatch { .. })
+        ));
+
+        let mut plan = super::tests::plan();
+        let mut bad = companion(ADAPTER_DEB);
+        bad.package = "Better Shell".to_string();
+        plan.steps[0].companions.push(bad);
+        assert!(matches!(
+            plan.validate(),
+            Err(IpcError::InvalidPackageName { .. })
+        ));
+
+        let mut plan = super::tests::plan();
+        plan.steps[0].companions.push(companion(ADAPTER_DEB));
+        plan.steps[0].companions.push(companion(ADAPTER_DEB));
+        assert!(matches!(
+            plan.validate(),
+            Err(IpcError::DuplicateComponent { .. })
+        ));
+
+        let mut plan = super::tests::plan();
+        let mut itself = companion("better-monitor_0.1.0_ubuntu-24.04_amd64.deb");
+        itself.package = "better-monitor".to_string();
+        plan.steps[0].companions.push(itself);
+        assert!(matches!(
+            plan.validate(),
+            Err(IpcError::DuplicateComponent { .. })
+        ));
+
+        let mut plan = super::tests::plan();
+        for _ in 0..=MAX_COMPANIONS {
+            plan.steps[0].companions.push(companion(ADAPTER_DEB));
+        }
+        assert!(matches!(
+            plan.validate(),
+            Err(IpcError::TooManyPackages { .. })
+        ));
+    }
+
+    #[test]
+    fn a_package_is_changed_once_per_plan_whether_step_or_companion() {
+        let adapter_step = || {
+            let mut step = step();
+            step.component = "better-shell-adapter".to_string();
+            step.artifact.as_mut().unwrap().filename = ADAPTER_DEB.to_string();
+            step
+        };
+        // A companion that is also a step, in either order.
+        let mut plan = plan();
+        plan.steps[0].companions.push(companion(ADAPTER_DEB));
+        plan.steps.push(adapter_step());
+        assert!(matches!(
+            plan.validate(),
+            Err(IpcError::DuplicateComponent { .. })
+        ));
+        let mut plan = super::tests::plan();
+        plan.steps[0].companions.push(companion(ADAPTER_DEB));
+        plan.steps.insert(0, adapter_step());
+        assert!(matches!(
+            plan.validate(),
+            Err(IpcError::DuplicateComponent { .. })
+        ));
+        // The same companion with two steps.
+        let mut plan = super::tests::plan();
+        plan.steps[0].companions.push(companion(ADAPTER_DEB));
+        let mut files = step();
+        files.component = "better-files".to_string();
+        files.artifact.as_mut().unwrap().filename =
+            "better-files_0.1.0_ubuntu-24.04_amd64.deb".to_string();
+        files.companions.push(companion(ADAPTER_DEB));
+        plan.steps.push(files);
+        assert!(matches!(
+            plan.validate(),
+            Err(IpcError::DuplicateComponent { .. })
+        ));
+    }
+
+    #[test]
+    fn a_removal_carries_no_companion() {
+        let mut plan = plan();
+        plan.steps[0].action = WireAction::Remove;
+        plan.steps[0].artifact = None;
+        plan.steps[0].after_version = None;
+        plan.steps[0].companions.push(companion(ADAPTER_DEB));
+        assert!(matches!(
+            plan.validate(),
+            Err(IpcError::UnexpectedArtifact { .. })
         ));
     }
 

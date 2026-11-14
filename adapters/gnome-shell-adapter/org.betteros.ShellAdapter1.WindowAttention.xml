@@ -1,0 +1,73 @@
+<!--
+  The window attention relay of the Better OS GNOME Shell adapter extension
+  (ADR 0018). `extension.js` loads this file at enable time rather than
+  embedding a second copy, and
+  `crates/window-attention-service/tests/extension.rs` asserts that it declares
+  exactly the members `window_attention_core::bus` names.
+
+  The relay is only ever active while `org.betteros.WindowAttention1`, the Rust
+  service that decides, owns its name and runs as the packaged
+  /usr/libexec/better-window-attention, and every method refuses any caller
+  but that name's current owner. The signals are sent to that owner alone,
+  never broadcast, and carry what the shell saw
+  and no verdict. Every method is something GNOME Shell already does to a
+  window, named as itself, and takes the shell's own window id or a boolean:
+  there is no method that takes a command, a path, an application, or any
+  free text.
+-->
+<node>
+  <interface name="org.betteros.ShellAdapter1.WindowAttention">
+    <!--
+      Takes GNOME's own attention handler off the display's
+      window-demands-attention and window-marked-urgent signals, so requests
+      are reported here instead, or puts it back exactly as GNOME connected it.
+      Taking it off is refused while the service does not own its name, and it
+      is put back by itself when the service's name goes and on disable.
+    -->
+    <method name="SuppressBuiltInAttention">
+      <arg type="b" name="suppress" direction="in"/>
+    </method>
+    <!-- Runs GNOME's own handler for the window: its banner and notification. -->
+    <method name="ShowAttentionBanner">
+      <arg type="t" name="window" direction="in"/>
+    </method>
+    <!-- Brings the window forward, as clicking it in the taskbar would. -->
+    <method name="ActivateWindow">
+      <arg type="t" name="window" direction="in"/>
+    </method>
+    <!-- Takes the request off the window, so nothing marks it. -->
+    <method name="ClearAttention">
+      <arg type="t" name="window" direction="in"/>
+    </method>
+    <!-- A JSON document saying what the relay can do and whether it is on. -->
+    <method name="Capabilities">
+      <arg type="s" name="capabilities" direction="out"/>
+    </method>
+    <!--
+      window: Meta.Window.get_id(), the shell's own id for the window.
+      app_id and app_name: what Shell.WindowTracker reports for the window's
+      application; the id is a desktop file id, or a made-up one for a window
+      the tracker could not match.
+      kind: 0 for window-demands-attention, 1 for window-marked-urgent.
+      focused and skip_taskbar: the window's own state at the time.
+      Emitted only while GNOME's handler is off.
+    -->
+    <signal name="WindowAttention">
+      <arg type="t" name="window"/>
+      <arg type="s" name="app_id"/>
+      <arg type="s" name="app_name"/>
+      <arg type="u" name="kind"/>
+      <arg type="b" name="focused"/>
+      <arg type="b" name="skip_taskbar"/>
+    </signal>
+    <!--
+      A window reported by WindowAttention stopped asking: reason 0 when it
+      was focused, 1 when it closed, 2 when its request was withdrawn (by the
+      application, or by ClearAttention). Emitted once per report.
+    -->
+    <signal name="WindowAttentionEnded">
+      <arg type="t" name="window"/>
+      <arg type="u" name="reason"/>
+    </signal>
+  </interface>
+</node>
