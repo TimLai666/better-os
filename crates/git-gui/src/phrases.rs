@@ -1,6 +1,6 @@
 //! Words for what ticket 103 added: why a dialog cannot go ahead, the
 //! identity step, the toolbar's shortcut buttons, worktrees in the lists,
-//! and live change detection. They sit beside [`crate::i18n`]'s table rather
+//! and live change detection, and for ticket 116's worktree dropdown. They sit beside [`crate::i18n`]'s table rather
 //! than in it so the table stays one block per screen; each string is still
 //! written in both languages in one call, so neither can be missing.
 
@@ -141,6 +141,38 @@ impl Copy {
 
     pub fn checked_out_in(&self) -> &'static str {
         self.t("Checked out in {path}", "已在 {path} 簽出")
+    }
+
+    // --- the worktree dropdown (ticket 116) ----------------------------------
+
+    /// The toolbar cell's caption, beside "Current repository".
+    pub fn current_worktree(&self) -> &'static str {
+        self.t("Current worktree", "目前的工作樹")
+    }
+
+    pub fn filter_worktrees(&self) -> &'static str {
+        self.t("Filter worktrees", "篩選工作樹")
+    }
+
+    /// The "More" button at the end of a worktree row.
+    pub fn worktree_actions(&self) -> &'static str {
+        self.t("More actions", "更多動作")
+    }
+
+    pub fn copy_folder_path(&self) -> &'static str {
+        self.t("Copy folder path", "複製資料夾路徑")
+    }
+
+    /// Under the list when the repository has only its main worktree.
+    pub fn only_main_worktree(&self) -> &'static str {
+        self.t(
+            "This repository has only its main worktree. Add one to work on another branch in its own folder.",
+            "這個儲存庫只有主要工作樹。加入一個工作樹，就能在另一個資料夾處理別的分支。",
+        )
+    }
+
+    pub fn no_matching_worktrees(&self) -> &'static str {
+        self.t("No worktrees match.", "沒有符合的工作樹。")
     }
 
     // --- live changes ----------------------------------------------------------

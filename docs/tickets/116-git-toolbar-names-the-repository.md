@@ -1,6 +1,6 @@
-# Ticket 116 — Better Git's toolbar names the repository, and the worktree separately
+# Ticket 116 — Better Git's toolbar has a repository dropdown and a separate worktree dropdown
 
-**Blocked by:** 113 (merged) · **Status:** open
+**Blocked by:** 113 (merged) · **Status:** built, not merged
 
 ## Why
 
@@ -10,27 +10,91 @@ worktree's folder name (for example `ticket-101`) where the repository's name
 (`better-os`) belongs. The owner decided on 2026-11-14: the cell shows the
 repository's name, and the worktree's name is shown separately.
 
+## Owner decision, later on 2026-11-14
+
+Worktrees are chosen in their own dropdown, as in GitHub Desktop, and are not
+listed inside the repository dropdown. This replaces ticket 113's grouped
+rows in the repository dropdown; ticket 113's grouping by git common
+directory, its merging of saved entries and its background reads stay.
+
 ## What to build
 
-- "Current repository" shows the repository's name: its alias if it has one,
-  otherwise the main worktree's folder name (the same name the dropdown's
-  group uses).
-- When the open folder is a linked worktree, its folder name is shown
-  separately and clearly as the worktree, in the same cell as secondary text
-  or as its own small element beside it, following DESIGN.md; the main
-  worktree shows nothing extra. It must fit the toolbar at the minimum window
-  width without pushing other cells out, with a tooltip carrying the full
-  path.
-- The window title and any other place that names the open repository
-  (recent list, dialogs that say "in <repository>") use the same rule
-  consistently.
+- The repository dropdown lists repositories only, one row each (alias or the
+  main worktree's folder name, path underneath). Choosing one opens the
+  worktree of it that was open last, or its main worktree.
+- "Current repository" shows the repository's name.
+- A new toolbar cell "Current worktree" sits between the repository and the
+  branch cells. It shows the open worktree's folder name and opens a dropdown
+  of that repository's worktrees: folder name, branch or "Detached at <sha>"
+  underneath, the main one marked, the current one marked, a filter box, the
+  whole row clickable, missing ones shown as missing and not clickable, a
+  tooltip with the full path. The existing worktree actions (add, remove,
+  open in file manager, whatever the worktrees view already offers) are
+  reachable from this dropdown.
+- A repository with only its main worktree still shows the cell, so adding a
+  worktree is one click away; decide by DESIGN.md whether it is quieter then.
+- The toolbar fits the minimum window width: cells shrink with ellipsis and
+  nothing is pushed out; the shortcut buttons stay visible (ticket 103).
+- The window title and other places that name the open repository use the
+  repository's name, with the worktree's name added when it is not the main
+  one.
+- Keyboard: the shortcut that opened the repository list still does; add one
+  for the worktree list if a free, conventional one exists.
 - English and Traditional Chinese (Taiwan usage).
 
 ## Acceptance
 
-- [ ] Unit tests: main worktree, linked worktree, alias, bare or missing main
-      worktree.
-- [ ] Screenshots in a headless sandbox with a fixture repository: main
+- [x] Unit tests: main worktree, linked worktree, alias, bare or missing main
+      worktree; choosing a repository reopens its last worktree; the
+      repository dropdown holds no worktree rows.
+- [x] Screenshots in a headless sandbox with a fixture repository: both dropdowns open, main
       worktree and linked worktree, both languages, normal and minimum width.
-- [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests and
+- [x] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests and
       the license check pass.
+
+## What was built
+
+- **The repository dropdown lists repositories only.** `RepositoryList::groups`
+  still keys by the common directory and merges saved entries (ticket 113),
+  but a `Group` no longer carries worktree rows; it keeps `folders` (every
+  folder that is the repository) for ranking and removal. Its filter matches
+  the repository's name, its folder, or one of its worktrees' folder names.
+  The row opens the worktree of it that was open last and is still there,
+  else the main worktree, else the first worktree that is there.
+- **One name everywhere.** `GitSession::open_names` takes the repository's
+  name from its row in the list (alias, else the main worktree's folder; a
+  repository without one is named after its common directory, a plain
+  `.git` after the folder it was in) and the worktree's from its folder.
+  The toolbar, the window title the desktop shows (`better-os · ticket-101 —
+  Better Git`, just `better-os — Better Git` on the main worktree), the
+  remove-repository dialog, and the folder suggested for a new worktree or a
+  published repository (the main worktree's folder, never the alias) use it.
+  Nothing here touches the disk; a linked worktree of a `--separate-git-dir`
+  repository borrows its main worktree from what the list's read learned.
+- **"Current worktree"** sits between the repository and the branch. Its
+  dropdown (`repositories::worktree_list`) lists the open repository's
+  worktrees: folder name, branch or "Detached at <sha>" beneath, "Main
+  worktree" and missing ones marked, the open one selected, the full path in
+  the tooltip, a filter on name, branch, and folder, the whole row clickable
+  (a missing one is not). "Add worktree…" is in its header; each row's More
+  button and its context menu offer Open, Show in Better Files, Copy folder
+  path, Move worktree, and Remove worktree. The old Worktrees dialog is gone:
+  the dropdown has everything it had. With only the main worktree the cell's
+  value is in secondary text (DESIGN.md: hierarchy comes from the ramp and
+  secondary color) and the dropdown says how a worktree helps.
+- **Keyboard.** Ctrl+T still opens the repository list; Ctrl+Alt+W, which
+  opened the Worktrees dialog, now opens the worktree dropdown, as does the
+  Repository menu's "Worktrees…".
+- **Minimum width.** The three cells start at the width their text asks for
+  and shrink to 112px with an ellipsis, the sync button to 152px; once the
+  shortcut buttons are icons they keep their width, so nothing leaves the
+  window at 960px.
+
+Tests: four new and five changed in `crates/git-gui/src/repositories.rs`
+(the dropdown holds no worktree rows, reopening the last worktree, names
+with an alias and without a main worktree, the two searches) and two new in
+`crates/git-gui/tests/session.rs` (names and title on the main and a linked
+worktree, with an alias, choosing the repository again; a bare repository's
+worktree). Screenshots in a headless GNOME Shell with fixture repositories,
+both dropdowns, main and linked worktree, both languages, 1280px and 960px.
+

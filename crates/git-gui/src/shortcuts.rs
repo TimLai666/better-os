@@ -46,15 +46,16 @@ pub fn text_width(text: &str) -> f32 {
         .sum()
 }
 
-/// One of the toolbar's drop-down items (repository, branch): 16px padding,
-/// a 16px icon, 12px gaps, the wider of its two lines, a 12px chevron, and
-/// the item's own 200 to 300px limits.
+/// One of the toolbar's drop-down items (repository, worktree, branch) at
+/// the width it starts at: 16px padding, a 16px icon, 12px gaps, the wider
+/// of its two lines, a 12px chevron, and the item's own 200 to 300px
+/// limits. A narrow window shrinks it from there, with an ellipsis.
 pub fn item_width(caption: &str, value: &str) -> f32 {
     (16.0 + 16.0 + 12.0 + text_width(caption).max(text_width(value)) + 12.0 + 12.0 + 16.0)
         .clamp(200.0, 300.0)
 }
 
-/// What the rest of the toolbar takes besides the two drop-down items: the
+/// What the rest of the toolbar takes besides the drop-down items: the
 /// sync button (at least 200px, room for "Last fetched {n} minutes ago"),
 /// the checks item when there is one, and the 48px Settings button.
 const SYNC_WIDTH: f32 = 280.0;
@@ -68,15 +69,17 @@ fn labelled_width(label: &str) -> f32 {
 }
 
 /// Whether the shortcut buttons drop their labels: when, with labels, the
-/// toolbar would be wider than the window. Settings is never pushed off.
-pub fn compact(
+/// toolbar would be wider than the window with its drop-down items at the
+/// width they start at. Settings is never pushed off, and the buttons, once
+/// only icons, are never pushed off either: the items shrink instead.
+pub fn compact<'a>(
     window_width: f32,
-    items: [(&str, &str); 2],
+    items: impl IntoIterator<Item = (&'a str, &'a str)>,
     labels: &[String],
     checks: bool,
 ) -> bool {
     let fixed = items
-        .iter()
+        .into_iter()
         .map(|(caption, value)| item_width(caption, value))
         .sum::<f32>()
         + SYNC_WIDTH

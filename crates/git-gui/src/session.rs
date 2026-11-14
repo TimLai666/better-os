@@ -800,6 +800,22 @@ pub struct RepoGitHub {
     pub loaded: bool,
 }
 
+/// How what is open is named ([`GitSession::open_names`]).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenNames {
+    /// The repository's name: its alias, else its main worktree's folder.
+    pub repository: String,
+    /// The open worktree's folder name.
+    pub worktree: String,
+    /// The open folder is not the main worktree.
+    pub linked: bool,
+    /// The repository has no worktree besides its main one.
+    pub only_main: bool,
+    /// The main worktree's folder name, never the alias: what a new
+    /// worktree's folder or a published repository is named after.
+    pub repository_folder: String,
+}
+
 /// The open repository.
 #[derive(Clone, Debug)]
 pub struct Repo {
@@ -873,10 +889,6 @@ impl Repo {
             BranchHead::Branch(name) => Some(name),
             BranchHead::Detached => None,
         }
-    }
-
-    pub fn name(&self) -> String {
-        crate::repositories::folder_name(&self.root)
     }
 
     /// The default branch's name, from the remote's HEAD or the usual names.
@@ -1852,6 +1864,116 @@ impl GitSession {
             |path| self.known_for(path),
             |path| !self.absent.iter().any(|a| a == path),
         )
+    }
+
+    /// What Git said about the open repository, with the worktrees of its
+    /// latest snapshot. When the open read could not say (Git could not
+    /// place the repository), the snapshot's worktrees stand alone.
+    fn open_known(&self) -> Option<Known> {
+        let repo = self.repo.as_ref()?;
+        Some(match repo.known.as_ref() {
+            Some(known) => {
+                // A linked worktree of a `--separate-git-dir` repository
+                // cannot say where its main worktree is; another folder of
+                // the same repository in the list may have.
+                let main = known.main.clone().or_else(|| {
+                    let common = known.common_dir.as_ref()?;
+                    self.worktrees_of
+                        .iter()
+                        .map(|(_, k)| k)
+                        .find(|k| k.common_dir.as_ref() == Some(common) && k.main.is_some())?
+                        .main
+                        .clone()
+                });
+                Known {
+                    worktrees: repo.info.worktrees.clone(),
+                    main,
+                    ..known.clone()
+                }
+            }
+            None => Known {
+                main: repo
+                    .info
+                    .worktrees
+                    .iter()
+                    .find(|w| w.main && !w.bare)
+                    .map(|w| w.path.clone()),
+                worktrees: repo.info.worktrees.clone(),
+                ..Known::default()
+            },
+        })
+    }
+
+    /// How the toolbar, the window title, and the dialogs name what is
+    /// open (ticket 116): the repository as its row in the repository list
+    /// names it (the alias, else the main worktree's folder), and the open
+    /// worktree by its folder. Read from what is already known; nothing
+    /// here touches the disk.
+    pub fn open_names(&self) -> Option<OpenNames> {
+        let repo = self.repo.as_ref()?;
+        let known = self.open_known();
+        let repository = self
+            .repository_groups("")
+            .into_iter()
+            .find(|g| g.current)
+            .map(|g| g.name)
+            .or_else(|| self.repositories.alias(&repo.root).map(str::to_string))
+            .unwrap_or_else(|| {
+                let folder = known
+                    .as_ref()
+                    .and_then(Known::repository)
+                    .unwrap_or_else(|| repo.root.clone());
+                crate::repositories::repository_folder_name(&folder)
+            });
+        let main = known.as_ref().and_then(|k| k.main.clone());
+        let worktrees = known
+            .as_ref()
+            .map(|k| crate::repositories::worktree_list(k, None, "").len())
+            .unwrap_or(0);
+        let linked = main.as_deref() != Some(repo.root.as_path());
+        Some(OpenNames {
+            repository,
+            worktree: crate::repositories::folder_name(&repo.root),
+            linked,
+            only_main: worktrees <= 1,
+            repository_folder: crate::repositories::repository_folder_name(
+                &main
+                    .or_else(|| known.as_ref().and_then(Known::repository))
+                    .unwrap_or_else(|| repo.root.clone()),
+            ),
+        })
+    }
+
+    /// The name the repository list gives the repository a saved entry
+    /// belongs to, for a dialog about it.
+    pub fn repository_name(&self, entry: &Path) -> String {
+        self.repository_groups("")
+            .into_iter()
+            .find(|g| g.entries.iter().any(|e| e == entry))
+            .map(|g| g.name)
+            .unwrap_or_else(|| crate::repositories::folder_name(entry))
+    }
+
+    /// The window's title: the repository's name, with the worktree's
+    /// folder after it when that is not the main worktree, then the
+    /// application's name. Just the application's name with nothing open.
+    pub fn window_title(&self, app_name: &str) -> String {
+        match self.open_names() {
+            Some(names) if names.linked => {
+                format!("{} · {} — {app_name}", names.repository, names.worktree)
+            }
+            Some(names) => format!("{} — {app_name}", names.repository),
+            None => app_name.to_string(),
+        }
+    }
+
+    /// The rows of the toolbar's worktree dropdown, for a search: the open
+    /// repository's worktrees, the main one and the open one marked.
+    pub fn worktree_rows(&self, query: &str) -> Vec<crate::repositories::WorktreeRow> {
+        let (Some(repo), Some(known)) = (self.repo.as_ref(), self.open_known()) else {
+            return Vec::new();
+        };
+        crate::repositories::worktree_list(&known, Some(&repo.root), query)
     }
 
     /// Keeps what the background read said, and folds saved entries that
@@ -2986,8 +3108,7 @@ impl GitSession {
         let mut current = false;
         if let Some(group) = group {
             entries.extend(group.entries.iter().cloned());
-            folders.extend(group.entries);
-            folders.extend(group.worktrees.into_iter().map(|w| w.path));
+            folders.extend(group.folders);
             current = group.current;
         }
         if let Some(known) = self.known_for(path) {

@@ -103,7 +103,6 @@ pub enum Dialog {
         from: usize,
         to: usize,
     },
-    Worktrees,
     /// texts: [folder, branch]
     AddWorktree {
         create: bool,

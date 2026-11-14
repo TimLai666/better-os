@@ -1,18 +1,21 @@
 //! Parts of the window drawn outside `render.rs`: a dialog field's reason,
 //! the identity step, the toolbar's shortcut buttons, the notice toast, and the
-//! repository list's worktree rows. As in `render.rs`, nothing here
+//! toolbar's worktree dropdown. As in `render.rs`, nothing here
 //! decides anything; the decisions are in `dialog_check`, `identity`,
 //! `shortcuts`, `worktree_links`, and `better_ui::fluent::toast`.
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, Context, Div, IntoElement, ParentElement as _,
+    AnyElement, App, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 use gpui_component::{Icon, IconName};
+use std::path::PathBuf;
 
 use better_ui::fluent::button::{Button, ButtonKind};
+use better_ui::fluent::dialog::Flyout;
 use better_ui::fluent::info_bar::Severity;
+use better_ui::fluent::menu::{MenuEntry, MenuItem};
 use better_ui::fluent::text_box::TextBox;
 use better_ui::fluent::toast::{ToastSpec, ToastWords};
 use better_ui::fluent::{BODY, BODY_STRONG, CAPTION, CODE, Palette, label, radius, spacing};
@@ -178,12 +181,13 @@ impl GitApp {
         if self.session.repo.is_none() {
             return div();
         }
-        // It gives way before Settings does: never wider than what is left.
+        // With labels it gives way before Settings does: never wider than
+        // what is left. As icons it keeps its width, and the drop-down
+        // items shrink instead, so every button stays on screen.
         let mut row = div()
             .flex()
-            .flex_shrink(1.0)
-            .min_w_0()
-            .overflow_hidden()
+            .when(compact, |d| d.flex_none())
+            .when(!compact, |d| d.flex_shrink(1.0).min_w_0().overflow_hidden())
             .items_center()
             .gap(px(4.0))
             .px(spacing::SM)
@@ -262,92 +266,281 @@ impl GitApp {
         self.notice_toast = Some((notice, id));
     }
 
-    /// The worktrees under one repository in the repository list: each
-    /// named by its folder, with its branch (or the commit it is detached
-    /// at) beneath, the main one marked. The whole row opens it.
-    pub(crate) fn worktree_rows(
+    /// The toolbar's worktree dropdown (ticket 116): the open repository's
+    /// worktrees, each named by its folder with its branch (or the commit
+    /// it is detached at) beneath, the main one and the open one marked, a
+    /// filter, and every worktree action: add from the header; open, show
+    /// in Better Files, copy the path, move, and remove from each row's
+    /// More button or its context menu. The whole row opens it; a missing
+    /// one opens nothing.
+    pub(crate) fn worktree_flyout(
         &self,
-        worktrees: &[crate::repositories::WorktreeRow],
-        group: usize,
         p: &'static Palette,
+        c: &'static Copy,
         cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        let c = self.copy();
-        worktrees
-            .iter()
-            .enumerate()
-            .map(|(offset, w)| {
-                let path = w.path.clone();
-                let mut detail = match (&w.branch, &w.short_sha) {
-                    (Some(branch), _) => branch.clone(),
-                    (None, Some(sha)) => {
-                        crate::i18n::fill(c.worktree_detached_at(), &[("sha", sha)])
-                    }
-                    (None, None) => c.worktree_detached().to_string(),
-                };
-                if w.main {
-                    detail = format!("{detail} · {}", c.worktree_main);
-                }
-                if w.missing {
-                    detail = format!("{detail} · {}", c.missing);
-                }
-                crate::render::row(
-                    gpui::ElementId::from((
-                        gpui::ElementId::from(("repo-worktree", group)),
-                        offset.to_string(),
-                    )),
-                    w.current,
-                    px(48.0),
-                    p,
-                )
-                .pl(px(36.0))
-                .child(
-                    Icon::empty()
-                        .path(crate::app::BRANCH_ICON)
-                        .size(px(14.0))
-                        .text_color(if w.missing {
-                            p.caution
-                        } else {
-                            p.text_secondary
-                        }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            label(
-                                w.name.clone(),
-                                BODY,
-                                if w.missing {
-                                    p.text_disabled
-                                } else {
-                                    p.text_primary
-                                },
-                            )
-                            .truncate(),
-                        )
-                        .child(label(detail, CAPTION, p.text_secondary).truncate()),
-                )
-                .when(!w.missing, |row| {
-                    row.on_click(
-                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                            if event.is_keyboard() {
-                                return;
-                            }
-                            this.flyout = None;
-                            this.session.open(path.clone());
-                            this.drive(window, cx);
-                        }),
+    ) -> AnyElement {
+        let query = self.inputs.worktree_search.read(cx).value().to_string();
+        let rows = self.session.worktree_rows(&query);
+        let only_main = self
+            .session
+            .open_names()
+            .is_some_and(|names| names.only_main);
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .max_h(px(420.0))
+            .id("worktree-list")
+            .overflow_y_scroll();
+        if rows.is_empty() {
+            list = list.child(div().px(spacing::MD).py(spacing::SM).child(label(
+                c.no_matching_worktrees(),
+                CAPTION,
+                p.text_secondary,
+            )));
+        }
+        for (index, w) in rows.iter().enumerate() {
+            list = list.child(self.worktree_row(index, w, p, c, cx));
+        }
+        Flyout::new("worktree-flyout")
+            .on_dismiss(Self::act(cx, |this, _, _| this.flyout = None))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .w(px(400.0))
+                    .gap(spacing::SM)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(spacing::SM)
+                            .child(div().flex_1().child(TextBox::search(
+                                "worktree-search",
+                                &self.inputs.worktree_search,
+                            )))
+                            .child(
+                                Button::standard("worktree-add", c.add_worktree)
+                                    .icon(IconName::Plus)
+                                    .on_click(Self::act(cx, |this, _, _| {
+                                        this.flyout = None;
+                                        this.session.dialog =
+                                            Some(crate::dialogs::Dialog::AddWorktree {
+                                                create: true,
+                                            });
+                                    })),
+                            ),
                     )
-                })
-                .into_any_element()
+                    .child(label(c.worktrees_title, CAPTION, p.text_secondary))
+                    .child(list)
+                    .when(only_main && query.trim().is_empty(), |d| {
+                        d.child(div().px(spacing::MD).child(label(
+                            c.only_main_worktree(),
+                            CAPTION,
+                            p.text_secondary,
+                        )))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// One row of the worktree dropdown.
+    fn worktree_row(
+        &self,
+        index: usize,
+        w: &crate::repositories::WorktreeRow,
+        p: &'static Palette,
+        c: &'static Copy,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut detail = match (&w.branch, &w.short_sha) {
+            (Some(branch), _) => branch.clone(),
+            (None, Some(sha)) => fill(c.worktree_detached_at(), &[("sha", sha)]),
+            (None, None) => c.worktree_detached().to_string(),
+        };
+        if w.main {
+            detail = format!("{detail} · {}", c.worktree_main);
+        }
+        if w.missing {
+            detail = format!("{detail} · {}", c.missing);
+        }
+        let (open, menu, more) = (w.path.clone(), w.path.clone(), w.path.clone());
+        let current = w.current;
+        crate::render::row(("worktree", index), w.current, px(48.0), p)
+            .tooltip(better_ui::fluent::dialog::tooltip_builder(
+                w.path.display().to_string().into(),
+            ))
+            .child(
+                if w.missing {
+                    Icon::new(IconName::TriangleAlert)
+                } else {
+                    Icon::empty().path(crate::app::WORKTREE_ICON)
+                }
+                .size(px(16.0))
+                .text_color(if w.missing {
+                    p.caution
+                } else {
+                    p.text_secondary
+                }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        label(
+                            w.name.clone(),
+                            BODY_STRONG,
+                            if w.missing {
+                                p.text_disabled
+                            } else {
+                                p.text_primary
+                            },
+                        )
+                        .truncate(),
+                    )
+                    .child(label(detail, CAPTION, p.text_secondary).truncate()),
+            )
+            .child(
+                // Its own press, so the row under it does not open.
+                div()
+                    .flex_none()
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        Button::icon_button(
+                            ("worktree-more", index),
+                            IconName::Ellipsis,
+                            c.worktree_actions(),
+                        )
+                        .on_click(Self::act(
+                            cx,
+                            move |this, window, cx| {
+                                this.context = Some((
+                                    crate::app::ContextTarget::Worktree(more.clone()),
+                                    window.mouse_position(),
+                                ));
+                                better_ui::fluent::menu::open_menu(
+                                    &this.context_menu,
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            },
+                        )),
+                    ),
+            )
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    this.context = Some((
+                        crate::app::ContextTarget::Worktree(menu.clone()),
+                        event.position,
+                    ));
+                    better_ui::fluent::menu::open_menu(&this.context_menu, None, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .when(!w.missing, |row| {
+                row.on_click(
+                    cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                        if event.is_keyboard() {
+                            return;
+                        }
+                        this.flyout = None;
+                        if !current {
+                            this.session.open(open.clone());
+                        }
+                        this.drive(window, cx);
+                    }),
+                )
             })
-            .collect()
+            .into_any_element()
+    }
+
+    /// The worktree dropdown's actions for one worktree, for its More
+    /// button and its context menu: what the worktrees dialog offered
+    /// before (open, move, remove) and what the repository list offers for
+    /// a folder (show in Better Files, copy the path).
+    pub(crate) fn worktree_entries(
+        &self,
+        path: PathBuf,
+        c: &'static Copy,
+        cx: &mut Context<Self>,
+    ) -> Vec<MenuEntry> {
+        let row = self
+            .session
+            .worktree_rows("")
+            .into_iter()
+            .find(|w| w.path == path);
+        let (current, main, missing) = row
+            .as_ref()
+            .map(|w| (w.current, w.main, w.missing))
+            .unwrap_or((false, false, true));
+        let item = |text: &'static str, cx: &mut Context<Self>, f: MenuAction| -> MenuEntry {
+            MenuItem::new(text)
+                .on_select(Self::act(cx, move |this, window, cx| f(this, window, cx)))
+                .entry()
+        };
+        let mut entries = Vec::new();
+        if !current && !missing {
+            let open = path.clone();
+            entries.push(item(
+                c.worktree_open,
+                cx,
+                Box::new(move |this, _, _| {
+                    this.flyout = None;
+                    this.session.open(open.clone())
+                }),
+            ));
+        }
+        if !missing {
+            let files = path.clone();
+            entries.push(item(
+                c.show_in_files,
+                cx,
+                Box::new(move |this, _, _| this.show_in_files(Some(files.clone()))),
+            ));
+        }
+        let text = path.display().to_string();
+        entries.push(item(
+            c.copy_folder_path(),
+            cx,
+            Box::new(move |this, _, cx| this.copy_text(text.clone(), cx)),
+        ));
+        if !main {
+            let (rename, remove) = (path.clone(), path.clone());
+            entries.push(MenuEntry::Separator);
+            if !missing {
+                entries.push(item(
+                    c.rename_worktree_title,
+                    cx,
+                    Box::new(move |this, _, _| {
+                        this.flyout = None;
+                        this.session.dialog = Some(crate::dialogs::Dialog::RenameWorktree {
+                            path: rename.clone(),
+                        })
+                    }),
+                ));
+            }
+            entries.push(item(
+                c.remove_worktree_title,
+                cx,
+                Box::new(move |this, _, _| {
+                    this.flyout = None;
+                    this.session.dialog = Some(crate::dialogs::Dialog::RemoveWorktree {
+                        path: remove.clone(),
+                        force: false,
+                    })
+                }),
+            ));
+        }
+        entries
     }
 }
+
+/// What a worktree menu entry does.
+type MenuAction = Box<dyn Fn(&mut GitApp, &mut gpui::Window, &mut Context<GitApp>)>;
 
 /// The last dialog check: the dialog and texts it was for, and its answer.
 pub(crate) struct DialogCheck {

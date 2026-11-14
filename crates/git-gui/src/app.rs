@@ -36,12 +36,20 @@ pub(crate) const MIN_WINDOW_HEIGHT: f32 = 600.0;
 pub(crate) const BRANCH_ICON: &str = "better-git/branch.svg";
 const BRANCH_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10"/><path d="M18 9c0 5-12 3-12 8"/></svg>"#;
 
+/// The worktree glyph, for the toolbar's worktree cell and its rows: a
+/// folder with a branch in its corner, on the same grid.
+pub(crate) const WORKTREE_ICON: &str = "better-git/worktree.svg";
+const WORKTREE_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2"/><circle cx="15" cy="13" r="1.5"/><circle cx="15" cy="21" r="1.5"/><circle cx="21" cy="14" r="1.5"/><path d="M15 14.5v5"/><path d="M21 15.5c0 2.5-6 1.5-6 4"/></svg>"#;
+
 struct GitAssets;
 
 impl AssetSource for GitAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         if path == BRANCH_ICON {
             return Ok(Some(Cow::Borrowed(BRANCH_SVG.as_bytes())));
+        }
+        if path == WORKTREE_ICON {
+            return Ok(Some(Cow::Borrowed(WORKTREE_SVG.as_bytes())));
         }
         if path == crate::graph_pane::TAG_ICON {
             return Ok(Some(Cow::Borrowed(crate::graph_pane::TAG_SVG.as_bytes())));
@@ -58,6 +66,8 @@ impl AssetSource for GitAssets {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Flyout {
     Repositories,
+    /// The open repository's worktrees (ticket 116).
+    Worktrees,
     Branches,
 }
 
@@ -72,6 +82,8 @@ pub(crate) enum ContextTarget {
     GraphLabels(Vec<git_core::RefLabel>),
     Branch(String),
     Repository(PathBuf),
+    /// A row of the worktree dropdown.
+    Worktree(PathBuf),
 }
 
 /// The text fields a page or dialog uses.
@@ -81,6 +93,7 @@ pub(crate) struct Inputs {
     pub co_authors: Entity<InputState>,
     pub filter: Entity<InputState>,
     pub repo_search: Entity<InputState>,
+    pub worktree_search: Entity<InputState>,
     pub branch_search: Entity<InputState>,
     pub dialog: [Entity<InputState>; 3],
     pub editor: Entity<InputState>,
@@ -120,6 +133,9 @@ pub struct GitApp {
     pub(crate) editor_name: std::cell::RefCell<Option<(String, Option<String>)>>,
     /// The open repository's folders being watched for changes.
     pub(crate) live: crate::live::Live,
+    /// The window title last given to the desktop, so it is set when it
+    /// changes and not on every frame.
+    pub(crate) window_title: String,
     /// The dialog the dialog fields were last filled for.
     dialog_seen: Option<Dialog>,
     form_generation: u64,
@@ -195,6 +211,7 @@ impl GitApp {
             co_authors: multi(window, cx, 2, c.co_authors_placeholder),
             filter: field(window, cx, c.filter_changes),
             repo_search: field(window, cx, c.filter_repositories),
+            worktree_search: field(window, cx, c.filter_worktrees()),
             branch_search: field(window, cx, c.filter_branches),
             dialog: [
                 field(window, cx, ""),
@@ -302,6 +319,7 @@ impl GitApp {
         }
         for input in [
             inputs.repo_search.clone(),
+            inputs.worktree_search.clone(),
             inputs.branch_search.clone(),
             inputs.dialog[0].clone(),
             inputs.dialog[1].clone(),
@@ -387,6 +405,7 @@ impl GitApp {
             dialog_check: std::cell::RefCell::new(None),
             editor_name: std::cell::RefCell::new(None),
             live: crate::live::Live::default(),
+            window_title: String::new(),
             dialog_seen: None,
             form_generation: 0,
             config_loaded: false,
@@ -643,12 +662,16 @@ impl GitApp {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
         let repo = self.session.repo.as_ref();
+        let names = self.session.open_names();
         let one = |s: String| [s, String::new(), String::new()];
         match &self.session.dialog {
             Some(Dialog::Clone { .. }) | Some(Dialog::NewRepository { .. }) => {
                 [String::new(), clone_folder, String::new()]
             }
-            Some(Dialog::Publish { .. }) => one(repo.map(|r| r.name()).unwrap_or_default()),
+            Some(Dialog::Publish { .. }) => one(names
+                .as_ref()
+                .map(|n| n.repository_folder.clone())
+                .unwrap_or_default()),
             Some(Dialog::Alias { path }) => one(self
                 .session
                 .repositories
@@ -662,10 +685,11 @@ impl GitApp {
                 self.session.squash_message(*from, *to),
             ],
             Some(Dialog::AddWorktree { .. }) => one(repo
-                .and_then(|r| {
+                .zip(names.as_ref())
+                .and_then(|(r, n)| {
                     r.root
                         .parent()
-                        .map(|p| p.join(format!("{}-worktree", r.name())))
+                        .map(|p| p.join(format!("{}-worktree", n.repository_folder)))
                 })
                 .map(|p| p.display().to_string())
                 .unwrap_or_default()),
@@ -983,7 +1007,7 @@ impl GitApp {
                     });
                 }
             }
-            Action::WorktreeList if has_repo => self.session.dialog = Some(Dialog::Worktrees),
+            Action::WorktreeList if has_repo => self.flyout = Some(Flyout::Worktrees),
             Action::GoToSummary => {
                 self.inputs
                     .summary
