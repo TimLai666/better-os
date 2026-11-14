@@ -1,6 +1,6 @@
 # Ticket 109 — Keep awake also covers closing the lid
 
-**Blocked by:** none · **Status:** implemented, not merged
+**Blocked by:** none · **Status:** merged, not released
 
 ## Why
 
