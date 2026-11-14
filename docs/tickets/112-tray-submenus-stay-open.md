@@ -59,15 +59,32 @@ the fix the Monitor menu's readings stopped changing while the menu was open.
   an id per role, a new reading is an `ItemsPropertiesUpdated` naming only the
   properties that changed, and a reading that appears or goes away is a layout
   change held while a submenu is open: the rows the panel has keep showing new
-  values, and the layout follows at the first poll after the submenu closes, or
-  at once when the whole menu opens or closes.
+  values, and the layout follows at the first poll at least 300 ms after the
+  submenu closes, or at once when the whole menu opens or closes.
 - Better Awake already sent wording changes as properties, but the whole set,
   `type` included; it now sends only what changed. Its layout changes (a
   session ending, a second reason, a rule starting) collapsed an open submenu;
   they are now held while a submenu is open and sent 300 ms after the last one
-  closes, or at once when the whole menu opens or closes. Awake keeps giving a
-  new layout new ids, as before: its items have no identity across layouts, so
-  only the ids of an unchanged layout are stable.
+  closes, or at once when the whole menu opens or closes. While one is held,
+  the rows the panel has stay, a row whose action the new menu no longer
+  offers (extending a session that ended) is greyed out, and choosing one that
+  raced the greying says why in a notification instead of doing nothing.
+  Rows take the new wording only where the two layouts line up one to one:
+  at the same level, from the first row on, while each pair is the same kind
+  of row with the same action, or for a row with no action the same field
+  name before its colon. Past the first pair that does not line up (a second
+  reason pushing the rows below it down), the rows keep what they said until
+  the layout goes out. Awake's item ids stay stable only while the menu's
+  structure is unchanged: a new structure comes under new ids, because its
+  items have no identity across layouts.
+
+Which submenus are open is taken from the host's `opened` and `closed`
+events, put back in order by the D-Bus serial of each call (the handlers run
+on separate tasks and can finish out of order). A submenu stops counting as
+open five minutes after it last said it opened, since a row the host destroys
+never says it closed and a host may never send the whole menu's events. A
+call from another connection than the last, or a new watcher appearing (the
+panel restarted), starts again with nothing open and sends a held layout.
 
 Checked in a headless GNOME Shell 46 with the extension, against a fake Awake
 service and a sandboxed Monitor service: both submenus stayed open for over 30

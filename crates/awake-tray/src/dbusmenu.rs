@@ -10,7 +10,7 @@ use std::sync::Arc;
 use zbus::interface;
 use zbus::zvariant::{OwnedValue, Type, Value};
 
-use crate::controller::{SUBMENU_SETTLE, TrayController};
+use crate::controller::TrayController;
 use crate::menu::{ItemKind, Menu, MenuItem};
 
 /// `(ia{sv}av)`: an id, its properties, and its children as variants. The
@@ -163,6 +163,19 @@ fn subtree(menu: &Menu, parent_id: i32, depth: i32, wanted: &[String]) -> Layout
     )
 }
 
+/// Who called and where the call stands among that caller's calls: its bus
+/// name and its D-Bus serial, which only grows on one connection. See
+/// [`crate::controller::OpenSubmenus`].
+fn order_of(header: &zbus::message::Header<'_>) -> (String, u64) {
+    (
+        header
+            .sender()
+            .map(|sender| sender.to_string())
+            .unwrap_or_default(),
+        u64::from(header.primary().serial_num().get()),
+    )
+}
+
 #[interface(name = "com.canonical.dbusmenu")]
 impl DbusMenu {
     /// `recursion_depth` of -1 means the whole tree, which is what every panel
@@ -210,6 +223,7 @@ impl DbusMenu {
     /// never start a session. Hover events change nothing.
     async fn event(
         &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         id: i32,
         event_id: String,
         _data: Value<'_>,
@@ -224,17 +238,18 @@ impl DbusMenu {
                     .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
             }
             "opened" | "closed" => {
+                let (host, order) = order_of(&header);
                 let controller = self.controller.clone();
-                let settle = self
+                let retry = self
                     .runtime
-                    .spawn(async move { controller.menu_event(id, &event_id).await })
+                    .spawn(async move { controller.menu_event(id, &event_id, &host, order).await })
                     .await
                     .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
-                if settle {
+                if let Some(delay) = retry {
                     // Not awaited: the reply does not wait for the layout.
                     let controller = self.controller.clone();
                     self.runtime.spawn(async move {
-                        tokio::time::sleep(SUBMENU_SETTLE).await;
+                        tokio::time::sleep(delay).await;
                         controller.release_layout().await;
                     });
                 }
@@ -253,15 +268,20 @@ impl DbusMenu {
     /// does not: GNOME asks for each one as it unfolds, and a layout that
     /// changed under an unfolding submenu would rebuild it closed under the
     /// pointer.
-    async fn about_to_show(&self, id: i32) -> bool {
+    async fn about_to_show(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        id: i32,
+    ) -> bool {
         if id != 0 {
             return false;
         }
+        let (host, order) = order_of(&header);
         let controller = self.controller.clone();
         self.runtime
             .spawn(async move {
                 let before = controller.revision().await;
-                controller.menu_event(0, "opened").await;
+                controller.menu_event(0, "opened", &host, order).await;
                 let _ = controller.refresh().await;
                 controller.revision().await != before
             })

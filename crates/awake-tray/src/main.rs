@@ -85,10 +85,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unique_name()
         .map(|name| name.to_string())
         .unwrap_or_default();
+    // A watcher that appears is a panel that started or restarted: it has
+    // no submenu of ours open, so a layout held for one goes out.
+    let host_controller = controller.clone();
     let registration = tokio::spawn(keep_registered(
         connection.clone(),
         unique_name.clone(),
-        report,
+        move |availability| {
+            report(availability);
+            let controller = host_controller.clone();
+            tokio::spawn(async move { controller.host_changed().await });
+        },
     ));
     report(register_and_verify(&connection, &unique_name).await);
 

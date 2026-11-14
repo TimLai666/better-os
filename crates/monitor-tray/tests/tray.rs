@@ -305,3 +305,229 @@ async fn an_item_started_before_the_panel_registers_when_the_panel_appears_and_a
     );
     task.abort();
 }
+
+// ---- Ticket 112: what the panel is told, and when -----------------------------
+
+type Updated = Vec<(i32, std::collections::HashMap<String, OwnedValue>)>;
+type Removed = Vec<(i32, Vec<String>)>;
+
+/// A served tray, attached, showing `first`, and a panel listening to its menu.
+async fn served_with_panel(
+    bus: &PrivateBus,
+    first: TrayReadings,
+) -> (
+    zbus::Connection,
+    Arc<Tray>,
+    zbus::Connection,
+    zbus::MessageStream,
+) {
+    let tray = Tray::new(TrayState::new(Locale::English, IconChoice::default(), None));
+    let address: zbus::Address = bus.address.parse().unwrap();
+    let connection = monitor_tray::serve(
+        zbus::connection::Builder::address(address).unwrap(),
+        tray.clone(),
+    )
+    .await
+    .unwrap();
+    let changes = tray.state.lock().await.adopt(Some(first));
+    tray.announce(changes).await;
+    let panel = bus.connect().await;
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender(connection.unique_name().unwrap().as_str())
+        .unwrap()
+        .path(MENU_PATH)
+        .unwrap()
+        .build();
+    let signals = zbus::MessageStream::for_match_rule(rule, &panel, None)
+        .await
+        .unwrap();
+    (connection, tray, panel, signals)
+}
+
+/// Every menu signal that arrives within a moment, in order.
+async fn received(signals: &mut zbus::MessageStream) -> Vec<zbus::Message> {
+    use zbus::export::futures_core::Stream;
+    let mut out = Vec::new();
+    loop {
+        let next = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            std::future::poll_fn(|context| std::pin::Pin::new(&mut *signals).poll_next(context)),
+        )
+        .await;
+        match next {
+            Ok(Some(Ok(message))) => out.push(message),
+            _ => return out,
+        }
+    }
+}
+
+fn member(message: &zbus::Message) -> String {
+    message.header().member().unwrap().to_string()
+}
+
+/// The `ItemsPropertiesUpdated` body as `(id, [(name, label-or-debug)])`,
+/// asserting no entry is empty.
+fn updated(message: &zbus::Message) -> Vec<(i32, Vec<(String, String)>)> {
+    let (updated, removed): (Updated, Removed) = message.body().deserialize().unwrap();
+    assert!(removed.is_empty());
+    assert!(!updated.is_empty(), "an update naming nothing");
+    updated
+        .into_iter()
+        .map(|(id, properties)| {
+            assert!(!properties.is_empty(), "item {id} updated with no property");
+            let mut properties: Vec<(String, String)> = properties
+                .into_iter()
+                .map(|(name, value)| {
+                    let shown = match value.downcast_ref::<&str>() {
+                        Ok(text) => text.to_string(),
+                        Err(_) => match value.downcast_ref::<bool>() {
+                            Ok(flag) => flag.to_string(),
+                            Err(_) => format!("{value:?}"),
+                        },
+                    };
+                    (name, shown)
+                })
+                .collect();
+            properties.sort();
+            (id, properties)
+        })
+        .collect()
+}
+
+async fn call<B, R>(panel: &zbus::Connection, tray: &zbus::Connection, method: &str, body: &B) -> R
+where
+    B: serde::Serialize + zbus::zvariant::DynamicType,
+    R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
+{
+    panel
+        .call_method(
+            Some(tray.unique_name().unwrap().as_str()),
+            MENU_PATH,
+            Some("com.canonical.dbusmenu"),
+            method,
+            body,
+        )
+        .await
+        .unwrap()
+        .body()
+        .deserialize()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_new_reading_reaches_the_panel_as_its_changed_label_alone() {
+    let bus = bus_or_skip!();
+    let (_connection, tray, _panel, mut signals) = served_with_panel(&bus, readings()).await;
+    let line = tray
+        .state
+        .lock()
+        .await
+        .menu
+        .find_by_label("Processor: 31%")
+        .unwrap()
+        .id;
+
+    let changes = tray.state.lock().await.adopt(Some(TrayReadings {
+        cpu: Some(0.62),
+        ..readings()
+    }));
+    tray.announce(changes).await;
+    let messages = received(&mut signals).await;
+    assert_eq!(
+        messages.iter().map(member).collect::<Vec<_>>(),
+        ["ItemsPropertiesUpdated"]
+    );
+    assert_eq!(
+        updated(&messages[0]),
+        [(
+            line,
+            vec![("label".to_string(), "Processor: 62%".to_string())]
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_reading_that_appears_is_its_properties_first_and_then_the_layout() {
+    let bus = bus_or_skip!();
+    let (_connection, tray, _panel, mut signals) = served_with_panel(&bus, readings()).await;
+    let graphics = tray
+        .state
+        .lock()
+        .await
+        .menu
+        .find_by_label("Graphics card")
+        .unwrap()
+        .id;
+
+    let changes = tray.state.lock().await.adopt(Some(TrayReadings {
+        gpu: Some(0.5),
+        ..readings()
+    }));
+    tray.announce(changes).await;
+    let messages = received(&mut signals).await;
+    assert_eq!(
+        messages.iter().map(member).collect::<Vec<_>>(),
+        ["ItemsPropertiesUpdated", "LayoutUpdated"]
+    );
+    assert_eq!(
+        updated(&messages[0]),
+        [(graphics, vec![("enabled".to_string(), "true".to_string())])]
+    );
+}
+
+#[tokio::test]
+async fn an_unfolded_submenu_holds_the_layout_until_the_menu_opens_again() {
+    let bus = bus_or_skip!();
+    let (connection, tray, panel, mut signals) = served_with_panel(&bus, readings()).await;
+    let show = tray
+        .state
+        .lock()
+        .await
+        .menu
+        .find_by_label("Show in the taskbar")
+        .unwrap()
+        .id;
+    let () = call(
+        &panel,
+        &connection,
+        "Event",
+        &(show, "opened", zbus::zvariant::Value::from(0i32), 0u32),
+    )
+    .await;
+
+    let changes = tray.state.lock().await.adopt(Some(TrayReadings {
+        gpu: Some(0.5),
+        cpu: Some(0.62),
+        ..readings()
+    }));
+    tray.announce(changes).await;
+    let messages = received(&mut signals).await;
+    assert_eq!(
+        messages.iter().map(member).collect::<Vec<_>>(),
+        ["ItemsPropertiesUpdated"],
+        "a layout went out under the unfolded submenu"
+    );
+    let labels: Vec<String> = updated(&messages[0])
+        .into_iter()
+        .flat_map(|(_, properties)| properties.into_iter().map(|(_, value)| value))
+        .collect();
+    assert!(labels.contains(&"Processor: 62%".to_string()), "{labels:?}");
+
+    // The whole menu about to show again: nothing is unfolded in it.
+    let (changed,): (bool,) = call(&panel, &connection, "AboutToShow", &(0i32,)).await;
+    assert!(changed);
+    let messages = received(&mut signals).await;
+    assert_eq!(
+        messages.iter().map(member).collect::<Vec<_>>(),
+        ["LayoutUpdated"]
+    );
+    assert!(
+        tray.state
+            .lock()
+            .await
+            .menu
+            .find_by_label("Graphics card: 50%")
+            .is_some()
+    );
+}
