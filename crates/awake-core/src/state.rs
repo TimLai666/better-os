@@ -42,6 +42,13 @@ pub enum EndCause {
     /// `TriggerCleared` because the rule still matches; only permission changed,
     /// and a history entry that conflated the two would misexplain the machine.
     RulesSuppressed,
+    /// The session kept the machine awake with the lid closed, and the lid
+    /// stayed closed on battery for longer than the limit the person set
+    /// (ticket 109). Ended so the machine may sleep rather than run flat in a
+    /// bag.
+    LidClosedOnBattery {
+        limit_minutes: u32,
+    },
 }
 
 impl EndCause {
@@ -56,6 +63,7 @@ impl EndCause {
             EndCause::Replaced => "replaced",
             EndCause::TriggerCleared => "trigger_cleared",
             EndCause::RulesSuppressed => "rules_suppressed",
+            EndCause::LidClosedOnBattery { .. } => "lid_closed_on_battery",
         }
     }
 }
@@ -141,6 +149,12 @@ pub enum Command {
     /// The battery reading, which may end sessions that watch it.
     BatteryLevel {
         percent: u8,
+    },
+    /// The lid has been closed on battery for `limit_minutes`, so every
+    /// session holding the lid ends. Sessions that do not hold the lid are not
+    /// touched: they never stopped the lid suspending the machine.
+    LidClosedOnBatteryLimit {
+        limit_minutes: u32,
     },
     /// The service could not confirm the inhibitor is still held.
     InhibitorLost {
@@ -427,6 +441,21 @@ impl AwakeState {
                     });
                 }
             }
+            Command::LidClosedOnBatteryLimit { limit_minutes } => {
+                let stopped: Vec<SessionId> = self
+                    .sessions
+                    .iter()
+                    .filter(|session| session.policy.prevent_lid_suspend)
+                    .map(|session| session.id)
+                    .collect();
+                for session in stopped {
+                    self.sessions.retain(|active| active.id != session);
+                    effects.push(Effect::SessionEnded {
+                        session,
+                        cause: EndCause::LidClosedOnBattery { limit_minutes },
+                    });
+                }
+            }
             Command::InhibitorLost { detail } => {
                 // The sessions stay: the user asked for them and the service
                 // will try to re-acquire. What changes is that the tray stops
@@ -620,6 +649,7 @@ mod tests {
             idle: true,
             display_sleep: false,
             automatic_lock: false,
+            lid_switch: true,
         }
     }
 
@@ -1281,5 +1311,51 @@ mod tests {
             ))
         );
         assert!(state.sessions().is_empty());
+    }
+
+    #[test]
+    fn the_closed_lid_limit_ends_only_the_sessions_holding_the_lid() {
+        let mut state = state();
+        let manual = started(&mut state, EndCondition::Indefinite);
+        assert!(state.effective_policy().policy.prevent_lid_suspend);
+        // A rule session that does not hold the lid runs alongside it.
+        state.apply(sync(vec![trigger(1, "Build")]), NOW).unwrap();
+        assert_eq!(state.sessions().len(), 2);
+
+        let effects = state
+            .apply(
+                Command::LidClosedOnBatteryLimit { limit_minutes: 120 },
+                NOW + 7_200,
+            )
+            .unwrap();
+
+        assert_eq!(
+            effects[0],
+            Effect::SessionEnded {
+                session: manual,
+                cause: EndCause::LidClosedOnBattery { limit_minutes: 120 },
+            }
+        );
+        assert_eq!(state.sessions().len(), 1);
+        assert_eq!(state.sessions()[0].rule, Some(RuleId(1)));
+        let Some(Effect::PolicyChanged(after)) = effects.last() else {
+            panic!("ending the lid session changes the policy: {effects:?}");
+        };
+        assert!(!after.policy.prevent_lid_suspend);
+        assert_eq!(
+            EndCause::LidClosedOnBattery { limit_minutes: 120 }.as_key(),
+            "lid_closed_on_battery"
+        );
+    }
+
+    #[test]
+    fn the_closed_lid_limit_with_no_lid_session_changes_nothing() {
+        let mut state = state();
+        state.apply(sync(vec![trigger(1, "Build")]), NOW).unwrap();
+        let effects = state
+            .apply(Command::LidClosedOnBatteryLimit { limit_minutes: 30 }, NOW)
+            .unwrap();
+        assert!(effects.is_empty());
+        assert_eq!(state.sessions().len(), 1);
     }
 }

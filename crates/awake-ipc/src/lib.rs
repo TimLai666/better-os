@@ -23,9 +23,10 @@
 pub mod notification;
 
 use awake_core::{
-    ActiveReason, BackendCapabilities, EndCondition, EndConditionError, IndicatorState, PolicyGap,
-    ProviderKind, Reason, ReasonError, Remaining, Rule, RuleError, Session, SessionChange,
-    SessionId, SessionOrigin, SessionPolicy, SessionRequest, Suppression, Truth,
+    ActiveReason, BackendCapabilities, EndCondition, EndConditionError, IndicatorState,
+    LidBatteryLimit, LidBatteryLimitError, PolicyGap, ProviderKind, Reason, ReasonError, Remaining,
+    Rule, RuleError, Session, SessionChange, SessionId, SessionOrigin, SessionPolicy,
+    SessionRequest, Suppression, Truth,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -39,7 +40,24 @@ use thiserror::Error;
 /// `deny_unknown_fields` — a version 1 client handed a version 2 status would
 /// reject the whole reply, so pretending the two are compatible would produce a
 /// client that silently stopped working rather than one that says why.
-pub const PROTOCOL_VERSION: u32 = 2;
+///
+/// Version 3 added "Also when the lid is closed" (ticket 109): the
+/// `prevent_lid_suspend` policy field, the backend's `lid_switch` capability,
+/// the status's `lid` protection, the `set_lid_battery_limit` request, and the
+/// `lid_limit_minutes` a closed-lid stop carries.
+///
+/// Raising it again would have stopped the window and tray already installed,
+/// which an update leaves running until they restart. So the service still
+/// accepts [`LEGACY_PROTOCOL_VERSION`] and answers such a request in that
+/// version's shape ([`AwakeResponse::to_json_for`]), and it pushes every event
+/// twice: as version 2 on the `StatusChanged` signal an older client listens
+/// to, and as this version on `Event`.
+pub const PROTOCOL_VERSION: u32 = 3;
+
+/// The one older version a service still answers. A request stamped with it
+/// is read with the fields it did not have at their defaults, and is answered
+/// without the fields it does not know.
+pub const LEGACY_PROTOCOL_VERSION: u32 = 2;
 
 /// Largest accepted request. A session request is a handful of fields; anything
 /// larger is a mistake or an attack.
@@ -188,6 +206,23 @@ pub enum RequestBody {
     QueryHistory {
         limit: u32,
     },
+
+    // ---- Version 3 -------------------------------------------------------
+    /// How long the lid may stay closed on battery before every session
+    /// holding the lid ends. A service setting, so a session started from the
+    /// tray and one started from the window are held to the same limit.
+    SetLidBatteryLimit {
+        limit: LidBatteryLimit,
+    },
+}
+
+impl RequestBody {
+    /// Whether this request exists only in [`PROTOCOL_VERSION`]. A request
+    /// stamped with the legacy version that carries one is refused, because no
+    /// client of that version could have meant it.
+    pub fn is_version_3_only(&self) -> bool {
+        matches!(self, RequestBody::SetLidBatteryLimit { .. })
+    }
 }
 
 /// The largest history page a client may ask for. A bigger request is refused
@@ -233,9 +268,24 @@ impl AwakeRequest {
         })
     }
 
+    /// The request as a service from before protocol version 3 reads it:
+    /// stamped with the legacy version and without the fields it does not know.
+    /// A client uses it after such a service refused the current version, so
+    /// it keeps working until the service restarts. A request that exists only
+    /// in version 3 cannot be sent this way.
+    pub fn to_legacy_json(&self) -> Result<String, IpcError> {
+        if self.body.is_version_3_only() {
+            return Err(IpcError::NeedsNewerService);
+        }
+        legacy_json(self)
+    }
+
     /// Everything checkable without a clock or a running session.
     pub fn validate(&self) -> Result<(), IpcError> {
-        if self.protocol_version != PROTOCOL_VERSION {
+        let legacy = self.protocol_version == LEGACY_PROTOCOL_VERSION;
+        if (self.protocol_version != PROTOCOL_VERSION && !legacy)
+            || (legacy && self.body.is_version_3_only())
+        {
             return Err(IpcError::ProtocolVersion {
                 found: self.protocol_version,
                 expected: PROTOCOL_VERSION,
@@ -309,6 +359,9 @@ impl AwakeRequest {
                 if *limit == 0 || *limit > MAX_HISTORY_PAGE {
                     return Err(IpcError::InvalidHistoryLimit { limit: *limit });
                 }
+            }
+            RequestBody::SetLidBatteryLimit { limit } => {
+                limit.validate()?;
             }
             RequestBody::EndManualSession
             | RequestBody::QueryStatus
@@ -628,6 +681,23 @@ pub struct WireBatteryProtection {
     pub stop_below_percent: Option<u8>,
 }
 
+/// The closed-lid protection the window and the tray both show (ticket 109).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WireLidProtection {
+    /// How long the lid may stay closed on battery before every session
+    /// holding it ends.
+    pub battery_limit: LidBatteryLimit,
+    /// Whether the lid is closed, as logind reports it. Absent when it cannot
+    /// be read, which is what a machine with no lid looks like.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed: Option<bool>,
+    /// When a session holding the lid will end because the lid has been closed
+    /// on battery. Present only while that clock is running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stops_at_unix_seconds: Option<u64>,
+}
+
 /// Everything a client needs to draw the menu or the Status window.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -671,6 +741,10 @@ pub struct StatusDocument {
     pub providers: Vec<WireProvider>,
     #[serde(default)]
     pub battery_protection: WireBatteryProtection,
+    /// What closing the lid does now, and the limit that protects the battery
+    /// while it is closed. Version 3.
+    #[serde(default)]
+    pub lid: WireLidProtection,
     /// The service's clock, so a client counts down against the same time the
     /// session was measured with.
     pub now_unix_seconds: u64,
@@ -877,10 +951,63 @@ impl AwakeResponse {
         Ok(response)
     }
 
+    /// Parses a reply in this version or the legacy one. A legacy reply reads
+    /// into these types with every version 3 field at its default, which says
+    /// "not available" (no lid lock, no lid limit) rather than inventing one.
+    /// `protocol_version` keeps the version the reply was stamped with.
+    pub fn from_json_any(document: &str) -> Result<Self, IpcError> {
+        if document.len() > MAX_RESPONSE_BYTES {
+            return Err(IpcError::PayloadTooLarge {
+                bytes: document.len(),
+                limit: MAX_RESPONSE_BYTES,
+            });
+        }
+        let response: AwakeResponse =
+            serde_json::from_str(document).map_err(|error| IpcError::Malformed {
+                detail: error.to_string(),
+            })?;
+        if response.protocol_version != PROTOCOL_VERSION
+            && response.protocol_version != LEGACY_PROTOCOL_VERSION
+        {
+            return Err(IpcError::ProtocolVersion {
+                found: response.protocol_version,
+                expected: PROTOCOL_VERSION,
+            });
+        }
+        Ok(response)
+    }
+
+    /// Whether this is a service from before protocol version 3 refusing a
+    /// current request. Such a service parses before it checks the version,
+    /// so a request carrying a version 3 field or request comes back as
+    /// malformed (an unknown field or variant), and one without as a version
+    /// refusal; both are stamped with its own version.
+    pub fn is_legacy_version_refusal(&self) -> bool {
+        self.protocol_version == LEGACY_PROTOCOL_VERSION
+            && matches!(
+                &self.body,
+                ResponseBody::Rejected { error_key }
+                    if error_key.starts_with("awake.ipc.error.protocol_version:")
+                        || (error_key.starts_with("awake.ipc.error.malformed:")
+                            && (error_key.contains("unknown field")
+                                || error_key.contains("unknown variant")))
+            )
+    }
+
     pub fn to_json(&self) -> Result<String, IpcError> {
         serde_json::to_string(self).map_err(|error| IpcError::Malformed {
             detail: error.to_string(),
         })
+    }
+
+    /// The reply in the shape a client of `version` reads: this version as it
+    /// is, the legacy version without the fields it does not know.
+    pub fn to_json_for(&self, version: u32) -> Result<String, IpcError> {
+        if version == LEGACY_PROTOCOL_VERSION {
+            legacy_json(self)
+        } else {
+            self.to_json()
+        }
     }
 }
 
@@ -904,6 +1031,10 @@ pub enum EventBody {
         /// stop.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         battery_percent: Option<u8>,
+        /// The closed-lid limit that ended it. Present only for a closed-lid
+        /// stop. Version 3.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lid_limit_minutes: Option<u32>,
     },
     BackendFailure {
         error_key: String,
@@ -945,10 +1076,103 @@ impl AwakeEvent {
         Ok(event)
     }
 
+    /// Parses an event in this version or the legacy one, as
+    /// [`AwakeResponse::from_json_any`] does a reply. A client reads the legacy
+    /// `StatusChanged` signal only while the service it follows is a legacy one.
+    pub fn from_json_any(document: &str) -> Result<Self, IpcError> {
+        if document.len() > MAX_RESPONSE_BYTES {
+            return Err(IpcError::PayloadTooLarge {
+                bytes: document.len(),
+                limit: MAX_RESPONSE_BYTES,
+            });
+        }
+        let event: AwakeEvent =
+            serde_json::from_str(document).map_err(|error| IpcError::Malformed {
+                detail: error.to_string(),
+            })?;
+        if event.protocol_version != PROTOCOL_VERSION
+            && event.protocol_version != LEGACY_PROTOCOL_VERSION
+        {
+            return Err(IpcError::ProtocolVersion {
+                found: event.protocol_version,
+                expected: PROTOCOL_VERSION,
+            });
+        }
+        Ok(event)
+    }
+
     pub fn to_json(&self) -> Result<String, IpcError> {
         serde_json::to_string(self).map_err(|error| IpcError::Malformed {
             detail: error.to_string(),
         })
+    }
+
+    /// The event as a legacy-version client reads it, for the signal such a
+    /// client listens to.
+    pub fn to_legacy_json(&self) -> Result<String, IpcError> {
+        legacy_json(self)
+    }
+}
+
+/// Keys that exist only in [`PROTOCOL_VERSION`]. Each names a version 3 field
+/// and nothing else in any document here, so removing it wherever it appears
+/// leaves exactly the version 2 shape. A key a person can type (a reason, a
+/// rule name) is always a value, never a key, so no user text is touched.
+const VERSION_3_KEYS: [&str; 4] = [
+    "prevent_lid_suspend",
+    "lid_switch",
+    "lid",
+    "lid_limit_minutes",
+];
+
+/// Serializes a document in the legacy version's shape.
+///
+/// Every document is parsed with `deny_unknown_fields`, so a version 2 client
+/// refuses a reply carrying one field it has never heard of. Besides the keys
+/// above, two values are version 3 only: `lid_switch` in a status's
+/// `unmet_policy`, and a conflict over `prevent_lid_suspend`. Both are dropped
+/// from those two lists, which is where a version 2 client reads them, rather
+/// than anywhere a string happens to match.
+fn legacy_json(document: &impl Serialize) -> Result<String, IpcError> {
+    let malformed = |error: serde_json::Error| IpcError::Malformed {
+        detail: error.to_string(),
+    };
+    let mut value = serde_json::to_value(document).map_err(malformed)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "protocol_version".to_string(),
+            serde_json::Value::from(LEGACY_PROTOCOL_VERSION),
+        );
+    }
+    strip_version_3(&mut value);
+    serde_json::to_string(&value).map_err(malformed)
+}
+
+fn strip_version_3(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for key in VERSION_3_KEYS {
+                object.remove(key);
+            }
+            if let Some(serde_json::Value::Array(gaps)) = object.get_mut("unmet_policy") {
+                gaps.retain(|gap| gap.as_str() != Some("lid_switch"));
+            }
+            if let Some(serde_json::Value::Array(conflicts)) = object.get_mut("conflicts") {
+                conflicts.retain(|conflict| {
+                    conflict.get("field").and_then(serde_json::Value::as_str)
+                        != Some("prevent_lid_suspend")
+                });
+            }
+            for child in object.values_mut() {
+                strip_version_3(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                strip_version_3(item);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -981,6 +1205,17 @@ pub enum IpcError {
     InvalidPauseDuration { seconds: u64 },
     #[error("awake.ipc.error.invalid_history_limit:{limit}")]
     InvalidHistoryLimit { limit: u32 },
+    #[error("awake.ipc.error.invalid_lid_limit:{0}")]
+    InvalidLidLimit(LidBatteryLimitError),
+    /// The request exists only in protocol version 3 and the service is older.
+    #[error("awake.ipc.error.needs_newer_service")]
+    NeedsNewerService,
+}
+
+impl From<LidBatteryLimitError> for IpcError {
+    fn from(error: LidBatteryLimitError) -> Self {
+        IpcError::InvalidLidLimit(error)
+    }
 }
 
 impl From<RuleError> for IpcError {
@@ -1031,6 +1266,7 @@ mod tests {
                     idle: true,
                     display_sleep: false,
                     automatic_lock: false,
+                    lid_switch: true,
                 },
                 detail: None,
             },
@@ -1043,8 +1279,271 @@ mod tests {
             conflicts: Vec::new(),
             providers: Vec::new(),
             battery_protection: WireBatteryProtection::default(),
+            lid: WireLidProtection::default(),
             now_unix_seconds: 1_000,
         }
+    }
+
+    /// A status in which every version 3 field is in use.
+    fn lid_status() -> StatusDocument {
+        let mut status = status();
+        status.indicator = WireIndicator::ActiveManual;
+        status.effective_policy = SessionPolicy::manual_default();
+        status.unmet_policy = vec![PolicyGap::DisplaySleep, PolicyGap::LidSwitch];
+        status.sessions = vec![WireSession {
+            session_id: 1,
+            reason: "lid".to_string(),
+            origin: SessionOrigin::Manual,
+            policy: SessionPolicy::manual_default(),
+            battery_stop_percent: Some(20),
+            end: WireEnd::Indefinite,
+            started_at_unix_seconds: 900,
+            remaining: WireRemaining::UntilEnded,
+        }];
+        status.conflicts = vec![
+            WireConflict {
+                field: "prevent_lid_suspend".to_string(),
+                winner_rule_id: 1,
+                winner_name: "A".to_string(),
+                overridden_rule_ids: vec![2],
+                resolution_key: "awake.conflict.strongest_protection_wins".to_string(),
+            },
+            WireConflict {
+                field: "prevent_display_sleep".to_string(),
+                winner_rule_id: 1,
+                winner_name: "A".to_string(),
+                overridden_rule_ids: vec![2],
+                resolution_key: "awake.conflict.strongest_protection_wins".to_string(),
+            },
+        ];
+        status.lid = WireLidProtection {
+            battery_limit: LidBatteryLimit::Minutes { minutes: 120 },
+            closed: Some(true),
+            stops_at_unix_seconds: Some(8_200),
+        };
+        status
+    }
+
+    fn keys(value: &serde_json::Value, into: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(object) => {
+                for (key, child) in object {
+                    into.push(key.clone());
+                    keys(child, into);
+                }
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|item| keys(item, into)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn a_legacy_reply_carries_no_field_a_version_2_client_does_not_know() {
+        let document = AwakeResponse::status(lid_status())
+            .to_json_for(LEGACY_PROTOCOL_VERSION)
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&document).unwrap();
+        assert_eq!(value["protocol_version"], LEGACY_PROTOCOL_VERSION);
+        let mut found = Vec::new();
+        keys(&value, &mut found);
+        for key in VERSION_3_KEYS {
+            assert!(!found.iter().any(|found| found == key), "{key}: {document}");
+        }
+        let status = &value["body"];
+        assert_eq!(status["unmet_policy"], serde_json::json!(["display_sleep"]));
+        assert_eq!(status["conflicts"].as_array().unwrap().len(), 1);
+        assert_eq!(status["conflicts"][0]["field"], "prevent_display_sleep");
+        // Everything version 2 had is still there.
+        assert_eq!(status["sessions"][0]["reason"], "lid");
+        assert_eq!(status["effective_policy"]["prevent_system_suspend"], true);
+        assert_eq!(
+            status["backend"]["capabilities"],
+            serde_json::json!({
+                "system_suspend": true,
+                "idle": true,
+                "display_sleep": false,
+                "automatic_lock": false
+            })
+        );
+    }
+
+    #[test]
+    fn a_current_reply_keeps_every_lid_field() {
+        let response = AwakeResponse::status(lid_status());
+        let document = response.to_json_for(PROTOCOL_VERSION).unwrap();
+        assert_eq!(AwakeResponse::from_json(&document).unwrap(), response);
+        assert!(document.contains("prevent_lid_suspend"));
+        assert!(document.contains("\"lid\""));
+    }
+
+    #[test]
+    fn a_legacy_event_drops_the_closed_lid_limit_and_keeps_the_cause() {
+        let event = AwakeEvent::new(EventBody::SessionEnded {
+            session_id: 3,
+            cause: "lid_closed_on_battery".to_string(),
+            battery_stop_percent: Some(20),
+            battery_percent: None,
+            lid_limit_minutes: Some(120),
+        });
+        let legacy: serde_json::Value =
+            serde_json::from_str(&event.to_legacy_json().unwrap()).unwrap();
+        assert_eq!(
+            legacy,
+            serde_json::json!({
+                "protocol_version": 2,
+                "body": {
+                    "event": "session_ended",
+                    "session_id": 3,
+                    "cause": "lid_closed_on_battery",
+                    "battery_stop_percent": 20
+                }
+            })
+        );
+        let current = event.to_json().unwrap();
+        assert_eq!(AwakeEvent::from_json(&current).unwrap(), event);
+    }
+
+    #[test]
+    fn a_legacy_request_is_accepted_and_reads_the_lid_choice_as_off() {
+        let document = r#"{"protocol_version":2,"body":{"request":"start_session","reason":"Build","policy":{"prevent_system_suspend":true,"prevent_idle":true,"prevent_display_sleep":false,"prevent_automatic_lock":false},"battery_stop_percent":20,"end":{"kind":"indefinite"}}}"#;
+        let request = AwakeRequest::from_json(document).unwrap();
+        assert_eq!(request.protocol_version, LEGACY_PROTOCOL_VERSION);
+        let session = request.as_session_request().unwrap().unwrap();
+        assert!(!session.policy.prevent_lid_suspend);
+    }
+
+    #[test]
+    fn a_legacy_request_cannot_carry_a_version_3_request() {
+        let mut request = AwakeRequest::new(RequestBody::SetLidBatteryLimit {
+            limit: LidBatteryLimit::Never,
+        });
+        assert!(request.validate().is_ok());
+        request.protocol_version = LEGACY_PROTOCOL_VERSION;
+        assert_eq!(
+            request.validate(),
+            Err(IpcError::ProtocolVersion {
+                found: LEGACY_PROTOCOL_VERSION,
+                expected: PROTOCOL_VERSION
+            })
+        );
+    }
+
+    #[test]
+    fn a_closed_lid_limit_outside_the_offered_range_is_refused_at_the_edge() {
+        let request = AwakeRequest::new(RequestBody::SetLidBatteryLimit {
+            limit: LidBatteryLimit::Minutes { minutes: 5 },
+        });
+        assert_eq!(
+            AwakeRequest::from_json(&request.to_json().unwrap()),
+            Err(IpcError::InvalidLidLimit(
+                awake_core::LidBatteryLimitError::OutOfRange { minutes: 5 }
+            ))
+        );
+    }
+
+    #[test]
+    fn a_request_downgraded_for_a_legacy_service_drops_the_lid_choice() {
+        let request = AwakeRequest::new(RequestBody::StartSession {
+            reason: "Build".to_string(),
+            policy: SessionPolicy::manual_default(),
+            battery_stop_percent: Some(20),
+            end: WireEnd::Indefinite,
+            security_confirmed: false,
+        });
+        let legacy: serde_json::Value =
+            serde_json::from_str(&request.to_legacy_json().unwrap()).unwrap();
+        assert_eq!(legacy["protocol_version"], 2);
+        assert_eq!(
+            legacy["body"]["policy"],
+            serde_json::json!({
+                "prevent_system_suspend": true,
+                "prevent_idle": true,
+                "prevent_display_sleep": false,
+                "prevent_automatic_lock": false
+            })
+        );
+        assert_eq!(
+            AwakeRequest::new(RequestBody::SetLidBatteryLimit {
+                limit: LidBatteryLimit::Never
+            })
+            .to_legacy_json(),
+            Err(IpcError::NeedsNewerService)
+        );
+    }
+
+    #[test]
+    fn a_legacy_reply_reads_into_the_current_types_with_the_lid_unavailable() {
+        let legacy = AwakeResponse::status(lid_status())
+            .to_json_for(LEGACY_PROTOCOL_VERSION)
+            .unwrap();
+        assert!(AwakeResponse::from_json(&legacy).is_err());
+        let read = AwakeResponse::from_json_any(&legacy).unwrap();
+        assert_eq!(read.protocol_version, LEGACY_PROTOCOL_VERSION);
+        let ResponseBody::Status(status) = read.body else {
+            panic!("a status");
+        };
+        assert!(!status.effective_policy.prevent_lid_suspend);
+        assert!(!status.backend.capabilities.lid_switch);
+        assert_eq!(status.sessions[0].reason, "lid");
+
+        let refusal = AwakeResponse::rejected("awake.ipc.error.protocol_version:3:2")
+            .to_json_for(LEGACY_PROTOCOL_VERSION)
+            .unwrap();
+        assert!(
+            AwakeResponse::from_json_any(&refusal)
+                .unwrap()
+                .is_legacy_version_refusal()
+        );
+        let unknown_field = AwakeResponse::rejected(
+            "awake.ipc.error.malformed:unknown field `prevent_lid_suspend`, expected one of",
+        )
+        .to_json_for(LEGACY_PROTOCOL_VERSION)
+        .unwrap();
+        assert!(
+            AwakeResponse::from_json_any(&unknown_field)
+                .unwrap()
+                .is_legacy_version_refusal()
+        );
+        let unknown_variant = AwakeResponse::rejected(
+            "awake.ipc.error.malformed:unknown variant `set_lid_battery_limit`, expected one of",
+        )
+        .to_json_for(LEGACY_PROTOCOL_VERSION)
+        .unwrap();
+        assert!(
+            AwakeResponse::from_json_any(&unknown_variant)
+                .unwrap()
+                .is_legacy_version_refusal()
+        );
+        let other = AwakeResponse::rejected("awake.error.no_manual_session")
+            .to_json_for(LEGACY_PROTOCOL_VERSION)
+            .unwrap();
+        assert!(
+            !AwakeResponse::from_json_any(&other)
+                .unwrap()
+                .is_legacy_version_refusal()
+        );
+        let legacy_event = AwakeEvent::new(EventBody::StatusChanged(Box::new(lid_status())))
+            .to_legacy_json()
+            .unwrap();
+        assert!(AwakeEvent::from_json_any(&legacy_event).is_ok());
+        assert!(
+            AwakeEvent::from_json_any(
+                r#"{"protocol_version":1,"body":{"event":"backend_failure","error_key":"x"}}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_version_older_than_the_legacy_one_is_still_refused() {
+        let document = r#"{"protocol_version":1,"body":{"request":"query_status"}}"#;
+        assert_eq!(
+            AwakeRequest::from_json(document),
+            Err(IpcError::ProtocolVersion {
+                found: 1,
+                expected: PROTOCOL_VERSION
+            })
+        );
     }
 
     #[test]
@@ -1074,6 +1573,7 @@ mod tests {
             cause: "battery_threshold".to_string(),
             battery_stop_percent: Some(20),
             battery_percent: Some(19),
+            lid_limit_minutes: None,
         });
         let document = event.to_json().unwrap();
         assert_eq!(AwakeEvent::from_json(&document).unwrap(), event);
@@ -1091,6 +1591,7 @@ mod tests {
                 cause: "expired".to_string(),
                 battery_stop_percent: None,
                 battery_percent: None,
+                lid_limit_minutes: None,
             }
         );
     }
