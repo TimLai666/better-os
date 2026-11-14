@@ -28,7 +28,8 @@ use crate::content::{ContentView, SelectionInput, header_click};
 use crate::i18n::{EN_US, Locale, ZH_TW, copy};
 use crate::keys::{Command, Focus, Modifiers, command_for};
 use crate::layout::{
-    ControlLayout, header_fits, label_width, sidebar_label_fits, toolbar_layout, visible_rows,
+    ControlLayout, header_fits, label_width, sidebar_label_fits, split_viewport_width,
+    toolbar_layout, visible_rows,
 };
 use crate::opcenter::{self, SessionHistory, choices_for, controls_for};
 use crate::prefs::{FilesPreferences, ItemScale, LocalePreference, PreferenceStore, ViewMode};
@@ -197,12 +198,17 @@ fn every_documented_shortcut_maps_to_its_command() {
 #[test]
 fn compress_and_extract_need_both_modifiers_and_take_nothing_already_bound() {
     let content = Focus::Content;
-    // Without Shift the letters stay free: Ctrl+P and Ctrl+E mean nothing here.
-    assert_eq!(command_for("p", Modifiers::control(), None, content), None);
+    // Without Shift, Ctrl+P pins the folder, as in folio, and Ctrl+E stays
+    // free.
+    assert_eq!(
+        command_for("p", Modifiers::control(), None, content),
+        Some(Command::TogglePin)
+    );
     assert_eq!(command_for("e", Modifiers::control(), None, content), None);
     // And the shortcuts already taken with Ctrl+Shift keep their meaning.
+    // Ctrl+Shift+C copies the path as text, as in folio.
     for (key, expected) in [
-        ("c", Command::Copy),
+        ("c", Command::CopyPath),
         ("n", Command::NewFolder),
         ("o", Command::OpenWith),
         ("t", Command::RestoreClosedTab),
@@ -461,6 +467,27 @@ fn a_page_is_the_number_of_rows_the_viewport_shows() {
     assert_eq!(visible_rows(340.0, 34.0), 10);
     assert_eq!(visible_rows(0.0, 34.0), 1);
     assert_eq!(visible_rows(340.0, 0.0), 1);
+}
+
+#[test]
+fn each_half_of_a_split_window_lays_out_at_its_own_width() {
+    // 1,000 wide with the 48 px navigation pane: 951 left for the two
+    // halves after the divider, 475.5 each. A pane subtracts the navigation
+    // pane from its viewport, so it is handed 48 + 475.5.
+    let viewport = split_viewport_width(1_000.0, 48.0);
+    assert_eq!(viewport, 523.5);
+    // What the list's columns and the grid's tiles are computed from is
+    // half, not the whole window.
+    let content = viewport - 48.0;
+    assert!(content * 2.0 + 1.0 <= 1_000.0 - 48.0 + 0.01);
+    let grid = ContentView::new(ViewMode::Grid, ItemScale::Medium);
+    assert!(grid.columns(content - 40.0) < grid.columns(1_000.0 - 48.0 - 40.0));
+    assert!(
+        crate::content::visible_columns(content - 48.0).len()
+            < crate::content::visible_columns(1_000.0 - 48.0 - 48.0).len()
+    );
+    // A window too narrow for two halves never hands out a negative width.
+    assert_eq!(split_viewport_width(40.0, 48.0), 48.0);
 }
 
 // --- Open routing --------------------------------------------------------
@@ -897,6 +924,39 @@ fn a_conflict_offers_overwrite_only_where_overwriting_would_settle_it() {
 }
 
 #[test]
+fn a_folder_landing_on_a_folder_also_offers_merge_and_says_nothing_is_deleted() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.path().join("a/photos")).unwrap();
+    fs::create_dir_all(root.path().join("b/photos")).unwrap();
+    let folders = Conflict::exists(
+        Some(root.path().join("a/photos")),
+        root.path().join("b/photos"),
+    );
+    assert!(opcenter::folders_clash(&folders));
+    assert_eq!(
+        choices_for(&folders),
+        vec![
+            Resolution::Skip,
+            Resolution::Merge,
+            Resolution::Overwrite,
+            Resolution::Rename,
+            Resolution::Cancel
+        ]
+    );
+    for copy in [&EN_US, &crate::i18n::ZH_TW] {
+        assert!(
+            copy.conflict_merge_note.contains("trash")
+                || copy.conflict_merge_note.contains("垃圾桶")
+        );
+        assert!(
+            copy.conflict_replace_note.contains("trash")
+                || copy.conflict_replace_note.contains("垃圾桶")
+        );
+        assert!(!crate::i18n::resolution_label(Resolution::Merge, copy).is_empty());
+    }
+}
+
+#[test]
 fn a_waiting_job_surfaces_its_prompt_and_the_answer_carries_its_scope() {
     let mut waiting = snapshot(OperationKind::Copy, JobState::WaitingOnConflict);
     waiting.conflict = Some(Conflict::exists(
@@ -1090,6 +1150,8 @@ fn fixture() -> (Fixture, FilesSession) {
 
     let engine = Arc::new(JobEngine::new(EngineConfig {
         store: None,
+        // A clash answered in a test never reaches the person's trash.
+        displaced_trash: Some(root.path().join("Trash")),
         ..EngineConfig::default()
     }));
     let reader = Arc::new(FilesReader::new(
@@ -1101,6 +1163,7 @@ fn fixture() -> (Fixture, FilesSession) {
         start: Location::local(home.join("Documents")).unwrap(),
         preferences: FilesPreferences::default(),
         preference_store: PreferenceStore::at_path(root.path().join("prefs.json")),
+        view_store: crate::settings_store::ViewStateStore::at_path(root.path().join("views.json")),
         bookmark_store: BookmarkStore::at_path(root.path().join("bookmarks")),
         directories: UserDirectories::from_values(Some(&home), None),
         mounts: MountTable::new(Vec::new()),
@@ -1168,6 +1231,153 @@ fn ctrl_h_reveals_hidden_entries_immediately_and_persists_the_choice() {
 }
 
 #[test]
+fn a_view_is_remembered_for_its_own_folder_and_the_rest_keep_the_default() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    let documents = fixture.home.join("Documents");
+    let reports = documents.join("reports");
+
+    session.set_view_mode(ViewMode::List);
+    session.set_sort_key(SortKey::Size);
+    session.toggle_hidden();
+    assert_eq!(session.pane().model().visible_len(), 3);
+
+    session.navigate_to(Location::local(&reports).unwrap());
+    settle(&mut session);
+    assert_eq!(
+        session.preferences.view_mode,
+        ViewMode::Grid,
+        "reports has the default"
+    );
+    assert_eq!(session.preferences.order().key, SortKey::Name);
+    assert!(!session.preferences.show_hidden);
+
+    session.go_back();
+    settle(&mut session);
+    assert_eq!(
+        session.preferences.view_mode,
+        ViewMode::List,
+        "Documents kept its own"
+    );
+    assert_eq!(session.preferences.order().key, SortKey::Size);
+    assert_eq!(
+        session.pane().model().visible_len(),
+        3,
+        "and its hidden files"
+    );
+    assert!(session.folder_has_own_view());
+
+    // Nothing was written into the folders themselves.
+    let names: Vec<String> = fs::read_dir(&documents)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names
+            .iter()
+            .all(|name| name != ".directory" && name != ".DS_Store")
+    );
+
+    // A restart reads the same file back, and remembers the last folder.
+    let store = crate::settings_store::ViewStateStore::at_path(
+        fixture.home.parent().unwrap().join("views.json"),
+    );
+    let state = store.load();
+    assert_eq!(state.view_for(Some(&documents)).mode, ViewMode::List);
+    assert_eq!(state.last_folder(), Some(documents.as_path()));
+}
+
+#[test]
+fn using_a_view_everywhere_makes_it_the_default() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    session.set_scale(ItemScale::Large);
+    session.use_view_everywhere();
+    session.navigate_to(Location::local(fixture.home.join("Documents/reports")).unwrap());
+    settle(&mut session);
+    assert_eq!(session.preferences.scale, ItemScale::Large);
+    assert!(!session.folder_has_own_view());
+}
+
+#[test]
+fn the_sort_steps_through_folios_five_orders() {
+    let (_fixture, mut session) = fixture();
+    settle(&mut session);
+    session.step_sort(true);
+    assert_eq!(session.preferences.order().key, SortKey::Type);
+    session.step_sort(false);
+    assert_eq!(session.preferences.order().key, SortKey::Name);
+}
+
+#[test]
+fn ctrl_z_undoes_the_folder_just_made_into_the_trash_and_ctrl_y_brings_it_back() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    let trash = fixture.home.parent().unwrap().join("Trash");
+    session.set_undo_trash(trash.clone());
+    let documents = fixture.home.join("Documents");
+    session.submit(files_operations::JobSpec::new(
+        files_operations::Operation::CreateFolder {
+            parent: LocalPath::new(&documents).unwrap(),
+            name: "Made".into(),
+        },
+    ));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !session.history.can_undo() && Instant::now() < deadline {
+        session.pump();
+        std::thread::yield_now();
+    }
+    assert!(documents.join("Made").is_dir());
+    assert_eq!(
+        session.history.undo_name(&EN_US).as_deref(),
+        Some("Undo New Folder")
+    );
+
+    session.dispatch(Command::Undo, 1, 10);
+    assert!(!documents.join("Made").exists());
+    assert!(
+        trash.join("files/Made").is_dir(),
+        "undo puts it in the trash"
+    );
+    assert_eq!(
+        session.notice.as_ref().unwrap().message(&EN_US),
+        "Undid New Folder."
+    );
+
+    session.dispatch(Command::Redo, 1, 10);
+    assert!(documents.join("Made").is_dir());
+
+    // With nothing left to redo, it says so.
+    session.dispatch(Command::Redo, 1, 10);
+    assert_eq!(
+        session.notice.as_ref().unwrap().message(&EN_US),
+        EN_US.nothing_to_redo
+    );
+}
+
+#[test]
+fn a_filter_narrows_this_folder_and_is_gone_in_the_next() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    fs::write(fixture.home.join("Documents/Notes-2.TXT"), b"x").unwrap();
+    session.reload();
+    settle(&mut session);
+    session.set_filter("NOTES");
+    let names: Vec<String> = (0..session.row_count())
+        .filter_map(|row| session.entry_at(row).map(|entry| entry.name.clone()))
+        .collect();
+    assert_eq!(names, ["Notes-2.TXT", "notes.txt"]);
+    assert_eq!(session.filter_status(), Some((2, 4)));
+
+    session.navigate_to(Location::local(fixture.home.join("Documents/reports")).unwrap());
+    settle(&mut session);
+    session.go_back();
+    settle(&mut session);
+    assert_eq!(session.filter(), "");
+    assert_eq!(session.filter_status(), None);
+}
+
+#[test]
 fn closing_a_tab_keeps_its_history_and_reopening_restores_it() {
     let (fixture, mut session) = fixture();
     settle(&mut session);
@@ -1231,17 +1441,28 @@ fn reopening_with_nothing_closed_says_so_rather_than_doing_nothing() {
 }
 
 #[test]
-fn a_new_tab_inherits_the_global_view_preferences() {
+fn a_new_tab_takes_the_view_of_the_folder_it_opens() {
     let (fixture, mut session) = fixture();
     settle(&mut session);
+    // Documents gets its own view.
     session.dispatch(Command::ToggleHidden, 1, 10);
     session.set_sort_key(SortKey::Size);
 
-    let second = session.open_tab(Location::local(&fixture.home).unwrap(), true);
+    // Home has none, so a tab there opens with the default.
+    let home = session.open_tab(Location::local(&fixture.home).unwrap(), true);
     settle(&mut session);
-    let tab = session.tabs().get(second).unwrap();
+    let tab = session.tabs().get(home).unwrap();
+    assert!(!tab.preferences().hidden.show_hidden);
+    assert_eq!(tab.preferences().order.key, SortKey::Name);
+
+    // A second tab on Documents opens the way Documents was left.
+    let documents = session.open_tab(
+        Location::local(fixture.home.join("Documents")).unwrap(),
+        true,
+    );
+    settle(&mut session);
+    let tab = session.tabs().get(documents).unwrap();
     assert!(tab.preferences().hidden.show_hidden);
-    assert_eq!(tab.preferences().order.key, SortKey::Size);
     assert_eq!(session.pane().preferences().order.key, SortKey::Size);
 }
 
@@ -1670,4 +1891,372 @@ fn sizes_and_times_read_the_way_a_file_manager_shows_them() {
         "—"
     );
     assert_eq!(crate::format::duration(Duration::from_secs(3_725)), "1h 2m");
+}
+
+#[test]
+fn an_image_without_a_thumbnail_gets_one_made_in_the_background() {
+    let root = tempfile::tempdir().unwrap();
+    let photo = root.path().join("photo.png");
+    image::RgbaImage::from_pixel(400, 400, image::Rgba([10, 120, 200, 255]))
+        .save(&photo)
+        .unwrap();
+    let cache_root = root.path().join("thumbnails");
+    let thumbnails = crate::views::Thumbnails::with_cache(Some(
+        files_preview::thumbnails::ThumbnailCache::at(&cache_root),
+    ));
+
+    // The first ask returns at once with nothing, and the work is queued.
+    assert_eq!(thumbnails.for_file(&photo, "image/png"), None);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let made = loop {
+        if let Some(path) = thumbnails.for_file(&photo, "image/png") {
+            break path;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the thumbnail was never made"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(
+        made,
+        cache_root.join("large").join(format!(
+            "{}.png",
+            files_preview::thumbnails::hash(&files_preview::thumbnails::file_uri(&photo))
+        ))
+    );
+    assert!(thumbnails.ready.load(std::sync::atomic::Ordering::Acquire));
+}
+
+#[test]
+fn escape_clears_the_selection_first_and_then_cancels_the_running_job() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    // A copy parked on a clash stays running until it is answered.
+    let documents = fixture.home.join("Documents");
+    fs::create_dir_all(fixture.home.join("other")).unwrap();
+    fs::write(fixture.home.join("other/notes.txt"), b"clash").unwrap();
+    session.submit(files_operations::JobSpec::new(
+        files_operations::Operation::Copy {
+            sources: vec![LocalPath::new(fixture.home.join("other/notes.txt")).unwrap()],
+            destination: LocalPath::new(&documents).unwrap(),
+        },
+    ));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !session
+        .jobs
+        .iter()
+        .any(|job| job.state == files_operations::JobState::WaitingOnConflict)
+    {
+        assert!(Instant::now() < deadline, "the copy never parked");
+        session.refresh_jobs();
+        std::thread::yield_now();
+    }
+    session.notice = None;
+    session.apply_selection(SelectionInput::SelectAll, 1);
+    session.dispatch(Command::ClearSelection, 1, 10);
+    assert!(
+        session.jobs.iter().any(|job| !job.state.is_terminal()),
+        "the first Escape only cleared the selection"
+    );
+    session.notice = None;
+    session.dispatch(Command::ClearSelection, 1, 10);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while session.jobs.iter().any(|job| !job.state.is_terminal()) {
+        assert!(Instant::now() < deadline, "the job was not cancelled");
+        session.refresh_jobs();
+        std::thread::yield_now();
+    }
+    assert_eq!(fs::read(documents.join("notes.txt")).unwrap(), b"hello");
+}
+
+#[test]
+fn ctrl_f6_moves_the_keyboard_to_the_sidebar_and_back() {
+    let (_fixture, mut session) = fixture();
+    assert_eq!(session.focus, Focus::Content);
+    session.dispatch(Command::CyclePane, 1, 10);
+    assert_eq!(session.focus, Focus::Sidebar);
+    session.dispatch(Command::CyclePane, 1, 10);
+    assert_eq!(session.focus, Focus::Content);
+}
+
+/// A server that wants "ann" / "secret".
+struct FakeServer {
+    folder: std::path::PathBuf,
+}
+
+impl crate::network::Mounter for FakeServer {
+    fn mount(
+        &self,
+        _address: &str,
+        credentials: Option<&crate::network::Credentials>,
+    ) -> Result<std::path::PathBuf, crate::network::MountError> {
+        match credentials {
+            Some(given) if given.user == "ann" && given.password == "secret" => {
+                Ok(self.folder.clone())
+            }
+            _ => Err(crate::network::MountError::NeedsPassword),
+        }
+    }
+}
+
+#[test]
+fn a_server_address_asks_for_a_password_then_opens_the_mounted_folder() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    let mounted = fixture.home.join("Documents/reports");
+    session.set_mounter(std::sync::Arc::new(FakeServer {
+        folder: mounted.clone(),
+    }));
+    session.submit_path(
+        "sftp://nas/home",
+        None,
+        &crate::toolbar::FilesystemValidator,
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while session.is_mounting() {
+        assert!(Instant::now() < deadline);
+        session.pump();
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        session.dialog,
+        Some(PendingDialog::ServerLogin {
+            address: "sftp://nas/home".into()
+        })
+    );
+    session.dialog = None;
+    session.mount_server(
+        "sftp://nas/home".into(),
+        Some(crate::network::Credentials {
+            user: "ann".into(),
+            password: "secret".into(),
+        }),
+    );
+    while session.is_mounting() {
+        assert!(Instant::now() < deadline);
+        session.pump();
+        std::thread::yield_now();
+    }
+    assert_eq!(session.location(), &Location::local(&mounted).unwrap());
+}
+
+#[test]
+fn the_side_preview_follows_a_click_without_waiting_for_anything_else() {
+    let (_fixture, mut session) = fixture();
+    settle(&mut session);
+    if !session.preview.open {
+        session.toggle_preview();
+    }
+    session.apply_selection(SelectionInput::Clear, 1);
+    session.pump();
+    assert_eq!(
+        session.preview.placeholder(&EN_US),
+        Some(EN_US.preview_nothing_selected)
+    );
+    let notes = session
+        .pane()
+        .model()
+        .iter_visible()
+        .position(|entry| entry.name == "notes.txt")
+        .unwrap();
+    // Only the click; no pump in between.
+    session.apply_selection(SelectionInput::Click(notes), 1);
+    assert_ne!(
+        session.preview.placeholder(&EN_US),
+        Some(EN_US.preview_nothing_selected),
+        "the pane is preparing notes.txt, not asking for a selection"
+    );
+}
+
+/// Two folders each with a `notes.txt`: going from one to the other shows
+/// the second file, not the first one's preview kept because the names
+/// match.
+#[test]
+fn the_same_name_in_another_folder_is_a_new_preview() {
+    let root = tempfile::tempdir().unwrap();
+    let mut panel = crate::preview::PreviewPanel::default();
+    panel.toggle();
+    let mut ask = |folder: &str| {
+        let dir = root.path().join(folder);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("notes.txt"), folder).unwrap();
+        let entry = Entry::file(
+            "notes.txt",
+            files_core::location::LocalPath::new(dir.join("notes.txt")).unwrap(),
+            EntryKind::File,
+        );
+        panel.request_for(Some(&entry), &Location::local(&dir).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while panel.is_waiting() && Instant::now() < deadline {
+            panel.pump();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        match panel.slot() {
+            crate::preview::PreviewSlot::Ready(preview) => match preview.as_ref() {
+                files_preview::Preview::Text(text) => format!("{text:?}"),
+                other => format!("{other:?}"),
+            },
+            other => format!("{other:?}"),
+        }
+    };
+    assert!(ask("first").contains("first"));
+    assert!(ask("second").contains("second"), "the second folder's file");
+}
+
+/// At 960 wide with the operation center open, the list's columns are
+/// chosen for what is left beside it (the panel is 420 wide, not the
+/// preview's 320), so the last one steps aside instead of being cut off.
+#[test]
+fn the_list_columns_fit_beside_every_open_panel() {
+    use crate::layout::side_panels_width;
+    assert_eq!(side_panels_width(false, false, false, false), 0.0);
+    assert_eq!(side_panels_width(false, true, false, false), 320.0);
+    // A compact window draws no preview.
+    assert_eq!(side_panels_width(false, true, true, false), 0.0);
+    assert_eq!(side_panels_width(false, true, false, true), 740.0);
+    assert_eq!(side_panels_width(true, true, false, false), 360.0);
+
+    let content = 960.0 - 48.0 - side_panels_width(false, false, true, true) - 48.0;
+    let shown = crate::content::visible_columns(content);
+    let used: f32 = shown
+        .iter()
+        .filter(|column| **column != crate::content::ListColumn::Name)
+        .map(|column| column.width() + 8.0)
+        .sum();
+    assert!(
+        used + crate::content::MIN_NAME_WIDTH <= content,
+        "{shown:?} need {used} beside the name in {content}"
+    );
+}
+
+/// Done things read as a success and news as information; only what needs
+/// a look uses the warning style.
+#[test]
+fn a_notice_is_drawn_in_the_tone_of_what_it_says() {
+    use crate::session::NoticeTone;
+    assert_eq!(
+        Notice::Undo {
+            undoing: true,
+            outcome: Ok(crate::undo::ChangeKind::Move),
+        }
+        .tone(),
+        NoticeTone::Success
+    );
+    let erased = |failure: Option<String>| Notice::Erased {
+        label: "Stick".into(),
+        format: true,
+        failure,
+    };
+    assert_eq!(erased(None).tone(), NoticeTone::Success);
+    assert_eq!(
+        erased(Some("storage.erase.busy".into())).tone(),
+        NoticeTone::Warning
+    );
+    assert_eq!(
+        Notice::WritingImage {
+            label: "Stick".into(),
+            percent: 40,
+        }
+        .tone(),
+        NoticeTone::Information
+    );
+}
+
+// --- Restart after an update (ticket 105) ---------------------------------
+
+#[test]
+fn a_restart_reopens_the_tabs_the_front_tab_and_its_selection() {
+    let (first, mut before) = fixture();
+    settle(&mut before);
+    before.open_tab(Location::local(first.home.clone()).unwrap(), false);
+    before.open_tab(Location::Trash(TrashLocation::Root), false);
+    before.select_by_name("notes.txt");
+    before.operations_open = true;
+    before.set_search_text("note");
+    let view = before.view();
+    assert_eq!(view.tabs.len(), 3);
+    assert_eq!(view.active, 0);
+    assert_eq!(view.selected, vec!["notes.txt".to_string()]);
+
+    // Through the hand-off's own encoding, as the next program reads it.
+    let carried: crate::restart::FilesView = serde_json::from_str(
+        &serde_json::to_string(&crate::restart::FilesView {
+            session: view.clone(),
+            path_draft: Some("/home/someone/Doc".into()),
+            scroll: 240.0,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    // The new program starts in the home folder, as a fresh window would.
+    let (_other, mut after) = fixture();
+    assert!(after.restore_view(&carried.session));
+    settle(&mut after);
+    let reopened = after.view();
+    assert_eq!(reopened.tabs, view.tabs);
+    assert_eq!(reopened.active, 0);
+    assert_eq!(reopened.selected, vec!["notes.txt".to_string()]);
+    assert_eq!(reopened.search, "note");
+    assert!(reopened.operations_open);
+    assert_eq!(carried.path_draft.as_deref(), Some("/home/someone/Doc"));
+}
+
+#[test]
+fn a_restart_brings_back_a_tab_that_was_not_the_first_in_front() {
+    let (first, mut before) = fixture();
+    settle(&mut before);
+    let home = before.open_tab(Location::local(first.home.clone()).unwrap(), true);
+    assert_eq!(before.active_tab(), home);
+    let view = before.view();
+    assert_eq!(view.active, 1);
+
+    let (_other, mut after) = fixture();
+    assert!(after.restore_view(&view));
+    assert_eq!(after.tabs().active_index(), 1);
+    assert_eq!(
+        after.location(),
+        &Location::local(first.home.clone()).unwrap()
+    );
+}
+
+#[test]
+fn a_location_that_cannot_be_reopened_is_left_out() {
+    let (_fixture, mut session) = fixture();
+    let started = session.location().clone();
+    let view = crate::restart::SessionView {
+        tabs: vec!["device://some-disk/x".into(), "bogus".into()],
+        ..Default::default()
+    };
+    assert!(!session.restore_view(&view), "nothing to reopen");
+    assert_eq!(session.location(), &started, "the start folder is kept");
+    assert_eq!(session.tabs().len(), 1);
+}
+
+#[test]
+fn an_operation_or_an_open_dialog_holds_the_restart() {
+    use better_ui::restart::Blocker;
+    let (_fixture, mut session) = fixture();
+    assert_eq!(session.restart_blocked(), None);
+    session.jobs = vec![snapshot(OperationKind::Copy, JobState::Running)];
+    assert_eq!(
+        session.restart_blocked(),
+        Some(Blocker::Task),
+        "a running copy"
+    );
+    session.jobs = vec![snapshot(OperationKind::Copy, JobState::Paused)];
+    assert_eq!(
+        session.restart_blocked(),
+        Some(Blocker::Task),
+        "a paused copy is not finished"
+    );
+    session.jobs = vec![snapshot(OperationKind::Copy, JobState::Completed)];
+    assert_eq!(session.restart_blocked(), None, "a finished one is history");
+    session.dialog = Some(PendingDialog::NewFolder);
+    assert_eq!(
+        session.restart_blocked(),
+        Some(Blocker::Dialog),
+        "a dialog with typed input"
+    );
 }

@@ -969,6 +969,7 @@ fn both_operations_leave_a_record_a_later_process_can_read() {
     let archive = data.join("notes.tar.gz");
     {
         let engine = JobEngine::new(EngineConfig {
+            displaced_trash: Some(support::test_trash()),
             workers: 1,
             store: Some(store.clone()),
             conflicts: ConflictPolicy::new(),

@@ -107,6 +107,33 @@ pub fn table_layout(viewport_width: f32, scale: f32, total_columns: f32) -> Tabl
     }
 }
 
+/// The width each pane of a split window lays itself out for, given the
+/// window's width and the navigation pane's.
+///
+/// Every width a pane computes (the tiles across, the list columns that fit,
+/// the breadcrumbs, the command bar) is "its viewport minus the navigation
+/// pane", so each half is handed a viewport whose width, less the navigation
+/// pane, is the half it really has: the window's content area split in two,
+/// less the divider between them.
+pub fn split_viewport_width(window_width: f32, nav_width: f32) -> f32 {
+    let half = ((window_width - nav_width - 1.0) / 2.0).max(0.0);
+    nav_width + half
+}
+
+/// The width of the panels beside the content area: the app details (360)
+/// or the preview (320, hidden in a compact window), and the operation
+/// center (420). Every one that is drawn takes its width from the content.
+pub fn side_panels_width(details: bool, preview: bool, compact: bool, operations: bool) -> f32 {
+    let column = if details {
+        360.0
+    } else if preview && !compact {
+        320.0
+    } else {
+        0.0
+    };
+    column + if operations { 420.0 } else { 0.0 }
+}
+
 /// How many rows a viewport of this height shows, which is the page size for
 /// Page Up and Page Down and the count the virtualized list draws.
 pub fn visible_rows(viewport_height: f32, row_height: f32) -> usize {

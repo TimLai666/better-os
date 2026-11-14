@@ -46,6 +46,12 @@ pub struct Settings {
     /// The OAuth App client ID that host's sign-in used, when it is not
     /// this build's (an Enterprise server's own app). Not a secret.
     pub account_client_id: String,
+    /// The Graph tab's filter: `all`, `local`, or `current`.
+    pub graph_scope: String,
+    #[serde(default = "yes")]
+    pub graph_remotes: bool,
+    #[serde(default = "yes")]
+    pub graph_tags: bool,
 }
 
 impl Default for Settings {
@@ -65,6 +71,9 @@ impl Default for Settings {
             clone_folder: String::new(),
             account_host: String::new(),
             account_client_id: String::new(),
+            graph_scope: "all".into(),
+            graph_remotes: true,
+            graph_tags: true,
         }
     }
 }

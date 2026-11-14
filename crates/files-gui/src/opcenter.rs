@@ -34,8 +34,7 @@ pub struct JobControls {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FailureRow {
     pub path: PathBuf,
-    /// The stable machine key the error renders as, so a log and a screen
-    /// agree about what went wrong.
+    /// What went wrong, in words: the error's stable key explained.
     pub reason: String,
 }
 
@@ -106,15 +105,37 @@ pub fn controls_for(snapshot: &JobSnapshot) -> JobControls {
 /// Overwrite is offered only where replacing the destination actually settles
 /// the conflict; a full disk is not made emptier by overwriting, so offering
 /// it there would be a button that fails.
+///
+/// A folder copied onto a folder also offers Merge, as folio's clash dialog
+/// does. Replace and Merge never delete: what they displace goes to the
+/// trash, which the prompt says.
 pub fn choices_for(conflict: &Conflict) -> Vec<Resolution> {
+    choices_with(conflict, folders_clash(conflict))
+}
+
+/// [`choices_for`], with whether both sides are folders given rather than
+/// read from the disk.
+pub fn choices_with(conflict: &Conflict, both_folders: bool) -> Vec<Resolution> {
     let mut choices = Vec::new();
     choices.push(Resolution::Skip);
     if conflict.kind.accepts_overwrite() {
+        if both_folders {
+            choices.push(Resolution::Merge);
+        }
         choices.push(Resolution::Overwrite);
         choices.push(Resolution::Rename);
     }
     choices.push(Resolution::Cancel);
     choices
+}
+
+/// Whether a conflict is a folder arriving where a folder already is.
+pub fn folders_clash(conflict: &Conflict) -> bool {
+    conflict.destination.is_dir()
+        && conflict
+            .source
+            .as_ref()
+            .is_some_and(|source| source.is_dir())
 }
 
 /// Maps one snapshot to one row.
@@ -129,7 +150,12 @@ pub fn job_row(snapshot: &JobSnapshot, c: &'static Copy) -> JobRow {
         items_label: items_label(&snapshot.progress),
         bytes_label: bytes_label(&snapshot.progress),
         throughput_label: throughput_label(&snapshot.throughput),
-        remaining_label: remaining_label(&snapshot.remaining, c),
+        // A finished job has no time left to estimate.
+        remaining_label: if snapshot.state.is_terminal() {
+            String::new()
+        } else {
+            remaining_label(&snapshot.remaining, c)
+        },
         current: snapshot.current.clone(),
         controls: controls_for(snapshot),
         conflict: snapshot.conflict.as_ref().map(|conflict| ConflictPrompt {
@@ -144,7 +170,7 @@ pub fn job_row(snapshot: &JobSnapshot, c: &'static Copy) -> JobRow {
             .iter()
             .map(|(path, error)| FailureRow {
                 path: path.clone(),
-                reason: reason_key(error),
+                reason: crate::errors::explain(&reason_key(error), c),
             })
             .collect(),
     }
@@ -253,7 +279,8 @@ fn remaining_label(remaining: &RemainingTime, c: &'static Copy) -> String {
 }
 
 /// The machine key an error renders as. `OperationError`'s `Display` is
-/// already a stable key, which is what the panel shows next to the path.
+/// already a stable key; the panel shows what it means
+/// ([`crate::errors::explain`]).
 fn reason_key(error: &OperationError) -> String {
     error.to_string()
 }

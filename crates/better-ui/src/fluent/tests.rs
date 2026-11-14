@@ -9,7 +9,7 @@ use super::button::{ButtonKind, colors};
 use super::chrome::{
     CLOSE_RED, CaptionButton, back_tooltip, caption_buttons, caption_colors, is_back_shortcut,
 };
-use super::command_bar::fit_count;
+use super::command_bar::{fit_count, split_primary};
 use super::dialog::{DefaultButton, DialogButtons, DialogResult};
 use super::hyperlink::link_color;
 use super::info_bar::{ErrorReport, Severity, severity_look};
@@ -17,10 +17,10 @@ use super::list::{
     ListItem, SortState, TILE_BODY_HEIGHT, TILE_BODY_WIDTH, TILE_HEIGHT, TILE_ICON, TILE_WIDTH,
     compare_cells, list_step, move_item, row_fill, row_icon_size, sorted_order,
 };
-use super::menu::{EntryShape, MenuAction, MenuOpen, MenuPath};
+use super::menu::{EntryShape, MenuAction, MenuEntry, MenuItem, MenuOpen, MenuPath, shapes};
 use super::navigation::{
-    NavEntry, NavItem, SearchSlot, content_offset, floats_over_content, item_fill, nav_step,
-    pane_width, search_slot, toggle_tooltip,
+    NavEntry, NavItem, SearchSlot, content_offset, floats_over_content, is_menu_key, item_fill,
+    nav_step, pane_width, search_slot, toggle_tooltip,
 };
 use super::progress::{fraction, indeterminate_arc, indeterminate_segment};
 use super::selection::{ComboOutcome, SliderModel, combo_key};
@@ -254,10 +254,12 @@ fn no_control_draws_text_outside_the_ramp() {
         include_str!("hyperlink.rs"),
         include_str!("breadcrumb.rs"),
         include_str!("button.rs"),
+        include_str!("chip.rs"),
         include_str!("chrome.rs"),
         include_str!("command_bar.rs"),
         include_str!("dialog.rs"),
         include_str!("info_bar.rs"),
+        include_str!("lanes.rs"),
         include_str!("list.rs"),
         include_str!("menu.rs"),
         include_str!("navigation.rs"),
@@ -864,6 +866,60 @@ fn a_command_bar_keeps_what_fits() {
 }
 
 #[test]
+fn a_command_bar_moves_the_tail_into_the_overflow_and_never_ends_on_a_divider() {
+    // command, separator, command, command, separator, command
+    let kinds = [true, false, true, true, false, true];
+    assert_eq!(
+        split_primary(&kinds, None),
+        (vec![0, 1, 2, 3, 4, 5], vec![])
+    );
+    assert_eq!(split_primary(&kinds, Some(3)), (vec![0, 1, 2, 3], vec![5]));
+    assert_eq!(split_primary(&kinds, Some(1)), (vec![0], vec![2, 3, 5]));
+    assert_eq!(split_primary(&kinds, Some(0)), (vec![], vec![0, 2, 3, 5]));
+}
+
+#[test]
+fn a_toggle_menu_item_is_an_ordinary_item_to_the_keyboard() {
+    let entries = vec![
+        MenuItem::new("Show hidden files").checked(true).entry(),
+        MenuItem::new("Folders first").checked(false).entry(),
+        MenuEntry::Separator,
+        MenuItem::new("Off").checked(true).disabled(true).entry(),
+    ];
+    assert_eq!(
+        shapes(&entries),
+        vec![
+            EntryShape::Item { enabled: true },
+            EntryShape::Item { enabled: true },
+            EntryShape::Separator,
+            EntryShape::Item { enabled: false },
+        ]
+    );
+    let MenuEntry::Item(item) = &entries[0] else {
+        panic!("an item");
+    };
+    assert_eq!(item.checked, Some(true));
+}
+
+#[test]
+fn a_navigation_item_with_a_caption_is_two_lines_tall() {
+    let plain = NavItem::new("Home", gpui_component::IconName::Folder);
+    assert_eq!(plain.height(), size::ROW_HEIGHT);
+    let drive = plain.clone().caption("Safe to unplug");
+    assert_eq!(drive.height(), size::TWO_LINE_ROW_HEIGHT);
+}
+
+#[test]
+fn the_menu_key_and_shift_f10_ask_for_a_context_menu() {
+    let key = |text: &str| gpui::Keystroke::parse(text).expect("a keystroke");
+    assert!(is_menu_key(&key("menu")));
+    assert!(is_menu_key(&key("shift-f10")));
+    assert!(!is_menu_key(&key("f10")));
+    assert!(!is_menu_key(&key("ctrl-shift-f10")));
+    assert!(!is_menu_key(&key("enter")));
+}
+
+#[test]
 fn the_appearance_is_stored_as_a_word_and_defaults_to_dark() {
     // ADR 0004: dark, light, or system; dark by default.
     assert_eq!(Appearance::default(), Appearance::Dark);
@@ -1287,5 +1343,329 @@ fn a_status_glyph_is_the_severity_color() {
         assert_eq!(status_glyph_color(Severity::Warning, p), p.caution);
         assert_eq!(status_glyph_color(Severity::Error, p), p.critical);
         assert_eq!(status_glyph_color(Severity::Informational, p), p.accent);
+    }
+}
+
+// The branch graph's cell (`lanes.rs`) and the label chip (`chip.rs`).
+
+#[test]
+fn lane_lines_run_straight_in_their_column_and_curve_between_columns() {
+    use super::lanes::{LaneLine, LineKind, column_x, segment};
+    let line = |kind, column| LaneLine {
+        kind,
+        column,
+        lane: 0,
+    };
+    assert_eq!(column_x(0, 16.0), 8.0);
+    assert_eq!(column_x(2, 16.0), 40.0);
+    // Pass: top to bottom, straight.
+    let pass = segment(line(LineKind::Pass, 1), 0, 16.0, 48.0);
+    assert_eq!(
+        (pass.from, pass.to, pass.controls),
+        ((24.0, 0.0), (24.0, 48.0), None)
+    );
+    // In from the node's own column: straight to the node's centre.
+    let straight = segment(line(LineKind::In, 0), 0, 16.0, 48.0);
+    assert_eq!((straight.from, straight.to), ((8.0, 0.0), (8.0, 24.0)));
+    assert!(straight.controls.is_none());
+    // A fork from column 2 into a node in column 0 curves and leaves and
+    // arrives vertically: both controls at mid-height, over each end.
+    let fork = segment(line(LineKind::In, 2), 0, 16.0, 48.0);
+    assert_eq!(fork.from, (40.0, 0.0));
+    assert_eq!(fork.to, (8.0, 24.0));
+    assert_eq!(fork.controls, Some(((40.0, 12.0), (8.0, 12.0))));
+    // A merge line from the node to column 1 at the bottom.
+    let merge = segment(line(LineKind::Out, 1), 0, 16.0, 48.0);
+    assert_eq!(merge.from, (8.0, 24.0));
+    assert_eq!(merge.to, (24.0, 48.0));
+    assert_eq!(merge.controls, Some(((8.0, 36.0), (24.0, 36.0))));
+}
+
+#[test]
+fn a_lane_keeps_one_hue_and_neighbouring_lanes_differ() {
+    use super::chart::ChartHue;
+    use super::lanes::lane_hue;
+    assert_eq!(lane_hue(0), ChartHue::SEQUENCE[0]);
+    for lane in 0..20u32 {
+        assert_eq!(lane_hue(lane), lane_hue(lane));
+        assert_ne!(lane_hue(lane), lane_hue(lane + 1));
+        assert_eq!(
+            lane_hue(lane),
+            lane_hue(lane + ChartHue::SEQUENCE.len() as u32)
+        );
+    }
+    let hues: std::collections::HashSet<ChartHue> = ChartHue::SEQUENCE.into_iter().collect();
+    assert_eq!(hues.len(), 5, "five different hues");
+    assert!(
+        !hues.contains(&ChartHue::Red) && !hues.contains(&ChartHue::Magenta),
+        "the alarm red and the NPU magenta are not lane colours"
+    );
+}
+
+#[test]
+fn a_chip_takes_its_hue_or_the_control_colours_and_primary_text() {
+    use super::chart::ChartHue;
+    use super::chip::chip_colors;
+    for p in [&LIGHT, &DARK] {
+        let dark = p.is_dark();
+        assert_eq!(
+            chip_colors(Some(ChartHue::Green), p),
+            (
+                ChartHue::Green.area(dark),
+                ChartHue::Green.color(dark),
+                p.text_primary
+            )
+        );
+        assert_eq!(
+            chip_colors(None, p),
+            (p.control_fill, p.stroke, p.text_primary)
+        );
+        assert_ne!(chip_colors(None, p).0, p.accent, "a chip is never accent");
+    }
+}
+
+#[test]
+fn a_clipped_cell_marks_what_is_beyond_and_never_hides_its_node() {
+    use super::lanes::{LaneLine, LineKind, clipping};
+    let line = |column| LaneLine {
+        kind: LineKind::Pass,
+        column,
+        lane: 0,
+    };
+    let inside = clipping(1, &[line(0), line(2)], 3);
+    assert_eq!(
+        (inside.node_column, inside.node_clipped, inside.beyond),
+        (1, false, false)
+    );
+    let lines_beyond = clipping(1, &[line(0), line(5)], 3);
+    assert_eq!(
+        (
+            lines_beyond.node_column,
+            lines_beyond.node_clipped,
+            lines_beyond.beyond
+        ),
+        (1, false, true)
+    );
+    let node_beyond = clipping(7, &[line(0)], 3);
+    assert_eq!(
+        (
+            node_beyond.node_column,
+            node_beyond.node_clipped,
+            node_beyond.beyond
+        ),
+        (3, true, true),
+        "drawn in the overflow column, on no lane of its own"
+    );
+    assert_eq!(
+        clipping(4, &[], 0).node_column,
+        1,
+        "at least one lane shows, then the overflow column"
+    );
+}
+
+// --- light dismiss and hit areas (ticket 103) --------------------------------
+
+use super::hit_area::{self as hit, RowInset};
+use super::light_dismiss::{Opener, PressAt, press, three_presses};
+
+/// Every kit control with a light-dismiss panel: open with a press, close
+/// with a second press on the same control, open again with a third.
+#[test]
+fn every_light_dismiss_panel_closes_on_a_second_press_of_its_control() {
+    let controls = [
+        ("Flyout", Opener::Shielded),
+        ("ComboBox", Opener::Shielded),
+        ("MenuFlyout", Opener::Shielded),
+        ("SplitButton", Opener::Shielded),
+        ("DropDownButton", Opener::Shielded),
+        ("CommandBar More", Opener::Shielded),
+        ("BreadcrumbBar overflow", Opener::Shielded),
+        ("NavigationView floating pane", Opener::InsidePanel),
+        ("AutoSuggestBox", Opener::Field),
+    ];
+    for (name, opener) in controls {
+        assert_eq!(three_presses(opener), [true, false, true], "{name}");
+    }
+}
+
+#[test]
+fn a_press_outside_closes_the_panel_and_still_reaches_its_target() {
+    assert_eq!(
+        press(true, PressAt::Elsewhere),
+        super::light_dismiss::Press {
+            open: false,
+            reaches_target: true
+        }
+    );
+    // The closing press on the panel's own control is taken by the shield.
+    assert!(!press(true, PressAt::OwnControl).reaches_target);
+    assert!(press(true, PressAt::Panel).open);
+    // A press in a menu opened from the panel, past the panel's edge.
+    assert!(press(true, PressAt::ChildPanel).open);
+    assert!(press(true, PressAt::ChildPanel).reaches_target);
+    assert!(!press(false, PressAt::Elsewhere).open);
+}
+
+/// Every panel the kit closes on `on_mouse_down_out` either floats through
+/// `anchored_panel`, which shields its control, or is the one panel whose
+/// toggle is inside it.
+#[test]
+fn every_panel_that_closes_on_a_press_outside_shields_its_control() {
+    let sources = [
+        ("dialog.rs", include_str!("dialog.rs")),
+        ("menu.rs", include_str!("menu.rs")),
+        ("selection.rs", include_str!("selection.rs")),
+        ("navigation.rs", include_str!("navigation.rs")),
+    ];
+    for (name, source) in sources {
+        assert!(source.contains(".on_mouse_down_out("), "{name}");
+        let shielded = source.contains("anchored_panel(");
+        assert!(
+            shielded || name == "navigation.rs",
+            "{name} closes on a press outside without shielding its control"
+        );
+    }
+    // Every panel that closes on a press outside first asks whether the
+    // press was in a panel opened from it.
+    for (name, source) in sources {
+        assert!(source.contains("pointer_in_child_panel("), "{name}");
+        assert!(source.contains("panel_marker("), "{name}");
+    }
+    // The menu's context form has no control to shield; its flyout form does.
+    assert!(include_str!("menu.rs").contains("light_dismiss::anchored_panel(panel, self.edge)"));
+}
+
+#[test]
+fn a_press_in_the_suggestion_field_closes_the_list_and_the_next_opens_it() {
+    use super::auto_suggest::field_pressed;
+    let value = "git";
+    // Open: the press closes it for this text.
+    let dismissed = field_pressed(true, value, None);
+    assert_eq!(dismissed.as_deref(), Some(value));
+    assert!(!list_open(true, value, dismissed.as_deref()));
+    // Closed by that press: the next one opens it again.
+    let dismissed = field_pressed(false, value, dismissed.as_deref());
+    assert_eq!(dismissed, None);
+    assert!(list_open(true, value, dismissed.as_deref()));
+    // Closed for another text: a press keeps what it remembered.
+    assert_eq!(
+        field_pressed(false, value, Some("gi")).as_deref(),
+        Some("gi")
+    );
+}
+
+#[test]
+fn a_menu_items_highlight_goes_when_the_pointer_leaves_it() {
+    let mut menu = MenuOpen::detached();
+    menu.toggle();
+    menu.pointer_over(2);
+    assert_eq!(menu.highlight, Some(2));
+    menu.pointer_left(2);
+    assert_eq!(menu.highlight, None, "a row left behind looks clickable");
+    // The keyboard moved on while the pointer was still on row 2.
+    menu.pointer_over(2);
+    menu.highlight = Some(3);
+    menu.pointer_left(2);
+    assert_eq!(menu.highlight, Some(3));
+    // An open submenu keeps its row highlighted while the pointer goes to it.
+    menu.highlight = Some(4);
+    menu.submenu = Some(4);
+    menu.pointer_left(4);
+    assert_eq!(menu.highlight, Some(4));
+    menu.pointer_over_sub(1);
+    menu.pointer_left_sub(1);
+    assert_eq!(menu.sub_highlight, None);
+}
+
+/// The kit's rows, each with its inset, drawn height, and where its label
+/// ends and its trailing text starts, pressed at scale 1 and 2.
+#[test]
+fn every_kit_row_takes_a_click_anywhere_it_is_highlighted() {
+    /// A row's name, inset, drawn height, and label-to-trailing gap.
+    type KitRow = (&'static str, RowInset, f32, Option<(f32, f32)>);
+    let rows: [KitRow; 8] = [
+        // Label, then the shortcut 24px after it.
+        ("menu item", RowInset::MENU, 36.0, Some((90.0, 150.0))),
+        ("combo item", RowInset::COMBO, 32.0, None),
+        ("suggestion", RowInset::SUGGESTION, 32.0, None),
+        // Label, then a badge at the trailing edge.
+        (
+            "navigation item",
+            RowInset::NAVIGATION,
+            36.0,
+            Some((120.0, 250.0)),
+        ),
+        ("list row", RowInset::LIST, 36.0, Some((100.0, 200.0))),
+        ("two-line list row", RowInset::LIST, 48.0, None),
+        // Rows that fill their row already: no inset.
+        (
+            "table row",
+            RowInset { x: 0.0, y: 0.0 },
+            36.0,
+            Some((80.0, 200.0)),
+        ),
+        (
+            "settings card",
+            RowInset { x: 0.0, y: 0.0 },
+            68.0,
+            Some((150.0, 250.0)),
+        ),
+    ];
+    for (name, inset, height, gap) in rows {
+        let stack = hit::stack(inset, &[height, height, height], 300.0);
+        for scale in [1.0, 2.0] {
+            if let Err(problem) = hit::check_rows(&stack, gap, scale) {
+                panic!("{name}: {problem}");
+            }
+        }
+    }
+}
+
+/// The old way, margins outside the drawn item, fails the same test: the
+/// pixels between two items belong to no row.
+#[test]
+fn rows_drawn_with_margins_leave_dead_pixels_between_them() {
+    let inset = RowInset::MENU;
+    let looks: Vec<hit::RowGeometry> = hit::stack(inset, &[36.0, 36.0], 300.0)
+        .into_iter()
+        .map(|row| hit::RowGeometry {
+            hit: row.look,
+            look: row.look,
+        })
+        .collect();
+    for scale in [1.0, 2.0] {
+        assert!(hit::check_rows(&looks, None, scale).is_err());
+    }
+}
+
+/// Each row renderer builds its hit area from the inset the test reads.
+#[test]
+fn the_row_renderers_use_their_hit_area_inset() {
+    for (name, source, inset) in [
+        ("menu.rs", include_str!("menu.rs"), "RowInset::MENU"),
+        (
+            "selection.rs",
+            include_str!("selection.rs"),
+            "RowInset::COMBO",
+        ),
+        (
+            "auto_suggest.rs",
+            include_str!("auto_suggest.rs"),
+            "RowInset::SUGGESTION",
+        ),
+        (
+            "navigation.rs",
+            include_str!("navigation.rs"),
+            "RowInset::NAVIGATION",
+        ),
+        ("list.rs", include_str!("list.rs"), "RowInset::LIST"),
+    ] {
+        assert!(source.contains("hit_row("), "{name}");
+        assert!(source.contains(inset), "{name}");
+        // A margin of 2px above and below was the gap between rows.
+        assert!(
+            !source.contains(".my(px(2.0))"),
+            "{name} draws a row with margins again"
+        );
     }
 }

@@ -28,11 +28,15 @@ pub mod badge;
 pub mod breadcrumb;
 pub mod button;
 pub mod chart;
+pub mod chip;
 pub mod chrome;
 pub mod command_bar;
 pub mod dialog;
+pub mod hit_area;
 pub mod hyperlink;
 pub mod info_bar;
+pub mod lanes;
+pub mod light_dismiss;
 pub mod list;
 pub mod menu;
 pub mod navigation;
@@ -42,8 +46,11 @@ pub mod settings_card;
 pub mod tabs;
 pub mod text_box;
 pub mod theme;
+pub mod toast;
 pub mod toggle;
 
+#[cfg(test)]
+mod interaction_tests;
 #[cfg(test)]
 mod tests;
 

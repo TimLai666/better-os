@@ -25,9 +25,10 @@ use storage_core::{
     Timestamp, Transition,
 };
 use storage_platform::traits::{
-    DeviceControl, EjectOutcome, FlushBackend, OpenUseInspector, PlatformError, WritebackInspector,
+    DeviceControl, EjectOutcome, FlushBackend, FormatRequest, ImageProgress, OpenUseInspector,
+    PlatformError, WritebackInspector,
 };
-use storage_platform::{PlatformDevice, PlatformEvent};
+use storage_platform::{DeviceAddress, PlatformDevice, PlatformEvent};
 use thiserror::Error;
 use tokio::sync::broadcast;
 
@@ -50,6 +51,10 @@ pub enum ServiceError {
     Policy(#[from] PolicyError),
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// An erasing action the person did not confirm, or one that cannot be
+    /// done now, with the stable reason.
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// The session clock. Monotonic in production; driven by hand in tests, so an
@@ -84,6 +89,59 @@ impl Clock {
     }
 }
 
+/// The devices an image is being written to, shared with every
+/// [`ImageWrite`] so dropping one releases its drive without the
+/// coordinator.
+type Erasing = Arc<Mutex<BTreeSet<DeviceHandle>>>;
+
+/// An image write whose checks passed: the drive is marked as being
+/// written and every volume on it is unmounted. The copy runs without the
+/// coordinator ([`StorageCoordinator::control`]), given the progress
+/// [`ImageWrite::holding`] returns. The mark goes once this is dropped and
+/// the copy has let go of that progress, however the write ends (finished,
+/// failed, or abandoned by a caller that went away while the copy thread
+/// still runs), so a drive is neither left refusing everything nor taken
+/// back while it is still being written.
+#[derive(Debug)]
+pub struct ImageWrite {
+    pub drive: DeviceHandle,
+    pub address: DeviceAddress,
+    pub image: PathBuf,
+    /// The image's length, for progress.
+    pub total: u64,
+    mark: Arc<BusyMark>,
+}
+
+/// The drive, every volume on it and every unlocked volume they back,
+/// marked as being written until the last holder lets go.
+#[derive(Debug)]
+struct BusyMark {
+    members: Vec<DeviceHandle>,
+    erasing: Erasing,
+}
+
+impl Drop for BusyMark {
+    fn drop(&mut self) {
+        if let Ok(mut erasing) = self.erasing.lock() {
+            for member in &self.members {
+                erasing.remove(member);
+            }
+        }
+    }
+}
+
+impl ImageWrite {
+    /// `progress`, holding the drive's mark for as long as the copy keeps
+    /// it: the platform drops it only when its copy has really ended.
+    pub fn holding(&self, progress: ImageProgress) -> ImageProgress {
+        let mark = self.mark.clone();
+        Arc::new(move |written| {
+            let _ = &mark;
+            progress(written)
+        })
+    }
+}
+
 pub struct StorageCoordinator<C: DeviceControl> {
     control: C,
     flush: Arc<dyn FlushBackend>,
@@ -102,6 +160,9 @@ pub struct StorageCoordinator<C: DeviceControl> {
     /// client's unique connection name. Operations started in process have
     /// no client and are not here.
     clients: BTreeMap<String, BTreeSet<(DeviceHandle, String)>>,
+    /// Devices an image is being written to: the drive and every volume on
+    /// it. Nothing else may be done to them until the write ends.
+    erasing: Erasing,
     /// The runtime this service owns, when it was built inside one.
     ///
     /// zbus runs on its default async-io flavor across this workspace — see
@@ -137,6 +198,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             diagnostics: VecDeque::new(),
             updates,
             clients: BTreeMap::new(),
+            erasing: Erasing::default(),
             runtime: tokio::runtime::Handle::try_current().ok(),
         })
     }
@@ -155,6 +217,20 @@ impl<C: DeviceControl> StorageCoordinator<C> {
 
     pub fn clock(&self) -> &Clock {
         &self.clock
+    }
+
+    /// The platform control, for work that must not hold the coordinator:
+    /// an image write's copy.
+    pub fn control(&self) -> &C {
+        &self.control
+    }
+
+    /// Refuses anything on a device an image is being written to.
+    fn refuse_if_erasing(&self, handle: &DeviceHandle) -> Result<(), ServiceError> {
+        if self.is_erasing(handle) {
+            return Err(ServiceError::Refused("storage.erase.busy".to_string()));
+        }
+        Ok(())
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<DeviceReport> {
@@ -322,6 +398,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
     /// Mount-on-open. The device stays mounted afterwards; leaving the folder
     /// does not unmount it.
     pub async fn mount(&mut self, handle: &DeviceHandle) -> Result<PathBuf, ServiceError> {
+        self.refuse_if_erasing(handle)?;
         let device = self
             .known
             .get(handle)
@@ -338,6 +415,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
     /// The explicit action, still supported and still required in Performance
     /// mode: unmount, then power the drive off where the platform allows it.
     pub async fn eject(&mut self, handle: &DeviceHandle) -> Result<EjectOutcome, ServiceError> {
+        self.refuse_if_erasing(handle)?;
         let device = self
             .known
             .get(handle)
@@ -349,6 +427,242 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         }
         self.apply_mount(handle, None).await;
         Ok(outcome)
+    }
+
+    /// Whether something is being written to the device right now: a
+    /// tracked operation, or writeback still on its way.
+    fn is_writing(&self, handle: &DeviceHandle) -> bool {
+        self.report(handle).is_some_and(|report| {
+            matches!(
+                report.state,
+                StateReport::Writing { .. }
+                    | StateReport::PerformanceMode {
+                        active_write: true,
+                        ..
+                    }
+            )
+        }) || self
+            .clients
+            .values()
+            .any(|started| started.iter().any(|(device, _)| device == handle))
+    }
+
+    /// Erases a volume and makes a new filesystem on it, through the
+    /// platform's own Format. Refused unless the person confirmed erasing
+    /// it in the window, and while anything is being written to it.
+    pub async fn format(
+        &mut self,
+        handle: &DeviceHandle,
+        request: &FormatRequest,
+        erase_confirmed: bool,
+    ) -> Result<(), ServiceError> {
+        if !erase_confirmed {
+            return Err(ServiceError::Refused(
+                "storage.erase.not_confirmed".to_string(),
+            ));
+        }
+        request
+            .validate()
+            .map_err(|detail| ServiceError::Refused(format!("storage.format.label:{detail}")))?;
+        let device = self
+            .known
+            .get(handle)
+            .ok_or_else(|| ServiceError::UnknownDevice(handle.as_str().to_string()))?
+            .clone();
+        if self.is_writing(handle) || self.is_erasing(handle) {
+            return Err(ServiceError::Refused("storage.erase.busy".to_string()));
+        }
+        self.control.format(&device.address, request).await?;
+        if let Some(known) = self.known.get_mut(handle) {
+            known.mount_point = None;
+        }
+        self.apply_mount(handle, None).await;
+        Ok(())
+    }
+
+    /// Starts writing a disk image to a whole drive. Refused unless
+    /// confirmed, for an image that is not a regular file, for anything but
+    /// a drive's own block device, and while anything on the drive is being
+    /// written. Every mounted volume on the drive is unmounted first; one
+    /// that will not unmount refuses the whole write, before a byte is
+    /// written. From here until [`Self::finish_image_write`], every
+    /// operation on the drive or its volumes is refused.
+    pub async fn begin_image_write(
+        &mut self,
+        handle: &DeviceHandle,
+        image: &std::path::Path,
+        erase_confirmed: bool,
+    ) -> Result<ImageWrite, ServiceError> {
+        if !erase_confirmed {
+            return Err(ServiceError::Refused(
+                "storage.erase.not_confirmed".to_string(),
+            ));
+        }
+        let total = match std::fs::metadata(image) {
+            Ok(metadata) if image.is_absolute() && metadata.is_file() => metadata.len(),
+            _ => {
+                return Err(ServiceError::Refused(
+                    "storage.image.not_a_file".to_string(),
+                ));
+            }
+        };
+        let device = self
+            .known
+            .get(handle)
+            .ok_or_else(|| ServiceError::UnknownDevice(handle.as_str().to_string()))?
+            .clone();
+        let drive_object = device
+            .drive
+            .as_ref()
+            .map(|drive| drive.object_path.clone())
+            .filter(|path| !path.is_empty());
+        let (true, Some(drive_object)) = (device.block.partition_number.is_none(), drive_object)
+        else {
+            return Err(ServiceError::Refused(
+                "storage.image.not_a_drive".to_string(),
+            ));
+        };
+        let members: Vec<DeviceHandle> = self
+            .known
+            .iter()
+            .filter(|(_, other)| {
+                other
+                    .drive
+                    .as_ref()
+                    .is_some_and(|drive| drive.object_path == drive_object)
+            })
+            .map(|(member, _)| member.clone())
+            .collect();
+        if members
+            .iter()
+            .any(|member| self.is_writing(member) || self.is_erasing(member))
+        {
+            return Err(ServiceError::Refused("storage.erase.busy".to_string()));
+        }
+        for member in &members {
+            let Some(volume) = self.known.get(member).cloned() else {
+                continue;
+            };
+            if volume.mount_point.is_none() {
+                continue;
+            }
+            if let Err(error) = self.control.unmount(&volume.address).await {
+                return Err(ServiceError::Refused(format!(
+                    "storage.image.unmount_failed:{}:{error}",
+                    volume.block.device_path
+                )));
+            }
+            if let Some(known) = self.known.get_mut(member) {
+                known.mount_point = None;
+            }
+            self.apply_mount(member, None).await;
+        }
+        // An unlocked LUKS volume on the drive is a device of its own (a
+        // mapper node with no drive), backed by a partition here: its
+        // filesystem is unmounted too, or the write is refused.
+        let on_drive: BTreeSet<String> = members
+            .iter()
+            .filter_map(|member| self.known.get(member))
+            .map(|volume| volume.address.object_path.clone())
+            .collect();
+        let everything = self.control.enumerate().await?;
+        let mut backed_here = on_drive.clone();
+        // Follows a chain (LUKS on LUKS) to its end.
+        loop {
+            let more: Vec<String> = everything
+                .iter()
+                .filter(|other| {
+                    other
+                        .block
+                        .crypto_backing
+                        .as_ref()
+                        .is_some_and(|backing| backed_here.contains(backing))
+                        && !backed_here.contains(&other.address.object_path)
+                })
+                .map(|other| other.address.object_path.clone())
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            backed_here.extend(more);
+        }
+        let cleartexts: Vec<&PlatformDevice> = everything
+            .iter()
+            .filter(|other| !on_drive.contains(&other.address.object_path))
+            .filter(|other| backed_here.contains(&other.address.object_path))
+            .collect();
+        for cleartext in cleartexts
+            .iter()
+            .filter(|other| other.mount_point.is_some())
+        {
+            if let Err(error) = self.control.unmount(&cleartext.address).await {
+                return Err(ServiceError::Refused(format!(
+                    "storage.image.unmount_failed:{}:{error}",
+                    cleartext.block.device_path
+                )));
+            }
+            let cleartext = DeviceHandle::new(cleartext.address.object_path.clone());
+            if let Some(known) = self.known.get_mut(&cleartext) {
+                known.mount_point = None;
+                self.apply_mount(&cleartext, None).await;
+            }
+        }
+        // The unlocked volumes are marked too, so nothing mounts one again
+        // while the partition under it is overwritten.
+        let mut members = members;
+        members.extend(
+            cleartexts
+                .iter()
+                .map(|cleartext| DeviceHandle::new(cleartext.address.object_path.clone())),
+        );
+        if let Ok(mut erasing) = self.erasing.lock() {
+            erasing.extend(members.iter().cloned());
+        }
+        Ok(ImageWrite {
+            drive: handle.clone(),
+            address: device.address,
+            image: image.to_path_buf(),
+            total,
+            mark: Arc::new(BusyMark {
+                members,
+                erasing: self.erasing.clone(),
+            }),
+        })
+    }
+
+    /// Ends an image write: the drive and its volumes take requests again.
+    /// (Dropping the write does the same; this says it where it happens.)
+    pub fn finish_image_write(&mut self, write: ImageWrite) {
+        drop(write);
+    }
+
+    /// Whether an image is being written to this device or its drive.
+    pub fn is_erasing(&self, handle: &DeviceHandle) -> bool {
+        self.erasing
+            .lock()
+            .map(|erasing| erasing.contains(handle))
+            .unwrap_or(false)
+    }
+
+    /// An image write in one call, holding the coordinator throughout: for
+    /// a caller that owns it outright (the in-process engine, tests). The
+    /// service uses the three steps so other devices stay served meanwhile.
+    pub async fn write_image(
+        &mut self,
+        handle: &DeviceHandle,
+        image: &std::path::Path,
+        erase_confirmed: bool,
+        progress: ImageProgress,
+    ) -> Result<u64, ServiceError> {
+        let write = self
+            .begin_image_write(handle, image, erase_confirmed)
+            .await?;
+        let result = self
+            .control
+            .write_image(&write.address, &write.image, write.holding(progress))
+            .await;
+        self.finish_image_write(write);
+        Ok(result?)
     }
 
     /// Changes a device's policy and persists it.
@@ -638,6 +952,11 @@ impl<C: DeviceControl> StorageCoordinator<C> {
                 mount_point: None,
                 policy: RemovalPolicy::DirectRemoval,
                 state: StateReport::from_state(&transition.state),
+                drive: None,
+                drive_name: None,
+                size: 0,
+                whole_disk: false,
+                erasing: false,
             },
         };
         let _ = self.updates.send(report);
@@ -649,6 +968,8 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         machine: &storage_core::DeviceMachine,
     ) -> DeviceReport {
         let identity = machine.identity();
+        let device = self.known.get(handle);
+        let drive = device.and_then(|device| device.drive.as_ref());
         DeviceReport {
             object_path: handle.as_str().to_string(),
             device_path: identity.device_path().to_string(),
@@ -662,6 +983,20 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             mount_point: machine.mount_point().map(str::to_string),
             policy: machine.policy(),
             state: StateReport::from_state(machine.state()),
+            drive: drive
+                .map(|drive| drive.object_path.clone())
+                .filter(|path| !path.is_empty()),
+            drive_name: drive.and_then(|drive| {
+                let name = [drive.vendor.as_deref(), drive.model.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (!name.is_empty()).then_some(name)
+            }),
+            size: device.map(|device| device.block.size).unwrap_or(0),
+            whole_disk: device.is_some_and(|device| device.block.partition_number.is_none()),
+            erasing: self.is_erasing(handle),
         }
     }
 }

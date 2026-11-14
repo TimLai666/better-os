@@ -188,6 +188,7 @@ fn a_queued_job_cancelled_before_it_starts_never_touches_the_filesystem() {
 
     // One worker, and a long job in front of the one being cancelled.
     let engine = JobEngine::new(files_operations::EngineConfig {
+        displaced_trash: Some(support::test_trash()),
         workers: 1,
         store: None,
         conflicts: ConflictPolicy::new(),

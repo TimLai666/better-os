@@ -543,3 +543,120 @@ async fn a_transaction_sent_while_dpkg_is_interrupted_is_refused_before_any_chan
     assert_eq!(outcome.transaction_id, TRANSACTION);
     assert!(apt.calls().is_empty(), "APT must not have run");
 }
+
+/// Ticket 105: a client that goes away in the middle of `ApplyTransaction`
+/// must not make the daemon think it is idle while dpkg still runs — or it
+/// could leave, and a package postinst could restart it, half way through.
+/// The running slot, the call's place inside the gate, and the busy marker the
+/// daemon package's postinst reads all stay until the install has finished.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_disconnects_mid_transaction_leaves_the_daemon_busy_until_dpkg_ends() {
+    use std::time::Duration;
+    let bus = bus_or_skip!();
+    let fixture = Fixture::new("disconnect");
+    let marker = fixture.root.join("run").join("daemon-busy");
+    let apt = Arc::new(monitor_apt().with_install_duration(Duration::from_millis(1500)));
+    let executor = Arc::new(Executor {
+        apt: apt.clone(),
+        host: Arc::new(FixedHostProbe::ubuntu_2404()),
+        health: Arc::new(FakeHealthProbe::with_files(vec![std::path::PathBuf::from(
+            "/usr/bin/better-monitor",
+        )])),
+        artifacts: fixture.artifacts.clone(),
+        journal: fixture.journal.clone(),
+    });
+    let service = ManagerService::new(
+        FakeAuthorizer(true),
+        executor,
+        fixture.artifacts.clone(),
+        fixture.journal.clone(),
+    )
+    .with_busy_marker(&marker);
+    let running = service.activity();
+    let gate = service.gate();
+    let address: zbus::Address = bus.address.parse().unwrap();
+    let _server = zbus::connection::Builder::address(address)
+        .unwrap()
+        .name("org.betteros.Manager1Test")
+        .unwrap()
+        .serve_at(OBJECT_PATH, service)
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+
+    let content = b"a package would be here";
+    let checksum = digest(content);
+    let source = fixture.root.join("source.deb");
+    std::fs::write(&source, content).unwrap();
+    let stager = client(&bus).await.unwrap();
+    let fd = zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(
+        std::fs::File::open(&source).unwrap(),
+    ));
+    let _: String = call(
+        &stager,
+        "StageArtifact",
+        &(TRANSACTION, MONITOR_DEB, checksum.as_str(), fd),
+    )
+    .await
+    .unwrap();
+
+    // A client that asks and then goes away.
+    let leaver = client(&bus).await.unwrap();
+    let document = plan(checksum).to_json().unwrap();
+    let asking = {
+        let leaver = leaver.clone();
+        tokio::spawn(async move {
+            let _ = call::<_, String>(&leaver, "ApplyTransaction", &(document,)).await;
+        })
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !apt.calls().iter().any(|c| c.starts_with("install:")) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the install never started"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    asking.abort();
+    drop(leaver);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert!(
+        running.load(std::sync::atomic::Ordering::SeqCst),
+        "still running"
+    );
+    assert!(gate.inside() > 0, "the call is still inside the gate");
+    assert!(marker.exists(), "the postinst can see a transaction runs");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while running.load(std::sync::atomic::Ordering::SeqCst) || gate.inside() > 0 {
+        assert!(std::time::Instant::now() < deadline, "never finished");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!marker.exists(), "the marker goes with the transaction");
+    let entry = fixture.journal.read(TRANSACTION).unwrap().unwrap();
+    assert!(entry.outcome.is_some(), "the transaction ran to its end");
+}
+
+#[tokio::test]
+async fn a_busy_marker_left_by_a_daemon_that_died_is_cleared_at_start() {
+    let fixture = Fixture::new("stale-marker");
+    let marker = fixture.root.join("daemon-busy");
+    std::fs::write(&marker, "1234\n").unwrap();
+    let executor = Arc::new(Executor {
+        apt: Arc::new(monitor_apt()),
+        host: Arc::new(FixedHostProbe::ubuntu_2404()),
+        health: Arc::new(FakeHealthProbe::empty()),
+        artifacts: fixture.artifacts.clone(),
+        journal: fixture.journal.clone(),
+    });
+    let _service = ManagerService::new(
+        FakeAuthorizer(true),
+        executor,
+        fixture.artifacts.clone(),
+        fixture.journal.clone(),
+    )
+    .with_busy_marker(&marker);
+    assert!(!marker.exists());
+}

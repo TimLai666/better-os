@@ -1,11 +1,12 @@
 use better_core::ComponentIcon;
+use better_ui::fluent::button::DropDownButton;
+use better_ui::fluent::menu::{MenuEntry, MenuItem};
 use better_ui::{BadgeStyle, StatusPill, StatusTone};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, Icon, IconName,
     button::{Button, ButtonVariants},
-    menu::{DropdownMenu as _, PopupMenuItem},
     *,
 };
 use manager_core::{
@@ -335,94 +336,64 @@ impl ManagerApp {
         let restore_view = view.clone();
         let remove_view = view;
 
-        Button::new(component.element_id("component-actions"))
-            .ghost()
-            .icon(IconName::Ellipsis)
-            .tooltip(c.more_actions)
-            .dropdown_menu(move |menu, window, _| {
-                let details_id = id.clone();
-                let menu = menu.item(PopupMenuItem::new(c.details).on_click(
-                    window.listener_for(&details_view, move |this, _, _, cx| {
-                        this.open_component(&details_id, cx)
-                    }),
-                ));
-                let menu = if can_change && installed && enabled {
-                    let disable_id = id.clone();
-                    menu.item(PopupMenuItem::new(c.disable).on_click(window.listener_for(
-                        &disable_view,
-                        move |this, _, _, cx| {
-                            this.prepare_component_operation(
-                                &disable_id,
-                                DesiredOperation::Disable,
-                                cx,
-                            )
-                        },
-                    )))
-                } else if can_change && installed {
-                    let enable_id = id.clone();
-                    menu.item(PopupMenuItem::new(c.enable).on_click(window.listener_for(
-                        &enable_view,
-                        move |this, _, _, cx| {
-                            this.prepare_component_operation(
-                                &enable_id,
-                                DesiredOperation::Enable,
-                                cx,
-                            )
-                        },
-                    )))
-                } else {
-                    menu
-                };
-                let menu = if can_change && installed {
-                    let verify_id = id.clone();
-                    menu.item(
-                        PopupMenuItem::new(c.retry_check).on_click(window.listener_for(
-                            &verify_view,
-                            move |this, _, _, cx| {
-                                this.prepare_component_operation(
-                                    &verify_id,
-                                    DesiredOperation::Verify,
-                                    cx,
-                                )
-                            },
-                        )),
-                    )
-                } else {
-                    menu
-                };
-                let menu =
-                    if can_change && restore_available {
-                        let restore_id = id.clone();
-                        menu.item(PopupMenuItem::new(c.restore_previous).on_click(
-                            window.listener_for(&restore_view, move |this, _, _, cx| {
-                                this.prepare_component_operation(
-                                    &restore_id,
-                                    DesiredOperation::Restore,
-                                    cx,
-                                )
-                            }),
-                        ))
-                    } else {
-                        menu
-                    };
-                // No remove entry for the manager itself: `manager-core`
-                // refuses to plan its own removal, so offering it would only
-                // produce a refusal.
-                if can_change && installed && !is_manager_itself {
-                    let remove_id = id.clone();
-                    menu.separator().item(PopupMenuItem::new(c.remove).on_click(
-                        window.listener_for(&remove_view, move |this, _, _, cx| {
-                            this.prepare_component_operation(
-                                &remove_id,
-                                DesiredOperation::Remove,
-                                cx,
-                            )
-                        }),
-                    ))
-                } else {
-                    menu
+        // The kit's drop-down button: a second press on it closes the menu
+        // (ticket 103); gpui-component's popup menu reopened it.
+        let operation =
+            move |view: &Entity<Self>, id: &better_core::ComponentId, op: DesiredOperation| {
+                let view = view.clone();
+                let id = id.clone();
+                move |_: &mut Window, cx: &mut App| {
+                    view.update(cx, |this, cx| this.prepare_component_operation(&id, op, cx));
                 }
-            })
+            };
+        let mut entries = vec![{
+            let details_id = id.clone();
+            MenuItem::new(c.details)
+                .on_select(move |_, cx| {
+                    details_view.update(cx, |this, cx| this.open_component(&details_id, cx))
+                })
+                .entry()
+        }];
+        if can_change && installed && enabled {
+            entries.push(
+                MenuItem::new(c.disable)
+                    .on_select(operation(&disable_view, &id, DesiredOperation::Disable))
+                    .entry(),
+            );
+        } else if can_change && installed {
+            entries.push(
+                MenuItem::new(c.enable)
+                    .on_select(operation(&enable_view, &id, DesiredOperation::Enable))
+                    .entry(),
+            );
+        }
+        if can_change && installed {
+            entries.push(
+                MenuItem::new(c.retry_check)
+                    .on_select(operation(&verify_view, &id, DesiredOperation::Verify))
+                    .entry(),
+            );
+        }
+        if can_change && restore_available {
+            entries.push(
+                MenuItem::new(c.restore_previous)
+                    .on_select(operation(&restore_view, &id, DesiredOperation::Restore))
+                    .entry(),
+            );
+        }
+        // No remove entry for the manager itself: `manager-core` refuses to
+        // plan its own removal, so offering it would only produce a refusal.
+        if can_change && installed && !is_manager_itself {
+            entries.push(MenuEntry::Separator);
+            entries.push(
+                MenuItem::new(c.remove)
+                    .on_select(operation(&remove_view, &id, DesiredOperation::Remove))
+                    .entry(),
+            );
+        }
+        DropDownButton::more(component.element_id("component-actions"), c.more_actions)
+            .align_right()
+            .entries(entries)
             .into_any_element()
     }
 

@@ -110,8 +110,10 @@ collection is explicitly configured to include them.
 
 The GPUI desktop binaries use the Linux X11 and Wayland backends. A development
 machine needs `libfontconfig1-dev`, `libxcb1-dev`, `libxkbcommon-dev`, and
-`libxkbcommon-x11-dev` to link the binaries. CI installs these packages before
-the workspace checks. `RUST_FONTCONFIG_DLOPEN=1` avoids requiring the
+`libxkbcommon-x11-dev` to link the binaries, and `libgstreamer1.0-dev` and
+`libgstreamer-plugins-base1.0-dev` for Better Files' media preview; its tests
+also need `gstreamer1.0-plugins-base` and `gstreamer1.0-plugins-good`. CI
+installs these packages before the workspace checks. `RUST_FONTCONFIG_DLOPEN=1` avoids requiring the
 fontconfig development metadata at compile time, but the runtime library is
 still required when a desktop binary starts. These `*-dev` packages are
 build-time dependencies only. The first release format is a `.deb`; its

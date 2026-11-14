@@ -22,6 +22,8 @@ use gpui::{
 use gpui_component::{Icon, IconName};
 
 use super::Handler;
+use super::hit_area::{RowInset, group_look, hit_row};
+use super::light_dismiss::{self, PanelEdge, PanelOrder, panel_marker, pointer_in_child_panel};
 use super::{
     BODY, CAPTION, Interaction, Key, Palette, ShownState, palette, radius, step_index, text,
 };
@@ -49,6 +51,9 @@ pub struct MenuItem {
     pub shortcut: Option<SharedString>,
     pub disabled: bool,
     pub shown: ShownState,
+    /// `Some` for a toggle item (`ToggleMenuFlyoutItem`): a check mark in the
+    /// icon column when on, an empty icon column when off.
+    pub checked: Option<bool>,
     pub on_select: Option<Handler>,
 }
 
@@ -60,8 +65,15 @@ impl MenuItem {
             shortcut: None,
             disabled: false,
             shown: ShownState::Live,
+            checked: None,
             on_select: None,
         }
+    }
+
+    /// Makes the item a toggle item, drawn with a check mark when `checked`.
+    pub fn checked(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
+        self
     }
 
     pub fn icon(mut self, icon: IconName) -> Self {
@@ -119,9 +131,18 @@ impl MenuEntry {
         }
     }
 
+    /// Whether the panel needs its icon column for this entry: it has an
+    /// icon, or it is a toggle item whose check mark comes and goes.
+    fn needs_icon_column(&self) -> bool {
+        self.icon().is_some() || matches!(self, MenuEntry::Item(item) if item.checked.is_some())
+    }
+
     fn icon(&self) -> Option<IconName> {
         match self {
-            MenuEntry::Item(item) => item.icon.clone(),
+            MenuEntry::Item(item) => match item.checked {
+                Some(true) => Some(IconName::Check),
+                _ => item.icon.clone(),
+            },
             MenuEntry::Submenu { icon, .. } => icon.clone(),
             MenuEntry::Separator => None,
         }
@@ -224,6 +245,33 @@ impl MenuOpen {
         self.highlight = highlight;
         self.submenu = None;
         self.sub_highlight = None;
+    }
+
+    /// The pointer entered item `index` of the menu: it is the highlighted
+    /// one, and any open submenu closes.
+    pub fn pointer_over(&mut self, index: usize) {
+        self.highlight = Some(index);
+        self.submenu = None;
+    }
+
+    /// The pointer left item `index`. Its highlight goes with it, so no row
+    /// looks clickable while the pointer is not on it. A highlight the
+    /// keyboard has since moved elsewhere stays.
+    pub fn pointer_left(&mut self, index: usize) {
+        if self.highlight == Some(index) && self.submenu != Some(index) {
+            self.highlight = None;
+        }
+    }
+
+    /// The same two for an item of the open submenu.
+    pub fn pointer_over_sub(&mut self, index: usize) {
+        self.sub_highlight = Some(index);
+    }
+
+    pub fn pointer_left_sub(&mut self, index: usize) {
+        if self.sub_highlight == Some(index) {
+            self.sub_highlight = None;
+        }
     }
 
     pub fn close(&mut self) {
@@ -420,12 +468,12 @@ fn row(
     p: &Palette,
 ) -> gpui::Stateful<gpui::Div> {
     let (background, foreground) = item_colors(state.unwrap_or(Interaction::Rest), p);
-    let mut item = text(
+    // The inset shape is drawn inside a hit area that fills the row, so the
+    // pixels between two items belong to one of them (`hit_area`).
+    let mut look = text(
         div()
-            .id(id)
+            .id("look")
             .h(ITEM_HEIGHT)
-            .mx(px(4.0))
-            .my(px(2.0))
             .px(px(11.0))
             .flex()
             .items_center()
@@ -438,20 +486,20 @@ fn row(
     if state.is_none() {
         let (hover, _) = item_colors(Interaction::PointerOver, p);
         let (pressed, _) = item_colors(Interaction::Pressed, p);
-        item = item
-            .hover(move |s| s.bg(hover))
-            .active(move |s| s.bg(pressed));
+        look = group_look(look, hover, pressed);
     }
     if icon_column {
-        item = item.child(
+        look = look.child(
             div()
                 .size(super::size::ICON)
                 .flex_none()
                 .children(icon.map(|icon| Icon::new(icon).size(super::size::ICON))),
         );
     }
-    item.child(div().flex_1().whitespace_nowrap().child(label))
-        .children(trailing)
+    let look = look
+        .child(div().flex_1().whitespace_nowrap().child(label))
+        .children(trailing);
+    hit_row(id, RowInset::MENU).child(look)
 }
 
 impl RenderOnce for MenuPanel {
@@ -465,16 +513,20 @@ impl RenderOnce for MenuPanel {
             None => (self.highlight, self.submenu, self.sub_highlight),
         };
         let entries = Rc::new(self.entries);
-        let icon_column = entries.iter().any(|entry| entry.icon().is_some());
+        let icon_column = entries.iter().any(MenuEntry::needs_icon_column);
         let state = self.state.clone();
         let return_focus = self.return_focus.clone();
 
         // `occlude`: a click on an item must not also reach whatever the
         // menu floats over, or choosing "Move to front" opens the tile under
         // it.
+        // Drawn before its items, so a submenu (drawn with them) counts as
+        // a panel opened from this one (`light_dismiss`).
+        let order = PanelOrder::default();
         let mut panel = panel_frame(div().id(self.id.clone()), p)
             .py(px(2.0))
-            .occlude();
+            .occlude()
+            .child(panel_marker(&order));
         if let Some(state) = state.clone() {
             let shapes: Vec<EntryShape> = entries.iter().map(MenuEntry::shape).collect();
             let entries_key = entries.clone();
@@ -512,6 +564,11 @@ impl RenderOnce for MenuPanel {
                     cx.stop_propagation();
                 })
                 .on_mouse_down_out(move |_, window, cx| {
+                    // A press in a submenu, or in a panel opened from an
+                    // item, is not a press outside.
+                    if pointer_in_child_panel(&order, window, cx) {
+                        return;
+                    }
                     if state_out.read(cx).is_open() {
                         close_menu(&state_out, return_out.as_ref(), window, cx);
                     }
@@ -547,12 +604,14 @@ impl RenderOnce for MenuPanel {
                     let mut element = row(
                         ElementId::named_usize("item", index),
                         item.label.clone(),
-                        item.icon.clone(),
+                        MenuEntry::Item(item.clone()).icon(),
                         icon_column,
                         shortcut,
                         shown_state,
                         p,
-                    );
+                    )
+                    // For the interaction tests; nothing outside a test build.
+                    .debug_selector(move || format!("menu-item-{index}"));
                     if !item.disabled
                         && let Some(state) = state.clone()
                     {
@@ -567,13 +626,14 @@ impl RenderOnce for MenuPanel {
                                 }
                             })
                             .on_hover(move |hovered, _, cx| {
-                                if *hovered {
-                                    state_hover.update(cx, |menu, cx| {
-                                        menu.highlight = Some(index);
-                                        menu.submenu = None;
-                                        cx.notify();
-                                    });
-                                }
+                                state_hover.update(cx, |menu, cx| {
+                                    if *hovered {
+                                        menu.pointer_over(index);
+                                    } else {
+                                        menu.pointer_left(index);
+                                    }
+                                    cx.notify();
+                                });
                             });
                     }
                     element.into_any_element()
@@ -645,13 +705,16 @@ impl RenderOnce for MenuPanel {
                             state: state.clone(),
                             return_focus: return_focus.clone(),
                         };
+                        // Beside the drawn item (the hit area already
+                        // reaches 4px past it and 2px above it), pushed
+                        // back inside the window when the menu already sits
+                        // at its edge, so a submenu of a menu opened at the
+                        // right edge stays on screen.
                         element = element.child(
-                            div()
-                                .absolute()
-                                .top(px(-4.0))
-                                .left(relative(1.0))
-                                .ml(px(4.0))
-                                .child(sub),
+                            div().absolute().top(px(-2.0)).left(relative(1.0)).child(
+                                deferred(anchored().snap_to_window_with_margin(px(8.0)).child(sub))
+                                    .with_priority(2),
+                            ),
                         );
                     }
                     element.into_any_element()
@@ -675,10 +738,11 @@ impl RenderOnce for SubmenuPanel {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
         let entries = self.panel.entries;
-        let icon_column = entries.iter().any(|entry| entry.icon().is_some());
+        let icon_column = entries.iter().any(MenuEntry::needs_icon_column);
         let mut panel = panel_frame(div().id(self.panel.id), p)
             .py(px(2.0))
-            .occlude();
+            .occlude()
+            .child(panel_marker(&PanelOrder::default()));
         for (index, entry) in entries.into_iter().enumerate() {
             let element: AnyElement = match entry {
                 MenuEntry::Item(item) => {
@@ -698,7 +762,7 @@ impl RenderOnce for SubmenuPanel {
                     let mut element = row(
                         ElementId::named_usize("sub-item", index),
                         item.label.clone(),
-                        item.icon.clone(),
+                        MenuEntry::Item(item.clone()).icon(),
                         icon_column,
                         shortcut,
                         shown,
@@ -718,12 +782,14 @@ impl RenderOnce for SubmenuPanel {
                                 }
                             })
                             .on_hover(move |hovered, _, cx| {
-                                if *hovered {
-                                    hover_state.update(cx, |menu, cx| {
-                                        menu.sub_highlight = Some(index);
-                                        cx.notify();
-                                    });
-                                }
+                                hover_state.update(cx, |menu, cx| {
+                                    if *hovered {
+                                        menu.pointer_over_sub(index);
+                                    } else {
+                                        menu.pointer_left_sub(index);
+                                    }
+                                    cx.notify();
+                                });
                             });
                     }
                     element.into_any_element()
@@ -745,6 +811,7 @@ impl RenderOnce for SubmenuPanel {
 /// corners, and a shadow, since it floats over the page.
 pub fn panel_frame<E: Styled>(element: E, p: &Palette) -> E {
     element
+        .relative()
         .flex()
         .flex_col()
         .min_w(px(120.0))
@@ -757,13 +824,15 @@ pub fn panel_frame<E: Styled>(element: E, p: &Palette) -> E {
 }
 
 /// A menu floating under its control. The control owns the [`MenuOpen`]
-/// state and draws this only while the menu is open.
+/// state and draws this only while the menu is open, as the last child of
+/// the control's `relative()` element.
 #[derive(IntoElement)]
 pub struct MenuFlyout {
     id: ElementId,
     entries: Vec<MenuEntry>,
     state: Option<Entity<MenuOpen>>,
     return_focus: Option<FocusHandle>,
+    edge: PanelEdge,
 }
 
 impl MenuFlyout {
@@ -773,7 +842,14 @@ impl MenuFlyout {
             entries,
             state: None,
             return_focus: None,
+            edge: PanelEdge::Left,
         }
+    }
+
+    /// Lines the menu up with its control's right edge.
+    pub fn align_right(mut self) -> Self {
+        self.edge = PanelEdge::Right;
+        self
     }
 
     pub fn state(mut self, state: Entity<MenuOpen>) -> Self {
@@ -794,14 +870,9 @@ impl RenderOnce for MenuFlyout {
         if let Some(state) = self.state {
             panel = panel.state(state, self.return_focus);
         }
-        div().absolute().top(relative(1.0)).left_0().child(
-            deferred(
-                anchored()
-                    .snap_to_window_with_margin(px(8.0))
-                    .child(div().mt(px(4.0)).child(panel)),
-            )
-            .with_priority(1),
-        )
+        // Over its control as well, so a second press on the control closes
+        // the menu rather than opening it again.
+        light_dismiss::anchored_panel(panel, self.edge)
     }
 }
 

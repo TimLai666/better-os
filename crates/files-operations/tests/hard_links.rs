@@ -146,10 +146,20 @@ fn a_move_within_one_filesystem_is_a_rename_and_links_are_untouched() {
 fn a_retry_does_not_link_to_a_first_copy_that_has_changed_since() {
     let root = tempfile::tempdir().unwrap();
     let tree = linked_tree(root.path());
+    if support::running_as_root() {
+        return;
+    }
     let destination = root.path().join("out");
-    // A directory where the second path's copy goes, so that item fails and
-    // is left for a retry while the first path's copy completes.
-    fs::create_dir_all(destination.join("tree/b/linked.bin")).unwrap();
+    // The second path's folder is already there and cannot be written to,
+    // so that item fails and is left for a retry while the first path's copy
+    // completes. Merge goes into the folders that are there (a Replace
+    // would send them to the trash and succeed).
+    fs::create_dir_all(destination.join("tree/b")).unwrap();
+    fs::set_permissions(
+        destination.join("tree/b"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o555),
+    )
+    .unwrap();
 
     let engine = engine();
     let handle = engine
@@ -160,7 +170,7 @@ fn a_retry_does_not_link_to_a_first_copy_that_has_changed_since() {
             })
             .with_conflicts(ConflictPolicy::always(
                 ConflictKind::Exists,
-                Resolution::Overwrite,
+                Resolution::Merge,
             )),
         )
         .unwrap();
@@ -170,7 +180,11 @@ fn a_retry_does_not_link_to_a_first_copy_that_has_changed_since() {
     assert!(copied.is_file());
 
     // Between the runs, something rewrites the first copy and clears the way.
-    fs::remove_dir(destination.join("tree/b/linked.bin")).unwrap();
+    fs::set_permissions(
+        destination.join("tree/b"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
     fs::write(&copied, b"somebody else's edit").unwrap();
 
     assert!(engine.retry_failed(handle.id()));
@@ -209,15 +223,23 @@ fn a_job_resubmitted_after_a_restart_does_not_link_to_what_it_did_not_copy() {
 
     let store = JobStore::new(root.path().join("jobs"));
     let engine = JobEngine::new(EngineConfig {
+        displaced_trash: Some(support::test_trash()),
         workers: 1,
         store: Some(store),
         conflicts: ConflictPolicy::new(),
     });
+    // The tree's entries, copied into the folder that is already there, so
+    // the clash is the file's own (a folder copied onto a folder is asked
+    // about as a folder).
     let snapshot = run(
         &engine,
         JobSpec::new(Operation::Copy {
-            sources: vec![local(&tree)],
-            destination: local(&destination),
+            sources: vec![
+                local(tree.join("a.bin")),
+                local(tree.join("b")),
+                local(tree.join("c.bin")),
+            ],
+            destination: local(destination.join("tree")),
         })
         .with_conflicts(ConflictPolicy::always(
             ConflictKind::Exists,

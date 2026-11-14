@@ -86,13 +86,17 @@ pub enum Resolution {
     /// Leave the destination alone and count the item as skipped rather than
     /// failed. A skipped item does not make the job fail.
     Skip,
-    /// Replace the destination. The replacement is still written to a
-    /// temporary name and renamed over the target, so an interrupted overwrite
-    /// leaves the original rather than half of the new one.
+    /// Replace the destination. The one already there goes to the trash
+    /// first (the job's home trash, or its own device's), never away; a
+    /// folder is replaced whole.
     Overwrite,
     /// Write beside it under a generated name: `report.txt` becomes
     /// `report (copy).txt`, then `report (copy 2).txt`.
     Rename,
+    /// For a folder: go into the one already there, and settle every clash
+    /// inside the same way Replace would. For a file it is Replace. What is
+    /// replaced goes to the trash, never away.
+    Merge,
     /// Give up on the job. Distinct from skip: the user is saying stop, not
     /// saying stop for this one.
     Cancel,

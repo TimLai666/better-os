@@ -19,6 +19,8 @@ pub enum Command {
     GoToParent,
     Reload,
     FocusPathField,
+    /// `Alt+Home`.
+    GoHome,
 
     // Tabs
     NewTab,
@@ -30,8 +32,15 @@ pub enum Command {
     // View
     ToggleHidden,
     ToggleViewMode,
+    /// `Ctrl+1` and `Ctrl+2`, as folio and File Explorer bind them.
+    ShowGrid,
+    ShowList,
+    /// `Ctrl+3`: the columns view.
+    ShowColumns,
     LargerItems,
     SmallerItems,
+    /// `Ctrl+0`: back to the normal size.
+    NormalSize,
 
     // Selection and movement
     MoveUp,
@@ -53,6 +62,8 @@ pub enum Command {
     /// Space. Opens or closes the preview pane, the way macOS Quick Look does
     /// and the way Issue #6's preview surface is reached.
     TogglePreview,
+    /// `Space`: the large preview, in a window (and process) of its own.
+    PreviewWindow,
     /// The explicit Open With action, which asks even when a default exists.
     OpenWith,
     /// View Details, for an application row.
@@ -79,6 +90,31 @@ pub enum Command {
     Compress,
     /// Extracts every selected archive. `Ctrl+Shift+E`.
     Extract,
+
+    /// `Ctrl+F6`: the keyboard moves to the next pane (the sidebar, then
+    /// the files), as in folio.
+    CyclePane,
+    /// `Ctrl+Alt+N`: a second pane beside this one, or closes it.
+    SplitView,
+    /// `Ctrl+N`: another window, on this folder, in the same process (so
+    /// the jobs and the undo history of the engine are shared).
+    NewWindow,
+    /// `Ctrl+Shift+F`: filter this folder by name.
+    FilterFolder,
+    /// `Ctrl+Z`: undo the latest change.
+    Undo,
+    /// `Ctrl+Shift+Z` or `Ctrl+Y`: redo what was undone.
+    Redo,
+    /// `Ctrl+Shift+C`: the selected paths, or the folder's, as text.
+    CopyPath,
+    /// `Ctrl+P`: pin the selected folder, or the current one, to the
+    /// sidebar, or unpin it when it is already there.
+    TogglePin,
+    /// `Shift+F10`, the menu key, or `Alt+Enter`: the context menu for the
+    /// selection, from the keyboard.
+    ContextMenu,
+    /// `?` (and `F1`): every shortcut, on one sheet.
+    ShowShortcuts,
 
     // Sidebar
     /// Move the focused bookmark one place earlier. The keyboard-accessible
@@ -187,6 +223,19 @@ pub fn command_for(
         "up" if alt && !shift => return Some(Command::GoToParent),
         "backspace" if modifiers.bare() && !shift => return Some(Command::GoToParent),
         "l" if control => return Some(Command::FocusPathField),
+        "d" if alt && !control => return Some(Command::FocusPathField),
+        "home" if alt && !control => return Some(Command::GoHome),
+        "f10" if shift && !control && !alt => return Some(Command::ContextMenu),
+        "menu" | "contextmenu" if !control && !alt => return Some(Command::ContextMenu),
+        "enter" if alt && !control => return Some(Command::ContextMenu),
+        "f1" if modifiers.bare() && !shift => return Some(Command::ShowShortcuts),
+        "c" if control && shift => return Some(Command::CopyPath),
+        "f" if control && shift => return Some(Command::FilterFolder),
+        "z" if control && shift => return Some(Command::Redo),
+        "y" if control && !shift => return Some(Command::Redo),
+        "d" if control && shift => return Some(Command::Duplicate),
+        "p" if control && !shift => return Some(Command::TogglePin),
+        "0" if control => return Some(Command::NormalSize),
         "r" if control => return Some(Command::Reload),
         "f5" => return Some(Command::Reload),
         "t" if control && !shift => return Some(Command::NewTab),
@@ -195,7 +244,9 @@ pub fn command_for(
         "tab" if control && !shift => return Some(Command::NextTab),
         "tab" if control && shift => return Some(Command::PreviousTab),
         "h" if control => return Some(Command::ToggleHidden),
-        "1" if control => return Some(Command::ToggleViewMode),
+        "1" if control => return Some(Command::ShowGrid),
+        "2" if control => return Some(Command::ShowList),
+        "3" if control => return Some(Command::ShowColumns),
         "=" | "+" if control => return Some(Command::LargerItems),
         "-" if control => return Some(Command::SmallerItems),
         "a" if control => return Some(Command::SelectAll),
@@ -204,11 +255,14 @@ pub fn command_for(
         "v" if control => return Some(Command::Paste),
         "d" if control => return Some(Command::Duplicate),
         "n" if control && shift => return Some(Command::NewFolder),
+        "n" if control && alt => return Some(Command::SplitView),
+        "n" if control && !alt => return Some(Command::NewWindow),
+        "f6" if control => return Some(Command::CyclePane),
         "p" if control && shift => return Some(Command::Compress),
         "e" if control && shift => return Some(Command::Extract),
         "o" if control && shift => return Some(Command::OpenWith),
         "o" if control => return Some(Command::ToggleOperations),
-        "z" if control => return Some(Command::RestoreFromTrash),
+        "z" if control => return Some(Command::Undo),
         "f2" => return Some(Command::Rename),
         "delete" if shift && modifiers.bare() => return Some(Command::DeletePermanently),
         "delete" if modifiers.bare() => return Some(Command::MoveToTrash),
@@ -219,7 +273,7 @@ pub fn command_for(
         // Space previews. It is checked before type-ahead claims it, which is
         // why a name cannot be typed with a leading space — a trade Quick Look
         // makes too, and the same one every file manager that binds Space makes.
-        "space" if modifiers.bare() && !shift => return Some(Command::TogglePreview),
+        "space" if modifiers.bare() && !shift => return Some(Command::PreviewWindow),
         _ => {}
     }
 
@@ -235,6 +289,15 @@ pub fn command_for(
             "pagedown" => return Some(Command::PageDown),
             "home" => return Some(Command::MoveToStart),
             "end" => return Some(Command::MoveToEnd),
+            _ => {}
+        }
+        // `/` searches here and below, as in folio; no name can contain it,
+        // so it never steals a type-ahead character. `?` shows every
+        // shortcut; a name that starts with `?` is rare enough to type after
+        // another letter.
+        match key_char.unwrap_or(key) {
+            "/" => return Some(Command::FocusSearch),
+            "?" => return Some(Command::ShowShortcuts),
             _ => {}
         }
         // Type-ahead is last, so a printable key that means something else
