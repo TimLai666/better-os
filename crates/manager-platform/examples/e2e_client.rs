@@ -129,6 +129,7 @@ fn main() -> Result<(), String> {
                         sha256,
                         size_bytes,
                     }),
+                    companions: Vec::new(),
                 },
                 Some(path.to_path_buf()),
             )
@@ -140,6 +141,7 @@ fn main() -> Result<(), String> {
                 before_version: Some(arguments.get(4).ok_or(usage)?.clone()),
                 after_version: None,
                 artifact: None,
+                companions: Vec::new(),
             },
             None,
         ),

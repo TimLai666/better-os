@@ -59,6 +59,8 @@ members = [
     "crates/storage-core",
     "crates/storage-platform",
     "crates/storage-service",
+    "crates/window-attention-core",
+    "crates/window-attention-service",
 ]
 
 [workspace.package]
@@ -125,6 +127,8 @@ touchpad-session = { path = "crates/touchpad-session" }
 storage-core = { path = "crates/storage-core" }
 storage-platform = { path = "crates/storage-platform" }
 storage-service = { path = "crates/storage-service" }
+window-attention-core = { path = "crates/window-attention-core" }
+window-attention-service = { path = "crates/window-attention-service" }
 libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 # zbus stays on its default async-io flavor everywhere in this workspace.

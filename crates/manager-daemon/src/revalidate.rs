@@ -9,7 +9,7 @@
 //! rollback record — inventing a restore point for a transaction that never
 //! started would be a lie.
 
-use manager_ipc::{WireAction, WirePlan, WireStep};
+use manager_ipc::{WireAction, WireArtifact, WirePlan, WireStep};
 
 use crate::apt::AptDriver;
 use crate::host::HostFacts;
@@ -40,6 +40,16 @@ pub fn check_plan(plan: &WirePlan, host: &HostFacts) -> Result<(), DaemonError> 
                 "{} is not a Better OS component",
                 step.component
             )));
+        }
+        // A companion is installed with root's authority like the step's own
+        // package, so it has to be a Better OS package too.
+        for companion in &step.companions {
+            if !is_first_party_component(&companion.package) {
+                return Err(DaemonError::PlanRejected(format!(
+                    "{} is not a Better OS package",
+                    companion.package
+                )));
+            }
         }
     }
     Ok(())
@@ -82,9 +92,40 @@ pub fn check_artifact(
     let Some(artifact) = &step.artifact else {
         return Ok(());
     };
+    check_package_file(
+        &step.component,
+        artifact,
+        step.after_version.as_deref(),
+        host,
+        artifacts,
+        apt,
+    )?;
+    // Each companion is checked the same way, under its own name and the
+    // step's version, before anything is handed to APT.
+    for companion in &step.companions {
+        check_package_file(
+            &companion.package,
+            &companion.artifact,
+            step.after_version.as_deref(),
+            host,
+            artifacts,
+            apt,
+        )?;
+    }
+    Ok(())
+}
+
+fn check_package_file(
+    package: &str,
+    artifact: &WireArtifact,
+    after_version: Option<&str>,
+    host: &HostFacts,
+    artifacts: &ArtifactStore,
+    apt: &dyn AptDriver,
+) -> Result<(), DaemonError> {
     if !artifacts.contains(&artifact.filename) {
         return Err(DaemonError::ArtifactMissing {
-            component: step.component.clone(),
+            component: package.to_string(),
         });
     }
     artifacts.verify(&artifact.filename, &artifact.sha256)?;
@@ -92,13 +133,13 @@ pub fn check_artifact(
     let path = artifacts.path_for(&artifact.filename)?;
     let fields = apt.deb_control_fields(&path)?;
 
-    if fields.package != step.component {
+    if fields.package != package {
         return Err(DaemonError::PlanRejected(format!(
-            "package claims to be {} but the step names {}",
-            fields.package, step.component
+            "package claims to be {} but the step names {package}",
+            fields.package
         )));
     }
-    if let Some(expected) = &step.after_version
+    if let Some(expected) = after_version
         && manager_ipc::strip_epoch(&fields.version) != manager_ipc::strip_epoch(expected)
     {
         return Err(DaemonError::PlanRejected(format!(
@@ -144,6 +185,7 @@ mod tests {
                 sha256: "a".repeat(64),
                 size_bytes: 2048,
             }),
+            companions: Vec::new(),
         }
     }
 

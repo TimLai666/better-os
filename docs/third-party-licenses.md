@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 972.
-- Packages with an SPDX license expression: 970.
+- Resolved Cargo packages: 974.
+- Packages with an SPDX license expression: 972.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `f34ccf49fb6194cef303ff262b51cb9dd856d752df9162787f3eb06751f71953`.
+- `Cargo.lock` SHA-256: `b61abbf388ac3ea5ae889b36fbd96374d35020855184073fa0ddfd1e3bbd40b6`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 424 |
 | `MIT` | 202 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 61 |
+| `GPL-3.0-or-later` | 63 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -140,6 +140,8 @@ Better OS does not relicense or silently select a different expression.
 | `touchpad-gui` | `0.2.13` | `GPL-3.0-or-later` | workspace |
 | `touchpad-platform` | `0.2.13` | `GPL-3.0-or-later` | workspace |
 | `touchpad-session` | `0.2.13` | `GPL-3.0-or-later` | workspace |
+| `window-attention-core` | `0.2.13` | `GPL-3.0-or-later` | workspace |
+| `window-attention-service` | `0.2.13` | `GPL-3.0-or-later` | workspace |
 | `zlog` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `ztracing` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
 | `ztracing_macro` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
@@ -1016,6 +1018,8 @@ keeps its own license.
 | `winapi-i686-pc-windows-gnu` | `0.4.0` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/winapi-i686-pc-windows-gnu/0.4.0) |
 | `winapi-util` | `0.1.11` | `Unlicense OR MIT` | [crates.io](https://crates.io/crates/winapi-util/0.1.11) |
 | `winapi-x86_64-pc-windows-gnu` | `0.4.0` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/winapi-x86_64-pc-windows-gnu/0.4.0) |
+| `window-attention-core` | `0.2.13` | `GPL-3.0-or-later` | workspace |
+| `window-attention-service` | `0.2.13` | `GPL-3.0-or-later` | workspace |
 | `windows` | `0.57.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/windows/0.57.0) |
 | `windows` | `0.58.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/windows/0.58.0) |
 | `windows` | `0.61.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/windows/0.61.3) |

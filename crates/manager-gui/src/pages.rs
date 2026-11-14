@@ -19,7 +19,7 @@ use crate::attention::{self, AttentionItem, Snapshot};
 use crate::i18n::{Locale, Shell, shell};
 use crate::navigation::Route;
 use crate::search::SearchEntry;
-use crate::{home, settings_page};
+use crate::{home, settings_page, window_attention_page};
 
 /// How far along a page is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -210,9 +210,10 @@ const FIXES: PageModule = PageModule {
 };
 
 /// The registration list, in the pane's order. One line per page.
-pub(crate) static PAGES: [PageModule; 8] = [
+pub(crate) static PAGES: [PageModule; 9] = [
     home::PAGE,
     SYSTEM,
+    window_attention_page::PAGE,
     TOUCHPAD,
     KEEP_AWAKE,
     APPS,
@@ -566,6 +567,7 @@ mod tests {
             [
                 "home",
                 "system",
+                "window-attention",
                 "touchpad",
                 "keep-awake",
                 "apps",
@@ -592,6 +594,7 @@ mod tests {
             [
                 "Home",
                 "System",
+                "Window attention",
                 "Touchpad",
                 "Keep awake",
                 "Apps",
@@ -609,6 +612,7 @@ mod tests {
             [
                 "首頁",
                 "系統",
+                "視窗提醒",
                 "觸控板",
                 "保持清醒",
                 "應用程式",
@@ -626,6 +630,7 @@ mod tests {
         let status = |route| module(route).status;
         assert_eq!(status(Route::Home), PageStatus::Built);
         assert_eq!(status(Route::Settings), PageStatus::Built);
+        assert_eq!(status(Route::WindowAttention), PageStatus::Built);
         assert_eq!(status(Route::Apps), PageStatus::Interim { ticket: 85 });
         assert_eq!(
             status(Route::System),

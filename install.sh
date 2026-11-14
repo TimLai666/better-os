@@ -25,6 +25,13 @@ API_BASE="https://api.github.com/repos/$REPOSITORY"
 # installed from inside Better Manager rather than from here.
 PACKAGES=(better-manager better-manager-daemon)
 
+# Packages Better Manager depends on that are not components of their own:
+# better-shell-adapter is the shared GNOME Shell extension (ADR 0018). Each one
+# is installed with the two above when the release carries it. A release from
+# before it existed does not, and its better-manager does not depend on it, so
+# its absence there is not an error.
+COMPANION_PACKAGES=(better-shell-adapter)
+
 MODE="install"
 DRY_RUN=0
 FROM_DIR=""
@@ -282,6 +289,13 @@ RATELIMITED
     fi
 
     info "Latest release: $RELEASE_TAG"
+
+    local companion
+    for companion in "${COMPANION_PACKAGES[@]}"; do
+        if [[ -n "$(asset_download_url "$(asset_name "$companion")" "$response")" ]]; then
+            PACKAGES+=("$companion")
+        fi
+    done
 }
 
 # One string field out of a flat JSON object. jq when it exists, and a
@@ -371,6 +385,19 @@ stage_from_directory() {
         fi
         cp "$deb_path" "$WORK_DIR/$(basename "$deb_path")"
         cp "$deb_path.sha256" "$WORK_DIR/$(basename "$deb_path").sha256"
+    done
+    for package in "${COMPANION_PACKAGES[@]}"; do
+        matches=("$FROM_DIR/${package}_"*"_ubuntu-${UBUNTU_RELEASE}_${ARCHITECTURE}.deb")
+        if ((${#matches[@]} > 1)); then
+            fail "--from-dir: expected at most one ${package} package for ubuntu-${UBUNTU_RELEASE}/${ARCHITECTURE} in $FROM_DIR, found ${#matches[@]}."
+        fi
+        if ((${#matches[@]} == 1)); then
+            deb_path="${matches[0]}"
+            [[ -f "$deb_path.sha256" ]] || fail "--from-dir: $deb_path has no .sha256 sidecar."
+            cp "$deb_path" "$WORK_DIR/$(basename "$deb_path")"
+            cp "$deb_path.sha256" "$WORK_DIR/$(basename "$deb_path").sha256"
+            PACKAGES+=("$package")
+        fi
     done
     shopt -u nullglob
 
@@ -523,7 +550,7 @@ do_install() {
             verify_checksum "$WORK_DIR/$(asset_name "$package")" \
                 "$WORK_DIR/$(asset_name "$package").sha256"
         done
-        info "Both packages match their published checksums."
+        info "Every package matches its published checksum."
     fi
 
     run_privileged
@@ -541,6 +568,15 @@ do_install() {
 
 do_uninstall() {
     require_commands dpkg-query apt-get
+
+    # apt cannot remove a package it has never heard of, so a companion goes
+    # only when it is there.
+    local companion
+    for companion in "${COMPANION_PACKAGES[@]}"; do
+        if [[ -n "$(installed_version "$companion")" ]]; then
+            PACKAGES+=("$companion")
+        fi
+    done
 
     step "what is installed now"
     report_installed_state

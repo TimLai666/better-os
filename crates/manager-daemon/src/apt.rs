@@ -67,9 +67,12 @@ pub struct DebFields {
 }
 
 pub trait AptDriver: Send + Sync {
-    fn install_local_deb(
+    /// Installs local `.deb` files in one APT transaction: a step's own
+    /// package and any companion it carries (ADR 0018) succeed or fail
+    /// together.
+    fn install_local_debs(
         &self,
-        deb_path: &Path,
+        deb_paths: &[&Path],
         allow_downgrade: bool,
     ) -> Result<AptRun, DaemonError>;
     fn remove(&self, package: &str) -> Result<AptRun, DaemonError>;
@@ -181,12 +184,15 @@ impl AptGetDriver {
 }
 
 impl AptDriver for AptGetDriver {
-    fn install_local_deb(
+    fn install_local_debs(
         &self,
-        deb_path: &Path,
+        deb_paths: &[&Path],
         allow_downgrade: bool,
     ) -> Result<AptRun, DaemonError> {
-        let path = deb_path.to_string_lossy().into_owned();
+        let paths: Vec<String> = deb_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
         // `apt-get install ./file.deb` resolves dependencies in one
         // transaction. `dpkg -i` followed by `apt-get -f install` would leave a
         // half-configured system in between.
@@ -205,7 +211,7 @@ impl AptDriver for AptGetDriver {
             arguments.push("--allow-downgrades");
         }
         arguments.push("--");
-        arguments.push(&path);
+        arguments.extend(paths.iter().map(String::as_str));
         self.run("apt-get", &arguments)
     }
 
@@ -496,40 +502,60 @@ impl FakeAptDriver {
 }
 
 impl AptDriver for FakeAptDriver {
-    fn install_local_deb(
+    fn install_local_debs(
         &self,
-        deb_path: &Path,
+        deb_paths: &[&Path],
         allow_downgrade: bool,
     ) -> Result<AptRun, DaemonError> {
-        let filename = Self::filename(deb_path);
-        let fields = self.control.lock().unwrap().get(&filename).cloned();
-        let package = fields
-            .as_ref()
-            .map(|fields| fields.package.clone())
-            .unwrap_or_else(|| filename.clone());
-        self.calls
-            .lock()
-            .unwrap()
-            .push(format!("install:{package}:downgrade={allow_downgrade}"));
+        let all_fields: Vec<(String, Option<DebFields>)> = deb_paths
+            .iter()
+            .map(|path| {
+                let filename = Self::filename(path);
+                let fields = self.control.lock().unwrap().get(&filename).cloned();
+                (filename, fields)
+            })
+            .collect();
+        let packages: Vec<String> = all_fields
+            .iter()
+            .map(|(filename, fields)| {
+                fields
+                    .as_ref()
+                    .map(|fields| fields.package.clone())
+                    .unwrap_or_else(|| filename.clone())
+            })
+            .collect();
+        self.calls.lock().unwrap().push(format!(
+            "install:{}:downgrade={allow_downgrade}",
+            packages.join("+")
+        ));
         std::thread::sleep(*self.install_duration.lock().unwrap());
 
-        let failed = self.failing_install.lock().unwrap().contains(&package);
-        if !failed && let Some(fields) = fields {
-            self.installed
-                .lock()
-                .unwrap()
-                .insert(fields.package.clone(), fields.version.clone());
+        // One transaction: if any package fails, none is installed.
+        let failing = self.failing_install.lock().unwrap();
+        let failed = packages.iter().any(|package| failing.contains(package));
+        drop(failing);
+        if !failed {
+            for fields in all_fields.into_iter().filter_map(|(_, fields)| fields) {
+                self.installed
+                    .lock()
+                    .unwrap()
+                    .insert(fields.package.clone(), fields.version.clone());
+            }
         }
         Ok(self.run(vec!["apt-get".to_string(), "install".to_string()], failed))
     }
 
     fn remove(&self, package: &str) -> Result<AptRun, DaemonError> {
         self.calls.lock().unwrap().push(format!("remove:{package}"));
-        let failed = self
-            .failing_remove
-            .lock()
-            .unwrap()
-            .contains(&package.to_string());
+        // As apt-get does, a package dpkg has never heard of cannot be
+        // removed: "Unable to locate package", exit 100.
+        let unknown = !self.installed.lock().unwrap().contains_key(package);
+        let failed = unknown
+            || self
+                .failing_remove
+                .lock()
+                .unwrap()
+                .contains(&package.to_string());
         if !failed {
             self.installed.lock().unwrap().remove(package);
         }

@@ -210,7 +210,14 @@ jobs:
         # The runners have lost name resolution for the Ubuntu mirrors for minutes
         # at a time, which failed this step and so the whole run. `apt-get update`
         # exits 0 with stale lists in that state, so the retry is around both.
+        #
+        # The 22.04 runner images carry libunwind-14-dev (from LLVM 14), which
+        # conflicts with the libunwind-dev that libgstreamer1.0-dev depends on;
+        # apt then refuses the install as "held broken packages".
         run: |
+          if dpkg -s libunwind-14-dev >/dev/null 2>&1; then
+            sudo apt-get remove -y libunwind-14-dev
+          fi
           for attempt in 1 2 3 4 5; do
             if sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good; then
               exit 0
@@ -242,7 +249,8 @@ jobs:
             better-git \
             better-touchpad \
             better-awake \
-            better-storage; do
+            better-storage \
+            better-shell-adapter; do
             asset="dist/${{ matrix.target }}/${package}_${version}_${{ matrix.asset_target }}_${{ matrix.architecture }}.deb"
             test -s "$asset" || { echo "Missing package asset: $asset" >&2; exit 1; }
             test -s "$asset.sha256" || { echo "Missing checksum sidecar: $asset.sha256" >&2; exit 1; }

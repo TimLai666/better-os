@@ -69,7 +69,12 @@ touchpad-gestures ──> touchpad-session ──> better-actions ──> launch
    gesture model, preset, conflicts    typed desktop actions
         └──> touchpad-gesture-service ──> better-touchpad-gestured
              resident pipeline: compositor events in, typed actions out
-adapters/gnome-shell-touchpad/   the one GJS file, ADR 0012's bounded exception
+adapters/gnome-shell-touchpad/   GJS under ADR 0012's bounded exception
+
+window-attention-core ──> window-attention-service ──> better-window-attention
+   choices, decision, store   resident relay counterpart (ships in better-manager)
+        └──> manager-gui                               Window attention page
+adapters/gnome-shell-adapter/    shared relay-only GJS extension (ADR 0018)
 
 defaults-core ──> defaults-platform ──> defaults-store ──> manager-gui / CLI
    declarations, aggregate status, plans   typed adapters   snapshots + history

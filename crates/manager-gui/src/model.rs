@@ -154,6 +154,8 @@ pub(crate) enum Page {
     /// Pages later tickets build: System (86), Touchpad (88), Keep awake
     /// (87), and Fixes (90).
     System,
+    /// What a window asking for attention does (ticket 106).
+    WindowAttention,
     Touchpad,
     KeepAwake,
     Fixes,

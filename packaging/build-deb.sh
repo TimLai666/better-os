@@ -116,7 +116,8 @@ cargo build --release \
     -p awake-tray \
     -p awake-gui \
     -p storage-service \
-    -p storage-platform
+    -p storage-platform \
+    -p window-attention-service
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 BUILD_DIR="$TARGET_DIR/release"
@@ -144,12 +145,20 @@ PACKAGE_BINARIES=()
 PACKAGE_DATA=()
 PACKAGE_DEPENDS=()
 PACKAGE_RECOMMENDS=""
+#   PACKAGE_DATA_ONLY  1 for a package that ships no binary at all
+PACKAGE_DATA_ONLY=0
+#   PACKAGE_ALWAYS_ON_UNITS  user units that run for every user, with no off
+#                      switch: enabled globally and started at install, and
+#                      stopped and disabled by a prerm on removal
+PACKAGE_ALWAYS_ON_UNITS=""
 
 reset_package_inputs() {
     PACKAGE_BINARIES=()
     PACKAGE_DATA=()
     PACKAGE_DEPENDS=()
     PACKAGE_RECOMMENDS=""
+    PACKAGE_DATA_ONLY=0
+    PACKAGE_ALWAYS_ON_UNITS=""
 }
 
 # The GPUI toolkit dlopens fontconfig and the Wayland client libraries, so they
@@ -168,16 +177,24 @@ FRAME_RECOMMENDS='libgtk-4-1, libadwaita-1-0'
 # Better Manager or by apt, the postinst restarts each logged-in person's
 # running units so none of them keeps running the old program, and enables a
 # unit that is new in this version for a person who had the component on.
+# A package with an always-on unit (ADR 0018) also gets a prerm, which stops
+# and disables its units for everyone on removal.
 write_user_unit_scripts() {
     local staging_dir="$1"
     local package_name="$2"
     local units="$3"
+    local always_on="${4:-}"
     local script
-    for script in preinst postinst; do
+    local scripts=(preinst postinst)
+    if [[ -n "$always_on" ]]; then
+        scripts+=(prerm)
+    fi
+    for script in "${scripts[@]}"; do
         {
             printf '#!/bin/sh\nset -e\n\n'
             printf "better_os_package='%s'\n" "$package_name"
             printf "better_os_user_units='%s'\n" "$units"
+            printf "better_os_always_on_units='%s'\n" "$always_on"
             printf "better_os_unit_dir='/usr/lib/systemd/user'\n"
             printf "better_os_run_user_root='/run/user'\n"
             printf "better_os_state_dir='/run/better-os/upgrade'\n"
@@ -193,6 +210,10 @@ write_user_unit_scripts() {
                 postinst)
                     # shellcheck disable=SC2016 # expanded by the maintainer script
                     printf 'better_os_user_units_postinst "$@" || true\n'
+                    ;;
+                prerm)
+                    # shellcheck disable=SC2016 # expanded by the maintainer script
+                    printf 'better_os_user_units_prerm "$@" || true\n'
                     ;;
             esac
         } > "$staging_dir/DEBIAN/$script"
@@ -213,14 +234,14 @@ make_package() {
     local entry binary_name installed_path source_path
     local scanned_binaries=()
 
-    if ((${#PACKAGE_BINARIES[@]} == 0)); then
+    if ((${#PACKAGE_BINARIES[@]} == 0)) && ((PACKAGE_DATA_ONLY == 0)); then
         printf 'No binaries declared for %s\n' "$package_name" >&2
         exit 1
     fi
 
     mkdir -p "$staging_dir/DEBIAN" "$staging_dir/usr/share/doc/$package_name"
 
-    for entry in "${PACKAGE_BINARIES[@]}"; do
+    for entry in ${PACKAGE_BINARIES[@]+"${PACKAGE_BINARIES[@]}"}; do
         binary_name="${entry%%:*}"
         installed_path="${entry#*:}"
         if [[ ! -x "$BUILD_DIR/$binary_name" ]]; then
@@ -247,30 +268,36 @@ make_package() {
     install -m 0644 "$ROOT_DIR/docs/third-party-licenses.md" \
         "$staging_dir/usr/share/doc/$package_name/THIRD-PARTY-LICENSES.md"
 
-    mkdir -p "$dependency_control_dir/debian"
-    printf '%s\n' \
-        'Source: better-os-packaging' \
-        'Section: utils' \
-        'Priority: optional' \
-        "Maintainer: $MAINTAINER" \
-        'Package: '"$package_name" \
-        'Architecture: any' \
-        'Depends: ${shlibs:Depends}' \
-        'Description: Better OS packaging dependency scan' \
-        ' Internal control file used to derive shared-library dependencies.' \
-        > "$dependency_control_dir/debian/control"
+    # A package with no binary links nothing, so there is nothing for
+    # dpkg-shlibdeps to scan and its dependencies are only the declared ones.
+    if ((${#scanned_binaries[@]} == 0)); then
+        shlib_dependencies=""
+    else
+        mkdir -p "$dependency_control_dir/debian"
+        printf '%s\n' \
+            'Source: better-os-packaging' \
+            'Section: utils' \
+            'Priority: optional' \
+            "Maintainer: $MAINTAINER" \
+            'Package: '"$package_name" \
+            'Architecture: any' \
+            'Depends: ${shlibs:Depends}' \
+            'Description: Better OS packaging dependency scan' \
+            ' Internal control file used to derive shared-library dependencies.' \
+            > "$dependency_control_dir/debian/control"
 
-    # Every binary in the package is scanned, not just the first one: a package
-    # whose service links something its window does not would otherwise ship a
-    # dependency nobody declared.
-    shlib_dependencies="$(
-        cd "$dependency_control_dir"
-        dpkg-shlibdeps -O "${scanned_binaries[@]}" |
-            sed -n 's/^shlibs:Depends=//p'
-    )"
-    if [[ -z "$shlib_dependencies" ]]; then
-        printf 'Could not derive shared-library dependencies for %s\n' "$package_name" >&2
-        exit 1
+        # Every binary in the package is scanned, not just the first one: a package
+        # whose service links something its window does not would otherwise ship a
+        # dependency nobody declared.
+        shlib_dependencies="$(
+            cd "$dependency_control_dir"
+            dpkg-shlibdeps -O "${scanned_binaries[@]}" |
+                sed -n 's/^shlibs:Depends=//p'
+        )"
+        if [[ -z "$shlib_dependencies" ]]; then
+            printf 'Could not derive shared-library dependencies for %s\n' "$package_name" >&2
+            exit 1
+        fi
     fi
 
     local declared_dependencies="$shlib_dependencies"
@@ -292,8 +319,10 @@ make_package() {
         'Priority: optional' \
         'Architecture: '"$ARCH" \
         "Maintainer: $MAINTAINER" \
-        "Depends: $runtime_dependencies" \
         > "$staging_dir/DEBIAN/control"
+    if [[ -n "$runtime_dependencies" ]]; then
+        printf 'Depends: %s\n' "$runtime_dependencies" >> "$staging_dir/DEBIAN/control"
+    fi
     # Recommends, not Depends: the manager still runs without the privileged
     # service, it just reports that it cannot apply changes instead of
     # pretending to.
@@ -317,7 +346,13 @@ make_package() {
         esac
     done
     if ((${#user_units[@]} > 0)); then
-        write_user_unit_scripts "$staging_dir" "$package_name" "${user_units[*]}"
+        # Sorted bytewise so the list does not depend on the build machine's
+        # locale; verify-deb.sh compares against the same order.
+        local sorted_units
+        sorted_units="$(printf '%s
+' "${user_units[@]}" | LC_ALL=C sort | paste -sd' ' -)"
+        write_user_unit_scripts "$staging_dir" "$package_name" "$sorted_units" \
+            "$PACKAGE_ALWAYS_ON_UNITS"
     fi
 
     dpkg-deb --build --root-owner-group "$staging_dir" "$deb_path" >/dev/null
@@ -535,13 +570,24 @@ POSTRM
 # better-monitor. Before ticket 49 it shipped nowhere at all, and the window
 # answered `better-manager catalog status` by opening a window and never
 # exiting, which is what the field report described as a hang.
+#
+# The window attention service ships here, not in better-shell-adapter, because
+# Better Manager enables and starts a component's user units from its own
+# record (manager-core's user unit pass), and better-shell-adapter is a
+# dependency package with no record of its own: a unit there would never be
+# enabled by anything. Its page is Better Manager's, so the service lives with
+# the window that sets it (ADR 0018).
+SHELL_ADAPTER_UUID="shell-adapter@betteros.org"
 PACKAGE_BINARIES=(
     "manager-gui:usr/bin/better-manager"
     "manager-cli:usr/bin/better-manager-cli"
+    "better-window-attention:usr/libexec/better-window-attention"
 )
 PACKAGE_DATA=(
     "packaging/manager/io.betteros.Manager.desktop:usr/share/applications/io.betteros.Manager.desktop"
     "packaging/icons/better-manager.svg:usr/share/icons/hicolor/scalable/apps/better-manager.svg"
+    "packaging/manager/better-window-attention.service:usr/lib/systemd/user/better-window-attention.service"
+    "packaging/manager/org.betteros.WindowAttention1.service:usr/share/dbus-1/services/org.betteros.WindowAttention1.service"
 )
 # libsecret-tools is a desktop helper Better OS installs with the manager so
 # that everyday tools work without the person hunting for a package: its
@@ -549,11 +595,39 @@ PACKAGE_DATA=(
 # example Claude Desktop importing Chrome's cookies, which asks the person to
 # install it otherwise). A Depends, not a Recommends, because Better Manager
 # installs with --no-install-recommends.
+#
+# better-shell-adapter is a Recommends and not a Depends. Better Manager
+# updates itself through the privileged service; from ADR 0018 on, the
+# manifest names the adapter as a companion of the manager's artifact and the
+# service installs both in one APT transaction. A privileged service or a
+# manager from before that installs the manager's .deb alone, and the adapter
+# is in no APT source, so a Depends would make that update fail. install.sh
+# installs it beside the manager too.
 PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS" "libsecret-tools")
-PACKAGE_RECOMMENDS="better-manager-daemon (= $VERSION)"
+PACKAGE_RECOMMENDS="better-manager-daemon (= $VERSION), better-shell-adapter (= $VERSION)"
+# The window attention service runs for everyone: installing the package
+# enables it for every user and starts it for everyone logged in, and removing
+# it stops and disables it, so nothing it started outlives it.
+PACKAGE_ALWAYS_ON_UNITS="better-window-attention.service"
 make_package better-manager \
     'Better OS manager desktop application' \
     'Better OS desktop application built with the shared manager and monitor contracts.'
+
+# The shared Better OS GNOME Shell extension (ADR 0018): three files and no
+# binary. It relays only while the service that decides owns its bus name, so
+# installing it alone changes nothing about the desktop. Every component that
+# needs a relay recommends it; Better Manager does now. It is not a catalog
+# component, so it has no manifest, no record, and no user unit.
+PACKAGE_DATA_ONLY=1
+PACKAGE_DATA=(
+    "adapters/gnome-shell-adapter/metadata.json:usr/share/gnome-shell/extensions/$SHELL_ADAPTER_UUID/metadata.json"
+    "adapters/gnome-shell-adapter/extension.js:usr/share/gnome-shell/extensions/$SHELL_ADAPTER_UUID/extension.js"
+    "adapters/gnome-shell-adapter/org.betteros.ShellAdapter1.WindowAttention.xml:usr/share/gnome-shell/extensions/$SHELL_ADAPTER_UUID/org.betteros.ShellAdapter1.WindowAttention.xml"
+)
+PACKAGE_RECOMMENDS="gnome-shell"
+make_package better-shell-adapter \
+    'Better OS GNOME Shell adapter extension' \
+    'Relays a few GNOME Shell events and shell actions to Better OS services, only while they run.'
 
 # The window, the session service, and the command line are one component and
 # one version: the CLI speaks the service's own IPC contract, so shipping them

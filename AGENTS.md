@@ -114,14 +114,18 @@ updated, verified, and rolled back through shared manager operations.
   Tauri, or GTK application code. **One bounded exception exists**, granted by
   the project owner on 2026-08-31 and recorded in ADR 0012: GJS is permitted
   inside the Better Touchpad GNOME Shell adapter extension
-  (`adapters/gnome-shell-touchpad/`) and nowhere else. Inside it, JavaScript may
-  only bridge typed events and typed actions — reporting what the compositor
-  saw, and invoking something GNOME Shell already exposes. It may hold no
-  threshold, no cooldown, no cancellation rule, no conflict decision, no
-  configuration, and no gesture decision, it may execute nothing, and no method
-  it serves may take free text. `crates/touchpad-session/tests/extension.rs`
-  asserts those bounds against the file. Widening them needs a new ADR, not a
-  commit.
+  (`adapters/gnome-shell-touchpad/`) and inside the shared Better OS shell
+  adapter extension (`adapters/gnome-shell-adapter/`, ADR 0018, proposed), and
+  nowhere else. Inside them, JavaScript may only bridge typed events and typed
+  actions — reporting what the compositor saw, and invoking something GNOME
+  Shell already exposes. It may hold no threshold, no cooldown, no cancellation
+  rule, no conflict decision, no configuration, no per-application rule, and no
+  decision of any kind, it may store nothing, it may execute nothing, and no
+  method it serves may take free text. Each relay of the shared extension acts
+  only while its Rust counterpart owns its bus name and otherwise leaves GNOME's
+  own behaviour in place. `crates/touchpad-session/tests/extension.rs` and
+  `crates/window-attention-service/tests/extension.rs` assert those bounds
+  against the files. Widening them needs a new ADR, not a commit.
 - Use GPUI with `gpui-component` for first-party desktop GUIs. `better-ui` owns
   shared presentation primitives.
 - Treat manifests as untrusted input: validate schema, targets, artifacts,
@@ -199,10 +203,10 @@ GUI or dependency compiles when the relevant command was not executed.
   Better OS component has a time-to-photon figure. And the idle CPU figure is a
   headless one: nothing asks the window to repaint, so it is the launcher's own
   idle cost and not a claim about a launcher on a running desktop.
-- All nine packages are published. `v0.2.12` carries every component
+- All nine packages are published. `v0.2.13` carries every component
   `packaging/build-deb.sh` builds, for Ubuntu 22.04 and 24.04 on amd64 and
   arm64, and every shipped manifest now records the checksum of its own
-  published 0.2.12 asset, verified after re-downloading the public release. No
+  published 0.2.13 asset, verified after re-downloading the public release. No
   first party manifest carries a placeholder checksum any more;
   `components/manifests/better-files-example.yaml` is the one exception and is a
   schema fixture, not a released component. A version bump puts the placeholders
@@ -300,7 +304,7 @@ GUI or dependency compiles when the relevant command was not executed.
   `touchpad-core` emits and its benchmark baselines are the figures in
   `docs/touchpad-sensitivity-mapping.md`, but nothing runs those benchmarks —
   the same unenforced-budget gap `better-files.yaml` carries. Its checksums are
-  the published v0.2.12 ones.
+  the published v0.2.13 ones.
 - A package installs its systemd user unit and does not enable it, matching
   `better-manager-daemon`; Better Manager enables it (ticket 79). Nothing in
   dpkg stops a running user service at removal either; Better Manager stops it

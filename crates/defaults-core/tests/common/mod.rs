@@ -85,6 +85,7 @@ pub fn manifest(id: &str, integrations: Vec<DefaultIntegration>) -> ComponentMan
             download_size_bytes: None,
             required_disk_bytes: None,
             signature: None,
+            companions: Vec::new(),
         }],
         lifecycle: Lifecycle {
             install: "mock-install".to_string(),

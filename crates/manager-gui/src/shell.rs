@@ -32,6 +32,7 @@ pub(crate) fn route_icon(route: Route) -> IconName {
     match route {
         Route::Home => IconName::LayoutDashboard,
         Route::System => IconName::Cpu,
+        Route::WindowAttention => IconName::Bell,
         Route::Touchpad => IconName::Frame,
         Route::KeepAwake => IconName::Sun,
         Route::Apps => IconName::Inbox,

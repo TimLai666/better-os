@@ -83,6 +83,23 @@ pub struct PlanArtifact {
     pub release_asset: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_bytes: Option<u64>,
+    /// Packages installed in the same APT transaction (ADR 0018), fetched
+    /// and staged beside the step's own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub companions: Vec<PlanCompanion>,
+}
+
+/// One companion package of a step's artifact, carried like the artifact
+/// itself: `url` is absent for a restore, which reinstalls cached bytes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PlanCompanion {
+    pub package: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    pub sha256: String,
+    pub release_asset: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -2188,6 +2205,17 @@ impl Manager {
                     sha256: artifact.sha256.clone(),
                     release_asset: artifact.release_asset.clone(),
                     expected_bytes: artifact.download_size_bytes,
+                    companions: artifact
+                        .companions
+                        .iter()
+                        .map(|companion| PlanCompanion {
+                            package: companion.package.to_string(),
+                            url: Some(companion.url.clone()),
+                            sha256: companion.sha256.clone(),
+                            release_asset: companion.release_asset.clone(),
+                            expected_bytes: companion.download_size_bytes,
+                        })
+                        .collect(),
                 })
             }
             // A restore reinstalls what was already fetched once, so it names
@@ -2198,6 +2226,14 @@ impl Manager {
                 .and_then(|snapshot| snapshot.artifact.clone())
                 .map(|artifact| PlanArtifact {
                     url: None,
+                    companions: artifact
+                        .companions
+                        .into_iter()
+                        .map(|companion| PlanCompanion {
+                            url: None,
+                            ..companion
+                        })
+                        .collect(),
                     ..artifact
                 }),
             _ => None,

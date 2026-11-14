@@ -25,7 +25,7 @@ use super::navigation::{
 };
 use super::progress::{fraction, indeterminate_arc, indeterminate_segment};
 use super::selection::{ComboOutcome, SliderModel, combo_key};
-use super::settings_card::card_fill;
+use super::settings_card::{LEADING_SIZE, card_fill};
 use super::tabs::{SelectorItem, TabOutcome, after_close, selector_step, tab_key};
 use super::text_box::{NumberModel, field_colors, multi_line_height};
 use super::theme::{Appearance, config_home};
@@ -841,6 +841,18 @@ fn settings_cards_change_fill_only_when_clickable() {
         card_fill(true, Interaction::Pressed, &DARK),
         DARK.control_fill_tertiary
     );
+}
+
+/// An application's own icon takes the glyph's place at the glyph's size,
+/// so a list of cards about applications lines up with every other card.
+#[test]
+fn a_card_s_leading_element_is_the_glyph_s_size() {
+    assert_eq!(LEADING_SIZE, gpui::px(20.0));
+    let source = include_str!("settings_card.rs");
+    assert!(source.contains(
+        "CardLeading::Element(element) => div()\n                    .size(LEADING_SIZE)"
+    ));
+    assert!(source.contains(".w(LEADING_SIZE)"));
 }
 
 #[test]
