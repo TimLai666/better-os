@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2030,SC2031,SC2034 # each case sources a maintainer library in a subshell with its own header variables
 # Drives packaging/maintainer/user-units.sh, the user-unit half of every
 # Better OS package's preinst and postinst (ticket 105), against a fake
 # systemctl, systemd-run, and timeout, and scratch copies of /run/user and
