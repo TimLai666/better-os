@@ -17,7 +17,10 @@ use gpui_component::{Icon, IconName};
 use better_ui::fluent::button::{Button, ButtonKind};
 use better_ui::fluent::chip::Chip;
 use better_ui::fluent::info_bar::{InfoBar, Severity};
-use better_ui::fluent::lanes::{LANE_WIDTH, LaneCell, LaneLine, LineKind, NodeStyle, lane_hue};
+use better_ui::fluent::lanes::{
+    LANE_WIDTH, LaneCell, LaneLine, LineKind, NODE_RADIUS, NodeStyle, clipping, column_x, lane_hue,
+    segment,
+};
 use better_ui::fluent::list::{row_fill, selection_bar};
 use better_ui::fluent::menu::{MenuEntry, open_menu};
 use better_ui::fluent::progress::{Progress, ProgressRing};
@@ -31,7 +34,7 @@ use git_core::{EdgeKind, RefKind};
 use git_platform::{GraphQuery, GraphScope};
 
 use crate::app::{BRANCH_ICON, ContextTarget, GitApp};
-use crate::graph::{Direction, GraphCopy, graph_copy};
+use crate::graph::{Direction, GraphCopy, GraphSpot, graph_copy};
 use crate::i18n::{Copy, fill};
 use crate::session::Repo;
 
@@ -65,6 +68,43 @@ pub(crate) struct GraphUi {
     placed: u64,
     /// How many lanes the person dragged the graph column to.
     pub lanes: Option<u16>,
+    /// What the pointer rests on in the graph column.
+    pub hover: Option<GraphHover>,
+    /// Counts hover changes, so a rest timer knows it is still current.
+    hover_epoch: u64,
+    /// When the last tooltip was put away: moving straight on to another
+    /// line shows its tooltip at once, as GPUI's own tooltips do.
+    tip_closed: Option<std::time::Instant>,
+}
+
+/// How long the pointer rests on a line before it says what it is: GPUI's
+/// own tooltip delay.
+const REST: std::time::Duration = std::time::Duration::from_millis(500);
+/// How soon after one tooltip closes the next one shows without waiting.
+const TIP_HANDOVER: std::time::Duration = std::time::Duration::from_millis(300);
+/// How much the lanes other than the highlighted one fade.
+const DIMMED: f32 = 0.3;
+/// The highlighted lane's stroke.
+const HIGHLIGHT_WIDTH: f32 = 2.5;
+/// The widest a graph tooltip grows before it wraps.
+const TIP_WIDTH: Pixels = px(480.0);
+
+/// A line, curve, or dot the pointer rests on.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GraphHover {
+    pub index: usize,
+    pub spot: GraphSpot,
+    pub text: SharedString,
+    /// Where the pointer was when it came to rest, for the tooltip.
+    pub at: Point<Pixels>,
+    /// The pointer has rested long enough: the tooltip shows and the lane
+    /// is highlighted.
+    pub shown: bool,
+    /// The list it was found in ([`crate::graph::GraphView::replaced`]).
+    pub replaced: u64,
+    /// The commit of the row, so a hover left over from another list or
+    /// repository is never shown.
+    pub sha: String,
 }
 
 impl GraphUi {
@@ -102,6 +142,9 @@ impl GraphUi {
                 top: Vec::new(),
                 placed: 0,
                 lanes: None,
+                hover: None,
+                hover_epoch: 0,
+                tip_closed: None,
             },
             subscription,
         )
@@ -562,6 +605,7 @@ impl GitApp {
                         .border_color(p.divider),
                 )
             })
+            .children(self.graph_tooltip(cx))
             .children(drop_branches.map(|strip| {
                 div()
                     .absolute()
@@ -780,11 +824,7 @@ impl GitApp {
                         s.border_1().border_color(p.accent)
                     })
                 })
-                .child(
-                    LaneCell::new(row.column, row.lane, lines, columns)
-                        .visible(lanes)
-                        .node(node),
-                )
+                .child(self.graph_cell(index, row, lines, node, columns, lanes, p, cx))
                 .child(chips)
                 .child(
                     label(commit.summary.clone(), BODY, p.text_primary)
@@ -879,6 +919,205 @@ impl GitApp {
             rows.push(item.into_any_element());
         }
         rows
+    }
+
+    /// A row's graph cell: the lanes as `LaneCell` draws them, and over
+    /// them what the pointer rests on. While a lane is highlighted every
+    /// other line fades and the lane is drawn again over them, stronger.
+    /// The pointer is watched through a hitbox that blocks nothing, so the
+    /// row under it is clicked, dragged, and hovered as before.
+    #[allow(clippy::too_many_arguments)]
+    fn graph_cell(
+        &self,
+        index: usize,
+        row: git_core::GraphRow,
+        lines: Vec<LaneLine>,
+        node: NodeStyle,
+        columns: u16,
+        lanes: u16,
+        p: &'static Palette,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let highlight = self.live_hover(cx).map(|h| h.spot.lane());
+        let cell = LaneCell::new(row.column, row.lane, lines.clone(), columns)
+            .visible(lanes)
+            .node(node);
+        let app = cx.entity().downgrade();
+        let dark = p.is_dark();
+        let overlay = canvas(
+            |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            move |bounds, hitbox, window, _| {
+                let lane_width = f32::from(LANE_WIDTH);
+                let height = f32::from(bounds.size.height);
+                let origin = bounds.origin;
+                if let Some(lane) = highlight {
+                    paint_highlight(
+                        &lines, &row, node, lane, lanes, columns, origin, height, dark, window,
+                    );
+                }
+                let (moved, pressed, scrolled) = (app.clone(), app.clone(), app);
+                let watched = hitbox.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble {
+                        return;
+                    }
+                    let inside = watched.is_hovered(window);
+                    let spot = inside
+                        .then(|| {
+                            let at = event.position - origin;
+                            crate::graph::spot_at(
+                                &row,
+                                (f32::from(at.x), f32::from(at.y)),
+                                lane_width,
+                                height,
+                                lanes,
+                            )
+                        })
+                        .flatten();
+                    let _ = moved.update(cx, |this, cx| {
+                        this.graph_pointer(index, inside, spot, event.position, cx)
+                    });
+                });
+                window.on_mouse_event(move |_: &MouseDownEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = pressed.update(cx, |this, cx| this.graph_hover_off(cx));
+                    }
+                });
+                window.on_mouse_event(move |_: &ScrollWheelEvent, phase, window, cx| {
+                    if phase == DispatchPhase::Capture && hitbox.should_handle_scroll(window) {
+                        let _ = scrolled.update(cx, |this, cx| this.graph_hover_off(cx));
+                    }
+                });
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
+        div()
+            .relative()
+            .flex_none()
+            .h_full()
+            .child(
+                div()
+                    .h_full()
+                    .when(highlight.is_some(), |d| d.opacity(DIMMED))
+                    .child(cell),
+            )
+            .child(overlay)
+    }
+
+    /// The pointer moved, inside the cell of the row at `index` or not,
+    /// resting on `spot` there.
+    fn graph_pointer(
+        &mut self,
+        index: usize,
+        inside: bool,
+        spot: Option<GraphSpot>,
+        at: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.graph.hover.as_ref().map(|h| (h.index, h.spot));
+        if !inside {
+            // Only the row that has the hover puts it away.
+            if current.is_some_and(|(i, _)| i == index) {
+                self.graph_hover_off(cx);
+            }
+            return;
+        }
+        let Some(spot) = spot else {
+            self.graph_hover_off(cx);
+            return;
+        };
+        if current == Some((index, spot)) {
+            if let Some(hover) = self.graph.hover.as_mut()
+                && !hover.shown
+            {
+                hover.at = at;
+            }
+            return;
+        }
+        let Some(repo) = self.session.repo.as_ref() else {
+            return;
+        };
+        let g = graph_copy(self.locale);
+        let Some(text) = repo.graph.describe(index, spot, g, crate::github::now()) else {
+            return;
+        };
+        let at_once = self.graph.hover.as_ref().is_some_and(|h| h.shown)
+            || self
+                .graph
+                .tip_closed
+                .is_some_and(|t| t.elapsed() < TIP_HANDOVER);
+        self.graph.hover_epoch += 1;
+        let epoch = self.graph.hover_epoch;
+        self.graph.hover = Some(GraphHover {
+            index,
+            spot,
+            text: text.into(),
+            at,
+            shown: at_once,
+            replaced: repo.graph.replaced,
+            sha: repo.graph.commits[index].sha.clone(),
+        });
+        if at_once {
+            cx.notify();
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(REST).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.graph.hover_epoch == epoch
+                    && let Some(hover) = this.graph.hover.as_mut()
+                {
+                    hover.shown = true;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The hover to draw: rested on, in the list shown now, on the commit it
+    /// was found on, and not while a commit is dragged.
+    fn live_hover(&self, cx: &App) -> Option<&GraphHover> {
+        let hover = self.graph.hover.as_ref().filter(|h| h.shown)?;
+        let graph = &self.session.repo.as_ref()?.graph;
+        let same = hover.replaced == graph.replaced
+            && graph
+                .commits
+                .get(hover.index)
+                .is_some_and(|c| c.sha == hover.sha);
+        (same && !cx.has_active_drag()).then_some(hover)
+    }
+
+    /// Puts the tooltip and the highlight away.
+    fn graph_hover_off(&mut self, cx: &mut Context<Self>) {
+        let Some(hover) = self.graph.hover.take() else {
+            return;
+        };
+        self.graph.hover_epoch += 1;
+        if hover.shown {
+            self.graph.tip_closed = Some(std::time::Instant::now());
+            cx.notify();
+        }
+    }
+
+    /// The tooltip of what the pointer rests on, beside the pointer, once
+    /// it has rested; never while a commit is dragged, nor for a list that
+    /// was replaced since.
+    fn graph_tooltip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let hover = self.live_hover(cx)?;
+        Some(
+            deferred(
+                anchored()
+                    .position(hover.at + point(px(12.0), px(20.0)))
+                    .snap_to_window_with_margin(px(8.0))
+                    .child(graph_tip(hover.text.clone(), fluent::palette(cx))),
+            )
+            .with_priority(1)
+            .into_any_element(),
+        )
     }
 
     /// While a commit is dragged: the local branches it can be dropped on to
@@ -1028,4 +1267,90 @@ fn v_center(child: impl IntoElement) -> Div {
         .justify_center()
         .p(spacing::LG)
         .child(child)
+}
+
+/// Draws `lane`'s lines in a row again over the faded cell, stronger, and
+/// its dot when the row's commit is on it, with `LaneCell`'s geometry and
+/// clipping.
+#[allow(clippy::too_many_arguments)]
+fn paint_highlight(
+    lines: &[LaneLine],
+    row: &git_core::GraphRow,
+    node: NodeStyle,
+    lane: u32,
+    visible: u16,
+    columns: u16,
+    origin: Point<Pixels>,
+    height: f32,
+    dark: bool,
+    window: &mut Window,
+) {
+    let lane_width = f32::from(LANE_WIDTH);
+    let shown = visible.min(columns.max(1)).max(1);
+    let at = |(x, y): (f32, f32)| point(origin.x + px(x), origin.y + px(y));
+    let color = lane_hue(lane).color(dark);
+    let mask = ContentMask {
+        bounds: Bounds::new(origin, size(LANE_WIDTH * shown as f32, px(height))),
+    };
+    window.with_content_mask(Some(mask), |window| {
+        for line in lines.iter().filter(|l| l.lane == lane) {
+            let s = segment(*line, row.column, lane_width, height);
+            let mut path = PathBuilder::stroke(px(HIGHLIGHT_WIDTH));
+            path.move_to(at(s.from));
+            match s.controls {
+                Some((c1, c2)) => path.cubic_bezier_to(at(s.to), at(c1), at(c2)),
+                None => path.line_to(at(s.to)),
+            }
+            if let Ok(path) = path.build() {
+                window.paint_path(path, color);
+            }
+        }
+    });
+    if row.lane != lane {
+        return;
+    }
+    let clip = clipping(row.column, lines, shown);
+    let center = (column_x(clip.node_column, lane_width), height / 2.0);
+    let ring = node == NodeStyle::Head;
+    let radius = match node {
+        NodeStyle::Head => NODE_RADIUS + 0.5,
+        NodeStyle::Merge => NODE_RADIUS - 1.0,
+        NodeStyle::Commit => NODE_RADIUS,
+    };
+    let points: Vec<Point<Pixels>> = (0..24)
+        .map(|i| {
+            let angle = i as f32 / 24.0 * std::f32::consts::TAU;
+            at((
+                center.0 + radius * angle.cos(),
+                center.1 + radius * angle.sin(),
+            ))
+        })
+        .collect();
+    let mut path = if ring {
+        PathBuilder::stroke(px(2.0))
+    } else {
+        PathBuilder::fill()
+    };
+    path.add_polygon(&points, true);
+    if let Ok(path) = path.build() {
+        window.paint_path(path, color);
+    }
+}
+
+/// A graph tooltip: the kit's tooltip (`fluent::dialog::tooltip_inline`),
+/// wider than its 320px so branch names such as `origin/main` in a sentence
+/// wrap less.
+fn graph_tip(text: SharedString, p: &Palette) -> Div {
+    fluent::text(div(), CAPTION)
+        .max_w(TIP_WIDTH)
+        .pt(px(6.0))
+        .pb(px(8.0))
+        .px(px(9.0))
+        .bg(p.flyout)
+        .border_1()
+        .border_color(p.flyout_stroke)
+        .rounded(radius::SM)
+        .shadow_md()
+        .text_color(p.text_primary)
+        .child(text)
 }
