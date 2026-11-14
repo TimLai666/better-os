@@ -16,6 +16,9 @@ pub struct Worktree {
     pub bare: bool,
     pub detached: bool,
     pub locked: bool,
+    /// Why it was locked (`git worktree lock --reason`), when a reason
+    /// was given.
+    pub lock_reason: Option<String>,
     /// git would remove it on `worktree prune` (its folder is gone).
     pub prunable: bool,
     /// The first entry is the main working tree, which cannot be removed.
@@ -26,7 +29,8 @@ pub struct Worktree {
 ///
 /// Expected results: attributes are NUL-separated, an empty attribute ends an
 /// entry; `worktree <path>` starts one; `HEAD`, `branch`, `bare`, `detached`,
-/// `locked [reason]`, and `prunable [reason]` set their fields; unknown
+/// `locked [reason]` (keeping the reason), and `prunable [reason]` set
+/// their fields; unknown
 /// attributes are ignored; an attribute before any `worktree` fails with
 /// `Malformed`.
 pub fn parse_worktrees(output: &[u8]) -> Result<Vec<Worktree>, ParseError> {
@@ -46,6 +50,7 @@ pub fn parse_worktrees(output: &[u8]) -> Result<Vec<Worktree>, ParseError> {
                 bare: false,
                 detached: false,
                 locked: false,
+                lock_reason: None,
                 prunable: false,
                 main: worktrees.is_empty(),
             });
@@ -70,7 +75,10 @@ pub fn parse_worktrees(output: &[u8]) -> Result<Vec<Worktree>, ParseError> {
             }
             "bare" => entry.bare = true,
             "detached" => entry.detached = true,
-            "locked" => entry.locked = true,
+            "locked" => {
+                entry.locked = true;
+                entry.lock_reason = (!value.is_empty()).then(|| value.to_string());
+            }
             "prunable" => entry.prunable = true,
             _ => {}
         }

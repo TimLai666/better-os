@@ -1,6 +1,6 @@
 //! Words for what ticket 103 added: why a dialog cannot go ahead, the
 //! identity step, the toolbar's shortcut buttons, worktrees in the lists,
-//! and live change detection. They sit beside [`crate::i18n`]'s table rather
+//! and live change detection, and for ticket 116's worktree dropdown. They sit beside [`crate::i18n`]'s table rather
 //! than in it so the table stays one block per screen; each string is still
 //! written in both languages in one call, so neither can be missing.
 
@@ -141,6 +141,146 @@ impl Copy {
 
     pub fn checked_out_in(&self) -> &'static str {
         self.t("Checked out in {path}", "已在 {path} 簽出")
+    }
+
+    // --- the worktree dropdown (ticket 116) ----------------------------------
+
+    /// The toolbar cell's caption, beside "Current repository".
+    pub fn current_worktree(&self) -> &'static str {
+        self.t("Current worktree", "目前的工作樹")
+    }
+
+    pub fn filter_worktrees(&self) -> &'static str {
+        self.t("Filter worktrees", "篩選工作樹")
+    }
+
+    /// The "More" button at the end of a worktree row.
+    pub fn worktree_actions(&self) -> &'static str {
+        self.t("More options", "更多選項")
+    }
+
+    pub fn copy_folder_path(&self) -> &'static str {
+        self.t("Copy folder path", "複製資料夾路徑")
+    }
+
+    /// Under the list when the repository has only its main worktree.
+    pub fn only_main_worktree(&self) -> &'static str {
+        self.t(
+            "This repository has only its main worktree. Add one to work on another branch in its own folder.",
+            "這個儲存庫只有主要工作樹。加入一個工作樹，就能在另一個資料夾處理別的分支。",
+        )
+    }
+
+    /// After the branch of a worktree `git worktree lock` holds.
+    pub fn worktree_locked(&self) -> &'static str {
+        self.t("Locked", "已鎖定")
+    }
+
+    /// After the branch of a worktree locked with a reason.
+    pub fn worktree_locked_because(&self) -> &'static str {
+        self.t("Locked: {reason}", "已鎖定：{reason}")
+    }
+
+    pub fn lock_worktree(&self) -> &'static str {
+        self.t("Lock worktree…", "鎖定工作樹…")
+    }
+
+    pub fn lock_worktree_title(&self) -> &'static str {
+        self.t("Lock worktree", "鎖定工作樹")
+    }
+
+    pub fn lock_worktree_body(&self) -> &'static str {
+        self.t(
+            "While {name} is locked, Git won't move, remove, or clear it from the list, even when its folder is on a drive that isn't connected.",
+            "{name} 鎖定後，Git 不會移動、移除它，也不會把它從清單清除，即使它的資料夾所在的磁碟沒有接上。",
+        )
+    }
+
+    pub fn lock_reason(&self) -> &'static str {
+        self.t("Reason (optional)", "原因（可不填）")
+    }
+
+    pub fn lock(&self) -> &'static str {
+        self.t("Lock", "鎖定")
+    }
+
+    pub fn unlock_worktree(&self) -> &'static str {
+        self.t("Unlock worktree", "解除鎖定工作樹")
+    }
+
+    /// For a worktree whose folder is gone: `git worktree prune`.
+    pub fn clear_worktree(&self) -> &'static str {
+        self.t("Clear from the list…", "從清單清除…")
+    }
+
+    pub fn clear_worktrees_title(&self) -> &'static str {
+        self.t("Clear from the list", "從清單清除")
+    }
+
+    /// The confirmation for one worktree; nothing on disk changes.
+    pub fn clear_worktree_body(&self) -> &'static str {
+        self.t(
+            "{path} can't be found. Clear it from the list of worktrees? No files are deleted.",
+            "找不到 {path}。要把它從工作樹清單清除嗎？不會刪除任何檔案。",
+        )
+    }
+
+    /// The confirmation when Git would clear more than one.
+    pub fn clear_worktrees_body(&self) -> &'static str {
+        self.t(
+            "Git clears every worktree whose folder can't be found, all at once. These {n} are cleared from the list; no files are deleted:",
+            "Git 會一次清除所有找不到資料夾的工作樹。下面這 {n} 個會從清單清除，不會刪除任何檔案：",
+        )
+    }
+
+    pub fn clear(&self) -> &'static str {
+        self.t("Clear", "清除")
+    }
+
+    /// Remove, off, for a locked worktree.
+    pub fn remove_locked_worktree(&self) -> &'static str {
+        self.t(
+            "Remove worktree (unlock it first)",
+            "移除工作樹（要先解除鎖定）",
+        )
+    }
+
+    /// Move, off, for a locked worktree.
+    pub fn move_locked_worktree(&self) -> &'static str {
+        self.t(
+            "Move worktree (unlock it first)",
+            "移動工作樹（要先解除鎖定）",
+        )
+    }
+
+    /// The remove confirmation while the worktree's files are counted.
+    pub fn worktree_changes_reading(&self) -> &'static str {
+        self.t("Checking it for changes…", "正在檢查裡面的變更…")
+    }
+
+    pub fn worktree_changes_none(&self) -> &'static str {
+        self.t(
+            "It has no changed or untracked files.",
+            "裡面沒有變更或未追蹤的檔案。",
+        )
+    }
+
+    pub fn worktree_changes_some(&self) -> &'static str {
+        self.t(
+            "It has {changed} changed and {untracked} untracked files. Removing it deletes them.",
+            "裡面有 {changed} 個變更過、{untracked} 個未追蹤的檔案，移除後會一起刪除。",
+        )
+    }
+
+    pub fn worktree_changes_unknown(&self) -> &'static str {
+        self.t(
+            "Better Git couldn't check it for changes.",
+            "Better Git 無法檢查裡面的變更。",
+        )
+    }
+
+    pub fn no_matching_worktrees(&self) -> &'static str {
+        self.t("No worktrees match.", "沒有符合的工作樹。")
     }
 
     // --- live changes ----------------------------------------------------------

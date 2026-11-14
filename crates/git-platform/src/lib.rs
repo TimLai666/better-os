@@ -502,6 +502,20 @@ pub trait Git: Send + Sync {
     fn remove_worktree(&self, repository: &Path, path: &Path, force: bool) -> Result<(), GitError> {
         unsupported!("remove_worktree")
     }
+    fn lock_worktree(
+        &self,
+        repository: &Path,
+        path: &Path,
+        reason: Option<&str>,
+    ) -> Result<(), GitError> {
+        unsupported!("lock_worktree")
+    }
+    fn unlock_worktree(&self, repository: &Path, path: &Path) -> Result<(), GitError> {
+        unsupported!("unlock_worktree")
+    }
+    fn prune_worktrees(&self, repository: &Path) -> Result<(), GitError> {
+        unsupported!("prune_worktrees")
+    }
 
     // Remotes
     fn fetch(
@@ -1420,6 +1434,23 @@ impl Git for SystemGit {
 
     fn remove_worktree(&self, repository: &Path, path: &Path, force: bool) -> Result<(), GitError> {
         worktrees::remove(repository, path, force)
+    }
+
+    fn lock_worktree(
+        &self,
+        repository: &Path,
+        path: &Path,
+        reason: Option<&str>,
+    ) -> Result<(), GitError> {
+        worktrees::lock(repository, path, reason)
+    }
+
+    fn unlock_worktree(&self, repository: &Path, path: &Path) -> Result<(), GitError> {
+        worktrees::unlock(repository, path)
+    }
+
+    fn prune_worktrees(&self, repository: &Path) -> Result<(), GitError> {
+        worktrees::prune(repository)
     }
 
     fn fetch(
