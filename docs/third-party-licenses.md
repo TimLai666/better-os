@@ -14,7 +14,7 @@ It does not replace the license text supplied by each upstream project.
 - Packages with an SPDX license expression: 972.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `98682853890249500ac1317a2bc7acfa28fee5e3168ec0c95a9a4e6916cb0854`.
+- `Cargo.lock` SHA-256: `b61abbf388ac3ea5ae889b36fbd96374d35020855184073fa0ddfd1e3bbd40b6`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -150,13 +150,17 @@ Better OS does not relicense or silently select a different expression.
 
 These are not Cargo packages and are not shipped in any Better OS package.
 They are installed from the distribution, as the package dependencies
-name them, and linked at run time; each keeps its own license.
+and recommendations name them, and linked or loaded at run time; each
+keeps its own license.
 
 | Library | Distribution packages | License | Used by |
 | --- | --- | --- | --- |
 | GStreamer core, base and app/video libraries | `libgstreamer1.0-0`, `libgstreamer-plugins-base1.0-0` | `LGPL-2.1-or-later` | `better-files-preview`: audio and video playback, through the `gstreamer`, `gstreamer-app` and `gstreamer-video` bindings (`MIT OR Apache-2.0`) |
 | GStreamer base plugins | `gstreamer1.0-plugins-base` | `LGPL-2.1-or-later` | `better-files-preview`: `playbin` and the format converters, loaded at run time |
-| GLib and GObject | `libglib2.0-0` (`libglib2.0-0t64` on Ubuntu 24.04) | `LGPL-2.1-or-later` | the GStreamer bindings above |
+| GLib and GObject | `libglib2.0-0` (`libglib2.0-0t64` on Ubuntu 24.04) | `LGPL-2.1-or-later` | the GStreamer bindings above, and GTK 4 below |
+| GTK 4 | `libgtk-4-1` (recommended) | `LGPL-2.1-or-later` | every window (`better-ui`): loaded at run time with `dlopen`, never linked, to draw the window frame, shadow, and window buttons from the desktop theme; without it the window draws Adwaita's frame itself |
+| libadwaita | `libadwaita-1-0` (recommended) | `LGPL-2.1-or-later` | every window (`better-ui`): loaded at run time with `dlopen` when installed, so the frame matches GNOME's own applications |
+| Cairo | `libcairo2`, through GTK 4 | `LGPL-2.1-only OR MPL-1.1` | every window (`better-ui`): the image surfaces GTK draws the frame into, reached through the loaded GTK 4 |
 
 ## Package inventory
 

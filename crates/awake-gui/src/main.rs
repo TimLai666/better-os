@@ -26,7 +26,6 @@ mod tray;
 use app::AwakeApp;
 use better_ui::command_line::WindowCommandLine;
 use gpui::*;
-use gpui_component::*;
 use gpui_component_assets::Assets;
 use layout::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 
@@ -87,7 +86,7 @@ fn main() {
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
                 let view = cx.new(|cx| AwakeApp::new(window, cx, handoff.as_ref()));
-                cx.new(|cx| Root::new(view, window, cx))
+                cx.new(|cx| better_ui::window_chrome::root(view, window, cx))
             })
             .expect("failed to open the Better Awake window");
         })

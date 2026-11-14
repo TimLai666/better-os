@@ -562,7 +562,8 @@ impl Render for ManagerApp {
             .size_full()
             .flex()
             .flex_col()
-            .bg(p.window_background)
+            // The window frame paints the window background, with the
+            // desktop's top corners (ticket 108).
             .text_color(p.text_primary)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 let keystroke = &event.keystroke;

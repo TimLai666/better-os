@@ -1,7 +1,7 @@
 ---
 version: alpha
 name: Better OS
-description: Every Better OS window in the visual language of WinUI on Windows 11, on a Linux desktop.
+description: Every Better OS window in the visual language of WinUI on Windows 11, inside the desktop's own window frame, on a Linux desktop.
 colors:
   primary: "#1a1a1a"
   secondary: "#5c5c5c"
@@ -64,6 +64,8 @@ The owner decided on 2026-10-05 that every first-party window looks like a WinUI
 
 This file is the baseline for all of them. The type ramp and the corner radii are taken from Microsoft's Windows app design guidance, read on 2026-11-11. The color values were checked on 2026-11-12 against WinUI's own theme resources in `microsoft/microsoft-ui-xaml` at commit `e38939f2680f0da968d7536a0b7863617ab5793e`: `controls/dev/CommonStyles/Common_themeresources_any.xaml` for fills, strokes, text, and status colors, and `controls/dev/Materials/Acrylic/AcrylicBrush_themeresources.xaml` for the flyout fill. Four values recalled earlier were wrong and are corrected below: dark secondary text, the dark dialog fill, the dark control stroke, and light secondary text.
 
+The window frame is the exception. The owner decided on 2026-11-14 (ticket 108) that a window's corners, edges, shadow, title bar background, and minimize, maximize, and close buttons look like every other window on the desktop, the way Chromium and Electron windows such as Claude Desktop do; everything inside the title bar and the window stays Fluent. See [Window frame](#window-frame).
+
 Every control is built once, in `better_ui::fluent` (ticket 80): window chrome, navigation view, command bar, buttons, text fields, check boxes, radio buttons, toggle switches, combo boxes, sliders, progress, info bars, dialogs, flyouts, menus, tooltips, lists, tables, settings cards, breadcrumbs, tab views, and selector bars. A window uses those rather than drawing its own. `better-fluent-gallery` shows each of them in every state, in both appearances.
 
 ## Colors
@@ -91,7 +93,7 @@ Two appearances, with the same roles in each. WinUI writes many of these as tran
 | Caution | `SystemFillColorCaution` | `#9d5d00` | `#fce100` |
 | Critical, success, caution background | `SystemFillColor*Background` | `#fde7e9`, `#dff6dd`, `#fff4ce` | `#442726`, `#393d1b`, `#433519` |
 
-The accent shades are not in the WinUI source: WinUI reads them from the operating system (`SystemAccentColorDark1` in light, `SystemAccentColorLight2` in dark). The values here are Windows 11's default blue. Every other value is the resource named beside it; `crates/better-ui/src/fluent.rs` holds the full set and `crates/better-ui/src/fluent/tests.rs` asserts it row by row.
+The accent shades are not in the WinUI source: WinUI reads them from the operating system (`SystemAccentColorDark1` in light, `SystemAccentColorLight2` in dark). The values here are Windows 11's default blue, used when the desktop gives no accent. Since ticket 108 the accent follows the desktop's, as WinUI's follows Windows': when the GTK theme defines `accent_bg_color` and `accent_fg_color` (Adwaita's blue, or Zorin's per-theme colour), those become the accent fill and the text on it, in both appearances. Every other value is the resource named beside it; `crates/better-ui/src/fluent.rs` holds the full set and `crates/better-ui/src/fluent/tests.rs` asserts it row by row.
 
 An info bar is drawn on its status background, never on the status color itself: the color goes only to the icon.
 
@@ -135,6 +137,17 @@ Two radii, as on Windows 11. 4px for everything that sits in the page: buttons, 
 
 A selected row in a list has a subtle fill across the row and a 3px accent bar, 16px tall and rounded, at its leading edge, never an outline. A text field has a 1px stroke whose bottom edge is the strong stroke at rest and a 2px accent line while focused; that line is the field's focus indicator. Every other control shows keyboard focus with WinUI's focus visual: a 2px ring in primary text color with a 1px inner ring in the opposite color, drawn 3px outside the control, and only when focus came from the keyboard.
 
+## Window frame
+
+GNOME's compositor draws no frame for a Wayland window, so every application draws its own; GTK applications, Chromium, and Electron look like the desktop because GTK draws theirs from the current theme. Better OS does the same (ticket 108): `better_ui::system_frame` opens GTK 4 (and libadwaita when installed) at run time, asks it to draw the window frame with its shadow, the header bar, and the title buttons in each state into Cairo images, and the kit paints those images. It never imitates a theme by hand. Chromium's `ui/gtk/window_frame_provider_gtk.cc` and `nav_button_provider_gtk.cc` are the method.
+
+- **Corners, edges, shadow.** As GTK draws a window under the current theme, focused and in the background. Maximized or tiled, there is none. The bottom corners are square, as in Chromium: content is painted to the window's edge.
+- **Resizing.** Every edge and corner, from GTK 4's 12px handle outside the window, with 24px corners. Clicks on the shadow beyond the handle go to whatever is behind.
+- **Title bar.** As tall as GTK's header bar, with its background and bottom shade. The buttons are GTK's, in the order and on the side `org.gnome.desktop.wm.preferences button-layout` names, and change as soon as it does. Double, middle, and right clicks on empty space follow `action-double-click-titlebar`, `action-middle-click-titlebar`, and `action-right-click-titlebar`; the right click's default is the compositor's window menu. Dragging moves the window; dragging a maximized one restores it.
+- **Inside the title bar.** Fluent: the back button, the app's icon and title in Body Strong, and any controls the app puts there, between the button groups.
+- **Light and dark.** The frame is drawn in the window's own appearance, which follows the desktop's `color-scheme` when the person chose "system" (owner, 2026-11-14): a window someone set to light has a light frame on a dark desktop, as a libadwaita application that forces its scheme does.
+- **Without GTK.** On a desktop where GTK 4 cannot be loaded, the kit draws Adwaita's frame itself (12px corners, a 47px header, round title buttons), never the old Windows caption buttons.
+
 ## Components
 
 - **Buttons.** One accent button per surface, for the action the person came to do. Everything else is a standard button with the control fill and stroke. Text is a verb.
@@ -151,7 +164,8 @@ A selected row in a list has a subtle fill across the row and a 3px accent bar, 
 - Do keep lifecycle wording user-facing: `Review changes`, `Install updates`, `Applying settings`, `Checking that everything works`, and `Restore previous version`.
 - Do localize all UI copy at runtime for `zh-TW`, `en-US`, and `system` fallback.
 - Do let every surface read its colors from the active theme so both appearances stay correct.
-- Do draw the titlebar through `better_ui::window_chrome`; Mutter gives a Wayland client none.
+- Do open a window with `better_ui::window_chrome::window_options` and `better_ui::window_chrome::root`, and draw its title bar with `fluent::chrome::TitleBar`; Mutter gives a Wayland client no frame, and these give it the desktop's.
+- Don't draw a window frame, a shadow, or window buttons in an app, and don't paint a background on the view's root: the frame paints the window background with the desktop's corners.
 - Don't use fixed card or button widths that can clip translated content.
 - Don't put a shadow, a gradient, or a radius larger than 4px on anything that sits in the page.
 - Don't use the accent color for more than the primary action, the selection indicator, and focus.

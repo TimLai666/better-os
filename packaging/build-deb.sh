@@ -166,6 +166,12 @@ reset_package_inputs() {
 # with no window ships none of them; see make_daemon_package and better-storage.
 GRAPHICS_DEPENDS='libfontconfig1, libwayland-client0, libwayland-egl1, libwayland-cursor0'
 
+# Every window asks GTK 4 (and libadwaita, which GNOME's own applications use)
+# to draw its frame, shadow, and window buttons, loading them at run time
+# (ticket 108). Recommended rather than required: without them the window draws
+# Adwaita's frame itself.
+FRAME_RECOMMENDS='libgtk-4-1, libadwaita-1-0'
+
 # A package that ships systemd user units gets a preinst and a postinst built
 # from packaging/maintainer/user-units.sh (ticket 105). After an upgrade, by
 # Better Manager or by apt, the postinst restarts each logged-in person's
@@ -320,8 +326,12 @@ make_package() {
     # Recommends, not Depends: the manager still runs without the privileged
     # service, it just reports that it cannot apply changes instead of
     # pretending to.
-    if [[ -n "$PACKAGE_RECOMMENDS" ]]; then
-        printf 'Recommends: %s\n' "$PACKAGE_RECOMMENDS" >> "$staging_dir/DEBIAN/control"
+    local recommends="$PACKAGE_RECOMMENDS"
+    if [[ " ${PACKAGE_DEPENDS[*]+"${PACKAGE_DEPENDS[*]}"} " == *"$GRAPHICS_DEPENDS"* ]]; then
+        recommends="${recommends:+$recommends, }$FRAME_RECOMMENDS"
+    fi
+    if [[ -n "$recommends" ]]; then
+        printf 'Recommends: %s\n' "$recommends" >> "$staging_dir/DEBIAN/control"
     fi
     printf '%s\n' \
         "Description: $description" \

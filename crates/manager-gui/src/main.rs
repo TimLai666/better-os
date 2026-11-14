@@ -36,7 +36,6 @@ mod window_attention_page;
 use app::ManagerApp;
 use better_ui::command_line::WindowCommandLine;
 use gpui::*;
-use gpui_component::*;
 use gpui_component_assets::Assets;
 use layout::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 
@@ -191,7 +190,7 @@ fn main() {
                     }
                     app
                 });
-                cx.new(|cx| Root::new(view, window, cx))
+                cx.new(|cx| better_ui::window_chrome::root(view, window, cx))
             })
             .expect("failed to open Better OS Manager window");
         })

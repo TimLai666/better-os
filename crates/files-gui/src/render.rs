@@ -206,7 +206,8 @@ impl Render for FilesApp {
             .size_full()
             .flex()
             .flex_col()
-            .bg(p.window_background)
+            // The window frame paints the window background, with the
+            // desktop's top corners (ticket 108).
             .text_color(p.text_primary)
             .track_focus(&self.focus_handle)
             .key_context("BetterFiles")
