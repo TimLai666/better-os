@@ -79,7 +79,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let launcher = match launcher_platform::bus::SessionBusRegistry::connect() {
+    let launcher = match launcher_platform::bus::SessionBusRegistry::connect_forward_only() {
         Ok(registry) => LauncherActivationAdapter::new(Box::new(registry)),
         Err(error) => {
             eprintln!("Better Launcher's activation route is unavailable: {error}");

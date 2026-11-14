@@ -191,14 +191,73 @@ pub(crate) mod bus {
     /// How long a second `better-manager` waits for the running window.
     pub(crate) const FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+    /// How long [`await_object_server`] waits for the object server in all.
+    const OBJECT_SERVER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Returns once `connection`'s object server is reading method calls.
+    ///
+    /// zbus starts the server lazily: the first `object_server()` spawns a
+    /// task that subscribes to incoming calls a moment later, and a call that
+    /// reaches the connection before that is dropped with no reply (ticket
+    /// 107). The server's root object answers `org.freedesktop.DBus.Peer.Ping`
+    /// only once it is reading, so the connection pings its own unique name
+    /// until it is answered. A ping sent too early is never answered; each
+    /// attempt waits twice as long as the last, up to a quarter of a second, so
+    /// a slow machine is not mistaken for a server that never started.
+    fn await_object_server(connection: &Connection) -> zbus::Result<()> {
+        let connection = connection.inner();
+        let _ = connection.object_server();
+        let Some(own_name) = connection.unique_name().map(ToString::to_string) else {
+            return Ok(());
+        };
+        smol::block_on(async {
+            let started = std::time::Instant::now();
+            let mut attempt = std::time::Duration::from_millis(5);
+            while started.elapsed() < OBJECT_SERVER_DEADLINE {
+                let ping = async {
+                    Some(
+                        connection
+                            .call_method(
+                                Some(own_name.as_str()),
+                                "/",
+                                Some("org.freedesktop.DBus.Peer"),
+                                "Ping",
+                                &(),
+                            )
+                            .await,
+                    )
+                };
+                let late = async {
+                    smol::Timer::after(attempt).await;
+                    None
+                };
+                match smol::future::or(ping, late).await {
+                    Some(Ok(_)) => return Ok(()),
+                    Some(Err(error)) => return Err(error),
+                    None => attempt = (attempt * 2).min(std::time::Duration::from_millis(250)),
+                }
+            }
+            Err(zbus::Error::Failure(
+                "the D-Bus object server did not start answering calls".to_string(),
+            ))
+        })
+    }
+
     /// Serves `ShowPage` and asks for the name. The object is served first,
     /// so a second window that finds the name taken always finds the method
     /// behind it.
+    ///
+    /// The object is added to a connection that is already built, because
+    /// `ShowPage`'s channel is made here and [`connect`] hands out plain
+    /// connections (a second window only forwards). So the name is asked for
+    /// only after [`await_object_server`] has seen the server reading calls;
+    /// a click forwarded the instant the name appears is then answered.
     pub(crate) fn claim(connection: Connection) -> zbus::Result<Claim> {
         let (sender, requests) = smol::channel::unbounded();
         connection
             .object_server()
             .at(OBJECT_PATH, ShowPage { sender })?;
+        await_object_server(&connection)?;
         // DoNotQueue: a window that silently became the owner later, after
         // the first one closed, would be a second window that never opened.
         let owned = match connection

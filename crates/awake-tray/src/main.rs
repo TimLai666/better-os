@@ -10,13 +10,9 @@ use std::sync::Arc;
 
 use awake_tray::client::{CALL_TIMEOUT, FIRST_CALL_TIMEOUT, ServiceClient};
 use awake_tray::controller::TrayController;
-use awake_tray::dbusmenu::DbusMenu;
-use awake_tray::item::StatusNotifierItem;
 use awake_tray::labels::Locale;
 use awake_tray::notify::DesktopNotifier;
-use awake_tray::sni::{
-    ITEM_PATH, MENU_PATH, TrayAvailability, keep_registered, register_and_verify,
-};
+use awake_tray::sni::{TrayAvailability, keep_registered, register_and_verify};
 
 fn report(availability: TrayAvailability) {
     match availability {
@@ -66,17 +62,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let locale = Locale::from_environment();
     let controller = Arc::new(TrayController::new(client, locale, status));
 
-    // The item and the menu are served from the builder: objects added to a
-    // connection that is already running start zbus's object server lazily,
-    // and a call that arrives before it has subscribed is dropped unanswered
-    // (zbus warns about exactly this).
-    let connection = zbus::connection::Builder::session()?
-        .method_timeout(CALL_TIMEOUT)
-        .serve_at(ITEM_PATH, StatusNotifierItem::new(controller.clone()))?
-        .serve_at(MENU_PATH, DbusMenu::new(controller.clone()))?
-        .build()
-        .await?;
-    controller.attach(connection.clone()).await;
+    // The item and the menu are served from the builder; `serve` says why.
+    let connection = awake_tray::serve(
+        zbus::connection::Builder::session()?.method_timeout(CALL_TIMEOUT),
+        controller.clone(),
+    )
+    .await?;
 
     // A missing notification service costs the notifications and nothing
     // else, so it is said and the tray starts anyway. One notifier says a

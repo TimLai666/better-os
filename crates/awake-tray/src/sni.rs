@@ -19,6 +19,33 @@
 
 use awake_ipc::WireIndicator;
 
+/// Serves the item and its menu on a connection from `builder`, then hands
+/// the connection to `controller`.
+///
+/// The item and the menu are served from the builder: objects added to a
+/// connection that is already running start zbus's object server lazily, and
+/// a call that arrives before it has subscribed is dropped unanswered (zbus
+/// warns about exactly this). `build` returns only once the server is
+/// reading, so the panel the item registers with next is answered at once.
+pub async fn serve(
+    builder: zbus::connection::Builder<'_>,
+    controller: std::sync::Arc<crate::controller::TrayController>,
+) -> zbus::Result<zbus::Connection> {
+    let connection = builder
+        .serve_at(
+            ITEM_PATH,
+            crate::item::StatusNotifierItem::new(controller.clone()),
+        )?
+        .serve_at(
+            MENU_PATH,
+            crate::dbusmenu::DbusMenu::new(controller.clone()),
+        )?
+        .build()
+        .await?;
+    controller.attach(connection.clone()).await;
+    Ok(connection)
+}
+
 pub const WATCHER_SERVICE: &str = "org.kde.StatusNotifierWatcher";
 pub const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 pub const ITEM_PATH: &str = "/StatusNotifierItem";

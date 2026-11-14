@@ -86,6 +86,27 @@ impl CallGate {
     }
 }
 
+/// Serves `service` on a connection from `builder`, then owns `bus_name`.
+///
+/// The interface goes in through `Builder::serve_at`, so `build` returns only
+/// once zbus's object server is reading method calls, and the name is asked
+/// for after that. An object added to a connection that is already built
+/// starts the server lazily, and a call that arrives before it is reading is
+/// dropped with no reply (ticket 107); for this daemon that call is the
+/// D-Bus activation that started it, and the caller would wait out its
+/// timeout.
+pub async fn serve<A: Authorizer + 'static>(
+    builder: zbus::connection::Builder<'_>,
+    bus_name: &str,
+    service: ManagerService<A>,
+) -> zbus::Result<zbus::Connection> {
+    builder
+        .serve_at(OBJECT_PATH, service)?
+        .name(bus_name)?
+        .build()
+        .await
+}
+
 pub struct ManagerService<A: Authorizer + 'static> {
     authorizer: A,
     executor: Arc<Executor>,
