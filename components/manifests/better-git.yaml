@@ -7,7 +7,7 @@ display_name: Better Git
 # standalone type, and a released Better Manager refuses a manifest with a type
 # it does not know, so adding one is a schema change for its own ticket.
 component_type: enhancement
-version: 0.2.11
+version: 0.2.12
 summary: Work with Git repositories and GitHub without a terminal, the way GitHub Desktop does.
 # The icon set is closed in the same way and has no Git mark; generic is the
 # value a component without a dedicated icon takes.
@@ -17,31 +17,31 @@ targets:
   distributions: [zorin, ubuntu]
   releases: [22.04, 24.04]
   architectures: [amd64, arm64]
-# The checksums below belong to the published v0.2.11 release assets. Each one
+# The checksums below belong to the published v0.2.12 release assets. Each one
 # was re-hashed from the package downloaded back from the public release rather
 # than copied from its sidecar, which is what ADR 0002 requires a manifest to
 # record.
 artifacts:
   - release: "22.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.11/better-git_0.2.11_ubuntu-22.04_amd64.deb
-    sha256: 3952b639b7ec2bb97af33c56974681f6933ba7e9a66dd1db79dd6f694123e43b
-    release_asset: better-git_0.2.11_ubuntu-22.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.12/better-git_0.2.12_ubuntu-22.04_amd64.deb
+    sha256: 82c9a3c9198b6a55f28e50f8a5fe5110165cb8e347cab66fabf04b7d11147204
+    release_asset: better-git_0.2.12_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.11/better-git_0.2.11_ubuntu-22.04_arm64.deb
-    sha256: 68a0529a4a9eb3f1e21150476ef8f83bb7bd81c4e24cfc8badf6a0d4d3120592
-    release_asset: better-git_0.2.11_ubuntu-22.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.12/better-git_0.2.12_ubuntu-22.04_arm64.deb
+    sha256: 5ea34ccfbcaa5cf0e6e1ee9c389b419944e785ed7c9c1882a3893074b92ac63e
+    release_asset: better-git_0.2.12_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.11/better-git_0.2.11_ubuntu-24.04_amd64.deb
-    sha256: 876d950d2adfc32f3142945d45692d7c0781096967ab61feee20ca969fa48c81
-    release_asset: better-git_0.2.11_ubuntu-24.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.12/better-git_0.2.12_ubuntu-24.04_amd64.deb
+    sha256: cbd903c0cb0b52a1f518db214332cfc64095ec39bc00f1c52c484fc7437454fb
+    release_asset: better-git_0.2.12_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.11/better-git_0.2.11_ubuntu-24.04_arm64.deb
-    sha256: 2f868d06668a3f975c5497552e3e2555c11b5883138737bbda9ae71ea3876fe5
-    release_asset: better-git_0.2.11_ubuntu-24.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.12/better-git_0.2.12_ubuntu-24.04_arm64.deb
+    sha256: ac7f135baf5364c34fd0848ab877d5a69448e5b60fea66680876622c4cda7666
+    release_asset: better-git_0.2.12_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable

@@ -143,9 +143,18 @@ fn the_overview_reads_the_captured_machine_rather_than_a_mock() {
         model.coverage.observed_fraction().unwrap() > 0.5,
         "most of a captured machine is observable"
     );
-    // Six collectors, all reporting.
-    assert_eq!(model.collectors.len(), 6);
-    assert!(model.unhealthy_collectors().is_empty());
+    // Every collector reports. The snapshot has no graphics card, NPU, or
+    // battery recorded, and those three say so rather than failing.
+    assert_eq!(
+        model.collectors.len(),
+        LinuxCollectors::collector_names().len()
+    );
+    for status in model.unhealthy_collectors() {
+        assert!(
+            matches!(status.health, monitor_core::CollectorHealth::Unsupported(_)),
+            "{status:?}"
+        );
+    }
 }
 
 #[test]
@@ -200,7 +209,10 @@ fn a_host_with_no_proc_at_all_explains_itself_rather_than_showing_zeros() {
         model.throttling,
         ThrottlingState::NotObservable { .. }
     ));
-    assert_eq!(model.unhealthy_collectors().len(), 6);
+    assert_eq!(
+        model.unhealthy_collectors().len(),
+        LinuxCollectors::collector_names().len()
+    );
 }
 
 #[test]

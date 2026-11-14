@@ -135,6 +135,10 @@ pub enum StoreError {
     Serialize(#[source] serde_json::Error),
     #[error("monitor.store.error.deserialize")]
     Deserialize(#[source] serde_json::Error),
+    /// Another process (the service, or a window collecting for itself) has
+    /// this store open.
+    #[error("monitor.store.error.locked:{path}")]
+    Locked { path: PathBuf },
 }
 
 #[cfg(test)]

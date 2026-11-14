@@ -8,9 +8,14 @@ license.workspace = true
 [dependencies]
 monitor-core.workspace = true
 serde.workspace = true
+# socket(2), sendto(2), and recv(2) for the NETLINK_SOCK_DIAG dump that
+# attributes TCP traffic to processes, and dlopen(3) for NVIDIA's management
+# library when it is installed. Already in the workspace lockfile.
+libc.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+tempfile.workspace = true
 
 [[example]]
 name = "overhead"

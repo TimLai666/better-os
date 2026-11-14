@@ -1,6 +1,6 @@
 # Ticket 92 — Better Git does everything GitHub Desktop does
 
-**Blocked by:** 80 (done) · **Status:** merged, not released
+**Blocked by:** 80 (done) · **Status:** released in v0.2.12
 
 ## Why
 

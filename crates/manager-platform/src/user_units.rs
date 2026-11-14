@@ -483,6 +483,26 @@ impl SystemdUserUnitController {
         Self::invocation(unit, &["disable", "--now"])
     }
 
+    /// `systemctl --user daemon-reload`, which makes the user manager read
+    /// unit files again. An update that changed a unit file (or shipped a new
+    /// unit) is not in effect until this has run.
+    pub fn daemon_reload_invocation() -> SystemctlInvocation {
+        SystemctlInvocation {
+            program: "systemctl",
+            arguments: vec!["--user".to_string(), "daemon-reload".to_string()],
+        }
+    }
+
+    /// Reload unit files once before units are started, so what starts is
+    /// what the package just installed.
+    fn daemon_reload(&self, units: &[String]) -> Result<(), UnitFailure> {
+        let Some(first) = units.first() else {
+            return Ok(());
+        };
+        self.call(first, &Self::daemon_reload_invocation())
+            .map(|_| ())
+    }
+
     /// `systemctl --user show` with the properties [`parse_unit_state`] reads.
     pub fn show_invocation(unit: &str) -> Result<SystemctlInvocation, UnitFailure> {
         Self::invocation(
@@ -568,6 +588,7 @@ impl SystemdUserUnitController {
 
 impl UserUnitController for SystemdUserUnitController {
     fn enable_now(&self, units: &[String]) -> Result<(), UnitFailure> {
+        self.daemon_reload(units)?;
         for unit in units {
             let invocation = Self::enable_invocation(unit)?;
             self.call(unit, &invocation)?;
@@ -589,6 +610,7 @@ impl UserUnitController for SystemdUserUnitController {
     }
 
     fn enable_and_restart(&self, units: &[String]) -> Result<(), UnitFailure> {
+        self.daemon_reload(units)?;
         for unit in units {
             let enable = Self::enable_only_invocation(unit)?;
             self.call(unit, &enable)?;
@@ -1142,7 +1164,7 @@ mod tests {
 
     #[test]
     fn a_unit_that_crashes_as_it_starts_fails_the_start() {
-        let runner = ScriptedRunner::new(vec![Ok(""), Ok(ACTIVATING), Ok(FAILED)]);
+        let runner = ScriptedRunner::new(vec![Ok(""), Ok(""), Ok(ACTIVATING), Ok(FAILED)]);
         let (controller, sleeps) = watched(runner.clone());
 
         let failure = controller
@@ -1151,13 +1173,13 @@ mod tests {
 
         assert_eq!(failure.unit, "better-awake.service");
         assert!(failure.message.contains("failed"), "{}", failure.message);
-        assert_eq!(runner.verbs(), ["enable", "show", "show"]);
+        assert_eq!(runner.verbs(), ["daemon-reload", "enable", "show", "show"]);
         assert_eq!(*sleeps.lock().unwrap(), 2);
     }
 
     #[test]
     fn a_unit_still_activating_after_two_seconds_is_reported_as_activating() {
-        let mut answers = vec![Ok("")];
+        let mut answers = vec![Ok(""), Ok("")];
         answers.extend(std::iter::repeat_n(Ok(ACTIVATING), 10));
         let runner = ScriptedRunner::new(answers);
         let (controller, sleeps) = watched(runner.clone());
@@ -1176,7 +1198,7 @@ mod tests {
 
     #[test]
     fn a_unit_that_comes_up_after_activating_starts() {
-        let runner = ScriptedRunner::new(vec![Ok(""), Ok(ACTIVATING), Ok(ACTIVE)]);
+        let runner = ScriptedRunner::new(vec![Ok(""), Ok(""), Ok(ACTIVATING), Ok(ACTIVE)]);
         let (controller, sleeps) = watched(runner.clone());
 
         controller
@@ -1188,14 +1210,30 @@ mod tests {
 
     #[test]
     fn restarting_enables_then_restarts_then_watches() {
-        let runner = ScriptedRunner::new(vec![Ok(""), Ok(""), Ok(ACTIVE)]);
+        let runner = ScriptedRunner::new(vec![Ok(""), Ok(""), Ok(""), Ok(ACTIVE)]);
         let (controller, _) = watched(runner.clone());
 
         controller
             .enable_and_restart(&["better-awake.service".to_string()])
             .expect("the unit restarted");
 
-        assert_eq!(runner.verbs(), ["enable", "restart", "show"]);
+        // Unit files are read again first, so a unit the update changed (or
+        // a new one it shipped) is what restarts.
+        assert_eq!(
+            runner.verbs(),
+            ["daemon-reload", "enable", "restart", "show"]
+        );
+    }
+
+    #[test]
+    fn disabling_does_not_reload_and_an_empty_start_asks_nothing() {
+        let runner = ScriptedRunner::new(vec![Ok("")]);
+        let (controller, _) = watched(runner.clone());
+        controller
+            .disable_now(&["better-awake.service".to_string()])
+            .expect("disabled");
+        controller.enable_now(&[]).expect("nothing to start");
+        assert_eq!(runner.verbs(), ["disable"]);
     }
 
     #[test]
@@ -1230,10 +1268,9 @@ mod tests {
         assert!(failure.is_no_session(), "{failure:?}");
         let recorded = std::fs::read_to_string(&log).unwrap();
         let _ = std::fs::remove_file(&log);
-        assert_eq!(
-            recorded,
-            "systemctl --user enable --now better-awake.service\n"
-        );
+        // The first thing a start asks is to read unit files again; the
+        // guard refuses it as no session, and nothing after it is asked.
+        assert_eq!(recorded, "systemctl --user daemon-reload\n");
     }
 
     #[test]

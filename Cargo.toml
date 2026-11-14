@@ -46,6 +46,7 @@ members = [
     "crates/monitor-ipc",
     "crates/monitor-export",
     "crates/monitor-service",
+    "crates/monitor-tray",
     "crates/monitor-cli",
     "crates/monitor-actions-linux",
     "crates/monitor-gui",
@@ -62,7 +63,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-version = "0.2.11"
+version = "0.2.12"
 # The oldest Rust that builds the locked dependency graph. `cargo metadata`
 # cannot say this on its own: the highest `rust-version` a locked crate
 # declares is 1.92 (oo7), but Zed's git crates declare none, and gpui at the
@@ -114,6 +115,7 @@ monitor-store = { path = "crates/monitor-store" }
 monitor-ipc = { path = "crates/monitor-ipc" }
 monitor-export = { path = "crates/monitor-export" }
 monitor-service = { path = "crates/monitor-service" }
+monitor-tray = { path = "crates/monitor-tray" }
 monitor-actions-linux = { path = "crates/monitor-actions-linux" }
 touchpad-core = { path = "crates/touchpad-core" }
 touchpad-gesture-service = { path = "crates/touchpad-gesture-service" }

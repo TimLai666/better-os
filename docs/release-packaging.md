@@ -278,6 +278,14 @@ unit，開啟時會把已啟用卻沒在跑的元件啟動起來。套件本身�
 仍然以停用狀態安裝，由 Better Manager 啟用。
 
 目前的 release 是
+[`v0.2.12`](https://github.com/TimLai666/better-os/releases/tag/v0.2.12)，由 commit
+`f5a28f4ecf604207832044864ecc2c91b4f3e51e` 的 CI run
+[`43272264034`](https://github.com/TimLai666/better-os/actions/runs/43272264034)
+產生，九個套件、36 個 `.deb` 與 36 個 `.deb.sha256`，共 74 個 assets。內容是
+ticket 92（功能對齊 GitHub Desktop 的 Better Git）與 84（Better Manager 控制台的外框、首頁與設定）。
+打包方式沒有改變。
+
+上一版是
 [`v0.2.11`](https://github.com/TimLai666/better-os/releases/tag/v0.2.11)，由 commit
 `13ea36afd4fdfe7eb80895da677e60a642b6cb8e` 的 CI run
 [`43261151208`](https://github.com/TimLai666/better-os/actions/runs/43261151208)

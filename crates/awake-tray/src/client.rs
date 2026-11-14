@@ -8,6 +8,8 @@
 use awake_ipc::{
     AwakeRequest, AwakeResponse, EventBody, IpcError, RequestBody, ResponseBody, StatusDocument,
 };
+use std::time::Duration;
+
 use thiserror::Error;
 
 use crate::menu::{MenuAction, QuickOptions};
@@ -48,13 +50,41 @@ impl From<IpcError> for ClientError {
     }
 }
 
+/// How long the tray waits for the service to answer one call. A reply the
+/// bus lost, or a service wedged inside a handler, must not leave a menu click
+/// or the loop that follows the service waiting forever; past this the call is
+/// treated as the service being unavailable, which the menu says.
+///
+/// It is set on the tray's connection (`method_timeout`), not around each call
+/// with a runtime's timer: zbus runs the menu's handlers on its own executor,
+/// where a tokio timer does not exist.
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The tray's first call at login, which may be the one that starts the
+/// service through D-Bus activation: the bus's own activation limit.
+pub const FIRST_CALL_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// A call the connection's `method_timeout` gave up on is the service being
+/// unavailable; any other failure keeps the error it came with.
+fn call_error(error: zbus::Error, otherwise: fn(String) -> ClientError) -> ClientError {
+    match &error {
+        zbus::Error::InputOutput(io) if io.kind() == std::io::ErrorKind::TimedOut => {
+            ClientError::ServiceUnavailable(format!("no answer in time: {error}"))
+        }
+        _ => otherwise(error.to_string()),
+    }
+}
+
 pub struct ServiceClient {
     proxy: AwakeProxy<'static>,
 }
 
 impl ServiceClient {
     pub async fn connect() -> Result<Self, ClientError> {
-        let connection = zbus::Connection::session()
+        let connection = zbus::connection::Builder::session()
+            .map_err(|error| ClientError::Transport(error.to_string()))?
+            .method_timeout(CALL_TIMEOUT)
+            .build()
             .await
             .map_err(|error| ClientError::Transport(error.to_string()))?;
         Self::with_connection(connection).await
@@ -87,7 +117,7 @@ impl ServiceClient {
         self.proxy
             .protocol_version()
             .await
-            .map_err(|error| ClientError::ServiceUnavailable(error.to_string()))
+            .map_err(|error| call_error(error, ClientError::ServiceUnavailable))
     }
 
     /// Sends one request and unwraps the reply into a status or a refusal.
@@ -97,7 +127,7 @@ impl ServiceClient {
             .proxy
             .request(&document)
             .await
-            .map_err(|error| ClientError::Transport(error.to_string()))?;
+            .map_err(|error| call_error(error, ClientError::Transport))?;
         match AwakeResponse::from_json(&reply)?.body {
             ResponseBody::Status(status) => Ok(*status),
             ResponseBody::Rejected { error_key } => Err(ClientError::Rejected(error_key)),
@@ -113,6 +143,18 @@ impl ServiceClient {
 
     pub async fn status(&self) -> Result<StatusDocument, ClientError> {
         self.send(AwakeRequest::new(RequestBody::QueryStatus)).await
+    }
+
+    /// Every change of who owns the service's name: `Some` when a service
+    /// (re)appears, `None` when it leaves the bus.
+    pub async fn owner_changes(
+        &self,
+    ) -> Result<zbus::proxy::OwnerChangedStream<'static>, ClientError> {
+        self.proxy
+            .inner()
+            .receive_owner_changed()
+            .await
+            .map_err(|error| ClientError::Transport(error.to_string()))
     }
 
     /// Every status the service pushes, so the menu follows the session rather
@@ -399,5 +441,24 @@ mod tests {
                 .body,
             RequestBody::OverrideAllRules { confirmed: true }
         );
+    }
+
+    #[test]
+    fn a_call_that_ran_out_of_time_is_the_service_being_unavailable() {
+        let timed_out = zbus::Error::InputOutput(std::sync::Arc::new(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "timed out",
+        )));
+        assert!(matches!(
+            call_error(timed_out, ClientError::Transport),
+            ClientError::ServiceUnavailable(_)
+        ));
+        assert!(matches!(
+            call_error(
+                zbus::Error::Failure("no".to_string()),
+                ClientError::Transport
+            ),
+            ClientError::Transport(_)
+        ));
     }
 }

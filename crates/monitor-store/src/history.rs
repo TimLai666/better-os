@@ -24,7 +24,24 @@ use std::collections::BTreeMap;
 
 /// The record schema for all three logs. One number, because the three files
 /// are written and migrated together as one store.
-pub const STORE_SCHEMA_VERSION: u32 = 1;
+///
+/// Version 2 (ticket 97) records graphics cards, NPUs, batteries, power
+/// sources, and sensors, which version 1 cannot decode. So version 2 lives in
+/// its own directory, [`SCHEMA_DIRECTORY`], beside the version 1 files: a
+/// rollback to a version 1 Better Monitor opens its own log untouched instead
+/// of failing on records it has never seen.
+pub const STORE_SCHEMA_VERSION: u32 = 2;
+
+/// The directory, under `$XDG_STATE_HOME/better-monitor`, this schema's logs
+/// live in.
+pub const SCHEMA_DIRECTORY: &str = "schema-2";
+
+/// Written last when the schema 1 logs have been brought in.
+pub const IMPORT_MARKER: &str = "imported-from-schema-1";
+
+/// Held, with an exclusive lock, by whichever process has the store open, so
+/// the service and a window collecting for itself never write the same logs.
+pub const LOCK_FILE_NAME: &str = "lock";
 
 pub const HISTORY_FILE_NAME: &str = "history.log";
 pub const INCIDENTS_FILE_NAME: &str = "incidents.log";
@@ -115,6 +132,10 @@ pub struct StoreStats {
     pub bytes_on_disk: u64,
     pub oldest_sample_unix_ms: Option<u64>,
     pub newest_sample_unix_ms: Option<u64>,
+    /// Records this version could not decode, kept with their original bytes
+    /// beside the logs rather than dropped.
+    #[serde(default)]
+    pub set_aside_records: u64,
 }
 
 /// Samples and gaps over one interval, kept together because reading one
@@ -142,6 +163,8 @@ pub struct HistoryStore {
     inventory: Vec<Inventory>,
     recovery: StoreRecovery,
     appends_since_compaction: u64,
+    /// The open lock file; the lock is released when the store is dropped.
+    _lock: std::fs::File,
 }
 
 /// How many appends may land before retention is applied.
@@ -157,8 +180,15 @@ const COMPACTION_INTERVAL_APPENDS: u64 = 720;
 const GAP_RECORD_ALLOWANCE_BYTES: u64 = 256;
 
 impl HistoryStore {
-    /// `$XDG_STATE_HOME/better-monitor`, falling back to `~/.local/state`.
+    /// `$XDG_STATE_HOME/better-monitor/schema-2`, falling back to
+    /// `~/.local/state`.
     pub fn default_root() -> PathBuf {
+        Self::legacy_root().join(SCHEMA_DIRECTORY)
+    }
+
+    /// Where version 1 kept its logs: `$XDG_STATE_HOME/better-monitor`. Read
+    /// once, when the version 2 store is first created, and never written.
+    pub fn legacy_root() -> PathBuf {
         let base = std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
@@ -171,7 +201,143 @@ impl HistoryStore {
     }
 
     pub fn open_default(policy: RetentionPolicy) -> Result<Self, StoreError> {
-        Self::open(Self::default_root(), policy)
+        Self::open_importing(Self::default_root(), &Self::legacy_root(), policy)
+    }
+
+    /// Opens the store at `root`, and until it has done so once, brings in
+    /// what an older version recorded under `legacy` (history, incidents, and
+    /// inventory), reading those files without changing them so the older
+    /// version still finds them as it left them.
+    ///
+    /// The import is done when [`IMPORT_MARKER`] exists, and the marker is the
+    /// last thing written. A crash part way through leaves no marker, so the
+    /// next start imports again; records already brought in are recognised by
+    /// time and not added twice. A legacy file that cannot be read (anything
+    /// but "not there") is logged and leaves the marker unwritten, so the
+    /// import is tried again at the next start.
+    pub fn open_importing(
+        root: impl Into<PathBuf>,
+        legacy: &Path,
+        policy: RetentionPolicy,
+    ) -> Result<Self, StoreError> {
+        let mut store = Self::open(root, policy)?;
+        if legacy != store.root && !store.root.join(IMPORT_MARKER).exists() {
+            match store.import(legacy) {
+                Ok(true) => store.mark_imported()?,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!(
+                        "better-monitor: the earlier history at {} could not be brought in \
+                         and will be tried again at the next start: {error}",
+                        legacy.display()
+                    );
+                }
+            }
+        }
+        Ok(store)
+    }
+
+    /// Bring the legacy logs in. `Ok(false)` when one of them could not be
+    /// read, so nothing was changed and the import stays pending.
+    fn import(&mut self, legacy: &Path) -> Result<bool, StoreError> {
+        fn read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<Vec<T>>, StoreError> {
+            match crate::log::read_records(path, STORE_SCHEMA_VERSION) {
+                Ok(records) => Ok(Some(records)),
+                Err(error) if crate::log::is_not_found(&error) => Ok(Some(Vec::new())),
+                Err(error) => {
+                    eprintln!(
+                        "better-monitor: {} could not be read for import: {error}",
+                        path.display()
+                    );
+                    Ok(None)
+                }
+            }
+        }
+        let (Some(history), Some(incidents), Some(inventory)) = (
+            read::<HistoryRecord>(&legacy.join(HISTORY_FILE_NAME))?,
+            read::<Incident>(&legacy.join(INCIDENTS_FILE_NAME))?,
+            read::<Inventory>(&legacy.join(INVENTORY_FILE_NAME))?,
+        ) else {
+            return Ok(false);
+        };
+
+        // Everything the older version recorded is older than anything this
+        // store holds, so a legacy record is brought in only when it is older
+        // than the oldest one here: a partial earlier import is not doubled.
+        let first_here = self.history.first().map(HistoryRecord::wall_unix_ms);
+        let mut merged: Vec<HistoryRecord> = history
+            .into_iter()
+            .filter(|record| first_here.is_none_or(|first| record.wall_unix_ms() < first))
+            .collect();
+        if !merged.is_empty() {
+            merged.append(&mut self.history);
+            self.history = merged;
+            self.history_log
+                .rewrite(&self.history, STORE_SCHEMA_VERSION)?;
+        }
+        // An incident is the same one when it was marked at the same moment,
+        // not when it has the same number: a deferred import can find the new
+        // store already holding incidents numbered from 1. Imported ones are
+        // renumbered after the highest number here, so none collides.
+        let marked: std::collections::BTreeSet<(u64, u64)> = self
+            .incidents
+            .iter()
+            .map(|i| (i.marked_at_unix_ms, i.monotonic_ns))
+            .collect();
+        let mut next_id = self.next_incident_id();
+        let mut incidents: Vec<Incident> = incidents
+            .into_iter()
+            .filter(|incident| {
+                !marked.contains(&(incident.marked_at_unix_ms, incident.monotonic_ns))
+            })
+            .map(|mut incident| {
+                incident.id = next_id;
+                next_id += 1;
+                incident
+            })
+            .collect();
+        if !incidents.is_empty() {
+            incidents.append(&mut self.incidents);
+            incidents.sort_by_key(|incident| incident.id);
+            self.incidents = incidents;
+            self.incidents_log
+                .rewrite(&self.incidents, STORE_SCHEMA_VERSION)?;
+        }
+        let first_capture = self.inventory.first().map(|i| i.captured_at_unix_ms);
+        let mut inventory: Vec<Inventory> = inventory
+            .into_iter()
+            .filter(|i| first_capture.is_none_or(|first| i.captured_at_unix_ms < first))
+            .collect();
+        if !inventory.is_empty() {
+            inventory.append(&mut self.inventory);
+            self.inventory = inventory;
+            self.inventory_log
+                .rewrite(&self.inventory, STORE_SCHEMA_VERSION)?;
+        }
+        self.compact()?;
+        Ok(true)
+    }
+
+    /// Write the import marker, synced, after everything it vouches for.
+    fn mark_imported(&self) -> Result<(), StoreError> {
+        let marker = self.root.join(IMPORT_MARKER);
+        let temporary = self.root.join(format!("{IMPORT_MARKER}.tmp"));
+        let io = |path: &Path, source| StoreError::Io {
+            path: path.to_path_buf(),
+            source,
+        };
+        {
+            let mut file = std::fs::File::create(&temporary).map_err(|e| io(&temporary, e))?;
+            use std::io::Write as _;
+            file.write_all(b"schema 1 history imported\n")
+                .map_err(|e| io(&temporary, e))?;
+            file.sync_all().map_err(|e| io(&temporary, e))?;
+        }
+        std::fs::rename(&temporary, &marker).map_err(|e| io(&marker, e))?;
+        if let Ok(directory) = std::fs::File::open(&self.root) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
     }
 
     /// Opens the three logs, recovering any torn tail, and loads the retained
@@ -182,6 +348,28 @@ impl HistoryStore {
             path: root.clone(),
             source,
         })?;
+        let lock_path = root.join(LOCK_FILE_NAME);
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|source| StoreError::Io {
+                path: lock_path.clone(),
+                source,
+            })?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(StoreError::Locked { path: root });
+            }
+            Err(std::fs::TryLockError::Error(source)) => {
+                return Err(StoreError::Io {
+                    path: lock_path,
+                    source,
+                });
+            }
+        }
 
         let (mut history_log, history_recovery) =
             AppendLog::open(root.join(HISTORY_FILE_NAME), STORE_SCHEMA_VERSION)?;
@@ -223,6 +411,7 @@ impl HistoryStore {
                 inventory: inventory_recovery.into(),
             },
             appends_since_compaction: 0,
+            _lock: lock,
         };
         store.compact()?;
         Ok(store)
@@ -424,6 +613,9 @@ impl HistoryStore {
                 + self.inventory_log.bytes(),
             oldest_sample_unix_ms: self.oldest_sample_unix_ms(),
             newest_sample_unix_ms: self.newest_sample_unix_ms(),
+            set_aside_records: self.history_log.set_aside()
+                + self.incidents_log.set_aside()
+                + self.inventory_log.set_aside(),
         }
     }
 
@@ -876,6 +1068,190 @@ mod tests {
 
     #[test]
     fn a_default_root_stays_inside_the_users_own_state_directory() {
-        assert!(HistoryStore::default_root().ends_with("better-monitor"));
+        assert!(HistoryStore::default_root().ends_with("better-monitor/schema-2"));
+        assert!(HistoryStore::legacy_root().ends_with("better-monitor"));
+    }
+
+    #[test]
+    fn a_store_open_in_one_place_cannot_be_opened_in_another() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
+        let second = HistoryStore::open(directory.path(), RetentionPolicy::default());
+        assert!(matches!(second, Err(StoreError::Locked { .. })));
+        drop(first);
+        assert!(HistoryStore::open(directory.path(), RetentionPolicy::default()).is_ok());
+    }
+
+    #[test]
+    fn an_import_cut_short_by_a_crash_is_finished_at_the_next_start_without_doubling() {
+        let directory = tempfile::tempdir().unwrap();
+        let legacy = directory.path();
+        let mut old = AppendLog::open(legacy.join(HISTORY_FILE_NAME), 1)
+            .unwrap()
+            .0;
+        old.append(&HistoryRecord::Sample(Box::new(sample(1_000))))
+            .unwrap();
+        drop(old);
+        let mut old_incidents = AppendLog::open(legacy.join(INCIDENTS_FILE_NAME), 1)
+            .unwrap()
+            .0;
+        let incident = Incident {
+            id: 1,
+            marked_at_unix_ms: 2_000,
+            monotonic_ns: 0,
+            note: None,
+            window: IncidentWindow {
+                before_seconds: 60,
+                after_seconds: 60,
+            },
+            snapshot: Box::new(sample(2_000)),
+            baseline: BTreeMap::new(),
+            about_pid: None,
+        };
+        old_incidents.append(&incident).unwrap();
+        drop(old_incidents);
+
+        // The crash point: the history was brought in, the incidents not yet,
+        // and the marker never written.
+        let root = legacy.join(SCHEMA_DIRECTORY);
+        let mut partial = AppendLog::open(root.join(HISTORY_FILE_NAME), 2).unwrap().0;
+        partial
+            .append(&HistoryRecord::Sample(Box::new(sample(1_000))))
+            .unwrap();
+        drop(partial);
+        assert!(!root.join(IMPORT_MARKER).exists());
+
+        let store =
+            HistoryStore::open_importing(&root, legacy, RetentionPolicy::default()).unwrap();
+        assert_eq!(store.stats().samples, 1, "the sample is not doubled");
+        assert_eq!(store.incidents().len(), 1, "the incidents were finished");
+        assert!(root.join(IMPORT_MARKER).exists());
+    }
+
+    #[test]
+    fn an_incident_marked_before_a_deferred_import_is_kept_beside_the_imported_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let legacy = directory.path();
+        let incident = |id: u64, marked_at_unix_ms: u64| Incident {
+            id,
+            marked_at_unix_ms,
+            monotonic_ns: marked_at_unix_ms * 1_000_000,
+            note: None,
+            window: IncidentWindow::default(),
+            snapshot: Box::new(sample(marked_at_unix_ms)),
+            baseline: BTreeMap::new(),
+            about_pid: None,
+        };
+        let mut old = AppendLog::open(legacy.join(INCIDENTS_FILE_NAME), 1)
+            .unwrap()
+            .0;
+        old.append(&incident(1, 2_000)).unwrap();
+        drop(old);
+        // The old log could not be read at the first start, so the new store
+        // went on and recorded an incident of its own, also numbered 1.
+        let root = legacy.join(SCHEMA_DIRECTORY);
+        {
+            let mut store = HistoryStore::open(&root, RetentionPolicy::default()).unwrap();
+            store.record_incident(incident(1, 9_000)).unwrap();
+            store.flush().unwrap();
+        }
+        let store =
+            HistoryStore::open_importing(&root, legacy, RetentionPolicy::default()).unwrap();
+        let mut kept: Vec<(u64, u64)> = store
+            .incidents()
+            .iter()
+            .map(|i| (i.id, i.marked_at_unix_ms))
+            .collect();
+        kept.sort();
+        assert_eq!(kept, vec![(1, 9_000), (2, 2_000)]);
+        drop(store);
+        // A second import (the marker lost) does not double the old one.
+        std::fs::remove_file(root.join(IMPORT_MARKER)).unwrap();
+        let store =
+            HistoryStore::open_importing(&root, legacy, RetentionPolicy::default()).unwrap();
+        assert_eq!(store.incidents().len(), 2);
+    }
+
+    #[test]
+    fn a_legacy_log_that_cannot_be_read_leaves_the_import_for_the_next_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let legacy = directory.path();
+        // A directory where the log should be: there, but not readable as one.
+        std::fs::create_dir_all(legacy.join(HISTORY_FILE_NAME)).unwrap();
+        let root = legacy.join(SCHEMA_DIRECTORY);
+        let store =
+            HistoryStore::open_importing(&root, legacy, RetentionPolicy::default()).unwrap();
+        assert!(!root.join(IMPORT_MARKER).exists());
+        drop(store);
+        std::fs::remove_dir(legacy.join(HISTORY_FILE_NAME)).unwrap();
+        let mut old = AppendLog::open(legacy.join(HISTORY_FILE_NAME), 1)
+            .unwrap()
+            .0;
+        old.append(&HistoryRecord::Sample(Box::new(sample(1_000))))
+            .unwrap();
+        drop(old);
+        let store =
+            HistoryStore::open_importing(&root, legacy, RetentionPolicy::default()).unwrap();
+        assert_eq!(store.stats().samples, 1);
+        assert!(root.join(IMPORT_MARKER).exists());
+    }
+
+    #[test]
+    fn an_undecodable_record_is_counted_and_kept_through_a_compaction() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut log = AppendLog::open(directory.path().join(HISTORY_FILE_NAME), 2)
+            .unwrap()
+            .0;
+        log.append(&HistoryRecord::Sample(Box::new(sample(1_000))))
+            .unwrap();
+        log.append(&serde_json::json!({"from_the_future": true}))
+            .unwrap();
+        drop(log);
+        let mut store = HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
+        assert_eq!(store.stats().samples, 1);
+        assert_eq!(store.stats().set_aside_records, 1);
+        store.flush().unwrap();
+        drop(store);
+        let store = HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
+        assert_eq!(store.stats().set_aside_records, 1, "kept beside the log");
+        assert!(crate::log::aside_path(&directory.path().join(HISTORY_FILE_NAME)).exists());
+    }
+
+    #[test]
+    fn a_new_store_imports_the_old_one_and_leaves_it_for_a_rollback() {
+        let directory = tempfile::tempdir().unwrap();
+        let legacy = directory.path();
+        // What version 1 left: a log stamped 1 with a sample in it.
+        let mut old = AppendLog::open(legacy.join(HISTORY_FILE_NAME), 1)
+            .unwrap()
+            .0;
+        old.append(&HistoryRecord::Sample(Box::new(sample(1_000))))
+            .unwrap();
+        drop(old);
+        let before = std::fs::read(legacy.join(HISTORY_FILE_NAME)).unwrap();
+
+        let root = legacy.join(SCHEMA_DIRECTORY);
+        let store =
+            HistoryStore::open_importing(&root, legacy, RetentionPolicy::default()).unwrap();
+        assert_eq!(store.stats().samples, 1, "the old sample came along");
+        drop(store);
+
+        // The old log is byte for byte what version 1 left, and opens as
+        // version 1 still would.
+        assert_eq!(
+            std::fs::read(legacy.join(HISTORY_FILE_NAME)).unwrap(),
+            before
+        );
+        let (mut reopened, _) = AppendLog::open(legacy.join(HISTORY_FILE_NAME), 1).unwrap();
+        assert_eq!(reopened.read_all::<HistoryRecord>(1).unwrap().len(), 1);
+
+        // The new store is version 2 in its own directory, and importing
+        // happens once: a second open does not bring the old log in again.
+        let (stamped, _) = AppendLog::open(root.join(HISTORY_FILE_NAME), 2).unwrap();
+        assert_eq!(stamped.schema_version(), 2);
+        drop(stamped);
+        let again =
+            HistoryStore::open_importing(&root, legacy, RetentionPolicy::default()).unwrap();
+        assert_eq!(again.stats().samples, 1);
     }
 }

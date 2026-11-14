@@ -105,6 +105,7 @@ cargo build --release \
     -p manager-daemon \
     -p monitor-gui \
     -p monitor-service \
+    -p monitor-tray \
     -p monitor-cli \
     -p launcher-gui \
     -p files-gui \
@@ -458,13 +459,24 @@ make_package better-manager \
 # cargo binary is also called better-monitor, so it is installed as
 # better-monitor-cli, which is the name its --help and its errors print. The
 # window refuses the command line's arguments and names better-monitor-cli.
+#
+# The taskbar item (ticket 97) is in the same package for the same reason: it
+# is a client of the same service. It is a user unit of its own, enabled and
+# disabled with the component by Better Manager, so an update restarts it and
+# disabling Better Monitor stops it; the window asks for its bus name and the
+# activation file starts it through that unit. Asking for org.betteros.Monitor1
+# starts the service the same way when its unit is not running yet.
 PACKAGE_BINARIES=(
     "monitor-gui:usr/bin/better-monitor"
     "better-monitor-service:usr/bin/better-monitor-service"
     "better-monitor:usr/bin/better-monitor-cli"
+    "better-monitor-tray:usr/bin/better-monitor-tray"
 )
 PACKAGE_DATA=(
     "packaging/monitor/better-monitor.service:usr/lib/systemd/user/better-monitor.service"
+    "packaging/monitor/org.betteros.Monitor1.service:usr/share/dbus-1/services/org.betteros.Monitor1.service"
+    "packaging/monitor/better-monitor-tray.service:usr/lib/systemd/user/better-monitor-tray.service"
+    "packaging/monitor/org.betteros.MonitorTray1.service:usr/share/dbus-1/services/org.betteros.MonitorTray1.service"
     "packaging/monitor/io.betteros.Monitor.desktop:usr/share/applications/io.betteros.Monitor.desktop"
     "packaging/icons/better-monitor.svg:usr/share/icons/hicolor/scalable/apps/better-monitor.svg"
 )
@@ -550,8 +562,11 @@ make_package better-touchpad \
 
 # The tray and the settings window are installed under the names the desktop
 # entries and the component manifest already name, which are not the Cargo
-# binary names. The unit is installed, not enabled: enabling is Better
-# Manager's enable step, the same split better-manager-daemon uses.
+# binary names. The units are installed, not enabled: enabling is Better
+# Manager's enable step, the same split better-manager-daemon uses. The tray
+# is a user unit, not an XDG autostart entry, so an update restarts it with the
+# service (ticket 102); the old /etc/xdg/autostart entry was never a conffile,
+# so dpkg removes it on upgrade.
 PACKAGE_BINARIES=(
     "better-awake-service:usr/bin/better-awake-service"
     "better-awake-tray:usr/bin/awake-tray"
@@ -559,10 +574,11 @@ PACKAGE_BINARIES=(
 )
 PACKAGE_DATA=(
     "packaging/awake/better-awake.desktop:usr/share/applications/better-awake.desktop"
-    "packaging/awake/better-awake-tray.desktop:etc/xdg/autostart/better-awake-tray.desktop"
     "packaging/awake/better-awake.service:usr/lib/systemd/user/better-awake.service"
+    "packaging/awake/better-awake-tray.service:usr/lib/systemd/user/better-awake-tray.service"
     "packaging/icons/better-awake.svg:usr/share/icons/hicolor/scalable/apps/better-awake.svg"
     "packaging/awake/org.betteros.Awake1.service:usr/share/dbus-1/services/org.betteros.Awake1.service"
+    "packaging/awake/org.betteros.AwakeTray1.service:usr/share/dbus-1/services/org.betteros.AwakeTray1.service"
     "packaging/icons/awake-status/better-awake-inactive-symbolic.svg:usr/share/icons/hicolor/scalable/status/better-awake-inactive-symbolic.svg"
     "packaging/icons/awake-status/better-awake-active-symbolic.svg:usr/share/icons/hicolor/scalable/status/better-awake-active-symbolic.svg"
     "packaging/icons/awake-status/better-awake-active-trigger-symbolic.svg:usr/share/icons/hicolor/scalable/status/better-awake-active-trigger-symbolic.svg"
