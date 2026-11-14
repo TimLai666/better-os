@@ -1,6 +1,6 @@
 # Ticket 106 — The person decides, per app, what happens when a window asks for attention
 
-**Blocked by:** 84 (done) · **Status:** implemented, not merged
+**Blocked by:** 84 (done) · **Status:** merged, not released
 
 ## Why
 
