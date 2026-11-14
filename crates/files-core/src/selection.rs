@@ -43,6 +43,18 @@ impl Selection {
         self.selected.contains(id)
     }
 
+    /// Keeps only the selected entries `keep` admits; the cursor and the
+    /// anchor go too when they are not admitted.
+    pub fn retain(&mut self, keep: impl Fn(&EntryId) -> bool) {
+        self.selected.retain(|id| keep(id));
+        if self.cursor.as_ref().is_some_and(|id| !keep(id)) {
+            self.cursor = None;
+        }
+        if self.anchor.as_ref().is_some_and(|id| !keep(id)) {
+            self.anchor = None;
+        }
+    }
+
     pub fn ids(&self) -> impl Iterator<Item = &EntryId> {
         self.selected.iter()
     }

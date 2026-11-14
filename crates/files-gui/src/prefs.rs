@@ -34,6 +34,9 @@ pub enum ViewMode {
     Grid,
     /// One row per entry, with columns.
     List,
+    /// Finder's columns: the folders above this one side by side, this
+    /// folder, and what the selected folder holds.
+    Columns,
 }
 
 impl ViewMode {
@@ -41,13 +44,15 @@ impl ViewMode {
         match self {
             ViewMode::Grid => "files.view.grid",
             ViewMode::List => "files.view.list",
+            ViewMode::Columns => "files.view.columns",
         }
     }
 
     pub fn toggled(self) -> Self {
         match self {
             ViewMode::Grid => ViewMode::List,
-            ViewMode::List => ViewMode::Grid,
+            ViewMode::List => ViewMode::Columns,
+            ViewMode::Columns => ViewMode::Grid,
         }
     }
 }
@@ -86,12 +91,22 @@ impl ItemScale {
         }
     }
 
-    /// The row height in the list, in logical pixels.
+    /// The row height in the list, in logical pixels: WinUI's 36px list
+    /// row at the normal size, 32 compact and 48 roomy.
     pub fn row_height(self) -> f32 {
         match self {
-            ItemScale::Small => 28.0,
-            ItemScale::Medium => 34.0,
-            ItemScale::Large => 44.0,
+            ItemScale::Small => 32.0,
+            ItemScale::Medium => 36.0,
+            ItemScale::Large => 48.0,
+        }
+    }
+
+    /// The file icon's edge in the grid, in logical pixels.
+    pub fn icon_size(self) -> f32 {
+        match self {
+            ItemScale::Small => 40.0,
+            ItemScale::Medium => 64.0,
+            ItemScale::Large => 96.0,
         }
     }
 
@@ -326,4 +341,16 @@ pub(crate) fn config_home() -> PathBuf {
         }
     }
     PathBuf::from(".config")
+}
+
+/// Ctrl+wheel: up (a positive `delta`) is larger, down is smaller, one size
+/// a notch, stopping at the ends.
+pub fn zoom_step(scale: ItemScale, delta: f32) -> ItemScale {
+    if delta > 0.0 {
+        scale.larger()
+    } else if delta < 0.0 {
+        scale.smaller()
+    } else {
+        scale
+    }
 }

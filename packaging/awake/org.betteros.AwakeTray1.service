@@ -1,0 +1,9 @@
+[D-BUS Service]
+Name=org.betteros.AwakeTray1
+Exec=/usr/bin/awake-tray
+# Asking for org.betteros.AwakeTray1 starts the tray through its user unit, so
+# a tray the Better Awake window brings back is the one an update restarts and
+# an uninstall stops, never a second copy beside it. The window asks only
+# while the unit is enabled; the unit, not the window, is what Better Manager
+# manages.
+SystemdService=better-awake-tray.service

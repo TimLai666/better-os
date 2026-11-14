@@ -30,6 +30,8 @@ pub trait Storage {
     fn mount(&self, object_path: &str) -> zbus::Result<String>;
     fn eject(&self, object_path: &str) -> zbus::Result<String>;
     fn set_policy(&self, request_json: &str) -> zbus::Result<()>;
+    fn format(&self, request_json: &str) -> zbus::Result<()>;
+    fn write_image(&self, request_json: &str) -> zbus::Result<u64>;
     fn notify_operation_started(&self, notice_json: &str) -> zbus::Result<()>;
     fn notify_operation_completed(&self, notice_json: &str) -> zbus::Result<()>;
     fn refresh(&self) -> zbus::Result<()>;
@@ -37,6 +39,9 @@ pub trait Storage {
 
     #[zbus(signal)]
     fn device_state_changed(&self, object_path: String, state_json: String) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn image_progress(&self, object_path: String, written: u64, total: u64) -> zbus::Result<()>;
 
     #[zbus(property)]
     fn protocol_version(&self) -> zbus::Result<u32>;
@@ -178,6 +183,73 @@ impl StorageClient {
         };
         let json = request.to_json()?;
         self.proxy.set_policy(&json).await.map_err(map_call_error)
+    }
+
+    /// Formats a volume. `erase_confirmed` is the person's answer in the
+    /// window; the service refuses the request without it.
+    pub async fn format(
+        &self,
+        object_path: &str,
+        filesystem: storage_platform::FilesystemKind,
+        label: &str,
+        erase_confirmed: bool,
+    ) -> Result<(), ClientError> {
+        let json = crate::protocol::FormatDeviceRequest {
+            protocol_version: crate::protocol::PROTOCOL_VERSION,
+            object_path: object_path.to_string(),
+            filesystem,
+            label: label.to_string(),
+            erase_confirmed,
+        }
+        .to_json()?;
+        self.proxy.format(&json).await.map_err(map_call_error)
+    }
+
+    /// Writes a disk image to a whole drive (its own block device, as
+    /// `whole_disk` reports say). `progress` hears the bytes written and
+    /// the image's length as the service signals them.
+    pub async fn write_image(
+        &self,
+        object_path: &str,
+        image: &std::path::Path,
+        erase_confirmed: bool,
+        mut progress: impl FnMut(u64, u64),
+    ) -> Result<u64, ClientError> {
+        let json = crate::protocol::WriteImageRequest {
+            protocol_version: crate::protocol::PROTOCOL_VERSION,
+            object_path: object_path.to_string(),
+            image_path: image.to_string_lossy().into_owned(),
+            erase_confirmed,
+        }
+        .to_json()?;
+        // Subscribed before the call, so no early signal is missed.
+        let mut signals = self
+            .proxy
+            .receive_image_progress()
+            .await
+            .map_err(|error| ClientError::Transport(error.to_string()))?;
+        let call = self.proxy.write_image(&json);
+        tokio::pin!(call);
+        let mut listening = true;
+        loop {
+            let next = std::future::poll_fn(|context| {
+                use zbus::export::futures_core::Stream;
+                std::pin::Pin::new(&mut signals).poll_next(context)
+            });
+            tokio::select! {
+                result = &mut call => return result.map_err(map_call_error),
+                signal = next, if listening => match signal {
+                    Some(signal) => {
+                        if let Ok(args) = signal.args()
+                            && args.object_path() == object_path
+                        {
+                            progress(*args.written(), *args.total());
+                        }
+                    }
+                    None => listening = false,
+                },
+            }
+        }
     }
 
     /// Tells the service a write is starting, so readiness is refused while it

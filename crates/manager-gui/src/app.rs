@@ -175,6 +175,8 @@ pub(crate) struct ManagerApp {
     pub(crate) _nav_search_subscription: Subscription,
     /// Takes requests a second `better-manager` sent over the bus.
     pub(crate) _bus_task: Option<Task<()>>,
+    /// Watches for an update and restarts into it (ticket 105).
+    pub(crate) update_restart: better_ui::restart::UpdateRestart,
 }
 
 /// What a real transaction is currently moving.
@@ -201,6 +203,7 @@ impl ManagerApp {
         window: &mut Window,
         cx: &mut Context<Self>,
         bus_owner: Option<deep_link::bus::Owner>,
+        handoff: Option<&better_ui::restart::Handoff>,
     ) -> Self {
         let store = JsonStore::from_default_path();
         let catalog_store = JsonCatalogStore::from_default_path();
@@ -301,7 +304,19 @@ impl ManagerApp {
             _subscriptions: vec![subscription],
             _nav_search_subscription: nav_search_subscription,
             _bus_task: bus_task,
+            update_restart: better_ui::restart::UpdateRestart::new(
+                crate::APP_ID,
+                "Better Manager",
+                "better-manager",
+                env!("CARGO_PKG_VERSION"),
+                handoff,
+                window,
+                cx,
+            ),
         };
+        if let Some(view) = handoff.and_then(|h| h.state::<crate::restart::ManagerView>()) {
+            app.restore_view(view, window, cx);
+        }
         app.reconcile_with_host(cx);
         app.refresh_catalog_at_launch(cx);
         app.read_package_system_record(cx);
@@ -1023,8 +1038,15 @@ impl ManagerApp {
         self.cancel = Some(cancel.clone());
         self.transfer = None;
 
-        let (sender, receiver) = smol::channel::unbounded::<RunnerEvent>();
+        let (sender, receiver) =
+            smol::channel::unbounded::<crate::runner_end::WorkerEvent<RunnerEvent>>();
         let worker = cx.background_spawn(async move {
+            // However this ends — no service, a result, an error part way, or
+            // a panic — the window is told once, after everything else.
+            let ended = sender.clone();
+            let _ends = crate::runner_end::EndsOnce::new(move || {
+                let _ = ended.send_blocking(crate::runner_end::WorkerEvent::Ended);
+            });
             let downloader = HttpDownloader::new(ArtifactCache::from_default_path());
             let executor = match DbusPrivilegedExecutor::connect() {
                 Ok(executor) => executor,
@@ -1032,7 +1054,11 @@ impl ManagerApp {
                     // Nothing was applied, so abandoning is honest here.
                     let _ = manager.cancel(&mut state);
                     let _ = store.save(&state);
-                    let _ = sender.send(RunnerEvent::StateSaved(Box::new(state))).await;
+                    let _ = sender
+                        .send(crate::runner_end::WorkerEvent::Runner(
+                            RunnerEvent::StateSaved(Box::new(state)),
+                        ))
+                        .await;
                     return;
                 }
             };
@@ -1049,16 +1075,19 @@ impl ManagerApp {
             let mut runner = TransactionRunner::new(&manager, Box::new(driver), &store)
                 .with_cancel_token(cancel);
             let _ = runner.run(&mut state, &mut |event| {
-                let _ = sender.send_blocking(event);
+                let _ = sender.send_blocking(crate::runner_end::WorkerEvent::Runner(event));
             });
         });
 
         let pump = cx.spawn(async move |this, cx| {
             while let Ok(event) = receiver.recv().await {
-                if this
-                    .update(cx, |app, cx| app.apply_runner_event(event, cx))
-                    .is_err()
-                {
+                let applied = this.update(cx, |app, cx| match event {
+                    crate::runner_end::WorkerEvent::Runner(event) => {
+                        app.apply_runner_event(event, cx)
+                    }
+                    crate::runner_end::WorkerEvent::Ended => app.runner_ended(cx),
+                });
+                if applied.is_err() {
                     break;
                 }
             }
@@ -1069,6 +1098,28 @@ impl ManagerApp {
             worker.await;
             pump.await;
         }));
+    }
+
+    /// The background work is over, however it ended. Its task was kept as
+    /// `running` and never cleared, so `transaction_running()` stayed true
+    /// after the first transaction: the repair stayed disabled, the startup
+    /// unit pass was skipped, Back led to a finished progress screen, and a
+    /// restart after an update would wait forever (ticket 105). The task is
+    /// let finish rather than cancelled, and an end with no finish reported
+    /// leaves the installation screen.
+    fn runner_ended(&mut self, cx: &mut Context<Self>) {
+        if let Some(running) = self.running.take() {
+            running.detach();
+        }
+        self.transfer = None;
+        self.cancel = None;
+        if let Some(page) = crate::runner_end::page_after_unfinished_end(
+            self.page == Page::Installing,
+            self.state.active_operation.is_some(),
+        ) {
+            self.navigate(page, cx);
+        }
+        cx.notify();
     }
 
     /// Adopts what the background transaction reported.
@@ -1419,6 +1470,7 @@ impl ManagerApp {
             Some("daemon.unavailable") | Some("daemon.not_approved") => {
                 c.evidence_daemon_unavailable
             }
+            Some("daemon.interrupted") => c.evidence_daemon_interrupted,
             Some("daemon.polkit_denied") => c.evidence_polkit_denied,
             Some("restore.artifact_missing") => c.evidence_restore_artifact_missing,
             Some(other) if other.starts_with("daemon.error.apt_busy") => c.evidence_apt_busy,
@@ -1632,6 +1684,90 @@ pub(crate) fn activity_evidence_text(label: &str, evidence: Option<&str>) -> Str
 /// catalog knows.
 pub(crate) fn opens_requested_component(page: &Page, known: bool) -> bool {
     known && !matches!(page, Page::Installing)
+}
+
+impl ManagerApp {
+    /// Puts back the view a restart after an update handed over. The page the
+    /// state file put the window on — an operation still in progress — wins.
+    fn restore_view(
+        &mut self,
+        view: crate::restart::ManagerView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_plan.is_none() {
+            self.pending_plan = view.pending_plan;
+        }
+        self.finished_plan = view.finished_plan;
+        let pending = self.pending_plan.is_some();
+        let finished = self.finished_plan.is_some();
+        let knows = |id: &ComponentId| self.component_by_id(id).is_some();
+        let page = view.page.page(&knows, pending, finished);
+        let back = view
+            .back
+            .iter()
+            .map(|key| key.page(&knows, pending, finished))
+            .collect();
+        self.history = crate::navigation::History::from_pages(back);
+        self.detail_tab = view.detail_tab.tab();
+        self.activity_filter = view.activity_filter.filter();
+        self.wide_collapsed = view.wide_collapsed;
+        self.about_expanded = view.about_expanded;
+        self.update_check_requested = view.update_check_requested;
+        if !view.search.is_empty() {
+            let text = view.search.clone();
+            self.search
+                .update(cx, |state, cx| state.set_value(text, window, cx));
+            self.search_query = view.search;
+        }
+        if !view.nav_search.is_empty() {
+            let text = view.nav_search;
+            self.nav_search
+                .update(cx, |state, cx| state.set_value(text, window, cx));
+        }
+        if self.page != Page::Installing {
+            self.enter(page, cx);
+            self.narrow_open = view.narrow_open;
+            self.content_scroll
+                .set_offset(gpui::point(gpui::px(0.0), gpui::px(-view.scroll.max(0.0))));
+        }
+    }
+}
+
+impl better_ui::restart::Restartable for ManagerApp {
+    type State = crate::restart::ManagerView;
+
+    fn update_restart(&mut self) -> &mut better_ui::restart::UpdateRestart {
+        &mut self.update_restart
+    }
+
+    fn restart_blocked(&self, _cx: &App) -> Option<better_ui::restart::Blocker> {
+        crate::restart::restart_blocked(
+            self.transaction_running(),
+            self.repair_task.is_some(),
+            self.heal_task.is_some(),
+            self.page == Page::Installing,
+        )
+    }
+
+    fn restart_state(&self, _window: &Window, cx: &App) -> crate::restart::ManagerView {
+        use crate::restart::{FilterKey, PageKey, TabKey};
+        crate::restart::ManagerView {
+            page: PageKey::of(&self.page),
+            back: self.history.pages().iter().map(PageKey::of).collect(),
+            detail_tab: TabKey::of(self.detail_tab),
+            activity_filter: FilterKey::of(self.activity_filter),
+            search: self.search_query.clone(),
+            nav_search: self.nav_search.read(cx).value().to_string(),
+            wide_collapsed: self.wide_collapsed,
+            narrow_open: self.narrow_open,
+            about_expanded: self.about_expanded,
+            update_check_requested: self.update_check_requested,
+            scroll: -f32::from(self.content_scroll.offset().y),
+            pending_plan: self.pending_plan.clone(),
+            finished_plan: self.finished_plan.clone(),
+        }
+    }
 }
 
 #[cfg(test)]

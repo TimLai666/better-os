@@ -24,15 +24,31 @@ fn clashing_pair(root: &std::path::Path) -> (std::path::PathBuf, std::path::Path
     (source, destination)
 }
 
+/// The three clashing files themselves, in alphabetical order, copied into
+/// the folder that already holds their namesakes. A folder copied onto a
+/// folder is asked about once, as a folder (Merge, Replace, Skip, Keep
+/// both); these tests are about clashes between files.
+fn clashing_files(
+    root: &std::path::Path,
+) -> (Vec<files_core::location::LocalPath>, std::path::PathBuf) {
+    let (source, destination) = clashing_pair(root);
+    let files = ["one.txt", "three.txt", "two.txt"]
+        .iter()
+        .map(|name| local(source.join(name)))
+        .collect();
+    (files, destination.join("source"))
+}
+
 #[test]
 fn a_job_parks_on_the_first_conflict_and_says_what_it_is() {
     let root = tempfile::tempdir().unwrap();
-    let (source, destination) = clashing_pair(root.path());
+    let (sources, folder) = clashing_files(root.path());
+    let destination = folder.parent().unwrap().to_path_buf();
     let engine = engine();
     let handle = engine
         .submit(JobSpec::new(Operation::Copy {
-            sources: vec![local(&source)],
-            destination: local(&destination),
+            sources,
+            destination: local(&folder),
         }))
         .unwrap();
 
@@ -110,13 +126,14 @@ fn one_decision_can_answer_every_remaining_conflict() {
 #[test]
 fn skip_applied_to_the_remaining_conflicts_leaves_every_destination_alone() {
     let root = tempfile::tempdir().unwrap();
-    let (source, destination) = clashing_pair(root.path());
+    let (sources, folder) = clashing_files(root.path());
+    let destination = folder.parent().unwrap().to_path_buf();
     let engine = engine();
     let snapshot = run_ok(
         &engine,
         JobSpec::new(Operation::Copy {
-            sources: vec![local(&source)],
-            destination: local(&destination),
+            sources,
+            destination: local(&folder),
         })
         .with_conflicts(ConflictPolicy::always(
             ConflictKind::Exists,
@@ -137,13 +154,14 @@ fn skip_applied_to_the_remaining_conflicts_leaves_every_destination_alone() {
 #[test]
 fn rename_writes_beside_the_file_that_is_already_there() {
     let root = tempfile::tempdir().unwrap();
-    let (source, destination) = clashing_pair(root.path());
+    let (sources, folder) = clashing_files(root.path());
+    let destination = folder.parent().unwrap().to_path_buf();
     let engine = engine();
     run_ok(
         &engine,
         JobSpec::new(Operation::Copy {
-            sources: vec![local(&source)],
-            destination: local(&destination),
+            sources,
+            destination: local(&folder),
         })
         .with_conflicts(ConflictPolicy::always(
             ConflictKind::Exists,
@@ -285,4 +303,272 @@ fn a_conflict_the_engine_is_parked_on_is_released_by_cancelling() {
         .wait(handle.id(), Duration::from_secs(5))
         .expect("the job stopped");
     assert_eq!(snapshot.state, JobState::Cancelled);
+}
+
+// --- Replace and Merge never delete -------------------------------------
+
+/// The names in a trash's `files` folder.
+fn trashed(trash: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(trash.join("files"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+#[test]
+fn replacing_a_file_sends_the_old_one_to_the_trash() {
+    let root = tempfile::tempdir().unwrap();
+    let trash = root.path().join("Trash");
+    let source = root.path().join("new/report.txt");
+    let destination = root.path().join("there");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::create_dir_all(&destination).unwrap();
+    fs::write(&source, b"new").unwrap();
+    fs::write(destination.join("report.txt"), b"old").unwrap();
+
+    let engine = support::engine_with_trash(&trash);
+    let handle = engine
+        .submit(JobSpec::new(Operation::Copy {
+            sources: vec![local(&source)],
+            destination: local(&destination),
+        }))
+        .unwrap();
+    wait_for(&engine, handle.id(), |snapshot| {
+        snapshot.state == JobState::WaitingOnConflict
+    });
+    engine.resolve(handle.id(), ConflictDecision::once(Resolution::Overwrite));
+    let finished = engine.wait(handle.id(), support::LIMIT).unwrap();
+    assert_eq!(finished.state, JobState::Completed);
+    assert_eq!(fs::read(destination.join("report.txt")).unwrap(), b"new");
+    assert_eq!(trashed(&trash), ["report.txt"]);
+    assert_eq!(fs::read(trash.join("files/report.txt")).unwrap(), b"old");
+    // And the trash says where it came from, so Restore puts it back.
+    let info = fs::read_to_string(trash.join("info/report.txt.trashinfo")).unwrap();
+    assert!(info.contains("Path="), "{info}");
+}
+
+#[test]
+fn replacing_a_folder_sends_the_whole_old_folder_to_the_trash() {
+    let root = tempfile::tempdir().unwrap();
+    let trash = root.path().join("Trash");
+    let (source, destination) = clashing_pair(root.path());
+    fs::write(destination.join("source/only-there.txt"), b"keep me").unwrap();
+
+    let engine = support::engine_with_trash(&trash);
+    let handle = engine
+        .submit(JobSpec::new(Operation::Copy {
+            sources: vec![local(&source)],
+            destination: local(&destination),
+        }))
+        .unwrap();
+    let parked = wait_for(&engine, handle.id(), |snapshot| {
+        snapshot.state == JobState::WaitingOnConflict
+    });
+    // The folder is asked about first, as folio's clash dialog does.
+    assert_eq!(
+        parked.conflict.unwrap().destination,
+        destination.join("source")
+    );
+    engine.resolve(handle.id(), ConflictDecision::once(Resolution::Overwrite));
+    let finished = engine.wait(handle.id(), support::LIMIT).unwrap();
+    assert_eq!(finished.state, JobState::Completed);
+    assert!(!destination.join("source/only-there.txt").exists());
+    assert_eq!(trashed(&trash), ["source"]);
+    assert_eq!(
+        fs::read(trash.join("files/source/only-there.txt")).unwrap(),
+        b"keep me"
+    );
+}
+
+#[test]
+fn merging_keeps_what_is_only_there_and_trashes_what_it_replaces() {
+    let root = tempfile::tempdir().unwrap();
+    let trash = root.path().join("Trash");
+    let (source, destination) = clashing_pair(root.path());
+    fs::write(destination.join("source/only-there.txt"), b"keep me").unwrap();
+    fs::create_dir_all(source.join("inner")).unwrap();
+    fs::write(source.join("inner/deep.txt"), b"new deep").unwrap();
+    fs::create_dir_all(destination.join("source/inner")).unwrap();
+    fs::write(destination.join("source/inner/deep.txt"), b"old deep").unwrap();
+
+    let engine = support::engine_with_trash(&trash);
+    let handle = engine
+        .submit(JobSpec::new(Operation::Copy {
+            sources: vec![local(&source)],
+            destination: local(&destination),
+        }))
+        .unwrap();
+    wait_for(&engine, handle.id(), |snapshot| {
+        snapshot.state == JobState::WaitingOnConflict
+    });
+    engine.resolve(handle.id(), ConflictDecision::once(Resolution::Merge));
+    // Merge answers every clash inside: the job never parks again.
+    let finished = engine.wait(handle.id(), support::LIMIT).unwrap();
+    assert_eq!(finished.state, JobState::Completed);
+    assert_eq!(
+        fs::read(destination.join("source/only-there.txt")).unwrap(),
+        b"keep me"
+    );
+    for name in ["one.txt", "two.txt", "three.txt"] {
+        assert_eq!(
+            fs::read(destination.join("source").join(name)).unwrap(),
+            b"new content"
+        );
+    }
+    assert_eq!(
+        fs::read(destination.join("source/inner/deep.txt")).unwrap(),
+        b"new deep"
+    );
+    // Four files were replaced, and all four are in the trash.
+    assert_eq!(
+        trashed(&trash),
+        ["deep.txt", "one.txt", "three.txt", "two.txt"]
+    );
+}
+
+#[test]
+fn skipping_a_folder_skips_everything_that_would_have_gone_into_it() {
+    let root = tempfile::tempdir().unwrap();
+    let trash = root.path().join("Trash");
+    let (source, destination) = clashing_pair(root.path());
+    let engine = support::engine_with_trash(&trash);
+    let handle = engine
+        .submit(JobSpec::new(Operation::Copy {
+            sources: vec![local(&source)],
+            destination: local(&destination),
+        }))
+        .unwrap();
+    wait_for(&engine, handle.id(), |snapshot| {
+        snapshot.state == JobState::WaitingOnConflict
+    });
+    engine.resolve(handle.id(), ConflictDecision::once(Resolution::Skip));
+    let finished = engine.wait(handle.id(), support::LIMIT).unwrap();
+    assert_eq!(finished.state, JobState::Completed);
+    assert_eq!(
+        fs::read(destination.join("source/one.txt")).unwrap(),
+        b"old"
+    );
+    assert!(trashed(&trash).is_empty());
+}
+
+#[test]
+fn keeping_both_folders_copies_the_new_one_under_its_own_name() {
+    let root = tempfile::tempdir().unwrap();
+    let trash = root.path().join("Trash");
+    let (source, destination) = clashing_pair(root.path());
+    let engine = support::engine_with_trash(&trash);
+    let handle = engine
+        .submit(JobSpec::new(Operation::Copy {
+            sources: vec![local(&source)],
+            destination: local(&destination),
+        }))
+        .unwrap();
+    wait_for(&engine, handle.id(), |snapshot| {
+        snapshot.state == JobState::WaitingOnConflict
+    });
+    engine.resolve(handle.id(), ConflictDecision::once(Resolution::Rename));
+    let finished = engine.wait(handle.id(), support::LIMIT).unwrap();
+    assert_eq!(finished.state, JobState::Completed);
+    assert_eq!(
+        fs::read(destination.join("source/one.txt")).unwrap(),
+        b"old"
+    );
+    assert_eq!(
+        fs::read(destination.join("source (copy)/one.txt")).unwrap(),
+        b"new content"
+    );
+    assert!(trashed(&trash).is_empty());
+}
+
+#[test]
+fn a_replace_that_cannot_reach_the_trash_leaves_the_old_file_alone() {
+    if support::running_as_root() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    // A trash whose parent is a file: it can never be created.
+    let blocker = root.path().join("not-a-folder");
+    fs::write(&blocker, b"").unwrap();
+    let source = root.path().join("new/report.txt");
+    let destination = root.path().join("there");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::create_dir_all(&destination).unwrap();
+    fs::write(&source, b"new").unwrap();
+    fs::write(destination.join("report.txt"), b"old").unwrap();
+
+    let engine = support::engine_with_trash(&blocker.join("Trash"));
+    let handle = engine
+        .submit(JobSpec::new(Operation::Copy {
+            sources: vec![local(&source)],
+            destination: local(&destination),
+        }))
+        .unwrap();
+    wait_for(&engine, handle.id(), |snapshot| {
+        snapshot.state == JobState::WaitingOnConflict
+    });
+    engine.resolve(handle.id(), ConflictDecision::once(Resolution::Overwrite));
+    let finished = engine.wait(handle.id(), support::LIMIT).unwrap();
+    assert_ne!(finished.state, JobState::Completed);
+    assert_eq!(fs::read(destination.join("report.txt")).unwrap(), b"old");
+}
+
+/// Replace or Merge answered for a clash with the source itself, or with a
+/// folder the source is inside: refused, and nothing reaches the trash.
+#[test]
+fn replace_or_merge_onto_the_source_or_its_own_folder_is_refused_before_anything_moves() {
+    for resolution in [Resolution::Overwrite, Resolution::Merge] {
+        let root = tempfile::tempdir().unwrap();
+        let trash = root.path().join("Trash");
+        // `work/a/a` copied into `work` would land on `work/a`, the folder
+        // it is in.
+        let work = root.path().join("work");
+        let inner = work.join("a/a");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(inner.join("keep.txt"), b"precious").unwrap();
+        // `work/note.txt` copied into `work` lands on itself.
+        fs::write(work.join("note.txt"), b"also precious").unwrap();
+
+        let engine = support::engine_with_trash(&trash);
+        for (source, clash) in [
+            (inner.clone(), work.join("a")),
+            (work.join("note.txt"), work.join("note.txt")),
+        ] {
+            let handle = engine
+                .submit(JobSpec::new(Operation::Copy {
+                    sources: vec![local(&source)],
+                    destination: local(&work),
+                }))
+                .unwrap();
+            let parked = wait_for(&engine, handle.id(), |snapshot| {
+                snapshot.state == JobState::WaitingOnConflict || snapshot.state.is_terminal()
+            });
+            if parked.state == JobState::WaitingOnConflict {
+                assert_eq!(parked.conflict.unwrap().destination, clash);
+                engine.resolve(handle.id(), ConflictDecision::once(resolution));
+            }
+            let finished = engine.wait(handle.id(), support::LIMIT).unwrap();
+            assert!(
+                finished
+                    .failures
+                    .iter()
+                    .any(|(_, error)| error.key() == "files.operation.error.replaces_source"),
+                "{resolution:?} onto {}: {:?}",
+                clash.display(),
+                finished.failures
+            );
+        }
+        assert_eq!(fs::read(inner.join("keep.txt")).unwrap(), b"precious");
+        assert_eq!(fs::read(work.join("note.txt")).unwrap(), b"also precious");
+        assert!(
+            trashed(&trash).is_empty(),
+            "{resolution:?}: {:?}",
+            trashed(&trash)
+        );
+    }
 }

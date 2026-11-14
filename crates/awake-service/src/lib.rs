@@ -10,11 +10,15 @@ pub mod logind;
 pub mod notify;
 pub mod rules;
 pub mod service;
+pub mod settings;
 
 pub use backend::{
     BackendError, Clock, InhibitWhat, InhibitorBackend, LeaseHealth, LeaseRequest, SystemClock,
 };
-pub use engine::{AwakeEngine, BatteryStop, EndedSession, INHIBITOR_WHO, TickOutcome};
+pub use engine::{
+    AwakeEngine, BatteryStop, EndedSession, INHIBITOR_WHO, LID_LIMIT_HELD_BACK, LidStop,
+    TickOutcome,
+};
 pub use logind::LogindBackend;
 pub use rules::{RuleDriver, RuleEdit};
 pub use service::{AwakeDbusService, BUS_NAME, INTERFACE_NAME, OBJECT_PATH};

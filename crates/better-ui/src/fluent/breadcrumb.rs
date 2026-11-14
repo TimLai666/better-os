@@ -11,6 +11,7 @@
 
 use std::rc::Rc;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
     StatefulInteractiveElement, Styled, Window, div, px,
@@ -63,6 +64,9 @@ pub struct BreadcrumbBar {
     items: Vec<SharedString>,
     max_visible: usize,
     style: TypeStyle,
+    /// Whether items move to a second line when they do not fit (a page
+    /// header) or stay on one, clipped (an address bar).
+    wrap: bool,
     on_click: Option<ValueHandler<usize>>,
 }
 
@@ -73,6 +77,7 @@ impl BreadcrumbBar {
             items,
             max_visible: usize::MAX,
             style: BODY,
+            wrap: true,
             on_click: None,
         }
     }
@@ -87,6 +92,12 @@ impl BreadcrumbBar {
     /// Title, as Settings does.
     pub fn style(mut self, style: TypeStyle) -> Self {
         self.style = style;
+        self
+    }
+
+    /// Keeps the items on one line, as an address bar does.
+    pub fn single_line(mut self) -> Self {
+        self.wrap = false;
         self
     }
 
@@ -119,13 +130,42 @@ impl RenderOnce for BreadcrumbBar {
             .chain(shown.iter().map(|&i| Some(i)))
             .collect();
 
+        // The overflow menu hangs from the `…` item alone, so while it is open
+        // only that item is covered (`light_dismiss`), not the whole bar.
+        let mut overflow = menu_open.then(|| {
+            let entries = hidden
+                .iter()
+                .map(|&index| {
+                    let handler = self.on_click.clone();
+                    MenuItem::new(self.items[index].clone())
+                        .on_select(move |window, cx| {
+                            if let Some(handler) = handler.as_ref() {
+                                handler(index, window, cx);
+                            }
+                        })
+                        .entry()
+                })
+                .collect::<Vec<MenuEntry>>();
+            MenuFlyout::new(super::child_id(&self.id, "flyout"), entries)
+                .state(menu.clone())
+                .return_focus(focus.clone())
+        });
+
         let count_last = positions.len().checked_sub(1);
         let mut bar = text(
-            div().id(self.id.clone()).flex().items_center().flex_wrap(),
+            div()
+                .id(self.id.clone())
+                .flex()
+                .items_center()
+                .when(self.wrap, |bar| bar.flex_wrap())
+                .when(!self.wrap, |bar| {
+                    bar.flex_nowrap().whitespace_nowrap().min_w_0()
+                }),
             self.style,
         );
         let chevron = || {
             div()
+                .flex_none()
                 .px(px(2.0))
                 .text_color(p.text_secondary)
                 .child(Icon::new(IconName::ChevronRight).size(px(12.0)))
@@ -145,6 +185,13 @@ impl RenderOnce for BreadcrumbBar {
                 .rounded(radius::SM)
                 .text_color(item_color(Interaction::Rest, p))
                 .child(label);
+            // On one line, only the current item gives way when the bar is
+            // too narrow, ending in an ellipsis rather than being cut off.
+            item = if is_current && !self.wrap {
+                item.min_w_0().overflow_hidden().text_ellipsis()
+            } else {
+                item.flex_none()
+            };
             if !is_current {
                 item = item
                     .hover(move |s| s.text_color(hover))
@@ -158,8 +205,9 @@ impl RenderOnce for BreadcrumbBar {
                     }
                     None => {
                         let menu = menu.clone();
-                        item =
-                            item.on_click(move |_, window, cx| open_menu(&menu, None, window, cx));
+                        item = item
+                            .on_click(move |_, window, cx| open_menu(&menu, None, window, cx))
+                            .children(overflow.take());
                     }
                 }
             }
@@ -174,25 +222,6 @@ impl RenderOnce for BreadcrumbBar {
             }
             bar = bar.child(item);
         }
-
-        let overflow = menu_open.then(|| {
-            let entries = hidden
-                .iter()
-                .map(|&index| {
-                    let handler = self.on_click.clone();
-                    MenuItem::new(self.items[index].clone())
-                        .on_select(move |window, cx| {
-                            if let Some(handler) = handler.as_ref() {
-                                handler(index, window, cx);
-                            }
-                        })
-                        .entry()
-                })
-                .collect::<Vec<MenuEntry>>();
-            MenuFlyout::new(super::child_id(&self.id, "flyout"), entries)
-                .state(menu.clone())
-                .return_focus(focus.clone())
-        });
 
         let handler = self.on_click.clone();
         let count = positions.len();
@@ -231,6 +260,9 @@ impl RenderOnce for BreadcrumbBar {
                     _ => {}
                 }
             });
-        div().relative().child(bar).children(overflow)
+        div()
+            .relative()
+            .when(!self.wrap, |outer| outer.flex().min_w_0())
+            .child(bar)
     }
 }

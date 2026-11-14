@@ -70,6 +70,7 @@ impl JobObserver for Recorder {
 fn observed(workers: usize, recorder: Arc<Recorder>) -> JobEngine {
     JobEngine::with_observer(
         EngineConfig {
+            displaced_trash: Some(support::test_trash()),
             workers,
             store: None,
             conflicts: ConflictPolicy::new(),

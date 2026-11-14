@@ -60,6 +60,8 @@ pub struct Command {
     pub disabled: bool,
     pub shown: ShownState,
     pub on_click: Option<Handler>,
+    /// Draws a trailing chevron: the command opens a menu.
+    chevron: bool,
 }
 
 impl Command {
@@ -73,6 +75,7 @@ impl Command {
             disabled: false,
             shown: ShownState::Live,
             on_click: None,
+            chevron: false,
         }
     }
 
@@ -113,6 +116,9 @@ impl Command {
         if let Some(shortcut) = self.shortcut.clone() {
             item = item.shortcut(shortcut);
         }
+        if let Some(checked) = self.checked {
+            item = item.checked(checked);
+        }
         if let Some(handler) = self.on_click.clone() {
             item = item.on_select(move |window, cx| handler(window, cx));
         }
@@ -120,11 +126,87 @@ impl Command {
     }
 }
 
-/// A line in the bar: a command or a separator.
+/// A line in the bar: a command, a command that opens a menu, or a
+/// separator.
 #[derive(Clone)]
 pub enum BarEntry {
     Command(Command),
+    /// A drop-down command, as File Explorer's Sort and View are: a button
+    /// with a chevron that opens a menu flyout, and a submenu once it has
+    /// moved into the `…` menu.
+    Menu(Command, Vec<MenuEntry>),
     Separator,
+}
+
+/// Which primary entries stay in the bar and which move into the `…` menu,
+/// by index. A separator stays only while a command after it stays, so the
+/// bar never ends on a divider.
+pub fn split_primary(kinds: &[bool], max_primary: Option<usize>) -> (Vec<usize>, Vec<usize>) {
+    // `kinds[i]` is true for a command (plain or menu), false for a separator.
+    let mut shown = Vec::new();
+    let mut overflow = Vec::new();
+    let mut commands_seen = 0;
+    for (index, is_command) in kinds.iter().copied().enumerate() {
+        if is_command {
+            commands_seen += 1;
+            if max_primary.is_some_and(|max| commands_seen > max) {
+                overflow.push(index);
+            } else {
+                shown.push(index);
+            }
+        } else if max_primary.is_none_or(|max| commands_seen < max) {
+            shown.push(index);
+        }
+    }
+    while let Some(&last) = shown.last() {
+        if kinds[last] {
+            break;
+        }
+        shown.pop();
+    }
+    (shown, overflow)
+}
+
+/// A command bar button that opens a menu (`AppBarButton` with a `Flyout`).
+#[derive(IntoElement)]
+pub struct AppBarMenuButton {
+    id: ElementId,
+    command: Command,
+    entries: Vec<MenuEntry>,
+}
+
+impl AppBarMenuButton {
+    pub fn new(id: impl Into<ElementId>, command: Command, entries: Vec<MenuEntry>) -> Self {
+        Self {
+            id: id.into(),
+            command,
+            entries,
+        }
+    }
+}
+
+impl RenderOnce for AppBarMenuButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let menu = MenuOpen::keyed(child_id(&self.id, "menu"), window, cx);
+        let open = menu.read(cx).is_open();
+        let button_id = child_id(&self.id, "button");
+        let focus = keyed_focus(button_id.clone(), window, cx);
+        let open_state = menu.clone();
+        let mut command = self.command;
+        command.chevron = true;
+        let command = command.on_click(move |window, cx| open_menu(&open_state, None, window, cx));
+        let mut holder = div()
+            .relative()
+            .child(AppBarButton::new(button_id, command));
+        if open {
+            holder = holder.child(
+                MenuFlyout::new(child_id(&self.id, "flyout"), self.entries)
+                    .state(menu)
+                    .return_focus(focus),
+            );
+        }
+        holder
+    }
 }
 
 /// A command bar button (`AppBarButton`), usable outside a bar.
@@ -170,6 +252,9 @@ impl RenderOnce for AppBarButton {
             .child(Icon::new(command.icon.clone()).size(super::size::ICON))
             .when(!command.icon_only, |b| {
                 b.child(div().whitespace_nowrap().child(command.label.clone()))
+            })
+            .when(command.chevron, |b| {
+                b.child(Icon::new(IconName::ChevronDown).size(px(12.0)))
             });
         if command.icon_only {
             element = gpui::StatefulInteractiveElement::tooltip(
@@ -202,7 +287,7 @@ impl RenderOnce for AppBarButton {
 pub struct CommandBar {
     id: ElementId,
     primary: Vec<BarEntry>,
-    secondary: Vec<Command>,
+    secondary: Vec<MenuEntry>,
     max_primary: Option<usize>,
     locale: Locale,
     /// Draw the overflow menu open in the page, for the gallery.
@@ -231,9 +316,21 @@ impl CommandBar {
         self
     }
 
+    /// A drop-down command: a button that opens `entries` as a menu.
+    pub fn menu(mut self, command: Command, entries: Vec<MenuEntry>) -> Self {
+        self.primary.push(BarEntry::Menu(command, entries));
+        self
+    }
+
     /// A command that lives only in the `…` menu.
     pub fn secondary(mut self, command: Command) -> Self {
-        self.secondary.push(command);
+        self.secondary.push(command.menu_entry());
+        self
+    }
+
+    /// Any menu line in the `…` menu: a submenu, a toggle item, a separator.
+    pub fn secondary_entry(mut self, entry: MenuEntry) -> Self {
+        self.secondary.push(entry);
         self
     }
 
@@ -259,30 +356,34 @@ impl CommandBar {
 impl RenderOnce for CommandBar {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
+        let kinds: Vec<bool> = self
+            .primary
+            .iter()
+            .map(|entry| !matches!(entry, BarEntry::Separator))
+            .collect();
+        let (shown_at, overflow_at) = split_primary(&kinds, self.max_primary);
         let mut shown = Vec::new();
         let mut overflow: Vec<MenuEntry> = Vec::new();
-        let mut commands_seen = 0;
-        for entry in self.primary {
-            match entry {
-                BarEntry::Command(command) => {
-                    commands_seen += 1;
-                    if self.max_primary.is_some_and(|max| commands_seen > max) {
-                        overflow.push(command.menu_entry());
-                    } else {
-                        shown.push(BarEntry::Command(command));
-                    }
-                }
-                BarEntry::Separator => {
-                    if self.max_primary.is_none_or(|max| commands_seen < max) {
-                        shown.push(BarEntry::Separator);
-                    }
-                }
+        for (index, entry) in self.primary.into_iter().enumerate() {
+            if shown_at.contains(&index) {
+                shown.push(entry);
+            } else if overflow_at.contains(&index) {
+                overflow.push(match entry {
+                    BarEntry::Command(command) => command.menu_entry(),
+                    BarEntry::Menu(command, entries) => MenuEntry::Submenu {
+                        label: command.label.clone(),
+                        icon: Some(command.icon.clone()),
+                        disabled: command.disabled,
+                        entries,
+                    },
+                    BarEntry::Separator => MenuEntry::Separator,
+                });
             }
         }
         if !overflow.is_empty() && !self.secondary.is_empty() {
             overflow.push(MenuEntry::Separator);
         }
-        overflow.extend(self.secondary.iter().map(Command::menu_entry));
+        overflow.extend(self.secondary);
 
         let mut bar = div()
             .id(self.id.clone())
@@ -310,6 +411,12 @@ impl RenderOnce for CommandBar {
                     AppBarButton::new(gpui::ElementId::named_usize("command", index), command)
                         .into_any_element()
                 }
+                BarEntry::Menu(command, entries) => AppBarMenuButton::new(
+                    gpui::ElementId::named_usize("menu-command", index),
+                    command,
+                    entries,
+                )
+                .into_any_element(),
                 BarEntry::Separator => div()
                     .w(px(1.0))
                     .h(px(20.0))

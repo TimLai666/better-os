@@ -157,6 +157,43 @@ reset_package_inputs() {
 # with no window ships none of them; see make_daemon_package and better-storage.
 GRAPHICS_DEPENDS='libfontconfig1, libwayland-client0, libwayland-egl1, libwayland-cursor0'
 
+# A package that ships systemd user units gets a preinst and a postinst built
+# from packaging/maintainer/user-units.sh (ticket 105). After an upgrade, by
+# Better Manager or by apt, the postinst restarts each logged-in person's
+# running units so none of them keeps running the old program, and enables a
+# unit that is new in this version for a person who had the component on.
+write_user_unit_scripts() {
+    local staging_dir="$1"
+    local package_name="$2"
+    local units="$3"
+    local script
+    for script in preinst postinst; do
+        {
+            printf '#!/bin/sh\nset -e\n\n'
+            printf "better_os_package='%s'\n" "$package_name"
+            printf "better_os_user_units='%s'\n" "$units"
+            printf "better_os_unit_dir='/usr/lib/systemd/user'\n"
+            printf "better_os_run_user_root='/run/user'\n"
+            printf "better_os_state_dir='/run/better-os/upgrade'\n"
+            printf "better_os_path='/usr/sbin:/usr/bin:/sbin:/bin'\n"
+            printf "better_os_cgroup_file='/proc/self/cgroup'\n\n"
+            cat "$ROOT_DIR/packaging/maintainer/user-units.sh"
+            printf '\n'
+            case "$script" in
+                preinst)
+                    # shellcheck disable=SC2016 # expanded by the maintainer script
+                    printf 'better_os_user_units_before_upgrade "$1" || true\n'
+                    ;;
+                postinst)
+                    # shellcheck disable=SC2016 # expanded by the maintainer script
+                    printf 'better_os_user_units_postinst "$@" || true\n'
+                    ;;
+            esac
+        } > "$staging_dir/DEBIAN/$script"
+        chmod 0755 "$staging_dir/DEBIAN/$script"
+    done
+}
+
 make_package() {
     local package_name="$1"
     local description="$2"
@@ -262,6 +299,17 @@ make_package() {
         " $description_body" \
         >> "$staging_dir/DEBIAN/control"
 
+    local user_units=()
+    for entry in ${PACKAGE_DATA[@]+"${PACKAGE_DATA[@]}"}; do
+        installed_path="${entry#*:}"
+        case "$installed_path" in
+            usr/lib/systemd/user/*) user_units+=("${installed_path##*/}") ;;
+        esac
+    done
+    if ((${#user_units[@]} > 0)); then
+        write_user_unit_scripts "$staging_dir" "$package_name" "${user_units[*]}"
+    fi
+
     dpkg-deb --build --root-owner-group "$staging_dir" "$deb_path" >/dev/null
     (
         cd "$OUTPUT_DIR"
@@ -360,9 +408,21 @@ make_daemon_package() {
         ' against this host before acting on it.' \
         > "$staging_dir/DEBIAN/control"
 
-    cat > "$staging_dir/DEBIAN/postinst" <<'POSTINST'
-#!/bin/sh
-set -e
+    {
+        printf '#!/bin/sh\nset -e\n\n'
+        printf "better_os_daemon_busy='/run/better-os/daemon-busy'\n\n"
+        cat "$ROOT_DIR/packaging/maintainer/daemon.sh"
+        cat <<'POSTINST'
+
+# True when this script runs inside the daemon's own unit: Better Manager is
+# updating or removing the daemon itself, through the daemon. Stopping or
+# restarting the unit from here would kill the dpkg run that is executing this
+# script, half way through the transaction (ticket 105). The daemon instead
+# finishes the transaction, records it, and exits a few seconds later because
+# its program was replaced; D-Bus starts the new one on the next request.
+inside_daemon_unit() {
+    grep -q '/better-manager-daemon\.service$' /proc/self/cgroup 2>/dev/null
+}
 
 if [ "$1" = "configure" ]; then
     install -d -m 0755 -o root -g root /var/lib/better-os
@@ -383,16 +443,45 @@ if [ "$1" = "configure" ]; then
             /org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig \
             >/dev/null 2>&1 || true
     fi
+
+    # An upgrade from outside Better Manager (apt, Software Updater,
+    # unattended upgrades) restarts a daemon that is running, so the old
+    # program does not linger next to the new files. A daemon that is not
+    # running stays stopped; D-Bus starts it when it is needed. A daemon in
+    # the middle of a transaction is not restarted: apt can get in between two
+    # steps of a plan, and restarting would cut the plan in half. That daemon
+    # finishes and leaves on its own within seconds, because its program was
+    # replaced.
+    if [ -n "${2:-}" ] && [ -d /run/systemd/system ] && ! inside_daemon_unit \
+        && ! better_os_daemon_transaction_in_progress; then
+        if command -v deb-systemd-invoke >/dev/null 2>&1; then
+            deb-systemd-invoke try-restart better-manager-daemon.service >/dev/null 2>&1 || true
+        else
+            systemctl try-restart better-manager-daemon.service >/dev/null 2>&1 || true
+        fi
+    fi
 fi
 POSTINST
+    } > "$staging_dir/DEBIAN/postinst"
 
     cat > "$staging_dir/DEBIAN/prerm" <<'PRERM'
 #!/bin/sh
 set -e
 
-if [ -d /run/systemd/system ]; then
-    systemctl stop better-manager-daemon.service >/dev/null 2>&1 || true
-fi
+# See the postinst: never stop the unit this script is running inside.
+inside_daemon_unit() {
+    grep -q '/better-manager-daemon\.service$' /proc/self/cgroup 2>/dev/null
+}
+
+# On an upgrade the running daemon is left alone: the postinst restarts it
+# once the new program is in place. Removal stops it.
+case "$1" in
+    remove | deconfigure)
+        if [ -d /run/systemd/system ] && ! inside_daemon_unit; then
+            systemctl stop better-manager-daemon.service >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
 PRERM
 
     cat > "$staging_dir/DEBIAN/postrm" <<'POSTRM'
@@ -444,7 +533,13 @@ PACKAGE_DATA=(
     "packaging/manager/io.betteros.Manager.desktop:usr/share/applications/io.betteros.Manager.desktop"
     "packaging/icons/better-manager.svg:usr/share/icons/hicolor/scalable/apps/better-manager.svg"
 )
-PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
+# libsecret-tools is a desktop helper Better OS installs with the manager so
+# that everyday tools work without the person hunting for a package: its
+# `secret-tool` is how other programs read a key from the GNOME keyring (for
+# example Claude Desktop importing Chrome's cookies, which asks the person to
+# install it otherwise). A Depends, not a Recommends, because Better Manager
+# installs with --no-install-recommends.
+PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS" "libsecret-tools")
 PACKAGE_RECOMMENDS="better-manager-daemon (= $VERSION)"
 make_package better-manager \
     'Better OS manager desktop application' \
@@ -495,7 +590,12 @@ make_package better-launcher \
     'Better OS application launcher overlay' \
     'One overlay with the search row on top and the whole application library below it.'
 
-PACKAGE_BINARIES=("better-files:usr/bin/better-files")
+# The large preview (Space) is a program of its own, which Better Files
+# looks for beside itself.
+PACKAGE_BINARIES=(
+    "better-files:usr/bin/better-files"
+    "better-files-preview:usr/bin/better-files-preview"
+)
 PACKAGE_DATA=(
     "packaging/files/io.betteros.Files.desktop:usr/share/applications/io.betteros.Files.desktop"
     "packaging/icons/better-files.svg:usr/share/icons/hicolor/scalable/apps/better-files.svg"
@@ -503,7 +603,12 @@ PACKAGE_DATA=(
 # udisks2 is a Recommends rather than a Depends: without it Better Files still
 # browses files, it just cannot mount or eject a device, and it says so instead
 # of hiding the devices.
-PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
+#
+# The preview plays audio and video through GStreamer. dpkg-shlibdeps finds
+# the libraries it links (libgstreamer1.0-0, libgstreamer-plugins-base1.0-0);
+# the base plugins are named here because nothing links them: playbin, the
+# format converters and the common demuxers are plugins, loaded at run time.
+PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS" "gstreamer1.0-plugins-base")
 PACKAGE_RECOMMENDS="udisks2"
 make_package better-files \
     'Better OS file manager' \
@@ -552,8 +657,11 @@ make_package better-touchpad \
 
 # The tray and the settings window are installed under the names the desktop
 # entries and the component manifest already name, which are not the Cargo
-# binary names. The unit is installed, not enabled: enabling is Better
-# Manager's enable step, the same split better-manager-daemon uses.
+# binary names. The units are installed, not enabled: enabling is Better
+# Manager's enable step, the same split better-manager-daemon uses. The tray
+# is a user unit, not an XDG autostart entry, so an update restarts it with the
+# service (ticket 102); the old /etc/xdg/autostart entry was never a conffile,
+# so dpkg removes it on upgrade.
 PACKAGE_BINARIES=(
     "better-awake-service:usr/bin/better-awake-service"
     "better-awake-tray:usr/bin/awake-tray"
@@ -561,10 +669,11 @@ PACKAGE_BINARIES=(
 )
 PACKAGE_DATA=(
     "packaging/awake/better-awake.desktop:usr/share/applications/better-awake.desktop"
-    "packaging/awake/better-awake-tray.desktop:etc/xdg/autostart/better-awake-tray.desktop"
     "packaging/awake/better-awake.service:usr/lib/systemd/user/better-awake.service"
+    "packaging/awake/better-awake-tray.service:usr/lib/systemd/user/better-awake-tray.service"
     "packaging/icons/better-awake.svg:usr/share/icons/hicolor/scalable/apps/better-awake.svg"
     "packaging/awake/org.betteros.Awake1.service:usr/share/dbus-1/services/org.betteros.Awake1.service"
+    "packaging/awake/org.betteros.AwakeTray1.service:usr/share/dbus-1/services/org.betteros.AwakeTray1.service"
     "packaging/icons/awake-status/better-awake-inactive-symbolic.svg:usr/share/icons/hicolor/scalable/status/better-awake-inactive-symbolic.svg"
     "packaging/icons/awake-status/better-awake-active-symbolic.svg:usr/share/icons/hicolor/scalable/status/better-awake-active-symbolic.svg"
     "packaging/icons/awake-status/better-awake-active-trigger-symbolic.svg:usr/share/icons/hicolor/scalable/status/better-awake-active-trigger-symbolic.svg"

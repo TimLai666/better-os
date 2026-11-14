@@ -4,6 +4,7 @@
 
 pub mod command_line;
 pub mod fluent;
+pub mod restart;
 
 use better_core::ComponentManifest;
 use gpui::{
@@ -610,6 +611,51 @@ pub mod icons {
             paths
         }
 
+        /// Every path tried for `name` in one icon theme context other than
+        /// applications, such as `mimetypes` for a file type or `places` for
+        /// a folder: each theme of the search, then `hicolor`, at the usual
+        /// sizes, scalable first.
+        pub fn candidates_in(&self, context: &str, name: &str) -> Vec<PathBuf> {
+            let mut paths = Vec::new();
+            let themes: Vec<&str> = self
+                .themes
+                .iter()
+                .map(String::as_str)
+                .chain(std::iter::once("hicolor"))
+                .collect();
+            for theme in &themes {
+                for dir in &self.data_dirs {
+                    for size in SIZES {
+                        for extension in ["svg", "png"] {
+                            if size == "scalable" && extension == "png" {
+                                continue;
+                            }
+                            paths.push(
+                                dir.join("icons")
+                                    .join(theme)
+                                    .join(size)
+                                    .join(context)
+                                    .join(format!("{name}.{extension}")),
+                            );
+                        }
+                    }
+                }
+            }
+            paths
+        }
+
+        /// The file for a themed icon name in one context, or `None`. Neither
+        /// the name nor the context may be a path.
+        pub fn resolve_in(&self, context: &str, name: &str) -> Option<PathBuf> {
+            let name = name.trim();
+            if name.is_empty() || !valid_name(name) || !valid_name(context) || context.is_empty() {
+                return None;
+            }
+            self.candidates_in(context, name)
+                .into_iter()
+                .find(|path| path.is_file())
+        }
+
         /// The file for an `Icon=` value, or `None`. An absolute path must
         /// exist; a name must be a plain file name, never a path, so a
         /// desktop entry cannot point the lookup outside the icon
@@ -1076,6 +1122,27 @@ mod icon_tests {
             AppIcon::for_entry(None, "files", &search),
             AppIcon::Letter("F".into())
         );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_file_type_icon_is_found_in_its_own_context_only() {
+        let root = scratch("context");
+        let mimetypes = root.join("share/icons/Adwaita/scalable/mimetypes");
+        std::fs::create_dir_all(&mimetypes).unwrap();
+        std::fs::write(mimetypes.join("text-x-generic.svg"), b"<svg/>").unwrap();
+        let search = IconSearch::new(vec![root.join("share")], vec!["Adwaita".into()]);
+        assert_eq!(
+            search.resolve_in("mimetypes", "text-x-generic"),
+            Some(mimetypes.join("text-x-generic.svg"))
+        );
+        // An application lookup never lands on a file type icon.
+        assert_eq!(search.resolve("text-x-generic"), None);
+        assert_eq!(search.resolve_in("places", "text-x-generic"), None);
+        // Neither the name nor the context may be a path.
+        assert_eq!(search.resolve_in("mimetypes", "../x"), None);
+        assert_eq!(search.resolve_in("../apps", "x"), None);
+        assert_eq!(search.resolve_in("mimetypes", " "), None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -42,6 +42,7 @@ use gpui_component::{Icon, IconName};
 
 use super::badge::{Badge, InfoBadge};
 use super::button::{Button, ButtonKind};
+use super::hit_area::{ROW_GROUP, RowInset, hit_row};
 use super::words::Locale;
 use super::{
     BODY, BODY_STRONG, Interaction, Key, Palette, ShownState, keyed_focus, palette, radius,
@@ -67,6 +68,41 @@ pub struct NavItem {
     pub shown: ShownState,
     /// A count or a dot at the item's trailing edge.
     pub badge: Option<InfoBadge>,
+    /// A second line in secondary text, such as a drive's state. The item
+    /// grows to the two-line height while it has one; the compact pane shows
+    /// it in the tooltip.
+    pub caption: Option<SharedString>,
+    /// Draws the caption in the caution color, for a state that needs a look.
+    pub caption_warning: bool,
+    /// One trailing icon action, such as Eject on a drive. Only drawn in the
+    /// open pane; a window offers the same action in the item's context menu.
+    pub action: Option<NavAction>,
+    /// An SVG the window's own asset source serves, drawn instead of `icon`
+    /// for a glyph the kit's set does not have (a trash can).
+    pub icon_path: Option<SharedString>,
+}
+
+/// A trailing icon action on a navigation item.
+#[derive(Clone)]
+pub struct NavAction {
+    pub icon: IconName,
+    /// Its name, shown as the tooltip.
+    pub label: SharedString,
+    pub on_click: super::Handler,
+}
+
+impl NavAction {
+    pub fn new(
+        icon: IconName,
+        label: impl Into<SharedString>,
+        on_click: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            icon,
+            label: label.into(),
+            on_click: Rc::new(on_click),
+        }
+    }
 }
 
 impl NavItem {
@@ -77,6 +113,40 @@ impl NavItem {
             disabled: false,
             shown: ShownState::Live,
             badge: None,
+            caption: None,
+            caption_warning: false,
+            action: None,
+            icon_path: None,
+        }
+    }
+
+    /// Draws this SVG (served by the window's asset source) as the icon.
+    pub fn icon_path(mut self, path: impl Into<SharedString>) -> Self {
+        self.icon_path = Some(path.into());
+        self
+    }
+
+    pub fn caption(mut self, caption: impl Into<SharedString>) -> Self {
+        self.caption = Some(caption.into());
+        self
+    }
+
+    pub fn caption_warning(mut self, warning: bool) -> Self {
+        self.caption_warning = warning;
+        self
+    }
+
+    pub fn action(mut self, action: NavAction) -> Self {
+        self.action = Some(action);
+        self
+    }
+
+    /// The item's height in the open pane: one line, or two with a caption.
+    pub fn height(&self) -> Pixels {
+        if self.caption.is_some() {
+            size::TWO_LINE_ROW_HEIGHT
+        } else {
+            size::ROW_HEIGHT
         }
     }
 
@@ -185,6 +255,16 @@ pub fn content_offset(compact: bool, overlay: bool) -> Pixels {
     }
 }
 
+/// Whether a keystroke asks for a context menu: the menu key, or Shift+F10.
+pub fn is_menu_key(keystroke: &gpui::Keystroke) -> bool {
+    let m = &keystroke.modifiers;
+    match keystroke.key.as_str() {
+        "menu" | "contextmenu" => !m.control && !m.alt,
+        "f10" => m.shift && !m.control && !m.alt,
+        _ => false,
+    }
+}
+
 /// The keyboard position in a pane, kept across frames.
 #[derive(Default)]
 struct Cursor(Option<usize>);
@@ -208,7 +288,12 @@ pub struct NavigationView {
     on_select: Option<IndexHandler>,
     on_toggle: Option<ValueHandler<bool>>,
     on_search_open: Option<Handler>,
+    on_context: Option<ContextHandler>,
 }
+
+/// Called with the item's index and the pointer position on a right click,
+/// or the item's own position for the keyboard's menu key.
+type ContextHandler = Rc<dyn Fn(usize, gpui::Point<Pixels>, &mut Window, &mut App)>;
 
 impl NavigationView {
     /// `selected` indexes the entries and then the footer items, as one list.
@@ -228,6 +313,7 @@ impl NavigationView {
             on_select: None,
             on_toggle: None,
             on_search_open: None,
+            on_context: None,
         }
     }
 
@@ -250,6 +336,16 @@ impl NavigationView {
     /// the window can put the keyboard in the field.
     pub fn on_search_open(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_search_open = Some(Rc::new(handler));
+        self
+    }
+
+    /// A right click on an item, or Shift+F10 or the menu key while the pane
+    /// has the keyboard: the window opens that item's context menu.
+    pub fn on_context(
+        mut self,
+        handler: impl Fn(usize, gpui::Point<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_context = Some(Rc::new(handler));
         self
     }
 
@@ -302,6 +398,7 @@ struct RowContext<'a> {
     compact: bool,
     focus: gpui::FocusHandle,
     on_select: Option<IndexHandler>,
+    on_context: Option<ContextHandler>,
     p: &'a Palette,
 }
 
@@ -326,11 +423,13 @@ fn item_row(
     let pressed_text = p.text_secondary;
     let mut row = text(
         div()
-            .id(ElementId::named_usize("nav-item", index))
+            .id("look")
             .relative()
-            .h(px(36.0))
-            .mx(px(4.0))
-            .my(px(2.0))
+            .h(if c.compact {
+                size::ROW_HEIGHT
+            } else {
+                item.height()
+            })
             .flex()
             .flex_none()
             .items_center()
@@ -340,23 +439,48 @@ fn item_row(
         BODY,
     )
     .child(
-        div()
-            .w(px(40.0))
-            .flex_none()
-            .flex()
-            .justify_center()
-            .child(Icon::new(item.icon.clone()).size(size::ICON)),
+        div().w(px(40.0)).flex_none().flex().justify_center().child(
+            match &item.icon_path {
+                Some(path) => Icon::empty().path(path.clone()),
+                None => Icon::new(item.icon.clone()),
+            }
+            .size(size::ICON),
+        ),
     )
     .when(!c.compact, |row| {
+        let caption_color = if item.caption_warning {
+            p.caution
+        } else {
+            p.text_secondary
+        };
         row.child(
             div()
                 .ml(px(4.0))
                 .mr(px(8.0))
                 .flex_1()
                 .min_w_0()
-                .truncate()
-                .child(item.label.clone()),
+                .flex()
+                .flex_col()
+                .child(div().truncate().child(item.label.clone()))
+                .children(item.caption.clone().map(|caption| {
+                    text(div(), super::CAPTION)
+                        .text_color(caption_color)
+                        .truncate()
+                        .child(caption)
+                })),
         )
+        .children(item.action.clone().map(|action| {
+            let handler = action.on_click.clone();
+            div().mr(px(4.0)).child(
+                Button::new(
+                    ElementId::named_usize("nav-item-action", index),
+                    ButtonKind::Subtle,
+                )
+                .icon(action.icon.clone())
+                .tooltip(action.label.clone())
+                .on_click(move |window, cx| handler(window, cx)),
+            )
+        }))
         .children(
             item.badge
                 .map(|badge| div().mr(px(12.0)).flex_none().child(Badge::new(badge))),
@@ -364,17 +488,17 @@ fn item_row(
     })
     .when(c.compact, |row| {
         // Over the icon's top trailing corner, so the compact pane still
-        // says which page has something waiting.
+        // says which page has something waiting. A count ends at the row's
+        // trailing edge, so a wide one ("99+") grows over the icon instead
+        // of past the pane, where it would be cut off and lie under the
+        // scrollbar.
         row.children(item.badge.map(|badge| {
-            let (top, left) = match badge {
-                InfoBadge::Dot => (px(7.0), px(27.0)),
-                InfoBadge::Count(_) => (px(2.0), px(22.0)),
-            };
-            div()
-                .absolute()
-                .top(top)
-                .left(left)
-                .child(Badge::new(badge))
+            let at = div().absolute();
+            match badge {
+                InfoBadge::Dot => at.top(px(7.0)).left(px(27.0)),
+                InfoBadge::Count(_) => at.top(px(2.0)).right_0(),
+            }
+            .child(Badge::new(badge))
         }))
     });
     if selected {
@@ -395,24 +519,44 @@ fn item_row(
     }
     if forced.is_none() {
         row = row
-            .hover(move |s| s.bg(hover))
-            .active(move |s| s.bg(pressed).text_color(pressed_text));
+            .group_hover(ROW_GROUP, move |s| s.bg(hover))
+            .group_active(ROW_GROUP, move |s| s.bg(pressed).text_color(pressed_text));
     }
+    // The inset item is drawn inside a hit area that fills the pane's width
+    // and meets the next item (`hit_area`): no dead pixel between two.
+    let mut hit = hit_row(
+        ElementId::named_usize("nav-item", index),
+        RowInset::NAVIGATION,
+    );
     if c.compact {
-        row = row.tooltip(super::dialog::tooltip_builder(item.label.clone()));
+        let tip = match &item.caption {
+            Some(caption) => SharedString::from(format!("{} · {}", item.label, caption)),
+            None => item.label.clone(),
+        };
+        hit = hit.tooltip(super::dialog::tooltip_builder(tip));
+    }
+    if let Some(handler) = c.on_context.clone() {
+        hit = hit.on_mouse_down(gpui::MouseButton::Right, move |event, window, cx| {
+            cx.stop_propagation();
+            handler(index, event.position, window, cx)
+        });
     }
     if !disabled && let Some(handler) = c.on_select.clone() {
         let focus = c.focus.clone();
-        row = row.on_click(move |_, window, cx| {
+        hit = hit.on_click(move |_, window, cx| {
             focus.focus(window, cx);
             handler(index, window, cx)
         });
     }
-    with_focus_ring(row, ring, radius::SM, p).into_any_element()
+    hit.child(with_focus_ring(row, ring, radius::SM, p))
+        .into_any_element()
 }
 
+/// Fixed in size, like the rows: in a pane that overflows and scrolls, a
+/// shrinkable divider or header would be squeezed to nothing.
 fn divider(p: &Palette) -> AnyElement {
     div()
+        .flex_none()
         .mx(px(4.0))
         .my(px(4.0))
         .h(px(1.0))
@@ -441,6 +585,7 @@ impl RenderOnce for NavigationView {
             compact,
             focus: focus.clone(),
             on_select: self.on_select.clone(),
+            on_context: self.on_context.clone(),
             p,
         };
 
@@ -508,7 +653,28 @@ impl RenderOnce for NavigationView {
             _ => None,
         };
 
-        let mut list = div().flex().flex_col().flex_1().min_h_0();
+        let mut list = div()
+            .id(super::child_id(&self.id, "items"))
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            // Rows end where the scrollbar starts (their own 4px margin and
+            // this make its 8px), so it never lies over a row's highlight,
+            // trailing action or badge. Kept whether or not the pane
+            // overflows, so nothing moves when it starts to.
+            .pr(px(4.0))
+            .overflow_y_scroll();
+        // A pane taller than the window scrolls, with a scrollbar that stays
+        // in sight while there is more below (a compact pane at 960×720
+        // holds more rows than fit).
+        let scroll = window
+            .use_keyed_state(super::child_id(&self.id, "scroll"), cx, |_, _| {
+                gpui::ScrollHandle::new()
+            })
+            .read(cx)
+            .clone();
+        list = list.track_scroll(&scroll);
         for (index, entry) in self.entries.iter().enumerate() {
             list = list.child(match entry {
                 NavEntry::Item(item) => item_row(
@@ -520,6 +686,7 @@ impl RenderOnce for NavigationView {
                 ),
                 NavEntry::Header(label) if !compact => text(div(), BODY_STRONG)
                     .h(px(40.0))
+                    .flex_none()
                     .flex()
                     .items_center()
                     .px(px(16.0))
@@ -546,6 +713,7 @@ impl RenderOnce for NavigationView {
         }
 
         let handler = self.on_select.clone();
+        let context = self.on_context.clone();
         let key_cursor = cursor.clone();
         let selected = self.selected;
         let mut pane = div()
@@ -558,7 +726,27 @@ impl RenderOnce for NavigationView {
             .overflow_hidden()
             .child(top)
             .children(search_row)
-            .child(list)
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .child(list)
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .bottom_0()
+                            .w(px(8.0))
+                            .child(
+                                gpui_component::scroll::Scrollbar::vertical(&scroll)
+                                    .scrollbar_show(gpui_component::scroll::ScrollbarShow::Always),
+                            ),
+                    ),
+            )
             .child(footer);
         if floating {
             // Open over the content: the flyout fill, an edge, and the
@@ -573,8 +761,16 @@ impl RenderOnce for NavigationView {
                 .border_color(p.flyout_stroke)
                 .rounded_r(radius::MD)
                 .shadow_lg();
+            // The search box's suggestions float past the pane's edge; a
+            // press in them is not a press outside (`light_dismiss`).
+            let order = super::light_dismiss::PanelOrder::default();
+            pane = pane.child(super::light_dismiss::panel_marker(&order));
             if let Some(toggle) = self.on_toggle.clone() {
-                pane = pane.on_mouse_down_out(move |_, window, cx| toggle(true, window, cx));
+                pane = pane.on_mouse_down_out(move |_, window, cx| {
+                    if !super::light_dismiss::pointer_in_child_panel(&order, window, cx) {
+                        toggle(true, window, cx)
+                    }
+                });
             }
         }
         let pane_focus = focus.clone();
@@ -586,10 +782,18 @@ impl RenderOnce for NavigationView {
                 if !pane_focus.is_focused(window) {
                     return;
                 }
+                let now = key_cursor.read(cx).0.or(selected);
+                if is_menu_key(&event.keystroke) {
+                    if let (Some(index), Some(handler)) = (now, context.as_ref()) {
+                        cx.stop_propagation();
+                        let at = window.mouse_position();
+                        handler(index, at, window, cx);
+                    }
+                    return;
+                }
                 let Some(key) = Key::from_keystroke(&event.keystroke) else {
                     return;
                 };
-                let now = key_cursor.read(cx).0.or(selected);
                 if key.invokes() {
                     if let (Some(index), Some(handler)) = (now, handler.as_ref())
                         && all.get(index).is_some_and(NavEntry::selectable)

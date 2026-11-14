@@ -13,6 +13,12 @@ path = "src/lib.rs"
 name = "better-files"
 path = "src/main.rs"
 test = false
+
+# The large preview (Space), in a process of its own.
+[[bin]]
+name = "better-files-preview"
+path = "src/bin/preview.rs"
+test = false
 bench = false
 
 [dependencies]
@@ -23,6 +29,20 @@ app-chooser-gui.workspace = true
 better-ui.workspace = true
 files-core.workspace = true
 files-platform.workspace = true
+# org.freedesktop.FileManager1, so "Show in folder" in other applications
+# opens Better Files. Already in the workspace through the storage service.
+zbus.workspace = true
+# LocalSend's protocol: HTTPS to the receiver, its certificate pinned to the
+# fingerprint it announced, and a multicast announcement. rustls (with ring),
+# sha2 and socket2 are already built for Better Manager and the async runtime.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+sha2 = "0.10"
+# Better Files' own LocalSend certificate, made once (the generator
+# LocalSend itself uses; ring as above).
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+socket2 = { version = "0.6", features = ["all"] }
+# Plugins run in a process group of their own, ended whole.
+libc = "0.2"
 files-operations.workspace = true
 files-preview.workspace = true
 files-search.workspace = true
@@ -37,6 +57,9 @@ gpui-component.workspace = true
 gpui-component-assets.workspace = true
 gpui-platform.workspace = true
 smol = "2"
+# The preview's video frames become GPUI images, which hold `image` frames.
+# The version gpui already uses; no decoder features.
+image = { version = "0.25", default-features = false }
 
 [dev-dependencies]
 better-core.workspace = true

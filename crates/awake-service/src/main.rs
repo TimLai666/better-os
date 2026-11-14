@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use awake_ipc::notification::Locale;
 use awake_service::notify::LowBatteryNotifier;
-use awake_service::service::{shutdown_and_announce, tick_and_announce};
+use awake_service::service::{serve, shutdown_and_announce, tick_and_announce};
 use awake_service::{
     AwakeDbusService, AwakeEngine, BUS_NAME, LogindBackend, OBJECT_PATH, SystemClock,
     TICK_INTERVAL_SECONDS,
@@ -52,15 +52,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Locale::from_environment(),
     );
 
-    let connection = zbus::connection::Builder::session()?.build().await?;
-    connection
-        .object_server()
-        .at(
-            OBJECT_PATH,
-            AwakeDbusService::new(engine.clone()).with_notifier(notifier.clone()),
-        )
-        .await?;
-    connection.request_name(BUS_NAME).await?;
+    // Served and named from the builder, in that order; `serve` says why.
+    let connection = serve(
+        zbus::connection::Builder::session()?,
+        BUS_NAME,
+        AwakeDbusService::new(engine.clone()).with_notifier(notifier.clone()),
+    )
+    .await?;
 
     let emitter = SignalEmitter::new(&connection, OBJECT_PATH)?.into_owned();
     let ticking = engine.clone();

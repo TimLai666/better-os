@@ -269,6 +269,7 @@ fn every_real_failure_reason_has_copy_in_both_locales() {
             c.evidence_download_network,
             c.evidence_checksum_mismatch,
             c.evidence_daemon_unavailable,
+            c.evidence_daemon_interrupted,
             c.evidence_polkit_denied,
             c.evidence_restore_artifact_missing,
             c.evidence_apt_busy,

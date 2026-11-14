@@ -19,7 +19,7 @@ pub const EXTEND_MINUTES: [u64; 3] = [15, 30, 60];
 /// The battery threshold the `低於 20% 電量時停止` wording promises.
 pub const QUICK_BATTERY_PERCENT: u8 = 20;
 
-/// The two toggles in Quick options. They shape the next session the tray
+/// The toggles in Quick options. They shape the next session the tray
 /// starts; they never change anything on their own, which is why toggling one
 /// is not a request to the service.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,6 +27,9 @@ pub struct QuickOptions {
     /// Checked means the display may still turn off, which is the default.
     pub allow_display_off: bool,
     pub stop_below_battery: bool,
+    /// "Also when the lid is closed". On by default, because a session started
+    /// by hand is one the person means to survive closing the lid (ticket 109).
+    pub keep_awake_lid_closed: bool,
 }
 
 impl Default for QuickOptions {
@@ -34,6 +37,7 @@ impl Default for QuickOptions {
         Self {
             allow_display_off: true,
             stop_below_battery: true,
+            keep_awake_lid_closed: awake_core::SessionPolicy::manual_default().prevent_lid_suspend,
         }
     }
 }
@@ -42,6 +46,7 @@ impl QuickOptions {
     pub fn policy(&self) -> awake_core::SessionPolicy {
         awake_core::SessionPolicy {
             prevent_display_sleep: !self.allow_display_off,
+            prevent_lid_suspend: self.keep_awake_lid_closed,
             ..awake_core::SessionPolicy::quick_default()
         }
     }
@@ -60,6 +65,7 @@ pub enum MenuAction {
     StartUntilTime,
     ToggleAllowDisplayOff,
     ToggleStopBelowBattery,
+    ToggleKeepAwakeLidClosed,
     ExtendMinutes(u64),
     /// Needs the full window for the same reason.
     ChangeSession,
@@ -276,6 +282,69 @@ impl Menu {
     pub fn action(&self, id: i32) -> Option<MenuAction> {
         self.find(id).and_then(|item| item.action)
     }
+
+    /// How many ids the menu uses.
+    pub fn len(&self) -> usize {
+        let mut count = 0;
+        for item in &self.items {
+            item.walk(&mut |_| count += 1);
+        }
+        count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// The same menu with its ids numbered depth-first from `first`.
+    ///
+    /// A panel caches every item by id and, when the layout changes, re-reads
+    /// only `type` and `children-display` for an id it already knows (the
+    /// AppIndicator extension's `_doLayoutUpdate`). So an id must never be
+    /// reused for a different item: the controller hands every changed layout
+    /// a fresh range.
+    pub fn renumbered(mut self, first: i32) -> Menu {
+        let mut next = first;
+        for item in &mut self.items {
+            number(item, &mut next);
+        }
+        self
+    }
+
+    /// The structure without the wording: what kind each item is, whether it
+    /// is drawn, and what hangs under it. Two menus with the same shape map
+    /// id for id, so a change between them is a change of properties only.
+    pub fn shape(&self) -> Vec<Shape> {
+        self.items.iter().map(MenuItem::shape).collect()
+    }
+}
+
+/// One item's place in a [`Menu::shape`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Shape {
+    kind: std::mem::Discriminant<ItemKind>,
+    enabled_submenu: bool,
+    children: Vec<Shape>,
+}
+
+impl MenuItem {
+    fn shape(&self) -> Shape {
+        Shape {
+            kind: std::mem::discriminant(&self.kind),
+            // A disabled submenu is not drawn at all, so enabling one changes
+            // the layout and not only a property.
+            enabled_submenu: self.kind == ItemKind::Submenu && self.enabled,
+            children: self.children.iter().map(MenuItem::shape).collect(),
+        }
+    }
+}
+
+fn number(item: &mut MenuItem, next: &mut i32) {
+    item.id = *next;
+    *next += 1;
+    for child in &mut item.children {
+        number(child, next);
+    }
 }
 
 /// Builds the popup for the state the service reported.
@@ -292,7 +361,7 @@ pub fn build(
 ) -> Menu {
     let labels = locale.labels();
     let mut items = if status.is_active() {
-        active_items(status, labels, offset)
+        active_items(status, labels, locale, offset)
     } else {
         inactive_items(status, options, labels)
     };
@@ -358,12 +427,33 @@ fn inactive_items(
                 options.stop_below_battery,
                 MenuAction::ToggleStopBelowBattery,
             ),
+            lid_option(status, options, labels),
         ],
     ));
     items
 }
 
-fn active_items(status: &StatusDocument, labels: &Labels, offset: UtcOffset) -> Vec<MenuItem> {
+/// The lid quick option. A service from before protocol version 3, which an
+/// update has not restarted yet, has no lid lock to give, so the option is
+/// shown as unavailable rather than ticked and quietly ignored.
+fn lid_option(status: &StatusDocument, options: QuickOptions, labels: &Labels) -> MenuItem {
+    if status.backend.capabilities.lid_switch {
+        MenuItem::checkmark(
+            labels.keep_awake_lid_closed,
+            options.keep_awake_lid_closed,
+            MenuAction::ToggleKeepAwakeLidClosed,
+        )
+    } else {
+        MenuItem::info(labels.keep_awake_lid_closed_unavailable)
+    }
+}
+
+fn active_items(
+    status: &StatusDocument,
+    labels: &Labels,
+    locale: Locale,
+    offset: UtcOffset,
+) -> Vec<MenuItem> {
     let session = status
         .manual_session()
         .or_else(|| status.sessions.first())
@@ -398,35 +488,62 @@ fn active_items(status: &StatusDocument, labels: &Labels, offset: UtcOffset) -> 
     }
     items.extend(problem_items(status, labels));
 
-    items.push(MenuItem::separator());
-    items.push(policy_row(
-        labels.system_sleep,
-        status.effective_policy.prevent_system_suspend,
-        status.unmet_policy.contains(&PolicyGap::SystemSuspend),
-        labels,
+    // What the session holds back, in a submenu of its own: four rows of
+    // facts in the top level made the awake menu tall enough that GNOME
+    // scrolled every submenu inside it on an 800-pixel screen.
+    items.push(MenuItem::submenu(
+        labels.current_settings,
+        vec![
+            policy_row(
+                labels.system_sleep,
+                status.effective_policy.prevent_system_suspend,
+                status.unmet_policy.contains(&PolicyGap::SystemSuspend),
+                labels,
+            ),
+            policy_row(
+                labels.display_sleep,
+                status.effective_policy.prevent_display_sleep,
+                status.unmet_policy.contains(&PolicyGap::DisplaySleep),
+                labels,
+            ),
+            policy_row(
+                labels.automatic_lock,
+                status.effective_policy.prevent_automatic_lock,
+                status.unmet_policy.contains(&PolicyGap::AutomaticLock),
+                labels,
+            ),
+            if status.backend.capabilities.lid_switch {
+                policy_row(
+                    labels.lid_sleep,
+                    status.effective_policy.prevent_lid_suspend,
+                    status.unmet_policy.contains(&PolicyGap::LidSwitch),
+                    labels,
+                )
+            } else {
+                MenuItem::info(format!("{}: {}", labels.lid_sleep, labels.lid_unavailable))
+            },
+            // As the window's Status page reads it: from the battery
+            // protection the service reports, and "not applicable" on a
+            // machine with no battery rather than a threshold that never fires.
+            MenuItem::info(format!(
+                "{}: {}",
+                labels.battery_protection,
+                match (
+                    status.battery_protection.has_battery,
+                    status.battery_protection.stop_below_percent,
+                ) {
+                    (false, _) => labels.battery_not_applicable.to_string(),
+                    (true, Some(percent)) => labels
+                        .battery_stops_at
+                        .replace("{percent}", &percent.to_string()),
+                    (true, None) => labels.battery_off.to_string(),
+                }
+            )),
+        ]
+        .into_iter()
+        .chain(lid_limit_row(status, labels, locale, offset))
+        .collect(),
     ));
-    items.push(policy_row(
-        labels.display_sleep,
-        status.effective_policy.prevent_display_sleep,
-        status.unmet_policy.contains(&PolicyGap::DisplaySleep),
-        labels,
-    ));
-    items.push(policy_row(
-        labels.automatic_lock,
-        status.effective_policy.prevent_automatic_lock,
-        status.unmet_policy.contains(&PolicyGap::AutomaticLock),
-        labels,
-    ));
-    items.push(MenuItem::info(format!(
-        "{}: {}",
-        labels.battery_protection,
-        match status.battery_stop_percent {
-            Some(percent) => labels
-                .battery_stops_at
-                .replace("{percent}", &percent.to_string()),
-            None => labels.battery_off.to_string(),
-        }
-    )));
 
     items.push(MenuItem::separator());
     let mut extend = MenuItem::submenu(
@@ -450,6 +567,50 @@ fn active_items(status: &StatusDocument, labels: &Labels, offset: UtcOffset) -> 
         }
     }
     items.push(extend);
+    if status.manual_session().is_some() && status.backend.available {
+        // Choosing a length while a session runs replaces the running one's
+        // end, measured from now. The controller turns these into a
+        // ChangeSession, so a second "start" is never refused as a duplicate.
+        // The length the session already has is not offered as a change.
+        // A session changed or extended before carries an end time rather
+        // than its length, so every length is offered for it.
+        let current = session.end;
+        let lengths = [
+            (
+                labels.indefinitely,
+                MenuAction::StartIndefinite,
+                WireEnd::Indefinite,
+            ),
+            (
+                labels.minutes_15,
+                MenuAction::StartMinutes(15),
+                WireEnd::Duration { seconds: 15 * 60 },
+            ),
+            (
+                labels.minutes_30,
+                MenuAction::StartMinutes(30),
+                WireEnd::Duration { seconds: 30 * 60 },
+            ),
+            (
+                labels.hour_1,
+                MenuAction::StartMinutes(60),
+                WireEnd::Duration { seconds: 60 * 60 },
+            ),
+            (
+                labels.hours_2,
+                MenuAction::StartMinutes(120),
+                WireEnd::Duration { seconds: 120 * 60 },
+            ),
+        ];
+        items.push(MenuItem::submenu(
+            labels.change_length,
+            lengths
+                .into_iter()
+                .filter(|(_, _, end)| *end != current)
+                .map(|(label, action, _)| MenuItem::standard(label, action))
+                .collect(),
+        ));
+    }
     items.push(MenuItem::standard(
         labels.change_session,
         MenuAction::ChangeSession,
@@ -466,6 +627,52 @@ fn active_items(status: &StatusDocument, labels: &Labels, offset: UtcOffset) -> 
         items.push(MenuItem::standard(end, MenuAction::EndSession));
     }
     items
+}
+
+/// The safety that goes with the lid choice, stated beside it: how long the lid
+/// may stay closed on battery. Only while the lid is held, because otherwise
+/// closing the lid suspends the machine as it always did.
+fn lid_limit_row(
+    status: &StatusDocument,
+    labels: &Labels,
+    locale: Locale,
+    offset: UtcOffset,
+) -> Option<MenuItem> {
+    if !status.effective_policy.prevent_lid_suspend
+        || status.unmet_policy.contains(&PolicyGap::LidSwitch)
+    {
+        return None;
+    }
+    // The clock is running (lid closed, on battery): when it stops, as a
+    // countdown. Otherwise the limit as a rule.
+    if let Some(stops_at) = status.lid.stops_at_unix_seconds {
+        let minutes = stops_at
+            .saturating_sub(status.now_unix_seconds)
+            .div_ceil(60)
+            .max(1);
+        let value = labels
+            .lid_stops_at
+            .replace("{time}", &clock_time(stops_at, offset))
+            .replace(
+                "{remaining}",
+                &awake_ipc::notification::limit_words(locale, minutes as u32),
+            );
+        return Some(MenuItem::info(format!(
+            "{}: {value}",
+            labels.lid_battery_limit
+        )));
+    }
+    let value = match status.lid.battery_limit.minutes() {
+        Some(minutes) => labels.lid_stops_after.replace(
+            "{limit}",
+            &awake_ipc::notification::limit_words(locale, minutes),
+        ),
+        None => labels.lid_never_stops.to_string(),
+    };
+    Some(MenuItem::info(format!(
+        "{}: {value}",
+        labels.lid_battery_limit
+    )))
 }
 
 /// The rows that explain a degraded state, shown in both layouts.
@@ -613,13 +820,6 @@ pub fn duration_label(seconds: u64, labels: &Labels) -> String {
 /// Numbers every item depth-first, starting at 1. Zero is the dbusmenu root.
 fn assign_ids(menu: &mut Menu) {
     let mut next = 1;
-    fn number(item: &mut MenuItem, next: &mut i32) {
-        item.id = *next;
-        *next += 1;
-        for child in &mut item.children {
-            number(child, next);
-        }
-    }
     for item in &mut menu.items {
         number(item, &mut next);
     }
@@ -646,6 +846,7 @@ mod tests {
                 idle: true,
                 display_sleep: false,
                 automatic_lock: false,
+                lid_switch: true,
             },
             detail: (!available).then(|| "awake.backend.unavailable:no logind".to_string()),
         }
@@ -669,6 +870,7 @@ mod tests {
             conflicts: Vec::new(),
             providers: Vec::new(),
             battery_protection: WireBatteryProtection::default(),
+            lid: awake_ipc::WireLidProtection::default(),
             now_unix_seconds: NOW,
         }
     }
@@ -733,6 +935,12 @@ mod tests {
                 reason: session.reason.clone(),
             }],
             sessions: vec![session],
+            battery_protection: WireBatteryProtection {
+                has_battery: true,
+                percent: Some(80),
+                on_ac_power: Some(false),
+                stop_below_percent: Some(20),
+            },
             ..inactive()
         }
     }
@@ -775,6 +983,7 @@ mod tests {
                 "Quick options",
                 "Allow display to turn off",
                 "Stop below 20% battery",
+                "Also when the lid is closed",
                 "Automatic rules: No rules yet",
                 "Open Better Awake…",
                 "Quit Better Awake",
@@ -870,10 +1079,10 @@ mod tests {
         let menu = menu(&status, Locale::EnUs);
         let labels = menu.labels();
 
-        assert!(labels.contains(&"System sleep: Prevented"));
+        assert!(labels.contains(&"System sleep: Held off"));
         assert!(labels.contains(&"Display sleep: Allowed"));
         assert!(labels.contains(&"Automatic lock: Allowed"));
-        assert!(labels.contains(&"Battery protection: Stops at 20%"));
+        assert!(labels.contains(&"Battery stop threshold: Stops below 20%"));
     }
 
     #[test]
@@ -884,8 +1093,8 @@ mod tests {
 
         let menu = menu(&status, Locale::EnUs);
         let labels = menu.labels();
-        assert!(labels.contains(&"Display sleep: Not supported here"));
-        assert!(!labels.contains(&"Display sleep: Prevented"));
+        assert!(labels.contains(&"Display sleep: Asked for, not delivered by the backend"));
+        assert!(!labels.contains(&"Display sleep: Held off"));
     }
 
     #[test]
@@ -967,11 +1176,18 @@ mod tests {
         assert!(!allowed.policy().prevent_display_sleep);
         assert_eq!(allowed.battery_stop_percent(), Some(20));
 
+        assert!(
+            allowed.policy().prevent_lid_suspend,
+            "a session started by hand keeps awake with the lid closed by default"
+        );
+
         let held_on = QuickOptions {
             allow_display_off: false,
             stop_below_battery: false,
+            keep_awake_lid_closed: false,
         };
         assert!(held_on.policy().prevent_display_sleep);
+        assert!(!held_on.policy().prevent_lid_suspend);
         assert_eq!(held_on.battery_stop_percent(), None);
     }
 
@@ -1224,6 +1440,279 @@ mod tests {
         assert!(
             !actions(&menu(&status, Locale::EnUs)).contains(&MenuAction::EndSession),
             "there is no manual session to end"
+        );
+    }
+
+    // ---- Ticket 102 ---------------------------------------------------------
+
+    #[test]
+    fn the_awake_menu_offers_the_lengths_to_change_to_and_end() {
+        let menu = menu(
+            &active(WireEnd::Indefinite, WireRemaining::UntilEnded),
+            Locale::EnUs,
+        );
+        let change = menu.find_by_label("Change length").unwrap();
+        assert_eq!(change.kind, ItemKind::Submenu);
+        assert!(change.enabled);
+        // Indefinite is what it already is, so it is not offered.
+        assert_eq!(
+            change
+                .children
+                .iter()
+                .map(|child| child.action.unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                MenuAction::StartMinutes(15),
+                MenuAction::StartMinutes(30),
+                MenuAction::StartMinutes(60),
+                MenuAction::StartMinutes(120),
+            ]
+        );
+        assert!(actions(&menu).contains(&MenuAction::EndSession));
+        assert!(menu.find_by_label("Start a session").is_none());
+    }
+
+    #[test]
+    fn the_not_awake_menu_offers_each_start_length_once() {
+        let menu = menu(&inactive(), Locale::ZhTw);
+        let starts: Vec<MenuAction> = actions(&menu)
+            .into_iter()
+            .filter(|action| {
+                matches!(
+                    action,
+                    MenuAction::StartIndefinite | MenuAction::StartMinutes(_)
+                )
+            })
+            .collect();
+        let mut unique = starts.clone();
+        unique.dedup();
+        assert_eq!(starts, unique);
+        assert_eq!(starts.len(), 5);
+        assert!(menu.find_by_label("改成其他長度").is_none());
+    }
+
+    #[test]
+    fn a_session_held_only_by_a_rule_offers_no_length_to_change_to() {
+        let mut status = active(WireEnd::Indefinite, WireRemaining::UntilEnded);
+        status.sessions[0].origin = SessionOrigin::Trigger;
+        status.indicator = WireIndicator::ActiveTrigger;
+        assert!(
+            menu(&status, Locale::EnUs)
+                .find_by_label("Change length")
+                .is_none(),
+            "a rule's session is not the person's to change from the tray"
+        );
+    }
+
+    #[test]
+    fn renumbering_keeps_the_items_and_moves_every_id() {
+        let menu = menu(&inactive(), Locale::EnUs);
+        let moved = menu.clone().renumbered(500);
+        assert_eq!(menu.labels(), moved.labels());
+        assert_eq!(menu.shape(), moved.shape());
+        let mut ids = Vec::new();
+        for item in &moved.items {
+            item.walk(&mut |candidate| ids.push(candidate.id));
+        }
+        assert_eq!(ids, (500..500 + menu.len() as i32).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_new_countdown_is_the_same_shape_and_a_new_state_is_not() {
+        let timed = |seconds| {
+            menu(
+                &active(
+                    WireEnd::Duration { seconds: 7_200 },
+                    WireRemaining::Seconds { seconds },
+                ),
+                Locale::EnUs,
+            )
+        };
+        assert_ne!(timed(5_400), timed(5_340));
+        assert_eq!(timed(5_400).shape(), timed(5_340).shape());
+        assert_ne!(
+            timed(5_400).shape(),
+            menu(&inactive(), Locale::EnUs).shape()
+        );
+        // Ticking an option is only a property change.
+        let toggled = build(
+            &inactive(),
+            QuickOptions {
+                allow_display_off: false,
+                ..QuickOptions::default()
+            },
+            Locale::EnUs,
+            UtcOffset::UTC,
+            false,
+        );
+        assert_eq!(toggled.shape(), menu(&inactive(), Locale::EnUs).shape());
+    }
+
+    #[test]
+    fn the_awake_menu_keeps_the_policy_facts_one_level_down() {
+        let menu = menu(
+            &active(WireEnd::Indefinite, WireRemaining::UntilEnded),
+            Locale::EnUs,
+        );
+        let settings = menu.find_by_label("Current settings").unwrap();
+        assert_eq!(settings.kind, ItemKind::Submenu);
+        assert_eq!(settings.children.len(), 5);
+        assert!(
+            menu.items
+                .iter()
+                .all(|item| !item.label.starts_with("System sleep")),
+            "the facts are not in the top level"
+        );
+        // Top level: four facts, settings, a separator, extend (not drawn for
+        // an indefinite session), change length, change session, end, a
+        // separator, rules, open, quit.
+        assert_eq!(menu.items.len(), 14);
+    }
+
+    #[test]
+    fn the_current_settings_say_whether_the_lid_is_held_and_the_limit_that_goes_with_it() {
+        let held = |locale, limit| {
+            let mut status = active(WireEnd::Indefinite, WireRemaining::UntilEnded);
+            status.effective_policy = SessionPolicy::manual_default();
+            status.lid.battery_limit = limit;
+            menu(&status, locale)
+                .find_by_label(locale.labels().current_settings)
+                .unwrap()
+                .children
+                .iter()
+                .map(|item| item.label.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            held(Locale::EnUs, awake_core::LidBatteryLimit::default()),
+            vec![
+                "System sleep: Held off",
+                "Display sleep: Allowed",
+                "Automatic lock: Allowed",
+                "Sleep when the lid is closed: Held off",
+                "Battery stop threshold: Stops below 20%",
+                "Lid closed on battery: Stops after 2 hours",
+            ]
+        );
+        assert_eq!(
+            held(Locale::ZhTw, awake_core::LidBatteryLimit::Never)[3..],
+            [
+                "闔上螢幕時睡眠: 已擋下",
+                "電量停止門檻: 低於 20% 時停止",
+                "闔上螢幕並使用電池時: 不會因此停止",
+            ]
+        );
+
+        // Not held: closing the lid suspends as it always did, and no limit is
+        // stated for a choice that is off.
+        let off = menu(
+            &active(WireEnd::Indefinite, WireRemaining::UntilEnded),
+            Locale::EnUs,
+        );
+        let rows: Vec<String> = off
+            .find_by_label("Current settings")
+            .unwrap()
+            .children
+            .iter()
+            .map(|item| item.label.clone())
+            .collect();
+        assert!(rows.contains(&"Sleep when the lid is closed: Allowed".to_string()));
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.starts_with("Lid closed on battery"))
+        );
+    }
+
+    #[test]
+    fn a_running_closed_lid_clock_is_shown_as_a_countdown() {
+        let mut status = active(WireEnd::Indefinite, WireRemaining::UntilEnded);
+        status.effective_policy = SessionPolicy::manual_default();
+        status.lid.stops_at_unix_seconds = Some(status.now_unix_seconds + 30 * 60);
+        let at = clock_time(status.now_unix_seconds + 30 * 60, UtcOffset::UTC);
+        let rows: Vec<String> = menu(&status, Locale::ZhTw)
+            .find_by_label("目前的設定")
+            .unwrap()
+            .children
+            .iter()
+            .map(|item| item.label.clone())
+            .collect();
+        assert_eq!(
+            rows.last().unwrap(),
+            &format!("闔上螢幕並使用電池時: {at} 停止（還有 30 分鐘）")
+        );
+    }
+
+    #[test]
+    fn the_lid_quick_option_is_on_by_default_and_toggles_locally() {
+        let menu = menu(&inactive(), Locale::ZhTw);
+        let item = menu.find_by_label("闔上螢幕時也保持清醒").unwrap();
+        assert_eq!(item.action, Some(MenuAction::ToggleKeepAwakeLidClosed));
+        assert_eq!(item.kind, ItemKind::Checkmark { checked: true });
+    }
+
+    #[test]
+    fn a_timed_session_is_not_offered_its_own_length_and_a_changed_one_is_offered_all() {
+        let thirty = menu(
+            &active(
+                WireEnd::Duration { seconds: 1_800 },
+                WireRemaining::Seconds { seconds: 1_700 },
+            ),
+            Locale::EnUs,
+        );
+        let offered: Vec<MenuAction> = thirty
+            .find_by_label("Change length")
+            .unwrap()
+            .children
+            .iter()
+            .map(|child| child.action.unwrap())
+            .collect();
+        assert_eq!(
+            offered,
+            vec![
+                MenuAction::StartIndefinite,
+                MenuAction::StartMinutes(15),
+                MenuAction::StartMinutes(60),
+                MenuAction::StartMinutes(120),
+            ]
+        );
+
+        let changed = menu(
+            &active(
+                WireEnd::UntilUnixSeconds {
+                    unix_seconds: NOW + 600,
+                },
+                WireRemaining::Seconds { seconds: 600 },
+            ),
+            Locale::EnUs,
+        );
+        assert_eq!(
+            changed
+                .find_by_label("Change length")
+                .unwrap()
+                .children
+                .len(),
+            5
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_battery_says_the_threshold_does_not_apply() {
+        let mut status = active(WireEnd::Indefinite, WireRemaining::UntilEnded);
+        status.battery_protection = WireBatteryProtection::default();
+        let labels = menu(&status, Locale::ZhTw);
+        assert!(labels.labels().contains(&"電量停止門檻: 這台機器不適用"));
+
+        status.battery_protection = WireBatteryProtection {
+            has_battery: true,
+            percent: Some(90),
+            on_ac_power: Some(true),
+            stop_below_percent: None,
+        };
+        assert!(
+            menu(&status, Locale::ZhTw)
+                .labels()
+                .contains(&"電量停止門檻: 不因電量停止")
         );
     }
 }

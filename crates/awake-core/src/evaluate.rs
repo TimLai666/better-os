@@ -285,6 +285,7 @@ pub enum PolicyField {
     Idle,
     DisplaySleep,
     AutomaticLock,
+    LidSwitch,
     BatteryThreshold,
 }
 
@@ -295,6 +296,7 @@ impl PolicyField {
             PolicyField::Idle => "prevent_idle",
             PolicyField::DisplaySleep => "prevent_display_sleep",
             PolicyField::AutomaticLock => "prevent_automatic_lock",
+            PolicyField::LidSwitch => "prevent_lid_suspend",
             PolicyField::BatteryThreshold => "battery_stop_percent",
         }
     }
@@ -445,11 +447,11 @@ fn conflicts_for(active: &[ActiveRule]) -> Vec<Conflict> {
         return conflicts;
     }
 
-    /// One policy flag paired with the way to read it, so the four boolean
+    /// One policy flag paired with the way to read it, so the boolean
     /// fields are compared by one piece of code rather than four copies of it.
     type FieldReader = (PolicyField, fn(&SessionPolicy) -> bool);
 
-    let fields: [FieldReader; 4] = [
+    let fields: [FieldReader; 5] = [
         (PolicyField::SystemSuspend, |policy| {
             policy.prevent_system_suspend
         }),
@@ -460,6 +462,7 @@ fn conflicts_for(active: &[ActiveRule]) -> Vec<Conflict> {
         (PolicyField::AutomaticLock, |policy| {
             policy.prevent_automatic_lock
         }),
+        (PolicyField::LidSwitch, |policy| policy.prevent_lid_suspend),
     ];
 
     for (field, read) in fields {

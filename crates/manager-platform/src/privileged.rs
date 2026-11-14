@@ -68,6 +68,40 @@ impl DbusPrivilegedExecutor {
     }
 }
 
+/// How often, and how far apart, a call refused by a daemon that is leaving is
+/// asked again. The next call after it has gone starts a new daemon.
+const LEAVING_ATTEMPTS: u32 = 40;
+const LEAVING_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether the daemon refused because it is leaving (ticket 105).
+fn daemon_is_leaving(error: &zbus::Error) -> bool {
+    error.to_string().contains("daemon.error.shutting_down")
+}
+
+/// Makes a call, asking again while the daemon says it is leaving.
+fn call_while_leaving<T>(mut call: impl FnMut() -> zbus::Result<T>) -> Result<T, PlatformError> {
+    retry_while_leaving(&mut call, LEAVING_ATTEMPTS, &|| {
+        std::thread::sleep(LEAVING_PAUSE)
+    })
+}
+
+fn retry_while_leaving<T>(
+    call: &mut dyn FnMut() -> zbus::Result<T>,
+    attempts: u32,
+    pause: &dyn Fn(),
+) -> Result<T, PlatformError> {
+    let mut left = attempts.max(1);
+    loop {
+        match call() {
+            Err(error) if daemon_is_leaving(&error) && left > 1 => {
+                left -= 1;
+                pause();
+            }
+            other => return other.map_err(translate),
+        }
+    }
+}
+
 /// Turns a bus error back into something the presentation layer can localize.
 ///
 /// The daemon's own stable keys are carried through rather than reworded, so a
@@ -76,6 +110,13 @@ fn translate(error: zbus::Error) -> PlatformError {
     let text = error.to_string();
     if text.contains("daemon.error.unauthorized") {
         return PlatformError::PolkitDenied;
+    }
+    // The service vanished mid-call: the bus answers for it that it left
+    // without replying, or the reply's connection closed under the call.
+    if text.contains("org.freedesktop.DBus.Error.NoReply")
+        || text.contains("disconnected from message bus without replying")
+    {
+        return PlatformError::DaemonInterrupted(text);
     }
     if text.contains("org.freedesktop.DBus.Error.ServiceUnknown")
         || text.contains("org.freedesktop.DBus.Error.NameHasNoOwner")
@@ -97,20 +138,20 @@ impl PrivilegedTransactionExecutor for DbusPrivilegedExecutor {
         sha256: &str,
         artifact_path: &Path,
     ) -> Result<(), PlatformError> {
-        let file = std::fs::File::open(artifact_path)
-            .map_err(|error| PlatformError::DaemonRefused(error.to_string()))?;
-        let descriptor = zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(file));
-
         // Handing over a descriptor rather than a path means the daemon reads
         // exactly the bytes this client opened, with no window in which
-        // something else could swap the file.
-        let verified: String = self
-            .proxy()?
-            .call(
+        // something else could swap the file. A call asked again opens it
+        // again.
+        let proxy = self.proxy()?;
+        let verified: String = call_while_leaving(|| {
+            let file = std::fs::File::open(artifact_path)
+                .map_err(|error| zbus::Error::Failure(error.to_string()))?;
+            let descriptor = zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(file));
+            proxy.call(
                 "StageArtifact",
                 &(transaction_id, filename, sha256, descriptor),
             )
-            .map_err(translate)?;
+        })?;
 
         if verified != sha256 {
             return Err(PlatformError::ChecksumMismatch {
@@ -137,10 +178,9 @@ impl PrivilegedTransactionExecutor for DbusPrivilegedExecutor {
         // them on another deadlocks, because the signal iterator does not end
         // when the call returns. The long part of a transaction is the
         // download, and that reports progress from this side already.
-        let outcome: String = self
-            .proxy()?
-            .call("ApplyTransaction", &(document,))
-            .map_err(translate)?;
+        let proxy = self.proxy()?;
+        let outcome: String =
+            call_while_leaving(|| proxy.call("ApplyTransaction", &(document.as_str(),)))?;
 
         let outcome = TransactionOutcome::from_json(&outcome)
             .map_err(|error| PlatformError::DaemonRefused(error.to_string()))?;
@@ -156,10 +196,8 @@ impl PrivilegedTransactionExecutor for DbusPrivilegedExecutor {
 
 impl PackageSystemRepair for DbusPrivilegedExecutor {
     fn package_system_state(&self) -> Result<PackageSystemState, PlatformError> {
-        let document: String = self
-            .proxy()?
-            .call("GetPackageSystemState", &())
-            .map_err(translate)?;
+        let proxy = self.proxy()?;
+        let document: String = call_while_leaving(|| proxy.call("GetPackageSystemState", &()))?;
         PackageSystemState::from_json(&document)
             .map_err(|error| PlatformError::DaemonRefused(error.to_string()))
     }
@@ -167,10 +205,8 @@ impl PackageSystemRepair for DbusPrivilegedExecutor {
     fn repair_package_system(&self) -> Result<RepairOutcome, PlatformError> {
         // The method takes nothing. Which command runs is the daemon's decision
         // and is fixed there; ADR 0014.
-        let document: String = self
-            .proxy()?
-            .call("RepairPackageSystem", &())
-            .map_err(translate)?;
+        let proxy = self.proxy()?;
+        let document: String = call_while_leaving(|| proxy.call("RepairPackageSystem", &()))?;
         RepairOutcome::from_json(&document)
             .map_err(|error| PlatformError::DaemonRefused(error.to_string()))
     }
@@ -179,6 +215,69 @@ impl PackageSystemRepair for DbusPrivilegedExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_call_refused_by_a_leaving_daemon_is_asked_again_and_nothing_else_is() {
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let pauses = Cell::new(0);
+        let pause = || pauses.set(pauses.get() + 1);
+        let mut leaving_twice = || -> zbus::Result<u32> {
+            calls.set(calls.get() + 1);
+            if calls.get() <= 2 {
+                Err(zbus::Error::Failure(
+                    "org.freedesktop.DBus.Error.Failed: daemon.error.shutting_down".into(),
+                ))
+            } else {
+                Ok(7)
+            }
+        };
+        assert_eq!(
+            retry_while_leaving(&mut leaving_twice, 10, &pause).unwrap(),
+            7
+        );
+        assert_eq!((calls.get(), pauses.get()), (3, 2));
+
+        calls.set(0);
+        let mut busy = || -> zbus::Result<u32> {
+            calls.set(calls.get() + 1);
+            Err(zbus::Error::Failure("daemon.error.busy".into()))
+        };
+        assert!(retry_while_leaving(&mut busy, 10, &pause).is_err());
+        assert_eq!(calls.get(), 1, "any other refusal is reported at once");
+
+        calls.set(0);
+        let mut always_leaving = || -> zbus::Result<u32> {
+            calls.set(calls.get() + 1);
+            Err(zbus::Error::Failure("daemon.error.shutting_down".into()))
+        };
+        let refused = retry_while_leaving(&mut always_leaving, 4, &pause).unwrap_err();
+        assert_eq!(calls.get(), 4, "and gives up after the attempts it has");
+        assert_eq!(
+            refused.to_string(),
+            "platform.error.daemon_refused:daemon.error.shutting_down"
+        );
+    }
+
+    /// Ticket 105: an update of the daemon's package from outside Better
+    /// Manager restarts the daemon; a call it was answering — staging an
+    /// artifact — gets no reply. That is told apart from a refusal, so the
+    /// window can say the update cut the step off and to try again.
+    #[test]
+    fn a_daemon_that_left_mid_call_is_reported_as_interrupted() {
+        let cut_off = translate(zbus::Error::Failure(
+            "org.freedesktop.DBus.Error.NoReply: Message recipient disconnected from message bus without replying".to_string(),
+        ));
+        assert!(
+            matches!(cut_off, PlatformError::DaemonInterrupted(_)),
+            "{cut_off:?}"
+        );
+        assert!(
+            cut_off
+                .to_string()
+                .starts_with("platform.error.daemon_interrupted:")
+        );
+    }
 
     #[test]
     fn a_refusal_from_polkit_is_told_apart_from_the_service_being_absent() {
