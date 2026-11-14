@@ -291,21 +291,24 @@ unit，開啟時會把已啟用卻沒在跑的元件啟動起來。套件本身�
 仍然以停用狀態安裝，由 Better Manager 啟用。
 
 目前的 release 是
+[`v0.2.13`](https://github.com/TimLai666/better-os/releases/tag/v0.2.13)，由 commit
+`aab38acd778b544a35cce1969ebfa410df3296d9` 的 CI run
+[`43578783980`](https://github.com/TimLai666/better-os/actions/runs/43578783980)
+產生，九個套件、36 個 `.deb` 與 36 個 `.deb.sha256`，共 74 個 assets。內容是
+ticket 93（完整的 Better Files）、97（Better Monitor 的硬體頁與 tray）、102（Better
+Awake 的 tray 選單）、103（下拉選單、分頁與 Better Git 對話框）、104（Better Git
+的分支圖）、105（更新後自動重啟）、107（每個 D-Bus 服務都接得到第一個呼叫）與
+109（闔上螢幕時保持清醒）。打包上的變化：有 systemd user unit 的套件，preinst
+與 postinst 會在升級後重啟正在執行的 unit（ticket 105，清單依位元組排序）；
+`better-monitor` 多了 tray 的 user unit；`better-manager` 依賴 `libsecret-tools`。
+
+上一版是
 [`v0.2.12`](https://github.com/TimLai666/better-os/releases/tag/v0.2.12)，由 commit
 `f5a28f4ecf604207832044864ecc2c91b4f3e51e` 的 CI run
 [`43272264034`](https://github.com/TimLai666/better-os/actions/runs/43272264034)
 產生，九個套件、36 個 `.deb` 與 36 個 `.deb.sha256`，共 74 個 assets。內容是
 ticket 92（功能對齊 GitHub Desktop 的 Better Git）與 84（Better Manager 控制台的外框、首頁與設定）。
 打包方式沒有改變。
-
-上一版是
-[`v0.2.11`](https://github.com/TimLai666/better-os/releases/tag/v0.2.11)，由 commit
-`13ea36afd4fdfe7eb80895da677e60a642b6cb8e` 的 CI run
-[`43261151208`](https://github.com/TimLai666/better-os/actions/runs/43261151208)
-產生，九個套件、36 個 `.deb` 與 36 個 `.deb.sha256`，共 74 個 assets。內容是
-ticket 81（Better Monitor 的 Fluent 版）、82（Start 選單式的 Better Launcher 與
-選擇開啟方式）與 Better Awake tray 的修正。打包上的變化：`better-awake` 多了
-`org.betteros.Awake1` 的 D-Bus activation 檔與六個 symbolic 狀態圖示。
 
 `packaging/build-deb.sh` 從 0.2.4 開始會先清掉 `dist/` 裡上一次建置留下的
 `.deb` 與 `.deb.sha256`。`verify-deb.sh` 用不含版號的 glob 挑套件，同一個元件

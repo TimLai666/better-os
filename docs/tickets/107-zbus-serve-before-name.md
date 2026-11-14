@@ -1,6 +1,6 @@
 # Ticket 107 — Every D-Bus service answers its first call
 
-**Blocked by:** none · **Status:** merged, not released
+**Blocked by:** none · **Status:** released in v0.2.13
 
 ## Why
 

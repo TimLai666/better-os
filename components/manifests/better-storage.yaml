@@ -2,7 +2,7 @@ schema_version: 2
 id: better-storage
 display_name: Better Storage
 component_type: enhancement
-version: 0.2.12
+version: 0.2.13
 summary: Direct removal for external drives, with an honest ready-to-unplug state.
 icon: generic
 # The session service starts with the session, so a new install is only fully
@@ -14,31 +14,31 @@ targets:
   architectures: [amd64, arm64]
 enhances:
   - udisks2
-# The checksums below belong to the published v0.2.12 release assets. Each one
+# The checksums below belong to the published v0.2.13 release assets. Each one
 # was re-hashed from the package downloaded back from the public release rather
 # than copied from its sidecar, which is what ADR 0002 requires a manifest to
 # record.
 artifacts:
   - release: "22.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.12/better-storage_0.2.12_ubuntu-22.04_amd64.deb
-    sha256: 8185717f7bc6b835a473fb4b84611a239abbdf11c657fb64fcf064a7e99127ba
-    release_asset: better-storage_0.2.12_ubuntu-22.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.13/better-storage_0.2.13_ubuntu-22.04_amd64.deb
+    sha256: 3b9568703a806cc3ec9c9fa85320f34063ebb2a6d2925ad6a866a9decbda95b1
+    release_asset: better-storage_0.2.13_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.12/better-storage_0.2.12_ubuntu-22.04_arm64.deb
-    sha256: 01789a14a3e7e98c17d59be1d5688a9855a2c663dfc0b74a2d1ea403540e0b09
-    release_asset: better-storage_0.2.12_ubuntu-22.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.13/better-storage_0.2.13_ubuntu-22.04_arm64.deb
+    sha256: a04693d3e994d33b2dc6b803864b022aef88db98be8c0ed065734b2df1b82a6c
+    release_asset: better-storage_0.2.13_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.12/better-storage_0.2.12_ubuntu-24.04_amd64.deb
-    sha256: 068c605c1185a901cf09852adf968e7ee7f85a8c3a844c3216378e5f4d17dd00
-    release_asset: better-storage_0.2.12_ubuntu-24.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.13/better-storage_0.2.13_ubuntu-24.04_amd64.deb
+    sha256: 77ba40e9ea88e8314eea1146a908db96da25dda74d8cfa36dda2dc530323cb6c
+    release_asset: better-storage_0.2.13_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.12/better-storage_0.2.12_ubuntu-24.04_arm64.deb
-    sha256: 1a111b8dbb1ee87f0a7305dc22c0380d482be1140008645ae0fa2eab66981ecf
-    release_asset: better-storage_0.2.12_ubuntu-24.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.13/better-storage_0.2.13_ubuntu-24.04_arm64.deb
+    sha256: 4bf531cfb6833ea7c1c445a5d3646d36f12bd5845464ec061e919ca9db35136a
+    release_asset: better-storage_0.2.13_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable

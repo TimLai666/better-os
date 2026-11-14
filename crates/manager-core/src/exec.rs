@@ -1264,11 +1264,14 @@ mod tests {
     /// Better Manager's manifest as a release that ships the shell adapter
     /// would write it: the 24.04 amd64 artifact names its companion.
     fn manager_with_companion() -> Manager {
-        let asset = "better-manager_0.2.12_ubuntu-24.04_amd64.deb";
+        // The version follows the workspace, which every manifest carries,
+        // so the fixture keeps matching after a version bump.
+        let version = env!("CARGO_PKG_VERSION");
+        let asset = format!("better-manager_{version}_ubuntu-24.04_amd64.deb");
         let manifest = include_str!("../../../components/manifests/better-manager.yaml").replace(
             &format!("    release_asset: {asset}\n"),
             &format!(
-                "    release_asset: {asset}\n    companions:\n      - package: better-shell-adapter\n        url: https://example.com/better-shell-adapter_0.2.12_ubuntu-24.04_amd64.deb\n        sha256: {}\n        release_asset: better-shell-adapter_0.2.12_ubuntu-24.04_amd64.deb\n",
+                "    release_asset: {asset}\n    companions:\n      - package: better-shell-adapter\n        url: https://example.com/better-shell-adapter_{version}_ubuntu-24.04_amd64.deb\n        sha256: {}\n        release_asset: better-shell-adapter_{version}_ubuntu-24.04_amd64.deb\n",
                 "c".repeat(64)
             ),
         );
@@ -1335,7 +1338,10 @@ mod tests {
         assert_eq!(step.companions[0].package, "better-shell-adapter");
         assert_eq!(
             step.companions[0].artifact.filename,
-            "better-shell-adapter_0.2.12_ubuntu-24.04_amd64.deb"
+            format!(
+                "better-shell-adapter_{}_ubuntu-24.04_amd64.deb",
+                env!("CARGO_PKG_VERSION")
+            )
         );
         plans[0].validate().unwrap();
     }

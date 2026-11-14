@@ -1,3 +1,4 @@
+# shellcheck shell=sh disable=SC2154 # build-deb.sh writes the header that sets the better_os_* variables
 # Better OS maintainer-script functions for a package's systemd user units
 # (ticket 105). `packaging/build-deb.sh` copies this file into the preinst and
 # postinst of every package that ships a unit under /usr/lib/systemd/user,
