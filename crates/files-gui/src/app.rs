@@ -132,11 +132,26 @@ pub struct FilesApp {
     pub(crate) catalog_generation: u64,
     /// The LocalSend list's generation the window last drew.
     pub(crate) localsend_generation: u64,
+    /// Counts this window among the process's open Better Files windows.
+    window_count: Option<crate::restart::WindowCount>,
+    /// Watches for an update and restarts into it (ticket 105).
+    pub(crate) update_restart: better_ui::restart::UpdateRestart,
+    /// The scroll position a restart handed over, until the listing it
+    /// belongs to has arrived.
+    restored_scroll: Option<f32>,
     _pump: Option<Task<()>>,
 }
 
+/// The window's application id, which the desktop entry is named after.
+pub(crate) const APP_ID: &str = "io.betteros.Files";
+
 impl FilesApp {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>, start: StartPlan) -> Self {
+    pub(crate) fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        start: StartPlan,
+        handoff: Option<better_ui::restart::Handoff>,
+    ) -> Self {
         let preference_store = PreferenceStore::from_env();
         let loaded = preference_store.load();
         let preferences = loaded.preferences;
@@ -209,6 +224,13 @@ impl FilesApp {
                 problem: start.problem,
                 ignored: start.ignored,
             });
+        }
+
+        // A restart after an update puts the tabs and the selection back in
+        // place of the folder the program was first started with.
+        let restored: Option<crate::restart::FilesView> = handoff.as_ref().and_then(|h| h.state());
+        if let Some(view) = &restored {
+            session.restore_view(&view.session);
         }
 
         let locale = session.locale;
@@ -348,9 +370,26 @@ impl FilesApp {
             _chooser_subscription: None,
             catalog_generation: 0,
             localsend_generation: 0,
+            window_count: Some(crate::restart::WindowCount::open()),
+            update_restart: better_ui::restart::UpdateRestart::new(
+                APP_ID,
+                "Better Files",
+                "better-files",
+                env!("CARGO_PKG_VERSION"),
+                handoff.as_ref(),
+                window,
+                cx,
+            ),
+            restored_scroll: restored.as_ref().map(|view| view.scroll),
             _pump: None,
         };
         app.sync_path_field(window, cx);
+        app.sync_search_field(window, cx);
+        if let Some(draft) = restored.and_then(|view| view.path_draft) {
+            app.editing_path = true;
+            app.path_input
+                .update(cx, |state, cx| state.set_value(draft, window, cx));
+        }
         app.start_pump(cx);
         app
     }
@@ -422,6 +461,13 @@ impl FilesApp {
                         if app.context_menu.is_some() {
                             cx.notify();
                         }
+                    }
+                    if !app.session.is_listing()
+                        && let Some(offset) = app.restored_scroll.take()
+                    {
+                        let handle = app.content_scroll.0.borrow().base_handle.clone();
+                        handle.set_offset(point(px(0.0), px(-offset.max(0.0))));
+                        cx.notify();
                     }
                     // A background catalog reload is a redraw for the
                     // Applications location and nothing else.
@@ -579,7 +625,11 @@ impl FilesApp {
         };
         let parent = cx.entity().downgrade();
         let right = cx.new(|cx| {
-            let mut app = FilesApp::new(window, cx, start);
+            let mut app = FilesApp::new(window, cx, start, None);
+            // The window's own instance watches for updates; the right pane
+            // is part of it and must not restart the process a second time.
+            app.update_restart = better_ui::restart::UpdateRestart::inactive(APP_ID, cx);
+            app.window_count = None;
             app.embedded = true;
             app.parent = Some(parent);
             app
@@ -617,7 +667,9 @@ impl FilesApp {
     ) {
         let done = self.sharing.last.clone();
         let name = machine.name.clone();
+        let sending = crate::restart::SendCounter::begin();
         std::thread::spawn(move || {
+            let _sending = sending;
             let sent = crate::share::taildrop(&files, &machine);
             if let Ok(mut last) = done.lock() {
                 *last = Some((name, sent));
@@ -1038,7 +1090,7 @@ fn files_window_options(cx: &App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1_280.0), px(820.0)), cx)),
         window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-        ..better_ui::window_chrome::window_options("io.betteros.Files")
+        ..better_ui::window_chrome::window_options(APP_ID)
     }
 }
 
@@ -1053,7 +1105,7 @@ pub(crate) fn open_window_at(folder: Option<files_core::LocalPath>, cx: &mut App
     let options = files_window_options(cx);
     cx.spawn(async move |cx| {
         let _ = cx.open_window(options, |window, cx| {
-            let view = cx.new(|cx| FilesApp::new(window, cx, start));
+            let view = cx.new(|cx| FilesApp::new(window, cx, start, None));
             cx.new(|cx| gpui_component::Root::new(view, window, cx))
         });
     })
@@ -1067,11 +1119,15 @@ pub fn run(start: StartPlan) {
     app.run(move |cx| {
         gpui_component::init(cx);
 
-        let window_options = files_window_options(cx);
+        let handoff = better_ui::restart::take_handoff(APP_ID);
+        let mut window_options = files_window_options(cx);
+        if let Some(bounds) = better_ui::restart::window_bounds(handoff.as_ref()) {
+            window_options.window_bounds = Some(bounds);
+        }
 
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
-                let view = cx.new(|cx| FilesApp::new(window, cx, start));
+                let view = cx.new(|cx| FilesApp::new(window, cx, start, handoff));
                 cx.new(|cx| gpui_component::Root::new(view, window, cx))
             })
             .expect("failed to open Better Files window");
@@ -1095,7 +1151,7 @@ pub fn run(start: StartPlan) {
                         let options = files_window_options(cx);
                         cx.spawn(async move |cx| {
                             let _ = cx.open_window(options, |window, cx| {
-                                let view = cx.new(|cx| FilesApp::new(window, cx, start));
+                                let view = cx.new(|cx| FilesApp::new(window, cx, start, None));
                                 cx.new(|cx| gpui_component::Root::new(view, window, cx))
                             });
                         })
@@ -1218,7 +1274,9 @@ impl Sharing {
     pub(crate) fn localsend(&self, files: Vec<std::path::PathBuf>, peer: crate::localsend::Peer) {
         let done = self.last.clone();
         let identity = self.identity.clone();
+        let sending = crate::restart::SendCounter::begin();
         std::thread::spawn(move || {
+            let _sending = sending;
             let sent = localsend_identity(&identity).is_some_and(|identity| {
                 let own = crate::localsend::own_info(
                     &crate::localsend::alias(),
@@ -1235,5 +1293,47 @@ impl Sharing {
 
     pub(crate) fn dropbox(&self) -> Option<(std::path::PathBuf, Option<String>)> {
         self.dropbox.lock().ok().and_then(|dropbox| dropbox.clone())
+    }
+}
+
+impl better_ui::restart::Restartable for FilesApp {
+    type State = crate::restart::FilesView;
+
+    fn update_restart(&mut self) -> &mut better_ui::restart::UpdateRestart {
+        &mut self.update_restart
+    }
+
+    fn restart_blocked(&self, cx: &App) -> Option<better_ui::restart::Blocker> {
+        use better_ui::restart::Blocker;
+        if crate::restart::SendCounter::in_progress() {
+            return Some(Blocker::Task);
+        }
+        // Every window in the process watches; the last one open restarts,
+        // because a restart replaces the whole process.
+        if crate::restart::WindowCount::others_open() {
+            return Some(Blocker::OtherWindows);
+        }
+        // The right pane of a split view is part of this window.
+        if let Some(blocker) = self
+            .split
+            .as_ref()
+            .and_then(|right| better_ui::restart::Restartable::restart_blocked(right.read(cx), cx))
+        {
+            return Some(blocker);
+        }
+        self.session
+            .restart_blocked()
+            .or(self.chooser.is_some().then_some(Blocker::Dialog))
+    }
+
+    fn restart_state(&self, _window: &Window, cx: &App) -> crate::restart::FilesView {
+        let offset = self.content_scroll.0.borrow().base_handle.offset();
+        crate::restart::FilesView {
+            session: self.session.view(),
+            path_draft: self
+                .editing_path
+                .then(|| self.path_input.read(cx).value().to_string()),
+            scroll: -f32::from(offset.y),
+        }
     }
 }

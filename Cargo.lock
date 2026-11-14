@@ -833,10 +833,13 @@ dependencies = [
 name = "better-core"
 version = "0.2.12"
 dependencies = [
+ "libc",
+ "notify",
  "semver",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "thiserror 2.0.19",
 ]
 
@@ -847,6 +850,8 @@ dependencies = [
  "better-core",
  "gpui",
  "gpui-component",
+ "serde",
+ "smol",
 ]
 
 [[package]]
@@ -4180,6 +4185,8 @@ dependencies = [
  "gpui_platform",
  "launcher-core",
  "launcher-platform",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
@@ -4512,6 +4519,7 @@ dependencies = [
  "manager-core",
  "manager-platform",
  "manager-store",
+ "serde",
  "serde_json",
  "smol",
  "tempfile",
@@ -4780,6 +4788,8 @@ dependencies = [
  "monitor-service",
  "monitor-store",
  "monitor-views",
+ "serde",
+ "serde_json",
  "smol",
  "tempfile",
  "tokio",
@@ -8148,6 +8158,8 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "launcher-platform",
+ "serde",
+ "serde_json",
  "tempfile",
  "touchpad-core",
  "touchpad-gestures",

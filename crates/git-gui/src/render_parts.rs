@@ -1,19 +1,20 @@
 //! Parts of the window drawn outside `render.rs`: a dialog field's reason,
-//! the identity step, the toolbar's shortcut buttons, the toast, and the
+//! the identity step, the toolbar's shortcut buttons, the notice toast, and the
 //! repository list's worktree rows. As in `render.rs`, nothing here
 //! decides anything; the decisions are in `dialog_check`, `identity`,
-//! `shortcuts`, `toast`, and `worktree_links`.
+//! `shortcuts`, `worktree_links`, and `better_ui::fluent::toast`.
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _,
+    AnyElement, App, Context, Div, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 use gpui_component::{Icon, IconName};
 
 use better_ui::fluent::button::{Button, ButtonKind};
-use better_ui::fluent::info_bar::{InfoBar, Severity};
+use better_ui::fluent::info_bar::Severity;
 use better_ui::fluent::text_box::TextBox;
+use better_ui::fluent::toast::{ToastSpec, ToastWords};
 use better_ui::fluent::{BODY, BODY_STRONG, CAPTION, CODE, Palette, label, radius, spacing};
 
 use crate::app::GitApp;
@@ -213,48 +214,52 @@ impl GitApp {
         row
     }
 
-    /// The toast: a short-lived note at the bottom right for something the
-    /// window does not otherwise show. It keeps its link button and hides
-    /// itself unless the pointer is on it (`toast`).
-    pub(crate) fn toast(&self, p: &'static Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let notice = self.session.notice.as_ref()?;
-        let c = self.copy();
-        let mut bar = InfoBar::new("toast", Severity::Success, c.notice(notice))
-            .locale(self.words())
-            .on_close(Self::act(cx, |this, _, _| this.session.dismiss_notice()));
-        if let Some(url) = crate::toast::link(notice) {
-            bar = bar.action(
-                Button::standard("toast-open", c.open_link)
-                    .on_click(Self::act(cx, move |this, _, _| this.open_url(&url))),
+    /// Shows the session's notice as a toast on the window's one toast host
+    /// (`better_ui::fluent::toast`): a short-lived note at the bottom right
+    /// for something the window does not otherwise show, with its link or its
+    /// "restore" as the toast's action. A new notice replaces the one shown;
+    /// a notice cleared takes its toast away; a toast that went away by itself
+    /// clears the notice.
+    pub(crate) fn sync_notice_toast(&mut self, cx: &mut Context<Self>) {
+        let host = self.update_restart.toast_host().clone();
+        if let Some((_, id)) = &self.notice_toast
+            && !host.read(cx).contains(*id)
+        {
+            let (shown, _) = self.notice_toast.take().expect("checked above");
+            if self.session.notice.as_ref() == Some(&shown) {
+                self.session.dismiss_notice();
+            }
+        }
+        if self.notice_toast.as_ref().map(|(notice, _)| notice) == self.session.notice.as_ref() {
+            return;
+        }
+        if let Some((_, id)) = self.notice_toast.take() {
+            host.update(cx, |host, cx| host.dismiss(id, cx));
+        }
+        let Some(notice) = self.session.notice.clone() else {
+            return;
+        };
+        let words_of = notice.clone();
+        let mut spec = ToastSpec::timed(Severity::Success, move |locale| ToastWords {
+            title: crate::i18n::copy(git_locale(locale)).notice(&words_of),
+            message: None,
+        })
+        .closable(true);
+        if let Some(url) = notice.link() {
+            spec = spec.action(
+                |locale| crate::i18n::copy(git_locale(locale)).open_link.to_string(),
+                Self::act(cx, move |this, _, _| this.open_url(&url)),
             );
         }
-        if let crate::session::Notice::StashWaiting(name) = notice {
+        if let crate::session::Notice::StashWaiting(name) = &notice {
             let name = name.clone();
-            bar = bar.action(
-                Button::standard("toast-restore", c.restore)
-                    .on_click(Self::act(cx, move |this, _, _| {
-                        this.session.view_stash(name.clone())
-                    })),
+            spec = spec.action(
+                |locale| crate::i18n::copy(git_locale(locale)).restore.to_string(),
+                Self::act(cx, move |this, _, _| this.session.view_stash(name.clone())),
             );
         }
-        Some(
-            div()
-                .id("toast-holder")
-                .absolute()
-                .right(spacing::XL)
-                .bottom(spacing::XL)
-                .w(px(420.0))
-                .rounded(radius::MD)
-                .shadow_lg()
-                .bg(p.flyout)
-                .occlude()
-                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                    this.toast.hovered(*hovered, crate::toast::now_ms());
-                    cx.notify();
-                }))
-                .child(bar)
-                .into_any_element(),
-        )
+        let id = host.update(cx, |host, cx| host.push(spec, cx));
+        self.notice_toast = Some((notice, id));
     }
 
     /// The linked worktrees under one repository in the repository list.
@@ -339,4 +344,12 @@ pub(crate) struct DialogCheck {
     dialog: crate::dialogs::Dialog,
     texts: Vec<String>,
     blocked: Option<Blocked>,
+}
+
+/// The window's language for the kit's.
+fn git_locale(locale: better_ui::fluent::words::Locale) -> crate::i18n::Locale {
+    match locale {
+        better_ui::fluent::words::Locale::TraditionalChinese => crate::i18n::Locale::ZhTw,
+        better_ui::fluent::words::Locale::English => crate::i18n::Locale::EnUs,
+    }
 }

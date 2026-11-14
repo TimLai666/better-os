@@ -2162,3 +2162,101 @@ fn a_notice_is_drawn_in_the_tone_of_what_it_says() {
         NoticeTone::Information
     );
 }
+
+// --- Restart after an update (ticket 105) ---------------------------------
+
+#[test]
+fn a_restart_reopens_the_tabs_the_front_tab_and_its_selection() {
+    let (first, mut before) = fixture();
+    settle(&mut before);
+    before.open_tab(Location::local(first.home.clone()).unwrap(), false);
+    before.open_tab(Location::Trash(TrashLocation::Root), false);
+    before.select_by_name("notes.txt");
+    before.operations_open = true;
+    before.set_search_text("note");
+    let view = before.view();
+    assert_eq!(view.tabs.len(), 3);
+    assert_eq!(view.active, 0);
+    assert_eq!(view.selected, vec!["notes.txt".to_string()]);
+
+    // Through the hand-off's own encoding, as the next program reads it.
+    let carried: crate::restart::FilesView = serde_json::from_str(
+        &serde_json::to_string(&crate::restart::FilesView {
+            session: view.clone(),
+            path_draft: Some("/home/someone/Doc".into()),
+            scroll: 240.0,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    // The new program starts in the home folder, as a fresh window would.
+    let (_other, mut after) = fixture();
+    assert!(after.restore_view(&carried.session));
+    settle(&mut after);
+    let reopened = after.view();
+    assert_eq!(reopened.tabs, view.tabs);
+    assert_eq!(reopened.active, 0);
+    assert_eq!(reopened.selected, vec!["notes.txt".to_string()]);
+    assert_eq!(reopened.search, "note");
+    assert!(reopened.operations_open);
+    assert_eq!(carried.path_draft.as_deref(), Some("/home/someone/Doc"));
+}
+
+#[test]
+fn a_restart_brings_back_a_tab_that_was_not_the_first_in_front() {
+    let (first, mut before) = fixture();
+    settle(&mut before);
+    let home = before.open_tab(Location::local(first.home.clone()).unwrap(), true);
+    assert_eq!(before.active_tab(), home);
+    let view = before.view();
+    assert_eq!(view.active, 1);
+
+    let (_other, mut after) = fixture();
+    assert!(after.restore_view(&view));
+    assert_eq!(after.tabs().active_index(), 1);
+    assert_eq!(
+        after.location(),
+        &Location::local(first.home.clone()).unwrap()
+    );
+}
+
+#[test]
+fn a_location_that_cannot_be_reopened_is_left_out() {
+    let (_fixture, mut session) = fixture();
+    let started = session.location().clone();
+    let view = crate::restart::SessionView {
+        tabs: vec!["device://some-disk/x".into(), "bogus".into()],
+        ..Default::default()
+    };
+    assert!(!session.restore_view(&view), "nothing to reopen");
+    assert_eq!(session.location(), &started, "the start folder is kept");
+    assert_eq!(session.tabs().len(), 1);
+}
+
+#[test]
+fn an_operation_or_an_open_dialog_holds_the_restart() {
+    use better_ui::restart::Blocker;
+    let (_fixture, mut session) = fixture();
+    assert_eq!(session.restart_blocked(), None);
+    session.jobs = vec![snapshot(OperationKind::Copy, JobState::Running)];
+    assert_eq!(
+        session.restart_blocked(),
+        Some(Blocker::Task),
+        "a running copy"
+    );
+    session.jobs = vec![snapshot(OperationKind::Copy, JobState::Paused)];
+    assert_eq!(
+        session.restart_blocked(),
+        Some(Blocker::Task),
+        "a paused copy is not finished"
+    );
+    session.jobs = vec![snapshot(OperationKind::Copy, JobState::Completed)];
+    assert_eq!(session.restart_blocked(), None, "a finished one is history");
+    session.dialog = Some(PendingDialog::NewFolder);
+    assert_eq!(
+        session.restart_blocked(),
+        Some(Blocker::Dialog),
+        "a dialog with typed input"
+    );
+}

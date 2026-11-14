@@ -19,6 +19,8 @@ mod pages_flow;
 mod pages_main;
 mod pages_settings;
 mod render;
+mod restart;
+mod runner_end;
 mod search;
 mod settings_page;
 mod shell;
@@ -31,6 +33,9 @@ use gpui::*;
 use gpui_component::*;
 use gpui_component_assets::Assets;
 use layout::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
+
+/// The window's application id: the desktop entry's name without its suffix.
+pub(crate) const APP_ID: &str = "io.betteros.Manager";
 
 /// What this window does with the arguments it was started with.
 ///
@@ -115,11 +120,29 @@ fn main() {
         }
     };
 
+    // A restart after an update reopens the window as it was, and what the
+    // program was first started with no longer applies.
+    let handoff = better_ui::restart::take_handoff(APP_ID);
+    let requested = if handoff.is_some() { None } else { requested };
+
     // One window. Without a session bus there is no way to find another
-    // window, and this one opens on its own.
-    let bus_owner = match deep_link::bus::connect(None, deep_link::bus::FORWARD_TIMEOUT)
-        .and_then(deep_link::bus::claim)
-    {
+    // window, and this one opens on its own. Right after a restart the bus
+    // may not have noticed yet that the program this one replaced let its
+    // name go, so a restart asks again for a moment before treating the name
+    // as another window's.
+    let mut attempts = if handoff.is_some() { 30 } else { 1 };
+    let claimed = loop {
+        attempts -= 1;
+        let claimed = deep_link::bus::connect(None, deep_link::bus::FORWARD_TIMEOUT)
+            .and_then(deep_link::bus::claim);
+        match claimed {
+            Ok(deep_link::bus::Claim::Running(_)) if attempts > 0 => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            other => break other,
+        }
+    };
+    let bus_owner = match claimed {
         Ok(deep_link::bus::Claim::Owner(owner)) => Some(owner),
         Ok(deep_link::bus::Claim::Running(connection)) => {
             let request = requested.clone().unwrap_or(deep_link::Request::Raise);
@@ -147,15 +170,16 @@ fn main() {
         // suffix. The compositor matches a window to its entry by exactly that
         // string, so the two have to be changed together.
         let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1280.0), px(820.0)), cx)),
+            window_bounds: better_ui::restart::window_bounds(handoff.as_ref())
+                .or_else(|| Some(WindowBounds::centered(size(px(1280.0), px(820.0)), cx))),
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-            ..better_ui::window_chrome::window_options("io.betteros.Manager")
+            ..better_ui::window_chrome::window_options(APP_ID)
         };
 
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
                 let view = cx.new(|cx| {
-                    let mut app = ManagerApp::new(window, cx, bus_owner.take());
+                    let mut app = ManagerApp::new(window, cx, bus_owner.take(), handoff.as_ref());
                     if let Some(request) = requested {
                         app.show_request(request, cx);
                     }

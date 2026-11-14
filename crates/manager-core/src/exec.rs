@@ -750,6 +750,9 @@ pub(crate) fn evidence_for(error: &PlatformError) -> FailureEvidence {
         PlatformError::DaemonUnavailable(detail) => {
             FailureEvidence::with_detail("daemon.unavailable", detail.clone())
         }
+        PlatformError::DaemonInterrupted(detail) => {
+            FailureEvidence::with_detail("daemon.interrupted", detail.clone())
+        }
         PlatformError::PolkitDenied => FailureEvidence::new("daemon.polkit_denied"),
         PlatformError::PrivilegedExecutionNotApproved => {
             FailureEvidence::new("daemon.not_approved")
@@ -1236,6 +1239,10 @@ mod tests {
         assert_eq!(
             evidence_for(&PlatformError::DaemonUnavailable("no service".to_string())).key,
             "daemon.unavailable"
+        );
+        assert_eq!(
+            evidence_for(&PlatformError::DaemonInterrupted("no reply".to_string())).key,
+            "daemon.interrupted"
         );
     }
 

@@ -48,10 +48,20 @@ pub struct TouchpadApp {
     /// is previewed.
     pub(crate) export_path: Entity<InputState>,
     pub(crate) import_path: Entity<InputState>,
+    /// Watches for an update and restarts into it (ticket 105).
+    pub(crate) update_restart: better_ui::restart::UpdateRestart,
 }
 
+/// The window's application id, which the desktop entry is named after.
+pub const APP_ID: &str = "better-touchpad";
+
 impl TouchpadApp {
-    pub fn new(startup: Startup, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        startup: Startup,
+        handoff: Option<&better_ui::restart::Handoff>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let Startup {
             model,
             backend,
@@ -100,9 +110,35 @@ impl TouchpadApp {
             .join("gestures-export.json")
             .display()
             .to_string();
-        let export_path =
-            cx.new(|cx| InputState::new(window, cx).default_value(default_path.clone()));
-        let import_path = cx.new(|cx| InputState::new(window, cx).default_value(default_path));
+        // A restart after an update reopens the page and the paths it had.
+        let restored: Option<crate::restart::TouchpadView> = handoff.and_then(|h| h.state());
+        let mut gestures = gestures;
+        let page = match &restored {
+            Some(view) => {
+                gestures.select_device(view.gesture_device.clone());
+                view.page()
+            }
+            None => page,
+        };
+        let export_value = restored
+            .as_ref()
+            .and_then(|view| view.export_path.clone())
+            .unwrap_or_else(|| default_path.clone());
+        let import_value = restored
+            .as_ref()
+            .and_then(|view| view.import_path.clone())
+            .unwrap_or(default_path);
+        let export_path = cx.new(|cx| InputState::new(window, cx).default_value(export_value));
+        let import_path = cx.new(|cx| InputState::new(window, cx).default_value(import_value));
+        let update_restart = better_ui::restart::UpdateRestart::new(
+            APP_ID,
+            "Better Touchpad",
+            "better-touchpad",
+            env!("CARGO_PKG_VERSION"),
+            handoff,
+            window,
+            cx,
+        );
 
         Self {
             model,
@@ -117,6 +153,7 @@ impl TouchpadApp {
             gesture_store,
             export_path,
             import_path,
+            update_restart,
         }
     }
 
@@ -421,6 +458,35 @@ impl TouchpadApp {
             slider.update(cx, |state, cx| {
                 state.set_value(value, window, cx);
             });
+        }
+    }
+}
+
+impl better_ui::restart::Restartable for TouchpadApp {
+    type State = crate::restart::TouchpadView;
+
+    fn update_restart(&mut self) -> &mut better_ui::restart::UpdateRestart {
+        &mut self.update_restart
+    }
+
+    fn restart_blocked(&self, _cx: &gpui::App) -> Option<better_ui::restart::Blocker> {
+        crate::restart::InFlight {
+            applying: self.busy,
+            unapplied_settings: self.model.has_pending(),
+            preview: self.gestures.plan().is_some(),
+            import: self.gestures.import().is_some(),
+            editor: self.gestures.editor().is_some(),
+            live_test: self.gestures.live_testing(),
+        }
+        .blocker()
+    }
+
+    fn restart_state(&self, _window: &Window, cx: &gpui::App) -> crate::restart::TouchpadView {
+        crate::restart::TouchpadView {
+            page: self.page.key().to_string(),
+            gesture_device: self.gestures.active_device().map(str::to_string),
+            export_path: Some(self.export_path.read(cx).value().to_string()),
+            import_path: Some(self.import_path.read(cx).value().to_string()),
         }
     }
 }

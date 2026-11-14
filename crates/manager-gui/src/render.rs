@@ -577,5 +577,6 @@ impl Render for ManagerApp {
             )
             .child(title_bar)
             .child(div().flex_1().min_h_0().child(navigation))
+            .children(self.update_restart.toast_layer(self.locale.words(), cx))
     }
 }

@@ -269,6 +269,7 @@ strings! {
     cancel_network: "Stop talking to the remote", "停止和遠端的連線";
     ok: "OK", "確定";
     save: "Save", "儲存";
+    revert_settings: "Revert", "還原";
     create: "Create", "建立";
     trust_title: "Do you trust this repository?", "你信任這個儲存庫嗎？";
     trust_body: "A repository you trust can run any program its own settings or hooks name, with your permissions, when Better Git reads it, commits, or syncs. Open it only if you trust where it came from.", "信任的儲存庫，可以在 Better Git 讀取、提交或同步時，用你的權限執行它自己的設定或 hook 指定的任何程式。只有在信任來源時才開啟。";

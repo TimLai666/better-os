@@ -6,6 +6,7 @@ mod link;
 mod pages;
 mod popup;
 mod render;
+mod restart;
 mod shell;
 mod startup;
 mod stored;
@@ -92,15 +93,17 @@ fn main() {
         // the stored appearance (dark when there is none) once it exists.
         gpui_component::init(cx);
 
+        let handoff = better_ui::restart::take_handoff(app::APP_ID);
         let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1320.0), px(860.0)), cx)),
+            window_bounds: better_ui::restart::window_bounds(handoff.as_ref())
+                .or_else(|| Some(WindowBounds::centered(size(px(1320.0), px(860.0)), cx))),
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-            ..better_ui::window_chrome::window_options("io.betteros.Monitor")
+            ..better_ui::window_chrome::window_options(app::APP_ID)
         };
 
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
-                let view = cx.new(|cx| MonitorApp::new(window, cx));
+                let view = cx.new(|cx| MonitorApp::new(window, cx, handoff.as_ref()));
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("failed to open Better Monitor window");

@@ -8,7 +8,6 @@ use gpui::{AppContext as _, Context, Window};
 
 use crate::app::GitApp;
 use crate::live::{self, NotWatched};
-use crate::toast::now_ms;
 
 /// How often the window looks at what the watch saw.
 const TICK: Duration = Duration::from_millis(100);
@@ -112,4 +111,12 @@ impl GitApp {
         })
         .detach();
     }
+}
+
+/// Milliseconds since the window started, for the live view's clock.
+fn now_ms() -> u64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }

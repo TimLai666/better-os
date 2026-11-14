@@ -6,7 +6,7 @@
 
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use manager_ipc::{
     ExecutionStage, MAX_PLAN_BYTES, OutcomeStatus, PROTOCOL_VERSION, TransactionOutcome, WirePlan,
@@ -33,6 +33,59 @@ fn refuse(error: DaemonError) -> fdo::Error {
     }
 }
 
+/// The door every call comes through, so the daemon can leave without
+/// cutting one in half (ticket 105). Releasing the bus name is not that door:
+/// for a `Type=dbus` unit systemd treats losing the name as the service
+/// stopping and signals it at once. So the daemon first closes the gate —
+/// every new call is refused with `daemon.error.shutting_down`, which a client
+/// retries — waits until the calls already inside are done, and only then
+/// gives the name up and exits.
+#[derive(Debug, Default)]
+pub struct CallGate {
+    closing: AtomicBool,
+    inside: AtomicUsize,
+}
+
+/// One call inside the gate.
+pub struct CallGuard(Arc<CallGate>);
+
+impl Drop for CallGuard {
+    fn drop(&mut self) {
+        self.0.inside.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl CallGate {
+    /// Lets a call in, or refuses it once the gate is closing. The count goes
+    /// up before the flag is read, and `close` sets the flag before it reads
+    /// the count, so a call is either refused or waited for — never neither.
+    pub fn enter(self: &Arc<Self>) -> Result<CallGuard, DaemonError> {
+        self.inside.fetch_add(1, Ordering::SeqCst);
+        let guard = CallGuard(self.clone());
+        if self.closing.load(Ordering::SeqCst) {
+            return Err(DaemonError::ShuttingDown);
+        }
+        Ok(guard)
+    }
+
+    /// Refuses every call from now on and returns once none is inside.
+    pub async fn close(&self, poll: std::time::Duration) {
+        self.closing.store(true, Ordering::SeqCst);
+        while self.inside.load(Ordering::SeqCst) > 0 {
+            tokio::time::sleep(poll).await;
+        }
+    }
+
+    pub fn is_closing(&self) -> bool {
+        self.closing.load(Ordering::SeqCst)
+    }
+
+    /// How many calls are inside now.
+    pub fn inside(&self) -> usize {
+        self.inside.load(Ordering::SeqCst)
+    }
+}
+
 pub struct ManagerService<A: Authorizer + 'static> {
     authorizer: A,
     executor: Arc<Executor>,
@@ -42,6 +95,12 @@ pub struct ManagerService<A: Authorizer + 'static> {
     /// runs would fight over the dpkg lock and interleave in the journal, and a
     /// repair inside a transaction would change packages it is still checking.
     running: Arc<AtomicBool>,
+    /// Every call enters through this, so leaving never cuts one in half.
+    gate: Arc<CallGate>,
+    /// A file that exists exactly while a transaction or a repair runs
+    /// (ticket 105). The daemon package's postinst reads it to decide whether
+    /// a running daemon may be restarted; `None` in tests that do not ask.
+    busy_marker: Option<std::path::PathBuf>,
     /// The runtime this daemon owns, captured where it is unambiguous.
     ///
     /// zbus runs on its default async-io flavor across this workspace, for the
@@ -69,6 +128,8 @@ impl<A: Authorizer + 'static> ManagerService<A> {
             artifacts,
             journal,
             running: Arc::new(AtomicBool::new(false)),
+            gate: Arc::new(CallGate::default()),
+            busy_marker: None,
             runtime: tokio::runtime::Handle::current(),
         }
     }
@@ -82,10 +143,28 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         }
     }
 
+    /// Marks transactions and repairs with a file at `path` while they run.
+    /// A marker left by a daemon that died is removed here, at start.
+    pub fn with_busy_marker(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        let path = path.into();
+        let _ = std::fs::remove_file(&path);
+        self.busy_marker = Some(path);
+        self
+    }
+
     /// The flag that is set while a transaction or a repair runs, for the
     /// idle timer in `main.rs` to read.
     pub fn activity(&self) -> Arc<AtomicBool> {
         self.running.clone()
+    }
+
+    /// The gate `main.rs` closes before the daemon leaves.
+    pub fn gate(&self) -> Arc<CallGate> {
+        self.gate.clone()
+    }
+
+    fn enter(&self) -> Result<CallGuard, fdo::Error> {
+        self.gate.enter().map_err(refuse)
     }
 
     /// Claims the one running slot, or refuses as busy. The slot is released
@@ -94,20 +173,116 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         self.running
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| refuse(DaemonError::Busy))?;
-        Ok(RunningGuard(self.running.clone()))
+        if let Some(marker) = &self.busy_marker {
+            if let Some(parent) = marker.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(marker, format!("{}\n", std::process::id()));
+        }
+        Ok(RunningGuard {
+            running: self.running.clone(),
+            marker: self.busy_marker.clone(),
+        })
+    }
+
+    /// A transaction after authorization. As with a repair, the running slot
+    /// and the call's place inside the gate go with the work on the blocking
+    /// thread, so a client that disconnects mid-way never lets the daemon
+    /// think it is idle while dpkg still runs.
+    async fn run_transaction(
+        &self,
+        plan_json: &str,
+        call: Option<CallGuard>,
+        emitter: Option<SignalEmitter<'static>>,
+    ) -> Result<(String, bool), fdo::Error> {
+        if plan_json.len() > MAX_PLAN_BYTES {
+            return Err(refuse(DaemonError::Protocol("plan too large".to_string())));
+        }
+        let plan = WirePlan::from_json(plan_json).map_err(|error| refuse(error.into()))?;
+
+        // Already done? Say what happened instead of doing it twice.
+        if let Some(entry) = self.journal.read(&plan.transaction_id).map_err(refuse)?
+            && let Some(outcome) = entry.outcome
+        {
+            return outcome
+                .to_json()
+                .map(|document| (document, false))
+                .map_err(|error| refuse(error.into()));
+        }
+
+        let guard = self.begin_exclusive()?;
+
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let transaction_id = plan.transaction_id.clone();
+        let forwarding = self.runtime.spawn(async move {
+            while let Some((step_index, stage)) = progress_rx.recv().await {
+                if let Some(emitter) = &emitter {
+                    let _ = ManagerService::<A>::step_progress(
+                        emitter,
+                        &transaction_id,
+                        step_index,
+                        stage_name(stage),
+                    )
+                    .await;
+                }
+            }
+        });
+
+        let executor = self.executor.clone();
+        let outcome = self
+            .runtime
+            .spawn_blocking(move || {
+                let outcome = executor.execute(&plan, &mut |step_index, stage| {
+                    let _ = progress_tx.send((step_index, stage));
+                });
+                drop(guard);
+                drop(call);
+                outcome
+            })
+            .await
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        let _ = forwarding.await;
+
+        // A rejection before anything ran is still a result the client needs,
+        // so it is reported as a failed outcome rather than only as an error.
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => TransactionOutcome {
+                protocol_version: PROTOCOL_VERSION,
+                transaction_id: plan_transaction_id(plan_json),
+                status: OutcomeStatus::Failed {
+                    step_index: None,
+                    error_key: error.to_string(),
+                    recovery: None,
+                },
+                reports: Vec::new(),
+                rollback_records: Vec::new(),
+            },
+        };
+        outcome
+            .to_json()
+            .map(|document| (document, true))
+            .map_err(|error| refuse(error.into()))
     }
 
     /// The repair after authorization: wait for nothing, take the slot or
-    /// refuse, and run `dpkg --configure -a` off zbus's executor.
-    async fn run_repair(&self) -> Result<String, fdo::Error> {
+    /// refuse, and run `dpkg --configure -a` off zbus's executor. The slot,
+    /// and the call's place inside the gate, go with the dpkg run rather than
+    /// with this future: a client that disconnects drops the future, never
+    /// the run, and the daemon keeps counting it as running until dpkg ends.
+    async fn run_repair(&self, call: Option<CallGuard>) -> Result<String, fdo::Error> {
         let guard = self.begin_exclusive()?;
         let executor = self.executor.clone();
         let outcome = self
             .runtime
-            .spawn_blocking(move || executor.repair())
+            .spawn_blocking(move || {
+                let outcome = executor.repair();
+                drop(guard);
+                drop(call);
+                outcome
+            })
             .await
             .map_err(|error| fdo::Error::Failed(error.to_string()))?;
-        drop(guard);
         outcome
             .map_err(refuse)?
             .to_json()
@@ -129,6 +304,7 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         expected_sha256: &str,
         artifact: OwnedFd,
     ) -> Result<String, fdo::Error> {
+        let _call = self.enter()?;
         self.authorize(&header, APPLY_ACTION).await?;
         let _ = transaction_id;
 
@@ -162,75 +338,21 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         plan_json: &str,
     ) -> Result<String, fdo::Error> {
+        let call = self.enter()?;
         self.authorize(&header, APPLY_ACTION).await?;
-
-        if plan_json.len() > MAX_PLAN_BYTES {
-            return Err(refuse(DaemonError::Protocol("plan too large".to_string())));
+        let (document, ran) = self
+            .run_transaction(plan_json, Some(call), Some(emitter.to_owned()))
+            .await?;
+        if ran && let Ok(outcome) = TransactionOutcome::from_json(&document) {
+            let _ = Self::transaction_completed(&emitter, &outcome.transaction_id, &document).await;
         }
-        let plan = WirePlan::from_json(plan_json).map_err(|error| refuse(error.into()))?;
-
-        // Already done? Say what happened instead of doing it twice.
-        if let Some(entry) = self.journal.read(&plan.transaction_id).map_err(refuse)?
-            && let Some(outcome) = entry.outcome
-        {
-            return outcome.to_json().map_err(|error| refuse(error.into()));
-        }
-
-        let guard = self.begin_exclusive()?;
-
-        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let transaction_id = plan.transaction_id.clone();
-        let signal_emitter = emitter.to_owned();
-        let forwarding = self.runtime.spawn(async move {
-            while let Some((step_index, stage)) = progress_rx.recv().await {
-                let _ = ManagerService::<A>::step_progress(
-                    &signal_emitter,
-                    &transaction_id,
-                    step_index,
-                    stage_name(stage),
-                )
-                .await;
-            }
-        });
-
-        let executor = self.executor.clone();
-        let outcome = self
-            .runtime
-            .spawn_blocking(move || {
-                executor.execute(&plan, &mut |step_index, stage| {
-                    let _ = progress_tx.send((step_index, stage));
-                })
-            })
-            .await
-            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
-        let _ = forwarding.await;
-        drop(guard);
-
-        // A rejection before anything ran is still a result the client needs,
-        // so it is reported as a failed outcome rather than only as an error.
-        let outcome = match outcome {
-            Ok(outcome) => outcome,
-            Err(error) => TransactionOutcome {
-                protocol_version: PROTOCOL_VERSION,
-                transaction_id: plan_transaction_id(plan_json),
-                status: OutcomeStatus::Failed {
-                    step_index: None,
-                    error_key: error.to_string(),
-                    recovery: None,
-                },
-                reports: Vec::new(),
-                rollback_records: Vec::new(),
-            },
-        };
-
-        let document = outcome.to_json().map_err(|error| refuse(error.into()))?;
-        let _ = Self::transaction_completed(&emitter, &outcome.transaction_id, &document).await;
         Ok(document)
     }
 
     /// What the daemon remembers about a transaction. Ungated: it reports
     /// progress, not secrets, and a client needs it after a restart.
     async fn get_status(&self, transaction_id: &str) -> Result<String, fdo::Error> {
+        let _call = self.enter()?;
         let entry = self
             .journal
             .read(transaction_id)
@@ -247,6 +369,7 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         #[zbus(header)] header: Header<'_>,
         transaction_id: &str,
     ) -> Result<bool, fdo::Error> {
+        let _call = self.enter()?;
         self.authorize(&header, APPLY_ACTION).await?;
         match self.journal.read(transaction_id).map_err(refuse)? {
             None => Ok(true),
@@ -262,6 +385,7 @@ impl<A: Authorizer + 'static> ManagerService<A> {
     /// Ungated, like `GetStatus`: it reads a world-readable record and changes
     /// nothing. ADR 0014.
     async fn get_package_system_state(&self) -> Result<String, fdo::Error> {
+        let _call = self.enter()?;
         let executor = self.executor.clone();
         self.runtime
             .spawn_blocking(move || executor.apt.package_system_state())
@@ -280,8 +404,9 @@ impl<A: Authorizer + 'static> ManagerService<A> {
         &self,
         #[zbus(header)] header: Header<'_>,
     ) -> Result<String, fdo::Error> {
+        let call = self.enter()?;
         self.authorize(&header, REPAIR_ACTION).await?;
-        self.run_repair().await
+        self.run_repair(Some(call)).await
     }
 
     #[zbus(signal)]
@@ -314,24 +439,51 @@ impl<A: Authorizer + 'static> ManagerService<A> {
 /// something runs the timer waits, and once it finishes the idle period starts
 /// again, so the caller has time to ask what happened.
 pub async fn wait_until_idle(running: Arc<AtomicBool>, idle: std::time::Duration) {
-    let poll = idle.min(std::time::Duration::from_secs(1));
+    wait_until_idle_or_replaced(running, idle, idle, || false).await;
+}
+
+/// [`wait_until_idle`], and sooner once an update has replaced the daemon's
+/// own program (ticket 105): `grace` after the last transaction, which is long
+/// enough for its caller to ask how it ended, rather than the whole idle
+/// period. The next request then starts the new program by D-Bus activation.
+///
+/// This is how the daemon takes part in its own update. The package's
+/// maintainer scripts leave the unit alone when they run inside it — stopping
+/// it there would kill the `dpkg` run that is installing the package — so the
+/// running daemon finishes the transaction, records it, and leaves.
+pub async fn wait_until_idle_or_replaced(
+    running: Arc<AtomicBool>,
+    idle: std::time::Duration,
+    grace: std::time::Duration,
+    replaced: impl Fn() -> bool,
+) {
+    let poll = idle.min(grace).min(std::time::Duration::from_secs(1));
+    let mut quiet_since = tokio::time::Instant::now();
     loop {
-        tokio::time::sleep(idle).await;
-        if !running.load(Ordering::SeqCst) {
-            return;
+        tokio::time::sleep(poll).await;
+        if running.load(Ordering::SeqCst) {
+            quiet_since = tokio::time::Instant::now();
+            continue;
         }
-        while running.load(Ordering::SeqCst) {
-            tokio::time::sleep(poll).await;
+        let quiet = quiet_since.elapsed();
+        if quiet >= idle || (quiet >= grace && replaced()) {
+            return;
         }
     }
 }
 
 /// Releases the single-transaction flag even if the work panicked.
-struct RunningGuard(Arc<AtomicBool>);
+struct RunningGuard {
+    running: Arc<AtomicBool>,
+    marker: Option<std::path::PathBuf>,
+}
 
 impl Drop for RunningGuard {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        if let Some(marker) = &self.marker {
+            let _ = std::fs::remove_file(marker);
+        }
+        self.running.store(false, Ordering::SeqCst);
     }
 }
 
@@ -420,7 +572,7 @@ mod tests {
 
         // What `ApplyTransaction` holds while a transaction runs.
         let transaction = service.begin_exclusive().unwrap();
-        let refused = service.run_repair().await.unwrap_err();
+        let refused = service.run_repair(None).await.unwrap_err();
         assert!(
             matches!(&refused, fdo::Error::LimitsExceeded(message) if message == "daemon.error.busy"),
             "{refused:?}"
@@ -429,7 +581,8 @@ mod tests {
 
         drop(transaction);
         let outcome =
-            manager_ipc::RepairOutcome::from_json(&service.run_repair().await.unwrap()).unwrap();
+            manager_ipc::RepairOutcome::from_json(&service.run_repair(None).await.unwrap())
+                .unwrap();
         assert_eq!(outcome.status, manager_ipc::RepairStatus::Repaired);
 
         // The repair gave the flag back when it finished.
@@ -483,7 +636,7 @@ mod tests {
 
         let repairing = {
             let service = service.clone();
-            tokio::spawn(async move { service.run_repair().await })
+            tokio::spawn(async move { service.run_repair(None).await })
         };
         // Let the repair claim the running slot before the timer starts.
         while !service.activity().load(Ordering::SeqCst) {
@@ -519,6 +672,81 @@ mod tests {
         )
         .await
         .expect("an idle daemon exits");
+    }
+
+    #[tokio::test]
+    async fn a_replaced_daemon_leaves_after_the_grace_period_rather_than_the_idle_one() {
+        use std::time::Duration;
+        let running = Arc::new(AtomicBool::new(false));
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_until_idle_or_replaced(
+                running.clone(),
+                Duration::from_secs(3600),
+                Duration::from_millis(50),
+                || true,
+            ),
+        )
+        .await
+        .expect("a replaced daemon exits once its caller has had time");
+
+        let still = tokio::time::timeout(
+            Duration::from_millis(300),
+            wait_until_idle_or_replaced(
+                running,
+                Duration::from_secs(3600),
+                Duration::from_millis(50),
+                || false,
+            ),
+        )
+        .await;
+        assert!(still.is_err(), "a daemon that was not replaced waits");
+    }
+
+    #[tokio::test]
+    async fn a_replaced_daemon_still_finishes_its_transaction() {
+        use std::time::Duration;
+        let running = Arc::new(AtomicBool::new(true));
+        let waiting = tokio::spawn(wait_until_idle_or_replaced(
+            running.clone(),
+            Duration::from_secs(3600),
+            Duration::from_millis(50),
+            || true,
+        ));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!waiting.is_finished(), "it never leaves mid-transaction");
+        running.store(false, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("it leaves once the transaction is over")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_closing_gate_refuses_new_calls_and_waits_for_the_ones_inside() {
+        use std::time::Duration;
+        let gate = Arc::new(CallGate::default());
+        let inside = gate.enter().expect("open gate lets a call in");
+        let closing = {
+            let gate = gate.clone();
+            tokio::spawn(async move { gate.close(Duration::from_millis(10)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(gate.is_closing());
+        assert!(
+            matches!(gate.enter(), Err(DaemonError::ShuttingDown)),
+            "a call after the gate closes is refused, retryably"
+        );
+        assert!(!closing.is_finished(), "the call inside is waited for");
+        drop(inside);
+        tokio::time::timeout(Duration::from_secs(5), closing)
+            .await
+            .expect("closes once the call inside is done")
+            .unwrap();
+        assert_eq!(
+            refuse(DaemonError::ShuttingDown).to_string(),
+            "org.freedesktop.DBus.Error.Failed: daemon.error.shutting_down"
+        );
     }
 
     #[test]

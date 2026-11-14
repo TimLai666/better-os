@@ -965,5 +965,14 @@ impl Render for TouchpadApp {
                         ),
                 ),
             )
+            .children(self.update_restart.toast_layer(
+                match self.model.locale().resolved() {
+                    crate::i18n::Locale::ZhTw => {
+                        better_ui::fluent::words::Locale::TraditionalChinese
+                    }
+                    _ => better_ui::fluent::words::Locale::English,
+                },
+                cx,
+            ))
     }
 }

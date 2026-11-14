@@ -215,9 +215,7 @@ impl Render for GitApp {
         };
         let dialog = self.dialog(p, c, window, cx);
         let context = self.context_menu(c, cx);
-        self.toast
-            .observe(self.session.notice.as_ref(), crate::toast::now_ms());
-        let toast = self.toast(p, cx);
+        self.sync_notice_toast(cx);
         div()
             .id("better-git")
             .relative()
@@ -238,9 +236,9 @@ impl Render for GitApp {
                     .middle(self.menu_bar(c, cx)),
             )
             .child(content)
-            .children(toast)
             .children(dialog)
             .children(context)
+            .children(self.update_restart.toast_layer(self.words(), cx))
     }
 }
 
@@ -3732,28 +3730,41 @@ impl GitApp {
                                 .child(TextBox::new("git-branch-field", &self.inputs.git_branch)),
                         ),
                     )
-                    .child(div().pt(spacing::MD).child(
-                        Button::accent("git-save", c.save).on_click(Self::act(
-                            cx,
-                            |this, _, cx| {
-                                let values = vec![
-                                    (
-                                        "user.name".to_string(),
-                                        this.inputs.git_name.read(cx).value().to_string(),
-                                    ),
-                                    (
-                                        "user.email".to_string(),
-                                        this.inputs.git_email.read(cx).value().to_string(),
-                                    ),
-                                    (
-                                        "init.defaultBranch".to_string(),
-                                        this.inputs.git_branch.read(cx).value().to_string(),
-                                    ),
-                                ];
-                                this.session.set_git_config(values);
-                            },
-                        )),
-                    ));
+                    .child(
+                        div()
+                            .pt(spacing::MD)
+                            .flex()
+                            .gap(spacing::SM)
+                            .child(Button::accent("git-save", c.save).on_click(Self::act(
+                                cx,
+                                |this, _, cx| {
+                                    let values = vec![
+                                        (
+                                            "user.name".to_string(),
+                                            this.inputs.git_name.read(cx).value().to_string(),
+                                        ),
+                                        (
+                                            "user.email".to_string(),
+                                            this.inputs.git_email.read(cx).value().to_string(),
+                                        ),
+                                        (
+                                            "init.defaultBranch".to_string(),
+                                            this.inputs.git_branch.read(cx).value().to_string(),
+                                        ),
+                                    ];
+                                    this.session.set_git_config(values);
+                                },
+                            )))
+                            .child(
+                                // Puts back what git's configuration says, so typed
+                                // text has a way out other than saving it.
+                                Button::standard("git-revert", c.revert_settings).on_click(
+                                    Self::act(cx, |this, window, cx| {
+                                        this.revert_git_identity(window, cx)
+                                    }),
+                                ),
+                            ),
+                    );
             }
             3 => {
                 let theme = match Appearance::from_argument(&s.appearance).unwrap_or_default() {

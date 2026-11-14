@@ -108,8 +108,8 @@ pub struct GitApp {
     pub(crate) show_commit_options: bool,
     /// The settings page's section.
     pub(crate) settings_page: usize,
-    /// When the toast on screen appeared, and whether the pointer is on it.
-    pub(crate) toast: crate::toast::ToastClock,
+    /// The session notice shown as a toast, and that toast.
+    pub(crate) notice_toast: Option<(crate::session::Notice, better_ui::fluent::toast::ToastId)>,
     /// Which dialog fields the person has typed in since the dialog opened.
     pub(crate) dialog_touched: [bool; 3],
     /// The last dialog check, so the disk is looked at when the dialog or
@@ -125,8 +125,16 @@ pub struct GitApp {
     form_generation: u64,
     config_loaded: bool,
     last_poll: i64,
+    /// Watches for an update and restarts into it (ticket 105).
+    pub(crate) update_restart: better_ui::restart::UpdateRestart,
+    /// The diff's scroll position a restart handed over, until a diff is
+    /// on screen to scroll.
+    restored_diff_scroll: Option<f32>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// The window's application id, which the desktop entry is named after.
+pub(crate) const APP_ID: &str = "io.betteros.Git";
 
 fn field(window: &mut Window, cx: &mut Context<GitApp>, placeholder: &str) -> Entity<InputState> {
     let placeholder = placeholder.to_string();
@@ -149,7 +157,12 @@ fn multi(
 }
 
 impl GitApp {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>, options: StartOptions) -> Self {
+    pub(crate) fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        options: StartOptions,
+        handoff: Option<better_ui::restart::Handoff>,
+    ) -> Self {
         let git: Arc<dyn git_platform::Git> = Arc::new(git_platform::SystemGit);
         let mut session = GitSession::new(git, Files::defaults());
 
@@ -316,9 +329,35 @@ impl GitApp {
             crate::graph_pane::GraphUi::new(window, cx, crate::graph::graph_copy(locale));
         subscriptions.push(graph_subscription);
 
-        if let Some(path) = options.path {
-            session.open(absolute(path));
+        // A restart after an update puts the view back; it wins over the
+        // path the program was first started with, which is the same one or
+        // one the person has since moved away from.
+        let restored: Option<crate::restart::GitView> = handoff.as_ref().and_then(|h| h.state());
+        match &restored {
+            Some(view) if view.session.repository.is_some() || view.session.settings_page => {
+                session.restore_view(view.session.clone());
+            }
+            _ => {
+                if let Some(path) = options.path {
+                    session.open(absolute(path));
+                }
+            }
         }
+        if let Some(view) = &restored {
+            let filter = view.session.filter.clone();
+            inputs
+                .filter
+                .update(cx, |s, cx| s.set_value(filter, window, cx));
+        }
+        let update_restart = better_ui::restart::UpdateRestart::new(
+            APP_ID,
+            "Better Git",
+            "better-git",
+            env!("CARGO_PKG_VERSION"),
+            handoff.as_ref(),
+            window,
+            cx,
+        );
 
         let mut app = Self {
             session,
@@ -335,7 +374,7 @@ impl GitApp {
             show_filter: false,
             show_commit_options: false,
             settings_page: 0,
-            toast: crate::toast::ToastClock::default(),
+            notice_toast: None,
             dialog_touched: [false; 3],
             dialog_check: std::cell::RefCell::new(None),
             editor_name: std::cell::RefCell::new(None),
@@ -344,8 +383,16 @@ impl GitApp {
             form_generation: 0,
             config_loaded: false,
             last_poll: 0,
+            update_restart,
+            restored_diff_scroll: restored.as_ref().map(|view| view.diff_scroll),
             _subscriptions: subscriptions,
         };
+        if let Some(view) = restored {
+            app.show_filter = view.show_filter;
+            app.show_commit_options = view.show_commit_options;
+            app.settings_page = view.settings_section;
+            app.branch_tab = view.branch_tab;
+        }
         app.restore_account(window, cx);
         app.start_timer(window, cx);
         app
@@ -469,6 +516,17 @@ impl GitApp {
             crate::notifications::send_desktop(&summary, &body);
         }
         self.sync_form(window, cx);
+        if let Some(offset) = self.restored_diff_scroll
+            && self
+                .session
+                .repo
+                .as_ref()
+                .is_some_and(|repo| repo.diff.is_some())
+        {
+            self.restored_diff_scroll = None;
+            let handle = self.diff_scroll.0.borrow().base_handle.clone();
+            handle.set_offset(point(px(0.0), px(-offset.max(0.0))));
+        }
         if self.session.git_config.loaded && !self.config_loaded {
             self.config_loaded = true;
             let config = self.session.git_config.clone();
@@ -479,6 +537,18 @@ impl GitApp {
             ] {
                 Self::set_input(&input, config.get(key), window, cx);
             }
+        }
+    }
+
+    /// Puts the identity fields back to what git's configuration says.
+    pub(crate) fn revert_git_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let config = self.session.git_config.clone();
+        for (input, key) in [
+            (self.inputs.git_name.clone(), "user.name"),
+            (self.inputs.git_email.clone(), "user.email"),
+            (self.inputs.git_branch.clone(), "init.defaultBranch"),
+        ] {
+            Self::set_input(&input, config.get(key), window, cx);
         }
     }
 
@@ -648,10 +718,6 @@ impl GitApp {
         }
         if self.session.fetch_due(now) {
             self.session.fetch(true, now);
-            changed = true;
-        }
-        if self.toast.expired(crate::toast::now_ms()) {
-            self.session.dismiss_notice();
             changed = true;
         }
         if changed {
@@ -1092,15 +1158,17 @@ pub fn run(options: StartOptions) {
     app.run(move |cx| {
         gpui_component::init(cx);
 
+        let handoff = better_ui::restart::take_handoff(APP_ID);
         let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1_280.0), px(800.0)), cx)),
+            window_bounds: better_ui::restart::window_bounds(handoff.as_ref())
+                .or_else(|| Some(WindowBounds::centered(size(px(1_280.0), px(800.0)), cx))),
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-            ..better_ui::window_chrome::window_options("io.betteros.Git")
+            ..better_ui::window_chrome::window_options(APP_ID)
         };
 
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
-                let view = cx.new(|cx| GitApp::new(window, cx, options));
+                let view = cx.new(|cx| GitApp::new(window, cx, options, handoff));
                 view.update(cx, |app, cx| app.drive(window, cx));
                 cx.new(|cx| gpui_component::Root::new(view, window, cx))
             })
@@ -1108,4 +1176,46 @@ pub fn run(options: StartOptions) {
         })
         .detach();
     });
+}
+
+impl better_ui::restart::Restartable for GitApp {
+    type State = crate::restart::GitView;
+
+    fn update_restart(&mut self) -> &mut better_ui::restart::UpdateRestart {
+        &mut self.update_restart
+    }
+
+    fn restart_blocked(&self, cx: &App) -> Option<better_ui::restart::Blocker> {
+        if let Some(blocker) = self.session.restart_blocked() {
+            return Some(blocker);
+        }
+        let config = &self.session.git_config;
+        let typed = [
+            self.inputs.git_name.read(cx).value().to_string(),
+            self.inputs.git_email.read(cx).value().to_string(),
+            self.inputs.git_branch.read(cx).value().to_string(),
+        ];
+        crate::restart::settings_unsaved(
+            self.config_loaded,
+            [&typed[0], &typed[1], &typed[2]],
+            [
+                config.get("user.name"),
+                config.get("user.email"),
+                config.get("init.defaultBranch"),
+            ],
+        )
+        .then_some(better_ui::restart::Blocker::UnsavedChanges)
+    }
+
+    fn restart_state(&self, _window: &Window, _cx: &App) -> crate::restart::GitView {
+        let offset = self.diff_scroll.0.borrow().base_handle.offset();
+        crate::restart::GitView {
+            session: self.session.view(),
+            show_filter: self.show_filter,
+            show_commit_options: self.show_commit_options,
+            settings_section: self.settings_page,
+            branch_tab: self.branch_tab,
+            diff_scroll: -f32::from(offset.y),
+        }
+    }
 }

@@ -31,10 +31,10 @@ pub mod publish;
 pub mod recent;
 pub mod remote;
 pub mod repositories;
+pub mod restart;
 pub mod session;
 pub mod settings;
 pub mod shortcuts;
-pub mod toast;
 pub mod trust;
 pub mod worktree_links;
 

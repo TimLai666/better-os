@@ -4,6 +4,7 @@
 
 pub mod command_line;
 pub mod fluent;
+pub mod restart;
 
 use better_core::ComponentManifest;
 use gpui::{
