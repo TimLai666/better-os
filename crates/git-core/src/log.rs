@@ -85,43 +85,56 @@ pub fn parse_co_author(line: &str) -> Option<(String, String)> {
 ///   and keeps any 0x1f it contains. Its trailing newline is trimmed.
 /// - Parents and decorations may be empty. A root commit has no parents.
 /// - A record with fewer fields, or a time that is not a number, fails with
-///   `Malformed`.
+///   `Malformed`. An empty time is what git prints for a commit whose date
+///   it cannot read (a broken or hand-made object); it reads as 0, so one
+///   such commit does not hide the rest of the history.
 pub fn parse_log(output: &[u8]) -> Result<Vec<Commit>, ParseError> {
     let mut commits = Vec::new();
     for record in output.split(|&byte| byte == 0) {
-        // `git log -z` separates commits with NUL; the format itself ends
-        // with a newline after the body that belongs to no field.
-        let record = record.strip_prefix(b"\n").unwrap_or(record);
-        if record.is_empty() {
-            continue;
+        if let Some(commit) = parse_log_record(record)? {
+            commits.push(commit);
         }
-        let text = String::from_utf8_lossy(record);
-        let fields: Vec<&str> = text.splitn(8, '\u{1f}').collect();
-        let [sha, parents, name, email, time, refs, summary, body] = fields[..] else {
-            return Err(ParseError::Malformed(
-                "log record has too few fields".to_string(),
-            ));
-        };
-        let author_time = time
-            .parse()
-            .map_err(|_| ParseError::Malformed("log record time is not a number".to_string()))?;
-        commits.push(Commit {
-            sha: sha.to_string(),
-            parents: parents.split_whitespace().map(str::to_string).collect(),
-            author_name: name.to_string(),
-            author_email: email.to_string(),
-            author_time,
-            refs: refs
-                .split(", ")
-                .map(str::trim)
-                .filter(|decoration| !decoration.is_empty())
-                .map(str::to_string)
-                .collect(),
-            summary: summary.to_string(),
-            body: body.trim_end().to_string(),
-        });
     }
     Ok(commits)
+}
+
+/// Reads one record of `git log -z` printed with [`LOG_FORMAT`], without
+/// its NUL: `None` for an empty record, otherwise as [`parse_log`] does.
+pub fn parse_log_record(record: &[u8]) -> Result<Option<Commit>, ParseError> {
+    // `git log -z` separates commits with NUL; the format itself ends
+    // with a newline after the body that belongs to no field.
+    let record = record.strip_prefix(b"\n").unwrap_or(record);
+    if record.is_empty() {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(record);
+    let fields: Vec<&str> = text.splitn(8, '\u{1f}').collect();
+    let [sha, parents, name, email, time, refs, summary, body] = fields[..] else {
+        return Err(ParseError::Malformed(
+            "log record has too few fields".to_string(),
+        ));
+    };
+    let author_time = if time.is_empty() {
+        0
+    } else {
+        time.parse()
+            .map_err(|_| ParseError::Malformed("log record time is not a number".to_string()))?
+    };
+    Ok(Some(Commit {
+        sha: sha.to_string(),
+        parents: parents.split_whitespace().map(str::to_string).collect(),
+        author_name: name.to_string(),
+        author_email: email.to_string(),
+        author_time,
+        refs: refs
+            .split(", ")
+            .map(str::trim)
+            .filter(|decoration| !decoration.is_empty())
+            .map(str::to_string)
+            .collect(),
+        summary: summary.to_string(),
+        body: body.trim_end().to_string(),
+    }))
 }
 
 /// One file a commit changed.

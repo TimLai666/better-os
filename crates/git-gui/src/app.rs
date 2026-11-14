@@ -43,6 +43,9 @@ impl AssetSource for GitAssets {
         if path == BRANCH_ICON {
             return Ok(Some(Cow::Borrowed(BRANCH_SVG.as_bytes())));
         }
+        if path == crate::graph_pane::TAG_ICON {
+            return Ok(Some(Cow::Borrowed(crate::graph_pane::TAG_SVG.as_bytes())));
+        }
         gpui_component_assets::Assets.load(path)
     }
 
@@ -63,6 +66,10 @@ pub(crate) enum Flyout {
 pub(crate) enum ContextTarget {
     Change(PathBuf),
     Commit(usize),
+    /// A row of the Graph tab.
+    GraphCommit(usize),
+    /// The graph labels a row had no room for ("+N").
+    GraphLabels(Vec<git_core::RefLabel>),
     Branch(String),
     Repository(PathBuf),
 }
@@ -88,6 +95,7 @@ pub struct GitApp {
     pub(crate) locale: Locale,
     pub(crate) inputs: Inputs,
     pub(crate) diff_scroll: UniformListScrollHandle,
+    pub(crate) graph: crate::graph_pane::GraphUi,
     pub(crate) focus_handle: FocusHandle,
     pub(crate) flyout: Option<Flyout>,
     /// 0 branches, 1 pull requests.
@@ -304,6 +312,10 @@ impl GitApp {
             }
         }));
 
+        let (graph, graph_subscription) =
+            crate::graph_pane::GraphUi::new(window, cx, crate::graph::graph_copy(locale));
+        subscriptions.push(graph_subscription);
+
         if let Some(path) = options.path {
             session.open(absolute(path));
         }
@@ -313,6 +325,7 @@ impl GitApp {
             locale,
             inputs,
             diff_scroll: UniformListScrollHandle::new(),
+            graph,
             focus_handle: cx.focus_handle(),
             flyout: None,
             branch_tab: 0,
@@ -404,6 +417,19 @@ impl GitApp {
                 let outcome = work.await;
                 this.update_in(cx, |app, window, cx| {
                     app.session.apply_background(outcome);
+                    app.drive(window, cx);
+                })
+                .ok();
+            })
+            .detach();
+        }
+        if let Some(job) = self.session.next_graph() {
+            let git = self.session.git();
+            let work = cx.background_spawn(async move { job.run(git.as_ref()) });
+            cx.spawn_in(window, async move |this, cx| {
+                let outcome = work.await;
+                this.update_in(cx, |app, window, cx| {
+                    app.session.apply_graph(outcome);
                     app.drive(window, cx);
                 })
                 .ok();
@@ -848,6 +874,10 @@ impl GitApp {
             Action::CloneRepository => self.session.open_clone_dialog(),
             Action::ShowChanges => self.session.set_tab(Tab::Changes),
             Action::ShowHistory => self.session.set_tab(Tab::History),
+            Action::ShowGraph => self.session.set_tab(Tab::Graph),
+            Action::FindInGraph if self.graph_find_allowed(window, cx) => {
+                self.open_graph_find(window, cx);
+            }
             Action::RepositoryList => self.flyout = Some(Flyout::Repositories),
             Action::BranchList if has_repo => {
                 self.flyout = Some(Flyout::Branches);
@@ -1006,6 +1036,11 @@ impl GitApp {
         ) else {
             return;
         };
+        // Ctrl+F belongs to the Graph tab's find, and only while the tab is
+        // shown and no other text field has the keyboard.
+        if action == Action::FindInGraph && !self.graph_find_allowed(window, cx) {
+            return;
+        }
         cx.stop_propagation();
         self.run_action(action, window, cx);
     }

@@ -1,6 +1,9 @@
 //! GitHub Desktop's keyboard shortcuts, with Ctrl where macOS has Cmd
 //! (desktop/desktop `app/src/main-process/menu/build-default-menu.ts`, read
-//! 2026-11-12). The window looks every key press up here.
+//! 2026-11-12), and two of Better Git's own for the Graph tab, which GitHub
+//! Desktop does not have: Ctrl+3 beside Ctrl+1 and Ctrl+2, and Ctrl+F, the
+//! find key in VS Code's Git Graph and in Fork. The window looks every key
+//! press up here.
 
 /// Something a shortcut does.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -11,6 +14,8 @@ pub enum Action {
     CloneRepository,
     ShowChanges,
     ShowHistory,
+    ShowGraph,
+    FindInGraph,
     RepositoryList,
     BranchList,
     WorktreeList,
@@ -53,6 +58,8 @@ pub const SHORTCUTS: &[(Action, &str, &str)] = &[
     (Action::CloneRepository, "ctrl-shift-o", "Ctrl+Shift+O"),
     (Action::ShowChanges, "ctrl-1", "Ctrl+1"),
     (Action::ShowHistory, "ctrl-2", "Ctrl+2"),
+    (Action::ShowGraph, "ctrl-3", "Ctrl+3"),
+    (Action::FindInGraph, "ctrl-f", "Ctrl+F"),
     (Action::RepositoryList, "ctrl-t", "Ctrl+T"),
     (Action::BranchList, "ctrl-b", "Ctrl+B"),
     (Action::WorktreeList, "ctrl-alt-w", "Ctrl+Alt+W"),

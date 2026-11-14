@@ -254,10 +254,12 @@ fn no_control_draws_text_outside_the_ramp() {
         include_str!("hyperlink.rs"),
         include_str!("breadcrumb.rs"),
         include_str!("button.rs"),
+        include_str!("chip.rs"),
         include_str!("chrome.rs"),
         include_str!("command_bar.rs"),
         include_str!("dialog.rs"),
         include_str!("info_bar.rs"),
+        include_str!("lanes.rs"),
         include_str!("list.rs"),
         include_str!("menu.rs"),
         include_str!("navigation.rs"),
@@ -1342,6 +1344,123 @@ fn a_status_glyph_is_the_severity_color() {
         assert_eq!(status_glyph_color(Severity::Error, p), p.critical);
         assert_eq!(status_glyph_color(Severity::Informational, p), p.accent);
     }
+}
+
+// The branch graph's cell (`lanes.rs`) and the label chip (`chip.rs`).
+
+#[test]
+fn lane_lines_run_straight_in_their_column_and_curve_between_columns() {
+    use super::lanes::{LaneLine, LineKind, column_x, segment};
+    let line = |kind, column| LaneLine {
+        kind,
+        column,
+        lane: 0,
+    };
+    assert_eq!(column_x(0, 16.0), 8.0);
+    assert_eq!(column_x(2, 16.0), 40.0);
+    // Pass: top to bottom, straight.
+    let pass = segment(line(LineKind::Pass, 1), 0, 16.0, 48.0);
+    assert_eq!(
+        (pass.from, pass.to, pass.controls),
+        ((24.0, 0.0), (24.0, 48.0), None)
+    );
+    // In from the node's own column: straight to the node's centre.
+    let straight = segment(line(LineKind::In, 0), 0, 16.0, 48.0);
+    assert_eq!((straight.from, straight.to), ((8.0, 0.0), (8.0, 24.0)));
+    assert!(straight.controls.is_none());
+    // A fork from column 2 into a node in column 0 curves and leaves and
+    // arrives vertically: both controls at mid-height, over each end.
+    let fork = segment(line(LineKind::In, 2), 0, 16.0, 48.0);
+    assert_eq!(fork.from, (40.0, 0.0));
+    assert_eq!(fork.to, (8.0, 24.0));
+    assert_eq!(fork.controls, Some(((40.0, 12.0), (8.0, 12.0))));
+    // A merge line from the node to column 1 at the bottom.
+    let merge = segment(line(LineKind::Out, 1), 0, 16.0, 48.0);
+    assert_eq!(merge.from, (8.0, 24.0));
+    assert_eq!(merge.to, (24.0, 48.0));
+    assert_eq!(merge.controls, Some(((8.0, 36.0), (24.0, 36.0))));
+}
+
+#[test]
+fn a_lane_keeps_one_hue_and_neighbouring_lanes_differ() {
+    use super::chart::ChartHue;
+    use super::lanes::lane_hue;
+    assert_eq!(lane_hue(0), ChartHue::SEQUENCE[0]);
+    for lane in 0..20u32 {
+        assert_eq!(lane_hue(lane), lane_hue(lane));
+        assert_ne!(lane_hue(lane), lane_hue(lane + 1));
+        assert_eq!(
+            lane_hue(lane),
+            lane_hue(lane + ChartHue::SEQUENCE.len() as u32)
+        );
+    }
+    let hues: std::collections::HashSet<ChartHue> = ChartHue::SEQUENCE.into_iter().collect();
+    assert_eq!(hues.len(), 5, "five different hues");
+    assert!(
+        !hues.contains(&ChartHue::Red) && !hues.contains(&ChartHue::Magenta),
+        "the alarm red and the NPU magenta are not lane colours"
+    );
+}
+
+#[test]
+fn a_chip_takes_its_hue_or_the_control_colours_and_primary_text() {
+    use super::chart::ChartHue;
+    use super::chip::chip_colors;
+    for p in [&LIGHT, &DARK] {
+        let dark = p.is_dark();
+        assert_eq!(
+            chip_colors(Some(ChartHue::Green), p),
+            (
+                ChartHue::Green.area(dark),
+                ChartHue::Green.color(dark),
+                p.text_primary
+            )
+        );
+        assert_eq!(
+            chip_colors(None, p),
+            (p.control_fill, p.stroke, p.text_primary)
+        );
+        assert_ne!(chip_colors(None, p).0, p.accent, "a chip is never accent");
+    }
+}
+
+#[test]
+fn a_clipped_cell_marks_what_is_beyond_and_never_hides_its_node() {
+    use super::lanes::{LaneLine, LineKind, clipping};
+    let line = |column| LaneLine {
+        kind: LineKind::Pass,
+        column,
+        lane: 0,
+    };
+    let inside = clipping(1, &[line(0), line(2)], 3);
+    assert_eq!(
+        (inside.node_column, inside.node_clipped, inside.beyond),
+        (1, false, false)
+    );
+    let lines_beyond = clipping(1, &[line(0), line(5)], 3);
+    assert_eq!(
+        (
+            lines_beyond.node_column,
+            lines_beyond.node_clipped,
+            lines_beyond.beyond
+        ),
+        (1, false, true)
+    );
+    let node_beyond = clipping(7, &[line(0)], 3);
+    assert_eq!(
+        (
+            node_beyond.node_column,
+            node_beyond.node_clipped,
+            node_beyond.beyond
+        ),
+        (3, true, true),
+        "drawn in the overflow column, on no lane of its own"
+    );
+    assert_eq!(
+        clipping(4, &[], 0).node_column,
+        1,
+        "at least one lane shows, then the overflow column"
+    );
 }
 
 // --- light dismiss and hit areas (ticket 103) --------------------------------
