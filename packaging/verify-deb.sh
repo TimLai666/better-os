@@ -41,7 +41,9 @@ required_executables() {
             printf '%s\n' usr/bin/better-launcher
             ;;
         better-files)
-            printf '%s\n' usr/bin/better-files
+            printf '%s\n' \
+                usr/bin/better-files \
+                usr/bin/better-files-preview
             ;;
         better-git)
             printf '%s\n' usr/bin/better-git
@@ -333,6 +335,13 @@ for package_name in \
                 printf 'The Better Files desktop entry does not run the packaged binary\n' >&2
                 exit 1
             }
+            # The preview plays media through the system's GStreamer.
+            for required_dependency in libgstreamer1.0-0 gstreamer1.0-plugins-base; do
+                if ! printf '%s\n' "$depends" | grep -Eq "(^|,)[[:space:]]*${required_dependency}([[:space:]]|,|$)"; then
+                    printf 'Better Files does not depend on %s\n' "$required_dependency" >&2
+                    exit 1
+                fi
+            done
             ;;
         better-git)
             grep -q '^Exec=better-git$' \

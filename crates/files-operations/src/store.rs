@@ -135,6 +135,52 @@ pub(crate) mod path_bytes {
     }
 }
 
+/// The same, for a list of paths.
+pub(crate) mod path_bytes_list {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::path::PathBuf;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &[PathBuf], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(value.iter().map(|path| path.as_os_str().as_bytes()))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<PathBuf>, D::Error> {
+        let list: Vec<Vec<u8>> = Vec::deserialize(deserializer)?;
+        Ok(list
+            .into_iter()
+            .map(|bytes| PathBuf::from(OsString::from_vec(bytes)))
+            .collect())
+    }
+}
+
+/// What an interrupted copy or move needs to be started again: the
+/// operation as it was asked for. Only these two are resumable; every
+/// other kind is short enough to ask for again.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResumeSpec {
+    /// A move rather than a copy.
+    pub moving: bool,
+    #[serde(with = "path_bytes_list")]
+    pub sources: Vec<PathBuf>,
+    #[serde(with = "path_bytes")]
+    pub destination: PathBuf,
+}
+
+/// One answer about a folder that was already there, as recorded, so a
+/// resumed job goes on honouring it (merging into the same folders,
+/// skipping the same ones, following the same new names).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FolderAnswerRecord {
+    #[serde(with = "path_bytes")]
+    pub folder: PathBuf,
+    pub answer: crate::exec::FolderAnswer,
+}
+
 /// Where one item got to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -174,6 +220,13 @@ pub struct JobRecord {
     pub updated_at: u64,
     /// Digests a checksum job produced.
     pub checksums: Vec<(String, String)>,
+    /// How to start the job again after an interruption; `None` for a kind
+    /// that is not resumed.
+    #[serde(default)]
+    pub resume: Option<ResumeSpec>,
+    /// The answers given about folders that were already there.
+    #[serde(default)]
+    pub folder_answers: Vec<FolderAnswerRecord>,
 }
 
 impl JobRecord {
@@ -196,6 +249,8 @@ struct HeaderRef<'a> {
     progress: &'a Progress,
     log: &'a OperationLog,
     updated_at: u64,
+    resume: &'a Option<ResumeSpec>,
+    folder_answers: &'a [FolderAnswerRecord],
 }
 
 #[derive(Deserialize)]
@@ -206,6 +261,10 @@ struct Header {
     progress: Progress,
     log: OperationLog,
     updated_at: u64,
+    #[serde(default)]
+    resume: Option<ResumeSpec>,
+    #[serde(default)]
+    folder_answers: Vec<FolderAnswerRecord>,
 }
 
 /// Enough of a header to know which format it is.
@@ -401,6 +460,8 @@ impl JobStore {
             progress: &record.progress,
             log: &record.log,
             updated_at: record.updated_at,
+            resume: &record.resume,
+            folder_answers: &record.folder_answers,
         };
         let text = serde_json::to_vec(&header).map_err(|error| StoreError::Unreadable {
             path: path.to_string_lossy().into_owned(),
@@ -541,6 +602,8 @@ impl JobStore {
                     log: header.log,
                     updated_at: header.updated_at,
                     checksums: replayed.checksums,
+                    resume: header.resume,
+                    folder_answers: header.folder_answers,
                 })
             }
             SINGLE_FILE_SCHEMA_VERSION => {
@@ -715,6 +778,23 @@ mod tests {
             log: OperationLog::default(),
             updated_at: 1,
             checksums: Vec::new(),
+            resume: Some(ResumeSpec {
+                moving: true,
+                sources: vec![PathBuf::from(OsStr::from_bytes(b"/src/\xffb"))],
+                destination: PathBuf::from("/dst"),
+            }),
+            folder_answers: vec![
+                FolderAnswerRecord {
+                    folder: PathBuf::from("/dst/merged"),
+                    answer: crate::exec::FolderAnswer::Merge,
+                },
+                FolderAnswerRecord {
+                    folder: PathBuf::from("/dst/kept"),
+                    answer: crate::exec::FolderAnswer::MovedTo(PathBuf::from(OsStr::from_bytes(
+                        b"/dst/kept \xff2",
+                    ))),
+                },
+            ],
         }
     }
 

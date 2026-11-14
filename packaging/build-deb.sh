@@ -495,7 +495,12 @@ make_package better-launcher \
     'Better OS application launcher overlay' \
     'One overlay with the search row on top and the whole application library below it.'
 
-PACKAGE_BINARIES=("better-files:usr/bin/better-files")
+# The large preview (Space) is a program of its own, which Better Files
+# looks for beside itself.
+PACKAGE_BINARIES=(
+    "better-files:usr/bin/better-files"
+    "better-files-preview:usr/bin/better-files-preview"
+)
 PACKAGE_DATA=(
     "packaging/files/io.betteros.Files.desktop:usr/share/applications/io.betteros.Files.desktop"
     "packaging/icons/better-files.svg:usr/share/icons/hicolor/scalable/apps/better-files.svg"
@@ -503,7 +508,12 @@ PACKAGE_DATA=(
 # udisks2 is a Recommends rather than a Depends: without it Better Files still
 # browses files, it just cannot mount or eject a device, and it says so instead
 # of hiding the devices.
-PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
+#
+# The preview plays audio and video through GStreamer. dpkg-shlibdeps finds
+# the libraries it links (libgstreamer1.0-0, libgstreamer-plugins-base1.0-0);
+# the base plugins are named here because nothing links them: playbin, the
+# format converters and the common demuxers are plugins, loaded at run time.
+PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS" "gstreamer1.0-plugins-base")
 PACKAGE_RECOMMENDS="udisks2"
 make_package better-files \
     'Better OS file manager' \

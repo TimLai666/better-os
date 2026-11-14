@@ -115,6 +115,57 @@ pub struct DeviceRow {
     /// Set when this device was pulled out during a write. Survives the row
     /// being removed, so the warning outlives the device.
     pub unsafe_removal: Option<UnsafeRemoval>,
+    /// The drive this device is on; every volume on one drive shares it.
+    pub drive: Option<String>,
+    /// The drive's vendor and model.
+    pub drive_name: Option<String>,
+    pub size: u64,
+    /// The drive's own block device, not a partition on it.
+    pub whole_disk: bool,
+    pub filesystem: Option<String>,
+    /// An image is being written to this device's drive.
+    pub erasing: bool,
+}
+
+/// A drive a disk image can be written to, and what writing it erases.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageTarget {
+    /// The drive's own block device: what the image is written to.
+    pub object_path: String,
+    /// Vendor, model and size: "Generic Flash Disk · 32 GB".
+    pub name: String,
+    /// Every volume on the drive, by the names the window shows them under.
+    pub volumes: Vec<String>,
+}
+
+/// The drives in an inventory an image could be written to, each with the
+/// volumes it would erase. A drive already being written to is left out.
+pub fn image_targets(rows: &[DeviceRow]) -> Vec<ImageTarget> {
+    rows.iter()
+        .filter(|row| row.whole_disk && !row.erasing)
+        .filter_map(|disk| {
+            let drive = disk.drive.as_ref()?;
+            let name = format!(
+                "{} · {}",
+                disk.drive_name
+                    .clone()
+                    .unwrap_or_else(|| disk.label.clone()),
+                crate::format::bytes(disk.size)
+            );
+            let volumes = rows
+                .iter()
+                .filter(|row| row.drive.as_ref() == Some(drive))
+                // The drive itself only when it holds a filesystem directly.
+                .filter(|row| !row.whole_disk || row.filesystem.is_some())
+                .map(|row| row.label.clone())
+                .collect();
+            Some(ImageTarget {
+                object_path: disk.object_path.clone(),
+                name,
+                volumes,
+            })
+        })
+        .collect()
 }
 
 /// What was lost, or might have been.
@@ -231,6 +282,18 @@ pub enum DeviceNotice {
         object_path: String,
         detail: String,
     },
+    /// How far an image write is.
+    ImageProgress {
+        object_path: String,
+        written: u64,
+        total: u64,
+    },
+    /// A format or image write finished: `Ok` or the reason it did not.
+    Erased {
+        object_path: String,
+        format: bool,
+        outcome: Result<(), String>,
+    },
 }
 
 /// A device that is mounted, as the tracked-operation mapping needs it.
@@ -274,6 +337,33 @@ pub trait DeviceLink: Send + Sync {
     /// Asks for a policy change. The answer is a `PolicyApplied` or
     /// `PolicyRefused` notice.
     fn request_policy(&self, request: PolicyRequest);
+    /// Asks the storage layer to erase: format a volume or write an image
+    /// to its drive. Only sent once the person confirmed it in the window.
+    /// The answer is an `Erased` notice.
+    fn request_erase(&self, request: EraseRequest);
+}
+
+/// An erasing action, as the window asks for it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EraseRequest {
+    Format {
+        object_path: String,
+        filesystem: storage_platform::FilesystemKind,
+        label: String,
+    },
+    WriteImage {
+        object_path: String,
+        image: PathBuf,
+    },
+}
+
+impl EraseRequest {
+    pub fn object_path(&self) -> &str {
+        match self {
+            EraseRequest::Format { object_path, .. }
+            | EraseRequest::WriteImage { object_path, .. } => object_path,
+        }
+    }
 }
 
 /// One link shared between the window and the job tracker.
@@ -310,6 +400,10 @@ impl DeviceLink for SharedLink {
     fn request_policy(&self, request: PolicyRequest) {
         self.0.request_policy(request)
     }
+
+    fn request_erase(&self, request: EraseRequest) {
+        self.0.request_erase(request)
+    }
 }
 
 /// A link with nothing behind it.
@@ -343,6 +437,8 @@ impl DeviceLink for NoDeviceLink {
         Err("no storage link in this build".to_string())
     }
     fn request_policy(&self, _request: PolicyRequest) {}
+
+    fn request_erase(&self, _request: EraseRequest) {}
 }
 
 /// The device rows the window is currently drawing.
@@ -469,6 +565,12 @@ pub fn row_from(report: DeviceReport) -> DeviceRow {
         state,
         blockers,
         unsafe_removal,
+        drive: report.drive,
+        drive_name: report.drive_name,
+        size: report.size,
+        whole_disk: report.whole_disk,
+        filesystem: report.filesystem,
+        erasing: report.erasing,
     }
 }
 
