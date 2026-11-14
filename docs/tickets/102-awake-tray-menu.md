@@ -1,6 +1,6 @@
 # Ticket 102 — The Better Awake tray menu is correct and every item works
 
-**Blocked by:** none · **Status:** done
+**Blocked by:** none · **Status:** merged, not released
 
 ## Why
 
