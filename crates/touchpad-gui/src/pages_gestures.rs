@@ -8,6 +8,7 @@
 //! in both locales.
 
 use better_actions::{Key, Modifier};
+use better_ui::fluent::tabs::{SelectorBar, SelectorItem};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
@@ -459,15 +460,9 @@ impl TouchpadApp {
                 .min_w_0()
                 .gap_2()
                 .child(div().text_sm().font_semibold().child(c.profile_heading))
-                .child(self.choice_row(
-                    c.device_scope,
-                    options,
-                    "gesture-profile",
-                    cx,
-                    |this, identity: Option<String>, cx| {
-                        this.select_gesture_device(identity, cx);
-                    },
-                ))
+                // Which pad's profile the page shows: a view switch, so a
+                // selector bar rather than a row of buttons (ticket 103).
+                .child(self.profile_switcher(c.device_scope, options, cx))
                 .when(selected.is_some(), |this| {
                     this.child(
                         div()
@@ -1029,6 +1024,47 @@ impl TouchpadApp {
                 cx,
             ),
         )
+    }
+
+    /// The row that picks whose gestures the page shows: the global profile
+    /// or one touchpad's.
+    fn profile_switcher(
+        &self,
+        label: &'static str,
+        options: Vec<(String, bool, Option<String>)>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = options.iter().position(|(_, selected, _)| *selected);
+        let identities: Vec<Option<String>> = options
+            .iter()
+            .map(|(_, _, identity)| identity.clone())
+            .collect();
+        let items = options
+            .into_iter()
+            .map(|(name, _, _)| SelectorItem::new(name))
+            .collect();
+        let view = cx.entity().downgrade();
+        v_flex()
+            .w_full()
+            .min_w_0()
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label),
+            )
+            .child(div().w_full().min_w_0().overflow_x_hidden().child(
+                SelectorBar::new("gesture-profile", items, selected).on_select(
+                    move |index, _, cx| {
+                        if let Some(identity) = identities.get(index).cloned() {
+                            let _ = view
+                                .update(cx, |this, cx| this.select_gesture_device(identity, cx));
+                        }
+                    },
+                ),
+            ))
+            .into_any_element()
     }
 
     /// A labelled row of segmented buttons. Every option stays visible and each

@@ -142,6 +142,9 @@ A selected row in a list has a subtle fill across the row and a 3px accent bar, 
 - **Lists.** Rows with a leading icon or checkbox, a Body Strong name, and Caption metadata. Hover and selection are fills, never borders.
 - **Info bar.** A full-width strip under the command bar for a state the person has to know about: an icon in the status color, a Body Strong title, a Body message, and at most one action.
 - **Dialogs.** A Subtitle title, Body text, and buttons at the bottom right with the primary one in accent.
+- **Light-dismiss panels.** A flyout, menu, combo box list, or suggestion list closes on a press outside it, and a second press on the control that opened it only closes it; the next press opens it again.
+- **Click targets.** The highlighted area is the click area: a row's hit area fills the row and meets the next one, and its inset fill is drawn inside it. A highlight shows only while the pointer is on that row.
+- **Field reasons.** When a dialog's primary button is off, the reason is under the field it is about, in the critical color after an error glyph.
 
 ## Do's and Don'ts
 

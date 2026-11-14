@@ -456,7 +456,7 @@ impl Copy {
         std::ptr::eq(self, &ZH_TW)
     }
 
-    fn t(&self, en: &'static str, zh: &'static str) -> &'static str {
+    pub(crate) fn t(&self, en: &'static str, zh: &'static str) -> &'static str {
         if self.zh() { zh } else { en }
     }
 
@@ -749,13 +749,9 @@ impl Copy {
         }
     }
 
-    /// The good-news bar's text.
+    /// A toast's text.
     pub fn notice(&self, notice: &Notice) -> String {
         match notice {
-            Notice::Done(kind) => fill(
-                self.t("{what}: done", "{what}：完成"),
-                &[("what", self.op_name(*kind))],
-            ),
             Notice::PullCreated { number, .. } => fill(
                 self.t("Pull request #{n} created", "已建立拉取要求 #{n}"),
                 &[("n", &number.to_string())],
@@ -793,6 +789,7 @@ impl Copy {
                 )
                 .to_string(),
             Notice::Pull(pull) => self.pull_notice(pull).1,
+            Notice::WatchFallback => self.watch_fallback().to_string(),
         }
     }
 

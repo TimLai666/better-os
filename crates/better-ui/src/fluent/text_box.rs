@@ -92,6 +92,7 @@ pub struct TextBox {
     kind: FieldKind,
     header: Option<SharedString>,
     description: Option<SharedString>,
+    error: Option<SharedString>,
     disabled: bool,
     shown: ShownState,
     width: Option<Pixels>,
@@ -117,6 +118,7 @@ impl TextBox {
             kind: FieldKind::Text,
             header: None,
             description: None,
+            error: None,
             disabled: false,
             shown: ShownState::Live,
             width: None,
@@ -159,6 +161,14 @@ impl TextBox {
     /// Caption text under the field.
     pub fn description(mut self, description: impl Into<SharedString>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    /// Why the field's value cannot be used, under the field in place of
+    /// the description: the critical color, after an error glyph, so it
+    /// does not rest on color alone. `None` clears it.
+    pub fn error(mut self, error: Option<impl Into<SharedString>>) -> Self {
+        self.error = error.map(Into::into);
         self
     }
 
@@ -321,11 +331,27 @@ impl RenderOnce for TextBox {
                     .child(header)
             }))
             .child(field)
-            .children(self.description.map(|description| {
-                text(div().mt(px(4.0)), super::CAPTION)
-                    .text_color(p.text_secondary)
-                    .child(description)
-            }))
+            .children(match self.error {
+                Some(error) => Some(
+                    text(div().mt(px(4.0)), super::CAPTION)
+                        .flex()
+                        .items_start()
+                        .gap(px(4.0))
+                        .text_color(p.critical)
+                        .child(
+                            div()
+                                .pt(px(2.0))
+                                .flex_none()
+                                .child(Icon::new(IconName::CircleX).size(px(12.0))),
+                        )
+                        .child(div().flex_1().min_w_0().child(error)),
+                ),
+                None => self.description.map(|description| {
+                    text(div().mt(px(4.0)), super::CAPTION)
+                        .text_color(p.text_secondary)
+                        .child(description)
+                }),
+            })
     }
 }
 

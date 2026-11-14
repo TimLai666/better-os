@@ -717,6 +717,7 @@ impl FilesApp {
         if tabs.len() < 2 {
             return None;
         }
+        let c = copy(self.locale());
         let active = self.session.active_tab();
         let selected = tabs.iter().position(|(id, _)| *id == active);
         let ids: Rc<Vec<files_core::TabId>> = Rc::new(tabs.iter().map(|(id, _)| *id).collect());
@@ -730,6 +731,7 @@ impl FilesApp {
         let close = select.clone();
         Some(
             TabView::new("files-tabs", kit_tabs, selected)
+                .tooltips(c.close_tab, c.new_tab)
                 .on_select(move |index, window, cx| {
                     if let Some(id) = select_ids.get(index).copied() {
                         let _ = select.update(cx, |app, cx| {
