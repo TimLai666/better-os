@@ -1293,3 +1293,34 @@ fn a_stale_identity_question_is_dropped() {
     assert_eq!(session.dialog, None);
     assert_eq!(session.identity_pending, None);
 }
+
+/// When Git's settings already have a name and an email and Git still
+/// refuses (here the repository's own settings blank the name), the step
+/// would have nothing to write and could only ask again: Git's own words
+/// are shown instead.
+#[test]
+fn a_refusal_the_step_cannot_fix_shows_gits_own_words() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let config = without_identity(&s);
+    std::fs::write(
+        &config,
+        "[user]\n\tuseConfigOnly = true\n\tname = Ada\n\temail = ada@example.com\n",
+    )
+    .unwrap();
+    s.git(&["config", "user.name", ""]);
+    let mut session = opened(&s);
+    s.write("a.txt", "changed\n");
+    session.refresh();
+    session.run_git_jobs();
+    session.repo.as_mut().unwrap().form.summary = "Second".into();
+    session.commit();
+    session.run_git_jobs();
+    assert_eq!(session.dialog, None, "no step that could only ask again");
+    assert_eq!(session.identity_pending, None);
+    assert!(
+        matches!(&session.problem, Some(Problem::Git { error: GitError::Failed { message, .. }, .. }) if message.contains("ident")),
+        "{:?}",
+        session.problem
+    );
+}

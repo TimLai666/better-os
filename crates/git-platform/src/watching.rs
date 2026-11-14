@@ -10,23 +10,29 @@ use crate::{GitError, Run};
 /// as `git commit` would: `git var` applies the same strict rules. An
 /// unknown identity is `Ok(false)`, not an error.
 pub fn identity_known(repository: &Path) -> Result<bool, GitError> {
+    identity_refusal(repository).map(|refusal| refusal.is_none())
+}
+
+/// What Git says when it cannot name the author or committer of a commit
+/// made here, or `None` when it can.
+pub fn identity_refusal(repository: &Path) -> Result<Option<String>, GitError> {
     for variable in ["GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"] {
         let captured = Run::new(repository, ["var", variable]).capture()?;
         if captured.code() != Some(0) {
             let error = crate::failed(&captured);
             if let GitError::Failed { message, .. } = &error {
-                let message = message.to_ascii_lowercase();
-                if message.contains("ident")
-                    || message.contains("email")
-                    || message.contains("no name was given")
+                let lower = message.to_ascii_lowercase();
+                if lower.contains("ident")
+                    || lower.contains("email")
+                    || lower.contains("no name was given")
                 {
-                    return Ok(false);
+                    return Ok(Some(message.clone()));
                 }
             }
             return Err(error);
         }
     }
-    Ok(true)
+    Ok(None)
 }
 
 /// This worktree's git directory and the directory every worktree of the

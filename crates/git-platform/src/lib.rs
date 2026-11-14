@@ -575,6 +575,11 @@ pub trait Git: Send + Sync {
     fn identity_known(&self, repository: &Path) -> Result<bool, GitError> {
         unsupported!("identity_known")
     }
+    /// Git's own words when a commit made here would have no author or
+    /// committer, or `None` when it would.
+    fn identity_refusal(&self, repository: &Path) -> Result<Option<String>, GitError> {
+        unsupported!("identity_refusal")
+    }
     /// The repository's worktrees, the main one first.
     fn worktrees(&self, repository: &Path) -> Result<Vec<Worktree>, GitError> {
         unsupported!("worktrees")
@@ -1430,6 +1435,10 @@ impl Git for SystemGit {
 
     fn identity_known(&self, repository: &Path) -> Result<bool, GitError> {
         watching::identity_known(repository)
+    }
+
+    fn identity_refusal(&self, repository: &Path) -> Result<Option<String>, GitError> {
+        watching::identity_refusal(repository)
     }
 
     fn worktrees(&self, repository: &Path) -> Result<Vec<Worktree>, GitError> {

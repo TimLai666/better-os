@@ -13,7 +13,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, Context, ElementId, InteractiveElement, IntoElement,
-    ParentElement, Render, RenderOnce, SharedString, Styled, Window, deferred, div, px,
+    ParentElement, Render, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled,
+    Window, deferred, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::FocusTrapElement as _;
 
@@ -167,6 +168,7 @@ impl RenderOnce for ContentDialog {
 
         let mut row = div()
             .flex()
+            .flex_none()
             .gap(spacing::SM)
             .p(spacing::XL)
             .bg(p.window_background)
@@ -223,10 +225,19 @@ impl RenderOnce for ContentDialog {
                     }
                 }
             })
+            // The title and content scroll when the window is too short for
+            // them; the button row under them always stays in view.
+            .when(!self.inline, |d| {
+                d.max_h(window.viewport_size().height - spacing::XL * 2.0)
+            })
             .child(
                 div()
+                    .id(super::child_id(&self.id, "body"))
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .p(spacing::XL)
                     .child(
                         text(div().mb(spacing::MD), SUBTITLE)

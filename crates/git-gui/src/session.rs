@@ -364,8 +364,11 @@ pub enum Answer {
     },
     GitConfig(Result<Vec<(String, Option<String>)>, GitError>),
     /// Git does not know who is committing; the job did not run. It runs
-    /// again after the identity step.
-    IdentityMissing(Box<Job>),
+    /// again after the identity step. `refusal` is Git's own words.
+    IdentityMissing {
+        job: Box<Job>,
+        refusal: String,
+    },
     LastCommit(Result<Vec<Commit>, GitError>),
     /// Each repository's worktrees; a repository that could not be read is
     /// left out.
@@ -428,11 +431,14 @@ impl Job {
         // refusal telling them to type a command (`identity`). A new
         // repository asks the same inside the new folder, in `init`.
         if matches!(self.op, Op::Commit { .. })
-            && !crate::identity::known(git.identity_known(&self.repository))
+            && let Ok(Some(refusal)) = git.identity_refusal(&self.repository)
         {
             return Outcome {
                 generation: self.generation,
-                answer: Answer::IdentityMissing(Box::new(self)),
+                answer: Answer::IdentityMissing {
+                    job: Box::new(self),
+                    refusal,
+                },
             };
         }
         let root = self.repository.as_path();
@@ -567,12 +573,20 @@ impl Job {
                 path: destination,
             },
             Op::Init(new) => match git.init_repository(&new) {
-                Err(error) if crate::identity::is_identity_error(&error) => {
-                    Answer::IdentityMissing(Box::new(Job {
-                        generation: self.generation,
-                        repository: self.repository.clone(),
-                        op: Op::Init(new),
-                    }))
+                Err(GitError::Failed { message, .. })
+                    if crate::identity::is_identity_error(&GitError::Failed {
+                        exit_code: None,
+                        message: message.clone(),
+                    }) =>
+                {
+                    Answer::IdentityMissing {
+                        job: Box::new(Job {
+                            generation: self.generation,
+                            repository: self.repository.clone(),
+                            op: Op::Init(new),
+                        }),
+                        refusal: message,
+                    }
                 }
                 result => Answer::Created {
                     kind,
@@ -992,6 +1006,8 @@ pub struct GitSession {
     pub git_config: GitConfig,
     /// What was about to run when Git turned out to have no identity.
     pub identity_pending: Option<Job>,
+    /// What Git said when it refused, and for which kind of job.
+    identity_refusal: Option<(OpKind, String)>,
     /// Git's settings are being read for the identity step.
     identity_reading: bool,
     /// The worktrees of the repositories in the list, as last read.
@@ -1040,6 +1056,7 @@ impl GitSession {
             github: GitHub::default(),
             git_config: GitConfig::default(),
             identity_pending: None,
+            identity_refusal: None,
             identity_reading: false,
             worktrees_of: Vec::new(),
             keyring_changes: Vec::new(),
@@ -1565,6 +1582,33 @@ impl GitSession {
                 }
                 self.queue.push_back(job);
             }
+        }
+    }
+
+    /// Git's settings are read: open the identity step, unless Git already
+    /// has a name and an email. Then the step would have nothing to write
+    /// and could only ask again; Git's own refusal is shown instead.
+    fn identity_asked(&mut self) {
+        let nothing_missing = crate::identity::writes_missing(
+            "",
+            "",
+            self.git_config.get("user.name"),
+            self.git_config.get("user.email"),
+        )
+        .is_empty();
+        if !nothing_missing {
+            self.dialog = Some(Dialog::Identity);
+            return;
+        }
+        self.identity_pending = None;
+        if let Some((kind, message)) = self.identity_refusal.take() {
+            self.problem = Some(Problem::Git {
+                kind,
+                error: GitError::Failed {
+                    exit_code: None,
+                    message,
+                },
+            });
         }
     }
 
@@ -2758,7 +2802,7 @@ impl GitSession {
                         loaded: true,
                     };
                     if asking {
-                        self.dialog = Some(Dialog::Identity);
+                        self.identity_asked();
                     }
                 }
                 Err(error) => {
@@ -2779,7 +2823,7 @@ impl GitSession {
             self.worktrees_of = list;
             return;
         }
-        if let Answer::IdentityMissing(job) = outcome.answer {
+        if let Answer::IdentityMissing { job, refusal } = outcome.answer {
             if matches!(job.op, Op::Commit { .. }) {
                 self.idle();
             }
@@ -2788,6 +2832,7 @@ impl GitSession {
             if job.generation != self.generation {
                 return;
             }
+            self.identity_refusal = Some((job.op.kind(), refusal));
             self.ask_identity(Some(*job));
             return;
         }
@@ -2951,7 +2996,7 @@ impl GitSession {
                 }
                 self.idle();
             }
-            Answer::GitConfig(_) | Answer::IdentityMissing(_) | Answer::Worktrees(_) => {}
+            Answer::GitConfig(_) | Answer::IdentityMissing { .. } | Answer::Worktrees(_) => {}
         }
     }
 
@@ -3005,6 +3050,9 @@ impl GitSession {
             // Git has no name or email (a commit that got past the check):
             // ask for them rather than show Git's text.
             Err(error) if kind == OpKind::Commit && crate::identity::is_identity_error(&error) => {
+                if let GitError::Failed { message, .. } = &error {
+                    self.identity_refusal = Some((kind, message.clone()));
+                }
                 self.ask_identity(None);
             }
             Err(error) => {

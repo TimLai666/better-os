@@ -68,14 +68,14 @@ pub fn init(new: &NewRepository) -> Result<(), GitError> {
     // has none, what was just made is taken away again and the caller asks
     // the person (nothing is committed, so nothing was needed otherwise).
     let commits = new.readme.is_some() || new.gitignore.is_some() || new.license.is_some();
-    if commits && !crate::watching::identity_known(&new.path).unwrap_or(true) {
+    if commits && let Ok(Some(refusal)) = crate::watching::identity_refusal(&new.path) {
         let _ = fs::remove_dir_all(new.path.join(".git"));
         if !existed {
             let _ = fs::remove_dir(&new.path);
         }
         return Err(GitError::Failed {
             exit_code: None,
-            message: "Author identity unknown: no name or email for the first commit".into(),
+            message: refusal,
         });
     }
     let mut written = Vec::new();
