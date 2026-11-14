@@ -430,6 +430,11 @@ impl MonitorApp {
         let incidents = self.incidents.clone();
         // Open while there is nothing recorded, when the explanation is the
         // whole page; out of the records' way once there are some.
+        let skipped = self
+            .status
+            .as_ref()
+            .map(|status| status.store.skipped_slowdowns)
+            .unwrap_or(0);
         let open = self.slowdown_rules_open.unwrap_or(incidents.is_empty());
         let intro = SettingsExpander::new("slowdown-rules", c.events_rules_title, open)
             .icon(IconName::Info)
@@ -456,12 +461,31 @@ impl MonitorApp {
                     .locale(self.locale.words()),
                 )
             })
+            .when(skipped > 0, |page| {
+                page.child(
+                    InfoBar::new(
+                        "bar-skipped-slowdowns",
+                        Severity::Informational,
+                        i18n::skipped_sentence(
+                            skipped,
+                            SlowdownRules::default().max_per_day,
+                            self.locale,
+                        ),
+                    )
+                    .locale(self.locale.words()),
+                )
+            })
             .child(intro);
         if incidents.is_empty() {
             page = page.child(note_card(c.no_events_yet, c.no_events_explained, cx));
         } else {
             page = page.child(section_title(c.recorded_slowdowns, p));
-            for incident in incidents.iter().rev() {
+            // Newest first by when it happened: identifiers follow the order
+            // records were written, which an import from an older store
+            // does not keep.
+            let mut newest_first: Vec<&Incident> = incidents.iter().collect();
+            newest_first.sort_by_key(|incident| std::cmp::Reverse(incident.marked_at_unix_ms));
+            for incident in newest_first {
                 page = page.child(match &incident.detection {
                     Some(detection) => self.slowdown_card(incident, detection, cx),
                     None => self.marked_card(incident, cx),

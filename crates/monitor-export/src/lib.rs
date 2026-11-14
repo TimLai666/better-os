@@ -574,9 +574,10 @@ fn schema_documents() -> Vec<(&'static str, String)> {
                 "description": "What the service saw: when the slowdown began and ended, \
                                 whether it was still going on, its causes (the one that \
                                 explains it best first: memory, disk, or CPU pressure, memory \
-                                nearly gone while swapping, a program ended for memory, or \
-                                thermal throttling, each with how many seconds it held, its \
-                                worst reading, and a count for the two event kinds), and the \
+                                nearly gone while swapping, a program ended for memory, \
+                                thermal throttling, or the machine freezing, each with how \
+                                many seconds it held, its worst reading, and a count for the \
+                                event kinds), and the \
                                 processes using the most of the leading cause's resource. \
                                 Absent on an incident marked by hand."
             },

@@ -50,9 +50,9 @@ use monitor_ipc::{
 };
 use monitor_store::{
     DEFAULT_WINDOW_AFTER_SECONDS, DEFAULT_WINDOW_BEFORE_SECONDS, Detection, Downsampler, Gap,
-    GapReason, HistoryStore, Incident, IncidentWindow, RetentionPolicy, SLOWDOWN_PROCESSES, Sample,
-    SlowdownDetector, SlowdownEvent, SlowdownRules, StoreError, TimeRange, baseline_shifts,
-    busiest_processes,
+    GapReason, HistoryStore, Incident, IncidentWindow, PendingSlowdownWrite, RetentionPolicy,
+    Round, SLOWDOWN_PROCESSES, Sample, SlowdownDetector, SlowdownEvent, SlowdownRules, StoreError,
+    TimeRange, baseline_shifts, busiest_processes,
 };
 use tokio::sync::Mutex;
 
@@ -222,11 +222,13 @@ impl MonitorEngine {
             })
             .cloned()
             .collect();
-        for mut incident in unfinished {
-            if let Some(detection) = incident.detection.as_mut() {
+        for incident in unfinished {
+            if let Some(mut detection) = incident.detection {
                 detection.ongoing = false;
+                if let Some(write) = store.amend_slowdown(incident.id, incident.window, detection) {
+                    write.write()?;
+                }
             }
-            store.update_incident(incident)?;
         }
 
         let mut detector = SlowdownDetector::new(config.slowdowns);
@@ -305,15 +307,29 @@ impl MonitorEngine {
             .unwrap_or(0.0);
         state.previous_round_at = Some(at);
         state.battery_use.observe(&reports, seconds, wall);
-        let slowdowns = state.detector.observe(&sample, &mut |resource| {
-            busiest_processes(&reports, resource, SLOWDOWN_PROCESSES)
-        });
+        let slowdowns = {
+            // The previous round is still the latest one here: a program the
+            // kernel ended for memory is in it and not in this one.
+            let state = &mut *state;
+            let previous = &state.latest_round;
+            state.detector.observe(&sample, &mut |resource, round| {
+                let from = match round {
+                    Round::Previous if !previous.is_empty() => previous,
+                    _ => &reports,
+                };
+                busiest_processes(from, resource, SLOWDOWN_PROCESSES)
+            })
+        };
         // A record that could not be written must not cost the round its
         // sample, so the error is held until the sample is in.
         let mut slowdown_error = None;
+        let mut slowdown_writes = Vec::new();
         for event in slowdowns {
-            if let Err(error) = record_slowdown(&mut state, &sample, event) {
-                slowdown_error.get_or_insert(error);
+            match record_slowdown(&mut state, &sample, event) {
+                Ok(write) => slowdown_writes.extend(write),
+                Err(error) => {
+                    slowdown_error.get_or_insert(error);
+                }
             }
         }
         state.latest_round = reports;
@@ -348,6 +364,26 @@ impl MonitorEngine {
         }
 
         drop(state);
+        // A slowdown's change is already in the store's memory; putting it on
+        // disk waits for `sync_data`, which during an I/O stall can take
+        // seconds, so it is done with the engine's lock let go.
+        if !slowdown_writes.is_empty() {
+            let written = tokio::task::spawn_blocking(move || {
+                slowdown_writes
+                    .into_iter()
+                    .try_for_each(PendingSlowdownWrite::write)
+            })
+            .await
+            .unwrap_or_else(|_| {
+                Err(StoreError::Io {
+                    path: self.config.store_root.clone(),
+                    source: std::io::Error::other("a slowdown record was not written"),
+                })
+            });
+            if let Err(error) = written {
+                slowdown_error.get_or_insert(error);
+            }
+        }
         self.audit_if_due(wall).await?;
         match slowdown_error {
             Some(error) => Err(error),
@@ -417,8 +453,10 @@ impl MonitorEngine {
         }
         // A slowdown still going on ends where it was last seen: the record
         // says when watching stopped rather than claiming it is still on.
-        if let Some(detection) = state.detector.interrupt() {
-            update_slowdown(&mut state, detection)?;
+        if let Some(detection) = state.detector.interrupt()
+            && let Some(write) = amend_slowdown(&mut state, detection)
+        {
+            write.write()?;
         }
         state.open_slowdown = None;
         state.store.flush()
@@ -501,21 +539,24 @@ impl MonitorEngine {
             }
             RequestBody::QueryIncidents => {
                 let state = self.state.lock().await;
+                let mut incidents = state.store.incidents().to_vec();
+                for incident in &mut incidents {
+                    live(&state, incident);
+                }
                 Ok(MonitorResponse::new(ResponseBody::Incidents(Box::new(
-                    IncidentsDocument {
-                        incidents: state.store.incidents().to_vec(),
-                    },
+                    IncidentsDocument { incidents },
                 ))))
             }
             RequestBody::QueryIncidentWindow { incident_id } => {
                 let state = self.state.lock().await;
                 match state.store.incident_window(incident_id) {
-                    Some((incident, slice)) => Ok(MonitorResponse::new(
-                        ResponseBody::IncidentWindow(Box::new(IncidentWindowDocument {
-                            incident: incident.clone(),
-                            slice,
-                        })),
-                    )),
+                    Some((incident, slice)) => {
+                        let mut incident = incident.clone();
+                        live(&state, &mut incident);
+                        Ok(MonitorResponse::new(ResponseBody::IncidentWindow(
+                            Box::new(IncidentWindowDocument { incident, slice }),
+                        )))
+                    }
                     None => Ok(MonitorResponse::rejected(
                         IpcError::UnknownIncident { incident_id }.to_string(),
                     )),
@@ -602,7 +643,13 @@ impl MonitorEngine {
             rounds_collected: self.rounds(),
             sample_interval_ms: self.config.sample_interval.as_millis() as u64,
             retention: self.config.retention,
-            store: state.store.stats(),
+            store: {
+                let mut stats = state.store.stats();
+                stats.skipped_slowdowns = state
+                    .store
+                    .skipped_slowdowns_since(now_unix_ms().saturating_sub(24 * 60 * 60 * 1_000));
+                stats
+            },
             recovered_truncated_bytes: self.recovered_truncated_bytes,
             collectors,
             latest_round: include_latest_round.then(|| state.latest_round.clone()),
@@ -675,21 +722,34 @@ impl MonitorEngine {
 }
 
 /// The history an incident of `detection` covers: the usual stretch before
-/// it began, and the whole slowdown plus the usual stretch after it.
+/// it began, and the whole slowdown plus the usual stretch after it, however
+/// long it lasted. Only the "before" half is bounded like a marked window.
 fn slowdown_window(detection: &Detection) -> IncidentWindow {
     IncidentWindow {
         before_seconds: DEFAULT_WINDOW_BEFORE_SECONDS,
         after_seconds: detection.duration_seconds() + DEFAULT_WINDOW_AFTER_SECONDS,
     }
-    .clamped()
 }
 
-/// Write what the detector said about the slowdown it is following.
+/// The slowdown going on right now, as the detector sees it this second,
+/// in place of the record last put on disk (rewritten every few minutes).
+fn live(state: &EngineState, incident: &mut Incident) {
+    if state.open_slowdown == Some(incident.id)
+        && let Some(detection) = state.detector.current()
+    {
+        incident.window = slowdown_window(&detection);
+        incident.detection = Some(detection);
+    }
+}
+
+/// Apply what the detector said about the slowdown it is following. The
+/// returned write puts the change on disk; the caller does it once the
+/// engine's lock is let go.
 fn record_slowdown(
     state: &mut EngineState,
     sample: &Sample,
     event: SlowdownEvent,
-) -> Result<(), StoreError> {
+) -> Result<Option<PendingSlowdownWrite>, StoreError> {
     match event {
         SlowdownEvent::Began(detection) => {
             let window = slowdown_window(&detection);
@@ -720,32 +780,30 @@ fn record_slowdown(
                 baseline: baseline_shifts(sample, &baseline),
                 snapshot: Box::new(sample.clone()),
                 about_pid: None,
-                detection: Some(detection),
+                detection: Some(detection.clone()),
             })?;
             state.open_slowdown = Some(id);
+            // Also in the slowdowns file, so a Better Monitor from before
+            // ticket 115 rewriting the incidents log cannot lose it.
+            Ok(state.store.amend_slowdown(id, window, detection))
         }
-        SlowdownEvent::Continued(detection) => update_slowdown(state, detection)?,
+        SlowdownEvent::Continued(detection) => Ok(amend_slowdown(state, detection)),
         SlowdownEvent::Ended(detection) => {
-            update_slowdown(state, detection)?;
+            let write = amend_slowdown(state, detection);
             state.open_slowdown = None;
+            Ok(write)
         }
+        SlowdownEvent::Skipped { at_unix_ms } => Ok(Some(state.store.skip_slowdown(at_unix_ms))),
     }
-    Ok(())
 }
 
-/// Rewrite the open slowdown's incident with what is known now. An incident
-/// the retention bound already dropped is left dropped.
-fn update_slowdown(state: &mut EngineState, detection: Detection) -> Result<(), StoreError> {
-    let Some(id) = state.open_slowdown else {
-        return Ok(());
-    };
-    let Some(mut incident) = state.store.incident(id).cloned() else {
-        return Ok(());
-    };
-    incident.window = slowdown_window(&detection);
-    incident.detection = Some(detection);
-    state.store.update_incident(incident)?;
-    Ok(())
+/// Bring the open slowdown's incident up to date. An incident the retention
+/// bound already dropped is left dropped.
+fn amend_slowdown(state: &mut EngineState, detection: Detection) -> Option<PendingSlowdownWrite> {
+    let id = state.open_slowdown?;
+    state
+        .store
+        .amend_slowdown(id, slowdown_window(&detection), detection)
 }
 
 fn unavailable_metrics(

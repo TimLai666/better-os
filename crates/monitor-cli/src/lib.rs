@@ -62,7 +62,20 @@ pub enum Command {
     Export(ExportArgs),
     /// What works, what does not, and what cannot be observed here.
     Doctor,
+    /// Gone in ticket 115: slowdowns are recorded automatically. Kept, hidden,
+    /// so a script or a habit that still types it is told so rather than
+    /// shown a usage error.
+    #[command(hide = true)]
+    Mark {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        ignored: Vec<String>,
+    },
 }
+
+/// What `better-monitor-cli mark` says now.
+pub const MARK_IS_AUTOMATIC: &str = "Marking a slowdown by hand is gone: Better Monitor records \
+slowdowns by itself as they happen, and nothing was recorded for this command. `better-monitor-cli \
+inspect` shows how many there are.\n";
 
 #[derive(Debug, Args)]
 pub struct InspectArgs {
@@ -196,6 +209,7 @@ pub async fn run(cli: &Cli) -> Result<String, CliError> {
         Command::Record(args) => record(cli, args).await,
         Command::Export(args) => export(cli, args).await,
         Command::Doctor => doctor(cli).await,
+        Command::Mark { .. } => Ok(MARK_IS_AUTOMATIC.to_string()),
     }
 }
 
@@ -665,6 +679,7 @@ mod tests {
                 Command::Record(_) => "record",
                 Command::Export(_) => "export",
                 Command::Doctor => "doctor",
+                Command::Mark { .. } => "mark",
             };
             assert_eq!(name, matched);
         }
@@ -691,13 +706,25 @@ mod tests {
     }
 
     #[test]
-    fn there_is_no_way_to_mark_a_slowdown_by_hand() {
+    fn mark_is_hidden_and_only_says_that_marking_is_automatic() {
         // Ticket 115: the service records slowdowns by itself.
-        let error = Cli::try_parse_from(["better-monitor-cli", "mark"])
-            .expect_err("mark is no longer a subcommand");
-        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+        for arguments in [
+            vec!["better-monitor-cli", "mark"],
+            vec![
+                "better-monitor-cli",
+                "mark",
+                "--note",
+                "slow",
+                "--before",
+                "60",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(arguments).expect("mark still parses");
+            assert!(matches!(cli.command, Command::Mark { .. }));
+        }
         let help = Cli::command().render_help().to_string();
         assert!(!help.contains("mark"), "{help}");
+        assert!(MARK_IS_AUTOMATIC.contains("by itself"));
     }
 
     #[test]

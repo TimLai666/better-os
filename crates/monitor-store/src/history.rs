@@ -14,13 +14,14 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::incident::Incident;
+use crate::incident::{Detection, Incident, IncidentWindow};
 use crate::inventory::{Inventory, InventoryDiff, diff};
 use crate::log::{AppendLog, Recovery};
 use crate::sample::{CoverageCounts, Gap, GapReason, HistoryRecord, Sample};
 use crate::{StoreError, TimeRange};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// The record schema for all three logs. One number, because the three files
 /// are written and migrated together as one store.
@@ -46,6 +47,55 @@ pub const LOCK_FILE_NAME: &str = "lock";
 pub const HISTORY_FILE_NAME: &str = "history.log";
 pub const INCIDENTS_FILE_NAME: &str = "incidents.log";
 pub const INVENTORY_FILE_NAME: &str = "inventory.log";
+
+/// Changes to slowdowns already recorded, and slowdowns the daily cap kept
+/// out (ticket 115). A slowdown's record changes while it lasts; writing the
+/// change here is one small append, where rewriting `incidents.log` would
+/// copy every incident. A Better Monitor from before ticket 115 does not know
+/// this file and leaves it alone, and when such a version rewrites
+/// `incidents.log` (dropping the `detection` it cannot read), the next open
+/// puts the detection back from here.
+pub const SLOWDOWNS_FILE_NAME: &str = "slowdowns.log";
+
+/// How long a slowdown the daily cap kept out is remembered.
+const SKIPPED_KEPT_MS: u64 = 24 * 60 * 60 * 1_000;
+
+/// One line of [`SLOWDOWNS_FILE_NAME`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "record")]
+pub enum SlowdownRecord {
+    /// The latest state of a recorded slowdown. Matched by identifier and by
+    /// the moment it began, so it never lands on another incident that
+    /// happens to share the number.
+    Amended {
+        incident_id: u64,
+        marked_at_unix_ms: u64,
+        window: IncidentWindow,
+        detection: Detection,
+    },
+    /// A slowdown the daily cap kept from being recorded.
+    Skipped { at_unix_ms: u64 },
+}
+
+/// A write to [`SLOWDOWNS_FILE_NAME`] already applied to the store in
+/// memory, still to be put on disk. It holds its own handle on the file, so
+/// it can be written after whatever lock guards the store is let go: a
+/// `sync_data` during an I/O stall then holds up nothing but itself.
+#[derive(Debug)]
+pub struct PendingSlowdownWrite {
+    log: Arc<std::sync::Mutex<AppendLog>>,
+    record: SlowdownRecord,
+}
+
+impl PendingSlowdownWrite {
+    pub fn write(self) -> Result<(), StoreError> {
+        let mut log = self
+            .log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        log.append(&self.record)
+    }
+}
 
 /// The default retention window.
 ///
@@ -136,6 +186,15 @@ pub struct StoreStats {
     /// beside the logs rather than dropped.
     #[serde(default)]
     pub set_aside_records: u64,
+    /// Goes up whenever an incident is recorded or changes, so a client can
+    /// tell its list is behind even when the number of incidents is not.
+    /// Only equality means anything, and only within one run of the store.
+    #[serde(default)]
+    pub incidents_revision: u64,
+    /// Slowdowns the daily cap kept from being recorded in the 24 hours
+    /// before the stats were taken. Filled in by whoever knows the clock.
+    #[serde(default)]
+    pub skipped_slowdowns: u64,
 }
 
 /// Samples and gaps over one interval, kept together because reading one
@@ -161,6 +220,10 @@ pub struct HistoryStore {
     history: Vec<HistoryRecord>,
     incidents: Vec<Incident>,
     inventory: Vec<Inventory>,
+    slowdowns_log: Arc<std::sync::Mutex<AppendLog>>,
+    /// When each slowdown the daily cap kept out happened, newest last.
+    skipped_slowdowns: Vec<u64>,
+    incidents_revision: u64,
     recovery: StoreRecovery,
     appends_since_compaction: u64,
     /// The open lock file; the lock is released when the store is dropped.
@@ -381,6 +444,12 @@ impl HistoryStore {
         let mut history = history_log.read_all::<HistoryRecord>(STORE_SCHEMA_VERSION)?;
         let incidents = incidents_log.read_all::<Incident>(STORE_SCHEMA_VERSION)?;
         let inventory = inventory_log.read_all::<Inventory>(STORE_SCHEMA_VERSION)?;
+        let (mut slowdowns_log, _) =
+            AppendLog::open(root.join(SLOWDOWNS_FILE_NAME), STORE_SCHEMA_VERSION)?;
+        let slowdown_records = slowdowns_log.read_all::<SlowdownRecord>(STORE_SCHEMA_VERSION)?;
+        let mut incidents = incidents;
+        let skipped_slowdowns =
+            apply_slowdown_records(&mut incidents, &mut slowdowns_log, slowdown_records)?;
 
         // A torn tail is a hole in the timeline, so it is recorded as one
         // rather than left to look like a quiet period.
@@ -405,6 +474,9 @@ impl HistoryStore {
             history,
             incidents,
             inventory,
+            slowdowns_log: Arc::new(std::sync::Mutex::new(slowdowns_log)),
+            skipped_slowdowns,
+            incidents_revision: 0,
             recovery: StoreRecovery {
                 history: history_recovery.into(),
                 incidents: incidents_recovery.into(),
@@ -477,6 +549,7 @@ impl HistoryStore {
 
     pub fn record_incident(&mut self, incident: Incident) -> Result<(), StoreError> {
         self.incidents_log.append(&incident)?;
+        self.incidents_revision += 1;
         self.incidents.push(incident);
         if self.incidents.len() > self.policy.max_incidents {
             let keep = self.policy.max_incidents;
@@ -488,25 +561,53 @@ impl HistoryStore {
         Ok(())
     }
 
-    /// Replace a recorded incident with a newer version of itself: a
-    /// slowdown that went on after it was first recorded. The log is
-    /// rewritten whole, so this is for the few times a slowdown's record
-    /// changes, not for every sample. Returns whether the incident was there.
-    pub fn update_incident(&mut self, incident: Incident) -> Result<bool, StoreError> {
-        let Some(slot) = self
+    /// Change a recorded slowdown: its window and what the service saw, as
+    /// it goes on and when it ends. The change is applied in memory at once;
+    /// the returned write puts it on disk and may be done after the caller
+    /// lets go of the store. `None` when the incident is no longer kept.
+    pub fn amend_slowdown(
+        &mut self,
+        incident_id: u64,
+        window: IncidentWindow,
+        detection: Detection,
+    ) -> Option<PendingSlowdownWrite> {
+        let slot = self
             .incidents
             .iter_mut()
-            .find(|candidate| candidate.id == incident.id)
-        else {
-            return Ok(false);
-        };
-        if *slot == incident {
-            return Ok(true);
+            .find(|candidate| candidate.id == incident_id)?;
+        slot.window = window;
+        slot.detection = Some(detection.clone());
+        self.incidents_revision += 1;
+        Some(PendingSlowdownWrite {
+            log: self.slowdowns_log.clone(),
+            record: SlowdownRecord::Amended {
+                incident_id,
+                marked_at_unix_ms: slot.marked_at_unix_ms,
+                window,
+                detection,
+            },
+        })
+    }
+
+    /// Remember a slowdown the daily cap kept from being recorded.
+    pub fn skip_slowdown(&mut self, at_unix_ms: u64) -> PendingSlowdownWrite {
+        self.skipped_slowdowns.push(at_unix_ms);
+        let newest = self.skipped_slowdowns.iter().copied().max().unwrap_or(0);
+        self.skipped_slowdowns
+            .retain(|at| newest.saturating_sub(*at) < SKIPPED_KEPT_MS);
+        self.incidents_revision += 1;
+        PendingSlowdownWrite {
+            log: self.slowdowns_log.clone(),
+            record: SlowdownRecord::Skipped { at_unix_ms },
         }
-        *slot = incident;
-        self.incidents_log
-            .rewrite(&self.incidents, STORE_SCHEMA_VERSION)?;
-        Ok(true)
+    }
+
+    /// Slowdowns the daily cap kept out at or after `from_unix_ms`.
+    pub fn skipped_slowdowns_since(&self, from_unix_ms: u64) -> u64 {
+        self.skipped_slowdowns
+            .iter()
+            .filter(|at| **at >= from_unix_ms)
+            .count() as u64
     }
 
     /// Store an inventory capture, but only when it differs from the last one.
@@ -631,13 +732,23 @@ impl HistoryStore {
             inventory_records: self.inventory.len() as u64,
             bytes_on_disk: self.history_log.bytes()
                 + self.incidents_log.bytes()
-                + self.inventory_log.bytes(),
+                + self.inventory_log.bytes()
+                + self.slowdowns_bytes(),
             oldest_sample_unix_ms: self.oldest_sample_unix_ms(),
             newest_sample_unix_ms: self.newest_sample_unix_ms(),
             set_aside_records: self.history_log.set_aside()
                 + self.incidents_log.set_aside()
                 + self.inventory_log.set_aside(),
+            incidents_revision: self.incidents_revision,
+            skipped_slowdowns: 0,
         }
+    }
+
+    fn slowdowns_bytes(&self) -> u64 {
+        self.slowdowns_log
+            .lock()
+            .map(|log| log.bytes())
+            .unwrap_or(0)
     }
 
     /// Force retention now. The service calls this on a clean shutdown so the
@@ -742,6 +853,51 @@ impl HistoryStore {
         self.history_log
             .rewrite(&self.history, STORE_SCHEMA_VERSION)
     }
+}
+
+/// Put the latest recorded state of each slowdown on its incident, and
+/// return when the remembered skipped slowdowns happened. The file is
+/// rewritten with only what is still needed once it holds more than twice
+/// that, so it stays about as large as the incidents it describes.
+fn apply_slowdown_records(
+    incidents: &mut [Incident],
+    log: &mut AppendLog,
+    records: Vec<SlowdownRecord>,
+) -> Result<Vec<u64>, StoreError> {
+    let total = records.len();
+    let mut latest: BTreeMap<u64, SlowdownRecord> = BTreeMap::new();
+    let mut skipped = Vec::new();
+    for record in records {
+        match &record {
+            SlowdownRecord::Amended {
+                incident_id,
+                marked_at_unix_ms,
+                window,
+                detection,
+            } => {
+                let Some(incident) = incidents.iter_mut().find(|incident| {
+                    incident.id == *incident_id && incident.marked_at_unix_ms == *marked_at_unix_ms
+                }) else {
+                    continue;
+                };
+                incident.window = *window;
+                incident.detection = Some(detection.clone());
+                latest.insert(*incident_id, record);
+            }
+            SlowdownRecord::Skipped { at_unix_ms } => skipped.push(*at_unix_ms),
+        }
+    }
+    let newest = skipped.iter().copied().max().unwrap_or(0);
+    skipped.retain(|at| newest.saturating_sub(*at) < SKIPPED_KEPT_MS);
+    let kept = latest.len() + skipped.len();
+    if total > kept * 2 + 16 {
+        let mut rewritten: Vec<SlowdownRecord> = latest.into_values().collect();
+        rewritten.extend(skipped.iter().map(|at_unix_ms| SlowdownRecord::Skipped {
+            at_unix_ms: *at_unix_ms,
+        }));
+        log.rewrite(&rewritten, STORE_SCHEMA_VERSION)?;
+    }
+    Ok(skipped)
 }
 
 #[cfg(test)]
@@ -966,11 +1122,9 @@ mod tests {
         assert_eq!(store.next_incident_id(), 2);
     }
 
-    #[test]
-    fn an_updated_incident_replaces_the_first_record_and_survives_a_restart() {
-        use crate::incident::{Detection, SlowdownCause, SlowdownKind, SlowdownResource};
-        let directory = tempfile::tempdir().unwrap();
-        let detection = |ended: u64, ongoing: bool| Detection {
+    fn memory_detection(ended: u64, ongoing: bool) -> Detection {
+        use crate::incident::{SlowdownCause, SlowdownKind, SlowdownResource};
+        Detection {
             started_at_unix_ms: 1_000,
             ended_at_unix_ms: ended,
             ongoing,
@@ -982,7 +1136,12 @@ mod tests {
             }],
             processes_by: SlowdownResource::Memory,
             processes: Vec::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn a_slowdown_changes_by_a_small_append_and_survives_a_restart() {
+        let directory = tempfile::tempdir().unwrap();
         let first = Incident {
             id: 1,
             marked_at_unix_ms: 1_000,
@@ -992,24 +1151,184 @@ mod tests {
             baseline: Default::default(),
             snapshot: Box::new(sample(1_000)),
             about_pid: None,
-            detection: Some(detection(11_000, true)),
+            detection: Some(memory_detection(11_000, true)),
         };
         {
             let mut store =
                 HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
             store.record_incident(first.clone()).unwrap();
-            let mut later = first.clone();
-            later.detection = Some(detection(91_000, false));
-            assert!(store.update_incident(later).unwrap());
-            let mut unknown = first.clone();
-            unknown.id = 9;
-            assert!(!store.update_incident(unknown).unwrap());
+            let incidents_bytes = std::fs::metadata(directory.path().join(INCIDENTS_FILE_NAME))
+                .unwrap()
+                .len();
+            let revision = store.stats().incidents_revision;
+            let window = IncidentWindow {
+                before_seconds: 300,
+                after_seconds: 210,
+            };
+            for ended in [31_000, 61_000, 91_000] {
+                store
+                    .amend_slowdown(1, window, memory_detection(ended, ended < 91_000))
+                    .expect("a kept incident")
+                    .write()
+                    .unwrap();
+            }
+            // In memory at once, and nothing rewritten: the incidents log is
+            // the size it was.
+            assert_eq!(store.incidents()[0].window.after_seconds, 210);
+            assert!(store.stats().incidents_revision > revision);
+            assert_eq!(
+                std::fs::metadata(directory.path().join(INCIDENTS_FILE_NAME))
+                    .unwrap()
+                    .len(),
+                incidents_bytes
+            );
+            assert!(
+                store
+                    .amend_slowdown(9, window, memory_detection(5_000, false))
+                    .is_none()
+            );
         }
         let store = HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
         assert_eq!(store.incidents().len(), 1, "one slowdown, one record");
         let kept = store.incidents()[0].detection.as_ref().unwrap();
         assert_eq!(kept.ended_at_unix_ms, 91_000);
         assert!(!kept.ongoing);
+        assert_eq!(store.incidents()[0].window.after_seconds, 210);
+    }
+
+    #[test]
+    fn the_slowdowns_file_is_compacted_to_what_is_still_needed() {
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let mut store =
+                HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
+            store
+                .record_incident(Incident {
+                    id: 1,
+                    marked_at_unix_ms: 1_000,
+                    monotonic_ns: 0,
+                    note: None,
+                    window: IncidentWindow::default(),
+                    baseline: Default::default(),
+                    snapshot: Box::new(sample(1_000)),
+                    about_pid: None,
+                    detection: Some(memory_detection(2_000, true)),
+                })
+                .unwrap();
+            for step in 0..100u64 {
+                store
+                    .amend_slowdown(
+                        1,
+                        IncidentWindow::default(),
+                        memory_detection(2_000 + step * 1_000, true),
+                    )
+                    .unwrap()
+                    .write()
+                    .unwrap();
+            }
+        }
+        let size = |directory: &Path| {
+            std::fs::metadata(directory.join(SLOWDOWNS_FILE_NAME))
+                .unwrap()
+                .len()
+        };
+        let before = size(directory.path());
+        let store = HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
+        assert!(size(directory.path()) * 10 < before, "compacted on open");
+        let kept = store.incidents()[0].detection.as_ref().unwrap();
+        assert_eq!(kept.ended_at_unix_ms, 2_000 + 99 * 1_000);
+    }
+
+    #[test]
+    fn slowdowns_the_daily_cap_kept_out_are_remembered_for_a_day() {
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let mut store =
+                HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
+            for at in [1_000, 2_000, 90_000_000, 90_001_000] {
+                store.skip_slowdown(at).write().unwrap();
+            }
+            assert_eq!(store.skipped_slowdowns_since(80_000_000), 2);
+        }
+        let store = HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
+        assert_eq!(store.skipped_slowdowns_since(80_000_000), 2);
+        assert_eq!(
+            store.skipped_slowdowns_since(0),
+            2,
+            "a day older than the newest is forgotten"
+        );
+    }
+
+    /// What v0.2.13 writes and rewrites, captured by running that tag's own
+    /// store crate (built from `git archive v0.2.13`) on a store: its record
+    /// of an incident marked by hand, and its rewrite of a log that held a
+    /// slowdown this version recorded. The rewrite was made by 0.2.13
+    /// opening [`NEW_DETECTED`], listing it with nothing set aside, and
+    /// trimming the log to its bound, so it also shows that version reading
+    /// this one's record.
+    const OLD_MARKED: &str = r#"{"id":1,"marked_at_unix_ms":1700000000000,"monotonic_ns":5,"note":"everything froze while saving","window":{"before_seconds":300,"after_seconds":120},"snapshot":{"wall_unix_ms":1700000000000,"monotonic_ns":0,"rounds":1,"metrics":{},"entities":[],"processes":[],"collectors":[]},"baseline":{},"about_pid":4242}"#;
+    const OLD_REWRITE_OF_DETECTED: &str = r#"{"id":2,"marked_at_unix_ms":1700000500000,"monotonic_ns":7,"window":{"before_seconds":300,"after_seconds":220},"snapshot":{"wall_unix_ms":1700000510000,"monotonic_ns":7,"rounds":1,"metrics":{},"entities":[],"processes":[],"collectors":[]},"baseline":{}}"#;
+    const OLD_MARKED_AFTER: &str = r#"{"id":3,"marked_at_unix_ms":1700000900000,"monotonic_ns":6,"note":"marked by 0.2.13 after the newer build","window":{"before_seconds":300,"after_seconds":120},"snapshot":{"wall_unix_ms":1700000900000,"monotonic_ns":0,"rounds":1,"metrics":{},"entities":[],"processes":[],"collectors":[]},"baseline":{}}"#;
+    /// The record this version writes for that slowdown.
+    const NEW_DETECTED: &str = r#"{"id":2,"marked_at_unix_ms":1700000500000,"monotonic_ns":7,"window":{"before_seconds":300,"after_seconds":220},"snapshot":{"wall_unix_ms":1700000510000,"monotonic_ns":7,"rounds":1,"metrics":{},"entities":[],"processes":[],"collectors":[]},"baseline":{},"detection":{"started_at_unix_ms":1700000500000,"ended_at_unix_ms":1700000600000,"ongoing":false,"causes":[{"kind":"memory_pressure","seconds":100,"worst":64.0,"count":0}],"processes_by":"memory","processes":[{"pid":20,"name":"browser","memory_resident":3000000000}]}}"#;
+
+    #[test]
+    fn a_record_marked_by_hand_with_v0_2_13_reads_as_marked_by_hand() {
+        let marked: Incident = serde_json::from_str(OLD_MARKED).unwrap();
+        assert!(marked.marked_by_hand());
+        assert_eq!(
+            marked.note.as_deref(),
+            Some("everything froze while saving")
+        );
+        assert_eq!(marked.about_pid, Some(4242));
+    }
+
+    #[test]
+    fn this_version_writes_exactly_the_record_v0_2_13_was_given() {
+        let detected: Incident = serde_json::from_str(NEW_DETECTED).unwrap();
+        assert!(!detected.marked_by_hand());
+        let written = serde_json::to_value(&detected).unwrap();
+        let given: serde_json::Value = serde_json::from_str(NEW_DETECTED).unwrap();
+        assert_eq!(written, given);
+    }
+
+    #[test]
+    fn a_detection_v0_2_13_dropped_in_a_rewrite_comes_back_from_the_slowdowns_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let detected: Incident = serde_json::from_str(NEW_DETECTED).unwrap();
+        {
+            // This version recorded the slowdown and its final state.
+            let mut store =
+                HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
+            store.record_incident(detected.clone()).unwrap();
+            store
+                .amend_slowdown(
+                    detected.id,
+                    detected.window,
+                    detected.detection.clone().unwrap(),
+                )
+                .unwrap()
+                .write()
+                .unwrap();
+        }
+        // Then 0.2.13 rewrote the incidents log, as it does at its bound.
+        {
+            let (mut log, _) = AppendLog::open(
+                directory.path().join(INCIDENTS_FILE_NAME),
+                STORE_SCHEMA_VERSION,
+            )
+            .unwrap();
+            let rewritten: Vec<serde_json::Value> = [OLD_REWRITE_OF_DETECTED, OLD_MARKED_AFTER]
+                .iter()
+                .map(|record| serde_json::from_str(record).unwrap())
+                .collect();
+            log.rewrite(&rewritten, STORE_SCHEMA_VERSION).unwrap();
+        }
+        let store = HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
+        assert_eq!(store.incidents().len(), 2);
+        assert_eq!(store.incidents()[0].detection, detected.detection);
+        assert!(store.incidents()[1].marked_by_hand());
+        assert_eq!(store.stats().set_aside_records, 0);
     }
 
     #[test]

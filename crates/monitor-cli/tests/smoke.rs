@@ -76,13 +76,25 @@ async fn record_writes_history_and_the_other_subcommands_read_it() {
     );
 }
 
-#[test]
-fn marking_a_slowdown_by_hand_is_no_longer_a_command() {
-    // Ticket 115: the service records slowdowns by itself, so `mark` is gone
-    // rather than kept as a second way to make one.
-    let refused = Cli::try_parse_from(["better-monitor-cli", "--offline", "mark"])
-        .expect_err("mark is refused");
-    assert!(refused.to_string().contains("mark"), "{refused}");
+#[tokio::test]
+async fn mark_only_says_that_slowdowns_are_recorded_automatically() {
+    // Ticket 115: the service records slowdowns by itself; `mark` is kept,
+    // hidden, to say so, and writes nothing.
+    let store = tempfile::tempdir().unwrap();
+    let said = cli(
+        store.path(),
+        &["mark", "--note", "the system was just slow"],
+    )
+    .await;
+    assert!(said.contains("records"), "{said}");
+    assert!(said.contains("by itself"), "{said}");
+    assert!(
+        !store
+            .path()
+            .join(monitor_store::INCIDENTS_FILE_NAME)
+            .exists(),
+        "nothing was recorded"
+    );
 }
 
 #[tokio::test]

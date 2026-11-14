@@ -228,6 +228,8 @@ pub(crate) struct MonitorApp {
     /// When the Events page last asked for the incident list, so a slowdown
     /// the service recorded while the page is open shows up on it.
     pub(crate) incidents_asked_at_unix_ms: u64,
+    /// The store's incident revision when the list was last asked for.
+    pub(crate) incidents_asked_revision: Option<u64>,
     pub(crate) last_failure: Option<String>,
 
     pub(crate) apps: AppsModel,
@@ -288,22 +290,24 @@ pub(crate) enum Collection {
 /// going on, so its length and its end appear without leaving the page.
 pub(crate) const ONGOING_REFRESH_MS: u64 = 10_000;
 
-/// Whether the Events page's list is behind the service: it holds a different
-/// number of incidents than the store does, or it shows a slowdown still
-/// going on and has not asked for a while.
+/// Whether the Events page's list is behind the service: the store recorded
+/// or changed an incident since the list was asked for (which the number of
+/// incidents alone cannot tell once the store is at its bound), it holds a
+/// different number, or the list shows a slowdown still going on and has not
+/// been asked for a while.
 pub(crate) fn incidents_are_stale(app: &MonitorApp, status: &StatusDocument) -> bool {
     list_is_stale(
         &app.incidents,
-        status.store.incidents,
-        app.incidents_asked_at_unix_ms,
+        (status.store.incidents, status.store.incidents_revision),
+        (app.incidents_asked_revision, app.incidents_asked_at_unix_ms),
         status.now_unix_ms,
     )
 }
 
 pub(crate) fn list_is_stale(
     shown: &[Incident],
-    stored: u64,
-    asked_at_unix_ms: u64,
+    (stored, revision): (u64, u64),
+    (asked_revision, asked_at_unix_ms): (Option<u64>, u64),
     now_unix_ms: u64,
 ) -> bool {
     let ongoing = shown.iter().any(|incident| {
@@ -312,7 +316,8 @@ pub(crate) fn list_is_stale(
             .as_ref()
             .is_some_and(|detection| detection.ongoing)
     });
-    shown.len() as u64 != stored
+    asked_revision != Some(revision)
+        || shown.len() as u64 != stored
         || ongoing && now_unix_ms.saturating_sub(asked_at_unix_ms) >= ONGOING_REFRESH_MS
 }
 
@@ -369,6 +374,7 @@ impl MonitorApp {
             inventory_captures: 0,
             inventory_diff: None,
             incidents_asked_at_unix_ms: 0,
+            incidents_asked_revision: None,
             last_failure: None,
             apps: AppsModel::new(Vec::new(), GroupingPrecedence::default()),
             app_sort: (AppColumn::Cpu, false),
@@ -465,6 +471,7 @@ impl MonitorApp {
                 }
                 if self.page == Page::Events && incidents_are_stale(self, &status) {
                     self.incidents_asked_at_unix_ms = status.now_unix_ms;
+                    self.incidents_asked_revision = Some(status.store.incidents_revision);
                     self.ask(LinkRequest::Incidents);
                 }
                 self.status = Some(*status);
@@ -594,6 +601,10 @@ impl MonitorApp {
             }),
             Page::Events => {
                 self.incidents_asked_at_unix_ms = self.now_unix_ms;
+                self.incidents_asked_revision = self
+                    .status
+                    .as_ref()
+                    .map(|status| status.store.incidents_revision);
                 self.ask(LinkRequest::Incidents);
             }
             Page::SystemInfo | Page::Performance => self.ask(LinkRequest::Inventory),

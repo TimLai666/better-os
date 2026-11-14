@@ -4,9 +4,10 @@
 //! service recognizes slowdowns by itself, as they happen, with
 //! [`SlowdownDetector`]: programs kept waiting for the processor, memory, or
 //! the disk, memory nearly gone while the computer swaps, a program ended
-//! because memory ran out, or a processor throttling itself because it is too
-//! hot. The record says which, for how long, how bad, and which processes
-//! were using the most of it. Incidents a person marked by hand with an
+//! because memory ran out, a processor throttling itself because it is too
+//! hot, or the machine freezing so badly that the service itself is late.
+//! The record says which, for how long, how bad, and which processes were
+//! using the most of it. Incidents a person marked by hand with an
 //! earlier version carry no [`Detection`] and stay readable as they were.
 //!
 //! The evidence is the sample taken when the slowdown was recognized, the
@@ -202,10 +203,11 @@ pub enum SlowdownKind {
     /// Programs kept waiting for memory: the kernel was reclaiming or swapping
     /// pages in their way (memory pressure stall information).
     MemoryPressure,
-    /// Programs kept waiting for the disk (I/O pressure stall information).
+    /// Every running program kept waiting for the disk at once (I/O `full`
+    /// pressure stall information).
     DiskPressure,
-    /// Programs kept waiting for a turn on the processor (CPU pressure stall
-    /// information).
+    /// Programs kept waiting for a turn on the processor while far more were
+    /// ready to run than there are processors.
     CpuPressure,
     /// Memory nearly ran out and the computer was swapping.
     MemoryExhausted,
@@ -213,6 +215,9 @@ pub enum SlowdownKind {
     OutOfMemoryKill,
     /// The processor slowed itself down because it was too hot.
     ThermalThrottling,
+    /// The computer froze: Better Monitor's own once-a-second reading came
+    /// far too late while the computer was awake.
+    Stalled,
     /// A kind a newer Better Monitor recorded.
     #[serde(other)]
     Other,
@@ -220,13 +225,14 @@ pub enum SlowdownKind {
 
 impl SlowdownKind {
     /// Every kind this build detects, in the order a tie is broken by.
-    pub const DETECTED: [SlowdownKind; 6] = [
+    pub const DETECTED: [SlowdownKind; 7] = [
         SlowdownKind::OutOfMemoryKill,
         SlowdownKind::MemoryExhausted,
         SlowdownKind::MemoryPressure,
         SlowdownKind::DiskPressure,
         SlowdownKind::CpuPressure,
         SlowdownKind::ThermalThrottling,
+        SlowdownKind::Stalled,
     ];
 
     /// A stable key for tests, logs, and locale lookup.
@@ -238,6 +244,7 @@ impl SlowdownKind {
             SlowdownKind::MemoryExhausted => "memory-exhausted",
             SlowdownKind::OutOfMemoryKill => "out-of-memory-kill",
             SlowdownKind::ThermalThrottling => "thermal-throttling",
+            SlowdownKind::Stalled => "stalled",
             SlowdownKind::Other => "other",
         }
     }
@@ -252,16 +259,26 @@ impl SlowdownKind {
             | SlowdownKind::MemoryExhausted
             | SlowdownKind::OutOfMemoryKill => SlowdownResource::Memory,
             SlowdownKind::DiskPressure => SlowdownResource::Disk,
-            SlowdownKind::Other => SlowdownResource::Other,
+            SlowdownKind::Stalled | SlowdownKind::Other => SlowdownResource::Other,
         }
     }
 
     /// Whether one reading is the whole evidence. The kernel ending a
-    /// program is never a brief spike, so it needs no onset period.
+    /// program, or the computer freezing for half a minute, is never a brief
+    /// spike, so neither needs an onset period.
     fn is_immediate(self) -> bool {
-        self == SlowdownKind::OutOfMemoryKill
+        matches!(self, SlowdownKind::OutOfMemoryKill | SlowdownKind::Stalled)
+    }
+
+    fn index(self) -> usize {
+        SlowdownKind::DETECTED
+            .iter()
+            .position(|candidate| *candidate == self)
+            .unwrap_or(usize::MAX)
     }
 }
+
+const KINDS: usize = SlowdownKind::DETECTED.len();
 
 /// What the busiest-process list of a slowdown is ranked by.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -270,6 +287,7 @@ pub enum SlowdownResource {
     Processor,
     Memory,
     Disk,
+    /// Not one resource (a freeze); ranked by processor time.
     #[serde(other)]
     Other,
 }
@@ -280,16 +298,20 @@ pub struct SlowdownCause {
     pub kind: SlowdownKind,
     /// How long the condition held, in whole seconds.
     pub seconds: u64,
-    /// The worst reading while it held. For a pressure kind it is the share of
-    /// time, in percent, that programs were waiting (the kernel's ten-second
-    /// `some` average). For [`SlowdownKind::MemoryExhausted`] it is the lowest
-    /// share of memory, in percent, that was still available. The two event
-    /// kinds leave it at zero and count instead.
+    /// The worst reading while it held. For memory and processor pressure it
+    /// is the share of time, in percent, that at least one program was
+    /// waiting (the kernel's ten-second `some` average); for the disk it is
+    /// the share of time every running program was waiting at once (`full`).
+    /// For [`SlowdownKind::MemoryExhausted`] it is the lowest share of memory,
+    /// in percent, that was still available. For [`SlowdownKind::Stalled`] it
+    /// is the longest freeze, in seconds. The other event kinds leave it at
+    /// zero and count instead.
     #[serde(default)]
     pub worst: f64,
     /// For [`SlowdownKind::OutOfMemoryKill`], how many programs the kernel
-    /// ended; for [`SlowdownKind::ThermalThrottling`], how many times the
-    /// processor's throttle counters went up. Zero for the other kinds.
+    /// ended; for [`SlowdownKind::ThermalThrottling`], how many times a core
+    /// or a package was throttled; for [`SlowdownKind::Stalled`], how many
+    /// freezes. Zero for the other kinds.
     #[serde(default)]
     pub count: u64,
 }
@@ -336,25 +358,39 @@ impl Detection {
 /// the Events page; a test or a recording session changes only the timing.
 /// Every threshold is entered at its value and left only below half of it,
 /// so a reading that hovers at the line is one slowdown and not a series.
+///
+/// Pressure stall information has two lines per resource. `some` is the share
+/// of time at least one program was waiting; `full` is the share of time
+/// every program that had work to do was waiting at once, which is what a
+/// person at the desktop feels, because their own programs are among them.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SlowdownRules {
     /// How long a condition has to hold before it is a slowdown. A brief
     /// spike is shorter than this and is never recorded.
     pub onset_seconds: u64,
+    /// The same for waiting for the processor, which a long build does for
+    /// minutes without anyone noticing, so it has to last longer.
+    pub cpu_onset_seconds: u64,
     /// How long every condition has to stay clear before the slowdown is
     /// over. Anything that comes back sooner extends the same record.
     pub quiet_seconds: u64,
-    /// How often the record of a slowdown still going on is rewritten.
+    /// How often the record of a slowdown still going on is brought up to
+    /// date on disk.
     pub checkpoint_seconds: u64,
     /// The most slowdowns recorded in any 24 hours.
     pub max_per_day: usize,
     /// CPU `some` pressure, percent of the last ten seconds.
     pub cpu_some_percent: f64,
+    /// The one-minute load average per logical processor that has to come
+    /// with it: a build that keeps every core busy has about one runnable
+    /// task per core, a machine that is overwhelmed has several.
+    pub cpu_load_per_processor: f64,
     /// Memory `some` and `full` pressure.
     pub memory_some_percent: f64,
     pub memory_full_percent: f64,
-    /// I/O `some` and `full` pressure.
-    pub disk_some_percent: f64,
+    /// I/O `full` pressure. `some` alone is what one large copy to a slow
+    /// stick holds at 80-90% while the rest of the desktop is fine, so it is
+    /// not used.
     pub disk_full_percent: f64,
     /// Memory still available, percent of the total, at or below which the
     /// computer is nearly out of memory.
@@ -362,16 +398,21 @@ pub struct SlowdownRules {
     /// Pages swapped in and out per second that make "nearly out" a
     /// slowdown rather than a full cache.
     pub swap_pages_per_second: f64,
+    /// How late, in seconds, Better Monitor's own reading has to be, with
+    /// the computer awake, to count as the computer freezing.
+    pub stall_seconds: u64,
 }
 
 /// The share of an entry threshold a condition has to fall below to stop
 /// holding.
 pub const SLOWDOWN_EXIT_FRACTION: f64 = 0.5;
 
-/// A hole between two samples longer than this means the service was not
-/// watching (a suspend, a stopped service). A condition is never counted as
-/// holding across it, and an open slowdown ends where the watching stopped.
-pub const SLOWDOWN_MAX_SAMPLE_GAP_MS: u64 = 30_000;
+/// How much further the wall clock may move than the monotonic clock between
+/// two samples before the difference is a suspend. The monotonic clock stops
+/// while the machine sleeps; it does not stop while the machine is stuck, so
+/// a gap on both clocks is a freeze and a gap on the wall clock alone is
+/// sleep (or the clock being set).
+pub const SUSPEND_SLACK_MS: u64 = 10_000;
 
 /// How long one throttle-counter increase keeps thermal throttling holding.
 /// The counters go up each time a core or package is held back, not once a
@@ -388,22 +429,19 @@ impl Default for SlowdownRules {
     fn default() -> Self {
         Self {
             onset_seconds: 10,
+            cpu_onset_seconds: 30,
             quiet_seconds: 60,
             checkpoint_seconds: 300,
             max_per_day: 24,
-            // Waiting for the processor is what a busy machine does; a
-            // quarter of the time is ordinary on a desktop doing a build, so
-            // the line is half of it.
-            cpu_some_percent: 50.0,
+            cpu_some_percent: 80.0,
+            cpu_load_per_processor: 2.0,
             // Memory stalls are felt at once (the Overview's own line).
             memory_some_percent: 20.0,
             memory_full_percent: 10.0,
-            // A large copy keeps one program waiting for the disk without
-            // anything else noticing; everything waiting is what is felt.
-            disk_some_percent: 50.0,
             disk_full_percent: 20.0,
             memory_available_percent: 5.0,
             swap_pages_per_second: 100.0,
+            stall_seconds: 30,
         }
     }
 }
@@ -412,6 +450,8 @@ impl SlowdownRules {
     fn onset_ms(&self, kind: SlowdownKind) -> u64 {
         if kind.is_immediate() {
             0
+        } else if kind == SlowdownKind::CpuPressure {
+            self.cpu_onset_seconds * 1_000
         } else {
             self.onset_seconds * 1_000
         }
@@ -423,10 +463,23 @@ impl SlowdownRules {
 pub enum SlowdownEvent {
     /// A slowdown began: record it.
     Began(Detection),
-    /// The slowdown is still going on and its record is due to be rewritten.
+    /// The slowdown is still going on and its record is due to be brought up
+    /// to date.
     Continued(Detection),
     /// The slowdown is over: write its final record.
     Ended(Detection),
+    /// A slowdown began and the daily cap kept it from being recorded.
+    Skipped { at_unix_ms: u64 },
+}
+
+/// Which round [`SlowdownDetector::observe`] asks the processes of.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Round {
+    /// The round the sample was made from.
+    Current,
+    /// The round before it: a program the kernel ended for memory is gone
+    /// from the round that reports the kill, so the list comes from before.
+    Previous,
 }
 
 /// How far one reading is past a kind's entry threshold: one or more is
@@ -438,11 +491,20 @@ struct Reading {
     count: u64,
 }
 
+/// A moment on both clocks: `clock` is the detector's own monotonic
+/// milliseconds, which every duration is measured on; `wall` is what a
+/// person reads and what a record says.
+#[derive(Clone, Copy, Debug, Default)]
+struct Moment {
+    clock: u64,
+    wall: u64,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct KindState {
     /// When the kind most recently began entering without a break.
-    entering_since: Option<u64>,
-    /// For thermal throttling, until when the last counter increase holds.
+    entering_since: Option<Moment>,
+    /// For thermal throttling, until when (clock) the last increase holds.
     throttled_until: u64,
     /// The worst reading and the events counted since `entering_since`, so
     /// the onset period is part of the record once it qualifies.
@@ -452,6 +514,7 @@ struct KindState {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Tally {
+    joined: bool,
     held_ms: u64,
     worst: Option<f64>,
     count: u64,
@@ -463,9 +526,9 @@ struct Tally {
 #[derive(Clone, Debug)]
 struct OpenSlowdown {
     started_at_unix_ms: u64,
-    last_held_unix_ms: u64,
-    last_checkpoint_unix_ms: u64,
-    tallies: BTreeMap<SlowdownKind, Tally>,
+    last_held: Moment,
+    last_checkpoint_clock: u64,
+    tallies: [Tally; KINDS],
     processes_by: SlowdownResource,
     processes: Vec<ProcessSample>,
     /// The severity the process list was taken at.
@@ -476,22 +539,23 @@ struct OpenSlowdown {
 }
 
 impl OpenSlowdown {
+    fn cause(&self, index: usize) -> Option<SlowdownCause> {
+        let tally = &self.tallies[index];
+        tally.qualified.then(|| SlowdownCause {
+            kind: SlowdownKind::DETECTED[index],
+            seconds: tally.held_ms / 1_000,
+            worst: tally.worst.unwrap_or(0.0),
+            count: tally.count,
+        })
+    }
+
     fn detection(&self, ongoing: bool) -> Detection {
-        let mut causes: Vec<SlowdownCause> = self
-            .tallies
-            .iter()
-            .filter(|(_, tally)| tally.qualified)
-            .map(|(kind, tally)| SlowdownCause {
-                kind: *kind,
-                seconds: tally.held_ms / 1_000,
-                worst: tally.worst.unwrap_or(0.0),
-                count: tally.count,
-            })
-            .collect();
+        let mut causes: Vec<SlowdownCause> =
+            (0..KINDS).filter_map(|index| self.cause(index)).collect();
         causes.sort_by(cause_order);
         Detection {
             started_at_unix_ms: self.started_at_unix_ms,
-            ended_at_unix_ms: self.last_held_unix_ms,
+            ended_at_unix_ms: self.last_held.wall,
             ongoing,
             causes,
             processes_by: self.processes_by,
@@ -499,40 +563,39 @@ impl OpenSlowdown {
         }
     }
 
+    /// The leading cause's kind, worked out without building a record.
     fn leading(&self) -> Option<SlowdownKind> {
-        let detection = self.detection(true);
-        detection.leading().map(|cause| cause.kind)
+        (0..KINDS)
+            .filter_map(|index| self.cause(index))
+            .min_by(cause_order)
+            .map(|cause| cause.kind)
     }
 }
 
 /// The program being ended explains everything else, so it leads; then
 /// whatever held longest; then the fixed order of [`SlowdownKind::DETECTED`].
 fn cause_order(left: &SlowdownCause, right: &SlowdownCause) -> std::cmp::Ordering {
-    let rank = |kind: SlowdownKind| {
-        SlowdownKind::DETECTED
-            .iter()
-            .position(|candidate| *candidate == kind)
-            .unwrap_or(usize::MAX)
-    };
     let oom = |cause: &SlowdownCause| cause.kind == SlowdownKind::OutOfMemoryKill;
     oom(right)
         .cmp(&oom(left))
         .then(right.seconds.cmp(&left.seconds))
-        .then(rank(left.kind).cmp(&rank(right.kind)))
+        .then(left.kind.index().cmp(&right.kind.index()))
 }
 
 /// Recognizes slowdowns in a stream of samples.
 ///
 /// It reads only what each sample already carries, so it costs a few
-/// comparisons per round. It holds one state per kind and at most one open
-/// slowdown, and its memory of the daily cap is the start times of the last
-/// day's records.
+/// comparisons per round and allocates nothing until something happens. It
+/// holds one state per kind and at most one open slowdown, and its memory of
+/// the daily cap is the start times of the last day's records.
 #[derive(Clone, Debug)]
 pub struct SlowdownDetector {
     rules: SlowdownRules,
-    kinds: BTreeMap<SlowdownKind, KindState>,
+    kinds: [KindState; KINDS],
     open: Option<OpenSlowdown>,
-    last_sample_unix_ms: Option<u64>,
+    /// The previous sample's wall time and monotonic nanoseconds.
+    previous: Option<(u64, u64)>,
+    clock_ms: u64,
     /// Start times of the slowdowns recorded in the last day.
     recent_starts: Vec<u64>,
     /// Slowdowns the daily cap kept from being recorded since this detector
@@ -544,9 +607,10 @@ impl SlowdownDetector {
     pub fn new(rules: SlowdownRules) -> Self {
         Self {
             rules,
-            kinds: BTreeMap::new(),
+            kinds: [KindState::default(); KINDS],
             open: None,
-            last_sample_unix_ms: None,
+            previous: None,
+            clock_ms: 0,
             recent_starts: Vec::new(),
             skipped: 0,
         }
@@ -566,7 +630,8 @@ impl SlowdownDetector {
         self.rules
     }
 
-    /// Slowdowns the daily cap kept from being recorded.
+    /// Slowdowns the daily cap kept from being recorded since this detector
+    /// started.
     pub fn skipped(&self) -> u64 {
         self.skipped
     }
@@ -576,41 +641,84 @@ impl SlowdownDetector {
         self.open.is_some()
     }
 
+    /// The recorded slowdown going on right now, as it stands this second.
+    pub fn current(&self) -> Option<Detection> {
+        self.open
+            .as_ref()
+            .filter(|open| open.recorded)
+            .map(|open| open.detection(true))
+    }
+
     /// Take one sample.
     ///
-    /// `busiest` ranks the processes of the round the sample was made from by
-    /// one resource; it is asked only when a slowdown begins or gets worse.
+    /// `busiest` ranks the processes of a round by one resource; it is asked
+    /// only when a slowdown begins or gets worse.
     pub fn observe(
         &mut self,
         sample: &Sample,
-        busiest: &mut dyn FnMut(SlowdownResource) -> Vec<ProcessSample>,
+        busiest: &mut dyn FnMut(SlowdownResource, Round) -> Vec<ProcessSample>,
     ) -> Vec<SlowdownEvent> {
-        let now = sample.wall_unix_ms;
+        let wall = sample.wall_unix_ms;
         let mut events = Vec::new();
-        let elapsed = match self.last_sample_unix_ms {
-            Some(previous) => now.checked_sub(previous),
-            None => Some(0),
+        let before = Moment {
+            clock: self.clock_ms,
+            wall: self.previous.map(|(wall, _)| wall).unwrap_or(wall),
         };
-        self.last_sample_unix_ms = Some(now);
-        let elapsed_ms = match elapsed {
-            Some(elapsed) if elapsed <= SLOWDOWN_MAX_SAMPLE_GAP_MS => elapsed,
-            // A hole, or a clock that went backwards: nothing held across it.
-            _ => {
-                self.kinds.clear();
-                if let Some(open) = self.open.take()
-                    && open.recorded
-                {
-                    events.push(SlowdownEvent::Ended(open.detection(false)));
+        // How long passed on each clock. A monotonic clock that went
+        // backwards is another process's; nothing is known about the gap.
+        let (elapsed_ms, slept) = match self.previous {
+            None => (0, false),
+            Some((previous_wall, previous_monotonic)) => {
+                match sample.monotonic_ns.checked_sub(previous_monotonic) {
+                    None => (0, true),
+                    Some(nanoseconds) => {
+                        let monotonic_ms = nanoseconds / 1_000_000;
+                        let wall_ms = wall.saturating_sub(previous_wall);
+                        (
+                            monotonic_ms,
+                            wall_ms > monotonic_ms + SUSPEND_SLACK_MS || wall < previous_wall,
+                        )
+                    }
                 }
-                0
             }
         };
-        let seconds = elapsed_ms as f64 / 1_000.0;
+        self.previous = Some((wall, sample.monotonic_ns));
+        if slept {
+            // Asleep, or a clock set by hand: nothing held across it, and a
+            // slowdown ends where watching stopped.
+            self.kinds = [KindState::default(); KINDS];
+            if let Some(open) = self.open.take()
+                && open.recorded
+            {
+                events.push(SlowdownEvent::Ended(open.detection(false)));
+            }
+        }
+        let held_ms = if slept { 0 } else { elapsed_ms };
+        self.clock_ms += held_ms;
+        let now = Moment {
+            clock: self.clock_ms,
+            wall,
+        };
+        let stalled_ms = (!slept && held_ms >= self.rules.stall_seconds * 1_000).then_some(held_ms);
 
-        let mut readings: BTreeMap<SlowdownKind, Reading> = BTreeMap::new();
-        for kind in SlowdownKind::DETECTED {
-            let state = self.kinds.entry(kind).or_default();
-            let reading = read(kind, sample, &self.rules, seconds, now, state);
+        let mut readings = [Reading::default(); KINDS];
+        for (index, kind) in SlowdownKind::DETECTED.into_iter().enumerate() {
+            let state = &mut self.kinds[index];
+            let reading = match kind {
+                // The freeze began when the last reading before it was taken.
+                SlowdownKind::Stalled => match stalled_ms {
+                    Some(stalled) => {
+                        state.entering_since = Some(before);
+                        Reading {
+                            severity: 1.0,
+                            worst: stalled as f64 / 1_000.0,
+                            count: 1,
+                        }
+                    }
+                    None => Reading::default(),
+                },
+                _ => read(kind, sample, &self.rules, held_ms, now.clock, state),
+            };
             if reading.severity >= 1.0 {
                 state.entering_since.get_or_insert(now);
                 state.pending_worst = Some(worse(kind, state.pending_worst, reading.worst));
@@ -620,96 +728,113 @@ impl SlowdownDetector {
                 state.pending_worst = None;
                 state.pending_count = 0;
             }
-            readings.insert(kind, reading);
+            readings[index] = reading;
         }
 
-        let qualified = |kinds: &BTreeMap<SlowdownKind, KindState>, kind: SlowdownKind| {
-            kinds[&kind]
+        let rules = self.rules;
+        let qualified = |state: &KindState, kind: SlowdownKind| {
+            state
                 .entering_since
-                .is_some_and(|since| now.saturating_sub(since) >= self.rules.onset_ms(kind))
+                .is_some_and(|since| now.clock.saturating_sub(since.clock) >= rules.onset_ms(kind))
         };
 
         if let Some(open) = self.open.as_mut() {
             let mut held_now = false;
-            for (kind, reading) in &readings {
+            for (index, reading) in readings.iter().enumerate() {
+                let kind = SlowdownKind::DETECTED[index];
                 let entering = reading.severity >= 1.0;
                 let holding = reading.severity >= SLOWDOWN_EXIT_FRACTION;
-                let joined = open.tallies.contains_key(kind);
-                if !(holding && joined || entering) {
+                let tally = &mut open.tallies[index];
+                if !(holding && tally.joined || entering) {
                     continue;
                 }
-                let tally = open.tallies.entry(*kind).or_default();
-                tally.held_ms += elapsed_ms;
+                tally.joined = true;
+                // A freeze in the middle of a slowdown is the slowdown going
+                // on: the time held includes it.
+                tally.held_ms += if kind == SlowdownKind::Stalled {
+                    stalled_ms.unwrap_or(0)
+                } else {
+                    held_ms
+                };
                 tally.count += reading.count;
-                tally.worst = Some(worse(*kind, tally.worst, reading.worst));
-                if qualified(&self.kinds, *kind) {
+                tally.worst = Some(worse(kind, tally.worst, reading.worst));
+                if qualified(&self.kinds[index], kind) {
                     tally.qualified = true;
                 }
                 if tally.qualified {
-                    open.last_held_unix_ms = now;
+                    open.last_held = now;
                     held_now = true;
                 }
             }
             if let Some(leading) = open.leading() {
-                let severity = readings[&leading].severity;
-                if leading.resource() != open.processes_by || severity > open.processes_severity {
-                    let ranked = busiest(leading.resource());
-                    if !ranked.is_empty() || leading.resource() != open.processes_by {
-                        open.processes = ranked;
-                        open.processes_by = leading.resource();
-                        open.processes_severity = severity;
+                if leading == SlowdownKind::OutOfMemoryKill {
+                    // The list from before the kill names the program that
+                    // was using the memory; a later one cannot.
+                    let killed_now = readings[leading.index()].count > 0;
+                    let have_memory_list =
+                        open.processes_by == SlowdownResource::Memory && !open.processes.is_empty();
+                    if killed_now && !have_memory_list {
+                        open.processes = busiest(SlowdownResource::Memory, Round::Previous);
+                        open.processes_by = SlowdownResource::Memory;
+                    }
+                    open.processes_severity = f64::INFINITY;
+                } else {
+                    let severity = readings[leading.index()].severity;
+                    if leading.resource() != open.processes_by || severity > open.processes_severity
+                    {
+                        let ranked = busiest(leading.resource(), Round::Current);
+                        if !ranked.is_empty() || leading.resource() != open.processes_by {
+                            open.processes = ranked;
+                            open.processes_by = leading.resource();
+                            open.processes_severity = severity;
+                        }
                     }
                 }
             }
             if !held_now
-                && now.saturating_sub(open.last_held_unix_ms) >= self.rules.quiet_seconds * 1_000
+                && now.clock.saturating_sub(open.last_held.clock) >= rules.quiet_seconds * 1_000
             {
                 let open = self.open.take().expect("an open slowdown");
                 if open.recorded {
                     events.push(SlowdownEvent::Ended(open.detection(false)));
                 }
             } else if open.recorded
-                && now.saturating_sub(open.last_checkpoint_unix_ms)
-                    >= self.rules.checkpoint_seconds * 1_000
+                && now.clock.saturating_sub(open.last_checkpoint_clock)
+                    >= rules.checkpoint_seconds * 1_000
             {
-                open.last_checkpoint_unix_ms = now;
+                open.last_checkpoint_clock = now.clock;
                 events.push(SlowdownEvent::Continued(open.detection(true)));
             }
             return events;
         }
 
-        let started: Vec<SlowdownKind> = SlowdownKind::DETECTED
-            .into_iter()
-            .filter(|kind| qualified(&self.kinds, *kind))
-            .collect();
-        if started.is_empty() {
+        let mut tallies = [Tally::default(); KINDS];
+        let mut started_at: Option<u64> = None;
+        for (index, kind) in SlowdownKind::DETECTED.into_iter().enumerate() {
+            let state = &self.kinds[index];
+            if !qualified(state, kind) {
+                continue;
+            }
+            let since = state.entering_since.unwrap_or(now);
+            started_at = Some(started_at.map_or(since.wall, |at| at.min(since.wall)));
+            tallies[index] = Tally {
+                joined: true,
+                held_ms: now.clock.saturating_sub(since.clock),
+                worst: state.pending_worst,
+                count: state.pending_count,
+                qualified: true,
+            };
+        }
+        let Some(started_at) = started_at else {
             return events;
-        }
-        let started_at = started
-            .iter()
-            .filter_map(|kind| self.kinds[kind].entering_since)
-            .min()
-            .unwrap_or(now);
-        let mut tallies = BTreeMap::new();
-        for kind in &started {
-            let state = self.kinds[kind];
-            tallies.insert(
-                *kind,
-                Tally {
-                    held_ms: now.saturating_sub(state.entering_since.unwrap_or(now)),
-                    worst: state.pending_worst,
-                    count: state.pending_count,
-                    qualified: true,
-                },
-            );
-        }
+        };
         self.recent_starts
-            .retain(|start| now.saturating_sub(*start) < DAY_MS);
-        let recorded = self.recent_starts.len() < self.rules.max_per_day;
+            .retain(|start| wall.saturating_sub(*start) < DAY_MS);
+        let recorded = self.recent_starts.len() < rules.max_per_day;
         let mut open = OpenSlowdown {
             started_at_unix_ms: started_at,
-            last_held_unix_ms: now,
-            last_checkpoint_unix_ms: now,
+            last_held: now,
+            last_checkpoint_clock: now.clock,
             tallies,
             processes_by: SlowdownResource::Other,
             processes: Vec::new(),
@@ -719,12 +844,20 @@ impl SlowdownDetector {
         if recorded {
             let leading = open.leading().expect("a slowdown has a cause");
             open.processes_by = leading.resource();
-            open.processes = busiest(leading.resource());
-            open.processes_severity = readings[&leading].severity;
+            if leading == SlowdownKind::OutOfMemoryKill {
+                open.processes = busiest(SlowdownResource::Memory, Round::Previous);
+                open.processes_severity = f64::INFINITY;
+            } else {
+                open.processes = busiest(leading.resource(), Round::Current);
+                open.processes_severity = readings[leading.index()].severity;
+            }
             self.recent_starts.push(started_at);
             events.push(SlowdownEvent::Began(open.detection(true)));
         } else {
             self.skipped += 1;
+            events.push(SlowdownEvent::Skipped {
+                at_unix_ms: started_at,
+            });
         }
         self.open = Some(open);
         events
@@ -734,13 +867,13 @@ impl SlowdownDetector {
     /// where it was last seen.
     pub fn interrupt(&mut self) -> Option<Detection> {
         let open = self.open.take()?;
-        self.kinds.clear();
+        self.kinds = [KindState::default(); KINDS];
         open.recorded.then(|| open.detection(false))
     }
 }
 
-/// Keep the worse of two readings: the higher pressure, the lower available
-/// memory.
+/// Keep the worse of two readings: the higher pressure or the longer freeze,
+/// the lower available memory.
 fn worse(kind: SlowdownKind, held: Option<f64>, reading: f64) -> f64 {
     match (kind, held) {
         (_, None) => reading,
@@ -749,17 +882,54 @@ fn worse(kind: SlowdownKind, held: Option<f64>, reading: f64) -> f64 {
     }
 }
 
-fn metric(raw: &str) -> MetricId {
-    MetricId::new(raw).expect("a slowdown metric id is well formed")
+/// The metric identifiers the detector reads, made once rather than every
+/// second.
+struct Ids {
+    some: MetricId,
+    full: MetricId,
+    load: MetricId,
+    processors: MetricId,
+    available: MetricId,
+    total: MetricId,
+    swap_in: MetricId,
+    swap_out: MetricId,
+    oom_kills: MetricId,
+    throttle: MetricId,
+    process_cpu: MetricId,
+    process_memory: MetricId,
+    process_read: MetricId,
+    process_write: MetricId,
 }
 
-fn pressure(sample: &Sample, resource: &str, scope: &str) -> Option<f64> {
-    let id = metric(&format!("pressure.{scope}.avg10"));
+fn ids() -> &'static Ids {
+    static IDS: std::sync::OnceLock<Ids> = std::sync::OnceLock::new();
+    IDS.get_or_init(|| {
+        let id = |raw: &str| MetricId::new(raw).expect("a slowdown metric id is well formed");
+        Ids {
+            some: id("pressure.some.avg10"),
+            full: id("pressure.full.avg10"),
+            load: id("cpu.load.average.1m"),
+            processors: id("cpu.logical.count"),
+            available: id("memory.available"),
+            total: id("memory.total"),
+            swap_in: id("memory.swap_in.rate"),
+            swap_out: id("memory.swap_out.rate"),
+            oom_kills: id("memory.oom.kill.rate"),
+            throttle: id("cpu.thermal_throttle.rate"),
+            process_cpu: id("process.cpu.utilization"),
+            process_memory: id("process.memory.resident"),
+            process_read: id("process.io.read.bytes.rate"),
+            process_write: id("process.io.write.bytes.rate"),
+        }
+    })
+}
+
+fn pressure(sample: &Sample, resource: &str, id: &MetricId) -> Option<f64> {
     sample
         .entities
         .iter()
         .find(|entity| entity.kind == EntityKind::PressureResource && entity.key == resource)
-        .and_then(|entity| entity.metrics.get(&id))
+        .and_then(|entity| entity.metrics.get(id))
         .and_then(Observation::as_f64)
 }
 
@@ -769,42 +939,57 @@ fn read(
     kind: SlowdownKind,
     sample: &Sample,
     rules: &SlowdownRules,
-    seconds: f64,
-    now: u64,
+    elapsed_ms: u64,
+    now_clock: u64,
     state: &mut KindState,
 ) -> Reading {
+    let ids = ids();
+    let seconds = elapsed_ms as f64 / 1_000.0;
     let over = |value: Option<f64>, threshold: f64| match value {
         Some(value) if threshold > 0.0 => value / threshold,
         _ => 0.0,
     };
     match kind {
-        SlowdownKind::CpuPressure | SlowdownKind::MemoryPressure | SlowdownKind::DiskPressure => {
-            let (resource, some_line, full_line) = match kind {
-                SlowdownKind::CpuPressure => ("cpu", rules.cpu_some_percent, None),
-                SlowdownKind::MemoryPressure => (
-                    "memory",
-                    rules.memory_some_percent,
-                    Some(rules.memory_full_percent),
-                ),
-                _ => ("io", rules.disk_some_percent, Some(rules.disk_full_percent)),
-            };
-            let some = pressure(sample, resource, "some");
-            // `full` is undefined for the processor at system level, so it is
-            // never read for it.
-            let full = full_line.and_then(|line| {
-                pressure(sample, resource, "full").map(|value| over(Some(value), line))
-            });
+        SlowdownKind::MemoryPressure => {
+            let some = pressure(sample, "memory", &ids.some);
+            let full = pressure(sample, "memory", &ids.full);
             Reading {
-                severity: over(some, some_line).max(full.unwrap_or(0.0)),
+                severity: over(some, rules.memory_some_percent)
+                    .max(over(full, rules.memory_full_percent)),
+                worst: some.unwrap_or(0.0),
+                count: 0,
+            }
+        }
+        SlowdownKind::DiskPressure => {
+            let full = pressure(sample, "io", &ids.full);
+            Reading {
+                severity: over(full, rules.disk_full_percent),
+                worst: full.unwrap_or(0.0),
+                count: 0,
+            }
+        }
+        SlowdownKind::CpuPressure => {
+            // `full` is undefined for the processor at system level, so the
+            // second sign is the run queue: far more tasks ready than there
+            // are processors to run them.
+            let some = pressure(sample, "cpu", &ids.some);
+            let load_per_processor =
+                match (sample.value_of(&ids.load), sample.value_of(&ids.processors)) {
+                    (Some(load), Some(processors)) if processors > 0.0 => Some(load / processors),
+                    _ => None,
+                };
+            Reading {
+                severity: over(some, rules.cpu_some_percent)
+                    .min(over(load_per_processor, rules.cpu_load_per_processor)),
                 worst: some.unwrap_or(0.0),
                 count: 0,
             }
         }
         SlowdownKind::MemoryExhausted => {
-            let available = sample.value_of(&metric("memory.available"));
-            let total = sample.value_of(&metric("memory.total"));
-            let swap_in = sample.value_of(&metric("memory.swap_in.rate"));
-            let swap_out = sample.value_of(&metric("memory.swap_out.rate"));
+            let available = sample.value_of(&ids.available);
+            let total = sample.value_of(&ids.total);
+            let swap_in = sample.value_of(&ids.swap_in);
+            let swap_out = sample.value_of(&ids.swap_out);
             let (Some(available), Some(total)) = (available, total) else {
                 return Reading::default();
             };
@@ -821,12 +1006,10 @@ fn read(
             }
         }
         SlowdownKind::OutOfMemoryKill => {
-            let rate = sample
-                .value_of(&metric("memory.oom.kill.rate"))
-                .unwrap_or(0.0);
+            let rate = sample.value_of(&ids.oom_kills).unwrap_or(0.0);
             if rate > 0.0 {
                 Reading {
-                    severity: f64::from(u16::MAX),
+                    severity: f64::INFINITY,
                     worst: 0.0,
                     count: ((rate * seconds).round() as u64).max(1),
                 }
@@ -835,17 +1018,15 @@ fn read(
             }
         }
         SlowdownKind::ThermalThrottling => {
-            let rate = sample
-                .value_of(&metric("cpu.thermal_throttle.rate"))
-                .unwrap_or(0.0);
+            let rate = sample.value_of(&ids.throttle).unwrap_or(0.0);
             let count = if rate > 0.0 {
-                state.throttled_until = now + THROTTLE_HOLD_MS;
+                state.throttled_until = now_clock + THROTTLE_HOLD_MS;
                 ((rate * seconds).round() as u64).max(1)
             } else {
                 0
             };
             Reading {
-                severity: if now < state.throttled_until || count > 0 {
+                severity: if now_clock < state.throttled_until || count > 0 {
                     1.0
                 } else {
                     0.0
@@ -854,54 +1035,63 @@ fn read(
                 count,
             }
         }
-        SlowdownKind::Other => Reading::default(),
+        SlowdownKind::Stalled | SlowdownKind::Other => Reading::default(),
     }
 }
 
 /// The processes of one round using the most of `resource`, busiest first,
-/// with names and numbers only.
+/// with names and numbers only. Only the few that are kept are turned into
+/// records.
 pub fn busiest_processes(
     reports: &[CollectorReport],
     resource: SlowdownResource,
     limit: usize,
 ) -> Vec<ProcessSample> {
-    let number =
-        |metrics: &MetricSet, raw: &str| metrics.get(&metric(raw)).and_then(Observation::as_f64);
-    let mut ranked: Vec<(f64, ProcessSample)> = reports
+    let ids = ids();
+    let number = |metrics: &MetricSet, id: &MetricId| metrics.get(id).and_then(Observation::as_f64);
+    let disk = |metrics: &MetricSet| match (
+        number(metrics, &ids.process_read),
+        number(metrics, &ids.process_write),
+    ) {
+        (None, None) => None,
+        (read, write) => Some(read.unwrap_or(0.0) + write.unwrap_or(0.0)),
+    };
+    let mut ranked: Vec<(f64, &monitor_core::Entity)> = reports
         .iter()
         .flat_map(|report| report.entities.iter())
         .filter(|entity| entity.id.kind == EntityKind::Process)
         .filter_map(|entity| {
-            let disk = match (
-                number(&entity.metrics, "process.io.read.bytes.rate"),
-                number(&entity.metrics, "process.io.write.bytes.rate"),
-            ) {
-                (None, None) => None,
-                (read, write) => Some(read.unwrap_or(0.0) + write.unwrap_or(0.0)),
-            };
-            let mut process = crate::sample::process_sample(&entity.id.key, &entity.metrics);
-            process.command_line = None;
-            process.user = None;
-            process.disk_bytes_rate = disk;
             let score = match resource {
-                SlowdownResource::Processor => process.cpu_utilization,
-                SlowdownResource::Memory => process.memory_resident.map(|bytes| bytes as f64),
-                SlowdownResource::Disk => disk,
-                SlowdownResource::Other => None,
+                SlowdownResource::Memory => number(&entity.metrics, &ids.process_memory),
+                SlowdownResource::Disk => disk(&entity.metrics),
+                SlowdownResource::Processor | SlowdownResource::Other => {
+                    number(&entity.metrics, &ids.process_cpu)
+                }
             }?;
-            (score > 0.0).then_some((score, process))
+            (score > 0.0).then_some((score, entity))
         })
         .collect();
-    ranked.sort_by(|left, right| {
+    let by_score = |left: &(f64, &monitor_core::Entity), right: &(f64, &monitor_core::Entity)| {
         right
             .0
             .total_cmp(&left.0)
-            .then(left.1.pid.cmp(&right.1.pid))
-    });
+            .then(left.1.id.key.cmp(&right.1.id.key))
+    };
+    if ranked.len() > limit && limit > 0 {
+        ranked.select_nth_unstable_by(limit - 1, by_score);
+        ranked.truncate(limit);
+    }
+    ranked.sort_by(by_score);
     ranked
         .into_iter()
         .take(limit)
-        .map(|(_, process)| process)
+        .map(|(_, entity)| {
+            let mut process = crate::sample::process_sample(&entity.id.key, &entity.metrics);
+            process.command_line = None;
+            process.user = None;
+            process.disk_bytes_rate = disk(&entity.metrics);
+            process
+        })
         .collect()
 }
 
@@ -1039,14 +1229,17 @@ mod tests {
         memory: (f64, f64),
         io: (f64, f64),
         system: Vec<(&'static str, f64)>,
+        /// Processes left out of this round, by name: a program the kernel
+        /// just ended is not in the round that reports the kill.
+        gone: Vec<&'static str>,
     }
 
     /// One round of reports for `moment`: pressure, system readings, and
     /// three processes that each use the most of one resource.
-    fn moment_reports(at_ms: u64, moment: &Moment) -> Vec<CollectorReport> {
+    fn moment_reports(at_ms: u64, monotonic_ms: u64, moment: &Moment) -> Vec<CollectorReport> {
         let at = Timestamp {
             unix_ms: at_ms,
-            monotonic_ns: at_ms * 1_000_000,
+            monotonic_ns: monotonic_ms * 1_000_000,
         };
         let mut pressure = CollectorReport::new(CollectorId::new("linux.pressure").unwrap(), at);
         for (resource, some, full) in [
@@ -1072,6 +1265,9 @@ mod tests {
             (20, "browser", 0.4, 3.0e9, 0.0),
             (30, "indexer", 0.1, 50.0e6, 9.0e7),
         ] {
+            if moment.gone.contains(&name) {
+                continue;
+            }
             let mut metrics = MetricSet::new();
             metrics.insert(id("process.name"), Observation::text(name));
             metrics.insert(id("process.cpu.utilization"), Observation::float(cpu));
@@ -1103,20 +1299,68 @@ mod tests {
         }
     }
 
+    /// A detector and the clocks it is fed from. The monotonic clock runs
+    /// with the wall clock except across [`Machine::sleep`], as on a
+    /// computer that was suspended.
+    struct Machine {
+        d: SlowdownDetector,
+        slept_ms: u64,
+        previous: Vec<CollectorReport>,
+    }
+
+    impl Machine {
+        fn new(rules: SlowdownRules) -> Self {
+            Self {
+                d: SlowdownDetector::new(rules),
+                slept_ms: 0,
+                previous: Vec::new(),
+            }
+        }
+
+        /// The next samples' wall clock will be `seconds` ahead of their
+        /// monotonic clock.
+        fn sleep(&mut self, seconds: u64) {
+            self.slept_ms += seconds * 1_000;
+        }
+
+        fn take(&mut self, at_ms: u64, moment: &Moment) -> Vec<SlowdownEvent> {
+            let reports = moment_reports(at_ms, at_ms - self.slept_ms, moment);
+            let sample = Sample::from_reports(&reports, 10);
+            let previous = std::mem::take(&mut self.previous);
+            let events = self.d.observe(&sample, &mut |resource, round| {
+                let from = match round {
+                    Round::Current => &reports,
+                    Round::Previous => &previous,
+                };
+                busiest_processes(from, resource, SLOWDOWN_PROCESSES)
+            });
+            self.previous = reports;
+            events
+        }
+    }
+
     /// Feed `seconds` one-second samples of `moment` from `start`, and
     /// return every event with the second it came at.
     fn feed(
-        detector: &mut SlowdownDetector,
+        machine: &mut Machine,
         start: u64,
         seconds: u64,
         moment: &Moment,
     ) -> Vec<(u64, SlowdownEvent)> {
+        feed_every(machine, start, seconds, 1, moment)
+    }
+
+    /// The same, one sample every `step` seconds.
+    fn feed_every(
+        machine: &mut Machine,
+        start: u64,
+        seconds: u64,
+        step: u64,
+        moment: &Moment,
+    ) -> Vec<(u64, SlowdownEvent)> {
         let mut events = Vec::new();
-        for second in start..start + seconds {
-            let reports = moment_reports(second * 1_000, moment);
-            let sample = Sample::from_reports(&reports, 10);
-            let mut busiest = |resource| busiest_processes(&reports, resource, SLOWDOWN_PROCESSES);
-            for event in detector.observe(&sample, &mut busiest) {
+        for second in (start..start + seconds).step_by(step as usize) {
+            for event in machine.take(second * 1_000, moment) {
                 events.push((second, event));
             }
         }
@@ -1143,8 +1387,28 @@ mod tests {
             .collect()
     }
 
-    fn detector() -> SlowdownDetector {
-        SlowdownDetector::new(SlowdownRules::default())
+    fn detector() -> Machine {
+        Machine::new(SlowdownRules::default())
+    }
+
+    /// A build that keeps every core busy: processor `some` pressure high,
+    /// one runnable task per processor.
+    fn all_core_build() -> Moment {
+        Moment {
+            cpu: 92.0,
+            system: vec![("cpu.load.average.1m", 25.0), ("cpu.logical.count", 24.0)],
+            ..Moment::default()
+        }
+    }
+
+    /// The processor overwhelmed: the same pressure with five times as many
+    /// tasks ready as there are processors.
+    fn overwhelmed_processor() -> Moment {
+        Moment {
+            cpu: 92.0,
+            system: vec![("cpu.load.average.1m", 120.0), ("cpu.logical.count", 24.0)],
+            ..Moment::default()
+        }
     }
 
     #[test]
@@ -1178,7 +1442,7 @@ mod tests {
         let cause = detection.leading().unwrap();
         assert_eq!(cause.seconds, 19);
         assert!((cause.worst - 45.0).abs() < 1e-9);
-        assert!(!detector.is_open());
+        assert!(!detector.d.is_open());
     }
 
     #[test]
@@ -1260,7 +1524,7 @@ mod tests {
             max_per_day: 3,
             ..SlowdownRules::default()
         };
-        let mut detector = SlowdownDetector::new(rules);
+        let mut detector = Machine::new(rules);
         let mut events = Vec::new();
         let mut second = 1_000;
         for _ in 0..5 {
@@ -1270,7 +1534,15 @@ mod tests {
         }
         assert_eq!(began(&events).len(), 3);
         assert_eq!(ended(&events).len(), 3, "an unrecorded one writes nothing");
-        assert_eq!(detector.skipped(), 2);
+        assert_eq!(detector.d.skipped(), 2);
+        let skipped: Vec<u64> = events
+            .iter()
+            .filter_map(|(_, event)| match event {
+                SlowdownEvent::Skipped { at_unix_ms } => Some(*at_unix_ms),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(skipped, vec![1_330_000, 1_440_000], "each one is reported");
 
         // A restarted service counts what the store already holds.
         let recorded: Vec<Incident> = began(&events)
@@ -1283,13 +1555,14 @@ mod tests {
                 recorded
             })
             .collect();
-        let mut restarted = SlowdownDetector::new(rules);
-        restarted.remember(&recorded);
+        let mut restarted = Machine::new(rules);
+        restarted.d.remember(&recorded);
         let more = feed(&mut restarted, second, 20, &memory_stall());
         assert!(began(&more).is_empty(), "{more:?}");
 
-        // A day later there is room again.
+        // A day later (the computer asleep in between) there is room again.
         let next_day = 1_000 + 24 * 60 * 60;
+        restarted.sleep(next_day - second - 20);
         let mut events = feed(&mut restarted, next_day, 200, &calm());
         events.extend(feed(&mut restarted, next_day + 200, 20, &memory_stall()));
         assert_eq!(began(&events).len(), 1, "{events:?}");
@@ -1298,8 +1571,8 @@ mod tests {
     fn kind_of(moment: Moment) -> (SlowdownKind, Detection) {
         let mut detector = detector();
         let mut events = feed(&mut detector, 1_000, 5, &calm());
-        events.extend(feed(&mut detector, 1_005, 30, &moment));
-        events.extend(feed(&mut detector, 1_035, 90, &calm()));
+        events.extend(feed(&mut detector, 1_005, 45, &moment));
+        events.extend(feed(&mut detector, 1_050, 90, &calm()));
         let ended = ended(&events);
         assert_eq!(ended.len(), 1, "{events:?}");
         let detection = ended[0].1.clone();
@@ -1308,10 +1581,7 @@ mod tests {
 
     #[test]
     fn each_trigger_kind_is_named_and_ranked_by_its_own_resource() {
-        let (kind, detection) = kind_of(Moment {
-            cpu: 80.0,
-            ..Moment::default()
-        });
+        let (kind, detection) = kind_of(overwhelmed_processor());
         assert_eq!(kind, SlowdownKind::CpuPressure);
         assert_eq!(detection.processes_by, SlowdownResource::Processor);
         assert_eq!(detection.processes[0].name, "compiler");
@@ -1327,6 +1597,10 @@ mod tests {
         });
         assert_eq!(kind, SlowdownKind::DiskPressure);
         assert_eq!(detection.processes_by, SlowdownResource::Disk);
+        assert!(
+            (detection.leading().unwrap().worst - 25.0).abs() < 1e-9,
+            "the disk's worst is everything waiting at once"
+        );
         assert_eq!(detection.processes[0].name, "indexer");
         assert_eq!(detection.processes[0].disk_bytes_rate, Some(9.0e7));
         assert_eq!(detection.processes.len(), 1, "nobody else read anything");
@@ -1348,7 +1622,7 @@ mod tests {
             ..Moment::default()
         });
         assert_eq!(kind, SlowdownKind::ThermalThrottling);
-        assert_eq!(detection.leading().unwrap().count, 90);
+        assert_eq!(detection.leading().unwrap().count, 135);
         assert_eq!(detection.processes_by, SlowdownResource::Processor);
     }
 
@@ -1372,22 +1646,30 @@ mod tests {
         assert!(events.is_empty(), "{events:?}");
     }
 
+    fn killed() -> Moment {
+        Moment {
+            memory: (45.0, 12.0),
+            system: vec![("memory.oom.kill.rate", 1.0)],
+            gone: vec!["browser"],
+            ..Moment::default()
+        }
+    }
+
     #[test]
     fn a_program_ended_for_memory_is_a_slowdown_at_once_and_leads() {
         let mut detector = detector();
         let mut events = feed(&mut detector, 1_000, 5, &calm());
         events.extend(feed(&mut detector, 1_005, 20, &memory_stall()));
+        events.extend(feed(&mut detector, 1_025, 1, &killed()));
         events.extend(feed(
             &mut detector,
-            1_025,
-            1,
+            1_026,
+            90,
             &Moment {
-                memory: (45.0, 12.0),
-                system: vec![("memory.oom.kill.rate", 1.0)],
+                gone: vec!["browser"],
                 ..Moment::default()
             },
         ));
-        events.extend(feed(&mut detector, 1_026, 90, &calm()));
         let ended = ended(&events);
         assert_eq!(ended.len(), 1, "{events:?}");
         let detection = &ended[0].1;
@@ -1397,19 +1679,30 @@ mod tests {
         );
         assert_eq!(detection.leading().unwrap().count, 1);
         assert_eq!(detection.causes[1].kind, SlowdownKind::MemoryPressure);
+        // The list taken while memory was short is kept: it names the
+        // program that was using it, which the round of the kill no longer
+        // has.
+        assert_eq!(detection.processes_by, SlowdownResource::Memory);
+        assert_eq!(detection.processes[0].name, "browser");
+    }
 
-        // Alone, one kill is recorded the moment it is seen.
-        let mut detector = SlowdownDetector::new(SlowdownRules::default());
-        let events = feed(
+    #[test]
+    fn a_kill_on_its_own_is_recorded_at_once_with_the_processes_from_before_it() {
+        let mut detector = detector();
+        let mut events = feed(&mut detector, 2_000, 3, &calm());
+        events.extend(feed(
             &mut detector,
-            2_000,
+            2_003,
             1,
             &Moment {
                 system: vec![("memory.oom.kill.rate", 2.0)],
+                gone: vec!["browser"],
                 ..Moment::default()
             },
-        );
-        assert_eq!(began(&events).len(), 1);
+        ));
+        let began = began(&events);
+        assert_eq!(began.len(), 1, "{events:?}");
+        assert_eq!(began[0].1.processes[0].name, "browser");
     }
 
     #[test]
@@ -1449,16 +1742,120 @@ mod tests {
     }
 
     #[test]
-    fn a_hole_in_the_samples_ends_the_slowdown_where_watching_stopped() {
+    fn a_suspend_ends_the_slowdown_where_watching_stopped_and_adds_no_time() {
         let mut detector = detector();
         let mut events = feed(&mut detector, 1_000, 20, &memory_stall());
         // The machine slept for an hour and woke up still stalled.
+        detector.sleep(3_580);
         events.extend(feed(&mut detector, 4_600, 5, &memory_stall()));
-        let ended = ended(&events);
-        assert_eq!(ended.len(), 1, "{events:?}");
-        assert_eq!(ended[0].1.ended_at_unix_ms, 1_019_000);
+        let finished = ended(&events);
+        assert_eq!(finished.len(), 1, "{events:?}");
+        assert_eq!(finished[0].1.ended_at_unix_ms, 1_019_000);
+        assert_eq!(
+            finished[0].1.leading().unwrap().seconds,
+            19,
+            "no sleep in it"
+        );
         // Five seconds after waking is not yet a new slowdown.
         assert_eq!(began(&events).len(), 1);
+
+        // A short suspend inside a slowdown adds nothing either.
+        let mut detector = self::detector();
+        let mut events = feed(&mut detector, 1_000, 20, &memory_stall());
+        detector.sleep(15);
+        events.extend(feed(&mut detector, 1_035, 10, &memory_stall()));
+        events.extend(feed(&mut detector, 1_045, 90, &calm()));
+        for (_, detection) in ended(&events) {
+            assert!(
+                detection.leading().unwrap().seconds < 30,
+                "{:?}",
+                detection.causes
+            );
+        }
+    }
+
+    #[test]
+    fn samples_forty_seconds_apart_under_memory_pressure_are_one_slowdown() {
+        // Swapping so hard that the service itself gets a turn only every
+        // forty seconds: the wall and monotonic clocks both moved, so the
+        // computer was awake and stuck, which is the slowdown going on.
+        let mut detector = detector();
+        let mut events = feed(&mut detector, 1_000, 5, &calm());
+        events.extend(feed_every(&mut detector, 1_005, 400, 40, &memory_stall()));
+        events.extend(feed(&mut detector, 1_405, 90, &calm()));
+        assert_eq!(began(&events).len(), 1, "{events:?}");
+        let ended = ended(&events);
+        assert_eq!(ended.len(), 1);
+        let detection = &ended[0].1;
+        assert_eq!(detection.started_at_unix_ms, 1_005_000);
+        assert!(detection.duration_seconds() >= 360);
+        let kinds: Vec<SlowdownKind> = detection.causes.iter().map(|cause| cause.kind).collect();
+        assert!(kinds.contains(&SlowdownKind::MemoryPressure), "{kinds:?}");
+        assert!(kinds.contains(&SlowdownKind::Stalled), "{kinds:?}");
+    }
+
+    #[test]
+    fn a_long_freeze_alone_is_a_slowdown() {
+        let mut detector = detector();
+        let mut events = feed(&mut detector, 1_000, 5, &calm());
+        events.extend(feed(&mut detector, 1_050, 1, &calm()));
+        let began = began(&events);
+        assert_eq!(began.len(), 1, "{events:?}");
+        let cause = began[0].1.leading().copied().unwrap();
+        assert_eq!(cause.kind, SlowdownKind::Stalled);
+        assert!((cause.worst - 46.0).abs() < 1e-9, "{cause:?}");
+        assert_eq!(began[0].1.started_at_unix_ms, 1_004_000);
+    }
+
+    #[test]
+    fn a_big_copy_to_a_slow_stick_is_not_a_slowdown() {
+        // One program waiting for the disk nearly all the time, the rest of
+        // the desktop running.
+        let mut detector = detector();
+        let events = feed(
+            &mut detector,
+            1_000,
+            600,
+            &Moment {
+                io: (88.0, 8.0),
+                ..Moment::default()
+            },
+        );
+        assert!(events.is_empty(), "{events:?}");
+        // Everything waiting for the disk is.
+        let events = feed(
+            &mut detector,
+            1_600,
+            20,
+            &Moment {
+                io: (90.0, 40.0),
+                ..Moment::default()
+            },
+        );
+        assert_eq!(began(&events).len(), 1);
+    }
+
+    #[test]
+    fn a_build_on_every_core_is_not_a_slowdown_and_an_overwhelmed_processor_is() {
+        let mut detector = detector();
+        let events = feed(&mut detector, 1_000, 900, &all_core_build());
+        assert!(events.is_empty(), "{events:?}");
+        // Overwhelmed for less than the processor's onset: still nothing.
+        let events = feed(&mut detector, 1_900, 25, &overwhelmed_processor());
+        assert!(events.is_empty(), "{events:?}");
+        let events = feed(&mut detector, 1_925, 40, &overwhelmed_processor());
+        assert_eq!(began(&events).len(), 1);
+    }
+
+    #[test]
+    fn the_slowdown_going_on_can_be_read_as_it_stands() {
+        let mut detector = detector();
+        assert!(detector.d.current().is_none());
+        feed(&mut detector, 1_000, 100, &memory_stall());
+        let current = detector.d.current().unwrap();
+        assert!(current.ongoing);
+        assert_eq!(current.ended_at_unix_ms, 1_099_000);
+        assert_eq!(current.duration_seconds(), 99);
     }
 
     #[test]
@@ -1468,7 +1865,7 @@ mod tests {
             let sample = Sample::from_reports(&[], 10);
             let mut sample = sample;
             sample.wall_unix_ms = second * 1_000;
-            let events = detector.observe(&sample, &mut |_| Vec::new());
+            let events = detector.d.observe(&sample, &mut |_, _| Vec::new());
             assert!(events.is_empty());
         }
     }
@@ -1483,7 +1880,8 @@ mod tests {
     }
 
     #[test]
-    fn a_detected_incident_round_trips_and_an_older_reader_ignores_the_detection() {
+    fn a_detected_incident_round_trips_and_one_marked_by_hand_reads_as_one() {
+        // Against what v0.2.13 itself wrote and read: see the store's tests.
         let (_, detection) = kind_of(memory_stall());
         let mut detected = incident();
         detected.note = None;
@@ -1495,27 +1893,6 @@ mod tests {
         );
         assert!(!detected.marked_by_hand());
 
-        // What a version 0.2.13 reader declares: the fields before ticket 115,
-        // with no rule against fields it does not know.
-        #[derive(Deserialize)]
-        #[allow(dead_code)]
-        struct OlderIncident {
-            id: u64,
-            marked_at_unix_ms: u64,
-            monotonic_ns: u64,
-            #[serde(default)]
-            note: Option<String>,
-            window: IncidentWindow,
-            snapshot: Box<Sample>,
-            #[serde(default)]
-            baseline: BTreeMap<String, BaselineShift>,
-            #[serde(default)]
-            about_pid: Option<u32>,
-        }
-        let older: OlderIncident = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(older.id, detected.id);
-
-        // And a record marked by hand reads as one.
         let by_hand = incident();
         let encoded = serde_json::to_string(&by_hand).unwrap();
         assert!(!encoded.contains("detection"));

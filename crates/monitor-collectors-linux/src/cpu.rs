@@ -27,6 +27,7 @@ use monitor_core::{
     MetricDescriptor, MetricSet, Observation, Timestamp, Unit, UnknownReason, UnsupportedReason,
 };
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 /// The `/proc` ABI expresses CPU time in USER_HZ, which the kernel fixes at
 /// 100 for userspace regardless of the configured internal `CONFIG_HZ`.
@@ -373,52 +374,120 @@ fn counter_rate(earlier: Option<u64>, later: Option<u64>, seconds: Option<f64>) 
 struct CpuSnapshot {
     at: Timestamp,
     stat: ProcStat,
-    /// The sum of the thermal throttle counters, where the kernel has them.
-    throttle_events: Option<u64>,
+    /// Each thermal throttle counter's value, where the kernel has them.
+    throttle_events: Option<BTreeMap<ThrottleCounter, u64>>,
 }
 
-/// The thermal throttle counters the kernel keeps for every logical CPU on
-/// processors that report thermal events (Intel's `therm_throt` driver):
-/// `core_throttle_count` and `package_throttle_count` under
-/// `/sys/devices/system/cpu/cpuN/thermal_throttle`. Documented in the
-/// kernel's `Documentation/ABI/testing/sysfs-devices-system-cpu`. They are
-/// world-readable and go up each time a core or the package is held back
-/// because it is too hot.
+/// One thermal throttle counter: a physical core's or a package's.
 ///
-/// Every logical CPU of a core repeats its core's count, and every CPU of a
-/// package repeats the package's, so the sum is a count of what the kernel
-/// reports rather than of distinct events. It is only ever read as "did it
-/// go up", which the repetition does not change. Absent when the first CPU
-/// has no `thermal_throttle` directory (AMD processors and most virtual
-/// machines), checked with one look per round.
-fn read_throttle_events(roots: &Roots, cpus: &[u32]) -> Option<u64> {
-    let first = cpus.first()?;
-    if !roots
-        .sys(&format!("devices/system/cpu/cpu{first}/thermal_throttle"))
-        .is_dir()
-    {
-        return None;
-    }
-    let mut total = 0u64;
-    let mut found = false;
-    for index in cpus {
-        for counter in ["core_throttle_count", "package_throttle_count"] {
-            let path = roots.sys(&format!(
-                "devices/system/cpu/cpu{index}/thermal_throttle/{counter}"
-            ));
-            if let Ok(value) = read_u64_attribute(&path) {
-                total = total.saturating_add(value);
-                found = true;
+/// The kernel's `therm_throt` driver (Intel processors) keeps
+/// `core_throttle_count` and `package_throttle_count` under
+/// `/sys/devices/system/cpu/cpuN/thermal_throttle`, documented in
+/// `Documentation/ABI/testing/sysfs-devices-system-cpu`. They are
+/// world-readable and go up each time a core or the package is held back
+/// because it is too hot. Every logical CPU repeats its core's and its
+/// package's counts, so each is read once, from one CPU that has it: one
+/// event is counted once, not once per sibling.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum ThrottleCounter {
+    Core { package: u64, core: u64 },
+    Package { package: u64 },
+}
+
+/// Where each counter is read, worked out once for a set of online CPUs and
+/// again only when that set changes (a CPU taken offline or brought back).
+struct ThrottleSources {
+    cpus: Vec<u32>,
+    paths: Vec<(ThrottleCounter, PathBuf)>,
+}
+
+impl ThrottleSources {
+    /// No paths at all when the first CPU has no `thermal_throttle`
+    /// directory: AMD processors and most virtual machines.
+    fn find(roots: &Roots, cpus: &[u32]) -> Self {
+        let mut paths = Vec::new();
+        let has_counters = cpus.first().is_some_and(|first| {
+            roots
+                .sys(&format!("devices/system/cpu/cpu{first}/thermal_throttle"))
+                .is_dir()
+        });
+        if has_counters {
+            let mut seen = std::collections::BTreeSet::new();
+            for index in cpus {
+                let base = format!("devices/system/cpu/cpu{index}");
+                let package =
+                    read_u64_attribute(&roots.sys(&format!("{base}/topology/physical_package_id")))
+                        .unwrap_or(0);
+                let core = read_u64_attribute(&roots.sys(&format!("{base}/topology/core_id")))
+                    .unwrap_or(u64::from(*index));
+                for (counter, file) in [
+                    (
+                        ThrottleCounter::Core { package, core },
+                        "core_throttle_count",
+                    ),
+                    (
+                        ThrottleCounter::Package { package },
+                        "package_throttle_count",
+                    ),
+                ] {
+                    if seen.insert(counter) {
+                        paths.push((
+                            counter,
+                            roots.sys(&format!("{base}/thermal_throttle/{file}")),
+                        ));
+                    }
+                }
             }
         }
+        Self {
+            cpus: cpus.to_vec(),
+            paths,
+        }
     }
-    found.then_some(total)
+
+    fn read(&self) -> Option<BTreeMap<ThrottleCounter, u64>> {
+        if self.paths.is_empty() {
+            return None;
+        }
+        let values: BTreeMap<ThrottleCounter, u64> = self
+            .paths
+            .iter()
+            .filter_map(|(counter, path)| {
+                read_u64_attribute(path).ok().map(|value| (*counter, value))
+            })
+            .collect();
+        (!values.is_empty()).then_some(values)
+    }
+}
+
+/// Throttle events per second between two reads. Only counters read both
+/// times are compared, and one that went down (a CPU brought back online
+/// starts again) adds nothing, so a CPU going offline or online is never a
+/// jump.
+fn throttle_rate(
+    earlier: Option<&BTreeMap<ThrottleCounter, u64>>,
+    later: &BTreeMap<ThrottleCounter, u64>,
+    seconds: Option<f64>,
+) -> Observation {
+    let (Some(earlier), Some(seconds)) = (earlier, seconds) else {
+        return Observation::Unknown(UnknownReason::NotYetSampled);
+    };
+    let events: u64 = later
+        .iter()
+        .filter_map(|(counter, value)| {
+            earlier
+                .get(counter)
+                .map(|before| value.saturating_sub(*before))
+        })
+        .sum();
+    Observation::float(events as f64 / seconds)
 }
 
 /// CPU utilization, load, frequency, and temperature.
 pub struct CpuCollector {
     roots: Roots,
     previous: Option<CpuSnapshot>,
+    throttle_sources: Option<ThrottleSources>,
 }
 
 impl CpuCollector {
@@ -426,6 +495,7 @@ impl CpuCollector {
         Self {
             roots,
             previous: None,
+            throttle_sources: None,
         }
     }
 
@@ -503,8 +573,8 @@ impl CpuCollector {
                 "cpu.thermal_throttle.rate",
                 Unit::CountPerSecond,
                 sys_source("devices/system/cpu/cpuN/thermal_throttle"),
-                "thermal throttle counter increases per second, summed over every logical \
-                 CPU's core and package counters (Intel processors publish them)",
+                "thermal throttle events per second: each physical core's and each \
+                 package's counter read once (Intel processors publish them)",
             ),
             gauge(
                 "cpu.logical.count",
@@ -660,16 +730,27 @@ impl CpuCollector {
             },
         );
 
-        let cpus: Vec<u32> = stat.per_cpu.iter().map(|(index, _)| *index).collect();
-        let throttle_events = read_throttle_events(roots, &cpus);
+        let online = stat.per_cpu.iter().map(|(index, _)| *index);
+        if !self
+            .throttle_sources
+            .as_ref()
+            .is_some_and(|sources| sources.cpus.iter().copied().eq(online.clone()))
+        {
+            let cpus: Vec<u32> = online.collect();
+            self.throttle_sources = Some(ThrottleSources::find(roots, &cpus));
+        }
+        let throttle_events = self
+            .throttle_sources
+            .as_ref()
+            .and_then(ThrottleSources::read);
         report.metrics.insert(
             metric_id("cpu.thermal_throttle.rate"),
-            match throttle_events {
-                Some(_) => counter_rate(
+            match &throttle_events {
+                Some(values) => throttle_rate(
                     self.previous
                         .as_ref()
-                        .and_then(|previous| previous.throttle_events),
-                    throttle_events,
+                        .and_then(|previous| previous.throttle_events.as_ref()),
+                    values,
                     if interval_long_enough { seconds } else { None },
                 ),
                 None => Observation::Unsupported(UnsupportedReason::NotReported {
@@ -1124,41 +1205,75 @@ mod tests {
     }
 
     #[test]
-    fn thermal_throttling_is_a_rate_of_the_counters_where_the_kernel_keeps_them() {
+    fn thermal_throttling_counts_each_core_and_package_once() {
         let temporary = crate::test_support::TempTree::copy_of("synthetic-a");
         let roots = temporary.roots();
-        let write = |cpu: u32, core: u64, package: u64| {
-            let directory = roots.sys(&format!("devices/system/cpu/cpu{cpu}/thermal_throttle"));
-            std::fs::create_dir_all(&directory).unwrap();
-            std::fs::write(directory.join("core_throttle_count"), format!("{core}\n")).unwrap();
-            std::fs::write(
-                directory.join("package_throttle_count"),
-                format!("{package}\n"),
-            )
-            .unwrap();
+        let cpus: Vec<u32> = parse_proc_stat(&read_text(&roots.proc("stat")).unwrap())
+            .unwrap()
+            .per_cpu
+            .iter()
+            .map(|(index, _)| *index)
+            .collect();
+        assert!(cpus.len() >= 2, "the fixture has two CPUs or more");
+        // Every CPU is a sibling on one core of one package, as hyper-threads
+        // are: each repeats the same two counts.
+        let write = |core: u64, package: u64| {
+            for cpu in &cpus {
+                let base = roots.sys(&format!("devices/system/cpu/cpu{cpu}"));
+                std::fs::create_dir_all(base.join("thermal_throttle")).unwrap();
+                std::fs::create_dir_all(base.join("topology")).unwrap();
+                std::fs::write(base.join("topology/core_id"), "0\n").unwrap();
+                std::fs::write(base.join("topology/physical_package_id"), "0\n").unwrap();
+                std::fs::write(
+                    base.join("thermal_throttle/core_throttle_count"),
+                    format!("{core}\n"),
+                )
+                .unwrap();
+                std::fs::write(
+                    base.join("thermal_throttle/package_throttle_count"),
+                    format!("{package}\n"),
+                )
+                .unwrap();
+            }
+        };
+        let rate = |report: &CollectorReport| {
+            report
+                .metrics
+                .get(&metric_id("cpu.thermal_throttle.rate"))
+                .and_then(Observation::as_f64)
         };
         let mut collector = CpuCollector::new(roots.clone());
-        let first_cpu = parse_proc_stat(&read_text(&roots.proc("stat")).unwrap())
-            .unwrap()
-            .per_cpu[0]
-            .0;
-        write(first_cpu, 10, 4);
+        write(10, 4);
         let first = collector.sample(&roots, crate::test_support::at(0));
         assert_eq!(
             first.metrics.get(&metric_id("cpu.thermal_throttle.rate")),
             Some(&Observation::Unknown(UnknownReason::NotYetSampled))
         );
-        write(first_cpu, 16, 6);
+        write(16, 6);
         let second = collector.sample(&roots, crate::test_support::at(2_000));
-        let rate = second
-            .metrics
-            .get(&metric_id("cpu.thermal_throttle.rate"))
-            .and_then(Observation::as_f64)
-            .expect("a rate");
-        assert!(
-            (rate - 4.0).abs() < 1e-9,
-            "eight increases over two seconds"
+        assert_eq!(
+            rate(&second),
+            Some(4.0),
+            "eight events over two seconds, however many siblings repeat them"
         );
+
+        // The CPU the counters were read from goes offline: its sibling's
+        // copy is read from then on, and the same values are no jump.
+        let stat = roots.proc("stat");
+        let text = read_text(&stat).unwrap();
+        let first_line = format!("cpu{} ", cpus[0]);
+        let without: String = text
+            .lines()
+            .filter(|line| !line.starts_with(&first_line))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&stat, without).unwrap();
+        let third = collector.sample(&roots, crate::test_support::at(4_000));
+        assert_eq!(rate(&third), Some(0.0));
+        // And a counter that starts again lower adds nothing.
+        write(1, 1);
+        let fourth = collector.sample(&roots, crate::test_support::at(6_000));
+        assert_eq!(rate(&fourth), Some(0.0));
 
         // Without the counters (an AMD processor, a virtual machine) it says
         // so rather than reading as no throttling.

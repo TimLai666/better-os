@@ -435,6 +435,50 @@ async fn a_slowdown_is_recorded_with_the_state_around_it_without_anyone_asking()
 }
 
 #[tokio::test]
+async fn an_ongoing_slowdown_is_answered_as_it_stands_now() {
+    let machine = StalledMachine::new();
+    let directory = tempfile::tempdir().unwrap();
+    let engine =
+        MonitorEngine::start(quick_config(directory.path().to_path_buf(), &machine)).unwrap();
+    machine.memory_pressure(64.0, 31.0);
+    tick(&engine, 1).await;
+    let first = incidents(&engine).await[0].detection.clone().unwrap();
+    // The record on disk is brought up to date every few minutes; a query
+    // in between sees the slowdown as it is this second.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    tick(&engine, 1).await;
+    let now = incidents(&engine).await[0].detection.clone().unwrap();
+    assert!(now.ongoing);
+    assert!(
+        now.ended_at_unix_ms > first.ended_at_unix_ms,
+        "{} then {}",
+        first.ended_at_unix_ms,
+        now.ended_at_unix_ms
+    );
+}
+
+#[tokio::test]
+async fn a_slowdown_the_daily_cap_kept_out_is_counted_and_survives_a_restart() {
+    let machine = StalledMachine::new();
+    let directory = tempfile::tempdir().unwrap();
+    let capped = || {
+        let mut config = quick_config(directory.path().to_path_buf(), &machine);
+        config.slowdowns.max_per_day = 0;
+        config
+    };
+    {
+        let engine = MonitorEngine::start(capped()).unwrap();
+        machine.memory_pressure(64.0, 31.0);
+        tick(&engine, 2).await;
+        assert!(incidents(&engine).await.is_empty());
+        assert_eq!(engine.status(false).await.store.skipped_slowdowns, 1);
+        engine.shutdown().await.unwrap();
+    }
+    let engine = MonitorEngine::start(capped()).unwrap();
+    assert_eq!(engine.status(false).await.store.skipped_slowdowns, 1);
+}
+
+#[tokio::test]
 async fn a_slowdown_going_on_at_shutdown_ends_where_it_was_last_seen() {
     let machine = StalledMachine::new();
     let directory = tempfile::tempdir().unwrap();

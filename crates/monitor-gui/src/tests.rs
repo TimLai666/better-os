@@ -1103,8 +1103,18 @@ fn what_counts_as_a_slowdown_is_written_from_the_rules_the_service_uses() {
     assert_eq!(zh.len(), en.len());
     assert!(en[0].1.contains("10 seconds") && en[0].1.contains("20%") && en[0].1.contains("10%"));
     assert!(zh[0].1.contains("10 秒") && zh[0].1.contains("20%"));
-    assert!(en[2].1.contains("50%"), "{}", en[2].1);
-    let (en_once, zh_once) = (&en[6].1, &zh[6].1);
+    assert!(
+        en[1].1.contains("20%") && en[1].1.contains("at once"),
+        "{}",
+        en[1].1
+    );
+    assert!(
+        en[2].1.contains("80%") && en[2].1.contains("30 seconds"),
+        "{}",
+        en[2].1
+    );
+    assert!(en[4].1.contains("systemd-oomd"), "{}", en[4].1);
+    let (en_once, zh_once) = (&en[7].1, &zh[7].1);
     assert!(en_once.contains("1 minute") && en_once.contains("24"));
     assert!(zh_once.contains("1 分鐘") && zh_once.contains("24"));
     for (name, rule) in en.iter().chain(&zh) {
@@ -1152,13 +1162,23 @@ fn every_kind_of_slowdown_is_named_in_plain_words_in_both_languages() {
         worst: 63.6,
         count: 0,
     };
+    // Pressure this high for this long is where systemd-oomd may have
+    // closed a program the kernel's counter never saw, and the record says so.
     assert_eq!(
         i18n::slowdown_severity(&pressure, Locale::EnUs).unwrap(),
-        "At worst, programs were waiting 64% of the time."
+        "At worst, programs were waiting 64% of the time. Pressure this high for this long is when Ubuntu's systemd-oomd may close programs on its own, which this record cannot see."
+    );
+    let milder = SlowdownCause {
+        worst: 31.0,
+        ..pressure
+    };
+    assert_eq!(
+        i18n::slowdown_severity(&milder, Locale::EnUs).unwrap(),
+        "At worst, programs were waiting 31% of the time."
     );
     assert_eq!(
-        i18n::slowdown_severity(&pressure, Locale::ZhTw).unwrap(),
-        "最嚴重的時候，程式有 64% 的時間在等。"
+        i18n::slowdown_severity(&milder, Locale::ZhTw).unwrap(),
+        "最嚴重的時候，程式有 31% 的時間在等。"
     );
     assert_eq!(
         i18n::slowdown_also(&pressure, Locale::EnUs),
@@ -1199,14 +1219,27 @@ fn a_slowdown_says_how_long_it_lasted_or_that_it_is_still_going() {
         i18n::slowdown_when(600_000, &detection, Locale::ZhTw),
         "10 分鐘前 · 持續 2 分 10 秒"
     );
+    // Going on: counted to now, not to the last time the record was saved.
     detection.ongoing = true;
     assert_eq!(
         i18n::slowdown_when(600_000, &detection, Locale::EnUs),
-        "Began 10 minutes ago · still going, 2 min 10 s so far"
+        "Began 10 minutes ago · still going, 10 min so far"
     );
     assert_eq!(
         i18n::slowdown_when(600_000, &detection, Locale::ZhTw),
-        "10 分鐘前開始 · 還在持續，已經 2 分 10 秒"
+        "10 分鐘前開始 · 還在持續，已經 10 分"
+    );
+}
+
+#[test]
+fn slowdowns_the_daily_cap_kept_out_are_counted_on_the_page() {
+    assert_eq!(
+        i18n::skipped_sentence(3, 24, Locale::EnUs),
+        "The limit of 24 a day was reached: 3 more slowdowns in the last 24 hours were not recorded."
+    );
+    assert_eq!(
+        i18n::skipped_sentence(3, 24, Locale::ZhTw),
+        "已達一天最多記 24 筆的上限：過去 24 小時另有 3 次變慢沒有記錄。"
     );
 }
 
@@ -1244,13 +1277,30 @@ fn the_events_page_asks_again_when_the_service_recorded_something_new() {
         }),
     };
     let shown = vec![finished.clone()];
-    assert!(!list_is_stale(&shown, 1, 0, 60_000));
-    assert!(list_is_stale(&shown, 2, 0, 1_000), "a new one was recorded");
+    assert!(!list_is_stale(&shown, (1, 7), (Some(7), 0), 60_000));
+    assert!(
+        list_is_stale(&shown, (2, 8), (Some(7), 0), 1_000),
+        "a new one was recorded"
+    );
+    // At the store's bound a new record replaces the oldest: the number
+    // stays the same and the revision does not.
+    assert!(list_is_stale(&shown, (1, 8), (Some(7), 0), 1_000));
+    assert!(list_is_stale(&shown, (1, 7), (None, 0), 1_000));
     let mut ongoing = finished;
     ongoing.detection.as_mut().unwrap().ongoing = true;
     let shown = vec![ongoing];
-    assert!(!list_is_stale(&shown, 1, 0, ONGOING_REFRESH_MS - 1));
-    assert!(list_is_stale(&shown, 1, 0, ONGOING_REFRESH_MS));
+    assert!(!list_is_stale(
+        &shown,
+        (1, 7),
+        (Some(7), 0),
+        ONGOING_REFRESH_MS - 1
+    ));
+    assert!(list_is_stale(
+        &shown,
+        (1, 7),
+        (Some(7), 0),
+        ONGOING_REFRESH_MS
+    ));
 }
 
 // Actions.

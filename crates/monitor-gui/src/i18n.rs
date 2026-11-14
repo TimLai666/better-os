@@ -1976,20 +1976,20 @@ pub(crate) fn marked_title(when: &str, locale: Locale) -> String {
 /// does.
 pub(crate) fn slowdown_rules(rules: &SlowdownRules, locale: Locale) -> Vec<(String, String)> {
     let onset = spelled_duration(rules.onset_seconds, locale);
+    let cpu_onset = spelled_duration(rules.cpu_onset_seconds, locale);
+    let stall = spelled_duration(rules.stall_seconds, locale);
     let quiet = spelled_duration(rules.quiet_seconds, locale);
     let percent = |value: f64| format!("{value:.0}%");
     let (ms, mf) = (
         percent(rules.memory_some_percent),
         percent(rules.memory_full_percent),
     );
-    let (ds, df) = (
-        percent(rules.disk_some_percent),
-        percent(rules.disk_full_percent),
-    );
+    let df = percent(rules.disk_full_percent);
     let cs = percent(rules.cpu_some_percent);
+    let load = format!("{:.0}", rules.cpu_load_per_processor);
     let free = percent(rules.memory_available_percent);
     let cap = rules.max_per_day;
-    let rows: [(&str, String); 7] = if zh(locale) {
+    let rows: [(&str, String); 8] = if zh(locale) {
         [
             (
                 "程式在等記憶體",
@@ -1998,14 +1998,16 @@ pub(crate) fn slowdown_rules(rules: &SlowdownRules, locale: Locale) -> Vec<(Stri
                 ),
             ),
             (
-                "程式在等磁碟",
+                "所有程式都在等磁碟",
                 format!(
-                    "持續 {onset}以上：有程式至少 {ds} 的時間在等，或所有程式同時在等的時間至少 {df}。"
+                    "有事要做的程式全都同時在等磁碟，至少 {df} 的時間，持續 {onset}以上。只有一個大檔案複製自己在等的話不算。"
                 ),
             ),
             (
                 "程式在排隊等處理器",
-                format!("至少 {cs} 的時間在等，持續 {onset}以上。"),
+                format!(
+                    "至少 {cs} 的時間在排隊，而且等著執行的程式超過處理器數量的 {load} 倍，持續 {cpu_onset}以上。把每個核心都用滿的編譯不算。"
+                ),
             ),
             (
                 "記憶體快用完",
@@ -2013,7 +2015,8 @@ pub(crate) fn slowdown_rules(rules: &SlowdownRules, locale: Locale) -> Vec<(Stri
             ),
             (
                 "程式因記憶體不夠被關掉",
-                "系統強制關掉程式的那一刻就會記下來。".to_string(),
+                "核心因為記憶體不夠強制關掉程式的那一刻就會記下來。如果是 Ubuntu 的 systemd-oomd 關掉的，這裡看不到，只會記成在等記憶體。"
+                    .to_string(),
             ),
             (
                 "處理器太熱而降速",
@@ -2022,9 +2025,13 @@ pub(crate) fn slowdown_rules(rules: &SlowdownRules, locale: Locale) -> Vec<(Stri
                 ),
             ),
             (
+                "電腦卡住",
+                format!("電腦沒在睡眠，系統監控每秒一次的測量卻晚了 {stall}以上。"),
+            ),
+            (
                 "一次變慢只記一筆",
                 format!(
-                    "一下子的短暫高峰不會記錄。不管變慢多久都只記一筆，要連續 {quiet}都沒有上述情況才算結束。一天最多記 {cap} 筆。"
+                    "只維持幾秒的尖峰不會記錄。不管變慢多久都只記一筆，要連續 {quiet}都沒有上述情況才算結束。一天最多記 {cap} 筆。"
                 ),
             ),
         ]
@@ -2037,14 +2044,16 @@ pub(crate) fn slowdown_rules(rules: &SlowdownRules, locale: Locale) -> Vec<(Stri
                 ),
             ),
             (
-                "Programs waiting for the disk",
+                "Everything waiting for the disk",
                 format!(
-                    "For {onset} or more: some of them at least {ds} of the time, or all of them at once at least {df}."
+                    "Every program with work to do waiting for the disk at once, at least {df} of the time, for {onset} or more. One large copy that keeps only itself waiting does not count."
                 ),
             ),
             (
                 "Programs waiting for the processor",
-                format!("Waiting for a turn at least {cs} of the time, for {onset} or more."),
+                format!(
+                    "Waiting for a turn at least {cs} of the time, with more than {load} times as many programs ready to run as there are processors, for {cpu_onset} or more. A build that keeps every core busy does not count."
+                ),
             ),
             (
                 "Memory nearly gone",
@@ -2053,20 +2062,26 @@ pub(crate) fn slowdown_rules(rules: &SlowdownRules, locale: Locale) -> Vec<(Stri
                 ),
             ),
             (
-                "A program closed for memory",
-                "Written down the moment the system closes a program because memory ran out."
+                "A program closed because memory ran out",
+                "Written down the moment the kernel closes a program because memory ran out. When Ubuntu's systemd-oomd closes one instead, it is not seen here; it shows as waiting for memory."
                     .to_string(),
             ),
             (
-                "The processor too hot",
+                "The processor slowed down by heat",
                 format!(
                     "The processor keeps slowing itself down for {onset} or more. Only processors that report this (most Intel ones) can be watched."
                 ),
             ),
             (
+                "The computer froze",
+                format!(
+                    "Better Monitor's own once-a-second reading came {stall} or more late while the computer was awake."
+                ),
+            ),
+            (
                 "One slowdown, one record",
                 format!(
-                    "A brief spike is not recorded. A slowdown is one record however long it lasts, and it is over only after {quiet} without any of these. At most {cap} are recorded a day."
+                    "A spike of a few seconds is not recorded. A slowdown is one record however long it lasts, and it is over only after {quiet} without any of these. At most {cap} are recorded a day."
                 ),
             ),
         ]
@@ -2094,57 +2109,43 @@ pub(crate) fn slowdown_title(cause: Option<&SlowdownCause>, locale: Locale) -> S
     let z = zh(locale);
     let kind = cause.map(|cause| cause.kind).unwrap_or(SlowdownKind::Other);
     let count = cause.map(|cause| cause.count).unwrap_or(0);
+    let fixed = |chinese: &str, english: &str| if z { chinese } else { english }.to_string();
     match kind {
-        SlowdownKind::MemoryPressure => if z {
-            "程式在等記憶體"
-        } else {
-            "Programs were waiting for memory"
+        SlowdownKind::MemoryPressure => fixed("程式在等記憶體", "Programs were waiting for memory"),
+        SlowdownKind::DiskPressure => {
+            fixed("所有程式都在等磁碟", "Everything was waiting for the disk")
         }
-        .to_string(),
-        SlowdownKind::DiskPressure => if z {
-            "程式在等磁碟"
-        } else {
-            "Programs were waiting for the disk"
-        }
-        .to_string(),
-        SlowdownKind::CpuPressure => if z {
-            "程式在排隊等處理器"
-        } else {
-            "Programs were waiting for the processor"
-        }
-        .to_string(),
-        SlowdownKind::MemoryExhausted => if z {
-            "記憶體快用完了"
-        } else {
-            "Memory nearly ran out"
-        }
-        .to_string(),
+        SlowdownKind::CpuPressure => fixed(
+            "程式在排隊等處理器",
+            "Programs were waiting for the processor",
+        ),
+        SlowdownKind::MemoryExhausted => fixed("記憶體快用完了", "Memory nearly ran out"),
         SlowdownKind::OutOfMemoryKill => match (z, count) {
             (true, 0 | 1) => "記憶體不夠，有程式被強制關掉".to_string(),
             (true, n) => format!("記憶體不夠，有 {n} 個程式被強制關掉"),
             (false, 0 | 1) => "A program was closed because memory ran out".to_string(),
             (false, n) => format!("{n} programs were closed because memory ran out"),
         },
-        SlowdownKind::ThermalThrottling => if z {
-            "處理器太熱而降速"
-        } else {
-            "The processor slowed down because it was too hot"
-        }
-        .to_string(),
-        SlowdownKind::Other => if z {
-            "有東西讓電腦變慢"
-        } else {
-            "Something slowed the computer down"
-        }
-        .to_string(),
+        SlowdownKind::ThermalThrottling => fixed(
+            "處理器太熱而降速",
+            "The processor slowed down because it was too hot",
+        ),
+        SlowdownKind::Stalled => fixed("電腦卡住了", "The computer froze"),
+        SlowdownKind::Other => fixed("有東西讓電腦變慢", "Something slowed the computer down"),
     }
 }
 
-/// When a detected slowdown began and how long it lasted, or that it is
-/// still going on.
+/// When a detected slowdown began and how long it lasted, or how long it
+/// has lasted so far, counted to now.
 pub(crate) fn slowdown_when(now_ms: u64, detection: &Detection, locale: Locale) -> String {
     let when = ago(now_ms, detection.started_at_unix_ms, locale);
-    let lasted = detection.duration_seconds();
+    let lasted = if detection.ongoing {
+        detection
+            .duration_seconds()
+            .max(now_ms.saturating_sub(detection.started_at_unix_ms) / 1_000)
+    } else {
+        detection.duration_seconds()
+    };
     let length = seconds(lasted, locale);
     match (zh(locale), detection.ongoing, lasted) {
         (true, true, _) => format!("{when}開始 · 還在持續，已經 {length}"),
@@ -2164,17 +2165,45 @@ fn capitalized(text: &str) -> String {
     }
 }
 
+/// The memory pressure at which Ubuntu's systemd-oomd may close programs on
+/// its own, and for how long. Its default for a person's session is a limit
+/// of 50% held for 20 seconds; this is a reading of that default, not of the
+/// machine's configuration, which is why the sentence says "may".
+const OOMD_PRESSURE_PERCENT: f64 = 50.0;
+const OOMD_PRESSURE_SECONDS: u64 = 20;
+
 /// How bad the leading cause got, in a sentence. `None` where the title has
 /// already said everything there is.
 pub(crate) fn slowdown_severity(cause: &SlowdownCause, locale: Locale) -> Option<String> {
     let z = zh(locale);
     match cause.kind {
-        SlowdownKind::MemoryPressure | SlowdownKind::DiskPressure | SlowdownKind::CpuPressure => {
+        SlowdownKind::MemoryPressure | SlowdownKind::CpuPressure => {
             let worst = format!("{:.0}%", cause.worst);
-            Some(if z {
+            let mut sentence = if z {
                 format!("最嚴重的時候，程式有 {worst} 的時間在等。")
             } else {
                 format!("At worst, programs were waiting {worst} of the time.")
+            };
+            // systemd-oomd ends programs without the kernel's counter going
+            // up, so this record cannot see it; it can say when it may have.
+            if cause.kind == SlowdownKind::MemoryPressure
+                && cause.worst >= OOMD_PRESSURE_PERCENT
+                && cause.seconds >= OOMD_PRESSURE_SECONDS
+            {
+                sentence.push_str(if z {
+                    "壓力這麼高又這麼久時，Ubuntu 的 systemd-oomd 可能會自己關掉程式，這筆紀錄看不到那件事。"
+                } else {
+                    " Pressure this high for this long is when Ubuntu's systemd-oomd may close programs on its own, which this record cannot see."
+                });
+            }
+            Some(sentence)
+        }
+        SlowdownKind::DiskPressure => {
+            let worst = format!("{:.0}%", cause.worst);
+            Some(if z {
+                format!("最嚴重的時候，所有程式有 {worst} 的時間同時在等。")
+            } else {
+                format!("At worst, everything was waiting {worst} of the time.")
             })
         }
         SlowdownKind::MemoryExhausted => {
@@ -2194,6 +2223,21 @@ pub(crate) fn slowdown_severity(cause: &SlowdownCause, locale: Locale) -> Option
         } else {
             format!("The processor reported slowing down {} times.", cause.count)
         }),
+        SlowdownKind::Stalled => {
+            let longest = seconds(cause.worst.round() as u64, locale);
+            Some(match (z, cause.count) {
+                (true, 0 | 1) => format!("系統監控自己也有 {longest}量不到任何數據。"),
+                (true, n) => {
+                    format!("卡住 {n} 次，最久的一次系統監控自己也有 {longest}量不到任何數據。")
+                }
+                (false, 0 | 1) => {
+                    format!("Better Monitor itself could not take a reading for {longest}.")
+                }
+                (false, n) => format!(
+                    "It froze {n} times; at the longest, Better Monitor itself could not take a reading for {longest}."
+                ),
+            })
+        }
         _ => None,
     }
 }
@@ -2204,16 +2248,18 @@ pub(crate) fn slowdown_also(cause: &SlowdownCause, locale: Locale) -> String {
     let what = match (cause.kind, z) {
         (SlowdownKind::MemoryPressure, true) => "等記憶體",
         (SlowdownKind::MemoryPressure, false) => "waiting for memory",
-        (SlowdownKind::DiskPressure, true) => "等磁碟",
-        (SlowdownKind::DiskPressure, false) => "waiting for the disk",
+        (SlowdownKind::DiskPressure, true) => "所有程式等磁碟",
+        (SlowdownKind::DiskPressure, false) => "everything waiting for the disk",
         (SlowdownKind::CpuPressure, true) => "等處理器",
         (SlowdownKind::CpuPressure, false) => "waiting for the processor",
         (SlowdownKind::MemoryExhausted, true) => "記憶體快用完",
         (SlowdownKind::MemoryExhausted, false) => "memory nearly gone",
         (SlowdownKind::OutOfMemoryKill, true) => "程式因記憶體不夠被關掉",
-        (SlowdownKind::OutOfMemoryKill, false) => "a program closed for memory",
+        (SlowdownKind::OutOfMemoryKill, false) => "a program closed because memory ran out",
         (SlowdownKind::ThermalThrottling, true) => "處理器太熱降速",
-        (SlowdownKind::ThermalThrottling, false) => "the processor too hot",
+        (SlowdownKind::ThermalThrottling, false) => "the processor slowed down by heat",
+        (SlowdownKind::Stalled, true) => "電腦卡住",
+        (SlowdownKind::Stalled, false) => "the computer frozen",
         (SlowdownKind::Other, true) => "其他原因",
         (SlowdownKind::Other, false) => "something else",
     };
@@ -2223,6 +2269,21 @@ pub(crate) fn slowdown_also(cause: &SlowdownCause, locale: Locale) -> String {
         (false, 0) => format!("Also: {what}"),
         (true, _) => format!("同時：{what}（{length}）"),
         (false, _) => format!("Also: {what} ({length})"),
+    }
+}
+
+/// The line on the Events page when the daily cap kept slowdowns out.
+pub(crate) fn skipped_sentence(count: u64, cap: usize, locale: Locale) -> String {
+    match (zh(locale), count) {
+        (true, n) => {
+            format!("已達一天最多記 {cap} 筆的上限：過去 24 小時另有 {n} 次變慢沒有記錄。")
+        }
+        (false, 1) => format!(
+            "The limit of {cap} a day was reached: 1 more slowdown in the last 24 hours was not recorded."
+        ),
+        (false, n) => format!(
+            "The limit of {cap} a day was reached: {n} more slowdowns in the last 24 hours were not recorded."
+        ),
     }
 }
 

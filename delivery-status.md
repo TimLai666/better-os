@@ -1925,13 +1925,17 @@ file says what was found.
 
 ## Better Monitor records slowdowns by itself (ticket 115)
 
-Implemented, not merged. The service recognizes slowdowns in the rounds it
-already takes (memory, disk, or processor pressure held for 10 seconds,
-memory nearly gone while swapping, an out-of-memory kill, thermal throttling
-where Intel's counters exist) and records one incident per slowdown, with
+Implemented, not merged; review fixes applied on top of `29dd1e3`. The
+service recognizes slowdowns in the rounds it already takes (memory pressure,
+everything waiting for the disk, the processor overwhelmed beyond a full
+build, memory nearly gone while swapping, an out-of-memory kill, thermal
+throttling where Intel's counters exist, and the machine freezing so badly
+that the service itself is late) and records one incident per slowdown, with
 what held, for how long, how bad, and the processes using the most of it.
-The "It was just slow" button, its copy, `better-monitor-cli mark`, and the
-client's `mark` are gone; `MarkIncident` is refused with its own key. Records
-marked by hand stay and are labelled so. Store schema unchanged (optional
-fields); the released 0.2.13 service read a store this build wrote. The
-ticket file has the thresholds, caps, and what was checked.
+Manual marking is gone (`MarkIncident` refused with its own key, a hidden
+`better-monitor-cli mark` that only says so); records marked by hand stay and
+are labelled. Store schema unchanged; slowdown updates go to a small
+`slowdowns.log` that a v0.2.13 build ignores and that restores what such a
+build drops. systemd-oomd kills are not detected (no unprivileged signal);
+the record says when they may have happened. The ticket file has the
+thresholds, costs, and what was checked.
