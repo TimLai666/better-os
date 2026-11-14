@@ -2129,3 +2129,36 @@ fn the_list_columns_fit_beside_every_open_panel() {
         "{shown:?} need {used} beside the name in {content}"
     );
 }
+
+/// Done things read as a success and news as information; only what needs
+/// a look uses the warning style.
+#[test]
+fn a_notice_is_drawn_in_the_tone_of_what_it_says() {
+    use crate::session::NoticeTone;
+    assert_eq!(
+        Notice::Undo {
+            undoing: true,
+            outcome: Ok(crate::undo::ChangeKind::Move),
+        }
+        .tone(),
+        NoticeTone::Success
+    );
+    let erased = |failure: Option<String>| Notice::Erased {
+        label: "Stick".into(),
+        format: true,
+        failure,
+    };
+    assert_eq!(erased(None).tone(), NoticeTone::Success);
+    assert_eq!(
+        erased(Some("storage.erase.busy".into())).tone(),
+        NoticeTone::Warning
+    );
+    assert_eq!(
+        Notice::WritingImage {
+            label: "Stick".into(),
+            percent: 40,
+        }
+        .tone(),
+        NoticeTone::Information
+    );
+}

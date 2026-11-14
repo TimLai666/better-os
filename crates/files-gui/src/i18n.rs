@@ -350,6 +350,8 @@ pub struct Copy {
     pub preview_dimensions: &'static str,
     pub preview_folder_files: &'static str,
     pub preview_folder_folders: &'static str,
+    pub preview_folder_file_one: &'static str,
+    pub preview_folder_folder_one: &'static str,
     pub preview_folder_size: &'static str,
     pub preview_folder_truncated: &'static str,
 
@@ -752,6 +754,8 @@ pub const EN_US: Copy = Copy {
     preview_dimensions: "Dimensions",
     preview_folder_files: "files",
     preview_folder_folders: "folders",
+    preview_folder_file_one: "file",
+    preview_folder_folder_one: "folder",
     preview_folder_size: "Size of contents",
     preview_folder_truncated: "counted up to the limit",
 
@@ -1143,6 +1147,8 @@ pub const ZH_TW: Copy = Copy {
     preview_dimensions: "尺寸",
     preview_folder_files: "個檔案",
     preview_folder_folders: "個資料夾",
+    preview_folder_file_one: "個檔案",
+    preview_folder_folder_one: "個資料夾",
     preview_folder_size: "內容大小",
     preview_folder_truncated: "已計算到上限",
 

@@ -37,6 +37,9 @@ zbus.workspace = true
 # sha2 and socket2 are already built for Better Manager and the async runtime.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 sha2 = "0.10"
+# Better Files' own LocalSend certificate, made once (the generator
+# LocalSend itself uses; ring as above).
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 socket2 = { version = "0.6", features = ["all"] }
 # Plugins run in a process group of their own, ended whole.
 libc = "0.2"

@@ -154,7 +154,37 @@ pub enum DeviceEvent {
     },
 }
 
+/// How a notice is drawn: a done thing is a success, news is information,
+/// and the rest asks for a look.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NoticeTone {
+    Success,
+    Information,
+    Warning,
+}
+
 impl Notice {
+    pub fn tone(&self) -> NoticeTone {
+        match self {
+            Notice::Undo { outcome: Ok(_), .. } | Notice::Erased { failure: None, .. } => {
+                NoticeTone::Success
+            }
+            Notice::Device(event) => match event.as_ref() {
+                DeviceEvent::Ejected { .. } => NoticeTone::Success,
+                DeviceEvent::EjectedNotPoweredOff { .. }
+                | DeviceEvent::DisconnectedWhileViewing { .. } => NoticeTone::Information,
+                _ => NoticeTone::Warning,
+            },
+            Notice::WritingImage { .. } | Notice::Mounting(_) => NoticeTone::Information,
+            Notice::Launch(
+                LaunchReport::Started { .. }
+                | LaunchReport::Activated { .. }
+                | LaunchReport::FellBackToProcess { .. },
+            ) => NoticeTone::Information,
+            _ => NoticeTone::Warning,
+        }
+    }
+
     pub fn message(&self, c: &'static Copy) -> String {
         match self {
             Notice::Path(rejection) => rejection.message(c).to_string(),
@@ -188,9 +218,11 @@ impl Notice {
             } => match (format, failure) {
                 (true, None) => c.format_done.replace("{device}", label),
                 (false, None) => c.image_written.replace("{device}", label),
-                (_, Some(reason)) => {
-                    format!("{}: {reason}", c.erase_failed.replace("{device}", label))
-                }
+                (_, Some(reason)) => format!(
+                    "{}: {}",
+                    c.erase_failed.replace("{device}", label),
+                    crate::errors::explain(reason, c)
+                ),
             },
             Notice::Mounting(address) => format!("{} {address}", c.server_connecting),
             Notice::MountFailed(error) => match error {
@@ -203,8 +235,8 @@ impl Notice {
             },
             Notice::AlreadyPinned => c.already_pinned.to_string(),
             Notice::NotPinnable => c.not_writable_here.to_string(),
-            Notice::Rejected(error) => error.to_string(),
-            Notice::Key(key) => key.clone(),
+            Notice::Rejected(error) => crate::errors::explain(&error.to_string(), c),
+            Notice::Key(key) => crate::errors::explain(key, c),
             Notice::Launch(report) => match report {
                 LaunchReport::Started { name, .. } => format!("{} {}", c.app_launched, name),
                 LaunchReport::Activated { name } => format!("{} {}", c.app_activated, name),
@@ -1221,7 +1253,7 @@ impl FilesSession {
                     label: label.to_string(),
                 };
                 if let Err(reason) = format.validate() {
-                    self.notice = Some(Notice::Key(reason));
+                    self.notice = Some(Notice::Key(format!("storage.format.label:{reason}")));
                     return;
                 }
                 crate::devices::EraseRequest::Format {

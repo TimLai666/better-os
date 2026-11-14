@@ -358,10 +358,13 @@ pub fn load(
     })
 }
 
-/// The plugin's catalog for `language` (`pt-BR` falls back to `pt`).
-fn catalog(dir: &Path, language: &str) -> BTreeMap<String, String> {
+/// The plugin's catalog for `language`: `i18n/zh-TW.json`, then
+/// `i18n/zh_TW.json`, then the language alone (`zh.json`). A plugin with
+/// none keeps the words its manifest and commands use.
+pub fn catalog(dir: &Path, language: &str) -> BTreeMap<String, String> {
     let short = language.split(['-', '_']).next().unwrap_or(language);
-    [language, short]
+    let underscored = language.replace('-', "_");
+    [language, underscored.as_str(), short]
         .iter()
         .find_map(|code| {
             std::fs::read_to_string(dir.join("i18n").join(format!("{code}.json")))

@@ -110,10 +110,6 @@ fn inside_merge(path: &Path, control: &dyn JobControl) -> bool {
     )
 }
 
-/// Moves what Replace or Merge displaces into the trash: the home trash for
-/// the job, or the trash on the item's own device. Nothing a conflict answer
-/// displaces is ever deleted; if it cannot go to the trash, the item fails and
-/// the one already there stays where it was.
 /// Whether putting `source` at `destination` with Replace or Merge would
 /// put it in place of itself or of a folder it is inside. Compared as
 /// written and, where both exist, as resolved, so a link or `..` cannot
@@ -129,6 +125,10 @@ fn replaces_source(source: &Path, destination: &Path) -> bool {
     }
 }
 
+/// Moves what Replace or Merge displaces into the trash: the home trash for
+/// the job, or the trash on the item's own device. Nothing a conflict answer
+/// displaces is ever deleted; if it cannot go to the trash, the item fails and
+/// the one already there stays where it was.
 fn displace(existing: &Path, control: &mut dyn JobControl) -> Result<(), ItemOutcome> {
     let root = control.displaced_trash();
     match trash_one(existing, root.as_deref(), control) {

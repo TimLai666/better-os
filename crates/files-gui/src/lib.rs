@@ -25,6 +25,7 @@ pub mod content;
 pub mod context_menu;
 pub mod devicelink;
 pub mod devices;
+pub mod errors;
 pub mod filemanager1;
 pub mod format;
 pub mod i18n;

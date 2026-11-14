@@ -307,7 +307,7 @@ async fn serve(
                 embedded.coordinator.handle_event(event).await;
             }
             while let Ok(write) = embedded.finished.1.try_recv() {
-                embedded.coordinator.finish_image_write(&write);
+                embedded.coordinator.finish_image_write(write);
             }
         }
 

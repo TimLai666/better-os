@@ -944,6 +944,83 @@ async fn while_an_image_is_written_the_drive_and_its_volumes_refuse_everything_e
     // Another drive is served as usual.
     harness.coordinator.mount(&handle()).await.unwrap();
 
-    harness.coordinator.finish_image_write(&write);
+    harness.coordinator.finish_image_write(write);
     harness.coordinator.mount(&volume).await.unwrap();
+}
+
+/// A write that is abandoned (its caller went away mid-copy) still lets go
+/// of the drive: the mark is held by the write itself.
+#[tokio::test]
+async fn an_abandoned_image_write_never_leaves_the_drive_busy() {
+    let fixture = Fixture::new("image-abandoned");
+    let mut harness = drive_with_two_volumes(&fixture).await;
+    let image = fixture.root.join("installer.iso");
+    std::fs::write(&image, b"ISO").unwrap();
+    let volume = DeviceHandle::new(PART1);
+    {
+        let _write = harness
+            .coordinator
+            .begin_image_write(&DeviceHandle::new(DISK), &image, true)
+            .await
+            .unwrap();
+        assert!(harness.coordinator.is_erasing(&volume));
+        // Dropped here, as a cancelled call drops it.
+    }
+    assert!(!harness.coordinator.is_erasing(&volume));
+    harness.coordinator.mount(&volume).await.unwrap();
+}
+
+const CLEARTEXT: &str = "/org/freedesktop/UDisks2/block_devices/dm_2d0";
+
+/// An unlocked LUKS volume on one of the drive's partitions is unmounted
+/// before the write, and one that will not unmount refuses it.
+#[tokio::test]
+async fn an_unlocked_encrypted_volume_on_the_drive_is_unmounted_first() {
+    use storage_platform::fake::luks_cleartext;
+    let fixture = Fixture::new("image-luks");
+    let mut harness = drive_with_two_volumes(&fixture).await;
+    harness.control.attach(luks_cleartext(
+        CLEARTEXT,
+        "/dev/dm-0",
+        PART2,
+        "/run/media/user/secret",
+    ));
+    let image = fixture.root.join("installer.iso");
+    std::fs::write(&image, b"ISO").unwrap();
+    let cleartext = drive_address(CLEARTEXT, "/dev/dm-0");
+
+    harness.control.refuse_unmount(&cleartext);
+    refused_with(
+        harness
+            .coordinator
+            .write_image(&DeviceHandle::new(DISK), &image, true, no_progress())
+            .await,
+        "storage.image.unmount_failed:/dev/dm-0",
+    );
+    assert_eq!(
+        harness.control.written(&drive_address(DISK, "/dev/sdc")),
+        None
+    );
+    assert!(!harness.coordinator.is_erasing(&DeviceHandle::new(PART1)));
+
+    // A fresh fake whose cleartext unmounts.
+    let fixture = Fixture::new("image-luks-ok");
+    let mut harness = drive_with_two_volumes(&fixture).await;
+    harness.control.attach(luks_cleartext(
+        CLEARTEXT,
+        "/dev/dm-0",
+        PART2,
+        "/run/media/user/secret",
+    ));
+    harness
+        .coordinator
+        .write_image(&DeviceHandle::new(DISK), &image, true, no_progress())
+        .await
+        .unwrap();
+    assert_eq!(harness.control.mount_point(&cleartext), None);
+    let calls = harness.control.calls();
+    let at = |call: String| calls.iter().position(|made| *made == call).unwrap();
+    assert!(
+        at(format!("unmount {CLEARTEXT}")) < at(format!("write image {DISK} {}", image.display()))
+    );
 }

@@ -471,6 +471,42 @@ pub fn usb_partition(
     partition
 }
 
+/// An unlocked LUKS volume: a mapper device with no drive of its own, backed
+/// by `backing` (a partition's object path), mounted at `mount_point`.
+pub fn luks_cleartext(
+    object_path: &str,
+    device_path: &str,
+    backing: &str,
+    mount_point: &str,
+) -> PlatformDevice {
+    use crate::model::BlockInfo;
+    PlatformDevice {
+        address: DeviceAddress {
+            object_path: object_path.to_string(),
+            device_path: device_path.to_string(),
+        },
+        block: BlockInfo {
+            device_path: device_path.to_string(),
+            id_type: Some("ext4".to_string()),
+            crypto_backing: Some(backing.to_string()),
+            ..BlockInfo::default()
+        },
+        drive: None,
+        mount_point: Some(PathBuf::from(mount_point)),
+    }
+}
+
+/// Whether a fake device is mounted now.
+impl FakeDeviceControl {
+    pub fn mount_point(&self, address: &DeviceAddress) -> Option<PathBuf> {
+        self.devices
+            .lock()
+            .expect("device lock")
+            .get(&address.object_path)
+            .and_then(|device| device.mount_point.clone())
+    }
+}
+
 /// An internal system disk, for asserting that it is excluded.
 pub fn internal_disk(object_path: &str, device_path: &str) -> PlatformDevice {
     use crate::model::{BlockInfo, DriveInfo};

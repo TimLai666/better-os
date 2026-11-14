@@ -235,7 +235,17 @@ impl FilesApp {
     /// Delete, then Sort and View, and the rest behind `…`.
     pub(crate) fn command_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale());
-        let facts = self.session.selection_facts();
+        let mut facts = self.session.selection_facts();
+        // On a plugin's page nothing is the folder's: nothing to make, cut,
+        // copy, paste, rename or trash, and no sort or view to change.
+        let on_plugin_page = self.plugin_view.is_some();
+        if on_plugin_page {
+            facts.writable = false;
+            facts.all_local = false;
+            facts.can_paste = false;
+            facts.count = 0;
+            facts.in_trash = false;
+        }
         let in_trash = facts.in_trash;
         let has_selection = facts.count > 0;
         let order = self.session.preferences.order();
@@ -433,10 +443,13 @@ impl FilesApp {
         }
         bar = bar
             .menu(
-                BarCommand::new(c.sort_menu, sort_icon(order.direction)),
+                BarCommand::new(c.sort_menu, sort_icon(order.direction)).disabled(on_plugin_page),
                 sort_menu,
             )
-            .menu(BarCommand::new(c.view_menu, view_icon(mode)), view_menu)
+            .menu(
+                BarCommand::new(c.view_menu, view_icon(mode)).disabled(on_plugin_page),
+                view_menu,
+            )
             .separator()
             .command(
                 BarCommand::new(c.preview_pane, IconName::PanelRight)
@@ -941,9 +954,15 @@ impl FilesApp {
         let c = copy(self.locale());
         let lines = self.nav_targets(c);
         let current = self.session.location().clone();
-        let selected = lines.iter().position(|(_, target)| {
-            target.as_ref().and_then(NavTarget::location) == Some(&current)
-        });
+        // A plugin's page lights its own row, not the folder behind it.
+        let selected = match &self.plugin_view {
+            Some(page) => lines.iter().position(|(_, target)| {
+                matches!(target, Some(NavTarget::PluginView(id)) if *id == page.plugin_id)
+            }),
+            None => lines.iter().position(|(_, target)| {
+                target.as_ref().and_then(NavTarget::location) == Some(&current)
+            }),
+        };
         let targets: Rc<Vec<Option<NavTarget>>> =
             Rc::new(lines.iter().map(|(_, target)| target.clone()).collect());
         let entries: Vec<NavEntry> = lines.into_iter().map(|(entry, _)| entry).collect();

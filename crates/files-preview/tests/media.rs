@@ -74,17 +74,34 @@ fn run_until(
     events
 }
 
+static FOLDER: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
 /// Points GStreamer's plugin registry (and any other cache) at a folder of
 /// this test process's own, so running the tests never writes to the
-/// person's `~/.cache/gstreamer-1.0`. Runs once, before GStreamer starts.
+/// person's `~/.cache/gstreamer-1.0`, and removes that folder when the
+/// tests are done. Runs once, before GStreamer starts.
 fn isolate() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let folder = std::env::temp_dir().join(format!(
-            "better-files-gstreamer-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::create_dir_all(&folder);
+        let folder = FOLDER
+            .get_or_init(|| {
+                tempfile::Builder::new()
+                    .prefix("better-files-gstreamer-test-")
+                    .tempdir()
+                    .expect("a temporary folder")
+                    .keep()
+            })
+            .clone();
+        // Removed when the test process exits.
+        extern "C" fn remove_folder() {
+            if let Some(folder) = FOLDER.get() {
+                let _ = std::fs::remove_dir_all(folder);
+            }
+        }
+        // SAFETY: registers a plain function with no arguments, once.
+        unsafe {
+            libc::atexit(remove_folder);
+        }
         // SAFETY: every test calls this before anything else, `Once` makes
         // the others wait until it returns, and nothing in these tests reads
         // the environment from another thread meanwhile.

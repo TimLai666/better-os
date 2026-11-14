@@ -37,7 +37,9 @@ struct Shared {
 #[derive(Clone)]
 pub struct PluginHost {
     shared: Arc<Mutex<Shared>>,
-    language: String,
+    /// The window's language, which plugins are run with and translated
+    /// into; it follows the window when the person changes it.
+    language: Arc<Mutex<String>>,
     home: Option<PathBuf>,
 }
 
@@ -64,7 +66,7 @@ impl PluginHost {
                 plugins: plugins.into_iter().map(|plugin| (plugin, None)).collect(),
                 ..Shared::default()
             })),
-            language: language.to_string(),
+            language: Arc::new(Mutex::new(language.to_string())),
             home: std::env::var_os("HOME").map(PathBuf::from),
         }
     }
@@ -102,9 +104,32 @@ impl PluginHost {
             });
     }
 
+    fn language(&self) -> String {
+        self.language
+            .lock()
+            .map(|language| language.clone())
+            .unwrap_or_default()
+    }
+
+    /// The window changed language: every plugin's catalog is read again in
+    /// it (a plugin without one keeps its own words), and the next poll and
+    /// run use it.
+    pub fn set_language(&self, language: &str) {
+        if let Ok(mut current) = self.language.lock() {
+            *current = language.to_string();
+        }
+        if let Ok(mut shared) = self.shared.lock() {
+            for (plugin, _) in shared.plugins.iter_mut() {
+                plugin.catalog = crate::plugins::catalog(&plugin.dir, language);
+            }
+            shared.details.clear();
+            shared.changed = true;
+        }
+    }
+
     /// Runs one plugin's poll and keeps the answer (a failure is empty).
     pub fn poll_now(&self, plugin: &Plugin) {
-        let output = plugin.poll(&self.language);
+        let output = plugin.poll(&self.language());
         if let Ok(mut shared) = self.shared.lock()
             && let Some(slot) = shared
                 .plugins
@@ -167,7 +192,7 @@ impl PluginHost {
                     .collect();
                 if detach {
                     if let Err(error) =
-                        plugin.spawn_detached(&command, &arguments, &env, &host.language)
+                        plugin.spawn_detached(&command, &arguments, &env, &host.language())
                         && let Ok(mut shared) = host.shared.lock()
                     {
                         shared.outcomes.push(Outcome::Failed(format!("{error:?}")));
@@ -175,7 +200,8 @@ impl PluginHost {
                     }
                     return;
                 }
-                let outcome = match plugin.run(&command, &arguments, &env, &host.language, None) {
+                let language = host.language();
+                let outcome = match plugin.run(&command, &arguments, &env, &language, None) {
                     Ok(output) => host.result(&plugin, &output),
                     Err(crate::plugins::RunError::Failed { last_error, .. }) => {
                         Some(Outcome::Failed(last_error))
@@ -255,7 +281,7 @@ impl PluginHost {
                         &path,
                         mime.as_deref(),
                         host.home.as_deref(),
-                        &host.language,
+                        &host.language(),
                     ));
                 }
                 if let Ok(mut shared) = host.shared.lock() {

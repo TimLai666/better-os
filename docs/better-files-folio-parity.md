@@ -244,14 +244,19 @@ Status at the end of the fifth ticket-93 pass: **108 of 113 lines ticked**, 5 de
       file in the Dropbox folder. Shot `22-…`; command words tested in
       `tests/share.rs`. Nothing was actually sent.
 - [x] LocalSend in the Share submenu — folio: `plugins/localsend`.
-      `localsend.rs`: LocalSend's protocol v2 with crates the workspace
-      already builds (ureq with rustls, socket2): a multicast announcement
-      when a selection's menu opens (never in the background), then
-      `prepare-upload` and one `upload` per file accepted. The receiver's
-      self-signed certificate is not checked against a CA (there is none;
-      folio does the same). Tests `tests/localsend.rs` against a stand-in
-      receiver (plain HTTP), including a declined transfer. Not tried with a
-      real LocalSend device.
+      `localsend.rs`: LocalSend's protocol v2.2 as v1.18.2 speaks it
+      (rustls, socket2, rcgen): a multicast announcement when a selection's
+      menu opens (never in the background), answers taken as HTTPS
+      `register` calls, then `prepare-upload` and one `upload` per file
+      accepted. Better Files makes one self-signed certificate once
+      (`$XDG_DATA_HOME/better-os/files/localsend`, key 0600), shows it as
+      the TLS client certificate LocalSend requires, and announces its
+      DER's upper-case SHA-256 as its fingerprint; a peer's certificate is
+      pinned to the fingerprint it announced, and a `register` whose
+      certificate does not back its claim is ignored. Tests
+      `tests/localsend.rs` against a stand-in HTTPS receiver that demands a
+      client certificate and checks it against the announcement, including
+      a declined transfer. Not tried with a real LocalSend device.
 - [x] Burn an image to a USB drive or SD card — folio:
       `src/FileMenu.qml:203-216`, `src/fileops.h:166-172`. "Write to
       <drive>…" on an `.iso` or `.img`, after a warning dialog; then a typed

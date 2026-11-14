@@ -55,6 +55,10 @@ pub struct BlockInfo {
     /// `/dev/disk/by-*` symlinks. The `by-path` entry is the closest thing to
     /// stable topology UDisks2 offers.
     pub symlinks: Vec<String>,
+    /// For an unlocked encrypted volume (LUKS cleartext): the object path of
+    /// the block device it is backed by (`CryptoBackingDevice`).
+    #[serde(default)]
+    pub crypto_backing: Option<String>,
 }
 
 impl BlockInfo {

@@ -522,3 +522,51 @@ fn undoing_a_merge_takes_back_only_what_it_brought_and_restores_what_it_replaced
     );
     assert!(!out.join("reports/added.txt").exists());
 }
+
+/// An undo that stops part-way (one item cannot go back, after another
+/// did) keeps the rest: what ran can be redone, and the next Undo, once the
+/// cause is gone, finishes the job.
+#[test]
+fn an_undo_that_stops_part_way_can_be_finished_later() {
+    use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipping: root ignores the folder permission this test relies on");
+        return;
+    }
+    let rig = rig();
+    let first_home = rig.dir.join("first");
+    let second_home = rig.dir.join("second");
+    let out = rig.dir.join("out");
+    for folder in [&first_home, &second_home, &out] {
+        fs::create_dir_all(folder).unwrap();
+    }
+    fs::write(first_home.join("a.txt"), b"a").unwrap();
+    fs::write(second_home.join("b.txt"), b"b").unwrap();
+    let mut history = rig.history();
+    history.record(rig.run(
+        Operation::Move {
+            sources: vec![
+                local(&first_home.join("a.txt")),
+                local(&second_home.join("b.txt")),
+            ],
+            destination: local(&out),
+        },
+        None,
+    ));
+    // a.txt cannot go back: its folder takes nothing new.
+    fs::set_permissions(&first_home, fs::Permissions::from_mode(0o555)).unwrap();
+    assert!(matches!(history.undo(), Err(Refusal::Failed { .. })));
+    assert!(second_home.join("b.txt").exists(), "b.txt went back");
+    assert!(out.join("a.txt").exists(), "a.txt stayed");
+    fs::set_permissions(&first_home, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(
+        history.undo(),
+        Ok(ChangeKind::Move),
+        "the rest is still there to undo"
+    );
+    assert!(first_home.join("a.txt").exists());
+    // Both halves can be redone.
+    assert_eq!(history.redo(), Ok(ChangeKind::Move));
+    assert_eq!(history.redo(), Ok(ChangeKind::Move));
+    assert!(out.join("a.txt").exists() && out.join("b.txt").exists());
+}

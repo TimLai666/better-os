@@ -85,7 +85,14 @@ impl Render for FilesApp {
             window.focus(&self.focus_handle, cx);
         }
 
-        let notice = self.session.notice.as_ref().map(|notice| notice.message(c));
+        let notice = self.session.notice.as_ref().map(|notice| {
+            let severity = match notice.tone() {
+                crate::session::NoticeTone::Success => Severity::Success,
+                crate::session::NoticeTone::Information => Severity::Informational,
+                crate::session::NoticeTone::Warning => Severity::Warning,
+            };
+            (severity, notice.message(c))
+        });
         let address = self.address_row(cx);
         let commands = self.command_bar(cx);
         let tab_strip = self.tab_strip(cx);
@@ -124,14 +131,18 @@ impl Render for FilesApp {
         // column about the selected item, and showing two of them would leave
         // the content area a sliver on a laptop screen.
         let details = self.application_details(cx);
-        let preview = (details.is_none() && self.session.preview.open && !compact)
-            .then(|| self.preview_pane(cx));
+        // A plugin's page shows its own details; the preview is the folder's.
+        let preview = (details.is_none()
+            && self.session.preview.open
+            && !compact
+            && self.plugin_view.is_none())
+        .then(|| self.preview_pane(cx));
         let chooser = self.chooser_overlay(cx);
         let menu = self.context_menu_element(cx);
         let sheet = self.show_shortcuts.then(|| self.shortcut_sheet(cx));
 
-        let notice_bar = notice.map(|message| {
-            InfoBar::new("files-notice", Severity::Warning, message)
+        let notice_bar = notice.map(|(severity, message)| {
+            InfoBar::new("files-notice", severity, message)
                 .locale(kit_locale(self.locale()))
                 .on_close(act(cx, |app, _, _| app.session.notice = None))
         });

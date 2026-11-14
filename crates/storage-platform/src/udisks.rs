@@ -50,6 +50,8 @@ pub trait Block {
     fn read_only(&self) -> zbus::Result<bool>;
     #[zbus(property)]
     fn size(&self) -> zbus::Result<u64>;
+    #[zbus(property)]
+    fn crypto_backing_device(&self) -> zbus::Result<OwnedObjectPath>;
     fn format(&self, kind: &str, options: HashMap<&str, Value<'_>>) -> zbus::Result<()>;
     fn open_for_restore(
         &self,
@@ -201,6 +203,12 @@ impl UDisks2 {
                 .iter()
                 .map(|raw| decode_path(raw))
                 .collect(),
+            crypto_backing: block
+                .crypto_backing_device()
+                .await
+                .ok()
+                .map(|path| path.as_str().to_string())
+                .filter(|path| path != "/"),
         };
 
         let drive_path = block.drive().await.ok();

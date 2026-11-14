@@ -1,14 +1,15 @@
 //! LocalSend's protocol, against a stand-in receiver on this machine that
-//! serves HTTPS with a self-signed certificate, as LocalSend apps do. The
-//! certificate and its key in `fixtures/` exist only for these tests.
+//! serves HTTPS with a self-signed certificate and requires a client
+//! certificate, as LocalSend 1.18 does. The certificate and its key in
+//! `fixtures/` exist only for these tests.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::sync::{Arc, Mutex};
 
 use files_gui::localsend::{
-    ANSWER_LIMIT, KnownPeers, Peer, SendError, certificate_fingerprint, own_info,
-    parse_announcement, prepare_body, read_answer, send,
+    ANSWER_LIMIT, Identity, Info, KnownPeers, Peer, SendError, certificate_fingerprint, own_info,
+    parse_announcement, prepare_body, read_answer, send, serve_register,
 };
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -21,13 +22,65 @@ fn stand_in_fingerprint() -> String {
     certificate_fingerprint(CertificateDer::from_pem_slice(CERT).unwrap().as_ref())
 }
 
+/// What LocalSend's `CustomClientCertVerifier` does when its web pages are
+/// not served: a client certificate is mandatory, and any valid one is
+/// taken; who it is, is its fingerprint.
+#[derive(Debug)]
+struct RequireClientCertificate(Arc<rustls::crypto::CryptoProvider>);
+
+impl rustls::server::danger::ClientCertVerifier for RequireClientCertificate {
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
+    fn verify_client_cert(
+        &self,
+        _: &CertificateDer<'_>,
+        _: &[CertificateDer<'_>],
+        _: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        Ok(rustls::server::danger::ClientCertVerified::assertion())
+    }
+    fn client_auth_mandatory(&self) -> bool {
+        true
+    }
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
 fn server_config() -> Arc<rustls::ServerConfig> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     Arc::new(
-        rustls::ServerConfig::builder_with_provider(provider)
+        rustls::ServerConfig::builder_with_provider(provider.clone())
             .with_safe_default_protocol_versions()
             .unwrap()
-            .with_no_client_auth()
+            .with_client_cert_verifier(Arc::new(RequireClientCertificate(provider)))
             .with_single_cert(
                 vec![CertificateDer::from_pem_slice(CERT).unwrap()],
                 PrivateKeyDer::from_pem_slice(KEY).unwrap(),
@@ -55,6 +108,15 @@ fn accept(listener: &TcpListener, config: &Arc<rustls::ServerConfig>) -> Option<
         }
     }
     Some(tls)
+}
+
+/// The fingerprint of the certificate the client presented.
+fn client_fingerprint(stream: &Tls) -> Option<String> {
+    stream
+        .conn
+        .peer_certificates()
+        .and_then(|chain| chain.first())
+        .map(|certificate| certificate_fingerprint(certificate.as_ref()))
 }
 
 fn peer(port: u16, fingerprint: &str) -> Peer {
@@ -207,6 +269,7 @@ type Request = (String, Vec<u8>);
 
 #[test]
 fn files_are_offered_then_uploaded_with_the_session_and_token() {
+    let me = Identity::generate().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let config = server_config();
@@ -216,7 +279,12 @@ fn files_are_offered_then_uploaded_with_the_session_and_token() {
         for _ in 0..2 {
             let mut stream = accept(&listener, &config).expect("a handshake");
             let (first, body) = read_request(&mut stream);
+            // As LocalSend: the sender is whoever's certificate it
+            // presented, and its claim has to be that certificate.
+            let presented = client_fingerprint(&stream).expect("a client certificate");
             if first.contains("prepare-upload") {
+                let claimed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(claimed["info"]["fingerprint"], presented.as_str());
                 answer(
                     &mut stream,
                     "200 OK",
@@ -235,7 +303,8 @@ fn files_are_offered_then_uploaded_with_the_session_and_token() {
     std::fs::write(&file, b"hello over the LAN").unwrap();
     send(
         &peer(port, &stand_in_fingerprint()),
-        own_info("Me", "f", false),
+        &me,
+        own_info("Me", &me.fingerprint(), false),
         &[file],
     )
     .unwrap();
@@ -257,6 +326,7 @@ fn files_are_offered_then_uploaded_with_the_session_and_token() {
 
 #[test]
 fn a_receiver_that_declines_is_reported_as_declined() {
+    let me = Identity::generate().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let config = server_config();
@@ -273,7 +343,8 @@ fn a_receiver_that_declines_is_reported_as_declined() {
     assert_eq!(
         send(
             &peer(port, &stand_in_fingerprint()),
-            own_info("Me", "f", false),
+            &me,
+            own_info("Me", &me.fingerprint(), false),
             &[file]
         ),
         Err(SendError::Declined)
@@ -293,7 +364,13 @@ fn a_certificate_other_than_the_announced_one_is_refused_before_anything_is_sent
     let file = root.path().join("secret.txt");
     std::fs::write(&file, b"not for them").unwrap();
     let announced = "0".repeat(64);
-    let result = send(&peer(port, &announced), own_info("Me", "f", false), &[file]);
+    let me = Identity::generate().unwrap();
+    let result = send(
+        &peer(port, &announced),
+        &me,
+        own_info("Me", &me.fingerprint(), false),
+        &[file],
+    );
     match result {
         Err(SendError::Failed(reason)) => {
             assert!(
@@ -314,7 +391,12 @@ fn a_plain_http_peer_is_refused() {
     let file = root.path().join("a.txt");
     std::fs::write(&file, b"x").unwrap();
     assert_eq!(
-        send(&plain, own_info("Me", "f", false), &[file]),
+        send(
+            &plain,
+            &Identity::generate().unwrap(),
+            own_info("Me", "f", false),
+            &[file]
+        ),
         Err(SendError::Failed("localsend.insecure_peer".into()))
     );
 }
@@ -340,4 +422,162 @@ fn an_answer_is_read_up_to_its_limit_and_no_further() {
     let mut endless = b"HTTP/1.1 200 OK\r\n\r\n".to_vec();
     endless.extend(std::iter::repeat_n(b'x', ANSWER_LIMIT + 10));
     assert!(read_answer(&mut endless.as_slice()).is_err());
+}
+
+/// Better Files' certificate is made once and kept: the same fingerprint
+/// every time, in LocalSend's format, the key readable only by the person.
+#[test]
+fn the_certificate_is_made_once_kept_privately_and_named_as_localsend_names_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("better-os/files/localsend");
+    let first = Identity::load_or_create(&folder).unwrap();
+    let again = Identity::load_or_create(&folder).unwrap();
+    assert_eq!(first.fingerprint(), again.fingerprint());
+    let fingerprint = first.fingerprint();
+    assert_eq!(fingerprint.len(), 64);
+    assert!(
+        fingerprint
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('A'..='F').contains(&c)),
+        "uppercase hex: {fingerprint}"
+    );
+    assert_eq!(
+        certificate_fingerprint(first.certificate().as_ref()),
+        fingerprint
+    );
+    let mode =
+        |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&folder), 0o700);
+    assert_eq!(mode(&folder.join("key.der")), 0o600);
+    // Two installs are two devices.
+    assert_ne!(Identity::generate().unwrap().fingerprint(), fingerprint);
+}
+
+/// A LocalSend device answers our announcement with a `register` request
+/// over HTTPS, presenting its own certificate. It is taken when its claim is
+/// that certificate, and ignored otherwise.
+#[test]
+fn a_register_request_is_taken_only_when_its_certificate_backs_its_claim() {
+    let me = Identity::generate().unwrap();
+    let own = own_info("Me", &me.fingerprint(), true);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let found: Arc<Mutex<Vec<Peer>>> = Arc::default();
+    let server = {
+        let found = found.clone();
+        let me = me.clone();
+        std::thread::spawn(move || {
+            serve_register(
+                &listener,
+                &me,
+                &own,
+                std::time::Duration::from_millis(1500),
+                &|peer| found.lock().unwrap().push(peer),
+            )
+        })
+    };
+    // The phone: its own certificate (the stand-in's), as a client.
+    let register = |claimed: &str| -> Option<Info> {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AnyServer(provider)))
+            .with_client_auth_cert(
+                vec![CertificateDer::from_pem_slice(CERT).unwrap()],
+                PrivateKeyDer::from_pem_slice(KEY).unwrap(),
+            )
+            .unwrap();
+        let socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let connection = rustls::ClientConnection::new(
+            Arc::new(config),
+            rustls::pki_types::ServerName::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST).into()),
+        )
+        .unwrap();
+        let mut stream = rustls::StreamOwned::new(connection, socket);
+        let body = format!(
+            r#"{{"alias":"Phone","version":"2.1","deviceType":"mobile","fingerprint":"{claimed}","port":53317,"protocol":"https","download":false}}"#
+        );
+        write!(
+            stream,
+            "POST /api/localsend/v2/register HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .ok()?;
+        let (status, answer) = read_answer(&mut stream).ok()?;
+        (status == 200).then(|| serde_json::from_slice(&answer).unwrap())
+    };
+    assert_eq!(
+        register(&"0".repeat(64)),
+        None,
+        "a claim the certificate does not back"
+    );
+    let answer = register(&stand_in_fingerprint().to_lowercase()).expect("an answer");
+    assert_eq!(answer.fingerprint, me.fingerprint(), "we say who we are");
+    server.join().unwrap();
+    let found = found.lock().unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].alias, "Phone");
+    assert_eq!(found[0].fingerprint, stand_in_fingerprint());
+}
+
+/// Takes any server certificate (the register test checks the other way).
+#[derive(Debug)]
+struct AnyServer(Arc<rustls::crypto::CryptoProvider>);
+
+impl rustls::client::danger::ServerCertVerifier for AnyServer {
+    fn verify_server_cert(
+        &self,
+        _: &CertificateDer<'_>,
+        _: &[CertificateDer<'_>],
+        _: &rustls::pki_types::ServerName<'_>,
+        _: &[u8],
+        _: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// A chunk size larger than any number can hold is refused, not wrapped,
+/// in a debug build and a release one alike.
+#[test]
+fn a_chunk_size_past_what_a_number_holds_is_refused() {
+    let answer =
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\nffffffffffffffff\r\n"
+            .to_vec();
+    assert_eq!(
+        read_answer(&mut answer.as_slice()),
+        Err(SendError::Failed("localsend.answer_too_long".into()))
+    );
 }

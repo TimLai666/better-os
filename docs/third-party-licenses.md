@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 950.
-- Packages with an SPDX license expression: 948.
+- Resolved Cargo packages: 961.
+- Packages with an SPDX license expression: 959.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `48a84dd856d494b12845fa2c4230d22236d759293f816aec758b9ce6cb74705f`.
+- `Cargo.lock` SHA-256: `af26e482ec076220f787ebc37e8768cfb8857ed0d922a6a2d5d79c33cf916ca2`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -25,11 +25,11 @@ source of truth for those packages.
 
 | License expression | Package records |
 | --- | ---: |
-| `MIT OR Apache-2.0` | 412 |
-| `MIT` | 200 |
+| `MIT OR Apache-2.0` | 420 |
+| `MIT` | 201 |
 | `Apache-2.0 OR MIT` | 77 |
 | `GPL-3.0-or-later` | 60 |
-| `MIT/Apache-2.0` | 36 |
+| `MIT/Apache-2.0` | 38 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
 | `Zlib OR Apache-2.0 OR MIT` | 17 |
@@ -198,6 +198,9 @@ name them, and linked at run time; each keeps its own license.
 | `as-slice` | `0.2.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/as-slice/0.2.1) |
 | `ash` | `0.38.0+1.3.281` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/ash/0.38.0+1.3.281) |
 | `ashpd` | `0.13.13` | `MIT` | [crates.io](https://crates.io/crates/ashpd/0.13.13) |
+| `asn1-rs` | `0.7.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/asn1-rs/0.7.2) |
+| `asn1-rs-derive` | `0.6.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/asn1-rs-derive/0.6.0) |
+| `asn1-rs-impl` | `0.2.0` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/asn1-rs-impl/0.2.0) |
 | `async-broadcast` | `0.7.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/async-broadcast/0.7.2) |
 | `async-channel` | `2.5.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/async-channel/2.5.0) |
 | `async-compression` | `0.4.43` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/async-compression/0.4.43) |
@@ -316,10 +319,12 @@ name them, and linked at run time; each keeps its own license.
 | `crypto-common` | `0.1.7` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/crypto-common/0.1.7) |
 | `crypto-common` | `0.2.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/crypto-common/0.2.2) |
 | `ctor` | `1.0.12` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/ctor/1.0.12) |
+| `data-encoding` | `2.11.1` | `MIT` | [crates.io](https://crates.io/crates/data-encoding/2.11.1) |
 | `data-url` | `0.3.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/data-url/0.3.2) |
 | `defaults-core` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `defaults-platform` | `0.2.11` | `GPL-3.0-or-later` | workspace |
 | `defaults-store` | `0.2.11` | `GPL-3.0-or-later` | workspace |
+| `der-parser` | `10.0.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/der-parser/10.0.0) |
 | `deranged` | `0.5.8` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/deranged/0.5.8) |
 | `derive_more` | `2.1.1` | `MIT` | [crates.io](https://crates.io/crates/derive_more/2.1.1) |
 | `derive_more-impl` | `2.1.1` | `MIT` | [crates.io](https://crates.io/crates/derive_more-impl/2.1.1) |
@@ -646,6 +651,7 @@ name them, and linked at run time; each keeps its own license.
 | `objc_exception` | `0.1.2` | `MIT` | [crates.io](https://crates.io/crates/objc_exception/0.1.2) |
 | `objc_id` | `0.1.1` | `MIT` | [crates.io](https://crates.io/crates/objc_id/0.1.1) |
 | `object` | `0.37.3` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/object/0.37.3) |
+| `oid-registry` | `0.8.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/oid-registry/0.8.1) |
 | `once_cell` | `1.21.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/once_cell/1.21.4) |
 | `once_cell_polyfill` | `1.70.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/once_cell_polyfill/1.70.2) |
 | `oo7` | `0.6.0` | `MIT` | [crates.io](https://crates.io/crates/oo7/0.6.0) |
@@ -733,6 +739,7 @@ name them, and linked at run time; each keeps its own license.
 | `raw-window-metal` | `1.1.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/raw-window-metal/1.1.0) |
 | `rayon` | `1.12.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/rayon/1.12.0) |
 | `rayon-core` | `1.13.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/rayon-core/1.13.0) |
+| `rcgen` | `0.14.10` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/rcgen/0.14.10) |
 | `read-fonts` | `0.37.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/read-fonts/0.37.0) |
 | `read-fonts` | `0.41.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/read-fonts/0.41.0) |
 | `reborrow` | `0.5.5` | `MIT` | [crates.io](https://crates.io/crates/reborrow/0.5.5) |
@@ -762,6 +769,7 @@ name them, and linked at run time; each keeps its own license.
 | `rustc-hash` | `1.1.0` | `Apache-2.0/MIT` | [crates.io](https://crates.io/crates/rustc-hash/1.1.0) |
 | `rustc-hash` | `2.1.3` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/rustc-hash/2.1.3) |
 | `rustc_version` | `0.4.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/rustc_version/0.4.1) |
+| `rusticata-macros` | `4.1.0` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/rusticata-macros/4.1.0) |
 | `rustix` | `0.38.44` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/rustix/0.38.44) |
 | `rustix` | `1.1.4` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/rustix/1.1.4) |
 | `rustls` | `0.23.43` | `Apache-2.0 OR ISC OR MIT` | [crates.io](https://crates.io/crates/rustls/0.23.43) |
@@ -877,6 +885,7 @@ name them, and linked at run time; each keeps its own license.
 | `tiff` | `0.11.3` | `MIT` | [crates.io](https://crates.io/crates/tiff/0.11.3) |
 | `time` | `0.3.54` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/time/0.3.54) |
 | `time-core` | `0.1.9` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/time-core/0.1.9) |
+| `time-macros` | `0.2.32` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/time-macros/0.2.32) |
 | `tiny-keccak` | `2.0.2` | `CC0-1.0` | [crates.io](https://crates.io/crates/tiny-keccak/2.0.2) |
 | `tiny-skia` | `0.11.4` | `BSD-3-Clause` | [crates.io](https://crates.io/crates/tiny-skia/0.11.4) |
 | `tiny-skia-path` | `0.11.4` | `BSD-3-Clause` | [crates.io](https://crates.io/crates/tiny-skia-path/0.11.4) |
@@ -1060,6 +1069,7 @@ name them, and linked at run time; each keeps its own license.
 | `x11-clipboard` | `0.9.3` | `MIT` | [crates.io](https://crates.io/crates/x11-clipboard/0.9.3) |
 | `x11rb` | `0.13.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/x11rb/0.13.2) |
 | `x11rb-protocol` | `0.13.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/x11rb-protocol/0.13.2) |
+| `x509-parser` | `0.18.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/x509-parser/0.18.1) |
 | `xcb` | `1.7.0` | `MIT` | [crates.io](https://crates.io/crates/xcb/1.7.0) |
 | `xcursor` | `0.3.10` | `MIT` | [crates.io](https://crates.io/crates/xcursor/0.3.10) |
 | `xim-ctext` | `0.3.0` | `MIT` | `git+https://github.com/zed-industries/xim-rs.git?rev=16f35a2c881b815a2b6cdfd6687988e84f8447d8#16f35a2c881b815a2b6cdfd6687988e84f8447d8` |
@@ -1070,6 +1080,7 @@ name them, and linked at run time; each keeps its own license.
 | `xml5ever` | `0.18.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/xml5ever/0.18.1) |
 | `xmlwriter` | `0.1.0` | `MIT` | [crates.io](https://crates.io/crates/xmlwriter/0.1.0) |
 | `y4m` | `0.8.0` | `MIT` | [crates.io](https://crates.io/crates/y4m/0.8.0) |
+| `yasna` | `0.6.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/yasna/0.6.0) |
 | `yazi` | `0.2.1` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/yazi/0.2.1) |
 | `yeslogic-fontconfig-sys` | `6.0.1` | `MIT` | [crates.io](https://crates.io/crates/yeslogic-fontconfig-sys/6.0.1) |
 | `yoke` | `0.8.3` | `Unicode-3.0` | [crates.io](https://crates.io/crates/yoke/0.8.3) |

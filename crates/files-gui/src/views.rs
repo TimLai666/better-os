@@ -173,11 +173,17 @@ pub struct IconCache {
 }
 
 impl IconCache {
-    /// The session's data directories, the desktop's usual themes, then
-    /// `hicolor`.
+    /// The session's data directories, the desktop's own icon theme (and
+    /// what it inherits), then Adwaita and Yaru, then `hicolor`. The
+    /// desktop's theme comes first, so a file looks as it does everywhere
+    /// else on this desktop, light or dark.
     pub fn from_env() -> Self {
         let mut search = better_ui::icons::IconSearch::from_environment();
-        search.themes = vec!["Adwaita".to_string(), "Yaru".to_string()];
+        for fallback in ["Adwaita", "Yaru"] {
+            if !search.themes.iter().any(|theme| theme == fallback) {
+                search.themes.push(fallback.to_string());
+            }
+        }
         Self {
             search,
             found: RefCell::new(HashMap::new()),

@@ -481,6 +481,11 @@ impl FilesApp {
             _ => "en",
         };
         self.type_names = Arc::new(files_platform::MimeDescriptions::from_env(language));
+        // Plugins speak the window's language too.
+        self.plugins.set_language(match locale.resolved() {
+            Locale::ZhTw => "zh-TW",
+            _ => "en",
+        });
         let c = crate::i18n::copy(locale);
         self.path_input.update(cx, |state, cx| {
             state.set_placeholder(c.path_placeholder, window, cx)
@@ -1115,7 +1120,26 @@ pub(crate) struct Sharing {
     pub(crate) last: std::sync::Arc<std::sync::Mutex<Option<(String, bool)>>>,
     /// LocalSend devices found the last time a Share menu was opened.
     localsend: std::sync::Arc<crate::localsend::KnownPeers>,
-    fingerprint: String,
+    /// Better Files' LocalSend certificate, read (or made) the first time a
+    /// Share menu needs it, never at start.
+    identity: std::sync::Arc<std::sync::OnceLock<Option<crate::localsend::Identity>>>,
+}
+
+/// The LocalSend certificate, from its folder, made there the first time.
+fn localsend_identity(
+    slot: &std::sync::OnceLock<Option<crate::localsend::Identity>>,
+) -> Option<crate::localsend::Identity> {
+    slot.get_or_init(|| {
+        let folder = crate::localsend::Identity::default_folder()?;
+        match crate::localsend::Identity::load_or_create(&folder) {
+            Ok(identity) => Some(identity),
+            Err(error) => {
+                eprintln!("better-files: no LocalSend certificate: {error}");
+                None
+            }
+        }
+    })
+    .clone()
 }
 
 impl Sharing {
@@ -1125,7 +1149,7 @@ impl Sharing {
             dropbox: Default::default(),
             last: Default::default(),
             localsend: Default::default(),
-            fingerprint: crate::localsend::fingerprint(),
+            identity: Default::default(),
         };
         let machines = sharing.machines.clone();
         let dropbox = sharing.dropbox.clone();
@@ -1173,13 +1197,16 @@ impl Sharing {
     /// thread. Only when a menu that could send is opened.
     pub(crate) fn discover_localsend(&self) {
         let found = self.localsend.clone();
-        let fingerprint = self.fingerprint.clone();
+        let identity = self.identity.clone();
         let _ = std::thread::Builder::new()
             .name("files-localsend".to_string())
             .spawn(move || {
+                let Some(identity) = localsend_identity(&identity) else {
+                    return;
+                };
                 let answered = crate::localsend::discover(
+                    &identity,
                     &crate::localsend::alias(),
-                    &fingerprint,
                     Duration::from_millis(1_500),
                     |peer| found.found(peer),
                 );
@@ -1190,9 +1217,16 @@ impl Sharing {
     /// Sends files to a LocalSend device, off the window's thread.
     pub(crate) fn localsend(&self, files: Vec<std::path::PathBuf>, peer: crate::localsend::Peer) {
         let done = self.last.clone();
-        let own = crate::localsend::own_info(&crate::localsend::alias(), &self.fingerprint, false);
+        let identity = self.identity.clone();
         std::thread::spawn(move || {
-            let sent = crate::localsend::send(&peer, own, &files).is_ok();
+            let sent = localsend_identity(&identity).is_some_and(|identity| {
+                let own = crate::localsend::own_info(
+                    &crate::localsend::alias(),
+                    &identity.fingerprint(),
+                    false,
+                );
+                crate::localsend::send(&peer, &identity, own, &files).is_ok()
+            });
             if let Ok(mut last) = done.lock() {
                 *last = Some((peer.alias.clone(), sent));
             }

@@ -262,3 +262,48 @@ tailnet machine names; keep it local),
 `26-preview-video-1600-light-en.png`,
 `27-preview-missing-codec-1600-light-en.png`,
 `28-split-view-narrow-1000-light-en.png`.
+
+### Second review fixes
+
+- **LocalSend identity as v1.18.2 requires it:** one self-signed
+  certificate, made once under `$XDG_DATA_HOME/better-os/files/localsend`
+  (folder 0700, key 0600), presented as the TLS client certificate; the
+  announced fingerprint is the upper-case SHA-256 of its DER. Discovery
+  takes answers as HTTPS `register` calls and ignores one whose certificate
+  does not back its claimed fingerprint. A chunk size past what a number
+  holds is refused (checked in debug and release).
+- **Undo that stops part way** keeps what ran on the redo list and what is
+  left on the undo list, so it can be finished later.
+- **Error keys become sentences** (`errors::explain`): every storage and job
+  engine key the window can show reads as what to do, in English and
+  Traditional Chinese; no raw key reaches a notice or a failed job's line.
+- **Notices take the tone of what they say:** a finished undo, format or
+  image write is a success; refusals stay warnings.
+- **Plugin page:** its own sidebar row is lit, and New, Sort, View, cut,
+  copy, paste and trash are off while it shows. A plugin's section titles
+  follow the window's language through its catalog.
+- **Navigation pane:** a pane taller than the window scrolls with a
+  scrollbar always in sight, and its headers and dividers keep their size
+  instead of being squeezed out (960×720 lost "實驗室機器" and "裝置").
+- **List icons** come from the desktop's icon theme first in the light
+  theme too.
+- **Image write in the storage service:** the D-Bus call awaits the
+  progress signaller instead of blocking the executor; the drive's busy
+  mark is released when the write is dropped, however it ends; an unlocked
+  LUKS volume backed by the drive is unmounted first (followed through
+  `CryptoBackingDevice`), and the write is refused when it cannot be.
+- **Media tests** remove their temporary GStreamer folder when they end.
+
+Screenshots of this round (`.shots/` in the worktree, the private headless
+sway with the fake storage service and a fake drive):
+`50-plugin-page-own-row-lit-commands-off-1600-light-en.png`,
+`51-write-image-dialog-1600-light-en.png`,
+`52-write-done-success-style-1600-light-en.png`,
+`53-clash-card-1600-light-en.png`,
+`54-completed-job-no-time-left-1600-light-en.png`,
+`55-undo-merge-move-success-style-1600-light-en.png`,
+`56-compact-sidebar-scrollbar-960-light-zh.png`,
+`57-open-pane-plugin-title-zh-960-light-zh.png`,
+`58-plugin-title-from-catalog-1600-light-zh.png`,
+`59-list-view-960-light-zh.png`,
+`60-open-pane-headers-960-light-zh.png`.

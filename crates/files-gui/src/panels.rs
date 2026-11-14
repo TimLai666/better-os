@@ -565,11 +565,17 @@ impl FilesApp {
                 column = column
                     .child(fluent::label(
                         format!(
-                            "{} {} · {} {}",
-                            summary.files,
-                            c.preview_folder_files,
-                            summary.directories,
-                            c.preview_folder_folders
+                            "{} · {}",
+                            crate::i18n::counted(
+                                summary.files,
+                                c.preview_folder_file_one,
+                                c.preview_folder_files
+                            ),
+                            crate::i18n::counted(
+                                summary.directories,
+                                c.preview_folder_folder_one,
+                                c.preview_folder_folders
+                            ),
                         ),
                         BODY,
                         p.text_primary,

@@ -200,19 +200,38 @@ impl History {
     /// A change that cannot be undone (its item was moved or replaced
     /// since) is said so and forgotten, so the next Undo reaches the change
     /// before it rather than refusing the same way forever.
+    ///
+    /// One that stops part-way (a move fails after others ran) is kept as it
+    /// stands: what ran can be redone, and what did not is still there to
+    /// undo once the cause is gone.
     pub fn undo(&mut self) -> Result<ChangeKind, Refusal> {
         let change = self.undo.pop().ok_or(Refusal::Nothing)?;
-        let flipped = flip(&change, true, self.trash.as_deref())?;
-        let kind = flipped.kind;
-        self.redo.push(flipped);
-        Ok(kind)
+        match flip(&change, true, self.trash.as_deref()) {
+            Ok(flipped) => {
+                let kind = flipped.kind;
+                self.redo.push(flipped);
+                Ok(kind)
+            }
+            Err(stopped) => {
+                self.redo.extend(stopped.ran);
+                self.undo.extend(stopped.remaining);
+                Err(stopped.refusal)
+            }
+        }
     }
 
     /// Redoes the latest undone change; one that cannot be redone is
     /// forgotten, as for undo.
     pub fn redo(&mut self) -> Result<ChangeKind, Refusal> {
         let change = self.redo.pop().ok_or(Refusal::Nothing)?;
-        let flipped = flip(&change, false, self.trash.as_deref())?;
+        let flipped = match flip(&change, false, self.trash.as_deref()) {
+            Ok(flipped) => flipped,
+            Err(stopped) => {
+                self.undo.extend(stopped.ran);
+                self.redo.extend(stopped.remaining);
+                return Err(stopped.refusal);
+            }
+        };
         let kind = flipped.kind;
         self.undo.push(flipped);
         Ok(kind)
@@ -260,7 +279,8 @@ fn occupied(path: &Path) -> bool {
 
 /// Checks every step, then runs them backwards (undo) or forwards (redo),
 /// returning the change as it stands afterwards.
-fn flip(change: &Change, undoing: bool, trash: Option<&Path>) -> Result<Change, Refusal> {
+/// Checks every step of a change before any runs.
+fn check(change: &Change, undoing: bool) -> Result<(), Refusal> {
     // Check first, all of it. A path an earlier-running step of this same
     // change empties is not "occupied": undoing a Replace puts the new file
     // away before the old one comes back.
@@ -352,6 +372,31 @@ fn flip(change: &Change, undoing: bool, trash: Option<&Path>) -> Result<Change, 
         }
     }
 
+    Ok(())
+}
+
+/// Why a flip did not finish, and, when it stopped after some steps ran,
+/// the change split there: the steps that ran (flipped) and the ones that
+/// did not (as they were).
+struct Stopped {
+    refusal: Refusal,
+    ran: Option<Change>,
+    remaining: Option<Change>,
+}
+
+impl From<Refusal> for Box<Stopped> {
+    fn from(refusal: Refusal) -> Self {
+        Box::new(Stopped {
+            refusal,
+            ran: None,
+            remaining: None,
+        })
+    }
+}
+
+fn flip(change: &Change, undoing: bool, trash: Option<&Path>) -> Result<Change, Box<Stopped>> {
+    check(change, undoing)?;
+
     // Then run. Undo goes last step first, so a folder made by the change is
     // emptied of what came back before it is itself put away.
     let mut steps = change.steps.clone();
@@ -360,9 +405,33 @@ fn flip(change: &Change, undoing: bool, trash: Option<&Path>) -> Result<Change, 
     } else {
         (0..steps.len()).collect()
     };
+    let mut ran: Vec<usize> = Vec::new();
     for index in order {
-        let next = run_step(&steps[index], undoing, trash)?;
-        steps[index] = next;
+        match run_step(&steps[index], undoing, trash) {
+            Ok(next) => {
+                steps[index] = next;
+                ran.push(index);
+            }
+            Err(refusal) => {
+                let part = |indices: Vec<usize>, from: &[Step]| {
+                    let mut indices = indices;
+                    indices.sort_unstable();
+                    let steps: Vec<Step> = indices.into_iter().map(|at| from[at].clone()).collect();
+                    (!steps.is_empty()).then(|| Change {
+                        count: steps.len(),
+                        steps,
+                        ..change.clone()
+                    })
+                };
+                let remaining: Vec<usize> =
+                    (0..steps.len()).filter(|at| !ran.contains(at)).collect();
+                return Err(Box::new(Stopped {
+                    refusal,
+                    ran: part(ran, &steps),
+                    remaining: part(remaining, &change.steps),
+                }));
+            }
+        }
     }
     Ok(Change {
         steps,

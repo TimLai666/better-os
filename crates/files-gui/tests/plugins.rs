@@ -420,3 +420,34 @@ fn details_are_fetched_by_one_worker_for_the_latest_file_only() {
     assert!(runs.len() <= 2, "{runs:?}");
     assert_eq!(runs.last().copied(), Some(last.to_str().unwrap()));
 }
+
+/// A plugin's words follow the window's language when it changes, from
+/// `i18n/zh-TW.json` (or `zh_TW.json`, or `zh.json`); without a catalog
+/// for it, the manifest's own words stay.
+#[test]
+fn a_plugin_follows_the_window_into_another_language() {
+    use files_gui::plugin_host::PluginHost;
+    let root = root();
+    let dir = plugin_dir(
+        root.path(),
+        "lab",
+        r#"{"folio":1,"section":{"title":"Lab machines"}}"#,
+    );
+    let i18n = dir.join("i18n");
+    fs::create_dir_all(&i18n).unwrap();
+    fs::set_permissions(&i18n, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(i18n.join("zh_TW.json"), r#"{"Lab machines":"實驗室機器"}"#).unwrap();
+    let plugin = load(&dir, "en", &|_| true).unwrap();
+    assert_eq!(plugin.translate("Lab machines"), "Lab machines");
+    let host = PluginHost::with(vec![plugin], "en");
+    host.set_language("zh-TW");
+    let (plugin, _) = host.snapshot().remove(0);
+    assert_eq!(plugin.translate("Lab machines"), "實驗室機器");
+    host.set_language("de");
+    let (plugin, _) = host.snapshot().remove(0);
+    assert_eq!(
+        plugin.translate("Lab machines"),
+        "Lab machines",
+        "no German catalog"
+    );
+}

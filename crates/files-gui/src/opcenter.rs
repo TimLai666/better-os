@@ -34,8 +34,7 @@ pub struct JobControls {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FailureRow {
     pub path: PathBuf,
-    /// The stable machine key the error renders as, so a log and a screen
-    /// agree about what went wrong.
+    /// What went wrong, in words: the error's stable key explained.
     pub reason: String,
 }
 
@@ -171,7 +170,7 @@ pub fn job_row(snapshot: &JobSnapshot, c: &'static Copy) -> JobRow {
             .iter()
             .map(|(path, error)| FailureRow {
                 path: path.clone(),
-                reason: reason_key(error),
+                reason: crate::errors::explain(&reason_key(error), c),
             })
             .collect(),
     }
@@ -280,7 +279,8 @@ fn remaining_label(remaining: &RemainingTime, c: &'static Copy) -> String {
 }
 
 /// The machine key an error renders as. `OperationError`'s `Display` is
-/// already a stable key, which is what the panel shows next to the path.
+/// already a stable key; the panel shows what it means
+/// ([`crate::errors::explain`]).
 fn reason_key(error: &OperationError) -> String {
     error.to_string()
 }

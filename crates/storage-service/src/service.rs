@@ -37,6 +37,17 @@ pub struct StorageService<C: DeviceControl + Clone + 'static> {
     coordinator: Arc<Mutex<StorageCoordinator<C>>>,
 }
 
+/// Sends on the channel when dropped, however the thread holding it ends.
+struct DropSend(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl Drop for DropSend {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+    }
+}
+
 /// How often an image write's progress is signalled, at most.
 const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -135,11 +146,15 @@ impl<C: DeviceControl + Clone + 'static> StorageService<C> {
         // it into signals, at most every PROGRESS_INTERVAL and always the
         // last one, and ends when the copy drops its sender.
         let (sender, written) = std::sync::mpsc::channel::<u64>();
-        let signaller = {
+        // Told when the signalling thread is done, awaited rather than
+        // joined: this runs on zbus's executor, which must not block.
+        let (signalled, signalling_done) = tokio::sync::oneshot::channel::<()>();
+        {
             let emitter = emitter.to_owned();
             let object_path = request.object_path.clone();
             let total = write.total;
             std::thread::spawn(move || {
+                let _done = DropSend(Some(signalled));
                 // A small runtime of its own to send the signals on.
                 let Ok(runtime) = tokio::runtime::Builder::new_current_thread().build() else {
                     // No runtime, no progress; the copy itself goes on.
@@ -172,7 +187,7 @@ impl<C: DeviceControl + Clone + 'static> StorageService<C> {
                         return;
                     }
                 }
-            })
+            });
         };
         let progress: storage_platform::ImageProgress = {
             let sender = std::sync::Mutex::new(sender);
@@ -185,8 +200,10 @@ impl<C: DeviceControl + Clone + 'static> StorageService<C> {
         let result = control
             .write_image(&write.address, &write.image, progress)
             .await;
-        let _ = signaller.join();
-        self.coordinator.lock().await.finish_image_write(&write);
+        let _ = signalling_done.await;
+        // The drive takes requests again. Were this call abandoned on the
+        // way, dropping `write` would do the same.
+        drop(write);
         result.map_err(|error| refuse(ServiceError::Platform(error)))
     }
 

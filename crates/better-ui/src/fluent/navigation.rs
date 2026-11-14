@@ -546,8 +546,11 @@ fn item_row(
     with_focus_ring(row, ring, radius::SM, p).into_any_element()
 }
 
+/// Fixed in size, like the rows: in a pane that overflows and scrolls, a
+/// shrinkable divider or header would be squeezed to nothing.
 fn divider(p: &Palette) -> AnyElement {
     div()
+        .flex_none()
         .mx(px(4.0))
         .my(px(4.0))
         .h(px(1.0))
@@ -651,6 +654,16 @@ impl RenderOnce for NavigationView {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll();
+        // A pane taller than the window scrolls, with a scrollbar that stays
+        // in sight while there is more below (a compact pane at 960×720
+        // holds more rows than fit).
+        let scroll = window
+            .use_keyed_state(super::child_id(&self.id, "scroll"), cx, |_, _| {
+                gpui::ScrollHandle::new()
+            })
+            .read(cx)
+            .clone();
+        list = list.track_scroll(&scroll);
         for (index, entry) in self.entries.iter().enumerate() {
             list = list.child(match entry {
                 NavEntry::Item(item) => item_row(
@@ -662,6 +675,7 @@ impl RenderOnce for NavigationView {
                 ),
                 NavEntry::Header(label) if !compact => text(div(), BODY_STRONG)
                     .h(px(40.0))
+                    .flex_none()
                     .flex()
                     .items_center()
                     .px(px(16.0))
@@ -701,7 +715,27 @@ impl RenderOnce for NavigationView {
             .overflow_hidden()
             .child(top)
             .children(search_row)
-            .child(list)
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .child(list)
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .bottom_0()
+                            .w(px(8.0))
+                            .child(
+                                gpui_component::scroll::Scrollbar::vertical(&scroll)
+                                    .scrollbar_show(gpui_component::scroll::ScrollbarShow::Always),
+                            ),
+                    ),
+            )
             .child(footer);
         if floating {
             // Open over the content: the flyout fill, an edge, and the

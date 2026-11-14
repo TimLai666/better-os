@@ -89,11 +89,17 @@ impl Clock {
     }
 }
 
+/// The devices an image is being written to, shared with every
+/// [`ImageWrite`] so dropping one releases its drive without the
+/// coordinator.
+type Erasing = Arc<Mutex<BTreeSet<DeviceHandle>>>;
+
 /// An image write whose checks passed: the drive is marked as being
 /// written and every volume on it is unmounted. The copy runs without the
-/// coordinator ([`StorageCoordinator::control`]), then
-/// [`StorageCoordinator::finish_image_write`] ends it.
-#[derive(Clone, Debug)]
+/// coordinator ([`StorageCoordinator::control`]). The mark goes when this
+/// is dropped, however the write ends (finished, failed, or abandoned by a
+/// caller that went away), so a drive is never left refusing everything.
+#[derive(Debug)]
 pub struct ImageWrite {
     pub drive: DeviceHandle,
     pub address: DeviceAddress,
@@ -102,6 +108,17 @@ pub struct ImageWrite {
     pub total: u64,
     /// The drive and every volume on it.
     members: Vec<DeviceHandle>,
+    erasing: Erasing,
+}
+
+impl Drop for ImageWrite {
+    fn drop(&mut self) {
+        if let Ok(mut erasing) = self.erasing.lock() {
+            for member in &self.members {
+                erasing.remove(member);
+            }
+        }
+    }
 }
 
 pub struct StorageCoordinator<C: DeviceControl> {
@@ -124,7 +141,7 @@ pub struct StorageCoordinator<C: DeviceControl> {
     clients: BTreeMap<String, BTreeSet<(DeviceHandle, String)>>,
     /// Devices an image is being written to: the drive and every volume on
     /// it. Nothing else may be done to them until the write ends.
-    erasing: BTreeSet<DeviceHandle>,
+    erasing: Erasing,
     /// The runtime this service owns, when it was built inside one.
     ///
     /// zbus runs on its default async-io flavor across this workspace — see
@@ -160,7 +177,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             diagnostics: VecDeque::new(),
             updates,
             clients: BTreeMap::new(),
-            erasing: BTreeSet::new(),
+            erasing: Erasing::default(),
             runtime: tokio::runtime::Handle::try_current().ok(),
         })
     }
@@ -189,7 +206,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
 
     /// Refuses anything on a device an image is being written to.
     fn refuse_if_erasing(&self, handle: &DeviceHandle) -> Result<(), ServiceError> {
-        if self.erasing.contains(handle) {
+        if self.is_erasing(handle) {
             return Err(ServiceError::Refused("storage.erase.busy".to_string()));
         }
         Ok(())
@@ -431,7 +448,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             .get(handle)
             .ok_or_else(|| ServiceError::UnknownDevice(handle.as_str().to_string()))?
             .clone();
-        if self.is_writing(handle) || self.erasing.contains(handle) {
+        if self.is_writing(handle) || self.is_erasing(handle) {
             return Err(ServiceError::Refused("storage.erase.busy".to_string()));
         }
         self.control.format(&device.address, request).await?;
@@ -497,7 +514,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             .collect();
         if members
             .iter()
-            .any(|member| self.is_writing(member) || self.erasing.contains(member))
+            .any(|member| self.is_writing(member) || self.is_erasing(member))
         {
             return Err(ServiceError::Refused("storage.erase.busy".to_string()));
         }
@@ -519,26 +536,73 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             }
             self.apply_mount(member, None).await;
         }
-        self.erasing.extend(members.iter().cloned());
+        // An unlocked LUKS volume on the drive is a device of its own (a
+        // mapper node with no drive), backed by a partition here: its
+        // filesystem is unmounted too, or the write is refused.
+        let on_drive: BTreeSet<String> = members
+            .iter()
+            .filter_map(|member| self.known.get(member))
+            .map(|volume| volume.address.object_path.clone())
+            .collect();
+        let everything = self.control.enumerate().await?;
+        let mut backed_here = on_drive.clone();
+        // Follows a chain (LUKS on LUKS) to its end.
+        loop {
+            let more: Vec<String> = everything
+                .iter()
+                .filter(|other| {
+                    other
+                        .block
+                        .crypto_backing
+                        .as_ref()
+                        .is_some_and(|backing| backed_here.contains(backing))
+                        && !backed_here.contains(&other.address.object_path)
+                })
+                .map(|other| other.address.object_path.clone())
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            backed_here.extend(more);
+        }
+        for cleartext in everything
+            .iter()
+            .filter(|other| !on_drive.contains(&other.address.object_path))
+            .filter(|other| backed_here.contains(&other.address.object_path))
+            .filter(|other| other.mount_point.is_some())
+        {
+            if let Err(error) = self.control.unmount(&cleartext.address).await {
+                return Err(ServiceError::Refused(format!(
+                    "storage.image.unmount_failed:{}:{error}",
+                    cleartext.block.device_path
+                )));
+            }
+        }
+        if let Ok(mut erasing) = self.erasing.lock() {
+            erasing.extend(members.iter().cloned());
+        }
         Ok(ImageWrite {
             drive: handle.clone(),
             address: device.address,
             image: image.to_path_buf(),
             total,
             members,
+            erasing: self.erasing.clone(),
         })
     }
 
     /// Ends an image write: the drive and its volumes take requests again.
-    pub fn finish_image_write(&mut self, write: &ImageWrite) {
-        for member in &write.members {
-            self.erasing.remove(member);
-        }
+    /// (Dropping the write does the same; this says it where it happens.)
+    pub fn finish_image_write(&mut self, write: ImageWrite) {
+        drop(write);
     }
 
     /// Whether an image is being written to this device or its drive.
     pub fn is_erasing(&self, handle: &DeviceHandle) -> bool {
-        self.erasing.contains(handle)
+        self.erasing
+            .lock()
+            .map(|erasing| erasing.contains(handle))
+            .unwrap_or(false)
     }
 
     /// An image write in one call, holding the coordinator throughout: for
@@ -558,7 +622,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             .control
             .write_image(&write.address, &write.image, progress)
             .await;
-        self.finish_image_write(&write);
+        self.finish_image_write(write);
         Ok(result?)
     }
 
@@ -893,7 +957,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             }),
             size: device.map(|device| device.block.size).unwrap_or(0),
             whole_disk: device.is_some_and(|device| device.block.partition_number.is_none()),
-            erasing: self.erasing.contains(handle),
+            erasing: self.is_erasing(handle),
         }
     }
 }
