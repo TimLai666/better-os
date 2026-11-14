@@ -263,7 +263,7 @@ impl RenderOnce for Button {
             .gap(px(8.0))
             .when(icon_only, |b| b.w(size::CONTROL_HEIGHT))
             .when(!icon_only, |b| b.px(px(11.0)))
-            .when(self.full_width, |b| b.w_full());
+            .when(self.full_width, |b| b.w_full().min_w_0());
         button = text(button, BODY);
         if !disabled {
             button = button.track_focus(&focus.tab_index(0).tab_stop(self.shown.is_live()));
@@ -273,7 +273,14 @@ impl RenderOnce for Button {
             button = button.child(icon.size(size::ICON));
         }
         if let Some(label) = self.label {
-            button = button.child(div().whitespace_nowrap().child(label));
+            // A full-width button's label can be longer than its row (a
+            // branch name in "Commit to …"): it ends in an ellipsis rather
+            // than spilling out; the caller gives the whole text a tooltip.
+            button = button.child(if self.full_width {
+                div().min_w_0().truncate().child(label)
+            } else {
+                div().whitespace_nowrap().child(label)
+            });
         }
         if let Some(icon) = self.trailing_icon {
             button = button.child(icon.size(px(12.0)));

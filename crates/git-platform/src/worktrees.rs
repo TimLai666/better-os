@@ -1,4 +1,4 @@
-//! Worktrees: list, add, rename (move), and remove.
+//! Worktrees: list, add, rename (move), remove, lock, unlock, and prune.
 
 use std::path::{Path, PathBuf};
 
@@ -38,12 +38,38 @@ pub fn rename(repository: &Path, from: &Path, to: &Path) -> Result<(), GitError>
         .run()
 }
 
+/// `git worktree remove`, with one `--force` at most: that lets go of a
+/// worktree with changes, never of a locked one (Git wants it twice for
+/// that, and Better Git never asks twice; it is unlocked first).
 pub fn remove(repository: &Path, path: &Path, force: bool) -> Result<(), GitError> {
     let mut run = Run::new(repository, ["worktree", "remove"]);
     if force {
         run = run.arg("--force");
     }
     run.arg(absolute(path)?).run()
+}
+
+/// `git worktree lock`, with `--reason` when one is given: Git then will
+/// not move, remove, or prune it.
+pub fn lock(repository: &Path, path: &Path, reason: Option<&str>) -> Result<(), GitError> {
+    let mut run = Run::new(repository, ["worktree", "lock"]);
+    if let Some(reason) = reason.map(str::trim).filter(|r| !r.is_empty()) {
+        run = run.args(["--reason", reason]);
+    }
+    run.arg("--end-of-options").arg(absolute(path)?).run()
+}
+
+pub fn unlock(repository: &Path, path: &Path) -> Result<(), GitError> {
+    Run::new(repository, ["worktree", "unlock", "--end-of-options"])
+        .arg(absolute(path)?)
+        .run()
+}
+
+/// `git worktree prune`: Git forgets every worktree whose folder is gone
+/// and is not locked. It takes no folder, so it cannot be narrowed to one;
+/// the caller names every worktree it would clear before asking.
+pub fn prune(repository: &Path) -> Result<(), GitError> {
+    Run::new(repository, ["worktree", "prune"]).run()
 }
 
 /// `core.worktree` in a git directory: where its main worktree is, as Git

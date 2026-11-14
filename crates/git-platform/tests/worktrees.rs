@@ -207,3 +207,80 @@ fn core_worktree_names_a_submodules_working_tree() {
     );
     assert_eq!(SystemGit.core_worktree(&s.repo.join(".git")).unwrap(), None);
 }
+
+/// Ticket 116: lock with and without a reason, unlock, and Remove refused
+/// on a locked worktree (one `--force` does not override a lock).
+#[test]
+fn lock_unlock_and_a_locked_worktree_is_not_removed() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let one = s.tmp.path().join("one");
+    let two = s.tmp.path().join("two");
+    SystemGit.add_worktree(&s.repo, &one, "one", true).unwrap();
+    SystemGit.add_worktree(&s.repo, &two, "two", true).unwrap();
+    SystemGit
+        .lock_worktree(&s.repo, &one, Some("on a USB stick"))
+        .unwrap();
+    SystemGit.lock_worktree(&s.repo, &two, None).unwrap();
+    let list = SystemGit.info(&s.repo).unwrap().worktrees;
+    assert!(list[1].locked && list[2].locked);
+    assert_eq!(list[1].lock_reason.as_deref(), Some("on a USB stick"));
+    assert_eq!(list[2].lock_reason, None);
+    // A blank reason is no reason.
+    SystemGit.unlock_worktree(&s.repo, &two).unwrap();
+    SystemGit.lock_worktree(&s.repo, &two, Some("  ")).unwrap();
+    assert_eq!(
+        SystemGit.info(&s.repo).unwrap().worktrees[2].lock_reason,
+        None
+    );
+
+    for force in [false, true] {
+        let refused = SystemGit.remove_worktree(&s.repo, &one, force).unwrap_err();
+        assert!(
+            format!("{refused:?}").contains("locked"),
+            "force {force}: {refused:?}"
+        );
+        assert!(one.exists());
+    }
+    SystemGit.unlock_worktree(&s.repo, &one).unwrap();
+    assert!(!SystemGit.info(&s.repo).unwrap().worktrees[1].locked);
+    SystemGit.remove_worktree(&s.repo, &one, false).unwrap();
+    assert!(!one.exists());
+    assert!(
+        SystemGit
+            .lock_worktree(&s.repo, std::path::Path::new("rel"), None)
+            .is_err()
+    );
+}
+
+/// Ticket 116: prune clears every worktree whose folder is gone, and
+/// leaves a locked one and one that is there.
+#[test]
+fn prune_clears_worktrees_whose_folder_is_gone() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let [gone, also_gone, kept, here] =
+        ["gone", "also-gone", "kept", "here"].map(|n| s.tmp.path().join(n));
+    for (path, branch) in [(&gone, "g"), (&also_gone, "a"), (&kept, "k"), (&here, "h")] {
+        SystemGit.add_worktree(&s.repo, path, branch, true).unwrap();
+    }
+    SystemGit
+        .lock_worktree(&s.repo, &kept, Some("away"))
+        .unwrap();
+    for path in [&gone, &also_gone, &kept] {
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    let before = SystemGit.info(&s.repo).unwrap().worktrees;
+    assert_eq!(before.iter().filter(|w| w.prunable).count(), 2);
+    SystemGit.prune_worktrees(&s.repo).unwrap();
+    let mut after: Vec<String> = SystemGit
+        .info(&s.repo)
+        .unwrap()
+        .worktrees
+        .iter()
+        .skip(1)
+        .map(|w| w.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    after.sort();
+    assert_eq!(after, ["here", "kept"]);
+}

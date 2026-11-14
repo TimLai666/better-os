@@ -1383,19 +1383,14 @@ fn linked_worktrees_saved_as_repositories_merge_into_their_repository() {
     assert_eq!(paths(&session), std::slice::from_ref(&main));
     let groups = session.repository_groups("");
     assert_eq!(groups.len(), 1, "{groups:#?}");
-    let names: Vec<&str> = groups[0]
-        .worktrees
-        .iter()
-        .map(|w| w.name.as_str())
-        .collect();
+    // The worktrees are the toolbar's worktree dropdown's (ticket 116).
+    let rows = session.worktree_rows("");
+    let names: Vec<&str> = rows.iter().map(|w| w.name.as_str()).collect();
     assert_eq!(names, ["repo", "wt-one", "wt-two"]);
-    assert!(groups[0].worktrees[0].main);
-    assert!(
-        groups[0].worktrees[1].current,
-        "the open worktree stays marked"
-    );
-    assert_eq!(groups[0].worktrees[2].branch, None);
-    assert!(groups[0].worktrees[2].short_sha.is_some());
+    assert!(rows[0].main);
+    assert!(rows[1].current, "the open worktree stays marked");
+    assert_eq!(rows[2].branch, None);
+    assert!(rows[2].short_sha.is_some());
 
     // Opening another worktree selects it under the same repository.
     session.open(two.clone());
@@ -1405,7 +1400,7 @@ fn linked_worktrees_saved_as_repositories_merge_into_their_repository() {
     assert_eq!(session.recent.first(), Some(&two));
     let groups = session.repository_groups("");
     assert_eq!(groups.len(), 1);
-    assert!(groups[0].worktrees[2].current);
+    assert!(session.worktree_rows("")[2].current);
 
     session.remove_repository(&main);
     assert!(session.repositories.entries.is_empty());
@@ -1449,7 +1444,7 @@ fn a_failed_read_leaves_the_saved_entry_exactly_as_it_was() {
     assert_eq!(session.repositories.writes, 0);
     let groups = session.repository_groups("");
     assert_eq!(groups.len(), 2, "{groups:#?}");
-    assert!(groups.iter().all(|g| g.missing && g.worktrees.is_empty()));
+    assert!(groups.iter().all(|g| g.missing && g.opens.is_none()));
     assert!(groups.iter().any(|g| g.name == "Dotfiles"));
 }
 
@@ -1478,4 +1473,264 @@ fn a_late_read_for_a_removed_repository_changes_nothing() {
     let reread = GitSession::new(Arc::new(SystemGit), files(&s));
     assert!(reread.repositories.entries.is_empty());
     assert!(session.repository_groups("").is_empty());
+}
+
+/// Ticket 116: the toolbar names the repository, as its row in the
+/// repository list does, and the open worktree by its folder; the window
+/// title adds the worktree only when it is not the main one; choosing the
+/// repository again opens the worktree that was open last.
+#[test]
+fn the_toolbar_names_the_repository_and_the_worktree_apart() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let root = s.tmp.path().canonicalize().unwrap();
+    let main = s.repo.canonicalize().unwrap();
+    let one = root.join("wt-one");
+
+    // Only the main worktree.
+    let mut session = opened(&s);
+    let names = session.open_names().unwrap();
+    assert_eq!(names.repository, "repo");
+    assert_eq!(names.worktree, "repo");
+    assert!(!names.linked && names.only_main);
+    assert_eq!(session.window_title("Better Git"), "repo — Better Git");
+    assert_eq!(session.worktree_rows("").len(), 1);
+    assert!(session.worktree_rows("")[0].main && session.worktree_rows("")[0].current);
+
+    // A linked worktree, opened.
+    s.git(&["worktree", "add", "-q", "-b", "one", one.to_str().unwrap()]);
+    session.open(one.clone());
+    session.trust_and_open(one.clone());
+    session.run_git_jobs();
+    assert_eq!(session.repo.as_ref().unwrap().root, one);
+    let names = session.open_names().unwrap();
+    assert_eq!(names.repository, "repo", "not the worktree's folder");
+    assert_eq!(names.worktree, "wt-one");
+    assert!(names.linked && !names.only_main);
+    assert_eq!(names.repository_folder, "repo");
+    assert_eq!(
+        session.window_title("Better Git"),
+        "repo · wt-one — Better Git"
+    );
+    let groups = session.repository_groups("");
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].name, names.repository, "the list's own name");
+
+    // The alias names it everywhere; folders keep the folder's name.
+    session.set_alias(&main, "Site");
+    let names = session.open_names().unwrap();
+    assert_eq!(names.repository, "Site");
+    assert_eq!(names.repository_folder, "repo");
+    assert_eq!(
+        session.window_title("Better Git"),
+        "Site · wt-one — Better Git"
+    );
+    assert_eq!(session.repository_name(&main), "Site");
+
+    // Choosing the repository opens the worktree that was open last.
+    session.open(main.clone());
+    session.run_git_jobs();
+    assert_eq!(session.repo.as_ref().unwrap().root, main);
+    assert_eq!(session.window_title("Better Git"), "Site — Better Git");
+    assert_eq!(session.repository_groups("")[0].opens.as_ref(), Some(&main));
+    session.open(one.clone());
+    session.run_git_jobs();
+    session.close_repository();
+    assert_eq!(session.window_title("Better Git"), "Better Git");
+    // As the dropdown does when it opens.
+    session.read_worktrees();
+    session.run_git_jobs();
+    let opens = session.repository_groups("")[0].opens.clone().unwrap();
+    assert_eq!(opens, one, "the worktree open last");
+    session.open(opens);
+    session.run_git_jobs();
+    assert_eq!(session.repo.as_ref().unwrap().root, one);
+}
+
+/// Ticket 116: a bare repository's worktree is named after the bare
+/// repository, and it is never the main worktree.
+#[test]
+fn a_bare_repository_names_its_worktree_after_itself() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let root = s.tmp.path().canonicalize().unwrap();
+    let bare = root.join("site.git");
+    let work = root.join("site-work");
+    harness::git_in(
+        &root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            s.repo.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    );
+    harness::git_in(
+        &bare,
+        &["worktree", "add", "-q", work.to_str().unwrap(), "main"],
+    );
+    let mut session = GitSession::new(Arc::new(SystemGit), files(&s));
+    session.open(work.clone());
+    session.trust_and_open(work.clone());
+    session.run_git_jobs();
+    assert!(session.repo.is_some(), "{:?}", session.problem);
+    let names = session.open_names().unwrap();
+    assert_eq!(names.repository, "site.git");
+    assert_eq!(names.worktree, "site-work");
+    assert!(names.linked);
+    assert!(!names.only_main, "a bare repository has no main worktree");
+    assert_eq!(
+        session.window_title("Better Git"),
+        "site.git · site-work — Better Git"
+    );
+    let rows = session.worktree_rows("");
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    assert!(rows[0].current && !rows[0].main);
+}
+
+/// Ticket 116 review: the open worktree cannot be removed from its own
+/// window, and the confirmation for another one says what it holds, read
+/// in the background.
+#[test]
+fn removing_a_worktree_says_what_it_holds_and_never_the_open_one() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let root = s.tmp.path().canonicalize().unwrap();
+    let one = root.join("wt-one");
+    s.git(&["worktree", "add", "-q", "-b", "one", one.to_str().unwrap()]);
+    std::fs::write(one.join("a.txt"), "changed\n").unwrap();
+    std::fs::write(one.join("new.txt"), "new\n").unwrap();
+    let mut session = opened(&s);
+    let main = session.repo.as_ref().unwrap().root.clone();
+
+    session.ask_remove_worktree(main.clone());
+    assert!(session.dialog.is_none(), "the main and open one: no");
+    session.ask_remove_worktree(one.clone());
+    assert!(matches!(
+        &session.dialog,
+        Some(Dialog::RemoveWorktree { path, force: false }) if *path == one
+    ));
+    assert_eq!(session.worktree_changes_for(&one), None, "being read");
+    session.run_git_jobs();
+    let found = session.worktree_changes_for(&one).unwrap().unwrap();
+    assert_eq!((found.changed, found.untracked), (1, 1));
+
+    // From the linked worktree itself, it cannot be removed.
+    session.dialog = None;
+    session.open(one.clone());
+    session.trust_and_open(one.clone());
+    session.run_git_jobs();
+    session.ask_remove_worktree(one.clone());
+    assert!(session.dialog.is_none());
+    assert!(one.exists());
+}
+
+/// Ticket 116 review: every window writes the recently opened list; each
+/// starts from the file, so two windows keep what both opened.
+#[test]
+fn two_windows_share_the_recent_list() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let root = s.tmp.path().canonicalize().unwrap();
+    let one = root.join("wt-one");
+    s.git(&["worktree", "add", "-q", "-b", "one", one.to_str().unwrap()]);
+    let main = s.repo.canonicalize().unwrap();
+    let mut first = opened(&s);
+    let mut second = GitSession::new(Arc::new(SystemGit), files(&s));
+    assert_eq!(second.recent, std::slice::from_ref(&main), "read at start");
+    let file = s.home.join("state/better-os/git-recent.json");
+    assert!(file.exists(), "opening wrote it");
+
+    // The second window opens the linked worktree; the first one then
+    // opens the main one again, and keeps the second window's too.
+    second.open(one.clone());
+    second.trust_and_open(one.clone());
+    second.run_git_jobs();
+    first.open(main.clone());
+    first.run_git_jobs();
+    assert_eq!(first.recent, [main.clone(), one.clone()]);
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(
+        saved["repositories"],
+        serde_json::json!([main.to_str().unwrap(), one.to_str().unwrap()])
+    );
+    // And the second one sees it when its dropdown opens.
+    second.read_worktrees();
+    assert_eq!(second.recent, [main, one]);
+}
+
+/// Ticket 116: lock with a reason and unlock from the worktree dropdown;
+/// Remove is not offered while it is locked; a worktree whose folder is gone
+/// is cleared from the list after a confirmation that names every one Git
+/// would clear, and a locked one stays.
+#[test]
+fn worktrees_are_locked_unlocked_and_cleared_from_the_list() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let root = s.tmp.path().canonicalize().unwrap();
+    let [one, gone, also_gone, away] =
+        ["wt-one", "wt-gone", "wt-also-gone", "wt-away"].map(|n| root.join(n));
+    for (path, branch) in [(&one, "one"), (&gone, "g"), (&also_gone, "a"), (&away, "w")] {
+        s.git(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            branch,
+            path.to_str().unwrap(),
+        ]);
+    }
+    let mut session = opened(&s);
+    let row = |session: &GitSession, path: &Path| {
+        session
+            .worktree_rows("")
+            .into_iter()
+            .find(|w| w.path == path)
+            .unwrap()
+    };
+
+    session.lock_worktree(one.clone(), "  on a USB stick ");
+    session.run_git_jobs();
+    let locked = row(&session, &one);
+    assert!(locked.locked);
+    assert_eq!(locked.lock_reason.as_deref(), Some("on a USB stick"));
+    session.ask_remove_worktree(one.clone());
+    assert!(session.dialog.is_none(), "a locked worktree is not removed");
+    session.unlock_worktree(one.clone());
+    session.run_git_jobs();
+    assert!(!row(&session, &one).locked);
+    session.ask_remove_worktree(one.clone());
+    assert!(matches!(
+        session.dialog,
+        Some(Dialog::RemoveWorktree { .. })
+    ));
+    session.dialog = None;
+
+    session.lock_worktree(away.clone(), "");
+    session.run_git_jobs();
+    assert_eq!(row(&session, &away).lock_reason, None);
+    for path in [&gone, &also_gone, &away] {
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    session.refresh();
+    session.run_git_jobs();
+    session.ask_clear_worktrees();
+    let Some(Dialog::ClearWorktrees { paths }) = session.dialog.clone() else {
+        panic!("{:?}", session.dialog);
+    };
+    let mut named = paths.clone();
+    named.sort();
+    let mut expected = vec![gone.clone(), also_gone.clone()];
+    expected.sort();
+    assert_eq!(named, expected, "both, and not the locked one");
+    session.clear_worktrees();
+    session.run_git_jobs();
+    let left: Vec<PathBuf> = session
+        .worktree_rows("")
+        .into_iter()
+        .map(|w| w.path)
+        .collect();
+    assert!(left.contains(&away) && left.contains(&one));
+    assert!(!left.contains(&gone) && !left.contains(&also_gone));
 }

@@ -1,12 +1,11 @@
-//! Worktrees in the repository list and the branch list.
+//! Worktrees in the branch list.
 //!
 //! A repository can have linked worktrees: other folders with their own
 //! branch checked out, sharing one history. Git will not check a branch out
 //! in two worktrees at once, so a branch that is checked out in another
 //! worktree cannot be switched to here; choosing it opens that worktree
-//! instead. The repository list shows each repository's worktrees under it
-//! (`crate::repositories::RepositoryList::groups`), so they are found where
-//! repositories are found.
+//! instead. The toolbar's worktree dropdown lists the open repository's
+//! worktrees (`crate::repositories::worktree_list`, ticket 116).
 
 use std::path::{Path, PathBuf};
 

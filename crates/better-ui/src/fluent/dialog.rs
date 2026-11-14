@@ -12,9 +12,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, AnyView, App, AppContext as _, Context, ElementId, InteractiveElement, IntoElement,
-    ParentElement, Render, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled,
-    Window, deferred, div, prelude::FluentBuilder as _, px,
+    AnyElement, AnyView, App, AppContext as _, Context, ElementId, FocusHandle, InteractiveElement,
+    IntoElement, ParentElement, Render, RenderOnce, SharedString, StatefulInteractiveElement as _,
+    Styled, Window, deferred, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::FocusTrapElement as _;
 
@@ -287,6 +287,7 @@ pub struct Flyout {
     content: Vec<AnyElement>,
     on_dismiss: Option<Handler>,
     inline: bool,
+    initial_focus: Option<FocusHandle>,
 }
 
 impl Flyout {
@@ -296,7 +297,16 @@ impl Flyout {
             content: Vec::new(),
             on_dismiss: None,
             inline: false,
+            initial_focus: None,
         }
+    }
+
+    /// What takes focus when the flyout opens, instead of the panel: its
+    /// search box, say, so typing filters at once. The control that opens
+    /// the flyout may focus it first; it is left there.
+    pub fn initial_focus(mut self, focus: FocusHandle) -> Self {
+        self.initial_focus = Some(focus);
+        self
     }
 
     pub fn on_dismiss(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
@@ -357,8 +367,27 @@ impl RenderOnce for Flyout {
         if self.inline {
             return panel.into_any_element();
         }
-        if !focus.contains_focused(window, cx) {
-            focus.focus(window, cx);
+        match self.initial_focus {
+            // Focused once, as it opens: a menu opened from a row in it then
+            // keeps focus (it floats outside the panel's own focus tree).
+            Some(first) => {
+                let placed = window.use_keyed_state(
+                    super::child_id(&self.id, "focus-placed"),
+                    cx,
+                    |_, _| false,
+                );
+                if !*placed.read(cx) {
+                    if !first.is_focused(window) {
+                        first.focus(window, cx);
+                    }
+                    placed.update(cx, |placed, _| *placed = true);
+                }
+            }
+            None => {
+                if !focus.contains_focused(window, cx) {
+                    focus.focus(window, cx);
+                }
+            }
         }
         // Over the control it hangs from, so a second press on that control
         // closes the flyout instead of opening it again.

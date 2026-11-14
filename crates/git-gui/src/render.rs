@@ -198,8 +198,35 @@ impl Render for GitApp {
         if window.focused(cx).is_none() {
             self.focus_handle.focus(window, cx);
         }
+        // A dropdown that closed may leave focus on one of its own controls
+        // (its search box, a row's More button or its menu), which is no
+        // longer drawn, and keys would reach nothing. A dialog it opened
+        // takes focus itself.
+        // Whatever held focus while it was open was inside it (the flyout
+        // keeps focus in itself); focus still there goes back to the window.
+        let focused = window.focused(cx);
+        if self.flyout.is_some() {
+            if let Some(focused) = focused
+                && !self.flyout_focus.contains(&focused)
+            {
+                self.flyout_focus.push(focused);
+            }
+        } else if !self.flyout_focus.is_empty() {
+            let inside = focused.is_some_and(|f| self.flyout_focus.contains(&f));
+            self.flyout_focus.clear();
+            if inside && self.session.dialog.is_none() {
+                self.focus_handle.focus(window, cx);
+            }
+        }
         let p = fluent::palette(cx);
         let c = self.copy();
+        // The desktop's name for the window (the overview, Alt+Tab).
+        self.names = self.session.open_names();
+        let title = crate::session::window_title(self.names.as_ref(), c.app_name);
+        if title != self.window_title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
         let content = match self.session.page {
             Page::Settings => self.settings_page(p, c, cx).into_any_element(),
             Page::Main => v_stack()
@@ -254,16 +281,32 @@ fn h_stack() -> Div {
 impl GitApp {
     // --- toolbar ------------------------------------------------------------
 
+    /// One of the toolbar's drop-down cells. It starts at the width its
+    /// text asks for (`shortcuts::item_width`) and gives way down to
+    /// `min_width` when the window is narrow, its value truncated with an
+    /// ellipsis and given whole in the tooltip.
+    #[allow(clippy::too_many_arguments)]
     fn toolbar_item(
         &self,
         id: &'static str,
         title: &str,
         value: String,
+        tooltip: String,
         icon: Icon,
         open: bool,
+        quiet: bool,
+        captions: bool,
         p: &'static Palette,
     ) -> Stateful<Div> {
         let hover = p.subtle_fill;
+        let basis = crate::shortcuts::item_width(title, &value);
+        // With its caption it never gets narrower than the caption: only
+        // the value line ends in an ellipsis.
+        let min_width = if captions {
+            crate::shortcuts::item_min_width(title)
+        } else {
+            crate::shortcuts::ITEM_MIN_BARE
+        };
         div()
             .id(id)
             .relative()
@@ -271,20 +314,31 @@ impl GitApp {
             .items_center()
             .gap(spacing::MD)
             .h_full()
-            .min_w(px(200.0))
+            .flex_basis(px(basis))
+            .flex_shrink(1.0)
+            .min_w(px(min_width))
             .max_w(px(300.0))
             .px(spacing::LG)
             .border_r_1()
             .border_color(p.divider)
             .when(open, |d| d.bg(p.subtle_fill))
             .hover(move |s| s.bg(hover))
+            .when(!open, |d| {
+                d.tooltip(better_ui::fluent::dialog::tooltip_builder(tooltip.into()))
+            })
             .child(icon.size(px(16.0)).text_color(p.text_secondary))
             .child(
                 v_stack()
                     .flex_1()
                     .min_w_0()
-                    .child(caption(title.to_string(), p))
-                    .child(label(value, BODY_STRONG, p.text_primary).truncate()),
+                    .when(captions, |d| {
+                        d.child(caption(title.to_string(), p).whitespace_nowrap())
+                    })
+                    .child(if quiet {
+                        label(value, BODY, p.text_secondary).truncate()
+                    } else {
+                        label(value, BODY_STRONG, p.text_primary).truncate()
+                    }),
             )
             .child(
                 Icon::new(IconName::ChevronDown)
@@ -301,14 +355,18 @@ impl GitApp {
         cx: &mut Context<Self>,
     ) -> Div {
         let repo = self.session.repo.as_ref();
-        let repo_name = repo
-            .map(|r| {
-                self.session
-                    .repositories
-                    .alias(&r.root)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| r.name())
-            })
+        let names = self.names.clone();
+        let width = f32::from(window.viewport_size().width);
+        let checks = repo.is_some_and(|r| r.github.checks.is_some());
+        let captions = crate::shortcuts::captions_fit(
+            width,
+            [c.current_repository, c.current_worktree(), c.current_branch],
+            self.shortcut_labels().len(),
+            checks,
+        );
+        let repo_name = names
+            .as_ref()
+            .map(|n| n.repository.clone())
             .unwrap_or_else(|| c.no_repository.to_string());
         let mut bar = h_stack()
             .flex_none()
@@ -323,18 +381,17 @@ impl GitApp {
             .toolbar_item(
                 "toolbar-repository",
                 c.current_repository,
-                repo_name,
+                repo_name.clone(),
+                repo.map(|r| r.root.display().to_string())
+                    .unwrap_or(repo_name),
                 Icon::new(IconName::Folder),
                 self.flyout == Some(Open::Repositories),
+                false,
+                captions,
                 p,
             )
             .on_click(cx.listener(|this, _, window, cx| {
-                this.flyout = if this.flyout == Some(Open::Repositories) {
-                    None
-                } else {
-                    this.session.read_worktrees();
-                    Some(Open::Repositories)
-                };
+                this.toggle_flyout(Open::Repositories, window, cx);
                 this.drive(window, cx);
             }))
             .when(self.flyout == Some(Open::Repositories), |d| {
@@ -342,7 +399,34 @@ impl GitApp {
             });
         bar = bar.child(repos);
 
-        if let Some(repo) = repo {
+        let worktree_label = names
+            .as_ref()
+            .map(|n| n.worktree.clone())
+            .unwrap_or_default();
+        if let (Some(repo), Some(names)) = (repo, names.as_ref()) {
+            // Quieter, and narrower, while the main worktree is the only
+            // one: still there, so adding one is a click away.
+            let worktrees = self
+                .toolbar_item(
+                    "toolbar-worktree",
+                    c.current_worktree(),
+                    names.worktree.clone(),
+                    repo.root.display().to_string(),
+                    Icon::empty().path(crate::app::WORKTREE_ICON),
+                    self.flyout == Some(Open::Worktrees),
+                    names.only_main,
+                    captions,
+                    p,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.toggle_flyout(Open::Worktrees, window, cx);
+                    cx.notify();
+                }))
+                .when(self.flyout == Some(Open::Worktrees), |d| {
+                    d.child(self.worktree_flyout(p, c, cx))
+                });
+            bar = bar.child(worktrees);
+
             let branch = repo
                 .branch()
                 .map(str::to_string)
@@ -351,17 +435,16 @@ impl GitApp {
                 .toolbar_item(
                     "toolbar-branch",
                     c.current_branch,
+                    branch.clone(),
                     branch,
                     Icon::empty().path(BRANCH_ICON),
                     self.flyout == Some(Open::Branches),
+                    false,
+                    captions,
                     p,
                 )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.flyout = if this.flyout == Some(Open::Branches) {
-                        None
-                    } else {
-                        Some(Open::Branches)
-                    };
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.toggle_flyout(Open::Branches, window, cx);
                     cx.notify();
                 }))
                 .when(self.flyout == Some(Open::Branches), |d| {
@@ -383,15 +466,16 @@ impl GitApp {
         let compact = crate::shortcuts::compact(
             f32::from(window.viewport_size().width),
             [
-                (c.current_repository, &repo_label),
-                (c.current_branch, &branch_name),
+                (c.current_repository, repo_label.as_str()),
+                (c.current_worktree(), worktree_label.as_str()),
+                (c.current_branch, branch_name.as_str()),
             ],
             &labels,
-            repo.is_some_and(|r| r.github.checks.is_some()),
+            checks,
         );
         bar = bar.child(self.shortcut_buttons(compact, p, cx));
         if let Some(repo) = repo {
-            bar = bar.children(self.checks_item(repo, p, c, cx));
+            bar = bar.children(self.checks_item(repo, captions, p, c, cx));
         }
         bar.child(
             div().flex_none().px(spacing::SM).child(
@@ -481,7 +565,10 @@ impl GitApp {
             .items_center()
             .gap(spacing::MD)
             .h_full()
-            .min_w(px(200.0))
+            // Room for "Fetch origin" whole; narrower windows shrink it to
+            // here, the lines ending in an ellipsis.
+            .flex_shrink(1.0)
+            .min_w(px(crate::shortcuts::SYNC_MIN))
             .px(spacing::LG)
             .border_r_1()
             .border_color(p.divider)
@@ -498,8 +585,9 @@ impl GitApp {
             .child(
                 v_stack()
                     .flex_1()
-                    .child(label(title, BODY_STRONG, p.text_primary))
-                    .child(caption(fetched, p)),
+                    .min_w_0()
+                    .child(label(title, BODY_STRONG, p.text_primary).truncate())
+                    .child(caption(fetched, p).truncate()),
             )
             .when(!counts.is_empty() && !busy, |d| {
                 d.child(label(counts, BODY_STRONG, p.accent))
@@ -519,9 +607,13 @@ impl GitApp {
             }))
     }
 
+    /// The pull request's checks. In a narrow window (`roomy` false) the
+    /// re-run button is an icon, and the item clips rather than reaching
+    /// over its neighbours.
     fn checks_item(
         &self,
         repo: &Repo,
+        roomy: bool,
         p: &'static Palette,
         c: &'static Copy,
         cx: &mut Context<Self>,
@@ -535,15 +627,21 @@ impl GitApp {
             github_api::CheckState::Neutral => (IconName::Info, p.text_secondary, c.checks),
         };
         let mut item = h_stack()
+            .flex_shrink(1.0)
+            .min_w_0()
+            .overflow_hidden()
             .gap(spacing::SM)
             .px(spacing::MD)
             .child(Icon::new(icon).size(px(16.0)).text_color(color))
-            .child(label(text, BODY, p.text_primary));
+            .child(label(text, BODY, p.text_primary).min_w_0().truncate());
         if overall == github_api::CheckState::Failure {
-            item = item.child(
+            let rerun = if roomy {
                 Button::standard("rerun-checks", c.rerun_checks)
-                    .on_click(Self::act(cx, |this, _, _| this.session.rerun_checks())),
-            );
+            } else {
+                Button::icon_button("rerun-checks", IconName::Redo, c.rerun_checks)
+            };
+            item =
+                item.child(rerun.on_click(Self::act(cx, |this, _, _| this.session.rerun_checks())));
         }
         if let Some(pull) = self.session.current_pull() {
             let url = pull.html_url.clone();
@@ -729,9 +827,8 @@ impl GitApp {
             let path = r.path.clone();
             let open_path = r.opens.clone();
             let menu_path = r.path.clone();
-            // With worktrees under it, the open one is marked there.
-            let marked = r.current && r.worktrees.is_empty();
-            let mut item = row(("repo", index), marked, TALL_ROW, p)
+            let mut item = row(("repo", index), r.current, TALL_ROW, p)
+                .children(self.highlight_ring(index, p))
                 .child(
                     Icon::new(if r.missing {
                         IconName::TriangleAlert
@@ -813,14 +910,12 @@ impl GitApp {
                 }));
             }
             list = list.child(item);
-            // Its worktrees, the main one first, under it.
-            let worktrees = self.worktree_rows(&r.worktrees, index, p, cx);
-            list = list.children(worktrees);
         }
         Flyout::new("repository-flyout")
+            .initial_focus(self.inputs.repo_search.focus_handle(cx))
             .on_dismiss(Self::act(cx, |this, _, _| this.flyout = None))
             .child(
-                v_stack()
+                self.flyout_keys(v_stack(), cx)
                     .w(px(400.0))
                     .gap(spacing::SM)
                     .child(
@@ -922,6 +1017,7 @@ impl GitApp {
                 let drop_name = b.name.clone();
                 list = list.child(
                     row(("branch", index), b.current, ROW_HEIGHT, p)
+                        .children(self.highlight_ring(index, p))
                         .child(
                             Icon::empty()
                                 .path(BRANCH_ICON)
@@ -989,7 +1085,7 @@ impl GitApp {
                         ),
                 );
             }
-            v_stack()
+            self.flyout_keys(v_stack(), cx)
                 .gap(spacing::SM)
                 .child(
                     h_stack()
@@ -1077,7 +1173,11 @@ impl GitApp {
             }
             list.into_any_element()
         };
-        Flyout::new("branch-flyout")
+        let mut flyout = Flyout::new("branch-flyout");
+        if self.branch_tab == 0 {
+            flyout = flyout.initial_focus(self.inputs.branch_search.focus_handle(cx));
+        }
+        flyout
             .on_dismiss(Self::act(cx, |this, _, _| this.flyout = None))
             .child(
                 v_stack()
@@ -1655,11 +1755,16 @@ impl GitApp {
                 h_stack()
                     .gap(spacing::SM)
                     .child(
-                        div().flex_1().child(
-                            Button::accent("commit", commit_label)
+                        // A long branch name ends in an ellipsis; the
+                        // tooltip has it whole.
+                        div().flex_1().min_w_0().child(
+                            Button::accent("commit", commit_label.clone())
                                 .full_width()
                                 .disabled(blocked.is_some())
-                                .tooltip(reason.unwrap_or(keys::label(Action::Commit)))
+                                .tooltip(format!(
+                                    "{commit_label} · {}",
+                                    reason.unwrap_or(keys::label(Action::Commit))
+                                ))
                                 .on_click(Self::act(cx, |this, _, _| this.session.commit())),
                         ),
                     )
@@ -1835,7 +1940,7 @@ impl GitApp {
                     .border_t_1()
                     .border_color(p.divider)
                     .child(
-                        div().flex_1().child(
+                        div().flex_1().min_w_0().child(
                             Button::accent("continue", c.continue_op)
                                 .full_width()
                                 .disabled(!can_continue || self.session.is_busy())
@@ -2514,8 +2619,19 @@ impl GitApp {
         }
         let (target, position) = self.context.clone()?;
         let entries = self.context_entries(&target, c, cx);
+        // Focus goes back where it was: the open dropdown's search box, or
+        // the window, never to the closed menu, where keys reach nothing.
+        let back = match self.flyout {
+            Some(Open::Repositories) => self.inputs.repo_search.focus_handle(cx),
+            Some(Open::Worktrees) => self.inputs.worktree_search.focus_handle(cx),
+            Some(Open::Branches) if self.branch_tab == 0 => {
+                self.inputs.branch_search.focus_handle(cx)
+            }
+            _ => self.focus_handle.clone(),
+        };
         Some(
             ContextMenu::new("context", entries, self.context_menu.clone(), position)
+                .return_focus(back)
                 .into_any_element(),
         )
     }
@@ -2656,6 +2772,7 @@ impl GitApp {
                 entries
             }
             ContextTarget::Repository(path) => self.repository_entries(path.clone(), c, cx),
+            ContextTarget::Worktree(path) => self.worktree_context(path, c, cx),
         }
     }
 
@@ -2965,7 +3082,7 @@ impl GitApp {
                     label(
                         fill(
                             c.remove_repository_body,
-                            &[("name", &crate::repositories::folder_name(path))],
+                            &[("name", &self.session.repository_name(path))],
                         ),
                         BODY,
                         p.text_primary,
@@ -3188,90 +3305,6 @@ impl GitApp {
                 push(label(c.squash_body, BODY, p.text_primary).into_any_element());
                 push(area(c.title).into_any_element());
             }
-            Dialog::Worktrees => {
-                title = c.worktrees_title.into();
-                primary = None;
-                let mut list = v_stack().gap(spacing::SM);
-                if let Some(repo) = repo {
-                    for (i, w) in repo.info.worktrees.iter().enumerate() {
-                        let (open, rename, remove) =
-                            (w.path.clone(), w.path.clone(), w.path.clone());
-                        let current = w.path == repo.root;
-                        list = list.child(
-                            h_stack()
-                                .gap(spacing::SM)
-                                .p(spacing::SM)
-                                .rounded(radius::SM)
-                                .bg(p.card)
-                                .child(
-                                    v_stack()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .child(
-                                            label(
-                                                w.path.display().to_string(),
-                                                BODY_STRONG,
-                                                p.text_primary,
-                                            )
-                                            .truncate(),
-                                        )
-                                        .child(caption(
-                                            format!(
-                                                "{}{}",
-                                                w.branch
-                                                    .clone()
-                                                    .unwrap_or_else(|| c.detached.to_string()),
-                                                if w.main {
-                                                    format!(" · {}", c.worktree_main)
-                                                } else {
-                                                    String::new()
-                                                }
-                                            ),
-                                            p,
-                                        )),
-                                )
-                                .when(!current, |d| {
-                                    d.child(
-                                        Button::standard(("wt-open", i), c.worktree_open).on_click(
-                                            Self::act(cx, move |this, _, _| {
-                                                this.session.dialog = None;
-                                                this.session.open(open.clone())
-                                            }),
-                                        ),
-                                    )
-                                })
-                                .when(!w.main, |d| {
-                                    d.child(Button::subtle(("wt-rename", i), c.rename).on_click(
-                                        Self::act(cx, move |this, _, _| {
-                                            this.session.dialog = Some(Dialog::RenameWorktree {
-                                                path: rename.clone(),
-                                            })
-                                        }),
-                                    ))
-                                    .child(
-                                        Button::subtle(("wt-remove", i), c.remove).on_click(
-                                            Self::act(cx, move |this, _, _| {
-                                                this.session.dialog = Some(Dialog::RemoveWorktree {
-                                                    path: remove.clone(),
-                                                    force: false,
-                                                })
-                                            }),
-                                        ),
-                                    )
-                                }),
-                        );
-                    }
-                }
-                push(list.into_any_element());
-                push(
-                    Button::standard("wt-add", c.add_worktree)
-                        .icon(IconName::Plus)
-                        .on_click(Self::act(cx, |this, _, _| {
-                            this.session.dialog = Some(Dialog::AddWorktree { create: true })
-                        }))
-                        .into_any_element(),
-                );
-            }
             Dialog::AddWorktree { create } => {
                 title = c.add_worktree_title.into();
                 primary = Some(c.create);
@@ -3293,6 +3326,54 @@ impl GitApp {
                 primary = Some(c.rename);
                 push(field(0, c.new_folder).into_any_element());
             }
+            Dialog::LockWorktree { path } => {
+                title = c.lock_worktree_title().into();
+                primary = Some(c.lock());
+                push(
+                    label(
+                        fill(
+                            c.lock_worktree_body(),
+                            &[("name", &crate::repositories::folder_name(path))],
+                        ),
+                        BODY,
+                        p.text_primary,
+                    )
+                    .into_any_element(),
+                );
+                push(field(0, c.lock_reason()).into_any_element());
+            }
+            Dialog::ClearWorktrees { paths } => {
+                title = c.clear_worktrees_title().into();
+                primary = Some(c.clear());
+                if let [path] = paths.as_slice() {
+                    push(
+                        label(
+                            fill(
+                                c.clear_worktree_body(),
+                                &[("path", &path.display().to_string())],
+                            ),
+                            BODY,
+                            p.text_primary,
+                        )
+                        .into_any_element(),
+                    );
+                } else {
+                    push(
+                        label(
+                            fill(c.clear_worktrees_body(), &[("n", &paths.len().to_string())]),
+                            BODY,
+                            p.text_primary,
+                        )
+                        .into_any_element(),
+                    );
+                    for path in paths {
+                        push(
+                            label(path.display().to_string(), CODE, p.text_primary)
+                                .into_any_element(),
+                        );
+                    }
+                }
+            }
             Dialog::RemoveWorktree { path, force } => {
                 title = c.remove_worktree_title.into();
                 primary = Some(c.remove);
@@ -3308,6 +3389,22 @@ impl GitApp {
                     )
                     .into_any_element(),
                 );
+                // What it holds, read off the window's thread when asked.
+                let holds = match self.session.worktree_changes_for(path) {
+                    None => c.worktree_changes_reading().to_string(),
+                    Some(None) => c.worktree_changes_unknown().to_string(),
+                    Some(Some(found)) if found.changed + found.untracked == 0 => {
+                        c.worktree_changes_none().to_string()
+                    }
+                    Some(Some(found)) => fill(
+                        c.worktree_changes_some(),
+                        &[
+                            ("changed", &found.changed.to_string()),
+                            ("untracked", &found.untracked.to_string()),
+                        ],
+                    ),
+                };
+                push(label(holds, BODY, p.text_primary).into_any_element());
                 let path = path.clone();
                 push(
                     CheckBox::new("wt-force", CheckState::from_bool(*force))
@@ -4266,10 +4363,11 @@ pub(crate) fn confirm(
             s.dialog = None;
             s.squash(from, to, &message);
         }
-        Dialog::Worktrees => s.dialog = None,
         Dialog::AddWorktree { create } => s.add_worktree(PathBuf::from(text(0)), &text(1), create),
         Dialog::RenameWorktree { path } => s.rename_worktree(path, PathBuf::from(text(0))),
         Dialog::RemoveWorktree { path, force } => s.remove_worktree(path, force),
+        Dialog::LockWorktree { path } => s.lock_worktree(path, &text(0)),
+        Dialog::ClearWorktrees { .. } => s.clear_worktrees(),
         Dialog::Remotes { editing } => {
             match editing {
                 Some(name) => s.set_remote_url(name, &text(1)),

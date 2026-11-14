@@ -11,7 +11,9 @@
 //! that saved a linked worktree as a repository of its own is folded into
 //! that repository once Git has said which one it is
 //! ([`RepositoryList::merge_worktrees`]). [`RepositoryList::groups`] draws
-//! each repository once with its worktrees under it.
+//! each repository once, and only repositories: its worktrees are chosen in
+//! the toolbar's own worktree dropdown ([`worktree_list`]), as in GitHub
+//! Desktop (ticket 116).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -39,6 +41,19 @@ pub fn folder_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// The name of the repository whose folder ([`Known::repository`]) is
+/// `repository`, when it has no alias: the main worktree's folder name, or
+/// for one without a main worktree the common directory's, where a plain
+/// `.git` is named after the folder it was in.
+pub fn repository_folder_name(repository: &Path) -> String {
+    match (repository.file_name(), repository.parent()) {
+        (Some(name), Some(parent)) if name == ".git" && parent.file_name().is_some() => {
+            folder_name(parent)
+        }
+        _ => folder_name(repository),
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -162,7 +177,8 @@ impl Known {
     }
 }
 
-/// One repository in the list, with its worktrees, ready to draw.
+/// One repository in the list, ready to draw. Its worktrees are not rows
+/// of the repository list; [`worktree_list`] draws them.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Group {
     /// The saved entry the row stands for: what an alias, locating, or
@@ -173,9 +189,10 @@ pub struct Group {
     pub name: String,
     /// The folder the repository's folder is in, for the caption.
     pub location: String,
-    /// The folder the repository row opens: the main worktree, or the first
-    /// worktree that is there when it has none. `None` for a row that only
-    /// heads its worktrees (a bare repository with none of them left).
+    /// The folder the row opens: the worktree of it that was open last and
+    /// is still there, else the main worktree, else the first worktree that
+    /// is there. `None` for a row that opens nothing (a bare repository
+    /// with none of its worktrees left).
     pub opens: Option<PathBuf>,
     /// The entry's folder is gone and Git knows nothing about it; the row
     /// offers to locate or remove it.
@@ -184,12 +201,13 @@ pub struct Group {
     /// worktrees.
     pub current: bool,
     pub recent: bool,
-    /// Its worktrees, the main one first, when it has any besides the main
-    /// one; empty otherwise.
-    pub worktrees: Vec<WorktreeRow>,
+    /// Every folder that is this repository: its worktrees, its saved
+    /// entries, and its own folder. Removing the repository forgets each
+    /// of them as a recent folder.
+    pub folders: Vec<PathBuf>,
 }
 
-/// One worktree under its repository.
+/// One row of the worktree dropdown.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorktreeRow {
     pub path: PathBuf,
@@ -204,6 +222,66 @@ pub struct WorktreeRow {
     pub current: bool,
     /// Its folder is gone; Git would prune it.
     pub missing: bool,
+    /// `git worktree lock`ed: Git will not move, remove, or prune it.
+    pub locked: bool,
+    /// Why, when the lock gave a reason.
+    pub lock_reason: Option<String>,
+}
+
+/// Something the worktree dropdown offers for one worktree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorktreeAction {
+    Open,
+    ShowInFiles,
+    CopyPath,
+    Move,
+    Remove,
+    Lock,
+    Unlock,
+    /// `git worktree prune`, for one whose folder is gone.
+    Clear,
+}
+
+impl WorktreeRow {
+    /// Whether it can be removed from here: not the main worktree, not the
+    /// one open in the window (its folder would go from under it), not
+    /// locked (Git refuses), and still there (Git cannot remove a folder
+    /// that is gone).
+    pub fn removable(&self) -> bool {
+        !self.main && !self.current && !self.locked && !self.missing
+    }
+
+    /// What its More button and context menu offer, each with whether it
+    /// can be chosen. Moving or removing the open worktree is not offered:
+    /// the window's own folder would go from under it, so another worktree
+    /// is opened first. A locked one shows Move and Remove, off, saying why,
+    /// and offers Unlock; any other linked one offers Lock (Git does not
+    /// lock the main worktree). One whose folder is gone offers Clear from
+    /// the list, once it is unlocked.
+    pub fn actions(&self) -> Vec<(WorktreeAction, bool)> {
+        let mut actions = Vec::new();
+        if !self.current && !self.missing {
+            actions.push((WorktreeAction::Open, true));
+        }
+        if !self.missing {
+            actions.push((WorktreeAction::ShowInFiles, true));
+        }
+        actions.push((WorktreeAction::CopyPath, true));
+        if !self.main && !self.current && !self.missing {
+            actions.push((WorktreeAction::Move, !self.locked));
+            actions.push((WorktreeAction::Remove, self.removable()));
+        }
+        if !self.main {
+            if self.locked {
+                actions.push((WorktreeAction::Unlock, true));
+            } else if self.missing {
+                actions.push((WorktreeAction::Clear, true));
+            } else {
+                actions.push((WorktreeAction::Lock, true));
+            }
+        }
+        actions
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -475,16 +553,15 @@ impl RepositoryList {
 
 impl RepositoryList {
     /// The list as the dropdown draws it: each repository once, keyed by its
-    /// common directory, with its worktrees under it. `known` is what Git
-    /// last said about an entry, `exists` whether a folder was there at the
-    /// last read (the window passes what its background read recorded, so
-    /// drawing never touches the file system). `current` is compared as it
-    /// is: Git's paths are already canonical.
+    /// common directory, and no worktree rows. `known` is what Git last said
+    /// about an entry, `exists` whether a folder was there at the last read
+    /// (the window passes what its background read recorded, so drawing
+    /// never touches the file system). `current` and `recent` are compared
+    /// as they are: Git's paths are already canonical.
     ///
-    /// The search matches a repository's name and folder (all its worktrees
-    /// stay), or a worktree's folder name or branch (only the matching
-    /// worktrees stay). Recent repositories come first, ranked by their
-    /// most recently opened worktree, then the rest by name.
+    /// The search matches a repository's name, its folder, or the folder
+    /// name of one of its worktrees. Recent repositories come first, ranked
+    /// by their most recently opened worktree, then the rest by name.
     pub fn groups(
         &self,
         query: &str,
@@ -496,6 +573,7 @@ impl RepositoryList {
         let query = query.trim().to_lowercase();
         let matches = |text: &str| query.is_empty() || text.to_lowercase().contains(&query);
         let is_current = |path: &Path| current == Some(path);
+        let rank_of = |path: &Path| recent.iter().position(|r| r == path);
         // Entries by repository, in the list's order.
         let mut keyed: Vec<(PathBuf, Members)> = Vec::new();
         for entry in &self.entries {
@@ -532,7 +610,7 @@ impl RepositoryList {
                 .alias
                 .clone()
                 .or_else(|| members.iter().find_map(|(e, _)| e.alias.clone()))
-                .unwrap_or_else(|| folder_name(&repository));
+                .unwrap_or_else(|| repository_folder_name(&repository));
             let worktrees: Vec<WorktreeRow> = info
                 .as_ref()
                 .map(|info| worktree_rows(info, &is_current))
@@ -542,49 +620,45 @@ impl RepositoryList {
             folders.extend(entries.iter().cloned());
             folders.push(repository.clone());
             let opens = match &info {
-                Some(info) => info.main.clone().or_else(|| {
-                    worktrees
-                        .iter()
-                        .find(|w| !w.missing)
-                        .map(|w| w.path.clone())
-                }),
+                Some(info) => {
+                    let present = || worktrees.iter().filter(|w| !w.missing);
+                    present()
+                        .filter_map(|w| Some((rank_of(&w.path)?, &w.path)))
+                        .min()
+                        .map(|(_, path)| path.clone())
+                        .or_else(|| info.main.clone())
+                        .or_else(|| present().next().map(|w| w.path.clone()))
+                }
                 None => exists(&own.path).then(|| own.path.clone()),
             };
-            let mut group = Group {
-                path: own.path.clone(),
-                name,
-                location: repository
-                    .parent()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                opens,
-                missing: info.is_none() && !exists(&own.path),
-                current: folders.iter().any(|f| is_current(f)),
-                recent: false,
-                // Only the main worktree: the repository row is enough.
-                worktrees: if worktrees.iter().any(|w| !w.main) {
-                    worktrees
-                } else {
-                    Vec::new()
-                },
-                entries,
-            };
-            let repository_matches = matches(&group.name) || matches(&repository.to_string_lossy());
-            if !repository_matches {
-                group
-                    .worktrees
-                    .retain(|w| matches(&w.name) || w.branch.as_deref().is_some_and(matches));
-                if group.worktrees.is_empty() {
-                    continue;
-                }
+            let shown = matches(&name)
+                || matches(&repository.to_string_lossy())
+                || worktrees.iter().any(|w| matches(&w.name));
+            if !shown {
+                continue;
             }
             let rank = folders
                 .iter()
-                .filter_map(|f| recent.iter().position(|r| r == f))
+                .filter_map(|f| rank_of(f))
                 .min()
                 .unwrap_or(usize::MAX);
-            group.recent = rank != usize::MAX;
-            groups.push((rank, group));
+            groups.push((
+                rank,
+                Group {
+                    path: own.path.clone(),
+                    name,
+                    location: repository
+                        .parent()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    opens,
+                    missing: info.is_none() && !exists(&own.path),
+                    current: folders.iter().any(|f| is_current(f)),
+                    recent: rank != usize::MAX,
+                    folders,
+                    entries,
+                },
+            ));
         }
         groups.sort_by(|(a_rank, a), (b_rank, b)| {
             a_rank
@@ -598,9 +672,22 @@ impl RepositoryList {
 /// The saved entries of one repository, with what Git said about each.
 type Members<'a> = Vec<(&'a Entry, Option<Known>)>;
 
-/// A repository's worktrees for the list: the main one first and marked,
-/// under the folder it really is (Git lists a submodule's common directory
-/// in its place); bare entries and an unknown main worktree left out.
+/// The rows of the toolbar's worktree dropdown for the repository `info`
+/// describes: the main one first and marked, then the linked ones in Git's
+/// order, the open one (`current`) marked. The search matches a worktree's
+/// folder name or its branch, not the rest of its path, where every
+/// worktree shares the same words. Drawing it touches no disk.
+pub fn worktree_list(info: &Known, current: Option<&Path>, query: &str) -> Vec<WorktreeRow> {
+    let query = query.trim().to_lowercase();
+    let matches = |text: &str| query.is_empty() || text.to_lowercase().contains(&query);
+    let mut rows = worktree_rows(info, &|path: &Path| current == Some(path));
+    rows.retain(|w| matches(&w.name) || w.branch.as_deref().is_some_and(matches));
+    rows
+}
+
+/// A repository's worktrees: the main one first and marked, under the
+/// folder it really is (Git lists a submodule's common directory in its
+/// place); bare entries and an unknown main worktree left out.
 fn worktree_rows(info: &Known, is_current: &impl Fn(&Path) -> bool) -> Vec<WorktreeRow> {
     info.worktrees
         .iter()
@@ -622,6 +709,8 @@ fn worktree_rows(info: &Known, is_current: &impl Fn(&Path) -> bool) -> Vec<Workt
                 main: w.main,
                 current: is_current(&path),
                 missing: w.prunable,
+                locked: w.locked,
+                lock_reason: w.lock_reason.clone(),
                 path,
             })
         })
@@ -639,7 +728,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{Facts, Known, RepositoryList};
+    use super::{Facts, Known, RepositoryList, repository_folder_name, worktree_list};
 
     fn git(home: &Path, dir: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
@@ -838,17 +927,25 @@ mod tests {
             let group = &groups[0];
             assert_eq!(group.name, "better-os");
             assert_eq!(group.path, f.main);
-            assert_eq!(group.opens.as_deref(), Some(f.main.as_path()));
+            // The worktree opened last is the one the row opens again.
+            assert_eq!(group.opens.as_deref(), Some(current.as_path()));
             assert!(group.current && group.recent);
-            // The main one first, then the linked ones in Git's order.
-            let mut names: Vec<&str> = group.worktrees.iter().map(|w| w.name.as_str()).collect();
+            let mut folders = group.folders.clone();
+            folders.sort();
+            folders.dedup();
+            let mut all = f.folders();
+            all.sort();
+            assert_eq!(folders, all, "{order:?}");
+            // The worktree dropdown: the main one first, then the linked
+            // ones in Git's order, the open one marked.
+            let rows = worktree_list(&f.known(current).unwrap(), Some(current), "");
+            let mut names: Vec<&str> = rows.iter().map(|w| w.name.as_str()).collect();
             assert_eq!(names.remove(0), "better-os");
             names.sort_unstable();
             assert_eq!(names, ["release-0.2.13", "ticket-101", "ticket-102"]);
-            assert!(group.worktrees[0].main);
-            assert!(group.worktrees[1..].iter().all(|w| !w.main));
-            let marked: Vec<&Path> = group
-                .worktrees
+            assert!(rows[0].main);
+            assert!(rows[1..].iter().all(|w| !w.main));
+            let marked: Vec<&Path> = rows
                 .iter()
                 .filter(|w| w.current)
                 .map(|w| w.path.as_path())
@@ -918,13 +1015,14 @@ mod tests {
             Path::exists,
         );
         assert_eq!(groups.len(), 1);
-        let marked: Vec<&Path> = groups[0]
-            .worktrees
-            .iter()
+        assert!(groups[0].current);
+        assert_eq!(groups[0].opens.as_ref(), Some(&selected));
+        let marked: Vec<PathBuf> = worktree_list(&f.known(&f.main).unwrap(), Some(&selected), "")
+            .into_iter()
             .filter(|w| w.current)
-            .map(|w| w.path.as_path())
+            .map(|w| w.path)
             .collect();
-        assert_eq!(marked, [selected.as_path()]);
+        assert_eq!(marked, [selected]);
     }
 
     #[test]
@@ -932,21 +1030,13 @@ mod tests {
         let f = Fixture::new();
         let mut list = f.list();
         list.add_opened(&f.linked[2], &f.main).unwrap();
-        let groups = list.groups("", None, &[], |p| f.known(p), Path::exists);
-        let detached = groups[0]
-            .worktrees
-            .iter()
-            .find(|w| w.path == f.linked[2])
-            .unwrap();
+        let rows = worktree_list(&f.known(&f.linked[2]).unwrap(), None, "");
+        let detached = rows.iter().find(|w| w.path == f.linked[2]).unwrap();
         assert_eq!(detached.name, "release-0.2.13");
         assert_eq!(detached.branch, None);
         let head = git(&f.home, &f.main, &["rev-parse", "HEAD"]);
         assert_eq!(detached.short_sha.as_deref(), Some(&head.trim()[..7]));
-        let on_branch = groups[0]
-            .worktrees
-            .iter()
-            .find(|w| w.path == f.linked[0])
-            .unwrap();
+        let on_branch = rows.iter().find(|w| w.path == f.linked[0]).unwrap();
         assert_eq!(on_branch.branch.as_deref(), Some("ticket-101"));
         assert_eq!(on_branch.short_sha, None);
     }
@@ -980,41 +1070,239 @@ mod tests {
     }
 
     #[test]
-    fn the_search_matches_repositories_worktree_folders_and_branches() {
+    fn the_repository_search_finds_repositories_and_the_worktree_search_worktrees() {
         let f = Fixture::new();
         let mut list = f.list();
         list.add_opened(&f.main, &f.main).unwrap();
         let search = |query: &str| {
             list.groups(query, None, &[], |p| f.known(p), Path::exists)
                 .into_iter()
-                .map(|g| {
-                    (
-                        g.name,
-                        g.worktrees.into_iter().map(|w| w.name).collect::<Vec<_>>(),
-                    )
-                })
+                .map(|g| g.name)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(search("BETTER")[0].1.len(), 4, "the repository keeps all");
-        assert_eq!(
-            search("release"),
-            [("better-os".to_string(), vec!["release-0.2.13".to_string()])]
-        );
-        assert_eq!(
-            search("ticket-102"),
-            [("better-os".to_string(), vec!["ticket-102".to_string()])]
-        );
+        assert_eq!(search("BETTER"), ["better-os"]);
+        // A worktree's folder finds its repository, as a repository row.
+        assert_eq!(search("release"), ["better-os"]);
+        assert_eq!(search("ticket-102"), ["better-os"]);
+        assert!(search("nothing-like-this").is_empty());
+
+        let info = f.known(&f.main).unwrap();
+        let worktrees = |query: &str| {
+            worktree_list(&info, None, query)
+                .into_iter()
+                .map(|w| w.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(worktrees("").len(), 4);
+        assert_eq!(worktrees("RELEASE"), ["release-0.2.13"]);
+        assert_eq!(worktrees("ticket-102"), ["ticket-102"]);
         // A branch name that is not a folder name.
         git(
             &f.home,
             &f.linked[0],
             &["switch", "-q", "-c", "feature/menu"],
         );
+        let info = f.known(&f.main).unwrap();
         assert_eq!(
-            search("feature/"),
-            [("better-os".to_string(), vec!["ticket-101".to_string()])]
+            worktree_list(&info, None, "feature/")
+                .into_iter()
+                .map(|w| w.name)
+                .collect::<Vec<_>>(),
+            ["ticket-101"]
         );
-        assert!(search("nothing-like-this").is_empty());
+        assert!(
+            search("feature/").is_empty(),
+            "branches are not repositories"
+        );
+        assert!(worktree_list(&info, None, "nothing-like-this").is_empty());
+    }
+
+    #[test]
+    fn the_repository_dropdown_holds_repositories_and_no_worktree_rows() {
+        let f = Fixture::new();
+        // Every worktree saved as if it were a repository, and another
+        // repository beside them.
+        let mut list = f.list();
+        for folder in f.folders() {
+            list.add(&folder).unwrap();
+        }
+        let other = f.tmp.path().canonicalize().unwrap().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        git(&f.home, &other, &["init", "-q", "-b", "main"]);
+        list.add(&other).unwrap();
+        let groups = list.groups("", Some(&f.linked[0]), &[], |p| f.known(p), Path::exists);
+        let rows: Vec<(&str, &Path)> = groups
+            .iter()
+            .map(|g| (g.name.as_str(), g.path.as_path()))
+            .collect();
+        assert_eq!(
+            rows,
+            [("better-os", f.main.as_path()), ("other", other.as_path())],
+            "one row per repository, none for a worktree"
+        );
+        assert!(groups[0].current && !groups[1].current);
+        assert!(groups.iter().all(|g| !f.linked.contains(&g.path)));
+    }
+
+    #[test]
+    fn choosing_a_repository_reopens_the_worktree_open_last() {
+        let f = Fixture::new();
+        let mut list = f.list();
+        list.add_opened(&f.main, &f.main).unwrap();
+        let opens = |recent: &[PathBuf]| {
+            list.groups("", None, recent, |p| f.known(p), Path::exists)[0]
+                .opens
+                .clone()
+        };
+        assert_eq!(
+            opens(&[]),
+            Some(f.main.clone()),
+            "never opened: the main one"
+        );
+        assert_eq!(
+            opens(&[f.linked[1].clone(), f.main.clone(), f.linked[0].clone()]),
+            Some(f.linked[1].clone())
+        );
+        // Another repository opened since does not count.
+        let elsewhere = f.tmp.path().join("elsewhere");
+        assert_eq!(
+            opens(&[elsewhere, f.linked[0].clone(), f.main.clone()]),
+            Some(f.linked[0].clone())
+        );
+        // A worktree that is gone is passed over for the next one.
+        std::fs::remove_dir_all(&f.linked[1]).unwrap();
+        assert_eq!(
+            opens(&[f.linked[1].clone(), f.linked[2].clone()]),
+            Some(f.linked[2].clone())
+        );
+        assert_eq!(opens(&[f.linked[1].clone()]), Some(f.main.clone()));
+    }
+
+    #[test]
+    fn the_worktree_search_ignores_the_shared_path() {
+        let f = Fixture::new();
+        let info = f.known(&f.main).unwrap();
+        // Every worktree's path holds "wt"; none is named so.
+        assert!(worktree_list(&info, None, "wt").is_empty());
+        let tmp = f
+            .tmp
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(worktree_list(&info, None, &tmp).is_empty());
+    }
+
+    #[test]
+    fn a_worktree_row_offers_only_what_can_be_done_to_it() {
+        use super::{WorktreeAction as A, WorktreeRow};
+        let row = |main: bool, current: bool, missing: bool, locked: bool| WorktreeRow {
+            path: PathBuf::from("/r/w"),
+            name: "w".into(),
+            branch: Some("w".into()),
+            short_sha: None,
+            main,
+            current,
+            missing,
+            locked,
+            lock_reason: None,
+        };
+        let offered = |r: &WorktreeRow| r.actions();
+        // Another linked worktree: everything.
+        assert_eq!(
+            offered(&row(false, false, false, false)),
+            [
+                (A::Open, true),
+                (A::ShowInFiles, true),
+                (A::CopyPath, true),
+                (A::Move, true),
+                (A::Remove, true),
+                (A::Lock, true)
+            ]
+        );
+        // The main worktree is never moved or removed.
+        let main = row(true, false, false, false);
+        assert!(!main.removable());
+        assert!(
+            offered(&main)
+                .iter()
+                .all(|(a, _)| !matches!(a, A::Move | A::Remove | A::Lock | A::Unlock | A::Clear))
+        );
+        // The open one is neither opened again, moved, nor removed.
+        let current = row(false, true, false, false);
+        assert!(!current.removable());
+        assert_eq!(
+            offered(&current),
+            [(A::ShowInFiles, true), (A::CopyPath, true), (A::Lock, true)]
+        );
+        // A missing one cannot be opened, shown, moved, or removed.
+        let missing = row(false, false, true, false);
+        assert!(!missing.removable());
+        assert_eq!(offered(&missing), [(A::CopyPath, true), (A::Clear, true)]);
+        // Locked and gone: unlocked first, then cleared.
+        assert_eq!(
+            offered(&row(false, false, true, true)),
+            [(A::CopyPath, true), (A::Unlock, true)]
+        );
+        // A locked one shows Move and Remove, off.
+        let locked = row(false, false, false, true);
+        assert!(!locked.removable());
+        assert!(offered(&locked).contains(&(A::Move, false)));
+        assert!(offered(&locked).contains(&(A::Remove, false)));
+        assert!(offered(&locked).contains(&(A::Open, true)));
+        assert!(offered(&locked).contains(&(A::Unlock, true)));
+        assert!(!offered(&locked).iter().any(|(a, _)| *a == A::Lock));
+    }
+
+    #[test]
+    fn a_locked_worktree_is_marked() {
+        let f = Fixture::new();
+        git(
+            &f.home,
+            &f.main,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "on a stick",
+                f.linked[1].to_str().unwrap(),
+            ],
+        );
+        let rows = worktree_list(&f.known(&f.main).unwrap(), None, "");
+        let locked: Vec<(&str, Option<&str>)> = rows
+            .iter()
+            .filter(|w| w.locked)
+            .map(|w| (w.name.as_str(), w.lock_reason.as_deref()))
+            .collect();
+        assert_eq!(locked, [("ticket-102", Some("on a stick"))]);
+    }
+
+    #[test]
+    fn a_repository_is_named_by_its_alias_or_its_main_worktree() {
+        let f = Fixture::new();
+        let mut list = f.list();
+        list.add_opened(&f.linked[0], &f.main).unwrap();
+        let name = |list: &RepositoryList, current: &Path| {
+            list.groups("", Some(current), &[], |p| f.known(p), Path::exists)
+                .into_iter()
+                .find(|g| g.current)
+                .map(|g| g.name)
+        };
+        // The same name from the main worktree and from a linked one.
+        assert_eq!(name(&list, &f.main).as_deref(), Some("better-os"));
+        assert_eq!(name(&list, &f.linked[0]).as_deref(), Some("better-os"));
+        assert_eq!(name(&list, &f.linked[2]).as_deref(), Some("better-os"));
+        list.set_alias(&f.main, "Better OS").unwrap();
+        assert_eq!(name(&list, &f.linked[1]).as_deref(), Some("Better OS"));
+        // Without a main worktree: the common directory, and a plain
+        // `.git` after the folder it is in.
+        assert_eq!(repository_folder_name(Path::new("/r/bare.git")), "bare.git");
+        assert_eq!(repository_folder_name(Path::new("/r/gone/.git")), "gone");
+        assert_eq!(
+            repository_folder_name(Path::new("/r/better-os")),
+            "better-os"
+        );
     }
 
     #[test]
@@ -1093,27 +1381,19 @@ mod tests {
         assert_eq!(bare_group.path, bare);
         assert!(!bare_group.missing);
         assert_eq!(bare_group.opens.as_deref(), Some(bare_wt.as_path()));
-        assert_eq!(
-            bare_group
-                .worktrees
-                .iter()
-                .map(|w| &w.path)
-                .collect::<Vec<_>>(),
-            [&bare_wt]
-        );
+        let paths = |folder: &Path| {
+            worktree_list(&f.known(folder).unwrap(), None, "")
+                .into_iter()
+                .map(|w| w.path)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(paths(&bare_wt), std::slice::from_ref(&bare_wt));
         let store_group = by_name("store.git");
         assert_eq!(store_group.path, left);
         assert_eq!(store_group.entries, std::slice::from_ref(&left));
         assert!(!store_group.missing);
         assert_eq!(store_group.opens.as_deref(), Some(left.as_path()));
-        assert_eq!(
-            store_group
-                .worktrees
-                .iter()
-                .map(|w| &w.path)
-                .collect::<Vec<_>>(),
-            [&left]
-        );
+        assert_eq!(paths(&left), std::slice::from_ref(&left));
     }
 
     #[test]
@@ -1239,14 +1519,17 @@ mod tests {
         assert_eq!(sub_group.path, sub);
         assert_eq!(sub_group.opens.as_deref(), Some(sub.as_path()));
         assert!(sub_group.current);
-        let paths: Vec<&PathBuf> = sub_group.worktrees.iter().map(|w| &w.path).collect();
+        let rows = worktree_list(&f.known(&sub_wt).unwrap(), Some(&sub_wt), "");
+        let paths: Vec<&PathBuf> = rows.iter().map(|w| &w.path).collect();
         assert_eq!(paths, [&sub, &sub_wt]);
-        assert!(sub_group.worktrees[0].main && sub_group.worktrees[1].current);
+        assert!(rows[0].main && rows[1].current);
         let apart = groups.iter().find(|g| g.name == "apart").unwrap();
         assert_eq!(apart.path, main);
         assert_eq!(apart.opens.as_deref(), Some(main.as_path()));
         assert_eq!(apart.entries, [main.clone(), apart_wt.clone()]);
-        let paths: Vec<&PathBuf> = apart.worktrees.iter().map(|w| &w.path).collect();
+        // Read from the main worktree: the linked one cannot say where it is.
+        let rows = worktree_list(&f.known(&main).unwrap(), None, "");
+        let paths: Vec<&PathBuf> = rows.iter().map(|w| &w.path).collect();
         assert_eq!(paths, [&main, &apart_wt]);
     }
 
