@@ -157,8 +157,13 @@ assert_user_units_restart_on_upgrade() {
     local units=("$extract_dir"/usr/lib/systemd/user/*.service)
     local shipped="" unit script
     for unit in ${units[@]+"${units[@]}"}; do
-        shipped="${shipped:+$shipped }${unit##*/}"
+        shipped="${shipped:+$shipped$'\n'}${unit##*/}"
     done
+    # Bytewise order, as build-deb.sh writes it: a glob sorts by the locale, so
+    # "a-tray.service" and "a.service" swap places between machines.
+    if [[ -n "$shipped" ]]; then
+        shipped="$(printf '%s\n' "$shipped" | LC_ALL=C sort | paste -sd' ' -)"
+    fi
     dpkg-deb --control "$deb_path" "$control_dir"
     if [[ -z "$shipped" ]]; then
         for script in preinst postinst; do

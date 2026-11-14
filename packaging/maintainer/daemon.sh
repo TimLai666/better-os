@@ -1,3 +1,4 @@
+# shellcheck shell=sh disable=SC2154 # build-deb.sh writes the header that sets the better_os_* variables
 # Better OS maintainer-script function for better-manager-daemon (ticket 105).
 # `packaging/build-deb.sh` copies this file into the daemon package's postinst
 # after a header that sets:
