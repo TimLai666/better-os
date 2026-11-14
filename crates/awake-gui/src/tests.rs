@@ -37,6 +37,7 @@ fn backend(available: bool) -> WireBackend {
             idle: true,
             display_sleep: true,
             automatic_lock: false,
+            lid_switch: true,
         },
         detail: (!available).then(|| "awake.backend.error.unavailable".to_string()),
     }
@@ -78,6 +79,7 @@ fn status(has_battery: bool) -> StatusDocument {
             on_ac_power: Some(true),
             stop_below_percent: has_battery.then_some(20),
         },
+        lid: awake_ipc::WireLidProtection::default(),
         now_unix_seconds: 1_700_000_600,
     }
 }
@@ -268,6 +270,31 @@ fn every_status_and_action_string_is_translated_in_both_locales() {
         (en.light_theme, zh.light_theme),
         (en.settings_storage_failed, zh.settings_storage_failed),
         (en.keyboard_hint, zh.keyboard_hint),
+        (en.keep_awake_lid_closed, zh.keep_awake_lid_closed),
+        (en.lid_sleep, zh.lid_sleep),
+        (en.lid_battery_limit, zh.lid_battery_limit),
+        (en.lid_stops_after, zh.lid_stops_after),
+        (en.lid_never_stops, zh.lid_never_stops),
+        (en.on, zh.on),
+        (en.off, zh.off),
+        (en.lid_note_base, zh.lid_note_base),
+        (en.lid_note_battery_stop, zh.lid_note_battery_stop),
+        (en.lid_note_no_battery_stop, zh.lid_note_no_battery_stop),
+        (en.lid_note_limit, zh.lid_note_limit),
+        (en.lid_note_no_limit, zh.lid_note_no_limit),
+        (en.lid_note_sleeps_at_once, zh.lid_note_sleeps_at_once),
+        (en.lid_stops_at, zh.lid_stops_at),
+        (en.lid_external_display_note, zh.lid_external_display_note),
+        (en.lid_limit_heading, zh.lid_limit_heading),
+        (en.lid_limit_description, zh.lid_limit_description),
+        (en.lid_limit_never, zh.lid_limit_never),
+        (en.lid_rule_heading, zh.lid_rule_heading),
+        (en.lid_rule_default_off, zh.lid_rule_default_off),
+        (en.field_lid_switch, zh.field_lid_switch),
+        (
+            en.cause_lid_closed_on_battery,
+            zh.cause_lid_closed_on_battery,
+        ),
     ];
 
     for (english, chinese) in pairs {
@@ -293,6 +320,7 @@ fn every_end_cause_and_condition_has_words_in_both_locales() {
             c.cause_replaced,
             c.cause_trigger_cleared,
             c.cause_rules_suppressed,
+            c.cause_lid_closed_on_battery,
             c.cause_unrecognized,
         ] {
             assert!(
@@ -807,4 +835,213 @@ fn a_preset_length_reads_as_hours_once_it_passes_an_hour() {
         assert!(minutes.contains("15"));
         assert_eq!(PresetLength::Indefinite.label(c), c.preset_indefinite);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Also when the lid is closed (ticket 109)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_lid_choice_uses_the_trays_words() {
+    // Copied from awake-tray's labels, so the window and the tray say the
+    // same thing about the same choice.
+    let zh = copy(Locale::ZhTw);
+    assert_eq!(zh.keep_awake_lid_closed, "闔上螢幕時也保持清醒");
+    assert_eq!(zh.lid_sleep, "闔上螢幕時睡眠");
+    assert_eq!(zh.lid_battery_limit, "闔上螢幕並使用電池時");
+    assert_eq!(zh.lid_stops_after, "{limit}後停止");
+    assert_eq!(zh.lid_never_stops, "不會因此停止");
+    let en = copy(Locale::EnUs);
+    assert_eq!(en.keep_awake_lid_closed, "Also when the lid is closed");
+    assert_eq!(en.lid_sleep, "Sleep when the lid is closed");
+    assert_eq!(en.lid_battery_limit, "Lid closed on battery");
+    assert_eq!(en.lid_stops_after, "Stops after {limit}");
+    assert_eq!(en.lid_never_stops, "Never stops for this");
+}
+
+#[test]
+fn the_status_shows_the_lid_row_and_the_limit_only_while_the_lid_is_held() {
+    let mut document = status(true);
+    let view = StatusView::from_status(&document);
+    let lid = view
+        .policy
+        .iter()
+        .find(|row| row.field == crate::model::PolicyRowField::LidSwitch)
+        .expect("the lid row is always drawn");
+    assert_eq!(lid.value(copy(Locale::EnUs)), "Allowed");
+    assert!(!view.lid.held);
+
+    document.effective_policy = SessionPolicy::manual_default();
+    document.lid.battery_limit = awake_core::LidBatteryLimit::Minutes { minutes: 240 };
+    let view = StatusView::from_status(&document);
+    assert!(view.lid.held);
+    let offset = crate::localtime::UtcOffset::UTC;
+    assert_eq!(
+        view.lid
+            .limit_summary(Locale::EnUs, document.now_unix_seconds, offset),
+        "Stops after 4 hours"
+    );
+    assert_eq!(
+        view.lid
+            .limit_summary(Locale::ZhTw, document.now_unix_seconds, offset),
+        "4 小時後停止"
+    );
+    let lid = view
+        .policy
+        .iter()
+        .find(|row| row.field == crate::model::PolicyRowField::LidSwitch)
+        .unwrap();
+    assert_eq!(lid.value(copy(Locale::ZhTw)), "已擋下");
+
+    // A backend with no lid lock, or a service from before protocol version 3
+    // whose status has no lid fields: the row says it is unavailable.
+    document.backend.capabilities.lid_switch = false;
+    let view = StatusView::from_status(&document);
+    assert!(!view.lid.held);
+    assert!(!view.lid.available);
+    let lid = view
+        .policy
+        .iter()
+        .find(|row| row.field == crate::model::PolicyRowField::LidSwitch)
+        .unwrap();
+    assert_eq!(lid.value(copy(Locale::ZhTw)), "目前無法使用");
+    assert_eq!(lid.value(copy(Locale::EnUs)), "Not available right now");
+}
+
+#[test]
+fn the_safety_note_says_only_what_applies_to_the_session() {
+    use crate::model::lid_safety_note;
+    use awake_core::LidBatteryLimit;
+    let note = lid_safety_note(LidBatteryLimit::default(), Some(20), true, Locale::EnUs);
+    assert!(note.contains("stops below 20%"), "{note}");
+    assert!(note.contains("2 hours"), "{note}");
+    assert!(note.contains("goes to sleep right away"), "{note}");
+
+    // No battery stop: nothing claims there is one.
+    let unprotected = lid_safety_note(LidBatteryLimit::default(), None, true, Locale::EnUs);
+    assert!(!unprotected.contains("stops below"), "{unprotected}");
+    assert!(
+        unprotected.contains("does not stop for a low battery"),
+        "{unprotected}"
+    );
+
+    // No closed-lid limit: says the battery can run out.
+    let never = lid_safety_note(LidBatteryLimit::Never, None, true, Locale::ZhTw);
+    assert!(never.contains("不會因為電量低而停止"), "{never}");
+    assert!(never.contains("電池可能會用完"), "{never}");
+    assert!(!never.contains("超過"), "{never}");
+    assert!(!never.contains('{'), "{never}");
+
+    // A machine with no battery hears nothing about one.
+    let desktop = lid_safety_note(LidBatteryLimit::default(), Some(20), false, Locale::ZhTw);
+    assert!(
+        !desktop.contains("電池") && !desktop.contains("電量"),
+        "{desktop}"
+    );
+    assert!(desktop.contains("電腦會馬上睡眠"), "{desktop}");
+}
+
+#[test]
+fn a_running_closed_lid_clock_reads_as_a_countdown_and_otherwise_as_the_rule() {
+    let mut document = status(true);
+    document.effective_policy = SessionPolicy::manual_default();
+    let view = StatusView::from_status(&document);
+    let offset = crate::localtime::UtcOffset::UTC;
+    assert_eq!(
+        view.lid
+            .limit_summary(Locale::EnUs, document.now_unix_seconds, offset),
+        "Stops after 2 hours"
+    );
+    document.lid.stops_at_unix_seconds = Some(document.now_unix_seconds + 90 * 60);
+    let view = StatusView::from_status(&document);
+    let at = crate::localtime::clock_time(document.now_unix_seconds + 90 * 60, offset);
+    assert_eq!(
+        view.lid
+            .limit_summary(Locale::EnUs, document.now_unix_seconds, offset),
+        format!("Stops at {at} (90 minutes left)")
+    );
+    assert_eq!(
+        view.lid
+            .limit_summary(Locale::ZhTw, document.now_unix_seconds, offset),
+        format!("{at} 停止（還有 90 分鐘）")
+    );
+}
+
+#[test]
+fn session_defaults_say_which_sessions_they_apply_to() {
+    let zh = copy(Locale::ZhTw).session_defaults_help;
+    assert!(
+        zh.contains("這個視窗") && zh.contains("系統匣") && zh.contains("闔上螢幕時也保持清醒")
+    );
+    let en = copy(Locale::EnUs).session_defaults_help;
+    assert!(
+        en.contains("this window")
+            && en.contains("tray")
+            && en.contains("Also when the lid is closed")
+    );
+}
+
+#[test]
+fn a_manual_session_keeps_awake_with_the_lid_closed_by_default() {
+    assert!(Preferences::default().defaults.policy.prevent_lid_suspend);
+}
+
+#[test]
+fn a_version_1_preferences_file_is_read_with_the_lid_choice_on() {
+    let directory =
+        std::env::temp_dir().join(format!("awake-gui-preferences-v1-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("preferences.json");
+    std::fs::write(
+        &path,
+        br#"{"schema_version":1,"presets":[{"kind":"indefinite"}],"default_preset":0,"defaults":{"policy":{"prevent_system_suspend":true,"prevent_idle":true,"prevent_display_sleep":true,"prevent_automatic_lock":false},"battery_stop_percent":30},"locale":"zh-TW","theme":"light"}"#,
+    )
+    .unwrap();
+
+    let (loaded, readable) = PreferencesStore::at_path(&path).load();
+    assert!(readable);
+    assert_eq!(
+        loaded.schema_version,
+        crate::settings::PREFERENCES_SCHEMA_VERSION
+    );
+    assert!(loaded.defaults.policy.prevent_lid_suspend);
+    assert!(
+        loaded.defaults.policy.prevent_display_sleep,
+        "the rest is kept"
+    );
+    assert_eq!(loaded.defaults.battery_stop_percent, Some(30));
+
+    // Turned off and saved, it stays off.
+    let mut off = loaded.clone();
+    off.defaults.policy.prevent_lid_suspend = false;
+    PreferencesStore::at_path(&path).save(&off).unwrap();
+    assert!(
+        !PreferencesStore::at_path(&path)
+            .load()
+            .0
+            .defaults
+            .policy
+            .prevent_lid_suspend
+    );
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn a_session_the_closed_lid_ended_is_named_in_history() {
+    let entry = crate::model::HistoryRow {
+        session_id: 3,
+        started_at_unix_seconds: 1_700_000_000,
+        ended_at_unix_seconds: Some(1_700_007_200),
+        origin: SessionOrigin::Manual,
+        rule_id: None,
+        reasons: vec!["Download".to_string()],
+        policy: SessionPolicy::manual_default(),
+        battery_stop_percent: Some(20),
+        end_cause: Some("lid_closed_on_battery".to_string()),
+        backend_failure: None,
+    };
+    assert_eq!(
+        entry.cause_label(copy(Locale::EnUs)),
+        "The lid stayed closed on battery past the limit"
+    );
 }

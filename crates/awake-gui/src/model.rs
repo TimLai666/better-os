@@ -166,6 +166,7 @@ pub(crate) enum PolicyRowField {
     Idle,
     DisplaySleep,
     AutomaticLock,
+    LidSwitch,
 }
 
 impl PolicyRowField {
@@ -175,12 +176,18 @@ impl PolicyRowField {
             PolicyRowField::Idle => c.idle_handling,
             PolicyRowField::DisplaySleep => c.display_sleep,
             PolicyRowField::AutomaticLock => c.automatic_lock,
+            PolicyRowField::LidSwitch => c.lid_sleep,
         }
     }
 }
 
 impl PolicyRow {
     pub(crate) fn value(self, c: &'static Copy) -> &'static str {
+        // A service or backend with no lid lock cannot be asked for one, so
+        // the lid row says it is unavailable rather than "allowed".
+        if self.field == PolicyRowField::LidSwitch && !self.delivered {
+            return c.lid_unavailable;
+        }
         match (self.prevented, self.delivered) {
             (false, _) => c.allowed,
             (true, true) => c.prevented,
@@ -217,6 +224,7 @@ impl ConflictView {
             "prevent_idle" => c.field_idle,
             "prevent_display_sleep" => c.field_display_sleep,
             "prevent_automatic_lock" => c.field_automatic_lock,
+            "prevent_lid_suspend" => c.field_lid_switch,
             "battery_stop_percent" => c.field_battery_threshold,
             // A field this build has never heard of is named by its own key
             // rather than dropped, so a newer service is still explainable.
@@ -328,6 +336,95 @@ impl BackendView {
     }
 }
 
+/// What closing the lid does now, and the limit that goes with it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LidView {
+    /// A session holds the lid and the backend delivers it.
+    pub(crate) held: bool,
+    /// The service can hold the lid at all. False for a service from before
+    /// protocol version 3, and for a backend with no lid lock.
+    pub(crate) available: bool,
+    pub(crate) limit: awake_core::LidBatteryLimit,
+    /// Set while the lid is closed on battery and the clock is running.
+    pub(crate) stops_at_unix_seconds: Option<u64>,
+}
+
+impl LidView {
+    /// While the lid is closed on battery and the clock is running, when the
+    /// sessions holding the lid will stop ("Stops at 15:42 (1 hour 58 minutes
+    /// left)"); otherwise the limit as a rule ("Stops after 2 hours").
+    pub(crate) fn limit_summary(
+        &self,
+        locale: crate::i18n::Locale,
+        now_unix_seconds: u64,
+        offset: UtcOffset,
+    ) -> String {
+        match self.stops_at_unix_seconds {
+            Some(stops_at) => {
+                let c = crate::i18n::copy(locale);
+                let minutes = stops_at.saturating_sub(now_unix_seconds).div_ceil(60);
+                let with_time = fill(c.lid_stops_at, "time", &clock_time(stops_at, offset));
+                fill(
+                    &with_time,
+                    "remaining",
+                    &crate::i18n::limit_words(locale, minutes.max(1) as u32),
+                )
+            }
+            None => lid_limit_summary(self.limit, locale),
+        }
+    }
+}
+
+/// The closed-lid limit as the row beside the choice states it.
+pub(crate) fn lid_limit_summary(
+    limit: awake_core::LidBatteryLimit,
+    locale: crate::i18n::Locale,
+) -> String {
+    let c = crate::i18n::copy(locale);
+    match limit.minutes() {
+        Some(minutes) => fill(
+            c.lid_stops_after,
+            "limit",
+            &crate::i18n::limit_words(locale, minutes),
+        ),
+        None => c.lid_never_stops.to_string(),
+    }
+}
+
+/// The safety stated next to the lid choice, saying only what is true for
+/// it: the battery threshold the session would carry (`None`: it does not stop
+/// for battery), the closed-lid limit, and nothing about the battery on a
+/// machine that has none.
+pub(crate) fn lid_safety_note(
+    limit: awake_core::LidBatteryLimit,
+    battery_stop_percent: Option<u8>,
+    has_battery: bool,
+    locale: crate::i18n::Locale,
+) -> String {
+    let c = crate::i18n::copy(locale);
+    let separator = match locale.resolved() {
+        crate::i18n::Locale::ZhTw => "",
+        _ => " ",
+    };
+    let mut parts = vec![c.lid_note_base.to_string()];
+    if has_battery {
+        parts.push(match battery_stop_percent {
+            Some(percent) => fill(c.lid_note_battery_stop, "percent", &percent.to_string()),
+            None => c.lid_note_no_battery_stop.to_string(),
+        });
+        parts.push(match limit.minutes() {
+            Some(minutes) => fill(
+                c.lid_note_limit,
+                "limit",
+                &crate::i18n::limit_words(locale, minutes),
+            ),
+            None => c.lid_note_no_limit.to_string(),
+        });
+    }
+    parts.push(c.lid_note_sleeps_at_once.to_string());
+    parts.join(separator)
+}
+
 /// Everything the Status section shows, decided once.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StatusView {
@@ -336,6 +433,7 @@ pub(crate) struct StatusView {
     pub(crate) policy: Vec<PolicyRow>,
     pub(crate) backend: BackendView,
     pub(crate) battery: BatteryView,
+    pub(crate) lid: LidView,
     pub(crate) conflicts: Vec<ConflictView>,
     pub(crate) attention: Option<String>,
     pub(crate) interrupted_previous_session: Option<String>,
@@ -398,7 +496,18 @@ impl StatusView {
                     prevented: policy.prevent_automatic_lock,
                     delivered: capabilities.automatic_lock,
                 },
+                PolicyRow {
+                    field: PolicyRowField::LidSwitch,
+                    prevented: policy.prevent_lid_suspend,
+                    delivered: capabilities.lid_switch,
+                },
             ],
+            lid: LidView {
+                held: policy.prevent_lid_suspend && capabilities.lid_switch,
+                available: capabilities.lid_switch,
+                limit: status.lid.battery_limit,
+                stops_at_unix_seconds: status.lid.stops_at_unix_seconds,
+            },
             backend: BackendView {
                 name: status.backend.name.clone(),
                 available: status.backend.available,
@@ -773,6 +882,7 @@ impl HistoryRow {
             Some("replaced") => c.cause_replaced,
             Some("trigger_cleared") => c.cause_trigger_cleared,
             Some("rules_suppressed") => c.cause_rules_suppressed,
+            Some("lid_closed_on_battery") => c.cause_lid_closed_on_battery,
             // A cause a newer service invented is named as such rather than
             // shown as "unknown", which would read like a failed read.
             Some(_) => c.cause_unrecognized,

@@ -179,13 +179,14 @@ pub struct SessionRequest {
 }
 
 impl SessionRequest {
-    /// The one-click session the tray's presets use: keeps the machine running
-    /// and lets the screen turn off and lock by itself.
+    /// The one-click session the tray's presets use: keeps the machine running,
+    /// also with the lid closed, and lets the screen turn off and lock by
+    /// itself.
     pub fn quick(reason: Reason, end: EndCondition) -> Self {
         Self {
             reason,
             origin: SessionOrigin::Manual,
-            policy: SessionPolicy::quick_default(),
+            policy: SessionPolicy::manual_default(),
             battery_stop_percent: Some(DEFAULT_BATTERY_STOP_PERCENT),
             end,
             rule: None,
@@ -422,6 +423,7 @@ mod tests {
         assert!(request.policy.prevent_system_suspend);
         assert!(!request.policy.prevent_display_sleep);
         assert!(!request.policy.prevent_automatic_lock);
+        assert!(request.policy.prevent_lid_suspend);
         assert_eq!(
             request.battery_stop_percent,
             Some(DEFAULT_BATTERY_STOP_PERCENT)

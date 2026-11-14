@@ -282,9 +282,11 @@ impl TrayController {
         use zbus::export::futures_core::Stream;
 
         let statuses = self.client.status_updates().await?;
+        let legacy_statuses = self.client.legacy_status_updates().await?;
         let owners = self.client.owner_changes().await?;
         let notifier = claim_notifications(&connection, notifier).await;
         let mut statuses = std::pin::pin!(statuses);
+        let mut legacy_statuses = std::pin::pin!(legacy_statuses);
         let mut owners = std::pin::pin!(owners);
         loop {
             tokio::select! {
@@ -295,10 +297,27 @@ impl TrayController {
                         self.set_status(status).await;
                     }
                 }
+                // A current service sends every event on both signals, so the
+                // legacy one is read only while the service is a legacy one,
+                // which sends nothing else.
+                signal = std::future::poll_fn(|context| legacy_statuses.as_mut().poll_next(context)) => {
+                    let Some(signal) = signal else { return Ok(()) };
+                    if !self.client.speaks_legacy() {
+                        continue;
+                    }
+                    let Ok(args) = signal.args() else { continue };
+                    if let Some(status) = handle_event(args.event_json(), notifier.as_ref()).await {
+                        self.set_status(status).await;
+                    }
+                }
                 owner = std::future::poll_fn(|context| owners.as_mut().poll_next(context)) => {
                     match owner {
                         None => return Ok(()),
                         Some(Some(_)) => {
+                            // A service that came back may be a newer one: an
+                            // update restarts it. Ask in the current version
+                            // first again.
+                            self.client.reset_protocol();
                             if let Err(error) = self.refresh().await {
                                 eprintln!(
                                     "better-awake-tray: the Better Awake service came back and \
@@ -417,6 +436,13 @@ impl TrayController {
             MenuAction::ToggleStopBelowBattery => {
                 self.toggle(|options| options.stop_below_battery = !options.stop_below_battery)
                     .await;
+                return Activation::OptionToggled;
+            }
+            MenuAction::ToggleKeepAwakeLidClosed => {
+                self.toggle(|options| {
+                    options.keep_awake_lid_closed = !options.keep_awake_lid_closed
+                })
+                .await;
                 return Activation::OptionToggled;
             }
             // A time picker, a change dialog, and the first-time security
@@ -733,6 +759,7 @@ mod tests {
             conflicts: Vec::new(),
             providers: Vec::new(),
             battery_protection: awake_ipc::WireBatteryProtection::default(),
+            lid: awake_ipc::WireLidProtection::default(),
             now_unix_seconds: NOW,
         }
     }

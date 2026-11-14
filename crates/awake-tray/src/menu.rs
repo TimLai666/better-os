@@ -19,7 +19,7 @@ pub const EXTEND_MINUTES: [u64; 3] = [15, 30, 60];
 /// The battery threshold the `低於 20% 電量時停止` wording promises.
 pub const QUICK_BATTERY_PERCENT: u8 = 20;
 
-/// The two toggles in Quick options. They shape the next session the tray
+/// The toggles in Quick options. They shape the next session the tray
 /// starts; they never change anything on their own, which is why toggling one
 /// is not a request to the service.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,6 +27,9 @@ pub struct QuickOptions {
     /// Checked means the display may still turn off, which is the default.
     pub allow_display_off: bool,
     pub stop_below_battery: bool,
+    /// "Also when the lid is closed". On by default, because a session started
+    /// by hand is one the person means to survive closing the lid (ticket 109).
+    pub keep_awake_lid_closed: bool,
 }
 
 impl Default for QuickOptions {
@@ -34,6 +37,7 @@ impl Default for QuickOptions {
         Self {
             allow_display_off: true,
             stop_below_battery: true,
+            keep_awake_lid_closed: awake_core::SessionPolicy::manual_default().prevent_lid_suspend,
         }
     }
 }
@@ -42,6 +46,7 @@ impl QuickOptions {
     pub fn policy(&self) -> awake_core::SessionPolicy {
         awake_core::SessionPolicy {
             prevent_display_sleep: !self.allow_display_off,
+            prevent_lid_suspend: self.keep_awake_lid_closed,
             ..awake_core::SessionPolicy::quick_default()
         }
     }
@@ -60,6 +65,7 @@ pub enum MenuAction {
     StartUntilTime,
     ToggleAllowDisplayOff,
     ToggleStopBelowBattery,
+    ToggleKeepAwakeLidClosed,
     ExtendMinutes(u64),
     /// Needs the full window for the same reason.
     ChangeSession,
@@ -355,7 +361,7 @@ pub fn build(
 ) -> Menu {
     let labels = locale.labels();
     let mut items = if status.is_active() {
-        active_items(status, labels, offset)
+        active_items(status, labels, locale, offset)
     } else {
         inactive_items(status, options, labels)
     };
@@ -421,12 +427,33 @@ fn inactive_items(
                 options.stop_below_battery,
                 MenuAction::ToggleStopBelowBattery,
             ),
+            lid_option(status, options, labels),
         ],
     ));
     items
 }
 
-fn active_items(status: &StatusDocument, labels: &Labels, offset: UtcOffset) -> Vec<MenuItem> {
+/// The lid quick option. A service from before protocol version 3, which an
+/// update has not restarted yet, has no lid lock to give, so the option is
+/// shown as unavailable rather than ticked and quietly ignored.
+fn lid_option(status: &StatusDocument, options: QuickOptions, labels: &Labels) -> MenuItem {
+    if status.backend.capabilities.lid_switch {
+        MenuItem::checkmark(
+            labels.keep_awake_lid_closed,
+            options.keep_awake_lid_closed,
+            MenuAction::ToggleKeepAwakeLidClosed,
+        )
+    } else {
+        MenuItem::info(labels.keep_awake_lid_closed_unavailable)
+    }
+}
+
+fn active_items(
+    status: &StatusDocument,
+    labels: &Labels,
+    locale: Locale,
+    offset: UtcOffset,
+) -> Vec<MenuItem> {
     let session = status
         .manual_session()
         .or_else(|| status.sessions.first())
@@ -485,6 +512,16 @@ fn active_items(status: &StatusDocument, labels: &Labels, offset: UtcOffset) -> 
                 status.unmet_policy.contains(&PolicyGap::AutomaticLock),
                 labels,
             ),
+            if status.backend.capabilities.lid_switch {
+                policy_row(
+                    labels.lid_sleep,
+                    status.effective_policy.prevent_lid_suspend,
+                    status.unmet_policy.contains(&PolicyGap::LidSwitch),
+                    labels,
+                )
+            } else {
+                MenuItem::info(format!("{}: {}", labels.lid_sleep, labels.lid_unavailable))
+            },
             // As the window's Status page reads it: from the battery
             // protection the service reports, and "not applicable" on a
             // machine with no battery rather than a threshold that never fires.
@@ -502,7 +539,10 @@ fn active_items(status: &StatusDocument, labels: &Labels, offset: UtcOffset) -> 
                     (true, None) => labels.battery_off.to_string(),
                 }
             )),
-        ],
+        ]
+        .into_iter()
+        .chain(lid_limit_row(status, labels, locale, offset))
+        .collect(),
     ));
 
     items.push(MenuItem::separator());
@@ -587,6 +627,52 @@ fn active_items(status: &StatusDocument, labels: &Labels, offset: UtcOffset) -> 
         items.push(MenuItem::standard(end, MenuAction::EndSession));
     }
     items
+}
+
+/// The safety that goes with the lid choice, stated beside it: how long the lid
+/// may stay closed on battery. Only while the lid is held, because otherwise
+/// closing the lid suspends the machine as it always did.
+fn lid_limit_row(
+    status: &StatusDocument,
+    labels: &Labels,
+    locale: Locale,
+    offset: UtcOffset,
+) -> Option<MenuItem> {
+    if !status.effective_policy.prevent_lid_suspend
+        || status.unmet_policy.contains(&PolicyGap::LidSwitch)
+    {
+        return None;
+    }
+    // The clock is running (lid closed, on battery): when it stops, as a
+    // countdown. Otherwise the limit as a rule.
+    if let Some(stops_at) = status.lid.stops_at_unix_seconds {
+        let minutes = stops_at
+            .saturating_sub(status.now_unix_seconds)
+            .div_ceil(60)
+            .max(1);
+        let value = labels
+            .lid_stops_at
+            .replace("{time}", &clock_time(stops_at, offset))
+            .replace(
+                "{remaining}",
+                &awake_ipc::notification::limit_words(locale, minutes as u32),
+            );
+        return Some(MenuItem::info(format!(
+            "{}: {value}",
+            labels.lid_battery_limit
+        )));
+    }
+    let value = match status.lid.battery_limit.minutes() {
+        Some(minutes) => labels.lid_stops_after.replace(
+            "{limit}",
+            &awake_ipc::notification::limit_words(locale, minutes),
+        ),
+        None => labels.lid_never_stops.to_string(),
+    };
+    Some(MenuItem::info(format!(
+        "{}: {value}",
+        labels.lid_battery_limit
+    )))
 }
 
 /// The rows that explain a degraded state, shown in both layouts.
@@ -760,6 +846,7 @@ mod tests {
                 idle: true,
                 display_sleep: false,
                 automatic_lock: false,
+                lid_switch: true,
             },
             detail: (!available).then(|| "awake.backend.unavailable:no logind".to_string()),
         }
@@ -783,6 +870,7 @@ mod tests {
             conflicts: Vec::new(),
             providers: Vec::new(),
             battery_protection: WireBatteryProtection::default(),
+            lid: awake_ipc::WireLidProtection::default(),
             now_unix_seconds: NOW,
         }
     }
@@ -895,6 +983,7 @@ mod tests {
                 "Quick options",
                 "Allow display to turn off",
                 "Stop below 20% battery",
+                "Also when the lid is closed",
                 "Automatic rules: No rules yet",
                 "Open Better Awake…",
                 "Quit Better Awake",
@@ -1087,11 +1176,18 @@ mod tests {
         assert!(!allowed.policy().prevent_display_sleep);
         assert_eq!(allowed.battery_stop_percent(), Some(20));
 
+        assert!(
+            allowed.policy().prevent_lid_suspend,
+            "a session started by hand keeps awake with the lid closed by default"
+        );
+
         let held_on = QuickOptions {
             allow_display_off: false,
             stop_below_battery: false,
+            keep_awake_lid_closed: false,
         };
         assert!(held_on.policy().prevent_display_sleep);
+        assert!(!held_on.policy().prevent_lid_suspend);
         assert_eq!(held_on.battery_stop_percent(), None);
     }
 
@@ -1460,7 +1556,7 @@ mod tests {
         );
         let settings = menu.find_by_label("Current settings").unwrap();
         assert_eq!(settings.kind, ItemKind::Submenu);
-        assert_eq!(settings.children.len(), 4);
+        assert_eq!(settings.children.len(), 5);
         assert!(
             menu.items
                 .iter()
@@ -1471,6 +1567,88 @@ mod tests {
         // an indefinite session), change length, change session, end, a
         // separator, rules, open, quit.
         assert_eq!(menu.items.len(), 14);
+    }
+
+    #[test]
+    fn the_current_settings_say_whether_the_lid_is_held_and_the_limit_that_goes_with_it() {
+        let held = |locale, limit| {
+            let mut status = active(WireEnd::Indefinite, WireRemaining::UntilEnded);
+            status.effective_policy = SessionPolicy::manual_default();
+            status.lid.battery_limit = limit;
+            menu(&status, locale)
+                .find_by_label(locale.labels().current_settings)
+                .unwrap()
+                .children
+                .iter()
+                .map(|item| item.label.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            held(Locale::EnUs, awake_core::LidBatteryLimit::default()),
+            vec![
+                "System sleep: Held off",
+                "Display sleep: Allowed",
+                "Automatic lock: Allowed",
+                "Sleep when the lid is closed: Held off",
+                "Battery stop threshold: Stops below 20%",
+                "Lid closed on battery: Stops after 2 hours",
+            ]
+        );
+        assert_eq!(
+            held(Locale::ZhTw, awake_core::LidBatteryLimit::Never)[3..],
+            [
+                "闔上螢幕時睡眠: 已擋下",
+                "電量停止門檻: 低於 20% 時停止",
+                "闔上螢幕並使用電池時: 不會因此停止",
+            ]
+        );
+
+        // Not held: closing the lid suspends as it always did, and no limit is
+        // stated for a choice that is off.
+        let off = menu(
+            &active(WireEnd::Indefinite, WireRemaining::UntilEnded),
+            Locale::EnUs,
+        );
+        let rows: Vec<String> = off
+            .find_by_label("Current settings")
+            .unwrap()
+            .children
+            .iter()
+            .map(|item| item.label.clone())
+            .collect();
+        assert!(rows.contains(&"Sleep when the lid is closed: Allowed".to_string()));
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.starts_with("Lid closed on battery"))
+        );
+    }
+
+    #[test]
+    fn a_running_closed_lid_clock_is_shown_as_a_countdown() {
+        let mut status = active(WireEnd::Indefinite, WireRemaining::UntilEnded);
+        status.effective_policy = SessionPolicy::manual_default();
+        status.lid.stops_at_unix_seconds = Some(status.now_unix_seconds + 30 * 60);
+        let at = clock_time(status.now_unix_seconds + 30 * 60, UtcOffset::UTC);
+        let rows: Vec<String> = menu(&status, Locale::ZhTw)
+            .find_by_label("目前的設定")
+            .unwrap()
+            .children
+            .iter()
+            .map(|item| item.label.clone())
+            .collect();
+        assert_eq!(
+            rows.last().unwrap(),
+            &format!("闔上螢幕並使用電池時: {at} 停止（還有 30 分鐘）")
+        );
+    }
+
+    #[test]
+    fn the_lid_quick_option_is_on_by_default_and_toggles_locally() {
+        let menu = menu(&inactive(), Locale::ZhTw);
+        let item = menu.find_by_label("闔上螢幕時也保持清醒").unwrap();
+        assert_eq!(item.action, Some(MenuAction::ToggleKeepAwakeLidClosed));
+        assert_eq!(item.kind, ItemKind::Checkmark { checked: true });
     }
 
     #[test]

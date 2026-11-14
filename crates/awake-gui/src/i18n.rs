@@ -322,6 +322,43 @@ pub(crate) struct Copy {
     pub(crate) dark_theme: &'static str,
     pub(crate) light_theme: &'static str,
     pub(crate) settings_storage_failed: &'static str,
+
+    // ---- Also when the lid is closed (ticket 109) -----------------------
+    /// The choice. The tray's Quick options and "Current settings" use the
+    /// same words.
+    pub(crate) keep_awake_lid_closed: &'static str,
+    pub(crate) lid_sleep: &'static str,
+    pub(crate) lid_battery_limit: &'static str,
+    pub(crate) lid_stops_after: &'static str,
+    pub(crate) lid_never_stops: &'static str,
+    pub(crate) on: &'static str,
+    pub(crate) off: &'static str,
+    /// `{limit}` is the closed-lid limit.
+    /// The safety stated beside the lid choice, built from the parts that
+    /// apply: the base, the battery threshold or its absence, the closed-lid
+    /// limit or its absence, and what happens when keeping awake ends.
+    pub(crate) lid_note_base: &'static str,
+    /// `{percent}` is the battery stop threshold.
+    pub(crate) lid_note_battery_stop: &'static str,
+    pub(crate) lid_note_no_battery_stop: &'static str,
+    /// `{limit}` is the closed-lid limit.
+    pub(crate) lid_note_limit: &'static str,
+    pub(crate) lid_note_no_limit: &'static str,
+    pub(crate) lid_note_sleeps_at_once: &'static str,
+    /// `{time}` is a clock time and `{remaining}` a length.
+    pub(crate) lid_stops_at: &'static str,
+    pub(crate) lid_external_display_note: &'static str,
+    pub(crate) lid_limit_heading: &'static str,
+    pub(crate) lid_limit_description: &'static str,
+    pub(crate) lid_limit_never: &'static str,
+    pub(crate) lid_rule_heading: &'static str,
+    pub(crate) lid_rule_default_off: &'static str,
+    pub(crate) field_lid_switch: &'static str,
+    pub(crate) cause_lid_closed_on_battery: &'static str,
+    /// The lid choice while the service cannot give it.
+    pub(crate) lid_unavailable: &'static str,
+    pub(crate) lid_needs_service_restart: &'static str,
+    pub(crate) lid_backend_cannot: &'static str,
 }
 
 static EN_US: Copy = Copy {
@@ -510,7 +547,7 @@ static EN_US: Copy = Copy {
     default_battery_threshold: "Default battery stop",
     battery_stops_at: "Stops below {percent}%",
     battery_stop_off: "Never stops for battery level",
-    session_defaults_help: "A session started from the tray or from Quick Sessions begins with these. A rule carries its own.",
+    session_defaults_help: "Sessions this window starts or changes begin with these: the Quick Sessions lengths and Modify session. The tray's Quick options have their own tick boxes, and \"Also when the lid is closed\" is on by default in both. A rule carries its own.",
     prevent_system_suspend_label: "Hold off system sleep",
     prevent_idle_label: "Hold off idle handling",
     prevent_display_sleep_label: "Hold off display sleep",
@@ -575,6 +612,31 @@ static EN_US: Copy = Copy {
     dark_theme: "Dark",
     light_theme: "Light",
     settings_storage_failed: "This preference could not be saved, so it applies to this window only and will be lost when it closes.",
+    keep_awake_lid_closed: "Also when the lid is closed",
+    lid_sleep: "Sleep when the lid is closed",
+    lid_battery_limit: "Lid closed on battery",
+    lid_stops_after: "Stops after {limit}",
+    lid_never_stops: "Never stops for this",
+    on: "On",
+    off: "Off",
+    lid_note_base: "Closing the lid won't put the computer to sleep, and the screen still turns off.",
+    lid_note_battery_stop: "On battery, keeping awake stops below {percent}%.",
+    lid_note_no_battery_stop: "Keeping awake does not stop for a low battery.",
+    lid_note_limit: "Without an external display, it also stops once the lid has been closed on battery for {limit}, and the computer may then sleep.",
+    lid_note_no_limit: "There is no limit on how long the lid may stay closed, so the battery can run out.",
+    lid_note_sleeps_at_once: "When keeping awake ends with the lid still closed, the computer goes to sleep right away, unless an external display is connected.",
+    lid_stops_at: "Stops at {time} ({remaining} left)",
+    lid_external_display_note: "With an external display connected, GNOME already keeps the computer awake when the lid is closed, whatever this says.",
+    lid_limit_heading: "Lid closed on battery",
+    lid_limit_description: "How long the lid may stay closed on battery before keeping awake stops and the computer may sleep. Sessions started from the tray and from this window both follow it.",
+    lid_limit_never: "Never",
+    lid_rule_heading: "While this rule is active",
+    lid_rule_default_off: "Off for new rules. Turn it on only for a rule that must keep running with the lid closed.",
+    field_lid_switch: "Sleep when the lid is closed",
+    cause_lid_closed_on_battery: "The lid stayed closed on battery past the limit",
+    lid_unavailable: "Not available right now",
+    lid_needs_service_restart: "The Better Awake service running now is an older version that cannot keep the computer awake with the lid closed. This becomes available once the service restarts, which an update or the next login does.",
+    lid_backend_cannot: "This computer's keep-awake backend cannot stop closing the lid from putting it to sleep.",
 };
 
 static ZH_TW: Copy = Copy {
@@ -763,7 +825,7 @@ static ZH_TW: Copy = Copy {
     default_battery_threshold: "預設電量停止門檻",
     battery_stops_at: "低於 {percent}% 時停止",
     battery_stop_off: "不因電量停止",
-    session_defaults_help: "從系統匣或「快速工作階段」開始的工作階段會套用這些設定。規則有自己的一套。",
+    session_defaults_help: "這個視窗開始或修改的工作階段（「快速工作階段」的長度和「修改工作階段」）會套用這些設定。系統匣的「快速選項」有自己的勾選，「闔上螢幕時也保持清醒」在兩邊都預設開啟。規則有自己的一套。",
     prevent_system_suspend_label: "擋下系統睡眠",
     prevent_idle_label: "擋下閒置處理",
     prevent_display_sleep_label: "擋下螢幕休眠",
@@ -828,6 +890,31 @@ static ZH_TW: Copy = Copy {
     dark_theme: "深色",
     light_theme: "淺色",
     settings_storage_failed: "這項偏好無法寫入，所以只在這個視窗內生效，關閉後就會消失。",
+    keep_awake_lid_closed: "闔上螢幕時也保持清醒",
+    lid_sleep: "闔上螢幕時睡眠",
+    lid_battery_limit: "闔上螢幕並使用電池時",
+    lid_stops_after: "{limit}後停止",
+    lid_never_stops: "不會因此停止",
+    on: "開啟",
+    off: "關閉",
+    lid_note_base: "闔上螢幕時電腦不會睡眠，螢幕仍會關閉。",
+    lid_note_battery_stop: "使用電池時，電量低於 {percent}% 就會停止保持清醒。",
+    lid_note_no_battery_stop: "保持清醒不會因為電量低而停止。",
+    lid_note_limit: "沒接外接螢幕時，螢幕闔上並使用電池超過 {limit}也會停止，之後電腦就可以睡眠。",
+    lid_note_no_limit: "螢幕闔上的時間沒有上限，電池可能會用完。",
+    lid_note_sleeps_at_once: "保持清醒結束時，如果螢幕還闔著，電腦會馬上睡眠（接著外接螢幕時除外）。",
+    lid_stops_at: "{time} 停止（還有 {remaining}）",
+    lid_external_display_note: "接著外接螢幕時，GNOME 本來就會在闔上螢幕後讓電腦保持清醒，不受這個選項影響。",
+    lid_limit_heading: "闔上螢幕並使用電池時",
+    lid_limit_description: "螢幕闔上並使用電池多久之後，就停止保持清醒，讓電腦可以睡眠。從系統匣和這個視窗開始的工作階段都會照這個時間。",
+    lid_limit_never: "永不",
+    lid_rule_heading: "這條規則生效時",
+    lid_rule_default_off: "新規則預設關閉。只有需要在闔上螢幕時繼續執行的規則才開啟。",
+    field_lid_switch: "闔上螢幕時睡眠",
+    cause_lid_closed_on_battery: "螢幕闔上並使用電池超過時限",
+    lid_unavailable: "目前無法使用",
+    lid_needs_service_restart: "目前執行中的保持清醒服務是舊版，無法在闔上螢幕時保持清醒。服務重新啟動後就能使用，更新或下次登入時會自動重新啟動。",
+    lid_backend_cannot: "這台電腦的保持清醒後端無法阻止闔上螢幕時進入睡眠。",
 };
 
 pub(crate) fn copy(locale: Locale) -> &'static Copy {
@@ -836,6 +923,16 @@ pub(crate) fn copy(locale: Locale) -> &'static Copy {
         // `resolved` never returns `System`; English is the remaining answer.
         Locale::EnUs | Locale::System => &EN_US,
     }
+}
+
+/// A closed-lid limit in this locale's words, the same words the tray and the
+/// notification use.
+pub(crate) fn limit_words(locale: Locale, minutes: u32) -> String {
+    let shared = match locale.resolved() {
+        Locale::ZhTw => awake_ipc::notification::Locale::ZhTw,
+        Locale::EnUs | Locale::System => awake_ipc::notification::Locale::EnUs,
+    };
+    awake_ipc::notification::limit_words(shared, minutes)
 }
 
 /// Substitutes one `{name}` placeholder. Kept deliberately dumb: the templates

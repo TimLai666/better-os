@@ -148,6 +148,24 @@ impl Service {
         std::fs::write(battery.join("capacity"), format!("{percent}\n")).unwrap();
     }
 
+    /// Plugs the charger in or out in the service's own `/sys` tree.
+    fn set_on_ac(&self, online: bool) {
+        let supply = self.directory.path().join("sys/class/power_supply/ACAD");
+        std::fs::create_dir_all(&supply).unwrap();
+        std::fs::write(supply.join("type"), "Mains\n").unwrap();
+        std::fs::write(supply.join("online"), if online { "1\n" } else { "0\n" }).unwrap();
+    }
+
+    /// What the fake inhibitor holds, as `systemd-inhibit --list` would show it.
+    fn held(&self) -> Vec<String> {
+        self.engine
+            .backend()
+            .held_requests()
+            .iter()
+            .map(|request| request.what_argument())
+            .collect()
+    }
+
     /// One tick through the path the service binary runs.
     async fn tick(&self) {
         let emitter =
@@ -700,6 +718,7 @@ fn session_ended(
         cause: cause.to_string(),
         battery_stop_percent,
         battery_percent,
+        lid_limit_minutes: None,
     })
     .to_json()
     .unwrap()
@@ -732,6 +751,7 @@ fn status_event() -> (String, StatusDocument) {
         conflicts: Vec::new(),
         providers: Vec::new(),
         battery_protection: awake_ipc::WireBatteryProtection::default(),
+        lid: awake_ipc::WireLidProtection::default(),
         now_unix_seconds: NOW,
     };
     let document = AwakeEvent::new(EventBody::StatusChanged(Box::new(status.clone())))
@@ -1938,4 +1958,402 @@ async fn a_new_tray_gets_the_name_an_exiting_one_was_still_holding() {
     tokio::time::sleep(std::time::Duration::from_millis(350)).await;
     drop(old);
     assert!(claim.await.unwrap(), "the replacing tray takes the name");
+}
+
+// ---- Also when the lid is closed (ticket 109) ---------------------------------
+
+async fn click(reader: &zbus::Connection, tray: &str, id: i32) {
+    reader
+        .call_method(
+            Some(tray),
+            MENU_PATH,
+            Some("com.canonical.dbusmenu"),
+            "Event",
+            &(id, "clicked", zbus::zvariant::Value::from(0i32), 0u32),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_session_started_from_the_tray_holds_the_lid_unless_the_option_is_unticked() {
+    let bus = bus_or_skip!();
+    let service = serve_service(&bus).await.unwrap();
+    let (tray, controller) = serve_tray(&bus).await;
+    let tray_name = tray.unique_name().unwrap().to_string();
+    let reader = bus.connect().await.unwrap();
+
+    let two_hours = controller.menu().await.find_by_label("2 hours").unwrap().id;
+    click(&reader, &tray_name, two_hours).await;
+    assert_eq!(service.held(), vec!["sleep:idle:handle-lid-switch"]);
+    assert!(
+        controller
+            .status()
+            .await
+            .effective_policy
+            .prevent_lid_suspend
+    );
+
+    let end = controller
+        .menu()
+        .await
+        .find_by_label("End session")
+        .unwrap()
+        .id;
+    click(&reader, &tray_name, end).await;
+    assert!(
+        service.held().is_empty(),
+        "ending the session releases the lid"
+    );
+
+    let lid = controller
+        .menu()
+        .await
+        .find_by_label("Also when the lid is closed")
+        .unwrap()
+        .id;
+    click(&reader, &tray_name, lid).await;
+    assert!(!controller.options().await.keep_awake_lid_closed);
+    let two_hours = controller.menu().await.find_by_label("2 hours").unwrap().id;
+    click(&reader, &tray_name, two_hours).await;
+    assert_eq!(service.held(), vec!["sleep:idle"]);
+}
+
+#[tokio::test]
+async fn with_a_tray_running_the_tray_says_why_the_closed_lid_ended_a_session() {
+    let bus = bus_or_skip!();
+    let (_daemon, raised) = serve_notifications(&bus, Behaviour::Accept).await;
+    let service = serve_service(&bus).await.unwrap();
+    let tray = follow_as_a_tray(&bus).await;
+
+    service.set_on_ac(true);
+    service.set_battery(80);
+    service
+        .engine
+        .handle(AwakeRequest::new(RequestBody::StartSession {
+            reason: "Download".to_string(),
+            policy: awake_core::SessionPolicy::manual_default(),
+            battery_stop_percent: Some(20),
+            end: WireEnd::Indefinite,
+            security_confirmed: false,
+        }))
+        .await;
+    service.engine.backend().set_lid_closed(Some(true));
+    service.set_on_ac(false);
+    service.clock.advance(60);
+    service.tick().await;
+    service.clock.advance(2 * 60 * 60);
+    service.tick().await;
+
+    let raised = settle(&raised, 1).await;
+    assert_eq!(raised.len(), 1, "exactly one notification for one stop");
+    assert_eq!(raised[0].sender, tray.unique_name().unwrap().to_string());
+    assert_eq!(
+        raised[0].summary,
+        "Stopped keeping awake: lid closed on battery for 2 hours"
+    );
+    assert!(service.held().is_empty());
+}
+
+// ---- A service from before protocol version 3 --------------------------------
+
+/// A service as 0.2.12 answers: it parses the request first, with
+/// `deny_unknown_fields` everywhere, so a version 3 field or request comes back
+/// as malformed; only a document it could parse has its version checked. It
+/// answers in version 2's shape. The engine behind it is the current one, its
+/// answers cut down to that shape.
+struct LegacyCore {
+    engine: Arc<AwakeEngine<FakeInhibitorBackend>>,
+    received: Arc<Mutex<Vec<String>>>,
+}
+
+impl LegacyCore {
+    async fn request(&self, request_json: &str) -> String {
+        self.received.lock().unwrap().push(request_json.to_string());
+        let reject = |key: String| {
+            awake_ipc::AwakeResponse::rejected(key)
+                .to_json_for(awake_ipc::LEGACY_PROTOCOL_VERSION)
+                .unwrap()
+        };
+        for unknown in ["prevent_lid_suspend", "lid_switch", "set_lid_battery_limit"] {
+            if request_json.contains(unknown) {
+                return reject(format!(
+                    "awake.ipc.error.malformed:unknown field `{unknown}`, expected one of"
+                ));
+            }
+        }
+        let value: serde_json::Value = serde_json::from_str(request_json).unwrap();
+        let version = value["protocol_version"].as_u64().unwrap() as u32;
+        if version != awake_ipc::LEGACY_PROTOCOL_VERSION {
+            return reject(format!("awake.ipc.error.protocol_version:{version}:2"));
+        }
+        let request = AwakeRequest::from_json(request_json).unwrap();
+        self.engine
+            .handle(request)
+            .await
+            .to_json_for(awake_ipc::LEGACY_PROTOCOL_VERSION)
+            .unwrap()
+    }
+}
+
+/// 0.2.12's interface, with its `ProtocolVersion` property.
+struct LegacyService(LegacyCore);
+
+#[zbus::interface(name = "org.betteros.Awake1")]
+impl LegacyService {
+    async fn request(&self, request_json: &str) -> String {
+        self.0.request(request_json).await
+    }
+
+    #[zbus(property)]
+    async fn protocol_version(&self) -> u32 {
+        awake_ipc::LEGACY_PROTOCOL_VERSION
+    }
+}
+
+/// The same service with the property unreadable, so the client has only the
+/// refusal to go on.
+struct LegacyServiceWithoutProperty(LegacyCore);
+
+#[zbus::interface(name = "org.betteros.Awake1")]
+impl LegacyServiceWithoutProperty {
+    async fn request(&self, request_json: &str) -> String {
+        self.0.request(request_json).await
+    }
+}
+
+const LEGACY_SERVICE_NAME: &str = "org.betteros.Awake1LegacyTest";
+
+async fn legacy_engine() -> (tempfile::TempDir, Arc<AwakeEngine<FakeInhibitorBackend>>) {
+    let directory = tempfile::tempdir().unwrap();
+    let engine = Arc::new(
+        AwakeEngine::start_in(
+            FakeInhibitorBackend::logind_shaped(),
+            directory.path(),
+            Arc::new(FixedClock::at(NOW)),
+        )
+        .await,
+    );
+    (directory, engine)
+}
+
+/// Drives a new tray's client through what a person does against an old
+/// service.
+async fn drive_against_an_old_service(
+    bus: &PrivateBus,
+    engine: Arc<AwakeEngine<FakeInhibitorBackend>>,
+) {
+    let client = ServiceClient::with_destination(
+        bus.connect().await.unwrap(),
+        LEGACY_SERVICE_NAME.to_string(),
+    )
+    .await
+    .unwrap();
+
+    // A start with the lid option ticked is the first request: the one a
+    // service that parses first would choke on.
+    let started = client
+        .send(awake_tray::client::start_request(
+            "從系統匣開始的工作階段",
+            WireEnd::Indefinite,
+            awake_tray::QuickOptions::default(),
+            false,
+        ))
+        .await
+        .unwrap();
+    assert!(client.speaks_legacy());
+    assert_eq!(started.indicator, WireIndicator::ActiveManual);
+    assert!(!started.backend.capabilities.lid_switch);
+    assert!(engine.holds_inhibitor().await);
+
+    let menu = awake_tray::build_menu(
+        &client.status().await.unwrap(),
+        awake_tray::QuickOptions::default(),
+        Locale::ZhTw,
+        awake_tray::UtcOffset::UTC,
+        false,
+    );
+    let settings = menu.find_by_label("目前的設定").unwrap();
+    assert!(
+        settings
+            .children
+            .iter()
+            .any(|item| item.label == "闔上螢幕時睡眠: 目前無法使用")
+    );
+
+    // Changing the length, as the menu does.
+    let session_id = started.sessions[0].session_id;
+    client
+        .send(AwakeRequest::new(RequestBody::ChangeSession {
+            session_id,
+            reason: "從系統匣開始的工作階段".to_string(),
+            policy: awake_tray::QuickOptions::default().policy(),
+            battery_stop_percent: Some(20),
+            end: WireEnd::Duration { seconds: 900 },
+            security_confirmed: false,
+        }))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        client
+            .send(AwakeRequest::new(RequestBody::SetLidBatteryLimit {
+                limit: awake_core::LidBatteryLimit::Never,
+            }))
+            .await,
+        Err(awake_tray::client::ClientError::Rejected(
+            "awake.ipc.error.needs_newer_service".to_string()
+        ))
+    );
+
+    // After the service restarts as a newer one, the tray asks again.
+    client.reset_protocol();
+    assert!(!client.speaks_legacy());
+}
+
+#[tokio::test]
+async fn a_new_tray_reads_the_old_services_version_and_never_sends_it_what_it_cannot_parse() {
+    let bus = bus_or_skip!();
+    let (_directory, engine) = legacy_engine().await;
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let _service =
+        zbus::connection::Builder::address(bus.address.parse::<zbus::Address>().unwrap())
+            .unwrap()
+            .name(LEGACY_SERVICE_NAME)
+            .unwrap()
+            .serve_at(
+                OBJECT_PATH,
+                LegacyService(LegacyCore {
+                    engine: engine.clone(),
+                    received: received.clone(),
+                }),
+            )
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+
+    drive_against_an_old_service(&bus, engine).await;
+
+    let received = received.lock().unwrap().clone();
+    assert_eq!(received.len(), 3, "start, status, change: {received:?}");
+    for document in &received {
+        assert!(document.contains(r#""protocol_version":2"#), "{document}");
+        assert!(!document.contains("lid"), "{document}");
+    }
+}
+
+#[tokio::test]
+async fn a_new_tray_falls_back_when_the_old_service_says_a_field_is_unknown() {
+    let bus = bus_or_skip!();
+    let (_directory, engine) = legacy_engine().await;
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let _service =
+        zbus::connection::Builder::address(bus.address.parse::<zbus::Address>().unwrap())
+            .unwrap()
+            .name(LEGACY_SERVICE_NAME)
+            .unwrap()
+            .serve_at(
+                OBJECT_PATH,
+                LegacyServiceWithoutProperty(LegacyCore {
+                    engine: engine.clone(),
+                    received: received.clone(),
+                }),
+            )
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+
+    drive_against_an_old_service(&bus, engine).await;
+
+    let received = received.lock().unwrap().clone();
+    assert!(
+        received[0].contains("prevent_lid_suspend"),
+        "the first start went out as version 3: {}",
+        received[0]
+    );
+    assert_eq!(
+        received.len(),
+        4,
+        "refused once, then three in the old version"
+    );
+    for document in &received[1..] {
+        assert!(document.contains(r#""protocol_version":2"#), "{document}");
+        assert!(!document.contains("lid"), "{document}");
+    }
+}
+
+#[tokio::test]
+async fn after_the_old_service_restarts_as_a_new_one_the_tray_speaks_version_3_again() {
+    let bus = bus_or_skip!();
+    let (_old_directory, old_engine) = legacy_engine().await;
+    let old = zbus::connection::Builder::address(bus.address.parse::<zbus::Address>().unwrap())
+        .unwrap()
+        .name(LEGACY_SERVICE_NAME)
+        .unwrap()
+        .serve_at(
+            OBJECT_PATH,
+            LegacyService(LegacyCore {
+                engine: old_engine,
+                received: Arc::new(Mutex::new(Vec::new())),
+            }),
+        )
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let client = ServiceClient::with_destination(
+        bus.connect().await.unwrap(),
+        LEGACY_SERVICE_NAME.to_string(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !client
+            .status()
+            .await
+            .unwrap()
+            .backend
+            .capabilities
+            .lid_switch
+    );
+    assert!(client.speaks_legacy());
+
+    // An update restarts the service as the current one under the same name.
+    drop(old);
+    let (_directory, engine) = legacy_engine().await;
+    let _new = zbus::connection::Builder::address(bus.address.parse::<zbus::Address>().unwrap())
+        .unwrap()
+        .name(LEGACY_SERVICE_NAME)
+        .unwrap()
+        .serve_at(OBJECT_PATH, AwakeDbusService::new(engine.clone()))
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    // What the tray's loop does when the name gets a new owner.
+    client.reset_protocol();
+
+    let started = client
+        .send(awake_tray::client::start_request(
+            "從系統匣開始的工作階段",
+            WireEnd::Indefinite,
+            awake_tray::QuickOptions::default(),
+            false,
+        ))
+        .await
+        .unwrap();
+    assert!(!client.speaks_legacy(), "the new service says 3");
+    assert!(started.backend.capabilities.lid_switch);
+    assert!(started.effective_policy.prevent_lid_suspend);
+    assert_eq!(
+        engine
+            .backend()
+            .held_requests()
+            .iter()
+            .map(|request| request.what_argument())
+            .collect::<Vec<_>>(),
+        vec!["sleep:idle:handle-lid-switch"]
+    );
 }

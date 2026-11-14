@@ -24,7 +24,15 @@ pub(crate) const PREFERENCES_FILE_NAME: &str = "awake-gui-preferences.json";
 
 /// The only schema this window writes. A newer file is refused rather than
 /// overwritten, following `awake-store`'s discipline.
-pub(crate) const PREFERENCES_SCHEMA_VERSION: u32 = 1;
+///
+/// Version 2 added "Also when the lid is closed" to the session defaults. A
+/// version 1 file is read and given the choice on, which is the default for a
+/// session started by hand (ticket 109); a version 1 window had no way to
+/// turn it off, so nobody chose "off".
+pub(crate) const PREFERENCES_SCHEMA_VERSION: u32 = 2;
+
+/// The schema before the lid choice.
+const PREFERENCES_SCHEMA_VERSION_1: u32 = 1;
 
 /// The largest number of presets the tray menu can show without becoming a
 /// scrolling list, which is not what a quick menu is for.
@@ -75,7 +83,7 @@ pub(crate) struct SessionDefaults {
 impl Default for SessionDefaults {
     fn default() -> Self {
         Self {
-            policy: SessionPolicy::quick_default(),
+            policy: SessionPolicy::manual_default(),
             battery_stop_percent: Some(awake_core::DEFAULT_BATTERY_STOP_PERCENT),
         }
     }
@@ -214,11 +222,17 @@ impl PreferencesStore {
             return (Preferences::default(), true);
         };
         match serde_json::from_slice::<Preferences>(&bytes) {
-            Ok(preferences)
-                if preferences.schema_version == PREFERENCES_SCHEMA_VERSION
+            Ok(mut preferences)
+                if (preferences.schema_version == PREFERENCES_SCHEMA_VERSION
+                    || preferences.schema_version == PREFERENCES_SCHEMA_VERSION_1)
                     && !preferences.presets.is_empty()
                     && preferences.default_preset < preferences.presets.len() =>
             {
+                if preferences.schema_version == PREFERENCES_SCHEMA_VERSION_1 {
+                    preferences.defaults.policy.prevent_lid_suspend =
+                        SessionPolicy::manual_default().prevent_lid_suspend;
+                    preferences.schema_version = PREFERENCES_SCHEMA_VERSION;
+                }
                 (preferences, true)
             }
             _ => (Preferences::default(), false),
