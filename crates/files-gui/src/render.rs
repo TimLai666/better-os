@@ -25,6 +25,9 @@ impl Render for FilesApp {
         // a guess made when the window opened.
         let window_size = window.viewport_size();
         self.window_width = window_size.width;
+        // The desktop's frame draws its shadow inside the surface; a pane's
+        // share of the window is a share of what the person sees.
+        self.frame_inset = window.client_inset().unwrap_or_default();
         self.viewport = window_size;
         if let Some(width) = self.pane_width.filter(|_| self.embedded) {
             self.viewport.width = px(self.nav_width() + width);
@@ -755,5 +758,122 @@ impl FilesApp {
                     .child(fluent::label("Esc", CAPTION, p.text_secondary)),
             )
             .into_any_element()
+    }
+}
+
+/// Which pane's edge is being dragged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PaneEdgeKind {
+    /// The file operations panel, whose edge is on its left.
+    Operations,
+}
+
+impl PaneEdgeKind {
+    fn policy(self) -> crate::layout::PaneEdge {
+        match self {
+            PaneEdgeKind::Operations => crate::layout::OPERATIONS_EDGE,
+        }
+    }
+}
+
+/// The value a pane edge's drag carries, and the (empty) thing drawn under
+/// the pointer while it moves: the pane itself is what follows the pointer.
+pub(crate) struct EdgeDrag(pub PaneEdgeKind);
+
+impl Render for EdgeDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
+impl FilesApp {
+    /// A pane's width now: what the person dragged it to, or its default,
+    /// clamped for this window.
+    pub(crate) fn pane_edge_width(&self, kind: PaneEdgeKind) -> f32 {
+        let stored = match kind {
+            PaneEdgeKind::Operations => self.session.preferences.operations_width,
+        };
+        kind.policy().resolve(stored, self.visible_width())
+    }
+
+    /// The window's width as the person sees it, without the frame's shadow.
+    fn visible_width(&self) -> f32 {
+        f32::from(self.window_width - self.frame_inset * 2.0).max(0.0)
+    }
+
+    /// Sets a pane's width (clamped); stored when the drag ends.
+    pub(crate) fn set_pane_edge_width(&mut self, kind: PaneEdgeKind, width: f32) {
+        let stored = kind.policy().store(width, self.visible_width());
+        match kind {
+            PaneEdgeKind::Operations => self.session.preferences.operations_width = stored,
+        }
+        self.edge_dirty = true;
+    }
+
+    /// The grab strip on a pane's leading edge: wider than the divider it
+    /// draws, a resize pointer, the divider in accent while hovered or
+    /// dragged, and a double-click back to the default width. The pane it
+    /// sits in is `relative()` and takes the drag with [`Self::follow_edge`].
+    pub(crate) fn pane_edge(&self, kind: PaneEdgeKind, cx: &mut Context<Self>) -> AnyElement {
+        let p = fluent::palette(cx);
+        let dragging = cx.has_active_drag() && self.dragging_edge == Some(kind);
+        let half = crate::layout::PANE_EDGE_HIT_WIDTH / 2.0;
+        let group = SharedString::from(format!("pane-edge-{kind:?}"));
+        div()
+            .id(SharedString::from(format!("pane-edge-{kind:?}")))
+            .group(group.clone())
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(px(-half))
+            .w(px(crate::layout::PANE_EDGE_HIT_WIDTH))
+            .cursor(CursorStyle::ResizeLeftRight)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(half - 1.0))
+                    .w(px(2.0))
+                    .when(dragging, |line| line.bg(p.accent))
+                    .group_hover(group, |line| line.bg(p.accent)),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |app, event: &MouseDownEvent, _, cx| {
+                    app.dragging_edge = Some(kind);
+                    if event.click_count >= 2 {
+                        let default = kind.policy().default;
+                        app.set_pane_edge_width(kind, default);
+                        cx.notify();
+                    }
+                    cx.stop_propagation();
+                }),
+            )
+            .on_drag(EdgeDrag(kind), |drag, _, _, cx| {
+                cx.new(|_| EdgeDrag(drag.0))
+            })
+            .into_any_element()
+    }
+
+    /// Makes the pane follow its edge while it is dragged. For a pane on the
+    /// right, its own right edge stays put and the width is what lies between
+    /// it and the pointer.
+    pub(crate) fn follow_edge(
+        &self,
+        kind: PaneEdgeKind,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&DragMoveEvent<EdgeDrag>, &mut Window, &mut App) + 'static {
+        let this = cx.entity().downgrade();
+        move |event, _window, cx| {
+            if event.drag(cx).0 != kind {
+                return;
+            }
+            let width = f32::from(event.bounds.right() - event.event.position.x);
+            let _ = this.update(cx, |app, cx| {
+                app.set_pane_edge_width(kind, width);
+                cx.notify();
+            });
+        }
     }
 }

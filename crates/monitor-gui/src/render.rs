@@ -202,6 +202,7 @@ impl MonitorApp {
                 );
                 commands.push(
                     Command::new(c.refresh, IconName::Redo)
+                        .icon_path(better_ui::fluent::glyphs::REFRESH)
                         .on_click(Self::act(cx, |this, _, cx| this.reload_startup(cx))),
                 );
             }
@@ -240,6 +241,7 @@ impl MonitorApp {
                 );
                 commands.push(
                     Command::new(c.refresh, IconName::Redo)
+                        .icon_path(better_ui::fluent::glyphs::REFRESH)
                         .on_click(Self::act(cx, |this, _, cx| this.reload_services(cx))),
                 );
             }

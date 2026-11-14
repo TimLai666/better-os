@@ -62,6 +62,12 @@ pub struct Command {
     pub on_click: Option<Handler>,
     /// Draws a trailing chevron: the command opens a menu.
     chevron: bool,
+    /// An SVG the window serves itself, drawn instead of `icon` in the bar
+    /// (the overflow menu, which takes only kit icons, keeps `icon`).
+    pub icon_path: Option<SharedString>,
+    /// A short count on the icon's corner (WinUI's `InfoBadge`), such as how
+    /// many jobs are running.
+    pub badge: Option<SharedString>,
 }
 
 impl Command {
@@ -76,7 +82,22 @@ impl Command {
             shown: ShownState::Live,
             on_click: None,
             chevron: false,
+            icon_path: None,
+            badge: None,
         }
+    }
+
+    /// Draws the window's own SVG at `path` in the bar instead of the kit
+    /// icon, for a glyph the kit does not have.
+    pub fn icon_path(mut self, path: impl Into<SharedString>) -> Self {
+        self.icon_path = Some(path.into());
+        self
+    }
+
+    /// Puts a short count on the icon's corner; `None` takes it off.
+    pub fn badge(mut self, badge: Option<impl Into<SharedString>>) -> Self {
+        self.badge = badge.map(Into::into);
+        self
     }
 
     pub fn checked(mut self, checked: bool) -> Self {
@@ -248,8 +269,41 @@ impl RenderOnce for AppBarButton {
         if !disabled {
             element = element.track_focus(&focus.tab_index(0).tab_stop(command.shown.is_live()));
         }
+        let icon = match &command.icon_path {
+            Some(path) => Icon::empty().path(path.clone()),
+            None => Icon::new(command.icon.clone()),
+        }
+        .size(super::size::ICON);
+        // On a checked (accent) button the badge turns over, so it never
+        // sits accent on accent.
+        let (badge_fill, badge_text) = if command.checked.unwrap_or(false) {
+            (p.text_on_accent, p.accent)
+        } else {
+            (p.accent, p.text_on_accent)
+        };
+        let icon = div()
+            .relative()
+            .child(icon)
+            .when_some(command.badge.clone(), |icon, badge| {
+                icon.child(
+                    text(div(), super::CAPTION)
+                        .absolute()
+                        .top(px(-10.0))
+                        .left(px(11.0))
+                        .min_w(px(16.0))
+                        .h(px(16.0))
+                        .px(px(4.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(radius::SM)
+                        .bg(badge_fill)
+                        .text_color(badge_text)
+                        .child(badge),
+                )
+            });
         let mut element = paint(element, colors, forced, radius::SM, p.is_dark())
-            .child(Icon::new(command.icon.clone()).size(super::size::ICON))
+            .child(icon)
             .when(!command.icon_only, |b| {
                 b.child(div().whitespace_nowrap().child(command.label.clone()))
             })

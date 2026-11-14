@@ -182,7 +182,7 @@ impl AwakeApp {
             .child(
                 Button::new("refresh")
                     .primary()
-                    .icon(IconName::Redo)
+                    .icon(Icon::empty().path(better_ui::fluent::glyphs::REFRESH))
                     .label(c.refresh)
                     .loading(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),

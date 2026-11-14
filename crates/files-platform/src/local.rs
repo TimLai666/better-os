@@ -15,7 +15,7 @@
 //! Every per-entry failure is recorded and the listing continues. A directory
 //! with one unreadable file lists the rest of the files.
 
-use std::fs::{self, DirEntry, Metadata};
+use std::fs::{self, Metadata};
 use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -100,6 +100,12 @@ impl LocalDirectoryReader {
 
     pub fn with_config(config: ReaderConfig) -> Self {
         Self { config }
+    }
+
+    /// How this reader builds its entries, so a watcher can build a changed
+    /// row the same way ([`read_entry`]).
+    pub fn config(&self) -> &ReaderConfig {
+        &self.config
     }
 }
 
@@ -204,7 +210,7 @@ fn list_into(
                 continue;
             }
         };
-        let mut entry = build_entry(&item, name, entry_path, config, uid, gid);
+        let mut entry = build_entry(item.metadata(), name, entry_path, config, uid, gid);
         entry.hidden = rules.classify(&entry.name);
         entry.permissions.read_only_medium = read_only_medium;
         if let EntryBody::File(facts) = &mut entry.body {
@@ -226,8 +232,46 @@ fn list_into(
     Ok(Outcome::Complete)
 }
 
+/// One entry of `directory`, read exactly as a listing reads it: the same
+/// `lstat`, symlink resolution, permissions, device, medium and type. `None`
+/// when it is not there (any more), which a watcher turns into a removal.
+///
+/// This is what a directory watcher uses for the one path that changed, so a
+/// row that arrives from an event looks like the row a re-listing would have
+/// produced, icon and type included.
+pub fn read_entry(
+    directory: &LocalPath,
+    name: &str,
+    config: &ReaderConfig,
+    rules: &files_core::hidden::HiddenRules,
+) -> Option<Entry> {
+    let path = directory.join_name(name).ok()?;
+    let link_metadata = fs::symlink_metadata(path.as_path()).ok()?;
+    let mut entry = build_entry(
+        Ok(link_metadata),
+        name.to_string(),
+        path,
+        config,
+        users_effective_uid(),
+        users_effective_gid(),
+    );
+    entry.hidden = rules.classify(&entry.name);
+    if let Some(mounts) = &config.mounts {
+        entry.permissions.read_only_medium = mounts.is_read_only(directory.as_path());
+        if let EntryBody::File(facts) = &mut entry.body {
+            facts.device = mounts.owner_of(directory.as_path());
+        }
+    }
+    if let Some(detector) = &config.mime
+        && entry.kind == EntryKind::File
+    {
+        entry.mime = detector.detect(&entry.name);
+    }
+    Some(entry)
+}
+
 fn build_entry(
-    item: &DirEntry,
+    link_metadata: io::Result<Metadata>,
     name: String,
     path: LocalPath,
     config: &ReaderConfig,
@@ -235,7 +279,6 @@ fn build_entry(
     gid: u32,
 ) -> Entry {
     // `lstat` first: the entry's own identity, before any link is followed.
-    let link_metadata = item.metadata();
     let is_symlink = link_metadata
         .as_ref()
         .map(|metadata| metadata.file_type().is_symlink())

@@ -190,6 +190,10 @@ pub struct Copy {
     pub confidence_none: &'static str,
     pub failures: &'static str,
     pub completed_this_session: &'static str,
+    /// Clears the finished list in the operations panel.
+    pub clear_finished: &'static str,
+    /// Removes one finished job from the list.
+    pub dismiss_finished: &'static str,
     pub conflict_needs_a_decision: &'static str,
     /// Before the folder the new one comes from.
     pub conflict_from: &'static str,
@@ -664,6 +668,8 @@ pub const EN_US: Copy = Copy {
     confidence_none: "Working out the time left",
     failures: "Failed items",
     completed_this_session: "Finished this session",
+    clear_finished: "Clear",
+    dismiss_finished: "Dismiss",
     conflict_needs_a_decision: "Waiting for a decision",
     conflict_from: "From",
     conflict_into: "Already in",
@@ -1109,6 +1115,8 @@ pub const ZH_TW: Copy = Copy {
     confidence_none: "正在估算剩餘時間",
     failures: "失敗項目",
     completed_this_session: "這次工作階段已完成",
+    clear_finished: "清除",
+    dismiss_finished: "移除",
     conflict_needs_a_decision: "等待你的決定",
     conflict_from: "來源",
     conflict_into: "已存在於",

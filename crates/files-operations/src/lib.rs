@@ -58,7 +58,9 @@ pub mod zip_end;
 pub use conflict::{
     Conflict, ConflictDecision, ConflictKind, ConflictPolicy, Resolution, ResolutionScope,
 };
-pub use engine::{EngineConfig, JobEngine, JobEvent, JobHandle, JobId, JobObserver, JobSnapshot};
+pub use engine::{
+    EngineConfig, FINISHED_KEPT, JobEngine, JobEvent, JobHandle, JobId, JobObserver, JobSnapshot,
+};
 pub use error::{ArchiveLimit, OperationError};
 pub use exec::{
     CopiedInode, FolderAnswer, ItemOutcome, JobControl, build_plan, preview_bulk_rename,

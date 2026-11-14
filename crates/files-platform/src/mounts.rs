@@ -80,6 +80,17 @@ impl MountTable {
             .find(|mount| path.starts_with(&mount.mount_point))
     }
 
+    /// Whether a change under `path` may happen without the kernel saying
+    /// so: a network filesystem, or a FUSE one other than a local disk's
+    /// (`fuseblk`), such as a GVfs mount, where another machine or the FUSE
+    /// daemon changes files that inotify never hears about. A folder there is
+    /// re-read now and then instead of trusted to a watch alone.
+    pub fn changes_may_go_unannounced(&self, path: &Path) -> bool {
+        self.mount_for(path).is_some_and(|mount| {
+            mount.filesystem != "fuseblk" && crate::trash::is_network_or_fuse(&mount.filesystem)
+        })
+    }
+
     /// The device identity to tag entries under this path with.
     pub fn owner_of(&self, path: &Path) -> Option<IdentityKey> {
         self.mount_for(path)
@@ -223,6 +234,23 @@ mod tests {
             .unwrap();
         assert_eq!(stick.source, "/dev/sdb1");
         assert_eq!(stick.filesystem, "vfat");
+    }
+
+    #[test]
+    fn only_network_and_fuse_daemon_folders_may_change_unannounced() {
+        let table = MountTable::new(parse_mountinfo(concat!(
+            "28 1 8:2 / / rw,relatime shared:1 - ext4 /dev/sda2 rw\n",
+            "90 28 0:50 / /run/user/1000/gvfs rw,nosuid,nodev - fuse.gvfsd-fuse gvfsd-fuse rw\n",
+            "91 28 8:17 / /media/user/NTFS rw,nosuid - fuseblk /dev/sdb1 rw\n",
+            "92 28 0:51 / /mnt/share rw - cifs //nas/share rw\n",
+        )));
+        assert!(!table.changes_may_go_unannounced(Path::new("/home/user")));
+        assert!(
+            table.changes_may_go_unannounced(Path::new("/run/user/1000/gvfs/sftp:host=nas/home"))
+        );
+        assert!(!table.changes_may_go_unannounced(Path::new("/media/user/NTFS/photos")));
+        assert!(table.changes_may_go_unannounced(Path::new("/mnt/share/reports")));
+        assert!(!MountTable::default().changes_may_go_unannounced(Path::new("/x")));
     }
 
     #[test]

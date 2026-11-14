@@ -19,15 +19,11 @@
 //! A list that is quietly wrong is worse than one that says it needs
 //! rereading.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
-use files_core::entry::{
-    Entry, EntryBody, EntryId, EntryKind, EntrySize, FileFacts, FileTime, HiddenState,
-    PermissionsSummary, SymlinkStatus,
-};
+use files_core::entry::{EntryId, HiddenState};
 use files_core::hidden::HiddenRules;
 use files_core::location::LocalPath;
 use files_core::model::RefreshEvent;
@@ -37,6 +33,7 @@ use notify::{
 };
 
 use crate::PlatformError;
+use crate::local::ReaderConfig;
 
 /// How the watcher learns about changes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,6 +181,19 @@ pub fn refresh_for(
     rules: &HiddenRules,
     event: &WatchEvent,
 ) -> Option<RefreshEvent> {
+    refresh_with(directory, rules, event, &ReaderConfig::new())
+}
+
+/// [`refresh_for`], with the row built by the listing's own configuration
+/// ([`crate::local::read_entry`]): its type detector and mount table, so a
+/// file that appears through an event has the icon and type a re-listing
+/// would give it.
+pub fn refresh_with(
+    directory: &LocalPath,
+    rules: &HiddenRules,
+    event: &WatchEvent,
+    config: &ReaderConfig,
+) -> Option<RefreshEvent> {
     let path = match event {
         WatchEvent::Overflowed => return Some(RefreshEvent::Resynchronize),
         WatchEvent::Created(path) | WatchEvent::Modified(path) | WatchEvent::Removed(path) => path,
@@ -198,50 +208,9 @@ pub fn refresh_for(
     if matches!(event, WatchEvent::Removed(_)) {
         return Some(RefreshEvent::Removed(id));
     }
-    let entry_path = directory.join_name(&name).ok()?;
-    let Ok(link_metadata) = fs::symlink_metadata(entry_path.as_path()) else {
+    let Some(entry) = crate::local::read_entry(directory, &name, config, rules) else {
         // It was created and is already gone. Removal is the honest update.
         return Some(RefreshEvent::Removed(id));
-    };
-    let is_symlink = link_metadata.file_type().is_symlink();
-    let (symlink, metadata) = if is_symlink {
-        let target = fs::read_link(entry_path.as_path()).unwrap_or_default();
-        match fs::metadata(entry_path.as_path()) {
-            Ok(resolved) => (SymlinkStatus::Resolved { target }, Some(resolved)),
-            Err(error) if error.raw_os_error() == Some(40) => {
-                (SymlinkStatus::Loop { target }, None)
-            }
-            Err(_) => (SymlinkStatus::Broken { target }, None),
-        }
-    } else {
-        (SymlinkStatus::None, Some(link_metadata))
-    };
-
-    let kind = match &metadata {
-        Some(metadata) if metadata.is_dir() => EntryKind::Directory,
-        Some(metadata) if metadata.is_file() => EntryKind::File,
-        Some(_) => EntryKind::Special,
-        None => EntryKind::Unknown,
-    };
-    let entry = Entry {
-        name: name.clone(),
-        kind,
-        size: match &metadata {
-            Some(metadata) if metadata.is_file() => EntrySize::Bytes(metadata.len()),
-            _ => EntrySize::Unknown,
-        },
-        modified: metadata
-            .as_ref()
-            .and_then(|metadata| metadata.modified().ok())
-            .map(FileTime::from_system_time),
-        permissions: PermissionsSummary::UNKNOWN,
-        hidden: rules.classify(&name),
-        mime: None,
-        body: EntryBody::File(FileFacts {
-            path: entry_path,
-            symlink,
-            device: None,
-        }),
     };
     let entry = Box::new(entry);
     match event {
@@ -259,6 +228,8 @@ pub fn default_hidden_state(rules: &HiddenRules, name: &str) -> HiddenState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use files_core::entry::{EntryKind, EntrySize};
+    use std::fs;
     use std::time::Instant;
 
     /// Waits for the watcher to deliver at least one event, or gives up.

@@ -32,6 +32,7 @@ pub mod chip;
 pub mod chrome;
 pub mod command_bar;
 pub mod dialog;
+pub mod glyphs;
 pub mod hit_area;
 pub mod hyperlink;
 pub mod info_bar;

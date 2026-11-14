@@ -387,6 +387,13 @@ pub struct FilesSession {
     pub interrupted: crate::interrupted::InterruptedJobs,
     pub jobs: Vec<JobSnapshot>,
     pub finished: SessionHistory,
+    /// The finished jobs already filed into `finished`, so a job the engine
+    /// still lists is filed (and its folders refreshed) once, not every frame.
+    /// Pruned to what the engine still lists, so it never grows with the
+    /// jobs of the past.
+    recorded: std::collections::HashSet<JobId>,
+    /// Each pane's folder watch (ticket 119).
+    watches: Vec<FolderWatch>,
 
     // --- ticket 35 --------------------------------------------------------
     /// The shared application catalog. The same handle the reader lists the
@@ -533,6 +540,8 @@ impl FilesSession {
             interrupted: crate::interrupted::InterruptedJobs::default(),
             jobs: Vec::new(),
             finished: SessionHistory::default(),
+            recorded: std::collections::HashSet::new(),
+            watches: Vec::new(),
             catalog,
             defaults,
             spawner,
@@ -903,6 +912,12 @@ impl FilesSession {
         if let Err(error) = self.view_store.save(&self.views) {
             self.notice = Some(Notice::Key(format!("files.prefs.error.unwritable:{error}")));
         }
+    }
+
+    /// Stores the preferences now; for a change the window made itself, such
+    /// as a pane's width after its edge was dragged.
+    pub fn save_preferences(&mut self) {
+        self.persist_preferences();
     }
 
     fn persist_preferences(&mut self) {
@@ -1318,6 +1333,18 @@ impl FilesSession {
     /// stop using a device should never have to argue with the file manager
     /// about it.
     pub fn eject_device(&mut self, object_path: &str) {
+        if let Some(folder) = self
+            .devices
+            .get(object_path)
+            .and_then(|row| row.location())
+            .and_then(|location| {
+                location
+                    .as_local_path()
+                    .map(|path| path.as_path().to_path_buf())
+            })
+        {
+            self.drop_watches_under(&folder);
+        }
         self.link.request_eject(object_path);
     }
 
@@ -1902,7 +1929,12 @@ impl FilesSession {
     }
 
     pub fn retry_job(&mut self, id: JobId) {
-        self.engine.retry_failed(id);
+        if self.engine.retry_failed(id) {
+            // Running again: it leaves the finished list and is filed anew
+            // when it ends.
+            self.finished.dismiss(id);
+            self.recorded.remove(&id);
+        }
         self.refresh_jobs();
     }
 
@@ -1926,12 +1958,21 @@ impl FilesSession {
 
     /// Re-reads every job from the engine and files the finished ones into the
     /// session history.
+    ///
+    /// A job is filed once, the first frame it is seen finished, and that is
+    /// when every pane is brought up to date ([`Self::refresh_panes`]), so the
+    /// result of the person's own action shows at once rather than when a
+    /// watcher gets to it. The engine lets go of old finished jobs itself
+    /// ([`files_operations::FINISHED_KEPT`]), so this does work for the jobs
+    /// it still lists, never for every job of the session.
     pub fn refresh_jobs(&mut self) -> bool {
         let jobs = self.engine.jobs();
-        let changed = jobs != self.jobs;
+        let mut changed = jobs != self.jobs;
         let c = crate::i18n::copy(self.locale);
+        let mut finished_now = false;
         for snapshot in &jobs {
-            if snapshot.state.is_terminal() {
+            if snapshot.state.is_terminal() && self.recorded.insert(snapshot.id) {
+                finished_now = true;
                 self.finished.record(opcenter::job_row(snapshot, c));
                 if let Some(at) = self.undoable.iter().position(|(id, _)| *id == snapshot.id) {
                     let (_, operation) = self.undoable.remove(at);
@@ -1941,8 +1982,118 @@ impl FilesSession {
                 }
             }
         }
+        if self.recorded.len() > jobs.len() {
+            let listed: std::collections::HashSet<JobId> = jobs.iter().map(|job| job.id).collect();
+            self.recorded.retain(|id| listed.contains(id));
+        }
         self.jobs = jobs;
+        if finished_now {
+            self.refresh_panes();
+            changed = true;
+        }
         changed
+    }
+
+    /// Dismisses one finished job from the panel. A failed one is let go of
+    /// by the engine too, which ends its Retry.
+    pub fn dismiss_finished(&mut self, id: JobId) {
+        if self.finished.dismiss(id) {
+            self.engine.forget(id);
+            self.jobs.retain(|job| job.id != id);
+        }
+    }
+
+    /// The panel's Clear: every finished job leaves the list.
+    pub fn clear_finished(&mut self) {
+        for id in self.finished.clear() {
+            self.engine.forget(id);
+            self.jobs.retain(|job| job.id != id);
+        }
+    }
+
+    /// Brings every open pane up to date in place, keeping selection and
+    /// scroll (ticket 119). Used when a file operation or an undo finishes:
+    /// which folders it touched is not worth working out when a reading of
+    /// an unchanged folder changes nothing on screen.
+    pub fn refresh_panes(&mut self) {
+        let reader = self.reader.clone();
+        for (_, pane) in &mut self.panes {
+            if matches!(pane.location(), Location::Applications) {
+                continue;
+            }
+            pane.refresh(reader.as_ref());
+        }
+    }
+
+    /// Follows every pane's folder: applies what its watch reports, re-reads
+    /// it when events were lost or came in a burst, and re-reads now and
+    /// then a visible folder whose changes are not announced. Returns
+    /// whether the window has to redraw.
+    fn pump_watches(&mut self) -> bool {
+        let reader = self.reader.clone();
+        let active = self.active_tab();
+        let panes = &self.panes;
+        self.watches
+            .retain(|watch| panes.iter().any(|(tab, _)| *tab == watch.tab));
+        let mut changed = false;
+        for (tab, pane) in &mut self.panes {
+            let index = match self.watches.iter().position(|watch| watch.tab == *tab) {
+                Some(index) if self.watches[index].folder == *pane.location() => index,
+                Some(index) => {
+                    // The pane moved: the old folder's watch goes before the
+                    // new one is made, so nothing keeps the old one busy.
+                    self.watches[index] = FolderWatch::new(*tab, pane.location(), &self.mounts);
+                    index
+                }
+                None => {
+                    self.watches
+                        .push(FolderWatch::new(*tab, pane.location(), &self.mounts));
+                    self.watches.len() - 1
+                }
+            };
+            let watch = &mut self.watches[index];
+            changed |= watch.apply(pane, reader.as_ref());
+            if watch.poll
+                && *tab == active
+                && watch.last_read.elapsed() >= UNANNOUNCED_REFRESH
+                && !pane.is_listing()
+                && !pane.is_refreshing()
+            {
+                watch.last_read = std::time::Instant::now();
+                pane.refresh(reader.as_ref());
+            }
+        }
+        changed
+    }
+
+    /// The folders a kernel watch is held on now, for tests.
+    #[cfg(test)]
+    pub(crate) fn watched_folders(&self) -> Vec<std::path::PathBuf> {
+        self.watches
+            .iter()
+            .filter_map(|watch| watch.watcher.as_ref())
+            .map(|watcher| watcher.directory().to_path_buf())
+            .collect()
+    }
+
+    /// The panes, for tests that look past the active one.
+    #[cfg(test)]
+    pub(crate) fn panes_for_tests(&self) -> impl Iterator<Item = &Pane> {
+        self.panes.iter().map(|(_, pane)| pane)
+    }
+
+    /// Lets go of every watch on a folder under `mount_point`, before the
+    /// storage layer is asked to unmount it.
+    pub(crate) fn drop_watches_under(&mut self, mount_point: &std::path::Path) {
+        for watch in &mut self.watches {
+            if watch
+                .watcher
+                .as_ref()
+                .is_some_and(|watcher| watcher.directory().starts_with(mount_point))
+            {
+                watch.watcher = None;
+            }
+        }
     }
 
     /// The running jobs as rows.
@@ -1960,9 +2111,11 @@ impl FilesSession {
     /// when it is switched to rather than starting over.
     pub fn pump(&mut self) -> bool {
         let mut changed = false;
+        let reader = self.reader.clone();
         for (_, pane) in &mut self.panes {
-            changed |= pane.pump();
+            changed |= pane.pump_with(reader.as_ref());
         }
+        changed |= self.pump_watches();
         if changed {
             // Entries arriving move indices around. The cursor is re-derived
             // from the selection's identity, which is what keeps the focused
@@ -2483,7 +2636,7 @@ impl FilesSession {
             undoing: true,
             outcome: self.history.undo(),
         });
-        self.reload();
+        self.refresh_panes();
     }
 
     /// `Ctrl+Shift+Z` or `Ctrl+Y`.
@@ -2492,7 +2645,7 @@ impl FilesSession {
             undoing: false,
             outcome: self.history.redo(),
         });
-        self.reload();
+        self.refresh_panes();
     }
 
     fn begin_rename(&mut self) {
@@ -2564,4 +2717,123 @@ pub fn preview_program() -> String {
         .filter(|candidate| candidate.is_file())
         .map(|candidate| candidate.to_string_lossy().into_owned())
         .unwrap_or_else(|| "better-files-preview".to_string())
+}
+
+/// How often a visible folder whose changes are not announced (a network or
+/// FUSE mount, the Trash, Recents) is read again. Five seconds is soon enough
+/// that a file someone else added shows while the person still looks, and a
+/// re-reading of an unchanged folder changes nothing on screen.
+pub const UNANNOUNCED_REFRESH: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// More events than this in one frame are a burst (an archive unpacked, a
+/// folder of ten thousand files copied in), and the folder is read once
+/// instead of each event being applied: one listing on the reader's thread
+/// costs less than ten thousand `lstat`s on this one.
+pub const WATCH_BURST: usize = 256;
+
+/// One pane's watch on the folder it shows (ticket 119).
+struct FolderWatch {
+    tab: TabId,
+    /// The location the watch was made for; a pane elsewhere gets a new one.
+    folder: Location,
+    /// The kernel watch, for a local folder. `None` where there is nothing
+    /// to watch or the watch could not be made.
+    watcher: Option<files_platform::DirectoryWatcher>,
+    rules: files_core::hidden::HiddenRules,
+    /// Whether changes here may go unannounced, so the folder is read again
+    /// now and then while it is visible.
+    poll: bool,
+    last_read: std::time::Instant,
+}
+
+impl FolderWatch {
+    fn new(tab: TabId, location: &Location, mounts: &MountTable) -> Self {
+        let local = location.as_local_path();
+        let watcher =
+            local.and_then(|path| files_platform::DirectoryWatcher::new(path.as_path()).ok());
+        let poll = match location {
+            Location::Local(path) => {
+                watcher.is_none() || mounts.changes_may_go_unannounced(path.as_path())
+            }
+            Location::Trash(_) | Location::Recent => true,
+            _ => false,
+        };
+        Self {
+            tab,
+            folder: location.clone(),
+            rules: local
+                .map(|path| files_platform::read_hidden_rules(path.as_path()))
+                .unwrap_or_else(files_core::hidden::HiddenRules::dotfiles_only),
+            watcher,
+            poll,
+            last_read: std::time::Instant::now(),
+        }
+    }
+
+    /// Applies what the watch delivered to the pane. Returns whether the
+    /// list changed.
+    fn apply(&mut self, pane: &mut Pane, reader: &FilesReader) -> bool {
+        let Some(watcher) = &self.watcher else {
+            return false;
+        };
+        let events = watcher.poll();
+        if events.is_empty() {
+            return false;
+        }
+        let Some(directory) = pane.location().as_local_path().cloned() else {
+            return false;
+        };
+        if events.len() > WATCH_BURST
+            || events
+                .iter()
+                .any(|event| matches!(event, files_platform::WatchEvent::Overflowed))
+        {
+            pane.refresh(reader);
+            return false;
+        }
+        // The last word on each path is the one that counts; the row is read
+        // now, so a file created and then written is read once.
+        let mut latest: Vec<&files_platform::WatchEvent> = Vec::with_capacity(events.len());
+        for event in events.iter().rev() {
+            let path = watch_path(event);
+            if !latest.iter().any(|seen| watch_path(seen) == path) {
+                latest.push(event);
+            }
+        }
+        let mut removed = Vec::new();
+        let mut rows = Vec::new();
+        for event in latest {
+            match files_platform::refresh_with(
+                &directory,
+                &self.rules,
+                event,
+                reader.local_config(),
+            ) {
+                Some(files_core::RefreshEvent::Removed(id)) => removed.push(id),
+                Some(files_core::RefreshEvent::Added(entry))
+                | Some(files_core::RefreshEvent::Modified(entry)) => rows.push(*entry),
+                Some(files_core::RefreshEvent::Resynchronize) => {
+                    pane.refresh(reader);
+                    return false;
+                }
+                None => {}
+            }
+        }
+        let model = pane.model_mut();
+        let mut changed = model.remove_many(&removed) > 0;
+        if !rows.is_empty() {
+            model.insert_batch(rows);
+            changed = true;
+        }
+        changed
+    }
+}
+
+fn watch_path(event: &files_platform::WatchEvent) -> Option<&std::path::Path> {
+    match event {
+        files_platform::WatchEvent::Created(path)
+        | files_platform::WatchEvent::Modified(path)
+        | files_platform::WatchEvent::Removed(path) => Some(path),
+        files_platform::WatchEvent::Overflowed => None,
+    }
 }

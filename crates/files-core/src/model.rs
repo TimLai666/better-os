@@ -336,6 +336,65 @@ impl DirectoryModel {
         true
     }
 
+    /// Removes many entries at once: one pass over the order, however many
+    /// go. Returns how many were there.
+    ///
+    /// [`DirectoryModel::remove`] re-walks the list per entry, which is right
+    /// for one file and wrong for ten thousand deleted together.
+    pub fn remove_many(&mut self, ids: &[EntryId]) -> usize {
+        self.commit();
+        let mut removed = 0;
+        for id in ids {
+            if let Some(slot) = self.positions.remove(id) {
+                self.storage[slot as usize] = None;
+                self.free.push(slot);
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            let storage = &self.storage;
+            self.ordered
+                .retain(|slot| storage[*slot as usize].is_some());
+            self.rebuild_visible();
+            let positions = &self.positions;
+            self.selection
+                .retain_existing(|candidate| positions.contains_key(candidate));
+        }
+        removed
+    }
+
+    /// Makes the model hold exactly `entries`, a fresh reading of the same
+    /// folder, without starting over: entries no longer there leave (and
+    /// leave the selection), changed ones are replaced, new ones are merged
+    /// in, and unchanged ones are not touched. Selection, and therefore the
+    /// cursor and the scroll position a view derives from it, survive.
+    ///
+    /// Returns whether anything changed.
+    pub fn reconcile(&mut self, entries: Vec<Entry>, skipped: Vec<SkippedEntry>) -> bool {
+        self.commit();
+        let fresh: std::collections::HashSet<EntryId> = entries.iter().map(Entry::id).collect();
+        let gone: Vec<EntryId> = self
+            .positions
+            .keys()
+            .filter(|id| !fresh.contains(*id))
+            .cloned()
+            .collect();
+        let mut changed = self.remove_many(&gone) > 0;
+        let differing: Vec<Entry> = entries
+            .into_iter()
+            .filter(|entry| self.get(&entry.id()) != Some(entry))
+            .collect();
+        if !differing.is_empty() {
+            self.insert_batch(differing);
+            changed = true;
+        }
+        if self.skipped != skipped {
+            self.skipped = skipped;
+            changed = true;
+        }
+        changed
+    }
+
     /// Changes the sort order and re-sorts what is already loaded.
     ///
     /// Selection is untouched: it names entries, and re-sorting does not
@@ -562,6 +621,59 @@ mod tests {
             .iter_visible()
             .map(|entry| entry.name.clone())
             .collect()
+    }
+
+    #[test]
+    fn reconciling_a_fresh_reading_keeps_the_selection_and_drops_what_is_gone() {
+        let mut model = model();
+        model.insert_batch(vec![
+            entry("alpha", EntryKind::File),
+            entry("bravo", EntryKind::File),
+            entry("gone", EntryKind::File),
+        ]);
+        let bravo = EntryId::Name("bravo".into());
+        let gone = EntryId::Name("gone".into());
+        model.selection_mut().select_only(bravo.clone());
+        model.selection_mut().toggle(gone.clone());
+        let mut changed_bravo = entry("bravo", EntryKind::File);
+        changed_bravo.size = crate::entry::EntrySize::Bytes(9);
+        let changed = model.reconcile(
+            vec![
+                entry("alpha", EntryKind::File),
+                changed_bravo,
+                entry("new", EntryKind::File),
+            ],
+            Vec::new(),
+        );
+        assert!(changed);
+        assert_eq!(names_of(&model), ["alpha", "bravo", "new"]);
+        assert!(model.selection().contains(&bravo), "the selection survives");
+        assert!(!model.selection().contains(&gone), "what is gone leaves it");
+        assert_eq!(
+            model.get(&bravo).map(|entry| entry.size),
+            Some(crate::entry::EntrySize::Bytes(9))
+        );
+        // The same reading again changes nothing.
+        let same: Vec<Entry> = model.iter_all().cloned().collect();
+        assert!(!model.reconcile(same, Vec::new()));
+    }
+
+    #[test]
+    fn many_entries_leave_in_one_pass() {
+        let mut model = model();
+        model.insert_batch(
+            (0..1_000)
+                .map(|index| entry(&format!("f{index:04}"), EntryKind::File))
+                .collect(),
+        );
+        let ids: Vec<EntryId> = (0..1_000)
+            .step_by(2)
+            .map(|index| EntryId::Name(format!("f{index:04}")))
+            .collect();
+        assert_eq!(model.remove_many(&ids), 500);
+        assert_eq!(model.total_len(), 500);
+        assert_eq!(model.visible_len(), 500);
+        assert_eq!(model.remove_many(&ids), 0);
     }
 
     #[test]

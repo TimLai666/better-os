@@ -73,6 +73,9 @@ pub struct FilesApp {
     /// The whole window's width, which decides whether the navigation pane
     /// is compact. `viewport` is this pane's share of the window.
     pub(crate) window_width: Pixels,
+    /// The client inset the desktop's frame asked for (its shadow), on each
+    /// side of `window_width`.
+    pub(crate) frame_inset: Pixels,
     /// The tailnet's machines and the Dropbox folder, refreshed in the
     /// background.
     pub(crate) sharing: Sharing,
@@ -136,6 +139,12 @@ pub struct FilesApp {
     /// belongs to has arrived.
     restored_scroll: Option<f32>,
     _pump: Option<Task<()>>,
+    /// A pane's edge was dragged and its width is not stored yet; it is
+    /// stored once the drag ends, not at every pixel.
+    pub(crate) edge_dirty: bool,
+    /// The pane edge last pressed, so only its divider lights while a drag
+    /// is under way.
+    pub(crate) dragging_edge: Option<crate::render::PaneEdgeKind>,
 }
 
 /// The window's application id, which the desktop entry is named after.
@@ -336,6 +345,7 @@ impl FilesApp {
             parent: None,
             pane_width: None,
             window_width: px(1_200.0),
+            frame_inset: px(0.0),
             sharing: Sharing::start(),
             plugins: crate::plugin_host::PluginHost::start(match locale_for_plugins {
                 Locale::ZhTw => "zh-TW",
@@ -378,6 +388,8 @@ impl FilesApp {
             ),
             restored_scroll: restored.as_ref().map(|view| view.scroll),
             _pump: None,
+            edge_dirty: false,
+            dragging_edge: None,
         };
         app.sync_path_field(window, cx);
         app.sync_search_field(window, cx);
@@ -404,6 +416,10 @@ impl FilesApp {
                 let Ok(interval) = this.update(cx, |app, cx| {
                     if app.session.pump() {
                         cx.notify();
+                    }
+                    if app.edge_dirty && !cx.has_active_drag() {
+                        app.edge_dirty = false;
+                        app.session.save_preferences();
                     }
                     if app
                         .thumbnails
@@ -475,7 +491,9 @@ impl FilesApp {
                         }
                         cx.notify();
                     }
-                    if app.session.is_listing() || !app.session.jobs.is_empty() {
+                    if app.session.is_listing()
+                        || app.session.jobs.iter().any(|job| !job.state.is_terminal())
+                    {
                         BUSY_INTERVAL
                     } else {
                         IDLE_INTERVAL

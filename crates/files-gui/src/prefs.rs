@@ -197,6 +197,9 @@ pub struct FilesPreferences {
     /// Whether search includes hidden files. Issue #6 requires this to be the
     /// search's own explicit setting rather than the view's.
     pub search_hidden: bool,
+    /// The file operations panel's width in logical pixels, when the person
+    /// dragged its edge; `None` is the default ([`crate::layout::OPERATIONS_EDGE`]).
+    pub operations_width: Option<u32>,
     sort_key: StoredSortKey,
     sort_direction: StoredSortDirection,
 }
@@ -213,6 +216,7 @@ impl Default for FilesPreferences {
             folders_first: order.folders_first,
             preview_open: false,
             search_hidden: false,
+            operations_width: None,
             sort_key: StoredSortKey::from_key(order.key),
             sort_direction: StoredSortDirection::Ascending,
         }

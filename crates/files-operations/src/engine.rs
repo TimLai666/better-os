@@ -540,11 +540,11 @@ impl JobEngine {
         });
         let (sender, receiver) = channel();
         job.listeners.lock().expect("job listeners").push(sender);
-        self.inner
-            .jobs
-            .lock()
-            .expect("engine jobs")
-            .insert(id, Arc::clone(&job));
+        {
+            let mut jobs = self.inner.jobs.lock().expect("engine jobs");
+            jobs.insert(id, Arc::clone(&job));
+            evict_finished(&mut jobs);
+        }
         self.persist(&job);
         if let Some(store) = &self.inner.store {
             store.release_claim(id.0);
@@ -599,7 +599,8 @@ impl JobEngine {
     }
 
     pub fn jobs(&self) -> Vec<JobSnapshot> {
-        let jobs = self.inner.jobs.lock().expect("engine jobs");
+        let mut jobs = self.inner.jobs.lock().expect("engine jobs");
+        evict_finished(&mut jobs);
         let mut snapshots: Vec<JobSnapshot> = jobs
             .values()
             .map(|job| {
@@ -609,6 +610,23 @@ impl JobEngine {
             .collect();
         snapshots.sort_by_key(|snapshot| snapshot.id);
         snapshots
+    }
+
+    /// Lets go of a finished job: its snapshot, log and failures leave
+    /// memory, and [`JobEngine::jobs`] no longer lists it. Refused (`false`)
+    /// for a job that has not finished, which still has work and listeners.
+    ///
+    /// What is on disk is untouched: recovery reads the store, not this map.
+    /// A window calls this when the person dismisses a finished job.
+    pub fn forget(&self, id: JobId) -> bool {
+        let mut jobs = self.inner.jobs.lock().expect("engine jobs");
+        let finished = jobs
+            .get(&id)
+            .is_some_and(|job| job.shared.lock().expect("job state").state.is_terminal());
+        if finished {
+            jobs.remove(&id);
+        }
+        finished
     }
 
     /// Asks a job to stop at its next item or chunk boundary.
@@ -740,8 +758,11 @@ impl JobEngine {
     /// than as "probably fine".
     pub fn wait(&self, id: JobId, timeout: Duration) -> Option<JobSnapshot> {
         let deadline = Instant::now() + timeout;
+        // The job itself is held, so one let go of once it finished
+        // ([`FINISHED_KEPT`]) still answers the caller who waited for it.
+        let job = self.job(id)?;
         loop {
-            let snapshot = self.snapshot(id)?;
+            let snapshot = job.snapshot(&job.shared.lock().expect("job state"));
             if snapshot.state.is_terminal() {
                 return Some(snapshot);
             }
@@ -760,8 +781,9 @@ impl JobEngine {
         accept: impl Fn(&JobSnapshot) -> bool,
     ) -> Option<JobSnapshot> {
         let deadline = Instant::now() + timeout;
+        let job = self.job(id)?;
         loop {
-            let snapshot = self.snapshot(id)?;
+            let snapshot = job.snapshot(&job.shared.lock().expect("job state"));
             if accept(&snapshot) {
                 return Some(snapshot);
             }
@@ -1058,6 +1080,41 @@ fn run_job(inner: &Arc<Inner>, job: Arc<Job>) {
     }
     job.set_state(&mut shared, final_state);
     finish(inner, &job, &mut shared, final_state);
+}
+
+/// How many finished jobs the engine keeps in memory for windows to read.
+///
+/// A window records a finished job the frame after it ends, so this only has
+/// to outlast a burst; 64 covers a person's whole batch of pasted folders and
+/// keeps the engine's memory, and every window's per-frame `jobs()` call,
+/// independent of how many jobs ran before. A failed job is let go of last,
+/// because its Retry needs it.
+pub const FINISHED_KEPT: usize = 64;
+
+/// Drops the oldest finished jobs beyond [`FINISHED_KEPT`], completed ones
+/// before failed ones. Never touches a job that is still running.
+fn evict_finished(jobs: &mut HashMap<JobId, Arc<Job>>) {
+    let mut finished: Vec<(bool, JobId)> = jobs
+        .iter()
+        .filter_map(|(id, job)| {
+            // A job whose state is locked is busy, so it is not finished
+            // with; it is simply not a candidate this time.
+            let shared = job.shared.try_lock().ok()?;
+            shared
+                .state
+                .is_terminal()
+                .then_some((shared.state == JobState::Failed, *id))
+        })
+        .collect();
+    if finished.len() <= FINISHED_KEPT {
+        return;
+    }
+    // Completed before failed, oldest first within each.
+    finished.sort();
+    let excess = finished.len() - FINISHED_KEPT;
+    for (_, id) in finished.into_iter().take(excess) {
+        jobs.remove(&id);
+    }
 }
 
 fn finish(
@@ -1449,5 +1506,64 @@ impl JobControl for WorkerControl {
     fn record_copied_inode(&mut self, key: InodeKey, copied: CopiedInode) {
         let mut shared = self.job.shared.lock().expect("job state");
         shared.hard_links.insert(key, copied);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::{JobSpec, Operation};
+    use files_core::location::LocalPath;
+
+    fn create_folder(engine: &JobEngine, parent: &LocalPath, name: &str) -> JobSnapshot {
+        let handle = engine
+            .submit(JobSpec::new(Operation::CreateFolder {
+                parent: parent.clone(),
+                name: name.into(),
+            }))
+            .expect("accepted");
+        engine
+            .wait(handle.id(), Duration::from_secs(30))
+            .expect("finished")
+    }
+
+    #[test]
+    fn a_thousand_finished_jobs_leave_only_the_last_few_in_memory() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = LocalPath::new(root.path()).unwrap();
+        let engine = JobEngine::new(EngineConfig::default());
+        let mut last = None;
+        for index in 0..1_000 {
+            let snapshot = create_folder(&engine, &parent, &format!("folder-{index}"));
+            assert_eq!(snapshot.state, JobState::Completed);
+            last = Some(snapshot.id);
+        }
+        let jobs = engine.jobs();
+        assert_eq!(jobs.len(), FINISHED_KEPT, "the engine kept {}", jobs.len());
+        assert_eq!(engine.inner.jobs.lock().unwrap().len(), FINISHED_KEPT);
+        // The newest are the ones kept.
+        assert_eq!(jobs.last().map(|job| job.id), last);
+    }
+
+    #[test]
+    fn a_failed_job_outlasts_completed_ones_and_forget_lets_it_go() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = LocalPath::new(root.path()).unwrap();
+        let engine = JobEngine::new(EngineConfig::default());
+        std::fs::create_dir(root.path().join("taken")).unwrap();
+        let failed = create_folder(&engine, &parent, "taken");
+        assert_ne!(failed.state, JobState::Completed);
+        for index in 0..(FINISHED_KEPT + 10) {
+            create_folder(&engine, &parent, &format!("folder-{index}"));
+        }
+        let jobs = engine.jobs();
+        assert!(
+            jobs.iter().any(|job| job.id == failed.id),
+            "{:?}",
+            failed.state
+        );
+        assert!(engine.forget(failed.id));
+        assert!(engine.snapshot(failed.id).is_none());
+        assert!(!engine.forget(failed.id), "already gone");
     }
 }

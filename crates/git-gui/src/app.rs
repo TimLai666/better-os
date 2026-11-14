@@ -43,6 +43,9 @@ impl AssetSource for GitAssets {
         if path == BRANCH_ICON {
             return Ok(Some(Cow::Borrowed(BRANCH_SVG.as_bytes())));
         }
+        if let Some(svg) = better_ui::fluent::glyphs::load(path) {
+            return Ok(Some(Cow::Borrowed(svg)));
+        }
         if path == crate::graph_pane::TAG_ICON {
             return Ok(Some(Cow::Borrowed(crate::graph_pane::TAG_SVG.as_bytes())));
         }

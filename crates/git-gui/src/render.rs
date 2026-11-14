@@ -459,6 +459,13 @@ impl GitApp {
             SyncAction::Push { ahead } => (c.push_origin, IconName::ArrowUp, format!("↑{ahead}")),
             SyncAction::Fetch | SyncAction::None => (c.fetch_origin, IconName::Redo, String::new()),
         };
+        // Fetch reads as a refresh of what the remote has, not as Redo: the
+        // shared two-arrow glyph, as GitHub Desktop's fetch is.
+        let icon = if matches!(action, SyncAction::Fetch | SyncAction::None) {
+            Icon::empty().path(better_ui::fluent::glyphs::REFRESH)
+        } else {
+            Icon::new(icon)
+        };
         let title = match (busy, repo.busy) {
             (true, Some(crate::session::OpKind::Pull)) => c.pulling,
             (true, Some(crate::session::OpKind::Push | crate::session::OpKind::ForcePush)) => {
@@ -484,8 +491,7 @@ impl GitApp {
                     .size(px(16.0))
                     .into_any_element()
             } else {
-                Icon::new(icon)
-                    .size(px(16.0))
+                icon.size(px(16.0))
                     .text_color(p.text_secondary)
                     .into_any_element()
             })

@@ -2260,3 +2260,312 @@ fn an_operation_or_an_open_dialog_holds_the_restart() {
         "a dialog with typed input"
     );
 }
+
+// --- Ticket 119: the view follows the folder ------------------------------
+
+/// Pumps until `done` holds or five seconds pass; whether it held.
+fn pump_until(session: &mut FilesSession, done: impl Fn(&FilesSession) -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        session.pump();
+        if done(session) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    false
+}
+
+fn visible_names(pane: &files_core::Pane) -> Vec<String> {
+    pane.model()
+        .iter_visible()
+        .map(|entry| entry.name.clone())
+        .collect()
+}
+
+fn shows(session: &FilesSession, name: &str) -> bool {
+    visible_names(session.pane())
+        .iter()
+        .any(|shown| shown == name)
+}
+
+#[test]
+fn a_change_made_by_another_program_shows_without_a_reload() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    let documents = fixture.home.join("Documents");
+    // A watch is made on the first frame.
+    session.pump();
+    assert_eq!(session.watched_folders(), vec![documents.clone()]);
+    let readings = session.pane().readings();
+
+    fs::write(documents.join("arrived.txt"), b"one").unwrap();
+    assert!(
+        pump_until(&mut session, |s| shows(s, "arrived.txt")),
+        "created"
+    );
+
+    fs::write(documents.join("arrived.txt"), b"one two three").unwrap();
+    assert!(
+        pump_until(&mut session, |s| {
+            s.pane()
+                .model()
+                .get(&files_core::EntryId::Name("arrived.txt".into()))
+                .is_some_and(|entry| entry.size == files_core::EntrySize::Bytes(13))
+        }),
+        "modified"
+    );
+
+    fs::rename(documents.join("arrived.txt"), documents.join("renamed.txt")).unwrap();
+    assert!(
+        pump_until(&mut session, |s| shows(s, "renamed.txt")
+            && !shows(s, "arrived.txt")),
+        "renamed: {:?}",
+        visible_names(session.pane())
+    );
+
+    fs::remove_file(documents.join("renamed.txt")).unwrap();
+    assert!(
+        pump_until(&mut session, |s| !shows(s, "renamed.txt")),
+        "removed"
+    );
+    assert_eq!(
+        session.pane().readings(),
+        readings,
+        "single changes are applied as rows, the folder is not read again"
+    );
+}
+
+#[test]
+fn the_selection_survives_changes_and_a_vanished_entry_leaves_it() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    let documents = fixture.home.join("Documents");
+    session.pump();
+    let notes = session
+        .pane()
+        .model()
+        .iter_visible()
+        .position(|entry| entry.name == "notes.txt")
+        .unwrap();
+    session.apply_selection(SelectionInput::Click(notes), 1);
+    fs::write(documents.join("aaa-first.txt"), b"x").unwrap();
+    fs::write(documents.join("doomed.txt"), b"x").unwrap();
+    assert!(pump_until(&mut session, |s| shows(s, "aaa-first.txt")
+        && shows(s, "doomed.txt")));
+    let notes_id = files_core::EntryId::Name("notes.txt".into());
+    assert!(session.pane().model().selection().contains(&notes_id));
+
+    let doomed = session
+        .pane()
+        .model()
+        .iter_visible()
+        .position(|entry| entry.name == "doomed.txt")
+        .unwrap();
+    session.apply_selection(SelectionInput::Click(doomed), 1);
+    fs::remove_file(documents.join("doomed.txt")).unwrap();
+    assert!(pump_until(&mut session, |s| !shows(s, "doomed.txt")));
+    assert!(session.pane().model().selection().is_empty());
+}
+
+#[test]
+fn a_job_better_files_runs_updates_every_pane_on_the_folder_at_once() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    let documents = fixture.home.join("Documents");
+    session.open_tab(Location::local(&documents).unwrap(), false);
+    settle(&mut session);
+    // No watch: the job's own result has to arrive without one.
+    session.drop_watches_under(&documents);
+    let trash = fixture.home.parent().unwrap().join("Trash");
+    session.submit(files_operations::JobSpec::new(
+        files_operations::Operation::Trash {
+            sources: vec![LocalPath::new(documents.join("notes.txt")).unwrap()],
+            trash_root: Some(trash),
+        },
+    ));
+    let gone = |s: &FilesSession| {
+        s.panes_for_tests()
+            .all(|pane| !visible_names(pane).contains(&"notes.txt".to_string()))
+    };
+    assert!(
+        pump_until(&mut session, gone),
+        "both tabs drop the trashed file"
+    );
+    assert_eq!(session.panes_for_tests().count(), 2);
+}
+
+#[test]
+fn undo_updates_the_folder_without_starting_its_listing_over() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    let trash = fixture.home.parent().unwrap().join("Trash");
+    session.set_undo_trash(trash);
+    let documents = fixture.home.join("Documents");
+    session.submit(files_operations::JobSpec::new(
+        files_operations::Operation::CreateFolder {
+            parent: LocalPath::new(&documents).unwrap(),
+            name: "Made".into(),
+        },
+    ));
+    assert!(pump_until(&mut session, |s| s.history.can_undo() && shows(s, "Made")));
+    session.drop_watches_under(&documents);
+    session.dispatch(Command::Undo, 1, 10);
+    assert!(pump_until(&mut session, |s| !shows(s, "Made")));
+}
+
+#[test]
+fn a_burst_of_ten_thousand_files_settles_without_reading_per_file() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    session.pump();
+    let readings = session.pane().readings();
+    let documents = fixture.home.join("Documents");
+    for index in 0..10_000 {
+        fs::write(documents.join(format!("burst-{index:05}.txt")), b"").unwrap();
+    }
+    // Every file shows, plus the three that were there.
+    assert!(
+        pump_until(&mut session, |s| s.pane().model().total_len() == 10_003
+            && !s.pane().is_refreshing()),
+        "{} rows",
+        session.pane().model().total_len()
+    );
+    let read = session.pane().readings() - readings;
+    assert!(read <= 4, "the folder was read {read} times for one burst");
+}
+
+#[test]
+fn a_device_s_watch_is_let_go_of_before_it_is_unmounted() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    session.pump();
+    let documents = fixture.home.join("Documents");
+    assert_eq!(session.watched_folders(), vec![documents.clone()]);
+    session.drop_watches_under(&fixture.home);
+    assert!(session.watched_folders().is_empty());
+}
+
+#[test]
+fn a_finished_job_is_shown_once_and_can_be_dismissed_or_cleared() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    let documents = fixture.home.join("Documents");
+    for name in ["One", "Two", "Three"] {
+        session.submit(files_operations::JobSpec::new(
+            files_operations::Operation::CreateFolder {
+                parent: LocalPath::new(&documents).unwrap(),
+                name: name.into(),
+            },
+        ));
+    }
+    assert!(pump_until(&mut session, |s| s.finished.len() == 3));
+    assert!(
+        session.job_rows().is_empty(),
+        "no finished job is also a running card"
+    );
+
+    let first = session.finished.rows()[0].id;
+    session.dismiss_finished(first);
+    assert_eq!(session.finished.len(), 2);
+    assert!(session.finished.rows().iter().all(|row| row.id != first));
+    assert!(
+        fixture.engine.snapshot(first).is_none(),
+        "the engine let go of it too"
+    );
+    session.pump();
+    assert_eq!(
+        session.finished.len(),
+        2,
+        "a dismissed job does not come back"
+    );
+
+    session.clear_finished();
+    assert!(session.finished.is_empty());
+    session.pump();
+    assert!(session.finished.is_empty());
+}
+
+#[test]
+fn the_finished_list_and_the_bookkeeping_stay_bounded() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    let documents = fixture.home.join("Documents");
+    for index in 0..150 {
+        session.submit(files_operations::JobSpec::new(
+            files_operations::Operation::CreateFolder {
+                parent: LocalPath::new(&documents).unwrap(),
+                name: format!("folder-{index}").into(),
+            },
+        ));
+        session.pump();
+    }
+    assert!(pump_until(&mut session, |s| s
+        .jobs
+        .iter()
+        .all(|job| job.state.is_terminal())
+        && documents.join("folder-149").is_dir()));
+    session.pump();
+    assert_eq!(session.finished.len(), opcenter::FINISHED_SHOWN);
+    assert!(session.jobs.len() <= files_operations::FINISHED_KEPT);
+    assert!(fixture.engine.jobs().len() <= files_operations::FINISHED_KEPT);
+}
+
+#[test]
+fn copy_move_rename_and_delete_each_show_at_once_without_a_watch() {
+    use files_operations::{DeleteConfirmation, DeleteTarget, JobSpec, Operation};
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    let documents = fixture.home.join("Documents");
+    let reports = documents.join("reports");
+    // A background tab on the destination, so both ends are on screen.
+    session.open_tab(Location::local(&reports).unwrap(), false);
+    settle(&mut session);
+    session.pump();
+    session.drop_watches_under(&fixture.home);
+    let local = |path: &std::path::Path| LocalPath::new(path).unwrap();
+    let in_tab = |s: &FilesSession, folder: &std::path::Path, name: &str| {
+        s.panes_for_tests().any(|pane| {
+            pane.location() == &Location::local(folder).unwrap()
+                && visible_names(pane).iter().any(|shown| shown == name)
+        })
+    };
+
+    session.submit(JobSpec::new(Operation::Copy {
+        sources: vec![local(&documents.join("notes.txt"))],
+        destination: local(&reports),
+    }));
+    assert!(
+        pump_until(&mut session, |s| in_tab(s, &reports, "notes.txt")),
+        "copy"
+    );
+
+    session.submit(JobSpec::new(Operation::Rename {
+        path: local(&documents.join("notes.txt")),
+        new_name: "renamed.txt".into(),
+    }));
+    assert!(
+        pump_until(&mut session, |s| in_tab(s, &documents, "renamed.txt")
+            && !in_tab(s, &documents, "notes.txt")),
+        "rename"
+    );
+
+    session.submit(JobSpec::new(Operation::Move {
+        sources: vec![local(&documents.join("renamed.txt"))],
+        destination: local(&reports),
+    }));
+    assert!(
+        pump_until(&mut session, |s| in_tab(s, &reports, "renamed.txt")
+            && !in_tab(s, &documents, "renamed.txt")),
+        "move"
+    );
+
+    session.submit(JobSpec::new(Operation::PermanentDelete {
+        targets: vec![DeleteTarget::Path(local(&reports.join("notes.txt")))],
+        confirmation: DeleteConfirmation::explicit(),
+    }));
+    assert!(
+        pump_until(&mut session, |s| !in_tab(s, &reports, "notes.txt")),
+        "delete"
+    );
+}
