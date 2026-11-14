@@ -1,6 +1,6 @@
 # Ticket 108 — Windows have the system's frame and window buttons
 
-**Blocked by:** 80 (done) · **Status:** implemented, not merged
+**Blocked by:** 80 (done) · **Status:** merged, not released
 
 ## Why
 
