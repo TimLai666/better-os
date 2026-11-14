@@ -15,7 +15,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use awake_ipc::notification::{
-    DEFAULT_EXPIRY, LOW_BATTERY_ICON, Locale, TRAY_BUS_NAME, low_battery_notification,
+    DEFAULT_EXPIRY, LOW_BATTERY_ICON, Locale, Notification, TRAY_BUS_NAME,
+    TRAY_LID_NOTIFY_BUS_NAME, lid_closed_notification, low_battery_notification,
 };
 use zbus::zvariant::Value;
 
@@ -71,6 +72,28 @@ impl LowBatteryStop {
                     session_id: stop.session.0,
                     threshold_percent: ended.battery_stop_percent?,
                     percent: stop.percent,
+                })
+            })
+            .collect()
+    }
+}
+
+/// A session the closed-lid battery limit ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LidClosedStop {
+    pub session_id: u64,
+    pub limit_minutes: u32,
+}
+
+impl LidClosedStop {
+    pub fn among(ended: &[EndedSession]) -> Vec<Self> {
+        ended
+            .iter()
+            .filter_map(|ended| {
+                let stop = ended.lid_stop()?;
+                Some(Self {
+                    session_id: stop.session.0,
+                    limit_minutes: stop.limit_minutes,
                 })
             })
             .collect()
@@ -138,6 +161,28 @@ impl LowBatteryNotifier {
         })
     }
 
+    /// Raises one notification for each closed-lid stop, on its own task.
+    pub fn raise_lid(
+        &self,
+        connection: &zbus::Connection,
+        stops: Vec<LidClosedStop>,
+    ) -> tokio::task::JoinHandle<()> {
+        let notifier = self.clone();
+        let connection = connection.clone();
+        self.runtime.spawn(async move {
+            for stop in stops {
+                let notification = lid_closed_notification(notifier.locale, stop.limit_minutes);
+                if let Err(error) = notifier.send(&connection, &notification).await {
+                    eprintln!(
+                        "better-awake-service: session {} ended because the lid stayed closed on \
+                         battery for {} minutes, and the notification could not be shown: {error}",
+                        stop.session_id, stop.limit_minutes
+                    );
+                }
+            }
+        })
+    }
+
     async fn notify(
         &self,
         connection: &zbus::Connection,
@@ -145,6 +190,14 @@ impl LowBatteryNotifier {
     ) -> Result<u32, String> {
         let notification =
             low_battery_notification(self.locale, stop.threshold_percent, stop.percent);
+        self.send(connection, &notification).await
+    }
+
+    async fn send(
+        &self,
+        connection: &zbus::Connection,
+        notification: &Notification,
+    ) -> Result<u32, String> {
         let call = async {
             // The interface has no properties worth caching, and not caching
             // means building the proxy sends nothing to a service that may not
@@ -182,12 +235,23 @@ impl LowBatteryNotifier {
 /// tray was there after all, that is a second notification for one stop, which
 /// is the better way to be wrong than none.
 pub async fn tray_is_running(connection: &zbus::Connection) -> bool {
+    name_is_owned(connection, TRAY_BUS_NAME).await
+}
+
+/// Whether a tray that raises the closed-lid notification is on the bus: one
+/// that speaks protocol version 3 and owns [`TRAY_LID_NOTIFY_BUS_NAME`]. A tray
+/// from before version 3 does not, so the service raises it then.
+pub async fn lid_notifying_tray_is_running(connection: &zbus::Connection) -> bool {
+    name_is_owned(connection, TRAY_LID_NOTIFY_BUS_NAME).await
+}
+
+async fn name_is_owned(connection: &zbus::Connection, bus_name: &str) -> bool {
     let answer: zbus::Result<bool> = async {
         let proxy = zbus::fdo::DBusProxy::builder(connection)
             .cache_properties(zbus::proxy::CacheProperties::No)
             .build()
             .await?;
-        let name = zbus::names::BusName::try_from(TRAY_BUS_NAME)?;
+        let name = zbus::names::BusName::try_from(bus_name)?;
         Ok(proxy.name_has_owner(name).await?)
     }
     .await;

@@ -154,8 +154,11 @@ fn the_desktop_entry_runs_the_window_and_matches_its_app_id() {
         Some("Development;RevisionControl;")
     );
     let app_id = desktop_value("StartupWMClass").expect("the entry names the window");
+    // The id is one constant, which the window opens with and which also
+    // names a restart's hand-off (ticket 105).
     assert!(
-        WINDOW_SOURCE.contains(&format!("window_options(\"{app_id}\")")),
+        WINDOW_SOURCE.contains(&format!("const APP_ID: &str = \"{app_id}\";"))
+            && WINDOW_SOURCE.contains("window_options(APP_ID)"),
         "the window does not open with app_id {app_id}"
     );
     for key in ["Name[zh_TW]", "GenericName[zh_TW]", "Comment[zh_TW]"] {

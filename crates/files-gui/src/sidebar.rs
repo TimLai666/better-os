@@ -188,6 +188,18 @@ pub fn build_rows(inputs: &SidebarInputs<'_>, c: &'static Copy) -> Vec<SidebarRo
             identity_volatile: false,
         });
     }
+    // Recents: the files opened lately, from the shared GTK list, as in
+    // folio's sidebar.
+    rows.push(SidebarRow {
+        section: SidebarSection::Places,
+        key: "place-recent".to_string(),
+        label: c.place_recent.to_string(),
+        location: Location::Recent,
+        availability: Availability::Available,
+        bookmark_index: None,
+        device_state: None,
+        identity_volatile: false,
+    });
     // Trash is a place, not a device and not a folder. It is always reachable:
     // an empty trash is still the Trash.
     rows.push(SidebarRow {
@@ -250,6 +262,16 @@ pub fn build_rows(inputs: &SidebarInputs<'_>, c: &'static Copy) -> Vec<SidebarRo
     }
 
     rows
+}
+
+/// The rows the sidebar draws. A place that is not there — a home with no
+/// Music folder — is left out rather than drawn as "Unavailable", the way
+/// folio lists only the folders home really has (`places.cpp`). A pinned
+/// folder that is gone stays, so it can be unpinned, and says so.
+pub fn shown_rows(rows: Vec<SidebarRow>) -> Vec<SidebarRow> {
+    rows.into_iter()
+        .filter(|row| row.section != SidebarSection::Places || row.availability.is_available())
+        .collect()
 }
 
 /// The rows of one section, in order.

@@ -19,6 +19,7 @@ pub mod i18n;
 pub mod model;
 pub mod pages;
 pub mod pages_gestures;
+pub mod restart;
 pub mod startup;
 #[cfg(test)]
 mod tests;

@@ -65,6 +65,8 @@ pub(crate) enum LinkUpdate {
     /// The service could not be reached, so this window is collecting for
     /// itself. Sent once, before the first status.
     Embedded(String),
+    /// The window stopped collecting for itself and now reads the service.
+    Connected,
     /// Neither the service nor an embedded engine could be started. There is
     /// nothing to show and the window says exactly that.
     Unavailable(String),
@@ -84,6 +86,17 @@ pub(crate) fn spawn(
     requests: smol::channel::Receiver<LinkRequest>,
     updates: smol::channel::Sender<LinkUpdate>,
 ) {
+    spawn_with(requests, updates, None);
+}
+
+/// Start the bridge, asking for only the `top` busiest processes per resource
+/// when `top` is set. The taskbar popup draws five names per resource, and a
+/// thousand processes a second would cost it more than everything it shows.
+pub(crate) fn spawn_with(
+    requests: smol::channel::Receiver<LinkRequest>,
+    updates: smol::channel::Sender<LinkUpdate>,
+    top: Option<u32>,
+) {
     let started = std::thread::Builder::new()
         .name("monitor-link".to_string())
         .spawn(move || {
@@ -99,7 +112,7 @@ pub(crate) fn spawn(
                     return;
                 }
             };
-            runtime.block_on(serve(requests, updates));
+            runtime.block_on(serve(requests, updates, top));
         });
     if let Err(error) = started {
         eprintln!("monitor-gui: the collection thread could not be started: {error}");
@@ -109,25 +122,28 @@ pub(crate) fn spawn(
 /// Which side is answering.
 enum Backend {
     Service(MonitorClient),
-    Embedded(Arc<MonitorEngine>),
+    Embedded(Embedded),
+    /// Only for the moment between letting one go and taking the other.
+    Closed,
 }
 
 async fn serve(
     requests: smol::channel::Receiver<LinkRequest>,
     updates: smol::channel::Sender<LinkUpdate>,
+    top: Option<u32>,
 ) {
-    let backend = match connect().await {
+    let mut backend = match connect().await {
         Ok(client) => Backend::Service(client),
         Err(detail) => {
             // No service. Collect in this process instead, and say so before
             // the first number appears, so nothing is ever shown without the
             // caveat attached.
-            match MonitorEngine::start(ServiceConfig::system()) {
-                Ok(engine) => {
+            match start_embedded() {
+                Ok(embedded) => {
                     if updates.send(LinkUpdate::Embedded(detail)).await.is_err() {
                         return;
                     }
-                    Backend::Embedded(engine)
+                    Backend::Embedded(embedded)
                 }
                 Err(error) => {
                     let _ = updates
@@ -138,6 +154,13 @@ async fn serve(
             }
         }
     };
+    let mut polls_since_check = 0u32;
+    // While collecting here, the service taking its name is the cue to hand
+    // over: it may be waiting for the store this window holds.
+    let mut owner_changes = match &backend {
+        Backend::Embedded(_) => service_owner_changes().await,
+        _ => None,
+    };
 
     let mut poll = tokio::time::interval(Duration::from_millis(POLL_INTERVAL_MILLIS));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -145,7 +168,10 @@ async fn serve(
         tokio::select! {
             _ = poll.tick() => {
                 match &backend {
-                    Backend::Service(client) => match client.status(true).await {
+                    Backend::Service(client) => match match top {
+                        Some(top) => client.summary(top).await,
+                        None => client.status(true).await,
+                    } {
                         Ok(status) => {
                             if updates
                                 .send(LinkUpdate::Status(Box::new(status)))
@@ -165,11 +191,16 @@ async fn serve(
                             return;
                         }
                     },
-                    Backend::Embedded(engine) => {
+                    Backend::Closed => {}
+                    Backend::Embedded(embedded) => {
+                        let engine = &embedded.engine;
                         if let Err(error) = engine.tick().await {
                             let _ = updates.send(LinkUpdate::Failed(error.to_string())).await;
                         }
-                        let status = engine.status(true).await;
+                        let mut status = engine.status(true).await;
+                        if let (Some(top), Some(round)) = (top, status.latest_round.as_mut()) {
+                            *round = monitor_ipc::trim_round(round, top as usize);
+                        }
                         if updates
                             .send(LinkUpdate::Status(Box::new(status)))
                             .await
@@ -178,6 +209,56 @@ async fn serve(
                             break;
                         }
                     }
+                }
+                // Collecting here while the service may come up: hand over to
+                // it once Better Monitor is on. The store is let go first, so
+                // a service waiting for it can open it.
+                polls_since_check += 1;
+                let due = match &backend {
+                    Backend::Embedded(embedded) if polls_since_check >= HANDOVER_CHECK_POLLS => {
+                        polls_since_check = 0;
+                        handover_due(embedded).await
+                    }
+                    _ => false,
+                };
+                {
+                    if due
+                        && let Backend::Embedded(embedded) =
+                            std::mem::replace(&mut backend, Backend::Closed)
+                    {
+                        embedded.finish().await;
+                        match connect_with_retry().await {
+                            Ok(client) => {
+                                backend = Backend::Service(client);
+                                if updates.send(LinkUpdate::Connected).await.is_err() {
+                                    return;
+                                }
+                            }
+                            Err(detail) => {
+                                // The service did not come after all: collect
+                                // here again.
+                                match start_embedded() {
+                                    Ok(embedded) => backend = Backend::Embedded(embedded),
+                                    Err(error) => {
+                                        let _ = updates
+                                            .send(LinkUpdate::Unavailable(format!(
+                                                "{detail} / {error}"
+                                            )))
+                                            .await;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            change = next_owner_change(&mut owner_changes) => {
+                match change {
+                    // Checked at the next poll, within a second.
+                    Some(true) => polls_since_check = HANDOVER_CHECK_POLLS,
+                    Some(false) => {}
+                    None => owner_changes = None,
                 }
             }
             request = requests.recv() => {
@@ -192,12 +273,283 @@ async fn serve(
 
     // The window closed. An embedded engine has to flush the bucket it was
     // holding, or the last seconds before the window went away are lost.
-    if let Backend::Embedded(engine) = backend {
-        let _ = engine.shutdown().await;
+    if let Backend::Embedded(embedded) = backend {
+        embedded.finish().await;
     }
 }
 
+/// How many polls pass between checks for whether to hand over to the
+/// service: five seconds.
+const HANDOVER_CHECK_POLLS: u32 = 5;
+
+/// The engine this window collects with, and the separate store it opened
+/// when it could not use the shared one.
+pub(crate) struct Embedded {
+    engine: Arc<MonitorEngine>,
+    private_root: Option<std::path::PathBuf>,
+    /// Whether Better Monitor was on when this window started collecting.
+    component_was_on: bool,
+}
+
+impl Embedded {
+    /// Flush, let go of the store, and remove a private store.
+    async fn finish(self) {
+        let _ = self.engine.shutdown().await;
+        drop(self.engine);
+        if let Some(root) = self.private_root {
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+}
+
+/// Where a window collecting for itself keeps its store.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum EmbeddedStore {
+    /// The shared store: Better Monitor is off, so no service will want it.
+    Shared,
+    /// A store of this window's own, because the service may start at any
+    /// moment and must find the shared store free.
+    Private,
+}
+
+/// Decide where the embedded engine writes.
+pub(crate) fn embedded_store(component_on: bool) -> EmbeddedStore {
+    if component_on {
+        EmbeddedStore::Private
+    } else {
+        EmbeddedStore::Shared
+    }
+}
+
+/// The directory a window's private stores go in, under the person's own
+/// runtime directory, which only they can open.
+const PRIVATE_PARENT: &str = "better-monitor";
+/// How a private store's directory is named: this, the window's process id,
+/// a dash, and random letters, so a later window can tell whose it was.
+const PRIVATE_PREFIX: &str = "better-monitor-window-";
+
+/// Make a private store directory, readable by this user only (0700), with
+/// a name nobody can guess beforehand: under `$XDG_RUNTIME_DIR` when there
+/// is one, else in the temporary directory. Leftovers of windows of this
+/// user that crashed are removed first.
+pub(crate) fn create_private_root(
+    runtime: Option<&std::path::Path>,
+    temporary: &std::path::Path,
+) -> std::io::Result<std::path::PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+    let parent = runtime
+        .filter(|runtime| runtime.is_absolute() && runtime.is_dir())
+        .and_then(|runtime| {
+            let parent = runtime.join(PRIVATE_PARENT);
+            let made = std::fs::DirBuilder::new().mode(0o700).create(&parent);
+            match made {
+                Ok(()) => Some(parent),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    owned_directory(&parent).then_some(parent)
+                }
+                Err(_) => None,
+            }
+        })
+        .unwrap_or_else(|| temporary.to_path_buf());
+    sweep_private_roots(&parent, |pid| {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    });
+    let directory = tempfile::Builder::new()
+        .prefix(&format!("{PRIVATE_PREFIX}{}-", std::process::id()))
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(&parent)?;
+    Ok(directory.keep())
+}
+
+/// The user this process runs as, from the owner of `/proc/self`.
+fn own_uid() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata("/proc/self").ok().map(|m| m.uid())
+}
+
+/// A real directory (not a link) that this user owns.
+fn owned_directory(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::symlink_metadata(path)
+        .is_ok_and(|m| m.file_type().is_dir() && Some(m.uid()) == own_uid())
+}
+
+/// Remove the private stores in `parent` that windows of this user left
+/// when they ended without cleaning up: the process named in the directory's
+/// name is gone. Another user's directories, links, and anything named
+/// otherwise are left alone.
+pub(crate) fn sweep_private_roots(parent: &std::path::Path, alive: impl Fn(u32) -> bool) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(PRIVATE_PREFIX))
+            .and_then(|rest| rest.split_once('-'))
+            .and_then(|(pid, _)| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let path = entry.path();
+        if pid != std::process::id() && !alive(pid) && owned_directory(&path) {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
+}
+
+fn component_is_on() -> bool {
+    crate::startup::component_on(
+        std::path::Path::new(SERVICE_UNIT_PATH).exists(),
+        crate::startup::unit_enabled(
+            &crate::startup::RealSystemctl::from_environment(),
+            SERVICE_UNIT,
+        ),
+    )
+}
+
+/// Start collecting in this window: on the shared store when Better Monitor
+/// is off and nobody else has it open, otherwise on a private one.
+fn start_embedded() -> Result<Embedded, monitor_store::StoreError> {
+    let mut config = ServiceConfig::system();
+    let on = component_is_on();
+    if embedded_store(on) == EmbeddedStore::Shared {
+        match MonitorEngine::start(config.clone()) {
+            Ok(engine) => {
+                return Ok(Embedded {
+                    engine,
+                    private_root: None,
+                    component_was_on: on,
+                });
+            }
+            Err(monitor_store::StoreError::Locked { .. }) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
+    let root =
+        create_private_root(runtime.as_deref(), &std::env::temp_dir()).map_err(|source| {
+            monitor_store::StoreError::Io {
+                path: std::env::temp_dir(),
+                source,
+            }
+        })?;
+    config.store_root = root.clone();
+    config.legacy_store_root = None;
+    let engine = MonitorEngine::start(config).inspect_err(|_| {
+        let _ = std::fs::remove_dir_all(&root);
+    })?;
+    Ok(Embedded {
+        engine,
+        private_root: Some(root),
+        component_was_on: on,
+    })
+}
+
+/// Whether to stop collecting here and use the service: its service is on
+/// the bus, or Better Monitor has been switched on since this window started
+/// collecting. A component that was on all along with no service answering
+/// (a service that keeps failing) is not handed over to every few seconds,
+/// which would throw the window's own minute of readings away each time.
+pub(crate) fn handover(
+    component_was_on: bool,
+    component_on: bool,
+    service_running: Option<bool>,
+) -> bool {
+    service_running == Some(true) || (component_on && !component_was_on)
+}
+
+async fn handover_due(embedded: &Embedded) -> bool {
+    handover(
+        embedded.component_was_on,
+        component_is_on(),
+        service_running().await,
+    )
+}
+
+/// Connect, giving a service that is waiting for the store a few seconds.
+async fn connect_with_retry() -> Result<MonitorClient, String> {
+    let mut last = String::new();
+    for _ in 0..10 {
+        match connect().await {
+            Ok(client) => return Ok(client),
+            Err(detail) => last = detail,
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    Err(last)
+}
+
+/// Where the package installs the service's user unit.
+pub(crate) const SERVICE_UNIT: &str = "better-monitor.service";
+pub(crate) const SERVICE_UNIT_PATH: &str = "/usr/lib/systemd/user/better-monitor.service";
+
+/// What the window does about the service.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ServicePlan {
+    /// Talk to it, starting it through D-Bus activation if it is not running.
+    Connect,
+    /// Better Monitor is switched off and the service is not running: do not
+    /// start it, collect in this window instead.
+    CollectHere,
+}
+
+/// Decide from whether the component is on and whether the service already
+/// owns its bus name. A service that is running anyway is used even when the
+/// component is off; what a switched-off component must never do is start.
+pub(crate) fn service_plan(component_on: bool, service_running: Option<bool>) -> ServicePlan {
+    if component_on || service_running == Some(true) {
+        ServicePlan::Connect
+    } else {
+        ServicePlan::CollectHere
+    }
+}
+
+/// Changes of who owns the service's bus name, on the session bus. `None`
+/// when there is no bus to ask; the periodic check still runs.
+async fn service_owner_changes() -> Option<zbus::fdo::NameOwnerChangedStream> {
+    let connection = zbus::Connection::session().await.ok()?;
+    let bus = zbus::fdo::DBusProxy::new(&connection).await.ok()?;
+    bus.receive_name_owner_changed_with_args(&[(0, monitor_ipc::BUS_NAME)])
+        .await
+        .ok()
+}
+
+/// The next change of the service's name: `Some(true)` when it gained an
+/// owner, `Some(false)` when it lost one, `None` when the stream ended. With
+/// no stream it never resolves.
+async fn next_owner_change(
+    changes: &mut Option<zbus::fdo::NameOwnerChangedStream>,
+) -> Option<bool> {
+    use smol::stream::StreamExt as _;
+    match changes {
+        Some(stream) => {
+            let signal = stream.next().await?;
+            Some(signal.args().is_ok_and(|args| args.new_owner().is_some()))
+        }
+        None => std::future::pending().await,
+    }
+}
+
+async fn service_running() -> Option<bool> {
+    let connection = zbus::Connection::session().await.ok()?;
+    let bus = zbus::fdo::DBusProxy::new(&connection).await.ok()?;
+    let name = zbus::names::BusName::try_from(monitor_ipc::BUS_NAME).ok()?;
+    bus.name_has_owner(name).await.ok()
+}
+
 async fn connect() -> Result<MonitorClient, String> {
+    let on = crate::startup::component_on(
+        std::path::Path::new(SERVICE_UNIT_PATH).exists(),
+        crate::startup::unit_enabled(
+            &crate::startup::RealSystemctl::from_environment(),
+            SERVICE_UNIT,
+        ),
+    );
+    if service_plan(on, service_running().await) == ServicePlan::CollectHere {
+        return Err("monitor.gui.link.component_disabled".to_string());
+    }
     let client = MonitorClient::connect()
         .await
         .map_err(|error| error.to_string())?;
@@ -216,7 +568,8 @@ async fn connect() -> Result<MonitorClient, String> {
 async fn handle(backend: &Backend, request: LinkRequest) -> LinkUpdate {
     match backend {
         Backend::Service(client) => handle_service(client, request).await,
-        Backend::Embedded(engine) => handle_embedded(engine, request).await,
+        Backend::Embedded(embedded) => handle_embedded(&embedded.engine, request).await,
+        Backend::Closed => LinkUpdate::Failed("monitor.gui.link.handing_over".to_string()),
     }
 }
 

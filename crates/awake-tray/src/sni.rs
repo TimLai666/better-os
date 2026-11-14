@@ -19,6 +19,33 @@
 
 use awake_ipc::WireIndicator;
 
+/// Serves the item and its menu on a connection from `builder`, then hands
+/// the connection to `controller`.
+///
+/// The item and the menu are served from the builder: objects added to a
+/// connection that is already running start zbus's object server lazily, and
+/// a call that arrives before it has subscribed is dropped unanswered (zbus
+/// warns about exactly this). `build` returns only once the server is
+/// reading, so the panel the item registers with next is answered at once.
+pub async fn serve(
+    builder: zbus::connection::Builder<'_>,
+    controller: std::sync::Arc<crate::controller::TrayController>,
+) -> zbus::Result<zbus::Connection> {
+    let connection = builder
+        .serve_at(
+            ITEM_PATH,
+            crate::item::StatusNotifierItem::new(controller.clone()),
+        )?
+        .serve_at(
+            MENU_PATH,
+            crate::dbusmenu::DbusMenu::new(controller.clone()),
+        )?
+        .build()
+        .await?;
+    controller.attach(connection.clone()).await;
+    Ok(connection)
+}
+
 pub const WATCHER_SERVICE: &str = "org.kde.StatusNotifierWatcher";
 pub const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 pub const ITEM_PATH: &str = "/StatusNotifierItem";
@@ -138,6 +165,37 @@ pub async fn register_and_verify(
         Ok(false) => TrayAvailability::NoHost,
         Err(error) => TrayAvailability::RegistrationFailed(error.to_string()),
     }
+}
+
+/// Registers the item again every time a StatusNotifierWatcher appears, and
+/// reports each result through `report`.
+///
+/// The watcher belongs to the panel, not to the tray: GNOME Shell restarting,
+/// the AppIndicator extension being switched off and on, or the tray simply
+/// starting before the panel at login all leave a tray whose registration went
+/// to a watcher that no longer exists. A tray that registered once and then
+/// waited would be running with no icon.
+pub async fn keep_registered(
+    connection: zbus::Connection,
+    unique_name: String,
+    mut report: impl FnMut(TrayAvailability),
+) -> zbus::Result<()> {
+    use zbus::export::futures_core::Stream;
+
+    let dbus = zbus::fdo::DBusProxy::new(&connection).await?;
+    let changes = dbus
+        .receive_name_owner_changed_with_args(&[(0, WATCHER_SERVICE)])
+        .await?;
+    let mut changes = std::pin::pin!(changes);
+    while let Some(change) =
+        std::future::poll_fn(|context| changes.as_mut().poll_next(context)).await
+    {
+        let Ok(args) = change.args() else { continue };
+        if args.new_owner().is_some() {
+            report(register_and_verify(&connection, &unique_name).await);
+        }
+    }
+    Ok(())
 }
 
 /// The icon name for one state. Distinct names, not a shared icon recolored:

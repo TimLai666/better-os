@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::session::{Reason, Session, SessionId, SessionOrigin};
 
-/// The four things a session can hold off, recorded per session so the merged
+/// The things a session can hold off, recorded per session so the merged
 /// answer can always be explained by naming the session that asked for it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -13,6 +13,15 @@ pub struct SessionPolicy {
     pub prevent_idle: bool,
     pub prevent_display_sleep: bool,
     pub prevent_automatic_lock: bool,
+    /// "Also when the lid is closed": the service holds logind's
+    /// `handle-lid-switch` lock as well, so closing the lid does not suspend.
+    ///
+    /// A `sleep` lock alone does not do that: logind's `LidSwitchIgnoreInhibited`
+    /// defaults to `yes`, so it acts on the lid whatever `sleep` locks are held.
+    /// Defaulted on read, so a file or document written before the field existed
+    /// reads as "off", which is what those sessions did.
+    #[serde(default)]
+    pub prevent_lid_suspend: bool,
 }
 
 impl SessionPolicy {
@@ -26,6 +35,18 @@ impl SessionPolicy {
             prevent_idle: true,
             prevent_display_sleep: false,
             prevent_automatic_lock: false,
+            prevent_lid_suspend: false,
+        }
+    }
+
+    /// What a session a person starts by hand is given unless they chose
+    /// otherwise (ticket 109): the quick default, and closing the lid does not
+    /// suspend either. A rule keeps [`Self::quick_default`], so an automatic
+    /// session holds the lid only when its rule says so.
+    pub const fn manual_default() -> Self {
+        Self {
+            prevent_lid_suspend: true,
+            ..Self::quick_default()
         }
     }
 
@@ -42,6 +63,7 @@ impl SessionPolicy {
             && !self.prevent_idle
             && !self.prevent_display_sleep
             && !self.prevent_automatic_lock
+            && !self.prevent_lid_suspend
     }
 
     /// Union: if any active session asks for something, it is held off.
@@ -51,6 +73,7 @@ impl SessionPolicy {
             prevent_idle: self.prevent_idle || other.prevent_idle,
             prevent_display_sleep: self.prevent_display_sleep || other.prevent_display_sleep,
             prevent_automatic_lock: self.prevent_automatic_lock || other.prevent_automatic_lock,
+            prevent_lid_suspend: self.prevent_lid_suspend || other.prevent_lid_suspend,
         }
     }
 }
@@ -64,6 +87,11 @@ pub struct BackendCapabilities {
     pub idle: bool,
     pub display_sleep: bool,
     pub automatic_lock: bool,
+    /// Whether the backend can stop the lid switch suspending the machine.
+    /// Defaulted on read, so a backend report from before the field existed
+    /// says it cannot.
+    #[serde(default)]
+    pub lid_switch: bool,
 }
 
 impl BackendCapabilities {
@@ -72,6 +100,7 @@ impl BackendCapabilities {
         idle: false,
         display_sleep: false,
         automatic_lock: false,
+        lid_switch: false,
     };
 
     /// Which parts of a policy this backend cannot deliver.
@@ -89,6 +118,9 @@ impl BackendCapabilities {
         if policy.prevent_automatic_lock && !self.automatic_lock {
             gaps.push(PolicyGap::AutomaticLock);
         }
+        if policy.prevent_lid_suspend && !self.lid_switch {
+            gaps.push(PolicyGap::LidSwitch);
+        }
         gaps
     }
 }
@@ -101,6 +133,7 @@ pub enum PolicyGap {
     Idle,
     DisplaySleep,
     AutomaticLock,
+    LidSwitch,
 }
 
 /// One line of the "why is this machine still awake" answer.
@@ -189,6 +222,7 @@ mod tests {
                 prevent_idle: true,
                 prevent_display_sleep: true,
                 prevent_automatic_lock: false,
+                prevent_lid_suspend: false,
             },
             Some(20),
             "Presenting",
@@ -232,6 +266,7 @@ mod tests {
             idle: true,
             display_sleep: false,
             automatic_lock: false,
+            lid_switch: true,
         };
         assert!(
             logind_shaped
@@ -250,6 +285,53 @@ mod tests {
             BackendCapabilities::NONE.gaps(&SessionPolicy::quick_default()),
             vec![PolicyGap::SystemSuspend, PolicyGap::Idle]
         );
+    }
+
+    #[test]
+    fn the_lid_choice_merges_like_every_other_field_and_is_on_only_for_manual_sessions() {
+        assert!(SessionPolicy::manual_default().prevent_lid_suspend);
+        assert!(!SessionPolicy::quick_default().prevent_lid_suspend);
+        let lid = session(1, SessionPolicy::manual_default(), Some(20), "Download");
+        let rule = session(2, SessionPolicy::quick_default(), Some(20), "Build");
+        assert!(
+            EffectivePolicy::merge(&[lid, rule.clone()])
+                .policy
+                .prevent_lid_suspend
+        );
+        assert!(!EffectivePolicy::merge(&[rule]).policy.prevent_lid_suspend);
+        assert!(
+            !SessionPolicy::manual_default().needs_security_confirmation(),
+            "keeping awake with the lid closed costs battery, not the screen lock"
+        );
+    }
+
+    #[test]
+    fn a_backend_without_a_lid_lock_reports_the_lid_choice_as_unmet() {
+        let without_lid = BackendCapabilities {
+            system_suspend: true,
+            idle: true,
+            display_sleep: false,
+            automatic_lock: false,
+            lid_switch: false,
+        };
+        assert_eq!(
+            without_lid.gaps(&SessionPolicy::manual_default()),
+            vec![PolicyGap::LidSwitch]
+        );
+    }
+
+    #[test]
+    fn a_policy_written_before_the_lid_choice_existed_reads_as_lid_off() {
+        let old: SessionPolicy = serde_json::from_str(
+            r#"{"prevent_system_suspend":true,"prevent_idle":true,"prevent_display_sleep":false,"prevent_automatic_lock":false}"#,
+        )
+        .unwrap();
+        assert_eq!(old, SessionPolicy::quick_default());
+        let old: BackendCapabilities = serde_json::from_str(
+            r#"{"system_suspend":true,"idle":true,"display_sleep":false,"automatic_lock":false}"#,
+        )
+        .unwrap();
+        assert!(!old.lid_switch);
     }
 
     #[test]

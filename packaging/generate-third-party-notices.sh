@@ -111,6 +111,19 @@ MISSING_METADATA_COUNT="$(jq '[.packages[] | select(.license == null and .licens
     ' "$METADATA_FILE"
     printf '%s\n' \
         '' \
+        '## System libraries linked dynamically' \
+        '' \
+        'These are not Cargo packages and are not shipped in any Better OS package.' \
+        'They are installed from the distribution, as the package dependencies' \
+        'name them, and linked at run time; each keeps its own license.' \
+        '' \
+        '| Library | Distribution packages | License | Used by |' \
+        '| --- | --- | --- | --- |' \
+        '| GStreamer core, base and app/video libraries | `libgstreamer1.0-0`, `libgstreamer-plugins-base1.0-0` | `LGPL-2.1-or-later` | `better-files-preview`: audio and video playback, through the `gstreamer`, `gstreamer-app` and `gstreamer-video` bindings (`MIT OR Apache-2.0`) |' \
+        '| GStreamer base plugins | `gstreamer1.0-plugins-base` | `LGPL-2.1-or-later` | `better-files-preview`: `playbin` and the format converters, loaded at run time |' \
+        '| GLib and GObject | `libglib2.0-0` (`libglib2.0-0t64` on Ubuntu 24.04) | `LGPL-2.1-or-later` | the GStreamer bindings above |'
+    printf '%s\n' \
+        '' \
         '## Package inventory' \
         '' \
         '| Package | Version | License metadata | Source |' \

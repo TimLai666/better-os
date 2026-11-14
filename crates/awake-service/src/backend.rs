@@ -9,10 +9,18 @@ use awake_core::{BackendCapabilities, SessionPolicy};
 use thiserror::Error;
 
 /// One kind of thing to hold off, named the way logind names it.
+///
+/// Declared in the order logind writes them in `ListInhibitors`
+/// (`inhibit_what_to_string`), so the joined form this service asks for is the
+/// form logind lists back and [`crate::LogindBackend`]'s verify can compare the
+/// two.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum InhibitWhat {
     Sleep,
     Idle,
+    /// Stops logind acting on the lid switch. A `sleep` lock does not, because
+    /// `LidSwitchIgnoreInhibited` defaults to `yes` (man logind.conf).
+    HandleLidSwitch,
 }
 
 impl InhibitWhat {
@@ -20,6 +28,7 @@ impl InhibitWhat {
         match self {
             InhibitWhat::Sleep => "sleep",
             InhibitWhat::Idle => "idle",
+            InhibitWhat::HandleLidSwitch => "handle-lid-switch",
         }
     }
 }
@@ -42,14 +51,23 @@ impl LeaseRequest {
     /// Display blanking and automatic locking are deliberately absent: logind
     /// has no lock for either, and inventing one by writing a GNOME setting is
     /// exactly what Issue #13 forbids. They are reported as unmet capability
-    /// instead.
-    pub fn from_policy(policy: &SessionPolicy, who: &str, why: &str) -> Option<Self> {
+    /// instead. The lid lock is asked for only when the backend said it can
+    /// hold one, so a backend without it still holds the rest.
+    pub fn from_policy(
+        policy: &SessionPolicy,
+        capabilities: &BackendCapabilities,
+        who: &str,
+        why: &str,
+    ) -> Option<Self> {
         let mut what = Vec::new();
         if policy.prevent_system_suspend {
             what.push(InhibitWhat::Sleep);
         }
         if policy.prevent_idle {
             what.push(InhibitWhat::Idle);
+        }
+        if policy.prevent_lid_suspend && capabilities.lid_switch {
+            what.push(InhibitWhat::HandleLidSwitch);
         }
         what.sort();
         what.dedup();
@@ -124,11 +142,44 @@ pub trait InhibitorBackend: Send + Sync {
         &self,
         lease: Self::Lease,
     ) -> impl std::future::Future<Output = Result<(), BackendError>> + Send;
+
+    /// Whether the lid is closed right now, or `None` when that cannot be read
+    /// (no lid, or the backend cannot say). The closed-lid battery limit is
+    /// measured from this.
+    fn lid_closed(&self) -> impl std::future::Future<Output = Option<bool>> + Send;
+
+    /// Whether logind counts the machine as docked: a docking station or an
+    /// external display connected. GNOME already keeps a docked machine
+    /// awake with the lid closed, so the closed-lid limit does not run then.
+    fn docked(&self) -> impl std::future::Future<Output = Option<bool>> + Send;
+}
+
+/// `CLOCK_BOOTTIME`, read through `/proc/uptime` so no unsafe call is needed.
+/// Falls back to a process-local monotonic clock if it cannot be read.
+pub fn boottime_seconds() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|text| text.split_whitespace().next()?.parse::<f64>().ok())
+        .map(|seconds| seconds as u64)
+        .unwrap_or_else(|| {
+            START
+                .get_or_init(std::time::Instant::now)
+                .elapsed()
+                .as_secs()
+        })
 }
 
 /// Reads the clock, so end-condition arithmetic can be driven by a test.
 pub trait Clock: Send + Sync {
     fn now_unix_seconds(&self) -> u64;
+
+    /// Seconds on a clock that only moves forward and keeps counting while the
+    /// machine is suspended, for measuring how long the lid has been closed.
+    /// The wall clock can be set back or forward under a running measurement.
+    fn monotonic_seconds(&self) -> u64 {
+        boottime_seconds()
+    }
 }
 
 pub struct SystemClock;
@@ -173,6 +224,14 @@ mod fake {
         acquire_failure: Option<BackendError>,
         /// Leases the backend still considers held.
         held: Vec<u64>,
+        lid_closed: Option<bool>,
+        docked: Option<bool>,
+        /// Kinds the fake refuses as polkit would, with `Denied`.
+        denied: Vec<InhibitWhat>,
+        /// After every acquire and release: whether any lock still held
+        /// includes `handle-lid-switch`. A swap that let go of the lid lock
+        /// before taking the next one shows up here as a `false`.
+        lid_held_timeline: Vec<bool>,
         pub acquired: Vec<LeaseRequest>,
         pub released: Vec<LeaseRequest>,
     }
@@ -186,7 +245,41 @@ mod fake {
                 idle: true,
                 display_sleep: false,
                 automatic_lock: false,
+                lid_switch: true,
             })
+        }
+
+        /// What the lid reports from now on. `None` is a machine with no lid.
+        pub fn set_lid_closed(&self, closed: Option<bool>) {
+            self.inner.lock().unwrap().lid_closed = closed;
+        }
+
+        /// Whether the machine reports itself docked (an external display).
+        pub fn set_docked(&self, docked: Option<bool>) {
+            self.inner.lock().unwrap().docked = docked;
+        }
+
+        /// Refuses every request that includes `what`, as polkit refusing
+        /// one kind of lock would.
+        pub fn deny(&self, what: InhibitWhat) {
+            self.inner.lock().unwrap().denied.push(what);
+        }
+
+        pub fn lid_held_timeline(&self) -> Vec<bool> {
+            self.inner.lock().unwrap().lid_held_timeline.clone()
+        }
+
+        /// What every lease still held asks for, so a test can say exactly
+        /// what `systemd-inhibit --list` would show.
+        pub fn held_requests(&self) -> Vec<LeaseRequest> {
+            let inner = self.inner.lock().unwrap();
+            inner
+                .acquired
+                .iter()
+                .zip(1u64..)
+                .filter(|(_, id)| inner.held.contains(id))
+                .map(|(request, _)| request.clone())
+                .collect()
         }
 
         pub fn with_capabilities(capabilities: BackendCapabilities) -> Self {
@@ -224,6 +317,15 @@ mod fake {
         }
     }
 
+    impl FakeInhibitorBackend {
+        fn note_lid(inner: &mut FakeInner) {
+            let held = inner.acquired.iter().zip(1u64..).any(|(request, id)| {
+                inner.held.contains(&id) && request.what.contains(&InhibitWhat::HandleLidSwitch)
+            });
+            inner.lid_held_timeline.push(held);
+        }
+    }
+
     impl InhibitorBackend for FakeInhibitorBackend {
         type Lease = FakeLease;
 
@@ -244,9 +346,16 @@ mod fake {
             if let Some(error) = inner.acquire_failure.take() {
                 return Err(error);
             }
+            if let Some(what) = request.what.iter().find(|what| inner.denied.contains(what)) {
+                return Err(BackendError::Denied(format!(
+                    "{} refused by policy",
+                    what.as_str()
+                )));
+            }
             let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
             inner.held.push(id);
             inner.acquired.push(request.clone());
+            Self::note_lid(&mut inner);
             Ok(FakeLease {
                 id,
                 request: request.clone(),
@@ -266,7 +375,16 @@ mod fake {
             let mut inner = self.inner.lock().unwrap();
             inner.held.retain(|held| *held != lease.id);
             inner.released.push(lease.request);
+            Self::note_lid(&mut inner);
             Ok(())
+        }
+
+        async fn lid_closed(&self) -> Option<bool> {
+            self.inner.lock().unwrap().lid_closed
+        }
+
+        async fn docked(&self) -> Option<bool> {
+            self.inner.lock().unwrap().docked
         }
     }
 
@@ -292,6 +410,12 @@ mod fake {
         fn now_unix_seconds(&self) -> u64 {
             self.0.load(Ordering::SeqCst)
         }
+
+        /// The fake moves both clocks together, which is what lets a test
+        /// advance the closed-lid measurement by advancing the clock.
+        fn monotonic_seconds(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
     }
 }
 
@@ -299,11 +423,62 @@ mod fake {
 mod tests {
     use super::*;
 
+    const LOGIND: BackendCapabilities = BackendCapabilities {
+        system_suspend: true,
+        idle: true,
+        display_sleep: false,
+        automatic_lock: false,
+        lid_switch: true,
+    };
+
+    #[test]
+    fn the_lid_choice_adds_the_lid_switch_lock_in_the_order_logind_lists_it() {
+        let request = LeaseRequest::from_policy(
+            &SessionPolicy::manual_default(),
+            &LOGIND,
+            "Better Awake",
+            "Download",
+        )
+        .unwrap();
+        assert_eq!(request.what_argument(), "sleep:idle:handle-lid-switch");
+
+        let lid_only = SessionPolicy {
+            prevent_lid_suspend: true,
+            ..SessionPolicy::default()
+        };
+        assert_eq!(
+            LeaseRequest::from_policy(&lid_only, &LOGIND, "Better Awake", "Lid")
+                .unwrap()
+                .what_argument(),
+            "handle-lid-switch"
+        );
+    }
+
+    #[test]
+    fn a_backend_without_a_lid_lock_is_not_asked_for_one() {
+        let without = BackendCapabilities {
+            lid_switch: false,
+            ..LOGIND
+        };
+        let request = LeaseRequest::from_policy(
+            &SessionPolicy::manual_default(),
+            &without,
+            "Better Awake",
+            "Download",
+        )
+        .unwrap();
+        assert_eq!(request.what_argument(), "sleep:idle");
+    }
+
     #[test]
     fn the_default_policy_asks_logind_for_sleep_and_idle_only() {
-        let request =
-            LeaseRequest::from_policy(&SessionPolicy::quick_default(), "Better Awake", "Build")
-                .unwrap();
+        let request = LeaseRequest::from_policy(
+            &SessionPolicy::quick_default(),
+            &LOGIND,
+            "Better Awake",
+            "Build",
+        )
+        .unwrap();
         assert_eq!(request.what_argument(), "sleep:idle");
     }
 
@@ -314,9 +489,10 @@ mod tests {
             prevent_idle: false,
             prevent_display_sleep: true,
             prevent_automatic_lock: true,
+            prevent_lid_suspend: false,
         };
         assert_eq!(
-            LeaseRequest::from_policy(&policy, "Better Awake", "Presenting"),
+            LeaseRequest::from_policy(&policy, &LOGIND, "Better Awake", "Presenting"),
             None
         );
     }
@@ -324,7 +500,7 @@ mod tests {
     #[test]
     fn an_empty_policy_needs_no_lease_at_all() {
         assert_eq!(
-            LeaseRequest::from_policy(&SessionPolicy::default(), "Better Awake", "None"),
+            LeaseRequest::from_policy(&SessionPolicy::default(), &LOGIND, "Better Awake", "None"),
             None
         );
     }
@@ -332,9 +508,13 @@ mod tests {
     #[tokio::test]
     async fn the_fake_backend_reports_a_lease_it_lost() {
         let backend = FakeInhibitorBackend::logind_shaped();
-        let request =
-            LeaseRequest::from_policy(&SessionPolicy::quick_default(), "Better Awake", "Build")
-                .unwrap();
+        let request = LeaseRequest::from_policy(
+            &SessionPolicy::quick_default(),
+            &LOGIND,
+            "Better Awake",
+            "Build",
+        )
+        .unwrap();
         let lease = backend.acquire(&request).await.unwrap();
         assert_eq!(backend.verify(&lease).await.unwrap(), LeaseHealth::Held);
 

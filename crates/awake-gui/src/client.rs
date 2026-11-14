@@ -62,7 +62,11 @@ impl ServiceClient {
         let connection = zbus::Connection::session()
             .await
             .map_err(|error| ClientError::Transport(error.to_string()))?;
-        let proxy = AwakeProxy::new(&connection)
+        // Not cached, so `ProtocolVersion` is read from the service each time
+        // rather than from whatever answered when the proxy was built.
+        let proxy = AwakeProxy::builder(&connection)
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
             .await
             .map_err(|error| ClientError::ServiceUnavailable(error.to_string()))?;
         Ok(Self { proxy })
@@ -75,17 +79,57 @@ impl ServiceClient {
             .map_err(|error| ClientError::ServiceUnavailable(error.to_string()))
     }
 
+    /// Sends one request in the version the service speaks. A service from
+    /// before protocol version 3 refuses the current version; the request is
+    /// then sent again in its shape, without the lid fields, so this window
+    /// keeps working until an update restarts the service. A request only
+    /// version 3 has is refused with a key that says the service is too old.
     async fn send(&self, body: RequestBody) -> Result<ResponseBody, ClientError> {
-        let document = AwakeRequest::new(body).to_json()?;
-        let reply = self
-            .proxy
-            .request(&document)
-            .await
-            .map_err(|error| ClientError::Transport(error.to_string()))?;
-        match AwakeResponse::from_json(&reply)?.body {
+        let request = AwakeRequest::new(body);
+        // Asked first: a service from before version 3 reports 2, and a
+        // request it cannot parse is then never sent to it.
+        let legacy = matches!(
+            self.protocol_version().await,
+            Ok(version) if version == awake_ipc::LEGACY_PROTOCOL_VERSION
+        );
+        let mut response = if legacy {
+            AwakeResponse::from_json_any(
+                &self
+                    .call(
+                        &request
+                            .to_legacy_json()
+                            .map_err(|error| ClientError::Rejected(error.to_string()))?,
+                    )
+                    .await?,
+            )?
+        } else {
+            AwakeResponse::from_json_any(&self.call(&request.to_json()?).await?)?
+        };
+        if !legacy && response.is_legacy_version_refusal() {
+            let document = request
+                .to_legacy_json()
+                .map_err(|error| ClientError::Rejected(error.to_string()))?;
+            response = AwakeResponse::from_json_any(&self.call(&document).await?)?;
+        }
+        match response.body {
             ResponseBody::Rejected { error_key } => Err(ClientError::Rejected(error_key)),
             body => Ok(body),
         }
+    }
+
+    /// Sends a request that changes something, and succeeds on any reply that
+    /// is not a refusal. A rule edit is answered with the rule list and a
+    /// session change with the status; the window re-reads both afterwards
+    /// either way, so the shape of the answer is not what decides success.
+    pub(crate) async fn perform(&self, body: RequestBody) -> Result<(), ClientError> {
+        self.send(body).await.map(|_| ())
+    }
+
+    async fn call(&self, document: &str) -> Result<String, ClientError> {
+        self.proxy
+            .request(document)
+            .await
+            .map_err(|error| ClientError::Transport(error.to_string()))
     }
 
     pub(crate) async fn status_request(

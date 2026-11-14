@@ -121,6 +121,22 @@ impl MonitorClient {
         match self
             .send(MonitorRequest::new(RequestBody::QueryStatus {
                 include_latest_round,
+                top_processes: None,
+            }))
+            .await?
+        {
+            ResponseBody::Status(status) => Ok(*status),
+            _ => Err(ClientError::UnexpectedReply),
+        }
+    }
+
+    /// The status with the latest round, keeping only the `top` busiest
+    /// processes per resource: what a taskbar item needs every second.
+    pub async fn summary(&self, top: u32) -> Result<StatusDocument, ClientError> {
+        match self
+            .send(MonitorRequest::new(RequestBody::QueryStatus {
+                include_latest_round: true,
+                top_processes: Some(top),
             }))
             .await?
         {

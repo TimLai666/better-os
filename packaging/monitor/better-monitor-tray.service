@@ -1,0 +1,36 @@
+[Unit]
+Description=Better Monitor taskbar item
+Documentation=https://github.com/TimLai666/better-os/blob/main/docs/tickets/97-monitor-hardware-and-tray.md
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+# A copy started some other way (an older release's autostart entry, or one
+# the window launched directly) holds org.betteros.MonitorTray1, and this one
+# would find the name taken and exit, leaving the old binary running after an
+# update. End only this user's copy first. The match is on the full command
+# line because the kernel's 15-character process name for this program,
+# "better-monitor-", is also the name of better-monitor-service, and an exact
+# name match would end the service too. The leading "-" makes "nothing to
+# end" a success.
+ExecStartPre=-/usr/bin/pkill --uid %U --full --exact "(/usr/bin/)?better-monitor-tray"
+ExecStart=/usr/bin/better-monitor-tray
+Restart=on-failure
+RestartSec=5
+# The popup and the window the item opens run in scopes of their own. Where
+# that is not possible (no systemd-run) they stay in this unit's cgroup, and
+# stopping the item (an update restarting it, or Better Monitor being
+# disabled) must still not close a window the person is using, so only the
+# item itself is ended.
+KillMode=process
+
+# No sandboxing directives: NoNewPrivileges and the seccomp-based ones are
+# inherited by every process this one starts, and the popup and the window it
+# opens are the person's own application, started in a scope of their own
+# (systemd-run --user --scope), which must not run with the item's limits.
+
+[Install]
+# Enabled and disabled with Better Monitor by Better Manager, like the
+# service: disabling the component stops the taskbar item too.
+WantedBy=graphical-session.target

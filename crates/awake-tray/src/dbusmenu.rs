@@ -21,11 +21,19 @@ pub struct LayoutNode(i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
 
 pub struct DbusMenu {
     controller: Arc<TrayController>,
+    /// The tray's tokio runtime. zbus runs these handlers on its own executor,
+    /// where tokio's timers do not exist, so anything that talks to the
+    /// service (and so may time out) is run here and awaited.
+    runtime: tokio::runtime::Handle,
 }
 
 impl DbusMenu {
+    /// Must be called from inside the tray's tokio runtime.
     pub fn new(controller: Arc<TrayController>) -> Self {
-        Self { controller }
+        Self {
+            controller,
+            runtime: tokio::runtime::Handle::current(),
+        }
     }
 }
 
@@ -36,15 +44,20 @@ fn properties(item: &MenuItem, wanted: &[String]) -> HashMap<String, OwnedValue>
     match &item.kind {
         ItemKind::Separator => properties.push(("type", Value::from("separator"))),
         ItemKind::Checkmark { checked } => {
+            properties.push(("type", Value::from("standard")));
             properties.push(("label", Value::from(item.label.clone())));
             properties.push(("toggle-type", Value::from("checkmark")));
             properties.push(("toggle-state", Value::from(i32::from(*checked))));
         }
         ItemKind::Submenu => {
+            properties.push(("type", Value::from("standard")));
             properties.push(("label", Value::from(item.label.clone())));
             properties.push(("children-display", Value::from("submenu")));
         }
         ItemKind::Standard | ItemKind::Info => {
+            // Said outright rather than left to the default, so a host that
+            // somehow kept an older item under this id is corrected.
+            properties.push(("type", Value::from("standard")));
             properties.push(("label", Value::from(item.label.clone())));
         }
     }
@@ -62,43 +75,77 @@ fn properties(item: &MenuItem, wanted: &[String]) -> HashMap<String, OwnedValue>
         .collect()
 }
 
+/// Every property of one item, as `GetGroupProperties` with no names returns
+/// them. The controller compares these to tell a host which items changed.
+pub fn all_properties(item: &MenuItem) -> HashMap<String, OwnedValue> {
+    properties(item, &[])
+}
+
+/// Whether the host is shown an item at all.
+///
+/// A disabled submenu is not: GNOME Shell draws it as a greyed row with an
+/// arrow that opens nothing, which reads as a broken menu rather than as an
+/// unavailable action. The row that explains why (no keep-awake support, an
+/// indefinite session with no end to push out) is already in the menu.
+fn is_drawn(item: &MenuItem) -> bool {
+    !(item.kind == ItemKind::Submenu && (!item.enabled || item.children.is_empty()))
+}
+
+/// The items of one level a host is shown, in order: no hidden submenu, and
+/// no separator at either end or next to another one, which is what hiding an
+/// item between two separators would otherwise leave behind.
+pub fn drawn(items: &[MenuItem]) -> Vec<&MenuItem> {
+    let mut shown: Vec<&MenuItem> = Vec::new();
+    for item in items.iter().filter(|item| is_drawn(item)) {
+        let separator = item.kind == ItemKind::Separator;
+        let after_separator = shown
+            .last()
+            .is_none_or(|last| last.kind == ItemKind::Separator);
+        if separator && after_separator {
+            continue;
+        }
+        shown.push(item);
+    }
+    while shown
+        .last()
+        .is_some_and(|last| last.kind == ItemKind::Separator)
+    {
+        shown.pop();
+    }
+    shown
+}
+
 /// One item and, unless the depth ran out, its children.
 fn node(item: &MenuItem, depth: i32, wanted: &[String]) -> Option<Value<'static>> {
-    let children = if depth == 0 {
-        Vec::new()
-    } else {
-        item.children
-            .iter()
-            .filter_map(|child| node(child, depth - 1, wanted))
-            .filter_map(|child| OwnedValue::try_from(child).ok())
-            .collect()
-    };
-
     zbus::zvariant::StructureBuilder::new()
         .add_field(item.id)
         .add_field(properties(item, wanted))
-        .add_field(children)
+        .add_field(children(&item.children, depth, wanted))
         .build()
         .ok()
         .map(Value::from)
 }
 
+fn children(items: &[MenuItem], depth: i32, wanted: &[String]) -> Vec<OwnedValue> {
+    if depth == 0 {
+        return Vec::new();
+    }
+    drawn(items)
+        .into_iter()
+        .filter_map(|child| node(child, depth - 1, wanted))
+        .filter_map(|child| OwnedValue::try_from(child).ok())
+        .collect()
+}
+
 /// The whole menu under the dbusmenu root, which is always id 0.
 pub fn layout(menu: &Menu, depth: i32, wanted: &[String]) -> LayoutNode {
-    let children = if depth == 0 {
-        Vec::new()
-    } else {
-        menu.items
-            .iter()
-            .filter_map(|item| node(item, depth - 1, wanted))
-            .filter_map(|item| OwnedValue::try_from(item).ok())
-            .collect()
-    };
     let mut root = HashMap::new();
-    if let Ok(value) = OwnedValue::try_from(Value::from("submenu")) {
+    if (wanted.is_empty() || wanted.iter().any(|name| name == "children-display"))
+        && let Ok(value) = OwnedValue::try_from(Value::from("submenu"))
+    {
         root.insert("children-display".to_string(), value);
     }
-    LayoutNode(0, root, children)
+    LayoutNode(0, root, children(&menu.items, depth, wanted))
 }
 
 /// The subtree under one item, so a host may ask for a submenu alone.
@@ -109,16 +156,11 @@ fn subtree(menu: &Menu, parent_id: i32, depth: i32, wanted: &[String]) -> Layout
     let Some(item) = menu.find(parent_id) else {
         return LayoutNode(parent_id, HashMap::new(), Vec::new());
     };
-    let children = if depth == 0 {
-        Vec::new()
-    } else {
-        item.children
-            .iter()
-            .filter_map(|child| node(child, depth - 1, wanted))
-            .filter_map(|child| OwnedValue::try_from(child).ok())
-            .collect()
-    };
-    LayoutNode(parent_id, properties(item, wanted), children)
+    LayoutNode(
+        parent_id,
+        properties(item, wanted),
+        children(&item.children, depth, wanted),
+    )
 }
 
 #[interface(name = "com.canonical.dbusmenu")]
@@ -131,8 +173,7 @@ impl DbusMenu {
         recursion_depth: i32,
         property_names: Vec<String>,
     ) -> (u32, LayoutNode) {
-        let menu = self.controller.menu().await;
-        let revision = self.controller.revision().await;
+        let (revision, menu) = self.controller.layout().await;
         let depth = if recursion_depth < 0 {
             i32::MAX
         } else {
@@ -174,18 +215,35 @@ impl DbusMenu {
         _timestamp: u32,
     ) -> zbus::fdo::Result<()> {
         if event_id == "clicked" {
-            self.controller.activate(id).await;
+            let controller = self.controller.clone();
+            self.runtime
+                .spawn(async move { controller.activate(id).await })
+                .await
+                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
         }
         Ok(())
     }
 
-    /// Asked before the menu is shown. The answer is whether the layout changed
-    /// as a result; refreshing from the service is how the countdown in an open
-    /// menu stays right.
-    async fn about_to_show(&self, _id: i32) -> bool {
-        let before = self.controller.revision().await;
-        let _ = self.controller.refresh().await;
-        self.controller.revision().await != before
+    /// Asked before a menu is shown. The answer is whether the layout changed
+    /// as a result, which makes the host read it again.
+    ///
+    /// Only the whole menu opening refreshes from the service; that is how
+    /// the countdown in it stays right. A submenu opening does not: GNOME
+    /// asks for each one as it unfolds, and a layout that changed under an
+    /// unfolding submenu would rebuild it closed under the pointer.
+    async fn about_to_show(&self, id: i32) -> bool {
+        if id != 0 {
+            return false;
+        }
+        let controller = self.controller.clone();
+        self.runtime
+            .spawn(async move {
+                let before = controller.revision().await;
+                let _ = controller.refresh().await;
+                controller.revision().await != before
+            })
+            .await
+            .unwrap_or(false)
     }
 
     #[zbus(property)]
@@ -255,6 +313,7 @@ mod tests {
             conflicts: Vec::new(),
             providers: Vec::new(),
             battery_protection: awake_ipc::WireBatteryProtection::default(),
+            lid: awake_ipc::WireLidProtection::default(),
             now_unix_seconds: 1_700_000_000,
         };
         crate::menu::build(
@@ -354,5 +413,155 @@ mod tests {
         let subtree = subtree(&menu, start.id, i32::MAX, &[]);
         assert_eq!(subtree.0, start.id);
         assert_eq!(subtree.2.len(), start.children.len());
+    }
+
+    fn drawn_labels(menu: &Menu) -> Vec<String> {
+        fn walk(items: &[MenuItem], out: &mut Vec<String>) {
+            for item in drawn(items) {
+                out.push(match item.kind {
+                    ItemKind::Separator => "---".to_string(),
+                    _ => item.label.clone(),
+                });
+                walk(&item.children, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&menu.items, &mut out);
+        out
+    }
+
+    fn awake(end: awake_ipc::WireEnd, remaining: awake_ipc::WireRemaining) -> Menu {
+        let mut status = StatusDocument {
+            indicator: WireIndicator::ActiveManual,
+            ..status_document()
+        };
+        let session = awake_ipc::WireSession {
+            session_id: 1,
+            reason: "Build".to_string(),
+            origin: awake_core::SessionOrigin::Manual,
+            policy: SessionPolicy::quick_default(),
+            battery_stop_percent: None,
+            end,
+            started_at_unix_seconds: 1_700_000_000,
+            remaining,
+        };
+        status.reasons = vec![awake_ipc::WireReason {
+            session_id: 1,
+            origin: awake_core::SessionOrigin::Manual,
+            reason: session.reason.clone(),
+        }];
+        status.sessions = vec![session];
+        crate::menu::build(
+            &status,
+            QuickOptions::default(),
+            Locale::EnUs,
+            UtcOffset::UTC,
+            false,
+        )
+    }
+
+    fn status_document() -> StatusDocument {
+        StatusDocument {
+            indicator: WireIndicator::Inactive,
+            effective_policy: SessionPolicy::default(),
+            unmet_policy: Vec::new(),
+            battery_stop_percent: None,
+            sessions: Vec::new(),
+            reasons: Vec::new(),
+            backend: WireBackend {
+                name: "logind".to_string(),
+                available: true,
+                capabilities: BackendCapabilities::NONE,
+                detail: None,
+            },
+            attention: None,
+            interrupted_previous_session: None,
+            reduced_security_confirmed: false,
+            active_rules: Vec::new(),
+            rule_summary: awake_ipc::WireRuleSummary::default(),
+            rules_suppression: None,
+            conflicts: Vec::new(),
+            providers: Vec::new(),
+            battery_protection: awake_ipc::WireBatteryProtection::default(),
+            lid: awake_ipc::WireLidProtection::default(),
+            now_unix_seconds: 1_700_000_000,
+        }
+    }
+
+    #[test]
+    fn an_indefinite_session_draws_no_extend_arrow_that_opens_nothing() {
+        let menu = awake(
+            awake_ipc::WireEnd::Indefinite,
+            awake_ipc::WireRemaining::UntilEnded,
+        );
+        let labels = drawn_labels(&menu);
+        assert!(
+            !labels.contains(&"Extend session".to_string()),
+            "{labels:?}"
+        );
+        assert!(labels.contains(&"End session".to_string()));
+        // The hidden children are not drawn either.
+        assert!(!labels.iter().any(|label| label == "15 min"), "{labels:?}");
+    }
+
+    #[test]
+    fn a_timed_session_draws_an_enabled_extend_submenu() {
+        let menu = awake(
+            awake_ipc::WireEnd::Duration { seconds: 3_600 },
+            awake_ipc::WireRemaining::Seconds { seconds: 1_800 },
+        );
+        let extend = menu.find_by_label("Extend session").unwrap();
+        assert!(is_drawn(extend));
+        assert_eq!(drawn(&extend.children).len(), 3);
+    }
+
+    #[test]
+    fn hiding_an_item_leaves_no_doubled_or_dangling_separator() {
+        let mut status = status_document();
+        status.indicator = WireIndicator::Unavailable;
+        status.backend.available = false;
+        let menu = crate::menu::build(
+            &status,
+            QuickOptions::default(),
+            Locale::EnUs,
+            UtcOffset::UTC,
+            false,
+        );
+        let labels = drawn_labels(&menu);
+        assert!(!labels.contains(&"Start a session".to_string()));
+        assert_ne!(labels.first().map(String::as_str), Some("---"));
+        assert_ne!(labels.last().map(String::as_str), Some("---"));
+        assert!(
+            !labels
+                .windows(2)
+                .any(|pair| pair[0] == "---" && pair[1] == "---"),
+            "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn every_item_states_its_type_so_a_cached_id_cannot_keep_an_old_one() {
+        let menu = menu();
+        for item in &menu.items {
+            item.walk(&mut |candidate| {
+                assert!(
+                    all_properties(candidate).contains_key("type"),
+                    "{candidate:?}"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn a_host_asking_only_for_type_and_children_display_gets_only_those() {
+        let menu = menu();
+        let wanted = ["type".to_string(), "children-display".to_string()];
+        let layout = layout(&menu, i32::MAX, &wanted);
+        for name in layout.1.keys() {
+            assert!(wanted.contains(name));
+        }
+        let start = menu.find_by_label("Start a session").unwrap();
+        let properties = properties(start, &wanted);
+        assert_eq!(properties.len(), 2);
     }
 }

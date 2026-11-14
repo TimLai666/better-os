@@ -61,6 +61,54 @@ updated, verified, and rolled back through shared manager operations.
   `BETTER_OS_TEST_SYSTEMCTL_GUARD` so the real runner can never reach the
   person's own user manager. User units need no privilege, so this never crosses
   `manager-daemon`; system units are out of scope.
+- After any update of a Better OS package, however it was installed (Better
+  Manager, `apt upgrade`, Software Updater, unattended upgrades), every Better
+  OS process of that package runs the new program within a few seconds:
+  services, tray icons, and open windows (owner, 2026-11-14, ticket 105). No
+  process may keep running a `(deleted)` executable. Three mechanisms carry it,
+  and a new process belongs to one of them:
+  - A package that ships a systemd user unit gets the preinst and postinst
+    `packaging/build-deb.sh` builds from `packaging/maintainer/user-units.sh`:
+    for every logged-in person it reloads their manager, `try-restart`s the
+    package's units (never starting one that is stopped), and enables a unit
+    new in that version only for a person who had the component's other units
+    enabled. Better Manager's own restart after an update stays; both only
+    restart what runs, so they never disagree. `verify-deb.sh` checks that
+    every package shipping a user unit carries the scripts.
+  - A process with no window — a service or a tray — is a systemd user unit,
+    and the first mechanism restarts it; it does not watch itself. (Both
+    trays became user units in tickets 97 and 102; the Awake tray's own
+    exec-restart from ticket 105's first draft was removed for that.)
+  - Every window mounts `better_ui::restart::UpdateRestart` and implements
+    `Restartable`.
+    The program watches its own file, waits for `dpkg-query` (never the
+    status file alone, which is stale while dpkg runs) to report the new
+    version configured, saves its view (page, tab, selection, scroll, window size,
+    anything being typed) into a private hand-off in
+    `$XDG_RUNTIME_DIR/better-os/restart`, and `exec`s the new program in the
+    same process, which reads the hand-off and shows "Updated to {version}".
+    While it is in the middle of work it cannot carry over — a file
+    operation, a Git command, a package transaction, a dialog whose typed
+    input has no saved form — it says "Updated — restarting when this
+    finishes" and waits. What blocks a restart and the view's shape live in
+    each window's GPUI-free `restart` module, with tests. Every toast a
+    window shows goes through `better_ui::fluent::toast` and the window's
+    one `ToastHost` (`UpdateRestart::toast_host`); there is no second toast. A window built by a
+    test or a benchmark uses `UpdateRestart::inactive` and never restarts.
+  - `better-manager-daemon` is never stopped or restarted from inside its own
+    unit, where systemd's stop kills the dpkg run executing the maintainer
+    script and leaves the package half-installed (reproduced in a VM with the
+    0.2.12 prerm). Its prerm stops it only on removal, its postinst
+    `try-restart`s it after an upgrade from outside unless that daemon is in a
+    transaction, and a daemon whose
+    program was replaced leaves ten seconds after its last transaction so
+    D-Bus starts the new one. It leaves by refusing new calls with the
+    retryable `daemon.error.shutting_down` (the client asks again), letting
+    the calls inside finish, and only then giving its bus name up: releasing
+    the name of a `Type=dbus` unit first makes systemd stop it at once. Better Manager does not update the daemon
+    through itself today (there is no manifest for it); a plan that did would
+    still run the *installed* version's prerm, so the first such update from
+    0.2.12 or older is the one these scripts cannot protect.
 - Use Rust for first-party production code. Use Go only after recording a
   concrete reason in an ADR. Do not add C, C++, Python, JavaScript, Electron,
   Tauri, or GTK application code. **One bounded exception exists**, granted by
@@ -250,6 +298,10 @@ GUI or dependency compiles when the relevant command was not executed.
   dpkg stops a running user service at removal either; Better Manager stops it
   before the package goes, and `better-awake.yaml`'s
   release notes describe behaviour the manager owns rather than the package.
+  The one thing dpkg does to a user unit is on an upgrade (ticket 105): the
+  postinst restarts the units that run and enables a unit that is new in that
+  version for a person who had the component on, so `apt upgrade` never
+  leaves a tray that replaced an autostart entry switched off.
 - Better Awake detects nine of Issue #13's eleven trigger kinds. Fullscreen
   needs a compositor adapter and reports itself unavailable; audio reads ALSA and
   cannot see Bluetooth or network sinks. Both limits are recorded in ADR 0010 and

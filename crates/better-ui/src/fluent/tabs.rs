@@ -121,6 +121,8 @@ pub struct TabView {
     on_select: Option<IndexHandler>,
     on_close: Option<IndexHandler>,
     on_add: Option<Handler>,
+    close_tooltip: Option<SharedString>,
+    add_tooltip: Option<SharedString>,
 }
 
 impl TabView {
@@ -133,7 +135,20 @@ impl TabView {
             on_select: None,
             on_close: None,
             on_add: None,
+            close_tooltip: None,
+            add_tooltip: None,
         }
+    }
+
+    /// What the close buttons' and the `+` button's tooltips say.
+    pub fn tooltips(
+        mut self,
+        close: impl Into<SharedString>,
+        add: impl Into<SharedString>,
+    ) -> Self {
+        self.close_tooltip = Some(close.into());
+        self.add_tooltip = Some(add.into());
+        self
     }
 
     pub fn shown(mut self, shown: ShownState) -> Self {
@@ -185,6 +200,34 @@ impl RenderOnce for TabView {
         let focus = keyed_focus(self.id.clone(), window, cx);
         let ring = shows_focus(&focus, self.shown, window);
         let len = self.tabs.len();
+        // The tabs scroll sideways when they do not fit, the selected one is
+        // scrolled into view when the selection changes, and `+` stays
+        // pinned after them.
+        let scroll = window
+            .use_keyed_state(super::child_id(&self.id, "scroll"), cx, |_, _| {
+                gpui::ScrollHandle::new()
+            })
+            .read(cx)
+            .clone();
+        let shown_selection =
+            window.use_keyed_state(super::child_id(&self.id, "scrolled-to"), cx, |_, _| {
+                None::<usize>
+            });
+        if *shown_selection.read(cx) != self.selected {
+            if let Some(index) = self.selected {
+                scroll.scroll_to_item(index);
+            }
+            shown_selection.update(cx, |s, _| *s = self.selected);
+        }
+        let mut row = div()
+            .id(super::child_id(&self.id, "tabs"))
+            .flex()
+            .items_end()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_x_scroll()
+            .track_scroll(&scroll);
         let mut strip = div()
             .id(self.id.clone())
             .flex()
@@ -252,6 +295,9 @@ impl RenderOnce for TabView {
                 let mut close =
                     small_button(ElementId::named_usize("close", index), IconName::Close, p)
                         .ml(px(4.0));
+                if let Some(tooltip) = self.close_tooltip.clone() {
+                    close = close.tooltip(super::dialog::tooltip_builder(tooltip));
+                }
                 if let Some(handler) = self.on_close.clone() {
                     close = close.on_click(move |_, window, cx| {
                         cx.stop_propagation();
@@ -265,23 +311,39 @@ impl RenderOnce for TabView {
             if let Some(handler) = self.on_select.clone() {
                 item = item.on_click(move |_, window, cx| handler(index, window, cx));
             }
+            // A middle click closes a closable tab, as in every tab strip.
+            if tab.closable
+                && let Some(handler) = self.on_close.clone()
+            {
+                item = item.on_mouse_down(gpui::MouseButton::Middle, move |_, window, cx| {
+                    cx.stop_propagation();
+                    handler(index, window, cx)
+                });
+            }
             let next_selected = self.selected == Some(index + 1);
             let item = with_focus_ring(item, ring && selected, radius::SM, p);
-            strip = strip.child(item);
+            // One child per tab, so the scroll handle's item `index` is tab
+            // `index`.
+            let mut cell = div().flex().flex_none().items_end().child(item);
             if !selected && !next_selected && index + 1 < len {
-                strip = strip.child(div().w(px(1.0)).h(px(16.0)).mb(px(8.0)).bg(p.divider));
+                cell = cell.child(div().w(px(1.0)).h(px(16.0)).mb(px(8.0)).bg(p.divider));
             }
+            row = row.child(cell);
         }
+        strip = strip.child(row);
         if let Some(handler) = self.on_add.clone() {
+            let mut add = small_button("add", IconName::Plus, p)
+                .on_click(move |_, window, cx| handler(window, cx));
+            if let Some(tooltip) = self.add_tooltip.clone() {
+                add = add.tooltip(super::dialog::tooltip_builder(tooltip));
+            }
             strip = strip.child(
                 div()
+                    .flex_none()
                     .pb(px(4.0))
-                    .pl(px(4.0))
+                    .px(px(4.0))
                     .text_color(p.text_primary)
-                    .child(
-                        small_button("add", IconName::Plus, p)
-                            .on_click(move |_, window, cx| handler(window, cx)),
-                    ),
+                    .child(add),
             );
         }
         let selected = self.selected;

@@ -70,6 +70,17 @@ pub enum EntityKind {
     NetworkInterface,
     /// One PSI resource: `cpu`, `memory`, or `io`.
     PressureResource,
+    /// A graphics processor, keyed by its PCI address.
+    Gpu,
+    /// A neural processing unit (`/sys/class/accel`), keyed by its PCI address.
+    Npu,
+    /// A battery from `power_supply`, keyed by its kernel name (`BAT1`).
+    Battery,
+    /// Something that supplies power: a mains adapter or a USB-C port.
+    PowerSource,
+    /// One hwmon reading (a temperature, fan, voltage, current, or power),
+    /// keyed by its chip and input (`k10temp/temp1`).
+    Sensor,
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

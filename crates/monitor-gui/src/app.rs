@@ -88,7 +88,11 @@ pub(crate) enum Resource {
     Memory,
     Disk(String),
     Adapter(String),
-    Gpu,
+    /// A graphics card, by its PCI address.
+    Gpu(String),
+    /// An NPU, by its PCI address.
+    Npu(String),
+    /// Every temperature, fan, and other hwmon reading.
     Temperatures,
     Battery,
 }
@@ -256,7 +260,12 @@ pub(crate) struct MonitorApp {
     controller: LinuxProcessController,
     link: Option<smol::channel::Sender<LinkRequest>>,
     _pump: Option<Task<()>>,
+    /// Watches for an update and restarts into it (ticket 105).
+    pub(crate) update_restart: better_ui::restart::UpdateRestart,
 }
+
+/// The window's application id, which the desktop entry is named after.
+pub(crate) const APP_ID: &str = "io.betteros.Monitor";
 
 /// How the window is being fed.
 #[derive(Clone, Debug, PartialEq)]
@@ -279,7 +288,11 @@ pub(crate) fn language_path() -> Option<PathBuf> {
 }
 
 impl MonitorApp {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        handoff: Option<&better_ui::restart::Handoff>,
+    ) -> Self {
         let locale = language_path()
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| Locale::parse(&text))
@@ -348,7 +361,19 @@ impl MonitorApp {
             controller: LinuxProcessController::for_current_process(),
             link: None,
             _pump: None,
+            update_restart: better_ui::restart::UpdateRestart::new(
+                APP_ID,
+                "Better Monitor",
+                "better-monitor",
+                env!("CARGO_PKG_VERSION"),
+                handoff,
+                window,
+                cx,
+            ),
         };
+        if let Some(view) = handoff.and_then(|h| h.state::<crate::restart::MonitorView>()) {
+            app.restore_view(view, window, cx);
+        }
         app.start_link(cx);
         app.observe_filter(cx);
         // The inventory names the graphics card and the processor model, so
@@ -411,6 +436,7 @@ impl MonitorApp {
             LinkUpdate::Embedded(detail) => {
                 self.collection = Collection::InProcess { detail };
             }
+            LinkUpdate::Connected => self.collection = Collection::Service,
             LinkUpdate::Unavailable(detail) => {
                 self.collection = Collection::Unavailable { detail };
             }
@@ -502,6 +528,12 @@ impl MonitorApp {
                 self.resource = Resource::Cpu;
             }
             Resource::Adapter(name) if !self.readings.adapters.iter().any(|a| &a.name == name) => {
+                self.resource = Resource::Cpu;
+            }
+            Resource::Gpu(key) if !self.readings.gpus.iter().any(|g| &g.key == key) => {
+                self.resource = Resource::Cpu;
+            }
+            Resource::Npu(key) if !self.readings.npus.iter().any(|n| &n.key == key) => {
                 self.resource = Resource::Cpu;
             }
             _ => {}
@@ -1013,5 +1045,87 @@ impl MonitorApp {
     pub(crate) fn sort_processes(&mut self, column: ProcessColumn, cx: &mut Context<Self>) {
         self.processes.sort_by(column);
         cx.notify();
+    }
+}
+
+impl MonitorApp {
+    /// Puts back the view a restart after an update handed over.
+    fn restore_view(
+        &mut self,
+        view: crate::restart::MonitorView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::restart::{column_of, direction, page_of, process_column_of};
+        self.page = page_of(view.page);
+        self.resource = view.resource.resource();
+        self.per_core = view.per_core;
+        self.paused = view.paused;
+        self.compact_choice = view.compact_choice;
+        self.app_sort = (column_of(view.app_sort.0), view.app_sort.1);
+        self.app_selection = view.app_selection.map(|key| key.selection());
+        self.expanded = view.expanded;
+        self.processes.set_sort(
+            process_column_of(view.process_sort.0),
+            direction(view.process_sort.1),
+        );
+        self.selected_pid = view.selected_pid;
+        let sort = |(column, ascending)| better_ui::fluent::list::SortState { column, ascending };
+        self.startup_sort = view.startup_sort.map(sort);
+        self.services_sort = view.services_sort.map(sort);
+        if let Some(seconds) = view.history_seconds {
+            self.history_seconds = seconds;
+        }
+        self.grouping_open = view.grouping_open;
+        self.sources_open = view.sources_open;
+        if !view.filter.is_empty() {
+            self.processes.set_filter(view.filter.clone());
+            self.apps.set_filter(view.filter.clone());
+            let text = view.filter;
+            self.filter
+                .update(cx, |state, cx| state.set_value(text, window, cx));
+        }
+    }
+}
+
+impl better_ui::restart::Restartable for MonitorApp {
+    type State = crate::restart::MonitorView;
+
+    fn update_restart(&mut self) -> &mut better_ui::restart::UpdateRestart {
+        &mut self.update_restart
+    }
+
+    /// A question over the page has not been answered yet.
+    fn restart_blocked(&self, _cx: &App) -> Option<better_ui::restart::Blocker> {
+        self.dialog
+            .is_some()
+            .then_some(better_ui::restart::Blocker::Dialog)
+    }
+
+    fn restart_state(&self, _window: &Window, cx: &App) -> crate::restart::MonitorView {
+        use crate::restart::{SelectionKey, ascending, column_index, process_column_index};
+        let (process_column, process_direction) = self.processes.sort();
+        let sort = |sort: better_ui::fluent::list::SortState| (sort.column, sort.ascending);
+        crate::restart::MonitorView {
+            page: self.page.index(),
+            resource: crate::restart::ResourceKey::of(&self.resource),
+            per_core: self.per_core,
+            paused: self.paused,
+            compact_choice: self.compact_choice,
+            filter: self.filter.read(cx).value().to_string(),
+            app_sort: (column_index(self.app_sort.0), self.app_sort.1),
+            app_selection: self.app_selection.as_ref().map(SelectionKey::of),
+            expanded: self.expanded.clone(),
+            process_sort: (
+                process_column_index(process_column),
+                ascending(process_direction),
+            ),
+            selected_pid: self.selected_pid,
+            startup_sort: self.startup_sort.map(sort),
+            services_sort: self.services_sort.map(sort),
+            history_seconds: Some(self.history_seconds),
+            grouping_open: self.grouping_open,
+            sources_open: self.sources_open,
+        }
     }
 }

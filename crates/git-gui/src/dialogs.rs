@@ -138,6 +138,8 @@ pub enum Dialog {
     DropStash {
         name: String,
     },
+    /// Git has no name or email yet (`identity`). texts: [name, email]
+    Identity,
 }
 
 /// Why the primary button is off, for the caption under the fields.
@@ -150,6 +152,14 @@ pub enum Invalid {
     TagTooLong,
     NotAbsolute,
     NoSelection,
+    /// The new repository's folder is a repository already.
+    AlreadyRepository,
+    /// The new repository's folder already holds files.
+    NotEmpty,
+    /// A file is where the new repository's folder would go.
+    NotAFolder,
+    /// The email field holds no address.
+    NotAnEmail,
 }
 
 /// Checks a dialog's fields. `branches` and `tags` are the repository's.
@@ -216,6 +226,11 @@ pub fn validate(
         }
         Dialog::PickBranch { selected, .. } => selected.is_none().then_some(Invalid::NoSelection),
         Dialog::Remotes { .. } => None,
+        Dialog::Identity => match crate::identity::check(text(0), text(1)) {
+            Some(crate::identity::Problem::NotAnEmail) => Some(Invalid::NotAnEmail),
+            Some(_) => Some(Invalid::Empty),
+            None => None,
+        },
         Dialog::SignIn { enterprise: true } => github_api::Host::enterprise(text(0))
             .is_none()
             .then_some(Invalid::Empty),
@@ -240,7 +255,8 @@ pub fn field_count(dialog: &Dialog) -> usize {
         | Dialog::AddWorktree { .. }
         | Dialog::Remotes { .. }
         | Dialog::CreatePull { .. }
-        | Dialog::CreateIssue => 2,
+        | Dialog::CreateIssue
+        | Dialog::Identity => 2,
         Dialog::NewRepository { .. } | Dialog::Squash { .. } => 3,
         _ => 0,
     }

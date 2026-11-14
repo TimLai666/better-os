@@ -42,7 +42,17 @@ use thiserror::Error;
 
 /// The protocol both sides must agree on exactly. A service refuses any other
 /// value rather than guessing which fields it can still trust.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// Version 2 (ticket 97) added entity kinds (graphics cards, NPUs,
+/// batteries, power sources, sensors), units, `top_processes`, and
+/// `battery_use`, none of which a version 1 client can parse. A client reads
+/// the version property first and, on a mismatch, says the service has to
+/// restart instead of failing on the first reply.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// The session bus name the taskbar item owns while it runs, so the window
+/// can tell whether one is running.
+pub const TRAY_BUS_NAME: &str = "org.betteros.MonitorTray1";
 
 /// The session bus name the service owns.
 pub const BUS_NAME: &str = "org.betteros.Monitor1";
@@ -77,6 +87,12 @@ pub enum RequestBody {
         /// process entities crossing the bus.
         #[serde(default)]
         include_latest_round: bool,
+        /// Keep only this many of the busiest processes per resource in the
+        /// round, instead of every process. The taskbar item asks for this
+        /// every second; a thousand process entities a second would cost it
+        /// more than everything it draws.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        top_processes: Option<u32>,
     },
     /// Stored samples and the gaps between them, over one interval.
     QueryHistory {
@@ -349,6 +365,10 @@ pub struct StatusDocument {
     /// The most recent raw round, when the client asked for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_round: Option<Vec<CollectorReport>>,
+    /// What has used the battery since the machine was last unplugged, on a
+    /// machine with a battery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battery_use: Option<BatteryUse>,
 }
 
 /// Samples and gaps over one interval.
@@ -590,6 +610,362 @@ pub enum IpcError {
     UnknownExport { export_id: u64 },
 }
 
+/// What has used the battery since the machine was last unplugged.
+///
+/// The service owns this because it is the one thing that is running the
+/// whole time the machine is on its battery; a window opened an hour after the
+/// plug came out still sees the whole hour. It is kept in memory only, and it
+/// restarts when the machine is unplugged again, the "since last unplugged"
+/// span a laptop's battery settings show.
+pub mod battery_use {
+    use std::collections::BTreeMap;
+
+    use monitor_core::{CollectorReport, EntityKind, MetricId, MetricScalar, Observation};
+    use serde::{Deserialize, Serialize};
+
+    /// The most process names one document lists.
+    pub const MAX_LISTED: usize = 50;
+
+    /// One program's estimated share.
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ProcessEnergy {
+        pub name: String,
+        pub watt_hours: f64,
+    }
+
+    /// The span and its programs, largest share first.
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct BatteryUse {
+        /// When the machine was unplugged, or when the service first saw it
+        /// on the battery.
+        pub since_unix_ms: u64,
+        /// Whether it is on the battery right now.
+        pub on_battery: bool,
+        /// Seconds spent on the battery in the span.
+        pub on_battery_seconds: f64,
+        /// Everything the battery gave, in watt-hours.
+        pub total_watt_hours: f64,
+        pub processes: Vec<ProcessEnergy>,
+    }
+
+    fn id(raw: &str) -> MetricId {
+        MetricId::new(raw).expect("a battery-use metric id is well formed")
+    }
+
+    /// Adds each round's draw and per-process estimate into the span.
+    #[derive(Debug, Default)]
+    pub struct BatteryUseTracker {
+        has_battery: bool,
+        use_: BatteryUse,
+        by_name: BTreeMap<String, f64>,
+    }
+
+    impl BatteryUseTracker {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// Read one round taken `seconds` after the previous one.
+        pub fn observe(&mut self, round: &[CollectorReport], seconds: f64, now_unix_ms: u64) {
+            let Some(battery) = round
+                .iter()
+                .find(|report| report.collector.as_str() == "linux.battery")
+            else {
+                return;
+            };
+            let on_battery = match battery.metrics.get(&id("power.on_battery")) {
+                Some(Observation::Value(MetricScalar::Bool(on))) => *on,
+                _ => {
+                    self.has_battery = false;
+                    return;
+                }
+            };
+            self.has_battery = true;
+            if on_battery && !self.use_.on_battery {
+                // Unplugged: a new span starts.
+                self.use_ = BatteryUse {
+                    since_unix_ms: now_unix_ms,
+                    ..BatteryUse::default()
+                };
+                self.by_name.clear();
+            }
+            self.use_.on_battery = on_battery;
+            if !on_battery || !(seconds > 0.0 && seconds < 60.0) {
+                return;
+            }
+            let hours = seconds / 3600.0;
+            if let Some(draw) = battery
+                .metrics
+                .get(&id("power.battery.draw"))
+                .and_then(Observation::as_f64)
+            {
+                self.use_.total_watt_hours += draw * hours;
+            }
+            self.use_.on_battery_seconds += seconds;
+            if let Some(processes) = round
+                .iter()
+                .find(|report| report.collector.as_str() == "linux.process")
+            {
+                for entity in processes.entities_of(EntityKind::Process) {
+                    let Some(watts) = entity
+                        .metrics
+                        .get(&id("process.energy.power"))
+                        .and_then(Observation::as_f64)
+                        .filter(|w| *w > 0.0)
+                    else {
+                        continue;
+                    };
+                    let Some(name) = entity
+                        .metrics
+                        .get(&id("process.name"))
+                        .and_then(Observation::as_text)
+                    else {
+                        continue;
+                    };
+                    *self.by_name.entry(name.to_string()).or_default() += watts * hours;
+                }
+            }
+        }
+
+        /// The span so far. `None` on a machine without a battery, or before
+        /// the machine has ever been seen on its battery.
+        pub fn current(&self) -> Option<BatteryUse> {
+            if !self.has_battery || self.use_.since_unix_ms == 0 {
+                return None;
+            }
+            let mut use_ = self.use_.clone();
+            let mut processes: Vec<ProcessEnergy> = self
+                .by_name
+                .iter()
+                .map(|(name, watt_hours)| ProcessEnergy {
+                    name: name.clone(),
+                    watt_hours: *watt_hours,
+                })
+                .collect();
+            processes.sort_by(|a, b| {
+                b.watt_hours
+                    .total_cmp(&a.watt_hours)
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            processes.truncate(MAX_LISTED);
+            use_.processes = processes;
+            Some(use_)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use monitor_core::{CollectorId, Entity, EntityId, MetricSet, Timestamp};
+
+        fn round(on: bool, draw: f64, processes: &[(&str, f64)]) -> Vec<CollectorReport> {
+            let at = Timestamp {
+                unix_ms: 1,
+                monotonic_ns: 1,
+            };
+            let mut battery = CollectorReport::new(CollectorId::new("linux.battery").unwrap(), at);
+            battery
+                .metrics
+                .insert(id("power.on_battery"), Observation::boolean(on));
+            battery
+                .metrics
+                .insert(id("power.battery.draw"), Observation::float(draw));
+            let mut table = CollectorReport::new(CollectorId::new("linux.process").unwrap(), at);
+            for (index, (name, watts)) in processes.iter().enumerate() {
+                let mut m = MetricSet::new();
+                m.insert(id("process.name"), Observation::text(*name));
+                m.insert(id("process.energy.power"), Observation::float(*watts));
+                table.entities.push(Entity::new(
+                    EntityId::new(EntityKind::Process, index.to_string()),
+                    m,
+                ));
+            }
+            vec![battery, table]
+        }
+
+        #[test]
+        fn energy_adds_up_by_name_while_on_the_battery_and_restarts_when_unplugged() {
+            let mut tracker = BatteryUseTracker::new();
+            tracker.observe(&round(false, 0.0, &[("firefox", 5.0)]), 1.0, 1_000);
+            assert_eq!(tracker.current(), None, "never on the battery yet");
+            for second in 0..3600 {
+                tracker.observe(
+                    &round(
+                        true,
+                        10.0,
+                        &[("firefox", 6.0), ("firefox", 1.0), ("code", 2.0)],
+                    ),
+                    1.0,
+                    2_000 + second,
+                );
+            }
+            let use_ = tracker.current().unwrap();
+            assert_eq!(use_.since_unix_ms, 2_000);
+            assert!((use_.total_watt_hours - 10.0).abs() < 1e-6);
+            assert!((use_.on_battery_seconds - 3600.0).abs() < 1e-6);
+            assert_eq!(use_.processes[0].name, "firefox");
+            assert!((use_.processes[0].watt_hours - 7.0).abs() < 1e-6);
+            assert!((use_.processes[1].watt_hours - 2.0).abs() < 1e-6);
+
+            // Plugged in: the span stays, nothing more is added.
+            tracker.observe(&round(false, 0.0, &[("firefox", 6.0)]), 1.0, 9_000);
+            let plugged = tracker.current().unwrap();
+            assert!(!plugged.on_battery);
+            assert!((plugged.total_watt_hours - 10.0).abs() < 1e-6);
+
+            // Unplugged again: a new span.
+            tracker.observe(&round(true, 10.0, &[]), 1.0, 10_000);
+            let again = tracker.current().unwrap();
+            assert_eq!(again.since_unix_ms, 10_000);
+            assert!(again.processes.is_empty());
+        }
+
+        #[test]
+        fn a_gap_longer_than_a_minute_is_not_counted_as_drain() {
+            let mut tracker = BatteryUseTracker::new();
+            tracker.observe(&round(true, 10.0, &[]), 1.0, 1_000);
+            tracker.observe(&round(true, 10.0, &[]), 3600.0, 2_000);
+            assert!(tracker.current().unwrap().total_watt_hours < 0.01);
+        }
+    }
+}
+
+/// Keeping a round small enough to send every second.
+pub mod trim {
+    use std::collections::BTreeSet;
+
+    use monitor_core::{CollectorReport, EntityKind, MetricId, Observation};
+
+    /// What a process is ranked by. A process in the top of any one is kept.
+    const RANKINGS: [&[&str]; 6] = [
+        &["process.cpu.utilization"],
+        &["process.memory.resident"],
+        &["process.io.read.bytes.rate", "process.io.write.bytes.rate"],
+        &["process.network.receive.rate", "process.network.send.rate"],
+        &["process.gpu.utilization"],
+        &["process.energy.power"],
+    ];
+
+    fn score(metrics: &monitor_core::MetricSet, ids: &[&str]) -> f64 {
+        ids.iter()
+            .filter_map(|raw| {
+                MetricId::new(*raw)
+                    .ok()
+                    .and_then(|id| metrics.get(&id).and_then(Observation::as_f64))
+            })
+            .sum()
+    }
+
+    /// The round with only the `top` busiest processes per resource kept.
+    /// Every other report is unchanged, and `process.count` still counts every
+    /// process.
+    pub fn trim_round(round: &[CollectorReport], top: usize) -> Vec<CollectorReport> {
+        round
+            .iter()
+            .map(|report| {
+                if report.collector.as_str() != "linux.process" {
+                    return report.clone();
+                }
+                let processes: Vec<usize> = report
+                    .entities
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.id.kind == EntityKind::Process)
+                    .map(|(index, _)| index)
+                    .collect();
+                // Processes of one program are ranked together, so five
+                // compiler processes are one place in the list, not five,
+                // and every process of a kept program is kept.
+                let name_id = MetricId::new("process.name").ok();
+                let name_of = |index: usize| -> String {
+                    let entity = &report.entities[index];
+                    name_id
+                        .as_ref()
+                        .and_then(|id| entity.metrics.get(id))
+                        .and_then(Observation::as_text)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("[{}]", entity.id.key))
+                };
+                let mut keep: BTreeSet<usize> = BTreeSet::new();
+                for ids in RANKINGS {
+                    let mut by_name: Vec<(String, f64, Vec<usize>)> = Vec::new();
+                    for index in &processes {
+                        let value = score(&report.entities[*index].metrics, ids);
+                        if value <= 0.0 {
+                            continue;
+                        }
+                        let name = name_of(*index);
+                        match by_name.iter_mut().find(|(n, _, _)| *n == name) {
+                            Some(entry) => {
+                                entry.1 += value;
+                                entry.2.push(*index);
+                            }
+                            None => by_name.push((name, value, vec![*index])),
+                        }
+                    }
+                    by_name.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.2[0].cmp(&b.2[0])));
+                    for (_, _, members) in by_name.into_iter().take(top) {
+                        keep.extend(members);
+                    }
+                }
+                let mut trimmed = report.clone();
+                trimmed.entities = report
+                    .entities
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, e)| e.id.kind != EntityKind::Process || keep.contains(index))
+                    .map(|(_, e)| e.clone())
+                    .collect();
+                trimmed
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use monitor_core::{CollectorId, Entity, EntityId, MetricSet, Timestamp};
+
+        #[test]
+        fn only_the_busiest_processes_of_each_resource_are_kept() {
+            let at = Timestamp {
+                unix_ms: 1,
+                monotonic_ns: 1,
+            };
+            let mut report = CollectorReport::new(CollectorId::new("linux.process").unwrap(), at);
+            for pid in 0..20u32 {
+                let mut m = MetricSet::new();
+                m.insert(
+                    MetricId::new("process.cpu.utilization").unwrap(),
+                    Observation::float(pid as f64),
+                );
+                m.insert(
+                    MetricId::new("process.memory.resident").unwrap(),
+                    Observation::unsigned(if pid == 0 { 1 << 30 } else { 0 }),
+                );
+                report.entities.push(Entity::new(
+                    EntityId::new(EntityKind::Process, pid.to_string()),
+                    m,
+                ));
+            }
+            let other = CollectorReport::new(CollectorId::new("linux.cpu").unwrap(), at);
+            let trimmed = trim_round(&[other.clone(), report], 3);
+            assert_eq!(trimmed[0], other);
+            let kept: Vec<&str> = trimmed[1]
+                .entities
+                .iter()
+                .map(|e| e.id.key.as_str())
+                .collect();
+            assert_eq!(kept, vec!["0", "17", "18", "19"]);
+        }
+    }
+}
+
+pub use battery_use::{BatteryUse, BatteryUseTracker, ProcessEnergy};
+pub use trim::trim_round;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,6 +996,7 @@ mod tests {
                 unavailable_metrics: vec!["cpu.temperature".to_string()],
             }],
             latest_round: None,
+            battery_use: None,
         }
     }
 
@@ -673,12 +1050,13 @@ mod tests {
 
     #[test]
     fn another_protocol_version_is_refused_rather_than_partly_trusted() {
-        let document = r#"{"protocol_version":2,"body":{"request":"query_incidents"}}"#;
+        // A version 1 client, from before ticket 97.
+        let document = r#"{"protocol_version":1,"body":{"request":"query_incidents"}}"#;
         assert_eq!(
             MonitorRequest::from_json(document),
             Err(IpcError::ProtocolVersion {
-                found: 2,
-                expected: 1
+                found: 1,
+                expected: PROTOCOL_VERSION
             })
         );
     }
@@ -690,7 +1068,7 @@ mod tests {
             MonitorResponse::from_json(document),
             Err(IpcError::ProtocolVersion {
                 found: 9,
-                expected: 1
+                expected: PROTOCOL_VERSION
             })
         );
     }

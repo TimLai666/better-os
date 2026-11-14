@@ -216,6 +216,15 @@ impl AwakeApp {
                 )
                 .child(self.key_value(c.rule_priority, rule.priority.to_string(), cx))
                 .child(self.priority_stepper(rule_id, rule.priority, cx))
+                .child(self.key_value(
+                    c.keep_awake_lid_closed,
+                    if rule.policy.prevent_lid_suspend {
+                        c.on
+                    } else {
+                        c.off
+                    },
+                    cx,
+                ))
                 .child(
                     v_flex()
                         .gap_2()
@@ -561,6 +570,35 @@ impl AwakeApp {
                                     cx.listener(|this, _, window, cx| this.add_group(window, cx)),
                                 ),
                         ),
+                    cx,
+                ),
+            )
+            .child(
+                self.surface(
+                    v_flex()
+                        .gap_3()
+                        .child(self.card_title(c.lid_rule_heading))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(c.lid_rule_default_off),
+                        )
+                        .child(self.lid_choice(
+                            "draft-lid",
+                            draft.policy.prevent_lid_suspend,
+                            draft.battery_stop_percent,
+                            |this, cx| {
+                                this.update_draft(
+                                    |draft| {
+                                        draft.policy.prevent_lid_suspend =
+                                            !draft.policy.prevent_lid_suspend
+                                    },
+                                    cx,
+                                )
+                            },
+                            cx,
+                        )),
                     cx,
                 ),
             )

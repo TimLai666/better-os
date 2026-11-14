@@ -1,4 +1,6 @@
-//! The low-battery notification, as the tray and the service both word it.
+//! The notifications that say why a session ended by itself (a low battery,
+//! or the lid closed on battery for too long), as the tray and the service
+//! both word them.
 //!
 //! Exactly one of them raises it for each stop. The tray does when it is
 //! running, because it is the process in the person's desktop session; the
@@ -10,6 +12,13 @@
 /// whether a tray is there to raise the notification. The tray takes it only
 /// once it is following the service's events.
 pub const TRAY_BUS_NAME: &str = "org.betteros.AwakeTray1";
+
+/// The name a tray that speaks protocol version 3 also owns, beside
+/// [`TRAY_BUS_NAME`], to say it raises the closed-lid notification too. A tray
+/// installed before version 3 owns only the first name and cannot read a
+/// closed-lid stop, so the service raises that notification itself unless
+/// someone owns this one. Exactly one notification either way.
+pub const TRAY_LID_NOTIFY_BUS_NAME: &str = "org.betteros.AwakeTray1.Protocol3";
 
 /// A standard icon name from the freedesktop Icon Naming Specification, so the
 /// notification has an icon without Better Awake shipping artwork for it.
@@ -71,18 +80,36 @@ pub struct NotificationWording {
     pub low_battery_stop_summary: &'static str,
     /// `{percent}` is the reading that crossed it.
     pub low_battery_stop_body: &'static str,
+    /// `{limit}` is the closed-lid limit, already worded.
+    pub lid_closed_stop_summary: &'static str,
+    pub lid_closed_stop_body: &'static str,
+    /// Words a whole number of hours, `{hours}`.
+    pub hours: &'static str,
+    pub one_hour: &'static str,
+    /// Words a number of minutes, `{minutes}`.
+    pub minutes: &'static str,
 }
 
 pub const ZH_TW: NotificationWording = NotificationWording {
     application_name: "保持清醒",
     low_battery_stop_summary: "電量低於 {threshold}%，已停止保持清醒",
     low_battery_stop_body: "工作階段在電量剩 {percent}% 時結束。",
+    lid_closed_stop_summary: "螢幕闔上並使用電池已超過 {limit}，已停止保持清醒",
+    lid_closed_stop_body: "工作階段已結束，電腦可以進入睡眠，以免電池耗盡。",
+    hours: "{hours} 小時",
+    one_hour: "1 小時",
+    minutes: "{minutes} 分鐘",
 };
 
 pub const EN_US: NotificationWording = NotificationWording {
     application_name: "Better Awake",
     low_battery_stop_summary: "Stopped keeping awake: battery below {threshold}%",
     low_battery_stop_body: "The session ended at {percent}% battery.",
+    lid_closed_stop_summary: "Stopped keeping awake: lid closed on battery for {limit}",
+    lid_closed_stop_body: "The session ended so the computer can sleep before the battery runs out.",
+    hours: "{hours} hours",
+    one_hour: "1 hour",
+    minutes: "{minutes} minutes",
 };
 
 /// What one notification says.
@@ -109,6 +136,30 @@ pub fn low_battery_notification(
         body: wording
             .low_battery_stop_body
             .replace("{percent}", &percent.to_string()),
+    }
+}
+
+/// A length of minutes in this locale's words: whole hours as hours.
+pub fn limit_words(locale: Locale, minutes: u32) -> String {
+    let wording = locale.notification_wording();
+    match minutes {
+        60 => wording.one_hour.to_string(),
+        minutes if minutes % 60 == 0 => wording
+            .hours
+            .replace("{hours}", &(minutes / 60).to_string()),
+        minutes => wording.minutes.replace("{minutes}", &minutes.to_string()),
+    }
+}
+
+/// The wording for a session the closed-lid battery limit ended.
+pub fn lid_closed_notification(locale: Locale, limit_minutes: u32) -> Notification {
+    let wording = locale.notification_wording();
+    Notification {
+        application_name: wording.application_name,
+        summary: wording
+            .lid_closed_stop_summary
+            .replace("{limit}", &limit_words(locale, limit_minutes)),
+        body: wording.lid_closed_stop_body.to_string(),
     }
 }
 
@@ -157,6 +208,25 @@ mod tests {
                 "{}: a placeholder was left unfilled",
                 locale.tag()
             );
+        }
+    }
+
+    #[test]
+    fn the_closed_lid_notification_names_the_limit_in_both_locales() {
+        assert_eq!(
+            lid_closed_notification(Locale::ZhTw, 120).summary,
+            "螢幕闔上並使用電池已超過 2 小時，已停止保持清醒"
+        );
+        assert_eq!(
+            lid_closed_notification(Locale::EnUs, 60).summary,
+            "Stopped keeping awake: lid closed on battery for 1 hour"
+        );
+        assert_eq!(limit_words(Locale::EnUs, 30), "30 minutes");
+        assert_eq!(limit_words(Locale::ZhTw, 90), "90 分鐘");
+        for locale in [Locale::ZhTw, Locale::EnUs] {
+            let notification = lid_closed_notification(locale, 240);
+            assert!(!notification.summary.contains('{'));
+            assert!(!notification.body.is_empty());
         }
     }
 

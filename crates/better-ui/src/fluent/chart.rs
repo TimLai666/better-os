@@ -37,11 +37,28 @@ pub enum ChartHue {
     Green,
     /// Network.
     Orange,
-    /// Graphics and sensors.
+    /// Graphics.
     Teal,
+    /// Temperatures.
+    Red,
+    /// Neural processors.
+    Magenta,
 }
 
 impl ChartHue {
+    /// The hues a chart with many series of one kind (a branch graph's
+    /// lanes) cycles through, in order: the five resource hues. Red and
+    /// Magenta stay out. Red reads as an alarm, and both are kept for what
+    /// they name (temperatures, neural processors), so a lane is never
+    /// mistaken for either.
+    pub const SEQUENCE: [ChartHue; 5] = [
+        ChartHue::Blue,
+        ChartHue::Green,
+        ChartHue::Purple,
+        ChartHue::Orange,
+        ChartHue::Teal,
+    ];
+
     /// The line color in the given appearance.
     pub fn color(self, dark: bool) -> Rgba {
         let rgb = match (self, dark) {
@@ -55,6 +72,10 @@ impl ChartHue {
             (ChartHue::Orange, true) => 0xf0a35a,
             (ChartHue::Teal, false) => 0x00838f,
             (ChartHue::Teal, true) => 0x4fcfd6,
+            (ChartHue::Red, false) => 0xc0392b,
+            (ChartHue::Red, true) => 0xf2786b,
+            (ChartHue::Magenta, false) => 0xb4157a,
+            (ChartHue::Magenta, true) => 0xf07cc4,
         };
         super::hex(rgb)
     }

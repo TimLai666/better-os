@@ -86,6 +86,17 @@ async fn serve(
     Arc<Mutex<StorageCoordinator<FakeDeviceControl>>>,
 )> {
     let control = FakeDeviceControl::new([usb_stick(OBJECT, "/dev/sdb1", "A1B2-C3D4")]);
+    serve_with(bus, fixture, control).await
+}
+
+async fn serve_with(
+    bus: &PrivateBus,
+    fixture: &Fixture,
+    control: FakeDeviceControl,
+) -> zbus::Result<(
+    zbus::Connection,
+    Arc<Mutex<StorageCoordinator<FakeDeviceControl>>>,
+)> {
     let coordinator = StorageCoordinator::new(
         control,
         Arc::new(FakeFlush::default()),
@@ -341,4 +352,77 @@ async fn a_client_that_disconnects_mid_write_does_not_hold_the_device_forever() 
         call(&late, "NotifyOperationCompleted", &(notice.as_str())).await;
     assert!(completed.is_ok(), "{completed:?}");
     assert_eq!(kind_of(&coordinator).await, DeviceStateKind::ReadyToUnplug);
+}
+
+#[tokio::test]
+async fn an_image_write_reports_progress_and_never_holds_the_service_while_it_copies() {
+    use storage_platform::fake::{usb_disk, usb_partition};
+    const DRIVE: &str = "/org/freedesktop/UDisks2/drives/SN_X";
+    const DISK: &str = "/org/freedesktop/UDisks2/block_devices/sdc";
+    const PART: &str = "/org/freedesktop/UDisks2/block_devices/sdc1";
+    let bus = bus_or_skip!();
+    let fixture = Fixture::new("image");
+    let control = FakeDeviceControl::new([
+        usb_disk(DISK, "/dev/sdc", DRIVE),
+        usb_partition(PART, "/dev/sdc1", "AAAA-1111", DRIVE),
+    ]);
+    let release = control.hold_image_write();
+    let (_service, _coordinator) = serve_with(&bus, &fixture, control.clone()).await.unwrap();
+    let image = fixture.root.join("installer.iso");
+    std::fs::write(&image, vec![7u8; 4096]).unwrap();
+
+    let connection = client(&bus).await.unwrap();
+    let storage =
+        storage_service::StorageClient::with_destination(connection.clone(), TEST_NAME.to_string())
+            .await
+            .unwrap();
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writing = {
+        let storage = storage.clone();
+        let image = image.clone();
+        let heard = heard.clone();
+        tokio::spawn(async move {
+            storage
+                .write_image(DISK, &image, true, move |written, total| {
+                    heard.lock().unwrap().push((written, total))
+                })
+                .await
+        })
+    };
+
+    // The copy is held half way. The service still answers, and says the
+    // drive is being written; the volume on it refuses a mount.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !control
+        .calls()
+        .iter()
+        .any(|call| call.starts_with("write image"))
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let listed = tokio::time::timeout(std::time::Duration::from_secs(5), storage.list_devices())
+        .await
+        .expect("the service answers while the image is copied")
+        .unwrap();
+    assert!(
+        listed
+            .iter()
+            .filter(|report| report.drive.as_deref() == Some(DRIVE))
+            .all(|report| report.erasing)
+    );
+    let refused = storage.mount(PART).await.unwrap_err();
+    assert!(
+        refused.to_string().contains("storage.erase.busy"),
+        "{refused}"
+    );
+
+    release.send(()).unwrap();
+    let written = writing.await.unwrap().unwrap();
+    assert_eq!(written, 4096);
+    let heard = heard.lock().unwrap().clone();
+    assert!(!heard.is_empty(), "progress was signalled");
+    assert!(heard.iter().all(|(_, total)| *total == 4096));
+    // Afterwards the volume takes requests again.
+    storage.mount(PART).await.unwrap();
 }

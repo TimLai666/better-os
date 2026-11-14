@@ -85,6 +85,10 @@ pub enum Unit {
     /// A count of memory pages, kept distinct from `Count` because the page
     /// size is a property of the host rather than of the metric.
     Pages,
+    Volts,
+    Amperes,
+    RevolutionsPerMinute,
+    WattHours,
 }
 
 impl Unit {
@@ -105,6 +109,10 @@ impl Unit {
             Unit::DegreesCelsius => "degC",
             Unit::Watts => "W",
             Unit::Pages => "pages",
+            Unit::Volts => "V",
+            Unit::Amperes => "A",
+            Unit::RevolutionsPerMinute => "rpm",
+            Unit::WattHours => "Wh",
         }
     }
 }
