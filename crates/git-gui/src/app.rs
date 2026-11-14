@@ -36,12 +36,20 @@ pub(crate) const MIN_WINDOW_HEIGHT: f32 = 600.0;
 pub(crate) const BRANCH_ICON: &str = "better-git/branch.svg";
 const BRANCH_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10"/><path d="M18 9c0 5-12 3-12 8"/></svg>"#;
 
+/// The worktree glyph, for the toolbar's worktree cell and its rows: a
+/// folder with a branch in its corner, on the same grid.
+pub(crate) const WORKTREE_ICON: &str = "better-git/worktree.svg";
+const WORKTREE_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2"/><circle cx="15" cy="13" r="1.5"/><circle cx="15" cy="21" r="1.5"/><circle cx="21" cy="14" r="1.5"/><path d="M15 14.5v5"/><path d="M21 15.5c0 2.5-6 1.5-6 4"/></svg>"#;
+
 struct GitAssets;
 
 impl AssetSource for GitAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         if path == BRANCH_ICON {
             return Ok(Some(Cow::Borrowed(BRANCH_SVG.as_bytes())));
+        }
+        if path == WORKTREE_ICON {
+            return Ok(Some(Cow::Borrowed(WORKTREE_SVG.as_bytes())));
         }
         if path == crate::graph_pane::TAG_ICON {
             return Ok(Some(Cow::Borrowed(crate::graph_pane::TAG_SVG.as_bytes())));
@@ -58,6 +66,8 @@ impl AssetSource for GitAssets {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Flyout {
     Repositories,
+    /// The open repository's worktrees (ticket 116).
+    Worktrees,
     Branches,
 }
 
@@ -72,6 +82,8 @@ pub(crate) enum ContextTarget {
     GraphLabels(Vec<git_core::RefLabel>),
     Branch(String),
     Repository(PathBuf),
+    /// A row of the worktree dropdown.
+    Worktree(PathBuf),
 }
 
 /// The text fields a page or dialog uses.
@@ -81,6 +93,7 @@ pub(crate) struct Inputs {
     pub co_authors: Entity<InputState>,
     pub filter: Entity<InputState>,
     pub repo_search: Entity<InputState>,
+    pub worktree_search: Entity<InputState>,
     pub branch_search: Entity<InputState>,
     pub dialog: [Entity<InputState>; 3],
     pub editor: Entity<InputState>,
@@ -98,6 +111,15 @@ pub struct GitApp {
     pub(crate) graph: crate::graph_pane::GraphUi,
     pub(crate) focus_handle: FocusHandle,
     pub(crate) flyout: Option<Flyout>,
+    /// The row of the open dropdown the arrow keys are on.
+    pub(crate) highlight: Option<usize>,
+    /// What held focus while a dropdown was open, so focus left on one of
+    /// its controls when it closes comes back to the window.
+    pub(crate) flyout_focus: Vec<FocusHandle>,
+    /// How the open repository and worktree are named, worked out once per
+    /// frame (`GitSession::open_names`) for the toolbar, the title, and the
+    /// worktree dropdown.
+    pub(crate) names: Option<crate::session::OpenNames>,
     /// 0 branches, 1 pull requests.
     pub(crate) branch_tab: usize,
     /// File, View, Repository, Branch.
@@ -120,6 +142,9 @@ pub struct GitApp {
     pub(crate) editor_name: std::cell::RefCell<Option<(String, Option<String>)>>,
     /// The open repository's folders being watched for changes.
     pub(crate) live: crate::live::Live,
+    /// The window title last given to the desktop, so it is set when it
+    /// changes and not on every frame.
+    pub(crate) window_title: String,
     /// The dialog the dialog fields were last filled for.
     dialog_seen: Option<Dialog>,
     form_generation: u64,
@@ -131,6 +156,134 @@ pub struct GitApp {
     /// on screen to scroll.
     restored_diff_scroll: Option<f32>,
     _subscriptions: Vec<Subscription>,
+}
+
+impl GitApp {
+    /// Opens a toolbar dropdown with its search box empty and focused, so
+    /// typing filters at once and the arrow keys walk the rows.
+    pub(crate) fn open_flyout(
+        &mut self,
+        which: Flyout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if which == Flyout::Repositories {
+            self.session.read_worktrees();
+        }
+        self.flyout = Some(which);
+        self.highlight = None;
+        let search = match which {
+            Flyout::Repositories => &self.inputs.repo_search,
+            Flyout::Worktrees => &self.inputs.worktree_search,
+            Flyout::Branches => &self.inputs.branch_search,
+        };
+        // Each opening starts with every row, as GitHub Desktop's does.
+        search.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+            state.focus(window, cx)
+        });
+        self.highlight = None;
+    }
+
+    /// The toolbar cell's press: opens its dropdown, or closes it.
+    pub(crate) fn toggle_flyout(
+        &mut self,
+        which: Flyout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.flyout == Some(which) {
+            self.flyout = None;
+        } else {
+            self.open_flyout(which, window, cx);
+        }
+    }
+
+    /// The rows the open dropdown's keyboard walks, as what Enter does
+    /// with each: `None` for a row that opens nothing.
+    fn flyout_targets(&self, cx: &App) -> Vec<Option<FlyoutTarget>> {
+        match self.flyout {
+            Some(Flyout::Repositories) => {
+                let query = self.inputs.repo_search.read(cx).value().to_string();
+                self.session
+                    .repository_groups(&query)
+                    .into_iter()
+                    .map(|g| g.opens.map(FlyoutTarget::Open))
+                    .collect()
+            }
+            Some(Flyout::Worktrees) => {
+                let query = self.inputs.worktree_search.read(cx).value().to_string();
+                self.session
+                    .worktree_rows(&query)
+                    .into_iter()
+                    .map(|w| match (w.missing, w.current) {
+                        (true, _) => None,
+                        (false, true) => Some(FlyoutTarget::Close),
+                        (false, false) => Some(FlyoutTarget::Open(w.path)),
+                    })
+                    .collect()
+            }
+            Some(Flyout::Branches) if self.branch_tab == 0 => {
+                let Some(repo) = self.session.repo.as_ref() else {
+                    return Vec::new();
+                };
+                let query = self.inputs.branch_search.read(cx).value().to_string();
+                let default = repo.default_branch();
+                crate::branches::rows(
+                    &repo.info.branches,
+                    default.as_deref(),
+                    &repo.recent_branches,
+                    &query,
+                )
+                .into_iter()
+                .map(|b| Some(FlyoutTarget::Switch(b.name)))
+                .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Up or Down in an open dropdown. Says whether it took the key.
+    pub(crate) fn flyout_step(&mut self, down: bool, cx: &mut Context<Self>) -> bool {
+        let len = self.flyout_targets(cx).len();
+        if self.flyout.is_none() || len == 0 {
+            return false;
+        }
+        self.highlight = crate::keys::step(self.highlight, len, down);
+        cx.notify();
+        true
+    }
+
+    /// Enter in an open dropdown: does what a press on the highlighted row
+    /// does. Says whether it took the key.
+    pub(crate) fn flyout_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self.highlight else {
+            return false;
+        };
+        let Some(target) = self.flyout_targets(cx).into_iter().nth(index) else {
+            return false;
+        };
+        let Some(target) = target else {
+            return true;
+        };
+        self.flyout = None;
+        self.highlight = None;
+        match target {
+            FlyoutTarget::Open(path) => self.session.open(path),
+            FlyoutTarget::Switch(name) => self.session.switch_branch(&name),
+            FlyoutTarget::Close => {}
+        }
+        self.drive(window, cx);
+        cx.notify();
+        true
+    }
+}
+
+/// What Enter on a dropdown row does.
+enum FlyoutTarget {
+    Open(PathBuf),
+    Switch(String),
+    Close,
 }
 
 /// The window's application id, which the desktop entry is named after.
@@ -195,6 +348,7 @@ impl GitApp {
             co_authors: multi(window, cx, 2, c.co_authors_placeholder),
             filter: field(window, cx, c.filter_changes),
             repo_search: field(window, cx, c.filter_repositories),
+            worktree_search: field(window, cx, c.filter_worktrees()),
             branch_search: field(window, cx, c.filter_branches),
             dialog: [
                 field(window, cx, ""),
@@ -302,6 +456,7 @@ impl GitApp {
         }
         for input in [
             inputs.repo_search.clone(),
+            inputs.worktree_search.clone(),
             inputs.branch_search.clone(),
             inputs.dialog[0].clone(),
             inputs.dialog[1].clone(),
@@ -310,7 +465,11 @@ impl GitApp {
                 &input,
                 window,
                 |this, _, event: &InputEvent, window, cx| match event {
-                    InputEvent::Change => cx.notify(),
+                    InputEvent::Change => {
+                        // A new search starts the keyboard highlight over.
+                        this.highlight = None;
+                        cx.notify()
+                    }
                     InputEvent::PressEnter { .. } if this.session.dialog.is_some() => {
                         this.confirm_dialog(window, cx)
                     }
@@ -375,6 +534,9 @@ impl GitApp {
             graph,
             focus_handle: cx.focus_handle(),
             flyout: None,
+            highlight: None,
+            flyout_focus: Vec::new(),
+            names: None,
             branch_tab: 0,
             app_menu: [new_state(cx), new_state(cx), new_state(cx), new_state(cx)],
             context_menu: new_state(cx),
@@ -387,6 +549,7 @@ impl GitApp {
             dialog_check: std::cell::RefCell::new(None),
             editor_name: std::cell::RefCell::new(None),
             live: crate::live::Live::default(),
+            window_title: String::new(),
             dialog_seen: None,
             form_generation: 0,
             config_loaded: false,
@@ -626,10 +789,17 @@ impl GitApp {
         self.dialog_touched = [false; 3];
         // After the dialog has drawn once: the dialog takes focus for its
         // own trap on its first frame, and the first field takes it next.
+        // A dialog opened from a menu item is drawn one frame later than
+        // one opened from a button (the menu closes first), so the field is
+        // focused on each of the next two frames; the second is a no-op
+        // when the first already held.
         if crate::dialogs::field_count(self.session.dialog.as_ref().expect("opened")) > 0 {
             let first = self.inputs.dialog[0].clone();
             cx.on_next_frame(window, move |_, window, cx| {
                 first.update(cx, |state, cx| state.focus(window, cx));
+                cx.on_next_frame(window, move |_, window, cx| {
+                    first.update(cx, |state, cx| state.focus(window, cx));
+                });
             });
         }
     }
@@ -643,12 +813,16 @@ impl GitApp {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
         let repo = self.session.repo.as_ref();
+        let names = self.names.clone();
         let one = |s: String| [s, String::new(), String::new()];
         match &self.session.dialog {
             Some(Dialog::Clone { .. }) | Some(Dialog::NewRepository { .. }) => {
                 [String::new(), clone_folder, String::new()]
             }
-            Some(Dialog::Publish { .. }) => one(repo.map(|r| r.name()).unwrap_or_default()),
+            Some(Dialog::Publish { .. }) => one(names
+                .as_ref()
+                .map(|n| n.repository_folder.clone())
+                .unwrap_or_default()),
             Some(Dialog::Alias { path }) => one(self
                 .session
                 .repositories
@@ -662,10 +836,11 @@ impl GitApp {
                 self.session.squash_message(*from, *to),
             ],
             Some(Dialog::AddWorktree { .. }) => one(repo
-                .and_then(|r| {
+                .zip(names.as_ref())
+                .and_then(|(r, n)| {
                     r.root
                         .parent()
-                        .map(|p| p.join(format!("{}-worktree", r.name())))
+                        .map(|p| p.join(format!("{}-worktree", n.repository_folder)))
                 })
                 .map(|p| p.display().to_string())
                 .unwrap_or_default()),
@@ -965,12 +1140,9 @@ impl GitApp {
             Action::FindInGraph if self.graph_find_allowed(window, cx) => {
                 self.open_graph_find(window, cx);
             }
-            Action::RepositoryList => {
-                self.session.read_worktrees();
-                self.flyout = Some(Flyout::Repositories);
-            }
+            Action::RepositoryList => self.open_flyout(Flyout::Repositories, window, cx),
             Action::BranchList if has_repo => {
-                self.flyout = Some(Flyout::Branches);
+                self.open_flyout(Flyout::Branches, window, cx);
                 self.branch_tab = 0;
             }
             Action::PullRequest if has_repo => {
@@ -983,7 +1155,7 @@ impl GitApp {
                     });
                 }
             }
-            Action::WorktreeList if has_repo => self.session.dialog = Some(Dialog::Worktrees),
+            Action::WorktreeList if has_repo => self.open_flyout(Flyout::Worktrees, window, cx),
             Action::GoToSummary => {
                 self.inputs
                     .summary

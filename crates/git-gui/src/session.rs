@@ -110,6 +110,9 @@ pub enum OpKind {
     AddWorktree,
     RenameWorktree,
     RemoveWorktree,
+    LockWorktree,
+    UnlockWorktree,
+    PruneWorktrees,
     Fetch,
     BackgroundFetch,
     Pull,
@@ -268,6 +271,15 @@ pub enum Op {
     LastCommit,
     /// The worktrees of these repositories, for the repository list.
     ReadWorktrees(Vec<PathBuf>),
+    /// What a worktree holds that removing it would delete, for the
+    /// remove confirmation (ticket 116).
+    WorktreeChanges(PathBuf),
+    LockWorktree {
+        path: PathBuf,
+        reason: Option<String>,
+    },
+    UnlockWorktree(PathBuf),
+    PruneWorktrees,
 }
 
 impl Op {
@@ -292,6 +304,9 @@ impl Op {
             Op::AddWorktree { .. } => OpKind::AddWorktree,
             Op::RenameWorktree { .. } => OpKind::RenameWorktree,
             Op::RemoveWorktree { .. } => OpKind::RemoveWorktree,
+            Op::LockWorktree { .. } => OpKind::LockWorktree,
+            Op::UnlockWorktree(_) => OpKind::UnlockWorktree,
+            Op::PruneWorktrees => OpKind::PruneWorktrees,
             Op::Fetch {
                 background: true, ..
             } => OpKind::BackgroundFetch,
@@ -375,6 +390,12 @@ pub enum Answer {
         refusal: String,
     },
     LastCommit(Result<Vec<Commit>, GitError>),
+    /// The changed and untracked files in a worktree; `None` when Git
+    /// could not read it.
+    WorktreeChanges {
+        path: PathBuf,
+        changes: Option<WorktreeChanges>,
+    },
     /// Each repository's worktrees; a repository that could not be read is
     /// left out.
     Worktrees(Vec<(PathBuf, Option<Known>)>),
@@ -557,6 +578,11 @@ impl Job {
                 create,
             } => changed(kind, git.add_worktree(root, &path, &branch, create)),
             Op::RenameWorktree { from, to } => changed(kind, git.move_worktree(root, &from, &to)),
+            Op::LockWorktree { path, reason } => {
+                changed(kind, git.lock_worktree(root, &path, reason.as_deref()))
+            }
+            Op::UnlockWorktree(path) => changed(kind, git.unlock_worktree(root, &path)),
+            Op::PruneWorktrees => changed(kind, git.prune_worktrees(root)),
             Op::RemoveWorktree { path, force } => {
                 changed(kind, git.remove_worktree(root, &path, force))
             }
@@ -606,6 +632,13 @@ impl Job {
             },
             Op::ReadGitConfig => Answer::GitConfig(read_config(git)),
             Op::LastCommit => Answer::LastCommit(git.log(root, "HEAD", 0, 1)),
+            Op::WorktreeChanges(path) => Answer::WorktreeChanges {
+                changes: git
+                    .status(&path)
+                    .ok()
+                    .map(|status| WorktreeChanges::of(&status)),
+                path,
+            },
             Op::ReadWorktrees(paths) => Answer::Worktrees(
                 paths
                     .into_iter()
@@ -800,6 +833,52 @@ pub struct RepoGitHub {
     pub loaded: bool,
 }
 
+/// The window's title for what is open ([`GitSession::window_title`]),
+/// from names already worked out.
+pub fn window_title(names: Option<&OpenNames>, app_name: &str) -> String {
+    match names {
+        Some(names) if names.linked => {
+            format!("{} · {} — {app_name}", names.repository, names.worktree)
+        }
+        Some(names) => format!("{} — {app_name}", names.repository),
+        None => app_name.to_string(),
+    }
+}
+
+/// What removing a worktree would delete with its folder.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WorktreeChanges {
+    /// Tracked files with changes, staged or not, and unmerged ones.
+    pub changed: usize,
+    pub untracked: usize,
+}
+
+impl WorktreeChanges {
+    pub fn of(status: &RepositoryStatus) -> WorktreeChanges {
+        let untracked = status.changes.iter().filter(|c| c.untracked).count();
+        WorktreeChanges {
+            changed: status.changes.len() - untracked,
+            untracked,
+        }
+    }
+}
+
+/// How what is open is named ([`GitSession::open_names`]).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenNames {
+    /// The repository's name: its alias, else its main worktree's folder.
+    pub repository: String,
+    /// The open worktree's folder name.
+    pub worktree: String,
+    /// The open folder is not the main worktree.
+    pub linked: bool,
+    /// The repository has no worktree besides its main one.
+    pub only_main: bool,
+    /// The main worktree's folder name, never the alias: what a new
+    /// worktree's folder or a published repository is named after.
+    pub repository_folder: String,
+}
+
 /// The open repository.
 #[derive(Clone, Debug)]
 pub struct Repo {
@@ -873,10 +952,6 @@ impl Repo {
             BranchHead::Branch(name) => Some(name),
             BranchHead::Detached => None,
         }
-    }
-
-    pub fn name(&self) -> String {
-        crate::repositories::folder_name(&self.root)
     }
 
     /// The default branch's name, from the remote's HEAD or the usual names.
@@ -1078,6 +1153,9 @@ pub struct GitSession {
     identity_reading: bool,
     /// What Git said about the repositories in the list, as last read.
     pub worktrees_of: Vec<(PathBuf, Known)>,
+    /// The worktree a remove confirmation is about, and what it holds once
+    /// read (`Some(None)`: Git could not read it).
+    worktree_changes: Option<(PathBuf, Option<Option<WorktreeChanges>>)>,
     /// Folders in the list the last read found gone or not a repository;
     /// the dropdown draws from this rather than touching the disk.
     absent: Vec<PathBuf>,
@@ -1143,6 +1221,7 @@ impl GitSession {
             identity_refusal: None,
             identity_reading: false,
             worktrees_of: Vec::new(),
+            worktree_changes: None,
             absent: Vec::new(),
             list_job: None,
             list_running: false,
@@ -1211,7 +1290,10 @@ impl GitSession {
             self.background_cancel.cancel();
         }
         if kind != OpKind::BackgroundFetch
-            && !matches!(op, Op::Refresh | Op::Diff { .. } | Op::LastCommit)
+            && !matches!(
+                op,
+                Op::Refresh | Op::Diff { .. } | Op::LastCommit | Op::WorktreeChanges(_)
+            )
         {
             repo.busy = Some(kind);
         }
@@ -1751,10 +1833,23 @@ impl GitSession {
 
     // --- worktrees in the lists --------------------------------------------
 
+    /// Takes the recently opened folders from the file, which every window
+    /// writes, so one window does not write back a list another window has
+    /// moved on from. A file that is not there leaves the list as it is.
+    pub fn reload_recent(&mut self) {
+        if let Some(file) = &self.recent_file
+            && file.exists()
+        {
+            self.recent = crate::recent::load(file);
+        }
+    }
+
     /// Reads every folder in the list in the background: its worktrees,
     /// its repository, and whether it is still there. One read at a time;
     /// asked for while one runs, it runs again afterwards.
     pub fn read_worktrees(&mut self) {
+        // The dropdowns open here: what other windows opened counts too.
+        self.reload_recent();
         if self.list_running {
             self.list_again = true;
             return;
@@ -1852,6 +1947,112 @@ impl GitSession {
             |path| self.known_for(path),
             |path| !self.absent.iter().any(|a| a == path),
         )
+    }
+
+    /// What Git said about the open repository, with the worktrees of its
+    /// latest snapshot. When the open read could not say (Git could not
+    /// place the repository), the snapshot's worktrees stand alone.
+    fn open_known(&self) -> Option<Known> {
+        let repo = self.repo.as_ref()?;
+        Some(match repo.known.as_ref() {
+            Some(known) => {
+                // A linked worktree of a `--separate-git-dir` repository
+                // cannot say where its main worktree is; another folder of
+                // the same repository in the list may have.
+                let main = known.main.clone().or_else(|| {
+                    let common = known.common_dir.as_ref()?;
+                    self.worktrees_of
+                        .iter()
+                        .map(|(_, k)| k)
+                        .find(|k| k.common_dir.as_ref() == Some(common) && k.main.is_some())?
+                        .main
+                        .clone()
+                });
+                Known {
+                    worktrees: repo.info.worktrees.clone(),
+                    main,
+                    ..known.clone()
+                }
+            }
+            None => Known {
+                main: repo
+                    .info
+                    .worktrees
+                    .iter()
+                    .find(|w| w.main && !w.bare)
+                    .map(|w| w.path.clone()),
+                worktrees: repo.info.worktrees.clone(),
+                ..Known::default()
+            },
+        })
+    }
+
+    /// How the toolbar, the window title, and the dialogs name what is
+    /// open (ticket 116): the repository as its row in the repository list
+    /// names it (the alias, else the main worktree's folder), and the open
+    /// worktree by its folder. Read from what is already known; nothing
+    /// here touches the disk.
+    pub fn open_names(&self) -> Option<OpenNames> {
+        let repo = self.repo.as_ref()?;
+        let known = self.open_known();
+        let repository = self
+            .repository_groups("")
+            .into_iter()
+            .find(|g| g.current)
+            .map(|g| g.name)
+            .or_else(|| self.repositories.alias(&repo.root).map(str::to_string))
+            .unwrap_or_else(|| {
+                let folder = known
+                    .as_ref()
+                    .and_then(Known::repository)
+                    .unwrap_or_else(|| repo.root.clone());
+                crate::repositories::repository_folder_name(&folder)
+            });
+        let main = known.as_ref().and_then(|k| k.main.clone());
+        let linked = main.as_deref() != Some(repo.root.as_path());
+        // A bare repository's one worktree is not a main worktree.
+        let others = known.as_ref().is_some_and(|k| {
+            crate::repositories::worktree_list(k, None, "")
+                .iter()
+                .any(|w| !w.main)
+        });
+        Some(OpenNames {
+            repository,
+            worktree: crate::repositories::folder_name(&repo.root),
+            linked,
+            only_main: !others && !linked,
+            repository_folder: crate::repositories::repository_folder_name(
+                &main
+                    .or_else(|| known.as_ref().and_then(Known::repository))
+                    .unwrap_or_else(|| repo.root.clone()),
+            ),
+        })
+    }
+
+    /// The name the repository list gives the repository a saved entry
+    /// belongs to, for a dialog about it.
+    pub fn repository_name(&self, entry: &Path) -> String {
+        self.repository_groups("")
+            .into_iter()
+            .find(|g| g.entries.iter().any(|e| e == entry))
+            .map(|g| g.name)
+            .unwrap_or_else(|| crate::repositories::folder_name(entry))
+    }
+
+    /// The window's title: the repository's name, with the worktree's
+    /// folder after it when that is not the main worktree, then the
+    /// application's name. Just the application's name with nothing open.
+    pub fn window_title(&self, app_name: &str) -> String {
+        window_title(self.open_names().as_ref(), app_name)
+    }
+
+    /// The rows of the toolbar's worktree dropdown, for a search: the open
+    /// repository's worktrees, the main one and the open one marked.
+    pub fn worktree_rows(&self, query: &str) -> Vec<crate::repositories::WorktreeRow> {
+        let (Some(repo), Some(known)) = (self.repo.as_ref(), self.open_known()) else {
+            return Vec::new();
+        };
+        crate::repositories::worktree_list(&known, Some(&repo.root), query)
     }
 
     /// Keeps what the background read said, and folds saved entries that
@@ -2731,7 +2932,65 @@ impl GitSession {
 
     pub fn remove_worktree(&mut self, path: PathBuf, force: bool) {
         self.dialog = None;
+        self.worktree_changes = None;
         self.push_op(Op::RemoveWorktree { path, force });
+    }
+
+    /// Locks a worktree, with a reason when one was typed.
+    pub fn lock_worktree(&mut self, path: PathBuf, reason: &str) {
+        self.dialog = None;
+        let reason = Some(reason.trim().to_string()).filter(|r| !r.is_empty());
+        self.push_op(Op::LockWorktree { path, reason });
+    }
+
+    pub fn unlock_worktree(&mut self, path: PathBuf) {
+        self.push_op(Op::UnlockWorktree(path));
+    }
+
+    /// Asks before clearing worktrees whose folder is gone from the list.
+    /// Git clears every one of them at once, so the confirmation names
+    /// each; a locked one stays and is not named.
+    pub fn ask_clear_worktrees(&mut self) {
+        let paths: Vec<PathBuf> = self
+            .worktree_rows("")
+            .into_iter()
+            .filter(|w| w.missing && !w.locked)
+            .map(|w| w.path)
+            .collect();
+        if !paths.is_empty() {
+            self.dialog = Some(Dialog::ClearWorktrees { paths });
+        }
+    }
+
+    pub fn clear_worktrees(&mut self) {
+        self.dialog = None;
+        self.push_op(Op::PruneWorktrees);
+    }
+
+    /// Asks before removing a worktree, and reads in the background what
+    /// it holds that the removal would delete. The open worktree, the main
+    /// one, and a locked one cannot be removed from here.
+    pub fn ask_remove_worktree(&mut self, path: PathBuf) {
+        let removable = self
+            .worktree_rows("")
+            .iter()
+            .any(|w| w.path == path && w.removable());
+        if !removable {
+            return;
+        }
+        self.worktree_changes = Some((path.clone(), None));
+        self.push_op(Op::WorktreeChanges(path.clone()));
+        self.dialog = Some(Dialog::RemoveWorktree { path, force: false });
+    }
+
+    /// What the worktree being asked about holds: `None` while it is read,
+    /// `Some(None)` when Git could not read it.
+    pub fn worktree_changes_for(&self, path: &Path) -> Option<Option<WorktreeChanges>> {
+        let (asked, found) = self.worktree_changes.as_ref()?;
+        if asked != path {
+            return None;
+        }
+        *found
     }
 
     // --- remotes ----------------------------------------------------------
@@ -2986,8 +3245,7 @@ impl GitSession {
         let mut current = false;
         if let Some(group) = group {
             entries.extend(group.entries.iter().cloned());
-            folders.extend(group.entries);
-            folders.extend(group.worktrees.into_iter().map(|w| w.path));
+            folders.extend(group.folders);
             current = group.current;
         }
         if let Some(known) = self.known_for(path) {
@@ -2996,6 +3254,7 @@ impl GitSession {
         if let Err(error) = self.repositories.remove_all(&entries) {
             self.problem = Some(Problem::Io(error.to_string()));
         }
+        self.reload_recent();
         self.recent.retain(|p| !folders.contains(p));
         if let Some(file) = &self.recent_file {
             let _ = crate::recent::save(file, &self.recent);
@@ -3301,6 +3560,8 @@ impl GitSession {
         if let Err(error) = self.repositories.add_opened(root, &repository) {
             self.problem = Some(Problem::Io(error.to_string()));
         }
+        // Another window may have written the list since: start from it.
+        self.reload_recent();
         self.recent = crate::recent::remember(&self.recent, root.to_path_buf());
         if let Some(file) = &self.recent_file
             && let Err(error) = crate::recent::save(file, &self.recent)
@@ -3550,6 +3811,14 @@ impl GitSession {
                         }
                     }
                     Err(error) => self.problem = Some(read_failed(error)),
+                }
+                self.idle();
+            }
+            Answer::WorktreeChanges { path, changes } => {
+                if let Some((asked, found)) = self.worktree_changes.as_mut()
+                    && *asked == path
+                {
+                    *found = Some(changes);
                 }
                 self.idle();
             }
