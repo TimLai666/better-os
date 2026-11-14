@@ -200,6 +200,12 @@ pub struct FilesPreferences {
     /// The file operations panel's width in logical pixels, when the person
     /// dragged its edge; `None` is the default ([`crate::layout::OPERATIONS_EDGE`]).
     pub operations_width: Option<u32>,
+    /// The navigation pane's open width, when dragged (ticket 118);
+    /// `None` is [`crate::layout::SIDEBAR_EDGE`]'s default.
+    pub sidebar_width: Option<u32>,
+    /// The preview pane's width, shared by the application details that
+    /// take its place; `None` is [`crate::layout::PREVIEW_EDGE`]'s default.
+    pub preview_width: Option<u32>,
     sort_key: StoredSortKey,
     sort_direction: StoredSortDirection,
 }
@@ -217,10 +223,42 @@ impl Default for FilesPreferences {
             preview_open: false,
             search_hidden: false,
             operations_width: None,
+            sidebar_width: None,
+            preview_width: None,
             sort_key: StoredSortKey::from_key(order.key),
             sort_direction: StoredSortDirection::Ascending,
         }
     }
+}
+
+/// The preferences a window writes when another window may have written
+/// since it read them: every field this window changed (`ours` differs from
+/// `base`, what it last read or wrote) from `ours`, every other one from
+/// `disk`. One window's sidebar width no longer undoes another's view mode.
+pub fn merge_preferences(
+    base: &FilesPreferences,
+    ours: &FilesPreferences,
+    disk: &FilesPreferences,
+) -> FilesPreferences {
+    let fallback = *ours;
+    let (
+        Ok(serde_json::Value::Object(base_fields)),
+        Ok(serde_json::Value::Object(our_fields)),
+        Ok(serde_json::Value::Object(mut merged)),
+    ) = (
+        serde_json::to_value(base),
+        serde_json::to_value(ours),
+        serde_json::to_value(disk),
+    )
+    else {
+        return fallback;
+    };
+    for (key, value) in &our_fields {
+        if base_fields.get(key) != Some(value) {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(merged)).unwrap_or(fallback)
 }
 
 impl FilesPreferences {

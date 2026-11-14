@@ -56,6 +56,8 @@ pub enum MenuCommand {
     RenameBookmark,
     MoveBookmarkUp,
     MoveBookmarkDown,
+    MoveBookmarkToTop,
+    MoveBookmarkToBottom,
     RemoveBookmark,
     Eject,
     Mount,
@@ -278,6 +280,11 @@ pub fn sidebar_menu(kind: SidebarKind, c: &'static Copy) -> Vec<MenuLine> {
             );
             lines.push(
                 MenuLine::new(M::MoveBookmarkDown, c.move_down, Some("Alt+Down"))
+                    .enabled(index + 1 < count),
+            );
+            lines.push(MenuLine::new(M::MoveBookmarkToTop, c.move_to_top, None).enabled(index > 0));
+            lines.push(
+                MenuLine::new(M::MoveBookmarkToBottom, c.move_to_bottom, None)
                     .enabled(index + 1 < count),
             );
             lines.push(MenuLine::Separator);

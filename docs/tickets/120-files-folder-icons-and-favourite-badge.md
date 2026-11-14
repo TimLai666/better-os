@@ -1,6 +1,6 @@
 # Ticket 120 — Better Files: a Developer folder icon, and favourites keep their own icon
 
-**Blocked by:** none · **Status:** open
+**Blocked by:** none · **Status:** merged, not released
 
 ## Why
 
@@ -45,12 +45,58 @@ sidebar places (`crates/files-gui/src/icons.rs` `place_icon`).
 
 ## Acceptance
 
-- [ ] Unit tests: each special folder maps to its icon in every place that
+- [x] Unit tests: each special folder maps to its icon in every place that
       asks; the developer spellings; a pinned Documents keeps the Documents
       icon with the badge; an ordinary pinned folder keeps the folder icon
       with the badge.
-- [ ] Every new glyph is served and is an SVG (extend the existing test).
-- [ ] Screenshots: sidebar with pinned special and ordinary folders, the home
+- [x] Every new glyph is served and is an SVG (extend the existing test).
+- [x] Screenshots: sidebar with pinned special and ordinary folders, the home
       folder in icon and list views, light and dark.
-- [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests and
+- [x] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests and
       the license check pass.
+
+## What was built
+
+- **One decision.** `icons::folder_glyph` says what a folder is from its
+  path, the session's user directories and its mount table, never the disk:
+  home, Desktop, Documents, Downloads, Music, Pictures, Videos, Templates,
+  Public, the trash, a mounted drive's top folder, a server's folder (a
+  network location, or a GVfs mount), the developer folder, else a folder.
+  It is used by the sidebar's places and favourites, the path bar, tabs,
+  the columns view, and the list and icon views; the preview pane draws no
+  folder icon, so it has nothing to change.
+- **The developer folder** is a folder directly under home named, in any
+  case, `Developer`, `Development`, `dev`, `Projects`, `Code`, `src`,
+  `source` or `repos` (`icons::DEVELOPER_NAMES`). Its glyph is a folder with
+  angle brackets, drawn for this in the 24 px, 2 px stroke grid of Better
+  Files' other glyphs. In the full-colour views, where icon themes have no
+  developer folder, it is the theme's folder with a small `</>` mark on a
+  disc at its corner.
+- **Favourites keep their icon.** A pinned folder is drawn as itself (a
+  pinned Documents keeps the Documents icon) with a small accent star on
+  its icon's corner (the kit's `NavItem::emblem`). Better Files' sidebar
+  only offers folders as favourites (a pinned file shows as unavailable, as
+  before), so there is no file-type case to draw.
+- **New glyphs**, each served and tested as SVG: home, Templates, Public,
+  developer, the `</>` mark; drives and servers use the kit's hard drive and
+  globe.
+- A git repository mark in the content view was left out: knowing it needs
+  a look inside each folder for `.git`, which the drawing must not do.
+
+Tests (`tests.rs`): every special folder, the developer spellings and what
+is not one, a drive and a GVfs server folder, a pinned Documents and an
+ordinary pinned folder with the star (and a place without it), and every
+glyph served as SVG (`icons.rs`). Screenshots in `.shots/`:
+`t120-home-grid-light.png`, `t120-home-list-light.png`,
+`t120-home-grid-dark.png`, `t120-home-list-dark.png` (the sidebar with a
+pinned Documents, an ordinary folder and the developer folder).
+
+## After review
+
+- The star on a favourite has no disc behind it (a disc of one fill showed
+  as a wrong dot on a hovered or selected row); it sits off the icon's
+  corner. The content view's `</>` mark is never smaller than 14 px, so it
+  reads on a 16 px list icon (`t120-review-list-100pct.png`).
+- The folder icon decision in the content view is one function
+  (`views::folder_row_icon`), tested; `/Developer` is found when HOME is
+  `/`, and a user folder set to HOME is drawn as home.

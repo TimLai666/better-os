@@ -85,6 +85,24 @@ pub const OPERATIONS_EDGE: PaneEdge = PaneEdge {
     max_fraction: 1.0 / 3.0,
 };
 
+/// The navigation pane (ticket 118): WinUI's 320px list pane by default;
+/// at 200px a section label and a folder name still read; at most two
+/// fifths of the window, so the folder keeps the rest.
+pub const SIDEBAR_EDGE: PaneEdge = PaneEdge {
+    default: 320.0,
+    min: 200.0,
+    max_fraction: 0.4,
+};
+
+/// The preview pane and the application details in its place (ticket
+/// 118): 320px as before, from 240px (a thumbnail and its caption) to a
+/// third of the window.
+pub const PREVIEW_EDGE: PaneEdge = PaneEdge {
+    default: 320.0,
+    min: 240.0,
+    max_fraction: 1.0 / 3.0,
+};
+
 /// How wide the strip a person grabs to drag a pane's edge is: wider than the
 /// 1px divider drawn in it, as in Windows 11 File Explorer.
 pub const PANE_EDGE_HIT_WIDTH: f32 = 8.0;
@@ -188,18 +206,78 @@ pub fn split_viewport_width(window_width: f32, nav_width: f32) -> f32 {
     nav_width + half
 }
 
-/// The width of the panels beside the content area: the app details (360)
-/// or the preview (320, hidden in a compact window), and the operation
-/// center (420). Every one that is drawn takes its width from the content.
-pub fn side_panels_width(details: bool, preview: bool, compact: bool, operations: bool) -> f32 {
-    let column = if details {
-        360.0
-    } else if preview && !compact {
-        320.0
-    } else {
-        0.0
+/// The narrowest the folder itself may be made by the panes around it:
+/// a name column and a size, or two tiles.
+pub const MIN_CONTENT_WIDTH: f32 = 320.0;
+
+/// What one window pane lays out: its width (less the frame's shadow), the
+/// whole window's for the sidebar, and the stored widths of the panes that
+/// are drawn (`None` for one that is not, `Some(None)` for one at its
+/// default).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneInputs {
+    /// The window as the person sees it; the sidebar is a share of this.
+    pub window: f32,
+    /// This pane's own width, sidebar included (half the window in a split).
+    pub pane: f32,
+    /// `None` when the navigation pane is compact (48px).
+    pub sidebar: Option<Option<u32>>,
+    /// The preview, or the application details in its place.
+    pub side: Option<Option<u32>>,
+    pub operations: Option<Option<u32>>,
+    /// A sidebar width decided elsewhere: the right half of a split is laid
+    /// out beside the left half's sidebar.
+    pub fixed_nav: Option<f32>,
+}
+
+/// Every pane's width, decided together, so the folder keeps
+/// [`MIN_CONTENT_WIDTH`] however wide each pane was dragged (ticket 118).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneLayout {
+    pub nav: f32,
+    pub side: f32,
+    pub operations: f32,
+    /// What is left for the folder.
+    pub content: f32,
+}
+
+/// Lays a window pane out: each pane at its stored width within its own
+/// limits, then the side panes narrowed (the operations panel first) and
+/// the sidebar after them, never below their minimums, until the folder has
+/// [`MIN_CONTENT_WIDTH`].
+pub fn pane_layout(inputs: PaneInputs) -> PaneLayout {
+    let nav = match inputs.sidebar {
+        _ if inputs.fixed_nav.is_some() => inputs.fixed_nav.unwrap_or(48.0),
+        None => 48.0,
+        Some(stored) => {
+            let wanted = SIDEBAR_EDGE.resolve(stored, inputs.window);
+            let room = (inputs.window - MIN_CONTENT_WIDTH).max(SIDEBAR_EDGE.min);
+            wanted.min(room)
+        }
     };
-    column + if operations { 420.0 } else { 0.0 }
+    let area = (inputs.pane - nav).max(0.0);
+    let mut side = inputs
+        .side
+        .map_or(0.0, |stored| PREVIEW_EDGE.resolve(stored, area));
+    let mut operations = inputs
+        .operations
+        .map_or(0.0, |stored| OPERATIONS_EDGE.resolve(stored, area));
+    let mut over = side + operations + MIN_CONTENT_WIDTH - area;
+    if over > 0.0 && operations > 0.0 {
+        let cut = over.min(operations - OPERATIONS_EDGE.min).max(0.0);
+        operations -= cut;
+        over -= cut;
+    }
+    if over > 0.0 && side > 0.0 {
+        let cut = over.min(side - PREVIEW_EDGE.min).max(0.0);
+        side -= cut;
+    }
+    PaneLayout {
+        nav,
+        side,
+        operations,
+        content: (area - side - operations).max(0.0),
+    }
 }
 
 /// How many rows a viewport of this height shows, which is the page size for
@@ -258,5 +336,82 @@ mod tests {
         assert_eq!(edge.store(edge.default, 1_200.0), None);
         assert_eq!(edge.store(280.4, 1_200.0), Some(280));
         assert_eq!(edge.store(5_000.0, 1_200.0), Some(400));
+    }
+
+    fn inputs(window: f32) -> PaneInputs {
+        PaneInputs {
+            window,
+            pane: window,
+            sidebar: Some(None),
+            side: None,
+            operations: None,
+            fixed_nav: None,
+        }
+    }
+
+    #[test]
+    fn the_folder_keeps_its_width_whatever_the_panes_were_dragged_to() {
+        // Everything open and dragged wide, in the narrowest window.
+        let crowded = pane_layout(PaneInputs {
+            side: Some(Some(5_000)),
+            operations: Some(Some(5_000)),
+            sidebar: Some(Some(5_000)),
+            ..inputs(MIN_WINDOW_WIDTH)
+        });
+        assert!(crowded.content >= MIN_CONTENT_WIDTH - 0.01 || crowded.side == PREVIEW_EDGE.min);
+        assert!(crowded.operations >= OPERATIONS_EDGE.min);
+        assert!(crowded.side >= PREVIEW_EDGE.min);
+        assert!(
+            (crowded.nav + crowded.side + crowded.operations + crowded.content - MIN_WINDOW_WIDTH)
+                .abs()
+                < 0.01
+        );
+        // With room, each keeps what it was dragged to.
+        let roomy = pane_layout(PaneInputs {
+            side: Some(Some(300)),
+            operations: Some(Some(260)),
+            ..inputs(1_800.0)
+        });
+        assert_eq!(
+            (roomy.nav, roomy.side, roomy.operations),
+            (320.0, 300.0, 260.0)
+        );
+        assert_eq!(roomy.content, 1_800.0 - 320.0 - 300.0 - 260.0);
+    }
+
+    #[test]
+    fn a_split_pane_s_preview_is_a_share_of_that_pane() {
+        let half = pane_layout(PaneInputs {
+            pane: 700.0,
+            side: Some(Some(600)),
+            ..inputs(1_400.0)
+        });
+        // A third of the 380px this pane has beside the sidebar, never the
+        // window's third.
+        assert!(half.side <= (700.0 - 320.0) / 3.0 + 0.01 || half.side == PREVIEW_EDGE.min);
+        assert!(half.content >= MIN_CONTENT_WIDTH - 0.01 || half.side == PREVIEW_EDGE.min);
+    }
+
+    #[test]
+    fn the_sidebar_and_preview_edges_keep_the_folder_usable() {
+        // Ticket 118: the sidebar from 200px to two fifths of the window,
+        // reset to 320; an unreadable stored width is the default.
+        let edge = SIDEBAR_EDGE;
+        assert_eq!(edge.resolve(None, 1_400.0), 320.0);
+        assert_eq!(edge.clamp(120.0, 1_400.0), 200.0);
+        assert_eq!(edge.clamp(900.0, 1_400.0), 560.0);
+        assert_eq!(edge.resolve(Some(0), 1_400.0), 320.0);
+        assert_eq!(edge.resolve(Some(260), 1_400.0), 260.0);
+        assert_eq!(edge.store(260.4, 1_400.0), Some(260));
+        assert_eq!(edge.reset(), None);
+        // A sidebar dragged as wide as it may be still leaves the folder
+        // its minimum.
+        let wide = pane_layout(PaneInputs {
+            sidebar: Some(Some(10_000)),
+            ..inputs(MIN_WINDOW_WIDTH)
+        });
+        assert!(wide.content >= MIN_CONTENT_WIDTH);
+        assert_eq!(PREVIEW_EDGE.resolve(None, 1_400.0), 320.0);
+        assert_eq!(PREVIEW_EDGE.clamp(100.0, 1_400.0), 240.0);
     }
 }

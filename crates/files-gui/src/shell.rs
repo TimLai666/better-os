@@ -188,9 +188,10 @@ impl FilesApp {
                 .overflow_hidden()
                 .child(
                     match self.session.location() {
-                        files_core::Location::Trash(_) => {
-                            gpui_component::Icon::empty().path(crate::icons::TRASH)
-                        }
+                        location @ (files_core::Location::Local(_)
+                        | files_core::Location::Trash(_)
+                        | files_core::Location::Network(_)) => gpui_component::Icon::empty()
+                            .path(self.session.folder_glyph(location).svg()),
                         other => gpui_component::Icon::new(icon_for_location(other)),
                     }
                     .size(px(16.0))
@@ -616,7 +617,10 @@ impl FilesApp {
                 icon_only,
             ]
         };
-        let available = px(f32::from(self.viewport.width) - self.nav_width() - 32.0 - 20.0);
+        // Each separator is 1px with 2px either side.
+        let separators = if in_trash { 2.0 } else { 3.0 } * 5.0;
+        let available =
+            px(f32::from(self.viewport.width) - self.nav_width() - 32.0 - 20.0 - separators);
         let fit = better_ui::fluent::command_bar::fit_count(&widths, available, icon_only);
         let bar = bar.max_primary(fit);
 
@@ -714,23 +718,27 @@ impl FilesApp {
 
     /// The tab strip, shown once there is more than one tab.
     pub(crate) fn tab_strip(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let tabs: Vec<(files_core::TabId, String)> = self
+        let tabs: Vec<(files_core::TabId, String, files_core::Location)> = self
             .session
             .tabs()
             .tabs()
             .iter()
-            .map(|tab| (tab.id(), tab.title()))
+            .map(|tab| (tab.id(), tab.title(), tab.location().clone()))
             .collect();
         if tabs.len() < 2 {
             return None;
         }
         let c = copy(self.locale());
         let active = self.session.active_tab();
-        let selected = tabs.iter().position(|(id, _)| *id == active);
-        let ids: Rc<Vec<files_core::TabId>> = Rc::new(tabs.iter().map(|(id, _)| *id).collect());
+        let selected = tabs.iter().position(|(id, _, _)| *id == active);
+        let ids: Rc<Vec<files_core::TabId>> = Rc::new(tabs.iter().map(|(id, _, _)| *id).collect());
         let kit_tabs = tabs
             .iter()
-            .map(|(_, title)| Tab::new(title.clone()).icon(IconName::Folder))
+            .map(|(_, title, location)| {
+                Tab::new(title.clone())
+                    .icon(IconName::Folder)
+                    .icon_path(self.session.folder_glyph(location).svg())
+            })
             .collect();
         let select_ids = ids.clone();
         let close_ids = ids.clone();
@@ -781,8 +789,12 @@ impl FilesApp {
         let mut out: Vec<(NavEntry, Option<NavTarget>)> = Vec::new();
         let row_item = |row: &SidebarRow| {
             let mut item = NavItem::new(row.label.clone(), icon_for_row(row));
-            if let Some(path) = crate::icons::place_icon(&row.location, &row.key) {
-                item = item.icon_path(path);
+            let (glyph, emblem) = sidebar_row_icon(&self.session, row);
+            if let Some(glyph) = glyph {
+                item = item.icon_path(glyph);
+            }
+            if let Some(emblem) = emblem {
+                item = item.emblem(emblem);
             }
             if !row.availability.is_available() {
                 item = item.caption(c.unavailable);
@@ -959,7 +971,12 @@ impl FilesApp {
     }
 
     /// The navigation pane around `content`.
-    pub(crate) fn navigation(&mut self, content: AnyElement, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn navigation(
+        &mut self,
+        content: AnyElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let c = copy(self.locale());
         let lines = self.nav_targets(c);
         let current = self.session.location().clone();
@@ -981,8 +998,14 @@ impl FilesApp {
         let select = cx.entity().downgrade();
         let context_targets = targets.clone();
         let context = select.clone();
+        let sidebar = crate::render::PaneEdgeKind::Sidebar;
+        let open_width = self.pane_edge_width(sidebar);
+        let edge = self.pane_edge(sidebar, window, cx);
+        let follow = self.follow_edge(sidebar, cx);
         let view = NavigationView::new("files-nav", entries, selected)
             .compact(compact)
+            .open_width(px(open_width))
+            .edge(edge)
             .title(format!("{} {}", c.brand_name, c.files))
             .locale(kit_locale(self.locale()))
             .content(content)
@@ -996,6 +1019,91 @@ impl FilesApp {
                 });
             })
             .on_toggle(act_bool(cx, |app, compact| app.nav_compact = Some(compact)))
+            .decorate_rows({
+                // Favourites move by dragging (ticket 121): a line shows where
+                // one lands, and a folder from the content view lands where
+                // it is dropped.
+                let rows = targets.clone();
+                let this = cx.entity().downgrade();
+                let accent = fluent::palette(cx).accent;
+                let pinned_now: Rc<Vec<files_core::Location>> = Rc::new(
+                    (0..self.session.bookmarks.len())
+                        .filter_map(|index| {
+                            self.session
+                                .bookmarks
+                                .get(index)
+                                .map(|bookmark| bookmark.location().clone())
+                        })
+                        .collect(),
+                );
+                move |index, row| {
+                    let Some(Some(NavTarget::Row(target))) = rows.get(index) else {
+                        return row;
+                    };
+                    let Some(at) = target.bookmark_index else {
+                        return row;
+                    };
+                    let label = target.label.clone();
+                    let moved = this.clone();
+                    let pinned = this.clone();
+                    row.on_drag(
+                        crate::views::FavouriteDrag {
+                            index: at,
+                            label: label.clone(),
+                        },
+                        |drag, _, _, cx| {
+                            cx.new(|_| crate::views::DragPreview {
+                                label: drag.label.clone(),
+                            })
+                        },
+                    )
+                    .drag_over::<crate::views::FavouriteDrag>(move |style, drag, _, _| {
+                        match drop_line(Some(drag.index), at) {
+                            DropLine::Above => style.border_t_2().border_color(accent),
+                            DropLine::Below => style.border_b_2().border_color(accent),
+                            DropLine::None => style,
+                        }
+                    })
+                    .drag_over::<crate::views::DraggedEntry>({
+                        let pinned_now = pinned_now.clone();
+                        move |style, dragged, _, _| {
+                            if !dragged.is_folder {
+                                return style;
+                            }
+                            // A folder already pinned moves; a new one is
+                            // put in front of the row it is dropped on.
+                            let from = pinned_now
+                                .iter()
+                                .position(|location| *location == dragged.location);
+                            match drop_line(from, at) {
+                                DropLine::Above => style.border_t_2().border_color(accent),
+                                DropLine::Below => style.border_b_2().border_color(accent),
+                                DropLine::None => style,
+                            }
+                        }
+                    })
+                    .on_drop(move |drag: &crate::views::FavouriteDrag, _, cx| {
+                        let from = drag.index;
+                        let _ = moved.update(cx, |app, cx| {
+                            app.session.move_bookmark_to(from, at);
+                            cx.notify();
+                        });
+                    })
+                    .on_drop(
+                        move |dragged: &crate::views::DraggedEntry, _, cx| {
+                            cx.stop_propagation();
+                            if !dragged.is_folder {
+                                return;
+                            }
+                            let location = dragged.location.clone();
+                            let _ = pinned.update(cx, |app, cx| {
+                                app.session.pin_at(&location, at);
+                                cx.notify();
+                            });
+                        },
+                    )
+                }
+            })
             .on_context(move |index, position, _window, cx| {
                 let Some(Some(target)) = context_targets.get(index).cloned() else {
                     return;
@@ -1010,11 +1118,15 @@ impl FilesApp {
         div()
             .id("files-nav-drop")
             .size_full()
+            .on_drag_move(follow)
             .child(view)
             .on_drop(
                 cx.listener(|this, dragged: &crate::views::DraggedEntry, _window, cx| {
-                    this.session.pin(&dragged.location);
-                    cx.notify();
+                    // Only folders: the GTK bookmarks file is a list of them.
+                    if dragged.is_folder {
+                        this.session.pin(&dragged.location);
+                        cx.notify();
+                    }
                 }),
             )
             .into_any_element()
@@ -1056,6 +1168,25 @@ impl FilesApp {
     }
 }
 
+/// Where the line shows on a favourite while something is dragged over
+/// it: a favourite moving up lands above it, one moving down below it, and
+/// a folder not yet pinned (`from` is `None`) is put in front of it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DropLine {
+    Above,
+    Below,
+    None,
+}
+
+pub(crate) fn drop_line(from: Option<usize>, at: usize) -> DropLine {
+    match from {
+        None => DropLine::Above,
+        Some(from) if from > at => DropLine::Above,
+        Some(from) if from < at => DropLine::Below,
+        Some(_) => DropLine::None,
+    }
+}
+
 fn act_bool(
     cx: &Context<FilesApp>,
     f: impl Fn(&mut FilesApp, bool) + 'static,
@@ -1090,6 +1221,25 @@ fn icon_for_location(location: &files_core::Location) -> IconName {
         files_core::Location::Applications => IconName::LayoutDashboard,
         _ => IconName::Folder,
     }
+}
+
+/// A sidebar row's own glyph and the mark on it (ticket 120): a place or a
+/// favourite is drawn as what the folder is, and a favourite keeps that icon
+/// and wears a small star, rather than turning into a star.
+pub(crate) fn sidebar_row_icon(
+    session: &crate::session::FilesSession,
+    row: &SidebarRow,
+) -> (Option<&'static str>, Option<IconName>) {
+    let glyph = match row.section {
+        SidebarSection::Places | SidebarSection::Favorites
+            if !matches!(row.location, files_core::Location::Recent) =>
+        {
+            Some(session.folder_glyph(&row.location).svg())
+        }
+        _ => None,
+    };
+    let emblem = (row.section == SidebarSection::Favorites).then_some(IconName::StarFill);
+    (glyph, emblem)
 }
 
 fn icon_for_row(row: &SidebarRow) -> IconName {

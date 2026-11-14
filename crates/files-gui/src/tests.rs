@@ -2104,30 +2104,45 @@ fn the_same_name_in_another_folder_is_a_new_preview() {
     assert!(ask("second").contains("second"), "the second folder's file");
 }
 
-/// At 960 wide with the operation center open, the list's columns are
-/// chosen for what is left beside it (the panel is 420 wide, not the
-/// preview's 320), so the last one steps aside instead of being cut off.
+/// The list's columns and the tiles across are chosen for what the panes
+/// really leave, at their dragged widths (ticket 118), so the last one
+/// steps aside instead of being cut off or leaving an empty strip.
 #[test]
-fn the_list_columns_fit_beside_every_open_panel() {
-    use crate::layout::side_panels_width;
-    assert_eq!(side_panels_width(false, false, false, false), 0.0);
-    assert_eq!(side_panels_width(false, true, false, false), 320.0);
-    // A compact window draws no preview.
-    assert_eq!(side_panels_width(false, true, true, false), 0.0);
-    assert_eq!(side_panels_width(false, true, false, true), 740.0);
-    assert_eq!(side_panels_width(true, true, false, false), 360.0);
-
-    let content = 960.0 - 48.0 - side_panels_width(false, false, true, true) - 48.0;
-    let shown = crate::content::visible_columns(content);
-    let used: f32 = shown
-        .iter()
-        .filter(|column| **column != crate::content::ListColumn::Name)
-        .map(|column| column.width() + 8.0)
-        .sum();
-    assert!(
-        used + crate::content::MIN_NAME_WIDTH <= content,
-        "{shown:?} need {used} beside the name in {content}"
-    );
+fn the_list_columns_and_tiles_fit_beside_every_open_panel_at_its_width() {
+    use crate::layout::{PaneInputs, pane_layout};
+    let at = |side: Option<Option<u32>>, operations: Option<Option<u32>>| {
+        pane_layout(PaneInputs {
+            window: 1_400.0,
+            pane: 1_400.0,
+            sidebar: Some(None),
+            side,
+            operations,
+            fixed_nav: None,
+        })
+    };
+    let narrow = at(Some(Some(240)), None);
+    let wide = at(Some(Some(340)), None);
+    assert_eq!(narrow.content - wide.content, 100.0);
+    for layout in [narrow, wide, at(Some(None), Some(None))] {
+        let content = layout.content - 48.0;
+        let shown = crate::content::visible_columns(content);
+        let used: f32 = shown
+            .iter()
+            .filter(|column| **column != crate::content::ListColumn::Name)
+            .map(|column| column.width() + 8.0)
+            .sum();
+        assert!(
+            used + crate::content::MIN_NAME_WIDTH <= content,
+            "{shown:?} need {used} beside the name in {content}"
+        );
+    }
+    // Wider panes, no more tiles across: the tiles follow the real width,
+    // and a pane dragged a tile's width wider takes one away.
+    let content = ContentView::default();
+    let across = |width: f32| content.columns(width - 40.0);
+    assert!(across(narrow.content) >= across(wide.content));
+    let tile_wider = at(Some(Some(240)), Some(Some(240 + 400)));
+    assert!(across(narrow.content) > across(tile_wider.content));
 }
 
 /// Done things read as a success and news as information; only what needs
@@ -2794,4 +2809,563 @@ fn one_window_dismissing_a_job_leaves_it_for_another_that_has_not_filed_it() {
     );
     fixture.engine.mark_recorded(id);
     assert!(fixture.engine.forget(id));
+}
+
+// --- Ticket 121: favourites move by dragging; applications' own icons -------
+
+fn favourites(lines: &[&str]) -> BookmarkFile {
+    BookmarkFile::parse(&(lines.join("\n") + "\n"))
+}
+
+#[test]
+fn a_favourite_dragged_from_any_place_to_any_other_lands_there_and_foreign_lines_stay() {
+    let names = ["a", "b", "c", "d"];
+    let lines = [
+        "file:///srv/a",
+        "sftp://server/remote",
+        "file:///srv/b",
+        "# a comment someone else wrote",
+        "file:///srv/c",
+        "file:///srv/d",
+    ];
+    for from in 0..names.len() {
+        for to in 0..names.len() {
+            let mut file = favourites(&lines);
+            file.move_to(from, to);
+            let mut expected: Vec<&str> = names.to_vec();
+            let moved = expected.remove(from);
+            expected.insert(to, moved);
+            let order: Vec<String> = (0..file.len())
+                .map(|index| {
+                    file.get(index)
+                        .unwrap()
+                        .location()
+                        .as_local_path()
+                        .unwrap()
+                        .as_path()
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            assert_eq!(order, expected, "{from} -> {to}");
+            // Other programs' lines keep their exact lines.
+            let text = file.render();
+            let rendered: Vec<&str> = text.lines().collect();
+            assert_eq!(rendered[1], "sftp://server/remote", "{from} -> {to}");
+            assert_eq!(
+                rendered[3], "# a comment someone else wrote",
+                "{from} -> {to}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_folder_dropped_on_the_favourites_is_pinned_where_it_was_dropped() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    for name in ["one", "two", "three"] {
+        let folder = fixture.home.join(name);
+        fs::create_dir_all(&folder).unwrap();
+        session.pin(&Location::local(&folder).unwrap());
+    }
+    let dropped = fixture.home.join("Documents");
+    session.pin_at(&Location::local(&dropped).unwrap(), 1);
+    let order: Vec<std::path::PathBuf> = (0..session.bookmarks.len())
+        .map(|index| {
+            session
+                .bookmarks
+                .get(index)
+                .unwrap()
+                .location()
+                .as_local_path()
+                .unwrap()
+                .as_path()
+                .to_path_buf()
+        })
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            fixture.home.join("one"),
+            dropped.clone(),
+            fixture.home.join("two"),
+            fixture.home.join("three"),
+        ]
+    );
+    // A folder already pinned moves to where it is dropped.
+    session.pin_at(&Location::local(fixture.home.join("three")).unwrap(), 0);
+    assert_eq!(
+        session.bookmarks.get(0).unwrap().location(),
+        &Location::local(fixture.home.join("three")).unwrap()
+    );
+    assert_eq!(session.bookmarks.len(), 4);
+}
+
+#[test]
+fn the_favourites_menu_moves_one_to_the_top_and_to_the_bottom() {
+    use crate::context_menu::MenuCommand as M;
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    for name in ["one", "two", "three"] {
+        let folder = fixture.home.join(name);
+        fs::create_dir_all(&folder).unwrap();
+        session.pin(&Location::local(&folder).unwrap());
+    }
+    let row = |session: &FilesSession, index: usize| crate::sidebar::SidebarRow {
+        section: crate::sidebar::SidebarSection::Favorites,
+        key: format!("bookmark-{index}"),
+        label: String::new(),
+        location: session.bookmarks.get(index).unwrap().location().clone(),
+        availability: crate::sidebar::Availability::Available,
+        bookmark_index: Some(index),
+        device_state: None,
+        identity_volatile: false,
+    };
+    let names = |session: &FilesSession| -> Vec<String> {
+        (0..session.bookmarks.len())
+            .map(|index| {
+                session
+                    .bookmarks
+                    .get(index)
+                    .unwrap()
+                    .location()
+                    .as_local_path()
+                    .unwrap()
+                    .as_path()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    };
+    let last = row(&session, 2);
+    session.run_menu_command(M::MoveBookmarkToTop, Some(&last), 1);
+    assert_eq!(names(&session), ["three", "one", "two"]);
+    let first = row(&session, 0);
+    session.run_menu_command(M::MoveBookmarkToBottom, Some(&first), 1);
+    assert_eq!(names(&session), ["one", "two", "three"]);
+}
+
+/// A fixture icon theme: `Fixture` inherits `Base`; `hicolor`; pixmaps.
+fn fixture_icons(root: &std::path::Path) -> better_ui::icons::IconSearch {
+    let icons = root.join("icons");
+    let write = |path: std::path::PathBuf, text: &str| {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    };
+    write(
+        icons.join("Fixture/index.theme"),
+        "[Icon Theme]\nName=Fixture\nInherits=Base\nDirectories=48x48/apps\n\n[48x48/apps]\nSize=48\nContext=Applications\n",
+    );
+    write(
+        icons.join("Base/index.theme"),
+        "[Icon Theme]\nName=Base\nDirectories=scalable/apps\n\n[scalable/apps]\nSize=48\nType=Scalable\nContext=Applications\n",
+    );
+    write(
+        icons.join("hicolor/index.theme"),
+        "[Icon Theme]\nName=hicolor\nDirectories=48x48/apps\n\n[48x48/apps]\nSize=48\nContext=Applications\n",
+    );
+    write(icons.join("Fixture/48x48/apps/themed.png"), "png");
+    write(icons.join("Base/scalable/apps/inherited.svg"), "<svg/>");
+    write(icons.join("hicolor/48x48/apps/fallback.png"), "png");
+    write(root.join("pixmaps/legacy.png"), "png");
+    write(root.join("elsewhere/absolute.svg"), "<svg/>");
+    better_ui::icons::IconSearch::new(
+        vec![root.to_path_buf()],
+        vec!["Fixture".into(), "Base".into()],
+    )
+}
+
+#[test]
+fn an_application_s_icon_is_found_the_way_the_launcher_finds_it() {
+    let root = tempfile::tempdir().unwrap();
+    let search = fixture_icons(root.path());
+    let found = |icon: &str| crate::views::application_icon_file(&search, icon);
+    let icons = root.path().join("icons");
+    assert_eq!(
+        found("themed"),
+        Some(icons.join("Fixture/48x48/apps/themed.png"))
+    );
+    assert_eq!(
+        found("inherited"),
+        Some(icons.join("Base/scalable/apps/inherited.svg"))
+    );
+    assert_eq!(
+        found("fallback"),
+        Some(icons.join("hicolor/48x48/apps/fallback.png"))
+    );
+    assert_eq!(
+        found("legacy"),
+        Some(root.path().join("pixmaps/legacy.png"))
+    );
+    let absolute = root.path().join("elsewhere/absolute.svg");
+    assert_eq!(found(absolute.to_str().unwrap()), Some(absolute.clone()));
+    assert_eq!(found("not-installed"), None);
+    assert_eq!(found("/nowhere/at/all.svg"), None);
+}
+
+#[test]
+fn an_application_row_draws_its_own_icon_once_resolved_off_this_thread() {
+    let root = tempfile::tempdir().unwrap();
+    let base = root.path().to_path_buf();
+    let icons =
+        crate::views::IconCache::start(move || fixture_icons(&base), Duration::from_secs(60));
+    let reference = app_catalog_core::IconReference::Name("themed".into());
+    // The first ask answers nothing and asks the worker.
+    assert_eq!(icons.application(&reference), None);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while icons.application(&reference).is_none() {
+        assert!(Instant::now() < deadline, "never resolved");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(icons.take_ready());
+    assert_eq!(
+        icons.application(&reference),
+        Some(root.path().join("icons/Fixture/48x48/apps/themed.png"))
+    );
+    // A miss is an answer too, asked once.
+    let missing = app_catalog_core::IconReference::Name("not-installed".into());
+    assert_eq!(icons.application(&missing), None);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(icons.application(&missing), None);
+}
+
+#[test]
+fn every_icon_is_looked_up_again_after_the_theme_changes() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static SWITCHED: AtomicBool = AtomicBool::new(false);
+    let root = tempfile::tempdir().unwrap();
+    let base = root.path().to_path_buf();
+    fixture_icons(&base);
+    // A second theme with its own `themed` icon.
+    let other = base.join("icons/Other");
+    fs::create_dir_all(other.join("48x48/apps")).unwrap();
+    fs::write(
+        other.join("index.theme"),
+        "[Icon Theme]\nName=Other\nDirectories=48x48/apps\n\n[48x48/apps]\nSize=48\nContext=Applications\n",
+    )
+    .unwrap();
+    fs::write(other.join("48x48/apps/themed.png"), "png").unwrap();
+    let search_root = base.clone();
+    let icons = crate::views::IconCache::start(
+        move || {
+            let theme = if SWITCHED.load(Ordering::Acquire) {
+                "Other"
+            } else {
+                "Fixture"
+            };
+            better_ui::icons::IconSearch::new(
+                vec![search_root.clone()],
+                vec![theme.into(), "Base".into()],
+            )
+        },
+        Duration::from_millis(50),
+    );
+    let reference = app_catalog_core::IconReference::Name("themed".into());
+    let wait_for = |expected: std::path::PathBuf| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if icons.application(&reference) == Some(expected.clone()) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "never became {expected:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    wait_for(base.join("icons/Fixture/48x48/apps/themed.png"));
+    SWITCHED.store(true, Ordering::Release);
+    wait_for(other.join("48x48/apps/themed.png"));
+}
+
+// --- Ticket 120: a folder looks like what it is ----------------------------
+
+#[test]
+fn every_special_folder_has_its_own_icon_and_the_developer_folder_is_found() {
+    use crate::icons::{FolderGlyph as G, folder_glyph};
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let config = root.path().join("config");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("user-dirs.dirs"),
+        "XDG_DESKTOP_DIR=\"$HOME/Desktop\"\nXDG_DOCUMENTS_DIR=\"$HOME/Documents\"\nXDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\nXDG_MUSIC_DIR=\"$HOME/Music\"\nXDG_PICTURES_DIR=\"$HOME/Pictures\"\nXDG_VIDEOS_DIR=\"$HOME/Videos\"\nXDG_TEMPLATES_DIR=\"$HOME/Templates\"\nXDG_PUBLICSHARE_DIR=\"$HOME/Public\"\n",
+    )
+    .unwrap();
+    let dirs = UserDirectories::from_values(Some(&home), Some(&config));
+    let mounts = MountTable::new(Vec::new());
+    let glyph =
+        |path: std::path::PathBuf| folder_glyph(&Location::local(path).unwrap(), &dirs, &mounts);
+    for (name, expected) in [
+        ("Desktop", G::Desktop),
+        ("Documents", G::Documents),
+        ("Downloads", G::Downloads),
+        ("Music", G::Music),
+        ("Pictures", G::Pictures),
+        ("Videos", G::Videos),
+        ("Templates", G::Templates),
+        ("Public", G::Public),
+    ] {
+        assert_eq!(glyph(home.join(name)), expected, "{name}");
+    }
+    assert_eq!(glyph(home.clone()), G::Home);
+    assert_eq!(
+        folder_glyph(
+            &Location::Trash(files_core::TrashLocation::Root),
+            &dirs,
+            &mounts
+        ),
+        G::Trash
+    );
+    for name in [
+        "Developer",
+        "developer",
+        "Development",
+        "dev",
+        "Projects",
+        "Code",
+        "src",
+        "source",
+        "repos",
+    ] {
+        assert_eq!(glyph(home.join(name)), G::Developer, "{name}");
+    }
+    // Only directly under home, and only those names.
+    assert_eq!(glyph(home.join("Documents/Developer")), G::Folder);
+    assert_eq!(glyph(home.join("Development-old")), G::Folder);
+    assert_eq!(glyph(home.join("reports")), G::Folder);
+}
+
+#[test]
+fn a_mounted_drive_and_a_server_folder_have_their_own_icons() {
+    use crate::icons::{FolderGlyph as G, folder_glyph};
+    let dirs = UserDirectories::from_values(Some(std::path::Path::new("/home/a")), None);
+    let table = tempfile::NamedTempFile::new().unwrap();
+    fs::write(
+        table.path(),
+        concat!(
+            "28 1 8:2 / / rw - ext4 /dev/sda2 rw\n",
+            "76 28 8:17 / /media/a/STICK rw - vfat /dev/sdb1 rw\n",
+            "90 28 0:50 / /run/user/1000/gvfs rw - fuse.gvfsd-fuse gvfsd-fuse rw\n",
+        ),
+    )
+    .unwrap();
+    let mounts = files_platform::read_mount_table(table.path());
+    let glyph = |path: &str| folder_glyph(&Location::local(path).unwrap(), &dirs, &mounts);
+    assert_eq!(glyph("/media/a/STICK"), G::Device);
+    assert_eq!(glyph("/media/a/STICK/photos"), G::Folder);
+    assert_eq!(glyph("/run/user/1000/gvfs/sftp:host=nas"), G::Network);
+    assert_eq!(glyph("/run/user/1000/gvfs/sftp:host=nas/home"), G::Folder);
+}
+
+#[test]
+fn a_pinned_folder_keeps_its_own_icon_and_wears_a_star() {
+    let (fixture, session) = fixture();
+    let documents = fixture.home.join("Documents");
+    let row = |section, location: Location| crate::sidebar::SidebarRow {
+        section,
+        key: "row".into(),
+        label: String::new(),
+        location,
+        availability: crate::sidebar::Availability::Available,
+        bookmark_index: Some(0),
+        device_state: None,
+        identity_volatile: false,
+    };
+    let favourite = crate::sidebar::SidebarSection::Favorites;
+    let (glyph, emblem) = crate::shell::sidebar_row_icon(
+        &session,
+        &row(favourite, Location::local(&documents).unwrap()),
+    );
+    assert_eq!(glyph, Some(crate::icons::DOCUMENTS));
+    assert!(matches!(emblem, Some(gpui_component::IconName::StarFill)));
+    let (glyph, emblem) = crate::shell::sidebar_row_icon(
+        &session,
+        &row(
+            favourite,
+            Location::local(documents.join("reports")).unwrap(),
+        ),
+    );
+    assert_eq!(glyph, Some(crate::icons::FOLDER));
+    assert!(matches!(emblem, Some(gpui_component::IconName::StarFill)));
+    let (glyph, emblem) = crate::shell::sidebar_row_icon(
+        &session,
+        &row(
+            crate::sidebar::SidebarSection::Places,
+            Location::local(&documents).unwrap(),
+        ),
+    );
+    assert_eq!(glyph, Some(crate::icons::DOCUMENTS));
+    assert!(emblem.is_none(), "only a favourite wears the star");
+}
+
+// --- After review of 118/120/121 --------------------------------------------
+
+#[test]
+fn a_drop_on_a_favourite_shows_where_it_lands_and_a_file_is_never_pinned() {
+    use crate::shell::{DropLine, drop_line};
+    assert_eq!(
+        drop_line(Some(3), 1),
+        DropLine::Above,
+        "moving up lands above"
+    );
+    assert_eq!(
+        drop_line(Some(0), 2),
+        DropLine::Below,
+        "moving down lands below"
+    );
+    assert_eq!(drop_line(Some(2), 2), DropLine::None, "on itself, nowhere");
+    assert_eq!(
+        drop_line(None, 2),
+        DropLine::Above,
+        "a new folder goes in front"
+    );
+
+    // Dropping a file's location is refused: the bookmarks file is folders.
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    let before = session.bookmarks.len();
+    session.pin_at(&Location::Trash(TrashLocation::Root), 0);
+    assert_eq!(session.bookmarks.len(), before);
+    // A folder already pinned and dragged in lands where the line showed.
+    for name in ["one", "two", "three"] {
+        let folder = fixture.home.join(name);
+        fs::create_dir_all(&folder).unwrap();
+        session.pin(&Location::local(&folder).unwrap());
+    }
+    session.pin_at(&Location::local(fixture.home.join("one")).unwrap(), 2);
+    let at = |i: usize| session.bookmarks.get(i).unwrap().location().clone();
+    assert_eq!(at(2), Location::local(fixture.home.join("one")).unwrap());
+}
+
+#[test]
+fn a_favourite_added_elsewhere_survives_this_window_s_next_edit() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    for name in ["one", "two"] {
+        let folder = fixture.home.join(name);
+        fs::create_dir_all(&folder).unwrap();
+        session.pin(&Location::local(&folder).unwrap());
+    }
+    // Another program (or window) adds one behind this window's back.
+    let path = fixture.home.parent().unwrap().join("bookmarks");
+    let mut text = fs::read_to_string(&path).unwrap();
+    let elsewhere = fixture.home.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!("file://{}\n", elsewhere.display()));
+    fs::write(&path, text).unwrap();
+    // This window reorders what it showed.
+    session.move_bookmark_to(0, 1);
+    let written = fs::read_to_string(&path).unwrap();
+    assert!(written.contains("elsewhere"), "{written}");
+    assert_eq!(session.bookmarks.len(), 3);
+    // And the sidebar follows an outside edit on its own.
+    let mut text = fs::read_to_string(&path).unwrap();
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str("file:///srv/added-later\n");
+    fs::write(&path, text).unwrap();
+    // The process's one watch thread is shared with every other test running
+    // at once, so this waits longer than a window ever would.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while session.bookmarks.len() != 4 {
+        assert!(
+            Instant::now() < deadline,
+            "the sidebar did not follow the file"
+        );
+        session.pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_symlinked_bookmarks_file_stays_a_link() {
+    let root = tempfile::tempdir().unwrap();
+    let real = root.path().join("dotfiles/bookmarks");
+    fs::create_dir_all(real.parent().unwrap()).unwrap();
+    fs::write(&real, "# mine\n").unwrap();
+    let link = root.path().join("gtk-3.0/bookmarks");
+    fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let store = BookmarkStore::at_path(&link);
+    let mut file = store.load();
+    file.pin(&Location::local(root.path()).unwrap());
+    store.save(&file).unwrap();
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(fs::read_to_string(&real).unwrap().contains("file://"));
+    // No temporary file is left beside either.
+    let leftovers = fs::read_dir(real.parent().unwrap()).unwrap().count()
+        + fs::read_dir(link.parent().unwrap()).unwrap().count();
+    assert_eq!(leftovers, 2);
+}
+
+#[test]
+fn a_window_writes_only_the_preferences_it_changed() {
+    let base = FilesPreferences::default();
+    let mut ours = base;
+    ours.sidebar_width = Some(260);
+    let mut theirs = base;
+    theirs.view_mode = ViewMode::List;
+    theirs.preview_width = Some(300);
+    let merged = crate::prefs::merge_preferences(&base, &ours, &theirs);
+    assert_eq!(merged.sidebar_width, Some(260), "ours");
+    assert_eq!(merged.view_mode, ViewMode::List, "theirs kept");
+    assert_eq!(merged.preview_width, Some(300), "theirs kept");
+}
+
+#[test]
+fn a_folder_s_icon_is_the_theme_s_own_else_the_plain_folder_with_its_mark() {
+    use crate::icons::FolderGlyph;
+    use crate::views::folder_row_icon;
+    let plain = std::path::PathBuf::from("/icons/folder.png");
+    let documents = std::path::PathBuf::from("/icons/folder-documents.png");
+    let theme = |names: &[(&'static str, String)]| -> Option<std::path::PathBuf> {
+        names.iter().find_map(|(_, name)| match name.as_str() {
+            "folder" => Some(plain.clone()),
+            "folder-documents" => Some(documents.clone()),
+            _ => None,
+        })
+    };
+    let own = folder_row_icon(FolderGlyph::Documents, &theme);
+    assert_eq!((own.file, own.emblem), (Some(documents.clone()), None));
+    let developer = folder_row_icon(FolderGlyph::Developer, &theme);
+    assert_eq!(
+        (developer.file, developer.emblem),
+        (Some(plain.clone()), Some(crate::icons::CODE_MARK))
+    );
+    let ordinary = folder_row_icon(FolderGlyph::Folder, &theme);
+    assert_eq!((ordinary.file, ordinary.emblem), (Some(plain), None));
+}
+
+#[test]
+fn home_at_the_root_and_a_user_folder_set_to_home_are_told_apart() {
+    use crate::icons::{FolderGlyph as G, folder_glyph};
+    let mounts = MountTable::new(Vec::new());
+    // HOME is `/`: `/Developer` is still the developer folder.
+    let root_home = UserDirectories::from_values(Some(std::path::Path::new("/")), None);
+    let glyph = |dirs: &UserDirectories, path: &str| {
+        folder_glyph(&Location::local(path).unwrap(), dirs, &mounts)
+    };
+    assert_eq!(glyph(&root_home, "/Developer"), G::Developer);
+    assert_eq!(glyph(&root_home, "/"), G::Home);
+    // A user folder set to home itself (XDG's way to turn it off) is home.
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let config = root.path().join("config");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(config.join("user-dirs.dirs"), "XDG_DESKTOP_DIR=\"$HOME\"\n").unwrap();
+    let dirs = UserDirectories::from_values(Some(&home), Some(&config));
+    assert_eq!(glyph(&dirs, home.to_str().unwrap()), G::Home);
 }

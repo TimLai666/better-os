@@ -127,6 +127,8 @@ pub struct Copy {
     pub remove_from_sidebar: &'static str,
     pub move_up: &'static str,
     pub move_down: &'static str,
+    pub move_to_top: &'static str,
+    pub move_to_bottom: &'static str,
     pub already_pinned: &'static str,
     pub bookmark_label_placeholder: &'static str,
 
@@ -614,6 +616,8 @@ pub const EN_US: Copy = Copy {
     remove_from_sidebar: "Remove from Sidebar",
     move_up: "Move up",
     move_down: "Move down",
+    move_to_top: "Move to top",
+    move_to_bottom: "Move to bottom",
     already_pinned: "Already in Favorites",
     bookmark_label_placeholder: "Bookmark label",
 
@@ -1063,6 +1067,8 @@ pub const ZH_TW: Copy = Copy {
     remove_from_sidebar: "從側邊欄移除",
     move_up: "上移",
     move_down: "下移",
+    move_to_top: "移到最上面",
+    move_to_bottom: "移到最下面",
     already_pinned: "已經在我的最愛",
     bookmark_label_placeholder: "書籤名稱",
 

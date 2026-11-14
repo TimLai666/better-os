@@ -403,6 +403,13 @@ pub struct FilesSession {
     recorded: std::collections::HashSet<JobId>,
     /// Each pane's folder watch (ticket 119).
     watches: Vec<FolderWatch>,
+    /// The bookmarks file's folder, followed so outside edits show.
+    bookmark_watch: Option<files_platform::Subscription>,
+    /// The preferences as last read or written, against which this window's
+    /// own changes are told apart from another window's.
+    preferences_baseline: FilesPreferences,
+    /// The preferences file's folder, followed so widths are shared.
+    preference_watch: Option<files_platform::Subscription>,
     /// Devices being ejected and the folders whose watches were let go of.
     ejecting: Vec<(String, std::path::PathBuf)>,
     /// This window's claim on the shared engine's finished jobs.
@@ -522,6 +529,22 @@ impl FilesSession {
         reader.set_include_hidden_applications(preferences.show_hidden);
         let view = preferences.view_preferences();
         let bookmarks = bookmark_store.load();
+        let preference_watch = preference_store
+            .path()
+            .parent()
+            .filter(|folder| folder.is_dir())
+            .map(|folder| {
+                files_platform::WatchHub::global()
+                    .subscribe(folder, files_platform::ReaderConfig::new())
+            });
+        let bookmark_watch = bookmark_store
+            .path()
+            .parent()
+            .filter(|folder| folder.is_dir())
+            .map(|folder| {
+                files_platform::WatchHub::global()
+                    .subscribe(folder, files_platform::ReaderConfig::new())
+            });
         let tabs = TabSet::with_preferences(start.clone(), view);
         let first = tabs.active().id();
         let pane = Pane::open(start, view, reader.as_ref());
@@ -556,6 +579,9 @@ impl FilesSession {
             finished: SessionHistory::default(),
             recorded: std::collections::HashSet::new(),
             watches: Vec::new(),
+            bookmark_watch,
+            preferences_baseline: preferences,
+            preference_watch,
             ejecting: Vec::new(),
             _engine_window: engine_window,
             catalog,
@@ -605,6 +631,11 @@ impl FilesSession {
 
     pub fn location(&self) -> &Location {
         self.pane().location()
+    }
+
+    /// What the folder at `location` is, for its icon (ticket 120).
+    pub fn folder_glyph(&self, location: &Location) -> crate::icons::FolderGlyph {
+        crate::icons::folder_glyph(location, &self.directories, &self.mounts)
     }
 
     /// Opens a tab. `activate` false is "open in background", which is what
@@ -940,10 +971,77 @@ impl FilesSession {
         self.persist_preferences();
     }
 
+    /// Writes the fields this window changed over what is on disk now, so
+    /// another window's changes since are kept.
     fn persist_preferences(&mut self) {
-        if let Err(error) = self.preference_store.save(&self.preferences) {
+        let disk = self.preference_store.load().preferences;
+        let merged =
+            crate::prefs::merge_preferences(&self.preferences_baseline, &self.preferences, &disk);
+        if let Err(error) = self.preference_store.save(&merged) {
             self.notice = Some(Notice::Key(format!("files.prefs.error.unwritable:{error}")));
+            return;
         }
+        self.preferences = merged;
+        self.preferences_baseline = merged;
+    }
+
+    /// Takes the pane widths another window stored (ticket 118: one width
+    /// for every window), when the preferences file changed. The other
+    /// fields this window applied when it opened are left as they are: a
+    /// view mode or a hidden-files choice changes what a window shows, and
+    /// it is changed by the window the person is using.
+    fn pump_preferences(&mut self) -> bool {
+        let Some(subscription) = &self.preference_watch else {
+            return false;
+        };
+        let name = self
+            .preference_store
+            .path()
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        let touched = subscription.poll().into_iter().any(|update| match update {
+            files_platform::HubUpdate::Rows(rows) => rows.iter().any(|row| match row {
+                files_core::RefreshEvent::Added(entry)
+                | files_core::RefreshEvent::Modified(entry) => {
+                    name.as_deref() == Some(entry.name.as_str())
+                }
+                _ => false,
+            }),
+            files_platform::HubUpdate::Resynchronize | files_platform::HubUpdate::Ready { .. } => {
+                true
+            }
+            _ => false,
+        });
+        if !touched {
+            return false;
+        }
+        let disk = self.preference_store.load().preferences;
+        let mut changed = false;
+        for (ours, base, theirs) in [
+            (
+                &mut self.preferences.sidebar_width,
+                &mut self.preferences_baseline.sidebar_width,
+                disk.sidebar_width,
+            ),
+            (
+                &mut self.preferences.preview_width,
+                &mut self.preferences_baseline.preview_width,
+                disk.preview_width,
+            ),
+            (
+                &mut self.preferences.operations_width,
+                &mut self.preferences_baseline.operations_width,
+                disk.operations_width,
+            ),
+        ] {
+            // A width this window is changing right now is its own.
+            if *ours == *base && *ours != theirs {
+                *ours = theirs;
+                changed = true;
+            }
+            *base = theirs;
+        }
+        changed
     }
 
     // --- Selection and opening --------------------------------------------
@@ -1708,13 +1806,14 @@ impl FilesSession {
     /// Pins a location. The directory is never moved: this writes a line to
     /// the bookmarks file and nothing else.
     pub fn pin(&mut self, location: &Location) {
-        match self.bookmarks.pin(location) {
-            PinOutcome::Pinned => {
-                // A successful pin shows itself: the row appears in Favorites.
-                // A notice on top of that would be noise.
-                self.notice = None;
-                self.persist_bookmarks();
-            }
+        let outcome = self.edit_bookmarks(|file| {
+            let outcome = file.pin(location);
+            (outcome == PinOutcome::Pinned, outcome)
+        });
+        match outcome {
+            // A successful pin shows itself: the row appears in Favorites.
+            // A notice on top of that would be noise.
+            PinOutcome::Pinned => self.notice = None,
             PinOutcome::AlreadyPinned => self.notice = Some(Notice::AlreadyPinned),
             PinOutcome::NotPinnable => self.notice = Some(Notice::NotPinnable),
         }
@@ -1725,51 +1824,161 @@ impl FilesSession {
         self.pin(&location);
     }
 
-    pub fn remove_bookmark(&mut self, index: usize) {
-        if self.bookmarks.remove(index).is_some() {
-            if let Some(cursor) = self.sidebar_cursor
-                && cursor >= self.bookmarks.len()
-            {
-                self.sidebar_cursor = self.bookmarks.len().checked_sub(1);
-            }
-            self.persist_bookmarks();
-        }
-    }
-
-    pub fn move_bookmark_up(&mut self, index: usize) {
-        if self.bookmarks.move_up(index) {
-            self.sidebar_cursor = Some(index - 1);
-            self.persist_bookmarks();
-        }
-    }
-
-    pub fn move_bookmark_down(&mut self, index: usize) {
-        if self.bookmarks.move_down(index) {
-            self.sidebar_cursor = Some(index + 1);
-            self.persist_bookmarks();
-        }
-    }
-
-    /// A drop between two favourites.
-    pub fn move_bookmark_to(&mut self, from: usize, to: usize) {
-        if self.bookmarks.move_to(from, to) {
-            self.sidebar_cursor = Some(to);
-            self.persist_bookmarks();
-        }
-    }
-
-    pub fn set_bookmark_label(&mut self, index: usize, label: &str) {
-        if self.bookmarks.set_label(index, label) {
-            self.persist_bookmarks();
-        }
-    }
-
-    fn persist_bookmarks(&mut self) {
-        if let Err(error) = self.bookmark_store.save(&self.bookmarks) {
+    /// Edits the shared bookmarks file as it is now, not as this window last
+    /// read it: the file is read again, the edit applied (by location, since
+    /// the rows may have moved), and written. A favourite added meanwhile in
+    /// Nautilus, another window or the other half of a split is kept.
+    /// `edit` says whether it changed anything.
+    fn edit_bookmarks<R>(&mut self, edit: impl FnOnce(&mut BookmarkFile) -> (bool, R)) -> R {
+        let mut file = self.bookmark_store.load();
+        let (changed, result) = edit(&mut file);
+        if changed && let Err(error) = self.bookmark_store.save(&file) {
             self.notice = Some(Notice::Key(format!(
                 "files.bookmarks.error.unwritable:{error}"
             )));
         }
+        self.bookmarks = file;
+        result
+    }
+
+    /// The location of the favourite this window shows at `index`.
+    fn bookmark_location(&self, index: usize) -> Option<Location> {
+        self.bookmarks
+            .get(index)
+            .map(|bookmark| bookmark.location().clone())
+    }
+
+    pub fn remove_bookmark(&mut self, index: usize) {
+        let Some(location) = self.bookmark_location(index) else {
+            return;
+        };
+        let removed = self.edit_bookmarks(|file| {
+            let removed = file
+                .position_of(&location)
+                .and_then(|at| file.remove(at))
+                .is_some();
+            (removed, removed)
+        });
+        if removed
+            && let Some(cursor) = self.sidebar_cursor
+            && cursor >= self.bookmarks.len()
+        {
+            self.sidebar_cursor = self.bookmarks.len().checked_sub(1);
+        }
+    }
+
+    pub fn move_bookmark_up(&mut self, index: usize) {
+        if index > 0 {
+            self.move_bookmark_to(index, index - 1);
+        }
+    }
+
+    pub fn move_bookmark_down(&mut self, index: usize) {
+        self.move_bookmark_to(index, index + 1);
+    }
+
+    /// Pins a folder dropped on the Favourites at `position` (ticket 121),
+    /// rather than at the end; a folder already pinned moves there instead.
+    pub fn pin_at(&mut self, location: &Location, position: usize) {
+        if location.as_local_path().is_none() {
+            self.notice = Some(Notice::NotPinnable);
+            return;
+        }
+        let target = self.bookmark_location(position);
+        self.edit_bookmarks(|file| {
+            let to = target
+                .as_ref()
+                .and_then(|target| file.position_of(target))
+                .unwrap_or(file.len());
+            match file.position_of(location) {
+                Some(from) => {
+                    let to = to.min(file.len().saturating_sub(1));
+                    (file.move_to(from, to), ())
+                }
+                None => {
+                    file.pin(location);
+                    let from = file.len() - 1;
+                    file.move_to(from, to.min(from));
+                    (true, ())
+                }
+            }
+        });
+        self.notice = None;
+    }
+
+    /// A drop between two favourites: the one at `from` lands where the one
+    /// at `to` is.
+    pub fn move_bookmark_to(&mut self, from: usize, to: usize) {
+        let (Some(moved), Some(target)) =
+            (self.bookmark_location(from), self.bookmark_location(to))
+        else {
+            return;
+        };
+        let landed = self.edit_bookmarks(|file| {
+            match (file.position_of(&moved), file.position_of(&target)) {
+                (Some(from), Some(to)) => (file.move_to(from, to), Some(to)),
+                _ => (false, None),
+            }
+        });
+        if let Some(to) = landed {
+            self.sidebar_cursor = Some(to);
+        }
+    }
+
+    pub fn set_bookmark_label(&mut self, index: usize, label: &str) {
+        let Some(location) = self.bookmark_location(index) else {
+            return;
+        };
+        self.edit_bookmarks(|file| {
+            let changed = file
+                .position_of(&location)
+                .is_some_and(|at| file.set_label(at, label));
+            (changed, ())
+        });
+    }
+
+    /// Reads the bookmarks file again when it changed on disk (another
+    /// program, window or pane), so the sidebar follows it.
+    fn pump_bookmarks(&mut self) -> bool {
+        let Some(subscription) = &self.bookmark_watch else {
+            return false;
+        };
+        let name = self
+            .bookmark_store
+            .path()
+            .file_name()
+            .map(|name| name.to_os_string());
+        let touched = subscription.poll().into_iter().any(|update| match update {
+            files_platform::HubUpdate::Rows(rows) => rows.iter().any(|row| match row {
+                files_core::RefreshEvent::Removed(files_core::EntryId::Name(changed)) => {
+                    name.as_deref() == Some(std::ffi::OsStr::new(changed))
+                }
+                files_core::RefreshEvent::Added(entry)
+                | files_core::RefreshEvent::Modified(entry) => {
+                    name.as_deref() == Some(std::ffi::OsStr::new(&entry.name))
+                }
+                _ => false,
+            }),
+            // What changed before the watch was in place is unknown.
+            files_platform::HubUpdate::Resynchronize | files_platform::HubUpdate::Ready { .. } => {
+                true
+            }
+            _ => false,
+        });
+        if !touched {
+            return false;
+        }
+        let fresh = self.bookmark_store.load();
+        if fresh == self.bookmarks {
+            return false;
+        }
+        self.bookmarks = fresh;
+        if let Some(cursor) = self.sidebar_cursor
+            && cursor >= self.bookmarks.len()
+        {
+            self.sidebar_cursor = self.bookmarks.len().checked_sub(1);
+        }
+        true
     }
 
     // --- Operations -------------------------------------------------------
@@ -2245,6 +2454,8 @@ impl FilesSession {
         }
         changed |= self.refresh_jobs();
         changed |= self.pump_devices();
+        changed |= self.pump_bookmarks();
+        changed |= self.pump_preferences();
         changed |= self.pump_mount();
         // Search is fed after the pane, so entries that arrived this frame are
         // considered this frame rather than next.
@@ -2519,6 +2730,17 @@ impl FilesSession {
                         self.move_bookmark_down(index);
                     }
                 }
+                M::MoveBookmarkToTop => {
+                    if let Some(index) = row.bookmark_index {
+                        self.move_bookmark_to(index, 0);
+                    }
+                }
+                M::MoveBookmarkToBottom => {
+                    if let Some(index) = row.bookmark_index {
+                        let last = self.bookmarks.len().saturating_sub(1);
+                        self.move_bookmark_to(index, last);
+                    }
+                }
                 M::RemoveBookmark | M::Unpin => {
                     if let Some(index) = row.bookmark_index {
                         self.remove_bookmark(index);
@@ -2568,6 +2790,8 @@ impl FilesSession {
             M::RenameBookmark
             | M::MoveBookmarkUp
             | M::MoveBookmarkDown
+            | M::MoveBookmarkToTop
+            | M::MoveBookmarkToBottom
             | M::RemoveBookmark
             | M::Eject
             | M::Mount

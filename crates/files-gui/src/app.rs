@@ -73,6 +73,8 @@ pub struct FilesApp {
     /// The whole window's width, which decides whether the navigation pane
     /// is compact. `viewport` is this pane's share of the window.
     pub(crate) window_width: Pixels,
+    /// The left half's sidebar width, for the right half of a split.
+    pub(crate) nav_width_override: Option<f32>,
     /// The client inset the desktop's frame asked for (its shadow), on each
     /// side of `window_width`.
     pub(crate) frame_inset: Pixels,
@@ -99,6 +101,9 @@ pub struct FilesApp {
     pub(crate) path_input: Entity<InputState>,
     pub(crate) dialog_input: Entity<InputState>,
     pub(crate) focus_handle: FocusHandle,
+    /// The keyboard stops of the sidebar's, the preview's and the
+    /// operations panel's edges (ticket 118), in that order.
+    pub(crate) edge_focus: [FocusHandle; 3],
     /// True while the path field is being edited, so the frame does not
     /// overwrite what is being typed with the current location.
     pub(crate) editing_path: bool,
@@ -145,6 +150,9 @@ pub struct FilesApp {
     /// The pane edge last pressed, so only its divider lights while a drag
     /// is under way.
     pub(crate) dragging_edge: Option<crate::render::PaneEdgeKind>,
+    /// The width a pane's edge had when it was pressed, which Escape during
+    /// the drag puts back.
+    pub(crate) edge_drag_start: Option<(crate::render::PaneEdgeKind, Option<u32>)>,
 }
 
 /// The window's application id, which the desktop entry is named after.
@@ -345,6 +353,7 @@ impl FilesApp {
             parent: None,
             pane_width: None,
             window_width: px(1_200.0),
+            nav_width_override: None,
             frame_inset: px(0.0),
             sharing: Sharing::start(),
             plugins: crate::plugin_host::PluginHost::start(match locale_for_plugins {
@@ -362,6 +371,7 @@ impl FilesApp {
             path_input,
             dialog_input,
             focus_handle: cx.focus_handle(),
+            edge_focus: [cx.focus_handle(), cx.focus_handle(), cx.focus_handle()],
             editing_path: false,
             apply_to_remaining: false,
             viewport: size(px(1_200.0), px(800.0)),
@@ -390,6 +400,7 @@ impl FilesApp {
             _pump: None,
             edge_dirty: false,
             dragging_edge: None,
+            edge_drag_start: None,
         };
         app.sync_path_field(window, cx);
         app.sync_search_field(window, cx);
@@ -418,6 +429,7 @@ impl FilesApp {
                         cx.notify();
                     }
                     if !cx.has_active_drag() && app.dragging_edge.take().is_some() {
+                        app.edge_drag_start = None;
                         cx.notify();
                     }
                     if app.edge_dirty && !cx.has_active_drag() {
@@ -429,6 +441,9 @@ impl FilesApp {
                         .ready
                         .swap(false, std::sync::atomic::Ordering::AcqRel)
                     {
+                        cx.notify();
+                    }
+                    if app.icons.take_ready() {
                         cx.notify();
                     }
                     if app.plugins.take_changed() {
@@ -583,8 +598,9 @@ impl FilesApp {
     /// Whether the navigation pane is drawn compact: the person's choice,
     /// or compact below the WinUI breakpoint.
     pub(crate) fn nav_compact(&self) -> bool {
+        // The same width `compact()` measures: what the person sees.
         self.nav_compact
-            .unwrap_or(self.window_width < px(COMPACT_VIEWPORT_WIDTH))
+            .unwrap_or(self.visible_width() < COMPACT_VIEWPORT_WIDTH)
     }
 
     /// The search box's width: narrower in a narrow pane (half of a split
@@ -603,7 +619,18 @@ impl FilesApp {
     /// The navigation pane's width, which every width this pane computes
     /// subtracts from its viewport.
     pub(crate) fn nav_width(&self) -> f32 {
-        if self.nav_compact() { 48.0 } else { 320.0 }
+        if let Some(nav) = self.nav_width_override {
+            return nav;
+        }
+        crate::layout::pane_layout(crate::layout::PaneInputs {
+            window: self.visible_width(),
+            pane: self.visible_width(),
+            sidebar: (!self.nav_compact()).then_some(self.session.preferences.sidebar_width),
+            side: None,
+            operations: None,
+            fixed_nav: None,
+        })
+        .nav
     }
 
     /// What every navigation does afterwards: the address box shows the new
@@ -763,6 +790,16 @@ impl FilesApp {
         // it, must not act on them a second time.
         if self.embedded {
             cx.stop_propagation();
+        }
+        // Escape during a drag (a favourite, a file, a pane's edge) puts
+        // it back where it was.
+        if event.keystroke.key == "escape" && cx.has_active_drag() {
+            if let Some((kind, stored)) = self.edge_drag_start.take() {
+                self.restore_pane_edge(kind, stored);
+            }
+            cx.stop_active_drag(window);
+            cx.notify();
+            return;
         }
         // The Performance mode confirmation is answered with its own buttons;
         // Escape is Cancel, and nothing else reaches the window behind it.
