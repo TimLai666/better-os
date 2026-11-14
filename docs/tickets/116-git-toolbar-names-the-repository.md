@@ -1,6 +1,6 @@
 # Ticket 116 — Better Git's toolbar has a repository dropdown and a separate worktree dropdown
 
-**Blocked by:** 113 (merged) · **Status:** built, not merged
+**Blocked by:** 113 (merged) · **Status:** merged, not released
 
 ## Why
 
