@@ -13,6 +13,7 @@
 //! could take even if something tried to build one.
 
 mod evaluate;
+mod lid;
 mod policy;
 mod rules;
 mod session;
@@ -22,6 +23,10 @@ pub use evaluate::{
     ActiveRule, Conflict, Evaluation, Observations, PolicyField, ProviderAvailability,
     RESOLUTION_EARLIEST_BATTERY_STOP, RESOLUTION_STRONGEST_WINS, RuleOutcome, RuleTest, Truth,
     WatchActivity, evaluate_condition, evaluate_group,
+};
+pub use lid::{
+    DEFAULT_LID_BATTERY_LIMIT_MINUTES, LidBatteryLimit, LidBatteryLimitError,
+    MAX_LID_BATTERY_LIMIT_MINUTES, MIN_LID_BATTERY_LIMIT_MINUTES,
 };
 pub use policy::{
     ActiveReason, BackendCapabilities, EffectivePolicy, PolicyGap, SessionPolicy,

@@ -313,6 +313,7 @@ mod tests {
             conflicts: Vec::new(),
             providers: Vec::new(),
             battery_protection: awake_ipc::WireBatteryProtection::default(),
+            lid: awake_ipc::WireLidProtection::default(),
             now_unix_seconds: 1_700_000_000,
         };
         crate::menu::build(
@@ -482,6 +483,7 @@ mod tests {
             conflicts: Vec::new(),
             providers: Vec::new(),
             battery_protection: awake_ipc::WireBatteryProtection::default(),
+            lid: awake_ipc::WireLidProtection::default(),
             now_unix_seconds: 1_700_000_000,
         }
     }

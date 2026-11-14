@@ -22,6 +22,13 @@ use crate::menu::{MenuAction, QuickOptions};
 pub trait Awake {
     fn request(&self, request_json: &str) -> zbus::Result<String>;
 
+    /// Every event in the current protocol version.
+    #[zbus(signal)]
+    fn event(&self, event_json: &str) -> zbus::Result<()>;
+
+    /// The same events in protocol version 2's shape. The only signal a
+    /// service from before version 3 sends, so the tray follows it while the
+    /// service it talks to is one of those, and ignores it otherwise.
     #[zbus(signal)]
     fn status_changed(&self, event_json: &str) -> zbus::Result<()>;
 
@@ -77,6 +84,13 @@ fn call_error(error: zbus::Error, otherwise: fn(String) -> ClientError) -> Clien
 
 pub struct ServiceClient {
     proxy: AwakeProxy<'static>,
+    /// Set once the service refused the current protocol version for its
+    /// older one: until it restarts, requests go in that version's shape and
+    /// the lid choice reads as unavailable.
+    legacy: std::sync::atomic::AtomicBool,
+    /// Whether the service's `ProtocolVersion` property has been read since it
+    /// (re)appeared.
+    version_read: std::sync::atomic::AtomicBool,
 }
 
 impl ServiceClient {
@@ -91,10 +105,81 @@ impl ServiceClient {
     }
 
     pub async fn with_connection(connection: zbus::Connection) -> Result<Self, ClientError> {
-        let proxy = AwakeProxy::new(&connection)
+        // Properties are not cached: zbus refreshes a cached property only on
+        // `PropertiesChanged`, which a service that restarts as a newer one
+        // never sends, so a cached `ProtocolVersion` would keep this tray
+        // speaking version 2 to a version 3 service until it restarted too.
+        let proxy = AwakeProxy::builder(&connection)
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
             .await
             .map_err(|error| ClientError::ServiceUnavailable(error.to_string()))?;
-        Ok(Self { proxy })
+        Ok(Self::new(proxy))
+    }
+
+    fn new(proxy: AwakeProxy<'static>) -> Self {
+        Self {
+            proxy,
+            legacy: std::sync::atomic::AtomicBool::new(false),
+            version_read: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Whether the service this tray talks to is one from before protocol
+    /// version 3, which a request found out.
+    pub fn speaks_legacy(&self) -> bool {
+        self.legacy.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Forgets what the last service spoke. Called when a service (re)appears
+    /// on the bus, because an update restarts it as the newer one.
+    pub fn reset_protocol(&self) {
+        self.legacy
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.version_read
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Sends one request in the version the service speaks.
+    ///
+    /// A service from before protocol version 3 refuses a current request
+    /// with a version error; the request is then sent again in its shape,
+    /// without the lid fields, and every later one goes that way until the
+    /// service restarts. A request only version 3 has is refused here with a
+    /// key that says the service is too old.
+    async fn exchange(&self, request: &AwakeRequest) -> Result<AwakeResponse, ClientError> {
+        // The service says which version it speaks; a service from before
+        // version 3 says 2. Asked once per service, before the first request,
+        // so a request it could not parse is never sent to it. The refusal
+        // check below stays for a service that cannot be asked.
+        if !self
+            .version_read
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+            && let Ok(version) = self.protocol_version().await
+            && version == awake_ipc::LEGACY_PROTOCOL_VERSION
+        {
+            self.legacy.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        if !self.speaks_legacy() {
+            let reply = self.call(&request.to_json()?).await?;
+            let response = AwakeResponse::from_json_any(&reply)?;
+            if !response.is_legacy_version_refusal() {
+                return Ok(response);
+            }
+            self.legacy.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let document = request
+            .to_legacy_json()
+            .map_err(|error| ClientError::Rejected(error.to_string()))?;
+        let reply = self.call(&document).await?;
+        Ok(AwakeResponse::from_json_any(&reply)?)
+    }
+
+    async fn call(&self, document: &str) -> Result<String, ClientError> {
+        self.proxy
+            .request(document)
+            .await
+            .map_err(|error| call_error(error, ClientError::Transport))
     }
 
     /// Points at a service published under another bus name. Used by the
@@ -107,10 +192,11 @@ impl ServiceClient {
         let proxy = AwakeProxy::builder(&connection)
             .destination(destination)
             .map_err(|error| ClientError::Transport(error.to_string()))?
+            .cache_properties(zbus::proxy::CacheProperties::No)
             .build()
             .await
             .map_err(|error| ClientError::ServiceUnavailable(error.to_string()))?;
-        Ok(Self { proxy })
+        Ok(Self::new(proxy))
     }
 
     pub async fn protocol_version(&self) -> Result<u32, ClientError> {
@@ -122,13 +208,7 @@ impl ServiceClient {
 
     /// Sends one request and unwraps the reply into a status or a refusal.
     pub async fn send(&self, request: AwakeRequest) -> Result<StatusDocument, ClientError> {
-        let document = request.to_json()?;
-        let reply = self
-            .proxy
-            .request(&document)
-            .await
-            .map_err(|error| call_error(error, ClientError::Transport))?;
-        match AwakeResponse::from_json(&reply)?.body {
+        match self.exchange(&request).await?.body {
             ResponseBody::Status(status) => Ok(*status),
             ResponseBody::Rejected { error_key } => Err(ClientError::Rejected(error_key)),
             // The tray asks for none of these. A reply shaped for the rule
@@ -159,7 +239,15 @@ impl ServiceClient {
 
     /// Every status the service pushes, so the menu follows the session rather
     /// than polling for it.
-    pub async fn status_updates(&self) -> Result<StatusChangedStream, ClientError> {
+    pub async fn status_updates(&self) -> Result<EventStream, ClientError> {
+        self.proxy
+            .receive_event()
+            .await
+            .map_err(|error| ClientError::Transport(error.to_string()))
+    }
+
+    /// The same events from a service from before protocol version 3.
+    pub async fn legacy_status_updates(&self) -> Result<StatusChangedStream, ClientError> {
         self.proxy
             .receive_status_changed()
             .await
@@ -171,7 +259,9 @@ impl ServiceClient {
 pub fn status_from_event(document: &str) -> Result<Option<StatusDocument>, ClientError> {
     Ok(match service_event(document)? {
         ServiceEvent::Status(status) => Some(*status),
-        ServiceEvent::LowBatteryStop(_) | ServiceEvent::Other => None,
+        ServiceEvent::LowBatteryStop(_) | ServiceEvent::LidClosedStop(_) | ServiceEvent::Other => {
+            None
+        }
     })
 }
 
@@ -186,11 +276,20 @@ pub struct LowBatteryStop {
     pub percent: u8,
 }
 
+/// A session the service stopped because the lid stayed closed on battery for
+/// longer than the limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LidClosedStop {
+    pub session_id: u64,
+    pub limit_minutes: u32,
+}
+
 /// What one signal body means to the tray.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServiceEvent {
     Status(Box<StatusDocument>),
     LowBatteryStop(LowBatteryStop),
+    LidClosedStop(LidClosedStop),
     /// Anything the tray has nothing to do for. A session that ended for
     /// another reason is shown by the status that follows it.
     Other,
@@ -201,13 +300,14 @@ pub enum ServiceEvent {
 /// A low-battery stop that does not say which threshold it crossed is an
 /// error rather than a notification with the number missing.
 pub fn service_event(document: &str) -> Result<ServiceEvent, ClientError> {
-    match awake_ipc::AwakeEvent::from_json(document)?.body {
+    match awake_ipc::AwakeEvent::from_json_any(document)?.body {
         EventBody::StatusChanged(status) => Ok(ServiceEvent::Status(status)),
         EventBody::SessionEnded {
             session_id,
             cause,
             battery_stop_percent,
             battery_percent,
+            ..
         } if cause == awake_core::EndCause::BatteryThreshold { percent: 0 }.as_key() => {
             match (battery_stop_percent, battery_percent) {
                 (Some(threshold_percent), Some(percent)) => {
@@ -219,6 +319,22 @@ pub fn service_event(document: &str) -> Result<ServiceEvent, ClientError> {
                 }
                 _ => Err(ClientError::Protocol(format!(
                     "awake.tray.error.battery_stop_without_threshold:{session_id}"
+                ))),
+            }
+        }
+        EventBody::SessionEnded {
+            session_id,
+            cause,
+            lid_limit_minutes,
+            ..
+        } if cause == awake_core::EndCause::LidClosedOnBattery { limit_minutes: 0 }.as_key() => {
+            match lid_limit_minutes {
+                Some(limit_minutes) => Ok(ServiceEvent::LidClosedStop(LidClosedStop {
+                    session_id,
+                    limit_minutes,
+                })),
+                None => Err(ClientError::Protocol(format!(
+                    "awake.tray.error.lid_stop_without_limit:{session_id}"
                 ))),
             }
         }
@@ -279,6 +395,7 @@ mod tests {
             QuickOptions {
                 allow_display_off: false,
                 stop_below_battery: false,
+                keep_awake_lid_closed: false,
             },
             true,
         );
@@ -293,6 +410,7 @@ mod tests {
             panic!("expected a start request");
         };
         assert!(policy.prevent_display_sleep);
+        assert!(!policy.prevent_lid_suspend);
         assert_eq!(*battery_stop_percent, None);
         assert!(*security_confirmed);
         assert!(request.validate().is_ok());
@@ -322,6 +440,7 @@ mod tests {
             conflicts: Vec::new(),
             providers: Vec::new(),
             battery_protection: awake_ipc::WireBatteryProtection::default(),
+            lid: awake_ipc::WireLidProtection::default(),
             now_unix_seconds: 1,
         };
         let document =
@@ -352,6 +471,7 @@ mod tests {
             cause: cause.to_string(),
             battery_stop_percent,
             battery_percent,
+            lid_limit_minutes: None,
         })
         .to_json()
         .unwrap()
@@ -384,6 +504,37 @@ mod tests {
     fn a_low_battery_stop_that_does_not_say_its_threshold_is_an_error() {
         assert!(service_event(&session_ended("battery_threshold", None, Some(19))).is_err());
         assert!(service_event(&session_ended("battery_threshold", Some(20), None)).is_err());
+    }
+
+    #[test]
+    fn a_closed_lid_stop_is_read_with_the_limit_that_ended_it() {
+        let event = |lid_limit_minutes| {
+            awake_ipc::AwakeEvent::new(EventBody::SessionEnded {
+                session_id: 4,
+                cause: "lid_closed_on_battery".to_string(),
+                battery_stop_percent: Some(20),
+                battery_percent: None,
+                lid_limit_minutes,
+            })
+            .to_json()
+            .unwrap()
+        };
+        assert_eq!(
+            service_event(&event(Some(120))).unwrap(),
+            ServiceEvent::LidClosedStop(LidClosedStop {
+                session_id: 4,
+                limit_minutes: 120,
+            })
+        );
+        assert!(service_event(&event(None)).is_err());
+    }
+
+    #[test]
+    fn a_status_from_a_service_before_version_3_is_read_with_the_lid_unavailable() {
+        let document = r#"{"protocol_version":2,"body":{"event":"status_changed","indicator":"inactive","effective_policy":{"prevent_system_suspend":false,"prevent_idle":false,"prevent_display_sleep":false,"prevent_automatic_lock":false},"backend":{"name":"logind","available":true,"capabilities":{"system_suspend":true,"idle":true,"display_sleep":false,"automatic_lock":false}},"now_unix_seconds":5}}"#;
+        let status = status_from_event(document).unwrap().unwrap();
+        assert!(!status.backend.capabilities.lid_switch);
+        assert!(!status.effective_policy.prevent_lid_suspend);
     }
 
     #[test]

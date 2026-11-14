@@ -1,4 +1,5 @@
-//! The desktop notification the tray raises when low battery ends a session.
+//! The desktop notification the tray raises when low battery, or the lid
+//! closed on battery for longer than the limit, ends a session.
 //!
 //! The service decides the stop and says so on the bus; the tray is the
 //! process in the person's desktop session, so it is the one that tells them.
@@ -20,13 +21,14 @@ use std::time::Duration;
 
 use awake_ipc::StatusDocument;
 use awake_ipc::notification::{
-    DEFAULT_EXPIRY, LOW_BATTERY_ICON, TRAY_BUS_NAME, low_battery_notification,
+    DEFAULT_EXPIRY, LOW_BATTERY_ICON, Notification, TRAY_BUS_NAME, TRAY_LID_NOTIFY_BUS_NAME,
+    lid_closed_notification, low_battery_notification,
 };
 use thiserror::Error;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::zvariant::Value;
 
-use crate::client::{LowBatteryStop, ServiceEvent, service_event};
+use crate::client::{LidClosedStop, LowBatteryStop, ServiceEvent, service_event};
 use crate::labels::{Locale, LocaleLabels};
 
 #[zbus::proxy(
@@ -121,6 +123,16 @@ impl DesktopNotifier {
     pub async fn low_battery_stop(&self, stop: &LowBatteryStop) -> Result<u32, NotifyError> {
         let notification =
             low_battery_notification(self.locale, stop.threshold_percent, stop.percent);
+        self.raise(&notification).await
+    }
+
+    /// Raises the notification for one closed-lid stop.
+    pub async fn lid_closed_stop(&self, stop: &LidClosedStop) -> Result<u32, NotifyError> {
+        let notification = lid_closed_notification(self.locale, stop.limit_minutes);
+        self.raise(&notification).await
+    }
+
+    async fn raise(&self, notification: &Notification) -> Result<u32, NotifyError> {
         let hints = HashMap::new();
         let call = self.proxy.notify(
             notification.application_name,
@@ -218,6 +230,21 @@ pub async fn claim_notifications_within(
             .await
         {
             Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => {
+                // This tray reads closed-lid stops too, which a tray from
+                // before protocol version 3 cannot, so it says so; without
+                // this name the service raises that notification itself.
+                if let Err(error) = connection
+                    .request_name_with_flags(
+                        TRAY_LID_NOTIFY_BUS_NAME,
+                        RequestNameFlags::DoNotQueue.into(),
+                    )
+                    .await
+                {
+                    eprintln!(
+                        "better-awake-tray: could not say that this tray raises the closed-lid \
+                         notification ({error}), so the service may raise it as well"
+                    );
+                }
                 return Some(notifier);
             }
             Ok(reply) => last = format!("{reply:?}"),
@@ -258,6 +285,26 @@ pub async fn handle_event(
                     "better-awake-tray: session {} ended because the battery fell below {}%, \
                      and there is no notification service to show it",
                     stop.session_id, stop.threshold_percent
+                ),
+            }
+            None
+        }
+        Ok(ServiceEvent::LidClosedStop(stop)) => {
+            match notifier {
+                Some(notifier) => {
+                    if let Err(error) = notifier.lid_closed_stop(&stop).await {
+                        eprintln!(
+                            "better-awake-tray: session {} ended because the lid stayed closed \
+                             on battery for {} minutes, and the notification could not be \
+                             shown: {error}",
+                            stop.session_id, stop.limit_minutes
+                        );
+                    }
+                }
+                None => eprintln!(
+                    "better-awake-tray: session {} ended because the lid stayed closed on \
+                     battery for {} minutes, and there is no notification service to show it",
+                    stop.session_id, stop.limit_minutes
                 ),
             }
             None

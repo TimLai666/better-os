@@ -248,7 +248,7 @@ impl AwakeApp {
             };
             runtime.block_on(async move {
                 let client = ServiceClient::connect().await?;
-                client.status_request(body).await.map(|_| ())
+                client.perform(body).await
             })
         });
         self._work = Some(cx.spawn(async move |this, cx| {
@@ -355,6 +355,16 @@ impl AwakeApp {
     pub(crate) fn set_default_policy(&mut self, policy: SessionPolicy, cx: &mut Context<Self>) {
         self.preferences.defaults.policy = policy;
         self.commit_preferences(cx);
+    }
+
+    /// The closed-lid limit is the service's setting, not this window's, so
+    /// it is sent rather than stored here.
+    pub(crate) fn set_lid_battery_limit(
+        &mut self,
+        limit: awake_core::LidBatteryLimit,
+        cx: &mut Context<Self>,
+    ) {
+        self.dispatch(RequestBody::SetLidBatteryLimit { limit }, cx);
     }
 
     pub(crate) fn set_default_battery(&mut self, percent: Option<u8>, cx: &mut Context<Self>) {

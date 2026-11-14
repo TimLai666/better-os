@@ -431,6 +431,7 @@ fn policy_sentence(policy: awake_core::SessionPolicy, c: &'static crate::i18n::C
         (policy.prevent_idle, c.idle_handling),
         (policy.prevent_display_sleep, c.display_sleep),
         (policy.prevent_automatic_lock, c.automatic_lock),
+        (policy.prevent_lid_suspend, c.lid_sleep),
     ]
     .into_iter()
     .filter_map(|(held, label)| held.then_some(label))
