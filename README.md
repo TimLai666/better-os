@@ -85,7 +85,7 @@ cargo run -p manager-cli -- --state-path /tmp/better-manager-state.json status b
 ```
 
 Read [`AGENTS.md`](AGENTS.md) before changing the project. The architecture
-and current handoff state live in [`ENG.md`](ENG.md) and
-[`delivery-status.md`](delivery-status.md). The manager screen behavior is
-defined in [`docs/manager-ux-logic.md`](docs/manager-ux-logic.md). Accepted
+and current handoff state live in [`ENG.md`](/engineering/architecture.md) and
+[`delivery-status.md`](/engineering/reports/legacy-status.md). The manager screen behavior is
+defined in [`docs/manager-ux-logic.md`](/engineering/specs/manager-ux-logic.md). Accepted
 decisions live in [`docs/decisions/`](docs/decisions/).

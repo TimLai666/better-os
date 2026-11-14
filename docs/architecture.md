@@ -121,5 +121,5 @@ still required when a desktop binary starts. These `*-dev` packages are
 build-time dependencies only. The first release format is a `.deb`; its
 metadata must declare the runtime libraries so `apt install ./<package>.deb`
 works on a clean supported desktop without manual development-package setup.
-See [Release Packaging Specification](release-packaging.md) for the release
+See [Release Packaging Specification](/engineering/specs/release-packaging.md) for the release
 verification contract.

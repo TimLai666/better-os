@@ -264,7 +264,7 @@ GUI or dependency compiles when the relevant command was not executed.
   manifest can only record a real checksum after its own release is public. So
   the `better-manager` shipped in a release always carries the pre-release
   placeholder checksums for that release. That is now a fallback rather than the
-  only path: ticket 41 and [ADR 0013](docs/decisions/0013-remote-catalog-refresh.md)
+  only path: ticket 41 and [ADR 0013](/engineering/decisions/0013-remote-catalog-refresh.md)
   made the catalog refreshable, so a manager fetches the eight manifest files
   from `main` over HTTPS, validates them with the same validator the compiled-in
   ones get, caches the result in the state directory, and shows the built-in

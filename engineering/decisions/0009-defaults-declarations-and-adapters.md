@@ -1,0 +1,181 @@
+# ADR 0009: Better Defaults declarations, storage, and the first adapter set
+
+## Status
+
+Accepted for the Better Defaults core (ticket 27). The GUI (ticket 28) consumes
+these decisions and does not revisit them.
+
+Decision 4's second option — writing through the `ca.desrt.dconf` D-Bus service
+— was built by ticket 29 and is recorded in
+[ADR 0010](/engineering/decisions/0010-touchpad-ranges-and-dconf-writes.md). **Ticket 57 adopted it.**
+The writer and the change-set encoder moved from `touchpad-platform` into
+`defaults-platform`, behind its `dconf-write` feature, which `defaults-core`
+turns on; `touchpad-platform` re-exports both under their old names. The
+encoder gained the string array every GNOME keybinding is, pinned against
+GLib's bytes like the other types. The `gnome-keybinding` and
+`gnome-desktop-setting` rows of the table in decision 4 now read, apply, and
+verify: every declared key goes to the service in one change set, and the
+outcome is Applied only when a second read of the database agrees. One reading
+changed with it. A key the user's database does not hold, or a database that
+does not exist yet, now reads as *nothing set* rather than as unknown, because
+that is the reading a restore can reproduce — by resetting the key, not by
+writing a guess at the schema default. The compiled schema default itself is
+still not read and not claimed. A build without the feature still reports
+manual action required for a change.
+
+**Ticket 58 changed the mixed handler group** described under Consequences. A
+group whose keys each read definitely and disagree is now a per-key reading
+rather than unknown: the preview lists each key's current value, apply is
+allowed, the snapshot stores each key's previous value, and restore writes each
+key back to its own value and reports each key's verifying read. Snapshots are
+schema version 2 from this change, because a version 1 reader cannot parse a
+per-key value; version 1 files are read unchanged.
+
+**Ticket 71 removed the one XDG restore that needed manual action.** The owner
+decided on 2026-09-27 that `app-chooser-core` offers a typed "remove this
+association" operation. `AssociationStore::remove_default` takes a `MimeType`,
+removes that type's lines from `[Default Applications]` in the same editor that
+sets a default, leaves every other byte as it was, and writes the same rollback
+record first. The `xdg-default-app` adapter uses it for a clear, so restoring a
+type captured as having no default leaves it with none and is verified by
+reading again like any other restore. This holds for a single type and for each
+type of a group restored type by type.
+
+**Ticket 72 decided what restore does when the previous application has been
+uninstalled.** The owner decided on 2026-09-27 that restore consults the shared
+application catalog. The production adapter set carries the catalog this
+session's application directories hold, loaded through `app-catalog-platform`
+when the session opens, and the engine looks every captured desktop entry up in
+it both while planning and again just before writing. An entry the catalog no
+longer holds is its own reported class, `PreviousApplicationMissing`, naming
+the application and the installed alternatives for the same types, and nothing
+is written for it. In a group restored type by type, that type is reported and
+the others are restored. The person can choose one of the alternatives or leave
+the type without a default, which is ticket 71's removal; the choice travels
+with the entry confirmations and is planned again. A simulated desktop carries
+no catalog and checks nothing.
+
+## Context
+
+Issue #10 lists seven decisions that must not be made silently, and ticket 27
+repeats them. Four of them block the core implementation and are decided here.
+The other three are restated at the end with what still has to happen before
+they can be decided.
+
+## Decisions
+
+### 1. Manifest field names
+
+`default_integrations` is a list. Each entry carries `id`, `kind`,
+`exclusivity`, `target` (`desired` plus `keys`), `platforms`, `sessions`,
+`apply_adapter`, `verify_adapter`, `restore_policy`, `privileges`,
+`session_effect`, and `health_prerequisites`.
+
+The alternative considered was the flatter shape sketched in Issue #10, where
+`desired_owner`, `desired_action`, and `capability` are separate optional
+top-level keys per kind. It was rejected because optional keys per kind cannot
+be validated: a declaration that names a shortcut and a desired owner is
+nonsense that a flat schema has to accept. Folding the value and the settings it
+applies to into one `target` makes the kind-to-value rule checkable, and it is,
+in `DefaultIntegration::validate`.
+
+`kind`, `apply_adapter`, `verify_adapter`, `exclusivity`, `restore_policy`,
+`privileges`, `session_effect`, and `health_prerequisites` are closed enums, for
+the same reason `icon` is: an untrusted manifest must not be able to name an
+arbitrary asset, command, or executable. Adding an adapter is a schema change,
+which is the intended cost.
+
+### 2. Storage format
+
+Snapshots are JSON files in a directory, one file per snapshot, named by
+snapshot id.
+
+Issue #10 sketches the record in YAML. YAML was rejected as the on-disk format
+because `manager-store` already keeps versioned local state as JSON with the
+same schema-stamp, atomic-write, and preserve-a-newer-writer rules, and a second
+serialization format in the same product is a second set of failure modes for no
+gain. The sketch's field names are kept; only the encoding differs.
+
+One file per snapshot rather than one file containing a history: a history in
+one file has to be rewritten to append, and rewriting is exactly what must never
+put the only known-good baseline at risk.
+
+### 3. Snapshot retention
+
+No automatic retention limit, and nothing is ever deleted by this
+implementation.
+
+A limit was considered and rejected for now because the only safe limit depends
+on a decision that has not been made — whether a new baseline can be promoted
+automatically (see below). Until then, discarding an old snapshot could discard
+the only record of the value a restore has to return to. Snapshot records are
+small; the cost of keeping them is far below the cost of losing one.
+
+### 4. The first production adapter set
+
+Two adapters ship, and their honest capability differs:
+
+| Adapter | Read | Verify | Apply / restore |
+| --- | --- | --- | --- |
+| `xdg-default-app` | yes, from the user's `mimeapps.list` | yes | yes, one line per declared type; a type that had no default is cleared |
+| `xdg-effective-default` | yes | yes | refuses — it is read-only, and the schema refuses to accept it as an apply adapter |
+| `gnome-keybinding` | yes, from the user's dconf database | yes | **manual action required** |
+| `gnome-desktop-setting` | yes, from the user's dconf database | yes | **manual action required** |
+
+The keybinding decision is the one worth recording. Three options were weighed:
+
+1. **Write the dconf file directly.** Rejected. The dconf service owns
+   `~/.config/dconf/user`, caches it, and rewrites it. A change written behind
+   the service is ignored by the running session and overwritten on the next
+   write it makes. This would be the "reports a change that never happened"
+   failure ADR 0005 exists to prevent.
+2. **Write through the `ca.desrt.dconf` D-Bus service.** Viable and correct, and
+   the eventual answer. It needs a GVariant change-set serialized in GVariant
+   encoding, a D-Bus client dependency in a crate that currently has none, and a
+   live session bus to test against. It is a larger, separately reviewable
+   change than this ticket, and shipping it untested against a real session
+   would be worse than not shipping it.
+3. **Read and verify fully, and report manual action required for a change.**
+   Chosen. Issue #10 explicitly allows "Manual action required" over a guessed
+   command, and the reason returned names the exact keys and why Better OS did
+   not touch them.
+
+Reading is a real GVDB parser over the user's database, tested against a fixture
+`dconf compile` produced. A key the user's database does not hold is reported as
+unknown rather than as a default, because the effective value then comes from the
+compiled GSettings schema, which this adapter does not read.
+
+Every other integration kind has no production adapter at all. That is not a
+gap in the model: an integration whose adapter is absent is skipped with
+`NoProductionAdapter` and executes nothing.
+
+## Consequences
+
+- A component can declare an integration of any of the nine kinds today, and the
+  status, planning, snapshot, and verification paths all work for it through the
+  mock adapter set. Only the change itself waits on a production adapter.
+- Restoring an XDG default that previously had no owner at all removes the
+  type's line through `app-chooser-core`'s typed removal (ticket 71), because a
+  second `mimeapps.list` editor is not acceptable. Restoring to a previous owner
+  writes that owner back.
+- A handler group whose declared types currently disagree reads as unknown
+  rather than as one of them, so a mixed state is never flattened and
+  overwritten. Per-key capture for that case is not implemented.
+
+## Still deferred
+
+These cannot be decided yet and are not decided here:
+
+- **Which Better OS integrations are enabled in the initial catalog.** The
+  shipped manifests in `components/manifests/` declare none. Deciding needs the
+  components that would own them to exist. The schema is proven against
+  `crates/better-core/tests/fixtures/every-integration-kind.yaml` instead.
+- **Whether related integrations are grouped into one user-facing toggle.** This
+  is a question about the review screen, so it belongs with ticket 28. The model
+  supports either: an integration may name several keys, and a component may
+  declare several integrations.
+- **Whether a new baseline can be promoted automatically.** Today a new baseline
+  is only ever created by an explicit apply of an integration nothing was
+  captured for. Automatic promotion would let Better OS decide that somebody
+  else's change is the new "previous value", which is the opposite of what
+  external-change protection is for.
