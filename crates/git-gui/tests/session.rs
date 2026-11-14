@@ -1324,3 +1324,94 @@ fn a_refusal_the_step_cannot_fix_shows_gits_own_words() {
         session.problem
     );
 }
+
+/// Ticket 113: a linked worktree saved by an older Better Git as a
+/// repository of its own is folded into its repository once the list is
+/// read, the worktree that was open stays open and marked, opening another
+/// linked worktree adds no second repository, and removing the repository
+/// takes every worktree with it from the list and none from disk.
+#[test]
+fn linked_worktrees_saved_as_repositories_merge_into_their_repository() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let root = s.tmp.path().canonicalize().unwrap();
+    let main = s.repo.canonicalize().unwrap();
+    let one = root.join("wt-one");
+    let two = root.join("wt-two");
+    s.git(&["worktree", "add", "-q", "-b", "one", one.to_str().unwrap()]);
+    s.git(&["worktree", "add", "-q", "--detach", two.to_str().unwrap()]);
+    let state = s.home.join("state/better-os");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(
+        state.join("git-repositories.json"),
+        serde_json::json!({
+            "repositories": [
+                { "path": one, "alias": "Ticket" },
+                { "path": main },
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let paths = |session: &GitSession| {
+        session
+            .repositories
+            .entries
+            .iter()
+            .map(|e| e.path.clone())
+            .collect::<Vec<_>>()
+    };
+    // The window reads the list's worktrees when it starts.
+    let mut session = GitSession::new(Arc::new(SystemGit), files(&s));
+    assert_eq!(session.repository_groups("").len(), 2, "nothing known yet");
+    session.read_worktrees();
+    session.run_git_jobs();
+    assert_eq!(
+        paths(&session),
+        std::slice::from_ref(&main),
+        "merged on load"
+    );
+    assert_eq!(session.repositories.alias(&main), Some("Ticket"));
+    let reread = GitSession::new(Arc::new(SystemGit), files(&s));
+    assert_eq!(paths(&reread), std::slice::from_ref(&main), "and written");
+
+    session.open(one.clone());
+    session.trust_and_open(one.clone());
+    session.run_git_jobs();
+    assert_eq!(session.repo.as_ref().unwrap().root, one);
+    assert_eq!(paths(&session), std::slice::from_ref(&main));
+    let groups = session.repository_groups("");
+    assert_eq!(groups.len(), 1, "{groups:#?}");
+    let names: Vec<&str> = groups[0]
+        .worktrees
+        .iter()
+        .map(|w| w.name.as_str())
+        .collect();
+    assert_eq!(names, ["repo", "wt-one", "wt-two"]);
+    assert!(groups[0].worktrees[0].main);
+    assert!(
+        groups[0].worktrees[1].current,
+        "the open worktree stays marked"
+    );
+    assert_eq!(groups[0].worktrees[2].branch, None);
+    assert!(groups[0].worktrees[2].short_sha.is_some());
+
+    // Opening another worktree selects it under the same repository.
+    session.open(two.clone());
+    session.trust_and_open(two.clone());
+    session.run_git_jobs();
+    assert_eq!(paths(&session), std::slice::from_ref(&main));
+    assert_eq!(session.recent.first(), Some(&two));
+    let groups = session.repository_groups("");
+    assert_eq!(groups.len(), 1);
+    assert!(groups[0].worktrees[2].current);
+
+    session.remove_repository(&main);
+    assert!(session.repositories.entries.is_empty());
+    assert!(session.recent.is_empty(), "{:?}", session.recent);
+    assert!(session.repo.is_none(), "its worktree was open");
+    let reread = GitSession::new(Arc::new(SystemGit), files(&s));
+    assert!(reread.repositories.entries.is_empty());
+    assert!(main.exists() && one.exists() && two.exists());
+}

@@ -262,25 +262,35 @@ impl GitApp {
         self.notice_toast = Some((notice, id));
     }
 
-    /// The linked worktrees under one repository in the repository list.
+    /// The worktrees under one repository in the repository list: each
+    /// named by its folder, with its branch (or the commit it is detached
+    /// at) beneath, the main one marked. The whole row opens it.
     pub(crate) fn worktree_rows(
         &self,
-        repository: &std::path::Path,
+        worktrees: &[crate::repositories::WorktreeRow],
         first_index: usize,
         p: &'static Palette,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let c = self.copy();
-        let current = self.session.repo.as_ref().map(|r| r.root.as_path());
-        crate::worktree_links::linked_rows(self.session.worktrees_for(repository), current)
-            .into_iter()
+        worktrees
+            .iter()
             .enumerate()
             .map(|(offset, w)| {
                 let path = w.path.clone();
-                let branch = w
-                    .branch
-                    .clone()
-                    .unwrap_or_else(|| c.worktree_detached().to_string());
+                let mut detail = match (&w.branch, &w.short_sha) {
+                    (Some(branch), _) => branch.clone(),
+                    (None, Some(sha)) => {
+                        crate::i18n::fill(c.worktree_detached_at(), &[("sha", sha)])
+                    }
+                    (None, None) => c.worktree_detached().to_string(),
+                };
+                if w.main {
+                    detail = format!("{detail} · {}", c.worktree_main);
+                }
+                if w.missing {
+                    detail = format!("{detail} · {}", c.missing);
+                }
                 crate::render::row(
                     ("repo-worktree", first_index + offset),
                     w.current,
@@ -304,22 +314,19 @@ impl GitApp {
                         .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .child(label(branch, BODY, p.text_primary).truncate())
                         .child(
                             label(
-                                format!(
-                                    "{} · {}",
-                                    c.worktree_of(),
-                                    crate::changes::truncate_leading(
-                                        &w.path.display().to_string(),
-                                        40
-                                    )
-                                ),
-                                CAPTION,
-                                p.text_secondary,
+                                w.name.clone(),
+                                BODY,
+                                if w.missing {
+                                    p.text_disabled
+                                } else {
+                                    p.text_primary
+                                },
                             )
                             .truncate(),
-                        ),
+                        )
+                        .child(label(detail, CAPTION, p.text_secondary).truncate()),
                 )
                 .when(!w.missing, |row| {
                     row.on_click(

@@ -1,6 +1,6 @@
 # Ticket 113 — Better Git's repository list keeps worktrees under their repository
 
-**Blocked by:** none · **Status:** open
+**Blocked by:** none · **Status:** done, not merged
 
 ## Why
 
@@ -40,11 +40,52 @@ repository as its main worktree: they share one git common directory
 
 ## Acceptance
 
-- [ ] Unit tests with fixture repositories (made in a temp dir with real git):
+- [x] Unit tests with fixture repositories (made in a temp dir with real git):
       main + 3 linked worktrees added in every order give one group; a saved
       list with a linked worktree as a repository is merged; detached naming;
       removal; filter.
-- [ ] Screenshot of the dropdown in a headless sandbox with a fixture
+- [x] Screenshot of the dropdown in a headless sandbox with a fixture
       repository and worktrees, in both languages.
-- [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests and
+- [x] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests and
       the license check pass.
+
+## What was built
+
+- **One entry per repository.** `repositories::Known` holds what Git said
+  about a folder: its common directory (`git rev-parse --git-common-dir`,
+  through the existing `Git::git_dirs`) and its worktrees. The repository's
+  folder is the main worktree, or the common directory when there is no main
+  worktree to show (a bare repository, or one whose git directory is kept
+  apart and whose main worktree was deleted; Git lists the common directory
+  itself as the main entry then).
+- **Opening a worktree saves its repository.** The open answer carries the
+  common directory, and `RepositoryList::add_opened` stores the repository and
+  turns an entry for the worktree itself into the repository's. The recent
+  list keeps the worktree, so the one that was open is still the one marked.
+- **Old lists are merged on load.** The window reads the list's worktrees at
+  start (and whenever the dropdown opens, by click or Ctrl+T), and
+  `RepositoryList::merge_worktrees` folds every entry that turned out to be a
+  linked worktree into its repository's entry, in its place, and writes the
+  file once. The repository's own alias wins; a worktree entry's alias carries
+  over only when the repository had none.
+- **The dropdown draws groups.** `RepositoryList::groups` keys by the common
+  directory, so even before the merge is written a repository shows once. Each
+  repository row is named after its main worktree's folder and opens it; under
+  it, when it has linked worktrees, every worktree is a row named by its
+  folder, with the branch, "Detached at <short sha>", "Main worktree", or
+  "Can't be found" beneath, the open one marked and the whole row clickable.
+- **Removing** a repository removes every saved entry that is it and the
+  recent folders of its worktrees; nothing on disk is touched.
+- **The filter** matches a repository's name or folder (all its worktrees
+  stay) or a worktree's folder name or branch (only those worktrees stay).
+
+Tests: six in `crates/git-gui/src/repositories.rs` on fixture repositories
+made by real `git` in a temporary directory (main plus three linked
+worktrees opened in all 24 orders, an old list merged, detached naming,
+removal, the filter, a bare repository and a repository whose main worktree
+is gone), and `linked_worktrees_saved_as_repositories_merge_into_their_repository`
+in `crates/git-gui/tests/session.rs` through the session. Screenshots of the
+dropdown in English and Traditional Chinese, the filter, and a worktree row
+opened by a click on its empty right side were taken in a headless GNOME
+Shell with a fixture repository whose saved list held a linked worktree as a
+repository.

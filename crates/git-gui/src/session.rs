@@ -34,7 +34,7 @@ use crate::dialogs::{BranchPurpose, CloneTab, Dialog};
 use crate::github::{Account, GhAnswer, GhCall, GhRequest, GhResult, SignIn, SignInProblem};
 use crate::graph::{Direction, Found, GraphJob, GraphOutcome, GraphView};
 use crate::notifications;
-use crate::repositories::RepositoryList;
+use crate::repositories::{Group, Known, RepositoryList};
 use crate::settings::Settings;
 
 /// Which list the left pane shows.
@@ -331,6 +331,8 @@ pub type Snapshot = Result<(RepositoryStatus, RepositoryInfo), GitError>;
 pub enum Answer {
     Opened {
         root: PathBuf,
+        /// The git directory its worktrees share, for the repository list.
+        common_dir: Option<PathBuf>,
         snapshot: Snapshot,
     },
     OpenFailed(GitError),
@@ -375,7 +377,7 @@ pub enum Answer {
     LastCommit(Result<Vec<Commit>, GitError>),
     /// Each repository's worktrees; a repository that could not be read is
     /// left out.
-    Worktrees(Vec<(PathBuf, Vec<git_core::Worktree>)>),
+    Worktrees(Vec<(PathBuf, Known)>),
     /// The last commit was undone (or not); `last` is the commit it was,
     /// read from git just before.
     Undone {
@@ -455,6 +457,7 @@ impl Job {
             Op::Open => match git.repository_root(root) {
                 Ok(found) => Answer::Opened {
                     snapshot: snapshot(git, &found),
+                    common_dir: git.git_dirs(&found).ok().map(|(_, common)| common),
                     root: found,
                 },
                 Err(error) => Answer::OpenFailed(error),
@@ -602,7 +605,17 @@ impl Job {
             Op::ReadWorktrees(paths) => Answer::Worktrees(
                 paths
                     .into_iter()
-                    .filter_map(|path| git.worktrees(&path).ok().map(|list| (path, list)))
+                    .filter_map(|path| {
+                        let worktrees = git.worktrees(&path).ok()?;
+                        let common_dir = git.git_dirs(&path).ok().map(|(_, common)| common);
+                        Some((
+                            path,
+                            Known {
+                                common_dir,
+                                worktrees,
+                            },
+                        ))
+                    })
                     .collect(),
             ),
             Op::SetGitConfig(values) => Answer::GitConfig(
@@ -762,6 +775,8 @@ pub struct RepoGitHub {
 #[derive(Clone, Debug)]
 pub struct Repo {
     pub root: PathBuf,
+    /// The git directory its worktrees share, when Git said.
+    pub common_dir: Option<PathBuf>,
     pub status: RepositoryStatus,
     pub info: RepositoryInfo,
     pub hosted: Option<HostedRepository>,
@@ -796,6 +811,7 @@ impl Repo {
         let hosted = hosted_of(&info);
         let mut repo = Repo {
             root,
+            common_dir: None,
             status,
             info,
             hosted,
@@ -1031,8 +1047,8 @@ pub struct GitSession {
     identity_refusal: Option<(OpKind, String)>,
     /// Git's settings are being read for the identity step.
     identity_reading: bool,
-    /// The worktrees of the repositories in the list, as last read.
-    pub worktrees_of: Vec<(PathBuf, Vec<git_core::Worktree>)>,
+    /// What Git said about the repositories in the list, as last read.
+    pub worktrees_of: Vec<(PathBuf, Known)>,
     /// For the window: keyring writes and desktop notifications to send.
     pub keyring_changes: Vec<KeyringChange>,
     pub desktop_notices: Vec<notifications::Notice>,
@@ -1715,15 +1731,76 @@ impl GitSession {
     /// from its own snapshot, the others' from the last read.
     pub fn worktrees_for(&self, path: &Path) -> &[git_core::Worktree] {
         if let Some(repo) = self.repo.as_ref()
-            && (repo.root == path || repo.info.worktrees.iter().any(|w| w.main && w.path == path))
+            && Self::is_open_repository(repo, path)
         {
             return &repo.info.worktrees;
         }
         self.worktrees_of
             .iter()
             .find(|(p, _)| p == path)
-            .map(|(_, list)| list.as_slice())
+            .map(|(_, known)| known.worktrees.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Whether a folder in the list is the open repository: the open
+    /// worktree, any of its worktrees, or its common directory.
+    fn is_open_repository(repo: &Repo, path: &Path) -> bool {
+        repo.root == path
+            || repo.common_dir.as_deref() == Some(path)
+            || repo.info.worktrees.iter().any(|w| w.path == path)
+    }
+
+    /// What Git said about a folder in the list.
+    pub fn known_for(&self, path: &Path) -> Option<Known> {
+        if let Some(repo) = self.repo.as_ref()
+            && Self::is_open_repository(repo, path)
+        {
+            return Some(Known {
+                common_dir: repo.common_dir.clone(),
+                worktrees: repo.info.worktrees.clone(),
+            });
+        }
+        self.worktrees_of
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, known)| known.clone())
+    }
+
+    /// The repository list as the dropdown draws it, for a search.
+    pub fn repository_groups(&self, query: &str) -> Vec<Group> {
+        let current = self.repo.as_ref().map(|r| r.root.as_path());
+        self.repositories.groups(
+            query,
+            current,
+            &self.recent,
+            |path| self.known_for(path),
+            Path::exists,
+        )
+    }
+
+    /// Keeps what the background read said, and folds saved entries that
+    /// turned out to be linked worktrees into their repository's entry.
+    fn learn_worktrees(&mut self, list: Vec<(PathBuf, Known)>) {
+        let pairs: Vec<(PathBuf, PathBuf)> = list
+            .iter()
+            .filter_map(|(path, known)| Some((path.clone(), known.repository()?)))
+            .collect();
+        let mut learned = list;
+        // The merged entries are the repositories' folders: keep what Git
+        // said under those names too.
+        for (entry, repository) in &pairs {
+            if entry != repository
+                && !learned.iter().any(|(p, _)| p == repository)
+                && let Some((_, known)) = learned.iter().find(|(p, _)| p == entry)
+            {
+                let known = known.clone();
+                learned.push((repository.clone(), known));
+            }
+        }
+        self.worktrees_of = learned;
+        if let Err(error) = self.repositories.merge_worktrees(&pairs) {
+            self.problem = Some(Problem::Io(error.to_string()));
+        }
     }
 
     // --- discarding and ignoring ------------------------------------------
@@ -2805,16 +2882,34 @@ impl GitSession {
         });
     }
 
+    /// Removes a repository from the list, with every entry and recent
+    /// folder that is one of its worktrees; nothing is deleted from disk.
     pub fn remove_repository(&mut self, path: &Path) {
         self.dialog = None;
-        if let Err(error) = self.repositories.remove(path) {
+        let group = self
+            .repository_groups("")
+            .into_iter()
+            .find(|g| g.entries.iter().any(|e| e == path));
+        let mut entries = vec![path.to_path_buf()];
+        let mut folders = entries.clone();
+        let mut current = false;
+        if let Some(group) = group {
+            entries.extend(group.entries.iter().cloned());
+            folders.extend(group.entries);
+            folders.extend(group.worktrees.into_iter().map(|w| w.path));
+            current = group.current;
+        }
+        if let Some(known) = self.known_for(path) {
+            folders.extend(known.worktrees.into_iter().map(|w| w.path));
+        }
+        if let Err(error) = self.repositories.remove_all(&entries) {
             self.problem = Some(Problem::Io(error.to_string()));
         }
-        self.recent.retain(|p| p != path);
+        self.recent.retain(|p| !folders.contains(p));
         if let Some(file) = &self.recent_file {
             let _ = crate::recent::save(file, &self.recent);
         }
-        if self.repo.as_ref().is_some_and(|r| r.root == path) {
+        if current || self.repo.as_ref().is_some_and(|r| r.root == path) {
             self.close_repository();
         }
     }
@@ -3106,8 +3201,11 @@ impl GitSession {
 
     // --- answers ----------------------------------------------------------
 
-    fn remember_open(&mut self, root: &Path) {
-        if let Err(error) = self.repositories.add(root) {
+    /// Saves the opened folder's repository (not the worktree), and the
+    /// worktree itself as the recently opened folder.
+    fn remember_open(&mut self, root: &Path, known: &Known) {
+        let repository = known.repository().unwrap_or_else(|| root.to_path_buf());
+        if let Err(error) = self.repositories.add_opened(root, &repository) {
             self.problem = Some(Problem::Io(error.to_string()));
         }
         self.recent = crate::recent::remember(&self.recent, root.to_path_buf());
@@ -3155,7 +3253,7 @@ impl GitSession {
             return;
         }
         if let Answer::Worktrees(list) = outcome.answer {
-            self.worktrees_of = list;
+            self.learn_worktrees(list);
             return;
         }
         if let Answer::IdentityMissing { job, refusal } = outcome.answer {
@@ -3179,10 +3277,19 @@ impl GitSession {
             error,
         };
         match outcome.answer {
-            Answer::Opened { root, snapshot } => match snapshot {
+            Answer::Opened {
+                root,
+                common_dir,
+                snapshot,
+            } => match snapshot {
                 Ok((status, info)) => {
-                    self.remember_open(&root);
+                    let known = Known {
+                        common_dir: common_dir.clone(),
+                        worktrees: info.worktrees.clone(),
+                    };
+                    self.remember_open(&root, &known);
                     let mut repo = Repo::new(root, status, info);
+                    repo.common_dir = common_dir;
                     repo.graph = GraphView::new(crate::graph::query_from(
                         &self.settings.graph_scope,
                         self.settings.graph_remotes,
