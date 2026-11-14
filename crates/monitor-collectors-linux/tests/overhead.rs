@@ -8,6 +8,17 @@
 use monitor_collectors_linux::{ProcessPrivacy, Roots, measure};
 use std::time::Duration;
 
+/// A tree captured from a real desktop. The default tests measure against it,
+/// so they never read the machine they run on.
+fn recorded() -> Roots {
+    Roots::at(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("snapshot-a"),
+    )
+}
+
 const ROUNDS: u32 = 30;
 
 /// A round that takes longer than this is not "low overhead" on any machine.
@@ -15,7 +26,21 @@ const ROUND_BUDGET: Duration = Duration::from_millis(500);
 
 #[test]
 fn sampling_every_collector_thirty_times_stays_within_a_sane_budget() {
-    let report = measure(&Roots::system(), ProcessPrivacy::default(), ROUNDS);
+    budget(&recorded());
+}
+
+/// The same budget against the machine running the test. Ignored by default
+/// because it reads the real `/proc`, `/sys`, and socket table; run it with
+/// `cargo test -p monitor-collectors-linux --test overhead -- --ignored
+/// --nocapture` to reproduce the figures the tickets record.
+#[test]
+#[ignore = "reads the real machine; run explicitly to measure it"]
+fn sampling_the_real_machine_thirty_times_stays_within_a_sane_budget() {
+    budget(&Roots::system());
+}
+
+fn budget(roots: &Roots) {
+    let report = measure(roots, ProcessPrivacy::default(), ROUNDS);
 
     println!("rounds:      {}", report.rounds);
     println!("total wall:  {:?}", report.total_wall);
@@ -52,9 +77,24 @@ fn sampling_every_collector_thirty_times_stays_within_a_sane_budget() {
 }
 
 #[test]
-fn the_process_table_is_the_expensive_collector_and_is_measured_separately() {
+fn every_collector_is_measured_separately() {
     // Attribution is the point of the per-collector breakdown: without it a
     // regression in one collector hides inside the total.
+    let report = measure(&recorded(), ProcessPrivacy::default(), 5);
+    let names: Vec<&str> = report
+        .per_collector
+        .iter()
+        .map(|cost| cost.collector.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        monitor_collectors_linux::LinuxCollectors::collector_names()
+    );
+}
+
+#[test]
+#[ignore = "reads the real machine; run explicitly to measure it"]
+fn the_process_table_is_the_expensive_collector_on_the_real_machine() {
     let report = measure(&Roots::system(), ProcessPrivacy::default(), 5);
     let process = report
         .per_collector

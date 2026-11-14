@@ -41,6 +41,18 @@ pub(crate) enum SeriesKey {
     Receive(String),
     /// Bytes sent per second on an adapter.
     Send(String),
+    /// A graphics card's busy share, in percent.
+    Gpu(String),
+    /// A graphics card's dedicated memory in use, in bytes.
+    GpuMemory(String),
+    /// An NPU's busy share, in percent.
+    Npu(String),
+    /// A battery's charge, in percent.
+    BatteryCharge(String),
+    /// What the machine draws from or puts into its battery, in watts.
+    BatteryPower(String),
+    /// One hwmon reading, in its own unit.
+    Sensor(String),
 }
 
 fn id(raw: &str) -> MetricId {
@@ -185,6 +197,119 @@ pub(crate) struct AdapterReadings {
     pub(crate) send_rate: Option<f64>,
 }
 
+/// One graphics card, now.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct GpuReadings {
+    /// Its PCI address, which keys its charts.
+    pub(crate) key: String,
+    pub(crate) card: Option<String>,
+    pub(crate) name: Option<String>,
+    pub(crate) vendor: Option<String>,
+    pub(crate) driver: Option<String>,
+    /// `0.0..=1.0`.
+    pub(crate) utilization: Option<f64>,
+    /// `driver`, `clients`, or `nvml`.
+    pub(crate) source: Option<String>,
+    pub(crate) dedicated_used: Option<u64>,
+    pub(crate) dedicated_total: Option<u64>,
+    pub(crate) shared_used: Option<u64>,
+    pub(crate) shared_total: Option<u64>,
+    pub(crate) temperature_celsius: Option<f64>,
+    pub(crate) frequency_hz: Option<f64>,
+    pub(crate) memory_frequency_hz: Option<f64>,
+    pub(crate) power_watts: Option<f64>,
+    pub(crate) clients: Option<u64>,
+}
+
+/// One NPU, now.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct NpuReadings {
+    pub(crate) key: String,
+    pub(crate) device: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) vendor: Option<String>,
+    pub(crate) driver: Option<String>,
+    pub(crate) firmware: Option<String>,
+    pub(crate) power_state: Option<String>,
+    pub(crate) runtime_status: Option<String>,
+    /// The share of time it was powered up, `0.0..=1.0`.
+    pub(crate) awake: Option<f64>,
+    pub(crate) utilization: Option<f64>,
+    /// Why there is no busy share, when there is none.
+    pub(crate) utilization_unreported: bool,
+    pub(crate) clients: Option<u64>,
+}
+
+/// One battery, now.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct BatteryReadings {
+    pub(crate) key: String,
+    pub(crate) charge: Option<f64>,
+    /// `charging`, `discharging`, `full`, `not_charging`, `unknown`.
+    pub(crate) status: Option<String>,
+    pub(crate) energy_now: Option<f64>,
+    pub(crate) energy_full: Option<f64>,
+    pub(crate) energy_design: Option<f64>,
+    pub(crate) health: Option<f64>,
+    pub(crate) power_watts: Option<f64>,
+    pub(crate) time_remaining: Option<f64>,
+    pub(crate) time_to_full: Option<f64>,
+    pub(crate) cycles: Option<u64>,
+    pub(crate) voltage: Option<f64>,
+    pub(crate) charge_limit: Option<f64>,
+    pub(crate) technology: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) manufacturer: Option<String>,
+    /// A mouse's or a keyboard's battery rather than this machine's.
+    pub(crate) peripheral: bool,
+}
+
+/// A mains adapter or a USB-C port.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct PowerSourceReadings {
+    pub(crate) key: String,
+    pub(crate) kind: Option<String>,
+    pub(crate) online: Option<bool>,
+    pub(crate) usb_type: Option<String>,
+    pub(crate) max_power: Option<f64>,
+}
+
+/// One hwmon reading.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct SensorReadings {
+    /// `chip/input`, which keys its chart.
+    pub(crate) key: String,
+    pub(crate) chip: String,
+    pub(crate) label: Option<String>,
+    /// `temperature`, `fan`, `voltage`, `current`, `power`, `frequency`.
+    pub(crate) kind: String,
+    pub(crate) device: Option<String>,
+    pub(crate) value: Option<f64>,
+    pub(crate) high: Option<f64>,
+    pub(crate) critical: Option<f64>,
+}
+
+impl SensorReadings {
+    pub(crate) fn is(&self, kind: &str) -> bool {
+        self.kind == kind
+    }
+}
+
+/// Which hardware cards the Overview shows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OverviewHardware {
+    pub(crate) gpu: bool,
+    pub(crate) battery: bool,
+}
+
+/// A card only for hardware the machine has.
+pub(crate) fn overview_hardware(readings: &Readings) -> OverviewHardware {
+    OverviewHardware {
+        gpu: readings.primary_gpu().is_some(),
+        battery: readings.system_battery().is_some(),
+    }
+}
+
 /// Everything the live pages draw from one round.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Readings {
@@ -192,12 +317,22 @@ pub(crate) struct Readings {
     pub(crate) memory: MemoryReadings,
     pub(crate) disks: Vec<DiskReadings>,
     pub(crate) adapters: Vec<AdapterReadings>,
+    pub(crate) gpus: Vec<GpuReadings>,
+    pub(crate) npus: Vec<NpuReadings>,
+    pub(crate) batteries: Vec<BatteryReadings>,
+    pub(crate) power_sources: Vec<PowerSourceReadings>,
+    pub(crate) sensors: Vec<SensorReadings>,
+    /// Whether the machine runs on its battery now; `None` without one.
+    pub(crate) on_battery: Option<bool>,
     /// Whether the round carried each collector at all, so a page can tell
     /// "nothing reported" from "nothing to report".
     pub(crate) has_cpu: bool,
     pub(crate) has_memory: bool,
     pub(crate) has_storage: bool,
     pub(crate) has_network: bool,
+    pub(crate) has_gpu: bool,
+    pub(crate) has_battery: bool,
+    pub(crate) has_sensors: bool,
 }
 
 fn report<'a>(reports: &'a [CollectorReport], collector: &str) -> Option<&'a CollectorReport> {
@@ -329,7 +464,165 @@ impl Readings {
                     .then_with(|| a.name.cmp(&b.name))
             });
         }
+        if let Some(gpu) = report(reports, "linux.gpu") {
+            readings.has_gpu = true;
+            readings.gpus = gpu
+                .entities_of(EntityKind::Gpu)
+                .map(|entity| {
+                    let m = &entity.metrics;
+                    GpuReadings {
+                        key: entity.id.key.clone(),
+                        card: text(m, "gpu.card"),
+                        name: text(m, "gpu.name"),
+                        vendor: text(m, "gpu.vendor"),
+                        driver: text(m, "gpu.driver"),
+                        utilization: number(m, "gpu.utilization"),
+                        source: text(m, "gpu.utilization.source"),
+                        dedicated_used: unsigned(m, "gpu.memory.dedicated.used"),
+                        dedicated_total: unsigned(m, "gpu.memory.dedicated.total"),
+                        shared_used: unsigned(m, "gpu.memory.shared.used"),
+                        shared_total: unsigned(m, "gpu.memory.shared.total"),
+                        temperature_celsius: number(m, "gpu.temperature"),
+                        frequency_hz: number(m, "gpu.frequency"),
+                        memory_frequency_hz: number(m, "gpu.memory.frequency"),
+                        power_watts: number(m, "gpu.power"),
+                        clients: unsigned(m, "gpu.clients"),
+                    }
+                })
+                .collect();
+            readings.gpus.sort_by(|a, b| a.key.cmp(&b.key));
+        }
+        if let Some(npu) = report(reports, "linux.npu") {
+            readings.npus = npu
+                .entities_of(EntityKind::Npu)
+                .map(|entity| {
+                    let m = &entity.metrics;
+                    NpuReadings {
+                        key: entity.id.key.clone(),
+                        device: text(m, "npu.device"),
+                        model: text(m, "npu.model"),
+                        vendor: text(m, "npu.vendor"),
+                        driver: text(m, "npu.driver"),
+                        firmware: text(m, "npu.firmware"),
+                        power_state: text(m, "npu.power_state"),
+                        runtime_status: text(m, "npu.runtime_status"),
+                        awake: number(m, "npu.awake"),
+                        utilization: number(m, "npu.utilization"),
+                        utilization_unreported: matches!(
+                            m.get(&id("npu.utilization")),
+                            Some(monitor_core::Observation::Unsupported(_))
+                        ),
+                        clients: unsigned(m, "npu.clients"),
+                    }
+                })
+                .collect();
+        }
+        if let Some(battery) = report(reports, "linux.battery") {
+            readings.has_battery = true;
+            readings.on_battery = boolean(&battery.metrics, "power.on_battery");
+            readings.batteries = battery
+                .entities_of(EntityKind::Battery)
+                .map(|entity| {
+                    let m = &entity.metrics;
+                    BatteryReadings {
+                        key: entity.id.key.clone(),
+                        charge: number(m, "battery.charge"),
+                        status: text(m, "battery.status"),
+                        energy_now: number(m, "battery.energy.now"),
+                        energy_full: number(m, "battery.energy.full"),
+                        energy_design: number(m, "battery.energy.design"),
+                        health: number(m, "battery.health"),
+                        power_watts: number(m, "battery.power"),
+                        time_remaining: number(m, "battery.time.remaining"),
+                        time_to_full: number(m, "battery.time.to_full"),
+                        cycles: unsigned(m, "battery.cycles"),
+                        voltage: number(m, "battery.voltage"),
+                        charge_limit: number(m, "battery.charge.limit"),
+                        technology: text(m, "battery.technology"),
+                        model: text(m, "battery.model"),
+                        manufacturer: text(m, "battery.manufacturer"),
+                        peripheral: boolean(m, "battery.peripheral").unwrap_or(false),
+                    }
+                })
+                .collect();
+            readings.power_sources = battery
+                .entities_of(EntityKind::PowerSource)
+                .map(|entity| {
+                    let m = &entity.metrics;
+                    PowerSourceReadings {
+                        key: entity.id.key.clone(),
+                        kind: text(m, "power_source.kind"),
+                        online: boolean(m, "power_source.online"),
+                        usb_type: text(m, "power_source.usb_type"),
+                        max_power: number(m, "power_source.power.max"),
+                    }
+                })
+                .collect();
+        }
+        if let Some(sensors) = report(reports, "linux.sensors") {
+            readings.has_sensors = true;
+            readings.sensors = sensors
+                .entities_of(EntityKind::Sensor)
+                .filter_map(|entity| {
+                    let m = &entity.metrics;
+                    let kind = text(m, "sensor.kind")?;
+                    let metric = match kind.as_str() {
+                        "temperature" => "sensor.temperature",
+                        "fan" => "sensor.fan.speed",
+                        "voltage" => "sensor.voltage",
+                        "current" => "sensor.current",
+                        "power" => "sensor.power",
+                        "frequency" => "sensor.frequency",
+                        _ => return None,
+                    };
+                    Some(SensorReadings {
+                        key: entity.id.key.clone(),
+                        chip: text(m, "sensor.chip").unwrap_or_default(),
+                        label: text(m, "sensor.label"),
+                        kind,
+                        device: text(m, "sensor.device"),
+                        value: number(m, metric),
+                        high: number(m, "sensor.temperature.high"),
+                        critical: number(m, "sensor.temperature.critical"),
+                    })
+                })
+                .collect();
+        }
         readings
+    }
+
+    /// This machine's own battery: the first that is not a peripheral's.
+    pub(crate) fn system_battery(&self) -> Option<&BatteryReadings> {
+        self.batteries.iter().find(|battery| !battery.peripheral)
+    }
+
+    /// The graphics card a person thinks of first: the busiest, or the first.
+    pub(crate) fn primary_gpu(&self) -> Option<&GpuReadings> {
+        self.gpus.first()
+    }
+
+    /// The hwmon readings of one kind.
+    pub(crate) fn sensors_of<'a>(
+        &'a self,
+        kind: &'a str,
+    ) -> impl Iterator<Item = &'a SensorReadings> {
+        self.sensors.iter().filter(move |sensor| sensor.is(kind))
+    }
+
+    /// The hottest temperature any sensor reports, and which.
+    pub(crate) fn hottest(&self) -> Option<&SensorReadings> {
+        self.sensors_of("temperature")
+            .filter(|sensor| sensor.value.is_some())
+            .max_by(|a, b| a.value.unwrap_or(0.0).total_cmp(&b.value.unwrap_or(0.0)))
+    }
+
+    /// The fastest fan, in RPM.
+    pub(crate) fn fastest_fan(&self) -> Option<f64> {
+        self.sensors_of("fan")
+            .filter_map(|sensor| sensor.value)
+            .fold(None, |peak: Option<f64>, value| {
+                Some(peak.map_or(value, |peak| peak.max(value)))
+            })
     }
 
     /// The sum of every disk's reads and writes, or `None` when no disk
@@ -419,6 +712,35 @@ impl LiveHistory {
                 adapter.receive_rate,
             ));
             now.push((SeriesKey::Send(adapter.name.clone()), adapter.send_rate));
+        }
+        for gpu in &readings.gpus {
+            now.push((
+                SeriesKey::Gpu(gpu.key.clone()),
+                gpu.utilization.map(|v| v * 100.0),
+            ));
+            now.push((
+                SeriesKey::GpuMemory(gpu.key.clone()),
+                gpu.dedicated_used.map(|v| v as f64),
+            ));
+        }
+        for npu in &readings.npus {
+            now.push((
+                SeriesKey::Npu(npu.key.clone()),
+                npu.utilization.map(|v| v * 100.0),
+            ));
+        }
+        for battery in &readings.batteries {
+            now.push((
+                SeriesKey::BatteryCharge(battery.key.clone()),
+                battery.charge.map(|v| v * 100.0),
+            ));
+            now.push((
+                SeriesKey::BatteryPower(battery.key.clone()),
+                battery.power_watts,
+            ));
+        }
+        for sensor in &readings.sensors {
+            now.push((SeriesKey::Sensor(sensor.key.clone()), sensor.value));
         }
 
         let round = self.round;

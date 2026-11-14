@@ -102,3 +102,8 @@ session" had no effect. Replacing it with the new tray fixed it. Two faults:
   sees an arrow that does nothing. Extending has no meaning for "until I end
   it", so the item is left out for an indefinite session, and for a timed one
   it is enabled; a disabled item never carries a submenu arrow.
+
+Ticket 102 closes the first two points (the tray is a user unit bound to
+`graphical-session.target` and follows `org.betteros.Awake1` across a restart,
+and a failed menu action raises a notification) and the greyed "延長工作階段"
+(left out for an indefinite session, enabled for a timed one).

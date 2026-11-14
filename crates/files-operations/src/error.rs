@@ -79,6 +79,14 @@ pub enum OperationError {
         #[serde(with = "crate::store::path_bytes")]
         path: PathBuf,
     },
+    /// Replace or Merge would put the item in place of itself, or of a
+    /// folder it is inside: the one there would go to the trash with the
+    /// source in it. Refused before anything is displaced.
+    #[error("files.operation.error.replaces_source:{}", display_path(.path))]
+    ReplacesSource {
+        #[serde(with = "crate::store::path_bytes")]
+        path: PathBuf,
+    },
     /// The recursive walk reached a directory it had already entered. Found
     /// with a visited set of `(device, inode)` pairs rather than a depth cap,
     /// so a legitimately deep tree is not mistaken for a loop.
@@ -274,6 +282,7 @@ impl OperationError {
             | Self::NotADirectory { path }
             | Self::IsADirectory { path }
             | Self::DestinationInsideSource { path }
+            | Self::ReplacesSource { path }
             | Self::SymlinkLoop { path }
             | Self::NameTooLong { path }
             | Self::DeviceLost { path }
@@ -305,6 +314,7 @@ impl OperationError {
             Self::DestinationInsideSource { .. } => {
                 "files.operation.error.destination_inside_source"
             }
+            Self::ReplacesSource { .. } => "files.operation.error.replaces_source",
             Self::SymlinkLoop { .. } => "files.operation.error.symlink_loop",
             Self::NameTooLong { .. } => "files.operation.error.name_too_long",
             Self::InvalidName { .. } => "files.operation.error.invalid_name",

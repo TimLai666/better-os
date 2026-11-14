@@ -319,12 +319,10 @@ impl Location {
         matches!(self, Location::Local(_) | Location::Device(_))
     }
 
-    /// Whether this build can list the location at all.
+    /// Whether this build can list the location at all. Recents is a view
+    /// over the shared recently-used list.
     pub fn is_listable(&self) -> bool {
-        !matches!(
-            self,
-            Location::Network(_) | Location::Unsupported(_) | Location::Recent
-        )
+        !matches!(self, Location::Network(_) | Location::Unsupported(_))
     }
 
     /// The location one level up, or `None` when there is none.

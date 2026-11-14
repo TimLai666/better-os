@@ -652,6 +652,30 @@ impl Systemctl for RealSystemctl {
     }
 }
 
+/// Whether one of Better Monitor's own user units is enabled: `Some(true)` or
+/// `Some(false)` from `systemctl --user is-enabled`, `None` when the user
+/// manager could not be asked. `is-enabled` exits non-zero for anything but
+/// enabled, which is how "disabled" arrives here.
+pub(crate) fn unit_enabled(systemctl: &dyn Systemctl, unit: &str) -> Option<bool> {
+    if !plain_unit_name(unit) {
+        return Some(false);
+    }
+    match systemctl.run(&["is-enabled", "--", unit]) {
+        Ok(state) => Some(state.trim().starts_with("enabled")),
+        Err(ServiceError::Refused(_)) => Some(false),
+        Err(_) => None,
+    }
+}
+
+/// Whether Better Monitor is switched on, as far as starting one of its
+/// units goes. A development build has no unit installed and is always on; an
+/// installed unit that is not enabled means Better Manager switched the
+/// component off, and nothing of it is started. A user manager that cannot be
+/// asked is not taken as "off".
+pub(crate) fn component_on(unit_installed: bool, enabled: Option<bool>) -> bool {
+    !unit_installed || enabled != Some(false)
+}
+
 /// Every background service the session's user manager knows.
 pub(crate) fn read_services(systemctl: &dyn Systemctl) -> Result<Vec<ServiceUnit>, ServiceError> {
     let units = systemctl.run(&[

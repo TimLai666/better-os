@@ -30,8 +30,11 @@
 pub mod cancel;
 pub mod folder;
 pub mod image_provider;
+pub mod media;
 pub mod service;
 pub mod text;
+pub mod thumbnails;
+pub mod viewer;
 
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};

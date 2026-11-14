@@ -239,6 +239,24 @@ pub struct DeviceReport {
     pub mount_point: Option<String>,
     pub policy: RemovalPolicy,
     pub state: StateReport,
+    /// The drive this device is on (its UDisks2 drive object). Every volume
+    /// on one drive has the same one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drive: Option<String>,
+    /// The drive's vendor and model, as it reports them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drive_name: Option<String>,
+    /// The device's size in bytes.
+    #[serde(default)]
+    pub size: u64,
+    /// The drive's own block device rather than a partition on it: what a
+    /// disk image is written to.
+    #[serde(default)]
+    pub whole_disk: bool,
+    /// An image is being written to this device's drive; everything else
+    /// on it is refused until that ends.
+    #[serde(default)]
+    pub erasing: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -376,6 +394,53 @@ pub struct EjectReport {
 }
 
 impl EjectReport {
+    pub fn to_json(&self) -> Result<String, ProtocolError> {
+        serde_json::to_string(self).map_err(|error| ProtocolError::Malformed {
+            detail: error.to_string(),
+        })
+    }
+
+    pub fn from_json(document: &str) -> Result<Self, ProtocolError> {
+        parse(document)
+    }
+}
+
+/// Format a volume: Better Files asks only after the person confirmed
+/// erasing it, and says so here; the service refuses a request that does
+/// not.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormatDeviceRequest {
+    pub protocol_version: u32,
+    pub object_path: String,
+    pub filesystem: storage_platform::FilesystemKind,
+    pub label: String,
+    pub erase_confirmed: bool,
+}
+
+impl FormatDeviceRequest {
+    pub fn to_json(&self) -> Result<String, ProtocolError> {
+        serde_json::to_string(self).map_err(|error| ProtocolError::Malformed {
+            detail: error.to_string(),
+        })
+    }
+
+    pub fn from_json(document: &str) -> Result<Self, ProtocolError> {
+        parse(document)
+    }
+}
+
+/// Write a disk image to the drive a volume is on, confirmed the same way.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WriteImageRequest {
+    pub protocol_version: u32,
+    pub object_path: String,
+    pub image_path: String,
+    pub erase_confirmed: bool,
+}
+
+impl WriteImageRequest {
     pub fn to_json(&self) -> Result<String, ProtocolError> {
         serde_json::to_string(self).map_err(|error| ProtocolError::Malformed {
             detail: error.to_string(),

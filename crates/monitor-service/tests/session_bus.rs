@@ -150,7 +150,10 @@ async fn a_client_reads_the_service_over_the_session_bus() {
     let status = client.status(false).await.expect("a status document");
     assert!(status.recording);
     assert_eq!(status.rounds_collected, 1);
-    assert_eq!(status.collectors.len(), 6);
+    assert_eq!(
+        status.collectors.len(),
+        monitor_collectors_linux::LinuxCollectors::collector_names().len()
+    );
 }
 
 #[tokio::test]
@@ -255,4 +258,68 @@ async fn an_incident_marked_by_one_client_is_visible_to_the_next() {
     let window = second.incident_window(1).await.expect("the window");
     assert_eq!(window.incident.id, 1);
     assert!(!window.incident.snapshot.collectors.is_empty());
+}
+
+#[tokio::test]
+async fn a_service_waiting_for_a_store_a_window_holds_is_on_the_bus_meanwhile() {
+    let bus = bus_or_skip!();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().to_path_buf();
+    // The window's own engine holds the store.
+    let window = monitor_store::HistoryStore::open(&root, RetentionPolicy::default()).unwrap();
+
+    let connection = bus.connect().await.unwrap();
+    let starting = tokio::spawn({
+        let connection = connection.clone();
+        let config = config(root.clone());
+        async move {
+            monitor_service::start_on_bus(
+                &connection,
+                SERVICE_NAME,
+                config,
+                monitor_service::StoreWait {
+                    retry: Duration::from_millis(50),
+                    attempts: 100,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())
+        }
+    });
+
+    // The window sees the name taken, the way it watches for it, while the
+    // store is still its own.
+    let watcher = bus.connect().await.unwrap();
+    let dbus = zbus::fdo::DBusProxy::new(&watcher).await.unwrap();
+    let name = zbus::names::BusName::try_from(SERVICE_NAME).unwrap();
+    let mut owned = false;
+    for _ in 0..100 {
+        if dbus.name_has_owner(name.clone()).await.unwrap() {
+            owned = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        owned,
+        "the service took its name while waiting for the store"
+    );
+    assert!(
+        !starting.is_finished(),
+        "and is still waiting for the store"
+    );
+
+    // The window hands over; the service opens the store and answers.
+    drop(window);
+    let engine = tokio::time::timeout(Duration::from_secs(5), starting)
+        .await
+        .expect("the service opened the store once it was free")
+        .unwrap()
+        .expect("a started engine");
+    engine.tick().await.unwrap();
+    let client = client(&bus).await;
+    assert_eq!(
+        client.protocol_version().await.unwrap(),
+        monitor_ipc::PROTOCOL_VERSION
+    );
 }

@@ -180,6 +180,7 @@ fn a_non_utf8_name_round_trips_through_the_persisted_record() {
 
     let store = files_operations::JobStore::new(&store_root);
     let engine = files_operations::JobEngine::new(files_operations::EngineConfig {
+        displaced_trash: Some(support::test_trash()),
         workers: 1,
         store: Some(store.clone()),
         conflicts: files_operations::ConflictPolicy::new(),

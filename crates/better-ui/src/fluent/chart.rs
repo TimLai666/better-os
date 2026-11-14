@@ -37,8 +37,12 @@ pub enum ChartHue {
     Green,
     /// Network.
     Orange,
-    /// Graphics and sensors.
+    /// Graphics.
     Teal,
+    /// Temperatures.
+    Red,
+    /// Neural processors.
+    Magenta,
 }
 
 impl ChartHue {
@@ -55,6 +59,10 @@ impl ChartHue {
             (ChartHue::Orange, true) => 0xf0a35a,
             (ChartHue::Teal, false) => 0x00838f,
             (ChartHue::Teal, true) => 0x4fcfd6,
+            (ChartHue::Red, false) => 0xc0392b,
+            (ChartHue::Red, true) => 0xf2786b,
+            (ChartHue::Magenta, false) => 0xb4157a,
+            (ChartHue::Magenta, true) => 0xf07cc4,
         };
         super::hex(rgb)
     }

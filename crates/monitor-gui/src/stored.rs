@@ -11,6 +11,7 @@
 //! GPUI and is tested directly.
 
 use better_ui::fluent::chart::{ChartHue, ChartSeries, LineChart, nice_maximum, peak};
+use better_ui::fluent::info_bar::{InfoBar, Severity};
 use better_ui::fluent::settings_card::{SettingsExpander, SettingsRow};
 use better_ui::fluent::tabs::{SelectorBar, SelectorItem};
 use better_ui::fluent::{BODY, BODY_STRONG, CAPTION, label, palette, spacing};
@@ -399,11 +400,23 @@ impl MonitorApp {
             }
         };
 
+        let set_aside = self
+            .status
+            .as_ref()
+            .map(|status| status.store.set_aside_records)
+            .unwrap_or(0);
         div()
             .flex()
             .flex_col()
             .gap(spacing::LG)
             .child(label(c.history_subtitle, BODY, p.text_secondary))
+            .when(set_aside > 0, |page| {
+                page.child(
+                    InfoBar::new("bar-set-aside", Severity::Warning, c.set_aside_title)
+                        .message(i18n::set_aside_sentence(set_aside, self.locale))
+                        .locale(self.locale.words()),
+                )
+            })
             .child(picker)
             .child(body)
             .into_any_element()

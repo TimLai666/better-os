@@ -334,3 +334,73 @@ mod tests {
         assert!(pictures.present);
     }
 }
+
+/// `$XDG_DATA_HOME` (or `~/.local/share`) followed by every absolute entry of
+/// `$XDG_DATA_DIRS` (or `/usr/local/share:/usr/share`), in that order, as the
+/// XDG base directory specification defines them.
+pub fn data_dirs_from_env() -> Vec<std::path::PathBuf> {
+    data_dirs_from_values(
+        std::env::var_os("HOME").as_deref().map(Path::new),
+        std::env::var_os("XDG_DATA_HOME").as_deref().map(Path::new),
+        std::env::var("XDG_DATA_DIRS").ok().as_deref(),
+    )
+}
+
+/// [`data_dirs_from_env`] over given values, so it can be tested.
+pub fn data_dirs_from_values(
+    home: Option<&Path>,
+    data_home: Option<&Path>,
+    data_dirs: Option<&str>,
+) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    match data_home.filter(|path| path.is_absolute()) {
+        Some(path) => dirs.push(path.to_path_buf()),
+        None => {
+            if let Some(home) = home.filter(|path| path.is_absolute()) {
+                dirs.push(home.join(".local/share"));
+            }
+        }
+    }
+    let system = data_dirs
+        .filter(|value| !value.is_empty())
+        .unwrap_or("/usr/local/share:/usr/share");
+    dirs.extend(
+        system
+            .split(':')
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_absolute()),
+    );
+    dirs
+}
+
+#[cfg(test)]
+mod data_dir_tests {
+    use super::*;
+
+    #[test]
+    fn data_directories_follow_the_base_directory_rules() {
+        assert_eq!(
+            data_dirs_from_values(Some(Path::new("/h")), None, None),
+            vec![
+                std::path::PathBuf::from("/h/.local/share"),
+                "/usr/local/share".into(),
+                "/usr/share".into()
+            ]
+        );
+        assert_eq!(
+            data_dirs_from_values(
+                Some(Path::new("/h")),
+                Some(Path::new("/d")),
+                Some("/x:rel:/y")
+            ),
+            vec![std::path::PathBuf::from("/d"), "/x".into(), "/y".into()]
+        );
+        assert_eq!(
+            data_dirs_from_values(None, Some(Path::new("relative")), Some("")),
+            vec![
+                std::path::PathBuf::from("/usr/local/share"),
+                "/usr/share".into()
+            ]
+        );
+    }
+}

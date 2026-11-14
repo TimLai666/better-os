@@ -34,13 +34,16 @@ required_executables() {
             printf '%s\n' \
                 usr/bin/better-monitor \
                 usr/bin/better-monitor-service \
-                usr/bin/better-monitor-cli
+                usr/bin/better-monitor-cli \
+                usr/bin/better-monitor-tray
             ;;
         better-launcher)
             printf '%s\n' usr/bin/better-launcher
             ;;
         better-files)
-            printf '%s\n' usr/bin/better-files
+            printf '%s\n' \
+                usr/bin/better-files \
+                usr/bin/better-files-preview
             ;;
         better-git)
             printf '%s\n' usr/bin/better-git
@@ -73,6 +76,9 @@ required_data_files() {
         better-monitor)
             printf '%s\n' \
                 usr/lib/systemd/user/better-monitor.service \
+                usr/share/dbus-1/services/org.betteros.Monitor1.service \
+                usr/lib/systemd/user/better-monitor-tray.service \
+                usr/share/dbus-1/services/org.betteros.MonitorTray1.service \
                 usr/share/applications/io.betteros.Monitor.desktop \
                 usr/share/icons/hicolor/scalable/apps/better-monitor.svg
             ;;
@@ -104,9 +110,10 @@ required_data_files() {
         better-awake)
             printf '%s\n' \
                 usr/share/applications/better-awake.desktop \
-                etc/xdg/autostart/better-awake-tray.desktop \
                 usr/lib/systemd/user/better-awake.service \
+                usr/lib/systemd/user/better-awake-tray.service \
                 usr/share/dbus-1/services/org.betteros.Awake1.service \
+                usr/share/dbus-1/services/org.betteros.AwakeTray1.service \
                 usr/share/icons/hicolor/scalable/apps/better-awake.svg \
                 usr/share/icons/hicolor/scalable/status/better-awake-inactive-symbolic.svg \
                 usr/share/icons/hicolor/scalable/status/better-awake-active-symbolic.svg \
@@ -328,6 +335,13 @@ for package_name in \
                 printf 'The Better Files desktop entry does not run the packaged binary\n' >&2
                 exit 1
             }
+            # The preview plays media through the system's GStreamer.
+            for required_dependency in libgstreamer1.0-0 gstreamer1.0-plugins-base; do
+                if ! printf '%s\n' "$depends" | grep -Eq "(^|,)[[:space:]]*${required_dependency}([[:space:]]|,|$)"; then
+                    printf 'Better Files does not depend on %s\n' "$required_dependency" >&2
+                    exit 1
+                fi
+            done
             ;;
         better-git)
             grep -q '^Exec=better-git$' \
@@ -385,11 +399,28 @@ for package_name in \
             }
             ;;
         better-awake)
-            # The tray is an indicator for the service, not an application a
-            # user launches out of the menu.
-            grep -q '^NoDisplay=true$' \
-                "$extract_dir/etc/xdg/autostart/better-awake-tray.desktop" || {
-                printf 'The Better Awake tray autostart entry is not hidden from the menu\n' >&2
+            # The tray is a user unit bound to the graphical session, so the
+            # manager's update restarts it. An autostart entry beside it would
+            # start a second tray.
+            if [[ -e "$extract_dir/etc/xdg/autostart/better-awake-tray.desktop" ]]; then
+                printf 'The Better Awake package still ships the tray autostart entry\n' >&2
+                exit 1
+            fi
+            grep -q '^ExecStart=/usr/bin/awake-tray$' \
+                "$extract_dir/usr/lib/systemd/user/better-awake-tray.service" || {
+                printf 'The Better Awake tray unit does not start the packaged tray\n' >&2
+                exit 1
+            }
+            grep -q '^WantedBy=graphical-session.target$' \
+                "$extract_dir/usr/lib/systemd/user/better-awake-tray.service" || {
+                printf 'The Better Awake tray unit is not bound to the graphical session\n' >&2
+                exit 1
+            }
+            # The window brings a missing tray back by asking for its bus name;
+            # that must start the unit, not a second copy of the program.
+            grep -q '^SystemdService=better-awake-tray.service$' \
+                "$extract_dir/usr/share/dbus-1/services/org.betteros.AwakeTray1.service" || {
+                printf 'The Better Awake tray is not activated through its unit\n' >&2
                 exit 1
             }
             grep -q '^ExecStart=/usr/bin/better-awake-service$' \
@@ -410,6 +441,39 @@ for package_name in \
             grep -q '^Exec=better-monitor$' \
                 "$extract_dir/usr/share/applications/io.betteros.Monitor.desktop" || {
                 printf 'The Better Monitor desktop entry does not run the window binary\n' >&2
+                exit 1
+            }
+            # The taskbar item is a user unit that starts the packaged program,
+            # replaces a stray copy first, and is never an autostart entry
+            # (which Better Manager could not stop or restart).
+            grep -q '^ExecStart=/usr/bin/better-monitor-tray$' \
+                "$extract_dir/usr/lib/systemd/user/better-monitor-tray.service" &&
+                grep -q '^ExecStartPre=-/usr/bin/pkill --uid %U ' \
+                    "$extract_dir/usr/lib/systemd/user/better-monitor-tray.service" &&
+                grep -q '^PartOf=graphical-session.target$' \
+                    "$extract_dir/usr/lib/systemd/user/better-monitor-tray.service" &&
+                grep -q '^WantedBy=graphical-session.target$' \
+                    "$extract_dir/usr/lib/systemd/user/better-monitor-tray.service" || {
+                printf 'The Better Monitor taskbar user unit is wrong\n' >&2
+                exit 1
+            }
+            if [[ -e "$extract_dir/etc/xdg/autostart/better-monitor-tray.desktop" ]]; then
+                printf 'The Better Monitor taskbar item must not also autostart\n' >&2
+                exit 1
+            fi
+            grep -q '^SystemdService=better-monitor-tray.service$' \
+                "$extract_dir/usr/share/dbus-1/services/org.betteros.MonitorTray1.service" &&
+                grep -q '^Name=org.betteros.MonitorTray1$' \
+                    "$extract_dir/usr/share/dbus-1/services/org.betteros.MonitorTray1.service" || {
+                printf 'The Better Monitor taskbar activation file is wrong\n' >&2
+                exit 1
+            }
+            # Asking for the service starts it through its user unit.
+            grep -q '^SystemdService=better-monitor.service$' \
+                "$extract_dir/usr/share/dbus-1/services/org.betteros.Monitor1.service" &&
+                grep -q '^Name=org.betteros.Monitor1$' \
+                    "$extract_dir/usr/share/dbus-1/services/org.betteros.Monitor1.service" || {
+                printf 'The Better Monitor D-Bus activation file is wrong\n' >&2
                 exit 1
             }
             ;;

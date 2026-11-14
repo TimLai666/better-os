@@ -116,14 +116,21 @@ impl MonitorApp {
                 ),
         );
 
-        let cards = vec![
+        let mut cards = vec![
             self.cpu_card(cx),
             self.memory_card(cx),
             self.disk_card(cx),
             self.network_card(cx),
-            self.gpu_card(cx),
-            self.battery_card(cx),
         ];
+        // A machine without a graphics card or a battery has no card for it,
+        // as the Performance page and the popup have no tile for it.
+        let shown = crate::charts::overview_hardware(&self.readings);
+        if shown.gpu {
+            cards.push(self.gpu_card(cx));
+        }
+        if shown.battery {
+            cards.push(self.battery_card(cx));
+        }
 
         let processors = self.processors();
         let rows: Vec<Vec<TableCell>> = top
@@ -402,42 +409,103 @@ impl MonitorApp {
 
     fn gpu_card(&self, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale);
-        // The card and its driver; the full identity is on the GPU page.
-        let detail = i18n::graphics_cards(self.inventory.as_ref(), self.locale)
-            .first()
-            .map(|(card, _)| {
-                match i18n::inventory_value(
-                    self.inventory.as_ref(),
-                    &format!("graphics.{card}.driver"),
-                ) {
-                    Some(driver) => format!("{card} · {driver}"),
-                    None => card.clone(),
-                }
-            })
-            .unwrap_or_else(|| c.gpu_not_found.to_string());
+        let Some(gpu) = self.readings.primary_gpu().cloned() else {
+            // No card read: the inventory may still name one.
+            let detail = i18n::graphics_cards(self.inventory.as_ref(), self.locale)
+                .first()
+                .map(|(card, _)| card.clone())
+                .unwrap_or_else(|| c.gpu_not_found.to_string());
+            return self.resource_card(
+                "card-gpu",
+                c.gpu,
+                IconName::Frame,
+                None,
+                None,
+                None,
+                detail,
+                Resource::Cpu,
+                cx,
+            );
+        };
+        let mut parts = Vec::new();
+        if let (Some(used), Some(total)) = (gpu.dedicated_used, gpu.dedicated_total) {
+            parts.push(i18n::of_total(
+                &bytes(used as f64),
+                &bytes(total as f64),
+                self.locale,
+            ));
+        }
+        if let Some(t) = gpu.temperature_celsius {
+            parts.push(format!("{t:.0} °C"));
+        }
+        let detail = if parts.is_empty() {
+            i18n::gpu_title(&gpu, self.cpu_model().as_deref(), self.locale)
+        } else {
+            parts.join(" · ")
+        };
         self.resource_card(
             "card-gpu",
             c.gpu,
             IconName::Frame,
             None,
-            None,
-            None,
+            gpu.utilization.map(share),
+            Some((
+                vec![ChartSeries::new(
+                    self.live.values(&SeriesKey::Gpu(gpu.key.clone())),
+                    ChartHue::Teal,
+                )],
+                100.0,
+            )),
             detail,
-            Resource::Gpu,
+            Resource::Gpu(gpu.key.clone()),
             cx,
         )
     }
 
+    /// The processor's model, which on a machine with integrated graphics
+    /// also names the graphics (`... w/ Radeon 890M`).
+    fn cpu_model(&self) -> Option<String> {
+        i18n::inventory_value(self.inventory.as_ref(), "cpu.model")
+    }
+
     fn battery_card(&self, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale);
+        let Some(battery) = self.readings.system_battery().cloned() else {
+            return self.resource_card(
+                "card-battery",
+                c.battery,
+                IconName::Battery,
+                None,
+                None,
+                None,
+                if self.readings.has_battery {
+                    c.no_battery.to_string()
+                } else {
+                    c.not_available.to_string()
+                },
+                Resource::Battery,
+                cx,
+            );
+        };
+        let p = palette(cx);
         self.resource_card(
             "card-battery",
             c.battery,
             IconName::Battery,
-            None,
-            None,
-            None,
-            c.battery_not_read.to_string(),
+            Some((
+                i18n::battery_status(battery.status.as_deref(), self.locale).to_string(),
+                p.text_secondary,
+            )),
+            battery.charge.map(share),
+            Some((
+                vec![ChartSeries::new(
+                    self.live
+                        .values(&SeriesKey::BatteryCharge(battery.key.clone())),
+                    ChartHue::Green,
+                )],
+                100.0,
+            )),
+            i18n::battery_line(&battery, self.locale),
             Resource::Battery,
             cx,
         )
@@ -449,9 +517,18 @@ impl MonitorApp {
         let c = copy(self.locale);
         let (column, ascending) = self.app_sort;
         let lines = app_lines(&self.apps, column, ascending);
+        // No program with a GPU reading, no GPU column; it is the last
+        // column, so the others keep their positions.
+        let has_gpu = crate::tables::shows_gpu_column(self.apps.processes());
         let rows: Vec<Vec<TableCell>> = lines
             .iter()
-            .map(|line| app_cells(&self.apps, *line, self.locale, self.processors()))
+            .map(|line| {
+                let mut cells = app_cells(&self.apps, *line, self.locale, self.processors());
+                if !has_gpu {
+                    cells.truncate(AppColumn::ALL.len() - 1);
+                }
+                cells
+            })
             .collect();
         let selected = lines
             .iter()
@@ -468,12 +545,19 @@ impl MonitorApp {
         let sort_index = AppColumn::ALL
             .iter()
             .position(|candidate| *candidate == column);
-        let columns = vec![
+        let mut columns = vec![
             Column::new(c.column_name),
             Column::new(c.column_cpu).width(px(96.0)).align_end(),
             Column::new(c.column_memory).width(px(120.0)).align_end(),
-            Column::new(c.column_disk).width(px(120.0)).align_end(),
+            Column::new(c.column_disk).width(px(112.0)).align_end(),
+            Column::new(c.column_network)
+                .width(px(112.0))
+                .align_end()
+                .tooltip(c.network_column_tooltip),
         ];
+        if has_gpu {
+            columns.push(Column::new(c.column_gpu).width(px(72.0)).align_end());
+        }
         let selection_of = {
             let lines = lines.clone();
             move |this: &MonitorApp, index: usize| -> Option<AppSelection> {
@@ -533,7 +617,10 @@ impl MonitorApp {
 
     fn details_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale);
-        let columns_shown = detail_columns(self.include_command_lines);
+        let columns_shown = detail_columns(
+            self.include_command_lines,
+            crate::tables::shows_gpu_column(self.processes.processes()),
+        );
         let (sorted, direction) = self.processes.sort();
         let tree = self.processes.tree_mode();
         let visible = self.processes.visible_rows().to_vec();
@@ -583,8 +670,14 @@ impl MonitorApp {
                 if *column == ProcessColumn::State {
                     definition = definition.tooltip(c.state_column_tooltip);
                 }
-                if matches!(*column, ProcessColumn::ReadRate | ProcessColumn::WriteRate) {
+                if matches!(
+                    *column,
+                    ProcessColumn::ReadRate | ProcessColumn::WriteRate | ProcessColumn::Disk
+                ) {
                     definition = definition.tooltip(c.disk_column_tooltip);
+                }
+                if *column == ProcessColumn::Network {
+                    definition = definition.tooltip(c.network_column_tooltip);
                 }
                 definition
             })
@@ -642,7 +735,8 @@ impl MonitorApp {
             Resource::Memory => self.memory_detail(cx),
             Resource::Disk(name) => self.disk_detail(&name, cx),
             Resource::Adapter(name) => self.adapter_detail(&name, cx),
-            Resource::Gpu => self.gpu_detail(cx),
+            Resource::Gpu(key) => self.gpu_detail(&key, cx),
+            Resource::Npu(key) => self.npu_detail(&key, cx),
             Resource::Temperatures => self.temperature_detail(cx),
             Resource::Battery => self.battery_detail(cx),
         };
@@ -756,35 +850,98 @@ impl MonitorApp {
                 Some((series, top)),
             ));
         }
-        tiles.push((
-            Resource::Temperatures,
-            c.temperatures.to_string(),
-            r.cpu
-                .temperature_celsius
-                .map(|t| format!("{t:.0} °C"))
-                .unwrap_or_else(|| c.not_available.to_string()),
-            r.cpu.temperature_celsius.is_some().then(|| {
-                (
+        for gpu in &r.gpus {
+            tiles.push((
+                Resource::Gpu(gpu.key.clone()),
+                if r.gpus.len() > 1 {
+                    format!("{} {}", c.gpu, gpu.card.clone().unwrap_or_default())
+                } else {
+                    c.gpu.to_string()
+                },
+                match (gpu.utilization, gpu.temperature_celsius) {
+                    // A powered-down card is not read, so as not to wake it.
+                    _ if gpu.source.as_deref() == Some("asleep") => c.npu_asleep.to_string(),
+                    (Some(u), Some(t)) => format!("{} ({t:.0} °C)", share(u)),
+                    (Some(u), None) => share(u),
+                    _ => c.not_available.to_string(),
+                },
+                Some((
                     vec![ChartSeries::new(
-                        self.live.values(&SeriesKey::CpuTemperature),
+                        self.live.values(&SeriesKey::Gpu(gpu.key.clone())),
                         ChartHue::Teal,
                     )],
                     100.0,
-                )
-            }),
-        ));
-        tiles.push((
-            Resource::Gpu,
-            c.gpu.to_string(),
-            c.not_read.to_string(),
-            None,
-        ));
-        tiles.push((
-            Resource::Battery,
-            c.battery.to_string(),
-            c.not_read.to_string(),
-            None,
-        ));
+                )),
+            ));
+        }
+        for npu in &r.npus {
+            tiles.push((
+                Resource::Npu(npu.key.clone()),
+                c.npu.to_string(),
+                match (npu.utilization, i18n::npu_state(npu, self.locale)) {
+                    (Some(u), Some(state)) => format!("{} · {state}", share(u)),
+                    (Some(u), None) => share(u),
+                    (None, Some(state)) => state.to_string(),
+                    (None, None) => c.not_available.to_string(),
+                },
+                Some((
+                    vec![ChartSeries::new(
+                        self.live.values(&SeriesKey::Npu(npu.key.clone())),
+                        ChartHue::Magenta,
+                    )],
+                    100.0,
+                )),
+            ));
+        }
+        if !r.sensors.is_empty() || r.cpu.temperature_celsius.is_some() {
+            let hottest = r.hottest();
+            let fan = r.fastest_fan();
+            let mut value = hottest
+                .and_then(|sensor| sensor.value)
+                .or(r.cpu.temperature_celsius)
+                .map(|t| format!("{t:.0} °C"))
+                .unwrap_or_else(|| c.not_available.to_string());
+            if let Some(rpm) = fan {
+                value = format!("{value} · {}", i18n::sensor_value("fan", rpm));
+            }
+            let series_key = hottest
+                .map(|sensor| SeriesKey::Sensor(sensor.key.clone()))
+                .unwrap_or(SeriesKey::CpuTemperature);
+            tiles.push((
+                Resource::Temperatures,
+                c.temperatures.to_string(),
+                value,
+                Some((
+                    vec![ChartSeries::new(
+                        self.live.values(&series_key),
+                        ChartHue::Red,
+                    )],
+                    100.0,
+                )),
+            ));
+        }
+        if let Some(battery) = r.system_battery() {
+            tiles.push((
+                Resource::Battery,
+                c.battery.to_string(),
+                match battery.charge {
+                    Some(charge) => format!(
+                        "{} · {}",
+                        share(charge),
+                        i18n::battery_status(battery.status.as_deref(), self.locale)
+                    ),
+                    None => c.not_available.to_string(),
+                },
+                Some((
+                    vec![ChartSeries::new(
+                        self.live
+                            .values(&SeriesKey::BatteryCharge(battery.key.clone())),
+                        ChartHue::Green,
+                    )],
+                    100.0,
+                )),
+            ));
+        }
 
         // Rows 2px apart, the 2px inside each row's hit area (ticket 103), so
         // a press between two tiles still lands on one.
@@ -1335,108 +1492,680 @@ impl MonitorApp {
             .into_any_element()
     }
 
-    fn gpu_detail(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn gpu_detail(&mut self, key: &str, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let c = copy(self.locale);
-        let cards = i18n::graphics_cards(self.inventory.as_ref(), self.locale);
-        let mut list = card(p).gap(px(0.0));
-        if cards.is_empty() {
-            list = list.child(label(c.gpu_not_found, BODY, p.text_secondary));
+        let Some(gpu) = self.readings.gpus.iter().find(|g| g.key == key).cloned() else {
+            return note_card(c.gpu, c.gpu_not_found, cx);
+        };
+        let busy = ChartSeries::new(
+            self.live.values(&SeriesKey::Gpu(gpu.key.clone())),
+            ChartHue::Teal,
+        );
+        let chart = card(p).child(
+            LineChart::new("gpu-chart", vec![busy], CAPACITY, 100.0)
+                .height(px(200.0))
+                .caption(c.utilization_percent)
+                .maximum_label("100%")
+                .span_label(self.span_label())
+                .minimum_label("0"),
+        );
+        let memory_chart = gpu.dedicated_total.map(|total| {
+            card(p).child(
+                LineChart::new(
+                    "gpu-memory-chart",
+                    vec![ChartSeries::new(
+                        self.live.values(&SeriesKey::GpuMemory(gpu.key.clone())),
+                        ChartHue::Purple,
+                    )],
+                    CAPACITY,
+                    (total as f64).max(1.0),
+                )
+                .height(px(120.0))
+                .caption(c.dedicated_memory)
+                .maximum_label(bytes(total as f64))
+                .span_label(self.span_label())
+                .minimum_label("0"),
+            )
+        });
+        let pair = |used: Option<u64>, total: Option<u64>| match (used, total) {
+            (Some(used), Some(total)) => Some(i18n::of_total(
+                &bytes(used as f64),
+                &bytes(total as f64),
+                self.locale,
+            )),
+            (Some(used), None) => Some(bytes(used as f64)),
+            _ => None,
+        };
+        let stats = div()
+            .flex()
+            .flex_wrap()
+            .gap(spacing::XL)
+            .child(stat_or_missing(
+                c.utilization,
+                gpu.utilization.map(share),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.dedicated_memory,
+                pair(gpu.dedicated_used, gpu.dedicated_total),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.shared_memory,
+                pair(gpu.shared_used, gpu.shared_total),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.temperature,
+                gpu.temperature_celsius.map(|t| format!("{t:.0} °C")),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.power,
+                gpu.power_watts.map(crate::tables::watts),
+                true,
+                c,
+                p,
+            ));
+        let missing = |value: Option<String>| {
+            let none = value.is_none();
+            (value.unwrap_or_else(|| c.not_available.to_string()), none)
+        };
+        let mut facts = card(p).gap(px(0.0));
+        for (name, (value, none)) in [
+            (
+                c.gpu_clock,
+                missing(
+                    gpu.frequency_hz
+                        .map(|hz| i18n::sensor_value("frequency", hz)),
+                ),
+            ),
+            (
+                c.memory_clock,
+                missing(
+                    gpu.memory_frequency_hz
+                        .map(|hz| i18n::sensor_value("frequency", hz)),
+                ),
+            ),
+            (c.driver, missing(gpu.driver.clone())),
+            (c.location, missing(Some(format!("PCI {}", gpu.key)))),
+            (
+                c.programs_using,
+                missing(gpu.clients.map(|n| n.to_string())),
+            ),
+        ] {
+            facts = facts.child(crate::shell::property_row(name, value, none, p));
         }
-        for (card_name, driver) in cards {
-            list = list.child(crate::shell::property_row(card_name, driver, false, p));
+        if gpu.source.as_deref() == Some("clients") {
+            facts = facts.child(div().pt(spacing::SM).child(label(
+                c.busy_from_clients,
+                CAPTION,
+                p.text_secondary,
+            )));
         }
+        let mut page = div()
+            .flex()
+            .flex_col()
+            .gap(spacing::LG)
+            .child(self.detail_header(
+                c.gpu.to_string(),
+                Some(i18n::gpu_title(
+                    &gpu,
+                    self.cpu_model().as_deref(),
+                    self.locale,
+                )),
+                p,
+            ));
+        if gpu.utilization.is_none() && self.rounds > 2 {
+            page = page.child(
+                InfoBar::new(
+                    "gpu-unreported",
+                    Severity::Informational,
+                    c.gpu_busy_unreported,
+                )
+                .locale(self.locale.words()),
+            );
+        }
+        page = page
+            .child(chart)
+            .children(memory_chart)
+            .child(stats)
+            .child(facts);
+        page = page
+            .child(section_title(c.gpu_apps, p))
+            .child(self.top_apps_table(
+                "gpu-apps",
+                |row| row.gpu_utilization.total,
+                |row, _| share(row.gpu_utilization.total.min(1.0)),
+                c.column_gpu,
+                cx,
+            ));
+        page.into_any_element()
+    }
+
+    /// The five applications using the most of one thing, by an aggregate of
+    /// their processes, as a small table.
+    fn top_apps_table(
+        &self,
+        id: &'static str,
+        score: impl Fn(&monitor_views::apps::AppRow) -> f64,
+        figure: impl Fn(&monitor_views::apps::AppRow, f64) -> String,
+        column: &'static str,
+        _cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = copy(self.locale);
+        let mut rows: Vec<&monitor_views::apps::AppRow> = self
+            .apps
+            .applications()
+            .iter()
+            .chain(self.apps.services().iter())
+            .filter(|row| score(row) > 0.0)
+            .collect();
+        rows.sort_by(|a, b| score(b).total_cmp(&score(a)));
+        rows.truncate(5);
+        let cells: Vec<Vec<TableCell>> = rows
+            .iter()
+            .map(|row| {
+                vec![
+                    TableCell::new(row.group.display_name.clone()),
+                    TableCell::new(figure(row, score(row))),
+                ]
+            })
+            .collect();
+        DetailsTable::new(
+            id,
+            vec![
+                Column::new(c.column_name),
+                Column::new(column).width(px(120.0)).align_end(),
+            ],
+            cells,
+        )
+        .empty(c.battery_use_nothing)
+        .into_any_element()
+    }
+
+    fn npu_detail(&mut self, key: &str, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        let Some(npu) = self.readings.npus.iter().find(|n| n.key == key).cloned() else {
+            return note_card(c.npu, c.not_reported_yet, cx);
+        };
+        let chart = card(p).child(
+            LineChart::new(
+                "npu-chart",
+                vec![ChartSeries::new(
+                    self.live.values(&SeriesKey::Npu(npu.key.clone())),
+                    ChartHue::Magenta,
+                )],
+                CAPACITY,
+                100.0,
+            )
+            .height(px(200.0))
+            .caption(c.utilization_percent)
+            .maximum_label("100%")
+            .span_label(self.span_label())
+            .minimum_label("0"),
+        );
+        let state = i18n::npu_state(&npu, self.locale).map(str::to_string);
+        let stats = div()
+            .flex()
+            .flex_wrap()
+            .gap(spacing::XL)
+            .child(stat_or_missing(
+                c.utilization,
+                npu.utilization.map(share),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(c.power_state, state, true, c, p))
+            .child(stat_or_missing(
+                c.awake_time,
+                npu.awake.map(share),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.programs_using,
+                npu.clients.map(|n| n.to_string()),
+                true,
+                c,
+                p,
+            ));
+        let missing = |value: Option<String>| {
+            let none = value.is_none();
+            (value.unwrap_or_else(|| c.not_available.to_string()), none)
+        };
+        let mut facts = card(p).gap(px(0.0));
+        for (name, (value, none)) in [
+            (c.battery_model, missing(npu.model.clone())),
+            (c.firmware, missing(npu.firmware.clone())),
+            (c.driver, missing(npu.driver.clone())),
+            (
+                c.power_state,
+                missing(match (&npu.power_state, &npu.runtime_status) {
+                    (Some(state), Some(runtime)) => Some(format!("{state} · {runtime}")),
+                    (one, other) => one.clone().or(other.clone()),
+                }),
+            ),
+            (c.location, missing(Some(format!("PCI {}", npu.key)))),
+        ] {
+            facts = facts.child(crate::shell::property_row(name, value, none, p));
+        }
+        let note = if npu.utilization_unreported {
+            Some(c.npu_no_busy)
+        } else if npu.clients == Some(0) {
+            Some(c.npu_idle)
+        } else {
+            None
+        };
         div()
             .flex()
             .flex_col()
             .gap(spacing::LG)
-            .child(self.detail_header(c.gpu.to_string(), None, p))
-            .child(
-                InfoBar::new(
-                    "gpu-not-read",
-                    Severity::Informational,
-                    c.not_read_yet_title,
-                )
-                .message(c.gpu_not_read)
-                .locale(self.locale.words()),
-            )
-            .child(section_title(c.graphics_cards, p))
-            .child(list)
+            .child(self.detail_header(
+                c.npu.to_string(),
+                Some(i18n::npu_title(&npu, self.locale)),
+                p,
+            ))
+            .children(note.map(|note| {
+                InfoBar::new("npu-note", Severity::Informational, note).locale(self.locale.words())
+            }))
+            .child(chart)
+            .child(stats)
+            .child(facts)
             .into_any_element()
     }
 
     fn temperature_detail(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let c = copy(self.locale);
-        let temperature = self.readings.cpu.temperature_celsius;
-        let body = match temperature {
-            Some(_) => {
-                let series = vec![ChartSeries::new(
-                    self.live.values(&SeriesKey::CpuTemperature),
-                    ChartHue::Teal,
-                )];
-                let top = nice_maximum(peak(&series).unwrap_or(0.0), 100.0);
-                card(p)
-                    .child(
-                        LineChart::new("temperature-chart", series, CAPACITY, top)
-                            .height(px(200.0))
-                            .caption(c.processor_temperature)
-                            .maximum_label(format!("{top:.0} °C"))
-                            .span_label(self.span_label())
-                            .minimum_label("0 °C"),
-                    )
-                    .into_any_element()
+        let r = self.readings.clone();
+        if r.sensors.is_empty() {
+            let temperature = r.cpu.temperature_celsius;
+            return div()
+                .flex()
+                .flex_col()
+                .gap(spacing::LG)
+                .child(self.detail_header(c.sensors.to_string(), None, p))
+                .child(match temperature {
+                    Some(t) => {
+                        crate::shell::stat(c.processor_temperature, format!("{t:.0} °C"), true, p)
+                            .into_any_element()
+                    }
+                    None => note_card(c.sensors, c.no_sensors, cx),
+                })
+                .into_any_element();
+        }
+        // The chart: every temperature together, hottest first.
+        let mut temperatures: Vec<&crate::charts::SensorReadings> = r
+            .sensors_of("temperature")
+            .filter(|s| s.value.is_some())
+            .collect();
+        temperatures.sort_by(|a, b| b.value.unwrap_or(0.0).total_cmp(&a.value.unwrap_or(0.0)));
+        const HUES: [ChartHue; 6] = [
+            ChartHue::Red,
+            ChartHue::Orange,
+            ChartHue::Blue,
+            ChartHue::Teal,
+            ChartHue::Purple,
+            ChartHue::Green,
+        ];
+        let series: Vec<ChartSeries> = temperatures
+            .iter()
+            .take(6)
+            .enumerate()
+            .map(|(index, sensor)| {
+                ChartSeries::new(
+                    self.live.values(&SeriesKey::Sensor(sensor.key.clone())),
+                    HUES[index % HUES.len()],
+                )
+            })
+            .collect();
+        let top = nice_maximum(peak(&series).unwrap_or(0.0), 100.0);
+        let legend = div().flex().flex_wrap().gap(spacing::LG).children(
+            temperatures
+                .iter()
+                .take(6)
+                .enumerate()
+                .map(|(index, sensor)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .size(px(10.0))
+                                .rounded_full()
+                                .bg(HUES[index % HUES.len()].color(p.is_dark())),
+                        )
+                        .child(label(
+                            i18n::sensor_title(sensor, self.locale),
+                            CAPTION,
+                            p.text_secondary,
+                        ))
+                        .into_any_element()
+                }),
+        );
+        let chart = card(p)
+            .gap(spacing::SM)
+            .child(
+                LineChart::new("temperature-chart", series, CAPACITY, top)
+                    .height(px(200.0))
+                    .caption(c.temperatures_heading)
+                    .maximum_label(format!("{top:.0} °C"))
+                    .span_label(self.span_label())
+                    .minimum_label("0 °C"),
+            )
+            .child(legend);
+
+        let section = |title: &'static str, kind: &str| -> Option<AnyElement> {
+            let rows: Vec<&crate::charts::SensorReadings> = r.sensors_of(kind).collect();
+            if rows.is_empty() {
+                return None;
             }
-            None => note_card(c.processor_temperature, c.temperature_not_found, cx),
+            let mut list = card(p).gap(px(0.0));
+            for sensor in rows {
+                let mut value = sensor
+                    .value
+                    .map(|v| i18n::sensor_value(kind, v))
+                    .unwrap_or_else(|| c.not_available.to_string());
+                if let Some(critical) = sensor.critical {
+                    value = format!("{value}  ({} {critical:.0} °C)", c.critical_at);
+                }
+                list = list.child(crate::shell::property_row(
+                    i18n::sensor_title(sensor, self.locale),
+                    value,
+                    sensor.value.is_none(),
+                    p,
+                ));
+            }
+            Some(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(spacing::SM)
+                    .child(section_title(title, p))
+                    .child(list)
+                    .into_any_element(),
+            )
         };
-        div()
+        let mut page = div()
             .flex()
             .flex_col()
             .gap(spacing::LG)
-            .child(self.detail_header(c.temperatures.to_string(), None, p))
-            .child(body)
+            .child(self.detail_header(c.sensors.to_string(), None, p))
+            .child(chart)
             .child(
                 div()
                     .flex()
                     .flex_wrap()
                     .gap(spacing::XL)
                     .child(stat_or_missing(
-                        c.processor_temperature,
-                        temperature.map(|t| format!("{t:.0} °C")),
+                        c.hottest,
+                        r.hottest()
+                            .and_then(|s| s.value)
+                            .map(|t| format!("{t:.0} °C")),
+                        true,
+                        c,
+                        p,
+                    ))
+                    .child(stat_or_missing(
+                        c.fan_speed,
+                        r.fastest_fan().map(|rpm| i18n::sensor_value("fan", rpm)),
                         true,
                         c,
                         p,
                     )),
-            )
-            .child(
-                InfoBar::new(
-                    "fans-not-read",
-                    Severity::Informational,
-                    c.not_read_yet_title,
-                )
-                .message(c.fans_not_read)
-                .locale(self.locale.words()),
-            )
-            .into_any_element()
+            );
+        for (title, kind) in [
+            (c.temperatures_heading, "temperature"),
+            (c.fans, "fan"),
+            (c.power_readings, "power"),
+            (c.voltages, "voltage"),
+            (c.currents, "current"),
+            (c.clocks, "frequency"),
+        ] {
+            page = page.children(section(title, kind));
+        }
+        if r.sensors_of("fan").next().is_none() {
+            page = page.child(label(c.no_fans, BODY, p.text_secondary));
+        }
+        page.into_any_element()
     }
 
     fn battery_detail(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let c = copy(self.locale);
-        div()
+        let Some(battery) = self.readings.system_battery().cloned() else {
+            return note_card(c.battery, c.no_battery, cx);
+        };
+        let chart = card(p).child(
+            LineChart::new(
+                "battery-chart",
+                vec![ChartSeries::new(
+                    self.live
+                        .values(&SeriesKey::BatteryCharge(battery.key.clone())),
+                    ChartHue::Green,
+                )],
+                CAPACITY,
+                100.0,
+            )
+            .height(px(160.0))
+            .caption(c.battery_charge_chart)
+            .maximum_label("100%")
+            .span_label(self.span_label())
+            .minimum_label("0"),
+        );
+        let charging = battery.status.as_deref() == Some("charging");
+        let stats = div()
+            .flex()
+            .flex_wrap()
+            .gap(spacing::XL)
+            .child(stat_or_missing(
+                c.charge,
+                battery.charge.map(share),
+                true,
+                c,
+                p,
+            ))
+            .child(crate::shell::stat(
+                c.column_state,
+                i18n::battery_status(battery.status.as_deref(), self.locale).to_string(),
+                true,
+                p,
+            ))
+            .child(stat_or_missing(
+                if charging {
+                    c.time_to_full
+                } else {
+                    c.time_left
+                },
+                if charging {
+                    battery.time_to_full
+                } else {
+                    battery.time_remaining
+                }
+                .map(|s| i18n::hours_minutes(s, self.locale)),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                if charging { c.charging_at } else { c.drawing },
+                battery.power_watts.map(crate::tables::watts),
+                true,
+                c,
+                p,
+            ))
+            .child(stat_or_missing(
+                c.battery_health,
+                battery.health.map(share),
+                true,
+                c,
+                p,
+            ));
+        let missing = |value: Option<String>| {
+            let none = value.is_none();
+            (value.unwrap_or_else(|| c.not_available.to_string()), none)
+        };
+        let mut facts = card(p).gap(px(0.0));
+        let model = match (&battery.manufacturer, &battery.model) {
+            (Some(m), Some(model)) => Some(format!("{m} {model}")),
+            (one, other) => one.clone().or(other.clone()),
+        };
+        for (name, (value, none)) in [
+            (
+                c.full_capacity,
+                missing(battery.energy_full.map(i18n::watt_hours)),
+            ),
+            (
+                c.design_capacity,
+                missing(battery.energy_design.map(i18n::watt_hours)),
+            ),
+            (
+                c.charge_cycles,
+                match battery.cycles {
+                    Some(n) => (n.to_string(), false),
+                    None => (c.not_reported_by_firmware.to_string(), true),
+                },
+            ),
+            (
+                c.voltage,
+                missing(battery.voltage.map(|v| i18n::sensor_value("voltage", v))),
+            ),
+            (c.charge_limit, missing(battery.charge_limit.map(share))),
+            (c.battery_model, missing(model)),
+            (c.kind, missing(battery.technology.clone())),
+        ] {
+            facts = facts.child(crate::shell::property_row(name, value, none, p));
+        }
+        let mut chargers = card(p).gap(px(0.0));
+        let mut any_charger = false;
+        for source in &self.readings.power_sources {
+            any_charger = true;
+            let state = match source.online {
+                Some(true) => match source.max_power {
+                    Some(w) => format!("{} · {}", c.connected, crate::tables::watts(w)),
+                    None => c.connected.to_string(),
+                },
+                Some(false) => c.not_connected.to_string(),
+                None => c.not_available.to_string(),
+            };
+            chargers = chargers.child(crate::shell::property_row(
+                i18n::power_source_title(source, self.locale),
+                state,
+                source.online != Some(true),
+                p,
+            ));
+        }
+        let mut page = div()
             .flex()
             .flex_col()
             .gap(spacing::LG)
-            .child(self.detail_header(c.battery.to_string(), None, p))
-            .child(
-                InfoBar::new(
-                    "battery-not-read",
-                    Severity::Informational,
-                    c.not_read_yet_title,
-                )
-                .message(c.battery_not_read)
-                .locale(self.locale.words()),
+            .child(self.detail_header(
+                c.battery.to_string(),
+                Some(i18n::battery_line(&battery, self.locale)),
+                p,
+            ))
+            .child(chart)
+            .child(stats)
+            .child(facts);
+        if any_charger {
+            page = page.child(section_title(c.chargers, p)).child(chargers);
+        }
+        page.child(self.battery_use_section(cx)).into_any_element()
+    }
+
+    /// "What is using the battery": now, from this round's estimate, and since
+    /// the machine was unplugged, from the service's running total.
+    fn battery_use_section(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        let on_battery = self.readings.on_battery == Some(true);
+        let now: AnyElement = if on_battery {
+            self.top_apps_table(
+                "battery-now",
+                |row| row.energy_power.total,
+                |_, watts| crate::tables::watts(watts),
+                c.column_power,
+                cx,
             )
+        } else {
+            label(c.battery_use_plugged, BODY, p.text_secondary).into_any_element()
+        };
+        let since: AnyElement = match self.status.as_ref().and_then(|s| s.battery_use.clone()) {
+            None => label(c.battery_use_never, BODY, p.text_secondary).into_any_element(),
+            Some(use_) => {
+                let rows: Vec<Vec<TableCell>> = use_
+                    .processes
+                    .iter()
+                    .take(8)
+                    .map(|process| {
+                        let share_of = if use_.total_watt_hours > 0.0 {
+                            format!(
+                                " ({})",
+                                share((process.watt_hours / use_.total_watt_hours).min(1.0))
+                            )
+                        } else {
+                            String::new()
+                        };
+                        vec![
+                            TableCell::new(process.name.clone()),
+                            TableCell::new(format!(
+                                "{}{share_of}",
+                                i18n::watt_hours(process.watt_hours)
+                            )),
+                        ]
+                    })
+                    .collect();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(spacing::SM)
+                    .child(label(
+                        i18n::since_unplugged(
+                            use_.on_battery_seconds,
+                            use_.total_watt_hours,
+                            self.locale,
+                        ),
+                        CAPTION,
+                        p.text_secondary,
+                    ))
+                    .child(
+                        DetailsTable::new(
+                            "battery-since",
+                            vec![
+                                Column::new(c.column_name),
+                                Column::new(c.column_energy).width(px(160.0)).align_end(),
+                            ],
+                            rows,
+                        )
+                        .empty(c.battery_use_nothing),
+                    )
+                    .into_any_element()
+            }
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::MD)
+            .child(section_title(c.battery_use_title, p))
+            .child(label(c.battery_use_note, CAPTION, p.text_secondary))
+            .child(label(c.battery_use_now, BODY_STRONG, p.text_primary))
+            .child(now)
+            .child(label(c.battery_use_since, BODY_STRONG, p.text_primary))
+            .child(since)
             .into_any_element()
     }
 

@@ -31,3 +31,6 @@ tempfile.workspace = true
 # The service client and the embedded engine both run on tokio; the window
 # keeps them on one thread of their own rather than on the GPUI executor.
 tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
+# Asking the session bus whether the taskbar item is running, as Better
+# Awake's window does. Already in the workspace through monitor-service.
+zbus.workspace = true

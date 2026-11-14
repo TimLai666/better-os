@@ -29,6 +29,14 @@ pub struct ProcessFacts {
     pub memory_virtual: Field<u64>,
     pub read_rate: Field<f64>,
     pub write_rate: Field<f64>,
+    /// TCP bytes per second received and sent.
+    pub network_receive_rate: Field<f64>,
+    pub network_send_rate: Field<f64>,
+    pub gpu_utilization: Field<f64>,
+    /// Graphics memory on the card, in bytes.
+    pub gpu_memory: Field<u64>,
+    /// Estimated share of the battery draw, in watts.
+    pub energy_power: Field<f64>,
     pub threads: Field<u64>,
     pub file_descriptors: Field<u64>,
     pub start_time: Field<f64>,
@@ -62,6 +70,11 @@ impl ProcessFacts {
             memory_virtual: field::unsigned(metrics, &id("process.memory.virtual")),
             read_rate: field::number(metrics, &id("process.io.read.bytes.rate")),
             write_rate: field::number(metrics, &id("process.io.write.bytes.rate")),
+            network_receive_rate: field::number(metrics, &id("process.network.receive.rate")),
+            network_send_rate: field::number(metrics, &id("process.network.send.rate")),
+            gpu_utilization: field::number(metrics, &id("process.gpu.utilization")),
+            gpu_memory: field::unsigned(metrics, &id("process.gpu.memory.dedicated")),
+            energy_power: field::number(metrics, &id("process.energy.power")),
             threads: field::unsigned(metrics, &id("process.threads")),
             file_descriptors: field::unsigned(metrics, &id("process.file_descriptors")),
             start_time: field::number(metrics, &id("process.start_time")),
@@ -80,6 +93,25 @@ impl ProcessFacts {
             .entities_of(EntityKind::Process)
             .filter_map(Self::from_entity)
             .collect()
+    }
+
+    /// Reads and writes together, when either was measured.
+    pub fn disk_rate(&self) -> Option<f64> {
+        match (self.read_rate.any_value(), self.write_rate.any_value()) {
+            (Some(read), Some(write)) => Some(read + write),
+            (one, other) => one.or(other).copied(),
+        }
+    }
+
+    /// Both directions of TCP traffic together, when either was measured.
+    pub fn network_rate(&self) -> Option<f64> {
+        match (
+            self.network_receive_rate.any_value(),
+            self.network_send_rate.any_value(),
+        ) {
+            (Some(receive), Some(send)) => Some(receive + send),
+            (one, other) => one.or(other).copied(),
+        }
     }
 
     /// The display name, falling back to the PID when the kernel's name was
@@ -143,6 +175,11 @@ impl ProcessFacts {
             memory_virtual: Field::Value(0),
             read_rate: Field::Value(0.0),
             write_rate: Field::Value(0.0),
+            network_receive_rate: Field::Value(0.0),
+            network_send_rate: Field::Value(0.0),
+            gpu_utilization: Field::Value(0.0),
+            gpu_memory: Field::Value(0),
+            energy_power: Field::NotCollected,
             threads: Field::Value(1),
             file_descriptors: Field::Value(3),
             start_time: Field::Value(1_700_000_000.0),
