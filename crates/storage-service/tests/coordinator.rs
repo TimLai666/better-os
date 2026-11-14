@@ -644,3 +644,437 @@ async fn two_devices_reporting_one_identity_are_both_left_unknown() {
         assert!(!report.state.permits_direct_removal());
     }
 }
+
+// --- Format and write image: fakes only, never a real drive -------------
+
+#[tokio::test]
+async fn format_is_refused_until_the_person_confirms_erasing_and_then_goes_through_the_platform() {
+    let fixture = Fixture::new("format");
+    let mut harness = harness(
+        &fixture,
+        FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]),
+    );
+    connect_and_mount(&mut harness).await;
+    let request = storage_platform::FormatRequest {
+        kind: storage_platform::FilesystemKind::Exfat,
+        label: "PHOTOS".into(),
+    };
+    let refused = harness.coordinator.format(&handle(), &request, false).await;
+    assert!(matches!(
+        refused,
+        Err(storage_service::coordinator::ServiceError::Refused(_))
+    ));
+    assert!(
+        !harness
+            .control
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("format"))
+    );
+
+    harness
+        .coordinator
+        .format(&handle(), &request, true)
+        .await
+        .unwrap();
+    assert!(
+        harness
+            .control
+            .calls()
+            .contains(&format!("format {OBJECT} exfat PHOTOS"))
+    );
+}
+
+#[tokio::test]
+async fn a_label_the_filesystem_cannot_hold_is_refused_before_anything_is_erased() {
+    let fixture = Fixture::new("label");
+    let mut harness = harness(
+        &fixture,
+        FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]),
+    );
+    connect_and_mount(&mut harness).await;
+    let too_long = storage_platform::FormatRequest {
+        kind: storage_platform::FilesystemKind::Fat32,
+        label: "A LABEL FAR TOO LONG".into(),
+    };
+    assert!(
+        harness
+            .coordinator
+            .format(&handle(), &too_long, true)
+            .await
+            .is_err()
+    );
+    let bad = storage_platform::FormatRequest {
+        kind: storage_platform::FilesystemKind::Fat32,
+        label: "a*b".into(),
+    };
+    assert!(
+        harness
+            .coordinator
+            .format(&handle(), &bad, true)
+            .await
+            .is_err()
+    );
+    assert!(
+        !harness
+            .control
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("format"))
+    );
+}
+
+#[tokio::test]
+async fn nothing_is_erased_while_a_file_operation_is_writing_to_the_drive() {
+    let fixture = Fixture::new("busy");
+    let mut harness = harness(
+        &fixture,
+        FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]),
+    );
+    connect_and_mount(&mut harness).await;
+    harness
+        .coordinator
+        .operation_started_by(":1.42", &handle(), "copy".into())
+        .await;
+    let request = storage_platform::FormatRequest {
+        kind: storage_platform::FilesystemKind::Ext4,
+        label: "data".into(),
+    };
+    let refused = harness.coordinator.format(&handle(), &request, true).await;
+    assert!(matches!(
+        refused,
+        Err(storage_service::coordinator::ServiceError::Refused(reason)) if reason == "storage.erase.busy"
+    ));
+}
+
+const DRIVE: &str = "/org/freedesktop/UDisks2/drives/Generic_Flash_SN1";
+const DISK: &str = "/org/freedesktop/UDisks2/block_devices/sdc";
+const PART1: &str = "/org/freedesktop/UDisks2/block_devices/sdc1";
+const PART2: &str = "/org/freedesktop/UDisks2/block_devices/sdc2";
+
+/// A drive with two partitions, both mounted, and a separate stick.
+async fn drive_with_two_volumes(fixture: &Fixture) -> Harness {
+    use storage_platform::fake::{usb_disk, usb_partition};
+    let mut harness = harness(
+        fixture,
+        FakeDeviceControl::new([
+            usb_disk(DISK, "/dev/sdc", DRIVE),
+            usb_partition(PART1, "/dev/sdc1", "AAAA-1111", DRIVE),
+            usb_partition(PART2, "/dev/sdc2", "BBBB-2222", DRIVE),
+            usb_stick(OBJECT, DEVICE, UUID),
+        ]),
+    );
+    harness.coordinator.refresh_inventory().await.unwrap();
+    harness.clock.advance(10);
+    for volume in [PART1, PART2] {
+        harness
+            .coordinator
+            .mount(&DeviceHandle::new(volume))
+            .await
+            .unwrap();
+    }
+    harness
+}
+
+fn drive_address(object_path: &str, device_path: &str) -> DeviceAddress {
+    DeviceAddress {
+        object_path: object_path.to_string(),
+        device_path: device_path.to_string(),
+    }
+}
+
+fn no_progress() -> storage_platform::ImageProgress {
+    Arc::new(|_| {})
+}
+
+fn refused_with(
+    result: Result<impl std::fmt::Debug, storage_service::coordinator::ServiceError>,
+    prefix: &str,
+) {
+    match result {
+        Err(storage_service::coordinator::ServiceError::Refused(reason)) => {
+            assert!(reason.starts_with(prefix), "{reason}")
+        }
+        other => panic!("expected a refusal starting {prefix}, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_image_goes_to_the_whole_drive_after_every_volume_on_it_is_unmounted() {
+    let fixture = Fixture::new("image");
+    let mut harness = drive_with_two_volumes(&fixture).await;
+    let image = fixture.root.join("installer.iso");
+    std::fs::write(&image, b"ISO 9660 stand-in").unwrap();
+    let disk = DeviceHandle::new(DISK);
+
+    refused_with(
+        harness
+            .coordinator
+            .write_image(&disk, &image, false, no_progress())
+            .await,
+        "storage.erase.not_confirmed",
+    );
+    // A partition is not a drive: the image would land inside it.
+    refused_with(
+        harness
+            .coordinator
+            .write_image(&DeviceHandle::new(PART1), &image, true, no_progress())
+            .await,
+        "storage.image.not_a_drive",
+    );
+    refused_with(
+        harness
+            .coordinator
+            .write_image(&disk, Path::new("relative.iso"), true, no_progress())
+            .await,
+        "storage.image.not_a_file",
+    );
+    assert_eq!(
+        harness.control.written(&drive_address(DISK, "/dev/sdc")),
+        None
+    );
+
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let progress: storage_platform::ImageProgress = {
+        let heard = heard.clone();
+        Arc::new(move |bytes| heard.lock().unwrap().push(bytes))
+    };
+    let written = harness
+        .coordinator
+        .write_image(&disk, &image, true, progress)
+        .await
+        .unwrap();
+    assert_eq!(written, 17);
+    assert_eq!(
+        harness
+            .control
+            .written(&drive_address(DISK, "/dev/sdc"))
+            .unwrap(),
+        b"ISO 9660 stand-in"
+    );
+    assert_eq!(*heard.lock().unwrap(), vec![8, 17]);
+
+    // Both volumes were unmounted, and before the write.
+    let calls = harness.control.calls();
+    let at = |call: String| calls.iter().position(|made| *made == call).unwrap();
+    let write = at(format!("write image {DISK} {}", image.display()));
+    assert!(at(format!("unmount {PART1}")) < write);
+    assert!(at(format!("unmount {PART2}")) < write);
+    for volume in [PART1, PART2] {
+        let report = harness
+            .coordinator
+            .report(&DeviceHandle::new(volume))
+            .unwrap();
+        assert_eq!(report.mount_point, None);
+        assert!(!report.erasing, "the write is over");
+    }
+    // The stick on another drive was never touched.
+    assert!(!calls.contains(&format!("unmount {OBJECT}")));
+}
+
+#[tokio::test]
+async fn a_volume_that_will_not_unmount_stops_the_write_before_a_byte_is_written() {
+    let fixture = Fixture::new("image-busy-volume");
+    let mut harness = drive_with_two_volumes(&fixture).await;
+    harness
+        .control
+        .refuse_unmount(&drive_address(PART2, "/dev/sdc2"));
+    let image = fixture.root.join("installer.iso");
+    std::fs::write(&image, b"ISO").unwrap();
+
+    refused_with(
+        harness
+            .coordinator
+            .write_image(&DeviceHandle::new(DISK), &image, true, no_progress())
+            .await,
+        "storage.image.unmount_failed:/dev/sdc2",
+    );
+    assert_eq!(
+        harness.control.written(&drive_address(DISK, "/dev/sdc")),
+        None
+    );
+    // Nothing is left marked as being written.
+    assert!(!harness.coordinator.is_erasing(&DeviceHandle::new(PART1)));
+    harness
+        .coordinator
+        .mount(&DeviceHandle::new(PART1))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn while_an_image_is_written_the_drive_and_its_volumes_refuse_everything_else() {
+    let fixture = Fixture::new("image-erasing");
+    let mut harness = drive_with_two_volumes(&fixture).await;
+    let image = fixture.root.join("installer.iso");
+    std::fs::write(&image, b"ISO").unwrap();
+    let disk = DeviceHandle::new(DISK);
+    let volume = DeviceHandle::new(PART1);
+
+    let write = harness
+        .coordinator
+        .begin_image_write(&disk, &image, true)
+        .await
+        .unwrap();
+    assert_eq!(write.total, 3);
+    assert!(harness.coordinator.report(&volume).unwrap().erasing);
+    refused_with(
+        harness.coordinator.mount(&volume).await,
+        "storage.erase.busy",
+    );
+    refused_with(
+        harness.coordinator.eject(&volume).await,
+        "storage.erase.busy",
+    );
+    let format = storage_platform::FormatRequest {
+        kind: storage_platform::FilesystemKind::Exfat,
+        label: "X".into(),
+    };
+    refused_with(
+        harness.coordinator.format(&volume, &format, true).await,
+        "storage.erase.busy",
+    );
+    refused_with(
+        harness
+            .coordinator
+            .begin_image_write(&disk, &image, true)
+            .await,
+        "storage.erase.busy",
+    );
+    // Another drive is served as usual.
+    harness.coordinator.mount(&handle()).await.unwrap();
+
+    harness.coordinator.finish_image_write(write);
+    harness.coordinator.mount(&volume).await.unwrap();
+}
+
+/// A write that is abandoned (its caller went away mid-copy) still lets go
+/// of the drive: the mark is held by the write itself.
+#[tokio::test]
+async fn an_abandoned_image_write_never_leaves_the_drive_busy() {
+    let fixture = Fixture::new("image-abandoned");
+    let mut harness = drive_with_two_volumes(&fixture).await;
+    let image = fixture.root.join("installer.iso");
+    std::fs::write(&image, b"ISO").unwrap();
+    let volume = DeviceHandle::new(PART1);
+    {
+        let _write = harness
+            .coordinator
+            .begin_image_write(&DeviceHandle::new(DISK), &image, true)
+            .await
+            .unwrap();
+        assert!(harness.coordinator.is_erasing(&volume));
+        // Dropped here, as a cancelled call drops it.
+    }
+    assert!(!harness.coordinator.is_erasing(&volume));
+    harness.coordinator.mount(&volume).await.unwrap();
+}
+
+/// A caller that goes away while the copy still runs (a cancelled D-Bus
+/// call) does not give the drive back: the copy holds it through its
+/// progress until it really ends.
+#[tokio::test]
+async fn a_copy_that_outlives_its_caller_keeps_the_drive_busy_until_it_ends() {
+    let fixture = Fixture::new("image-outlives");
+    let mut harness = drive_with_two_volumes(&fixture).await;
+    let image = fixture.root.join("installer.iso");
+    std::fs::write(&image, b"ISO").unwrap();
+    let volume = DeviceHandle::new(PART1);
+    let write = harness
+        .coordinator
+        .begin_image_write(&DeviceHandle::new(DISK), &image, true)
+        .await
+        .unwrap();
+    // What the copying thread is given, and keeps until it ends.
+    let copying = write.holding(no_progress());
+    drop(write);
+    assert!(harness.coordinator.is_erasing(&volume));
+    refused_with(
+        harness.coordinator.mount(&volume).await,
+        "storage.erase.busy",
+    );
+    drop(copying);
+    assert!(!harness.coordinator.is_erasing(&volume));
+    harness.coordinator.mount(&volume).await.unwrap();
+}
+
+const CLEARTEXT: &str = "/org/freedesktop/UDisks2/block_devices/dm_2d0";
+
+/// An unlocked LUKS volume on one of the drive's partitions is unmounted
+/// before the write, and one that will not unmount refuses it.
+#[tokio::test]
+async fn an_unlocked_encrypted_volume_on_the_drive_is_unmounted_first() {
+    use storage_platform::fake::luks_cleartext;
+    let fixture = Fixture::new("image-luks");
+    let mut harness = drive_with_two_volumes(&fixture).await;
+    harness.control.attach(luks_cleartext(
+        CLEARTEXT,
+        "/dev/dm-0",
+        PART2,
+        "/run/media/user/secret",
+    ));
+    let image = fixture.root.join("installer.iso");
+    std::fs::write(&image, b"ISO").unwrap();
+    let cleartext = drive_address(CLEARTEXT, "/dev/dm-0");
+
+    harness.control.refuse_unmount(&cleartext);
+    refused_with(
+        harness
+            .coordinator
+            .write_image(&DeviceHandle::new(DISK), &image, true, no_progress())
+            .await,
+        "storage.image.unmount_failed:/dev/dm-0",
+    );
+    assert_eq!(
+        harness.control.written(&drive_address(DISK, "/dev/sdc")),
+        None
+    );
+    assert!(!harness.coordinator.is_erasing(&DeviceHandle::new(PART1)));
+
+    // A fresh fake whose cleartext unmounts.
+    let fixture = Fixture::new("image-luks-ok");
+    let mut harness = drive_with_two_volumes(&fixture).await;
+    harness.control.attach(luks_cleartext(
+        CLEARTEXT,
+        "/dev/dm-0",
+        PART2,
+        "/run/media/user/secret",
+    ));
+    {
+        let _write = harness
+            .coordinator
+            .begin_image_write(&DeviceHandle::new(DISK), &image, true)
+            .await
+            .unwrap();
+        // Nothing mounts the unlocked volume again while the partition
+        // under it is overwritten.
+        assert!(
+            harness
+                .coordinator
+                .is_erasing(&DeviceHandle::new(CLEARTEXT))
+        );
+        refused_with(
+            harness
+                .coordinator
+                .mount(&DeviceHandle::new(CLEARTEXT))
+                .await,
+            "storage.erase.busy",
+        );
+    }
+    assert!(
+        !harness
+            .coordinator
+            .is_erasing(&DeviceHandle::new(CLEARTEXT))
+    );
+    harness
+        .coordinator
+        .write_image(&DeviceHandle::new(DISK), &image, true, no_progress())
+        .await
+        .unwrap();
+    assert_eq!(harness.control.mount_point(&cleartext), None);
+    let calls = harness.control.calls();
+    let at = |call: String| calls.iter().position(|made| *made == call).unwrap();
+    assert!(
+        at(format!("unmount {CLEARTEXT}")) < at(format!("write image {DISK} {}", image.display()))
+    );
+}

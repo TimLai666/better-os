@@ -99,6 +99,7 @@ impl Render for MonitorApp {
             .child(div().flex_1().min_h_0().child(nav))
             .children(dialog)
             .children(menu)
+            .children(self.update_restart.toast_layer(self.locale.words(), cx))
     }
 }
 

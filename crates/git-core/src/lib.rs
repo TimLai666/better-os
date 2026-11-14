@@ -6,8 +6,10 @@
 //! about what a line of git output means is testable from recorded output.
 //!
 //! Only machine-readable formats are parsed: `status --porcelain=v2 -z
-//! --branch`, unified diffs produced with `--no-color`, and `log`,
-//! `for-each-ref`, `stash list`, and `worktree list` with explicit formats.
+//! --branch`, unified diffs produced with `--no-color`, and `log` (the
+//! branch graph's included), `for-each-ref`, `stash list`, and `worktree
+//! list` with explicit formats. The branch graph's lanes ([`lanes`]) are
+//! laid out here too, from commits already read.
 //! The one exception is [`remote::classify_refusal`], which picks an
 //! explanation for a refused network operation from git's message, because
 //! git prints nothing else for it; git's message is always shown with it.
@@ -15,7 +17,9 @@
 pub mod branch;
 pub mod conflict;
 pub mod diff;
+pub mod graph;
 pub mod image;
+pub mod lanes;
 pub mod log;
 pub mod patch;
 pub mod remote;
@@ -30,8 +34,10 @@ pub use diff::{
     DiffLine, DiffLineKind, FileDiff, Hunk, LineKey, SplitRow, change_fingerprint, is_large,
     line_key, parse_diff, split_rows,
 };
+pub use graph::{RecordReader, RefKind, RefLabel, ref_labels};
 pub use image::{ImageKind, image_kind, sniff_image};
-pub use log::{Commit, CommitFile, parse_log, parse_name_status};
+pub use lanes::{Edge, EdgeKind, GraphRow, GraphRows, LaneLayout};
+pub use log::{Commit, CommitFile, parse_log, parse_log_record, parse_name_status};
 pub use patch::{PatchMode, RawDiff};
 pub use remote::{
     HostedRepository, Refusal, Remote, classify_refusal, parse_hosted, parse_remotes,

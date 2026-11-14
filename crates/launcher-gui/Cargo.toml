@@ -25,12 +25,14 @@ gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
 gpui-platform.workspace = true
+serde.workspace = true
 # Pins and history are written through a temporary file in the same folder,
 # synced, then renamed over the old one.
 tempfile.workspace = true
 
 [dev-dependencies]
 better-core.workspace = true
+serde_json.workspace = true
 
 [[bench]]
 name = "launcher_suite"

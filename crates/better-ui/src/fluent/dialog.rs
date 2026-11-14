@@ -13,12 +13,13 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, Context, ElementId, InteractiveElement, IntoElement,
-    ParentElement, Render, RenderOnce, SharedString, Styled, Window, anchored, deferred, div, px,
-    relative,
+    ParentElement, Render, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled,
+    Window, deferred, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::FocusTrapElement as _;
 
 use super::button::{Button, ButtonKind};
+use super::light_dismiss::{PanelOrder, panel_marker, pointer_in_child_panel};
 use super::menu::panel_frame;
 use super::{BODY, CAPTION, Key, SUBTITLE, palette, radius, spacing, text};
 use super::{Handler, ValueHandler};
@@ -167,6 +168,7 @@ impl RenderOnce for ContentDialog {
 
         let mut row = div()
             .flex()
+            .flex_none()
             .gap(spacing::SM)
             .p(spacing::XL)
             .bg(p.window_background)
@@ -223,10 +225,19 @@ impl RenderOnce for ContentDialog {
                     }
                 }
             })
+            // The title and content scroll when the window is too short for
+            // them; the button row under them always stays in view.
+            .when(!self.inline, |d| {
+                d.max_h(window.viewport_size().height - spacing::XL * 2.0)
+            })
             .child(
                 div()
+                    .id(super::child_id(&self.id, "body"))
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .p(spacing::XL)
                     .child(
                         text(div().mb(spacing::MD), SUBTITLE)
@@ -266,7 +277,10 @@ impl RenderOnce for ContentDialog {
 
 /// A flyout: a light-dismiss panel with any content, anchored under the
 /// control it belongs to. The control keeps whether it is open and passes
-/// `on_dismiss`, called on Escape and on a click outside.
+/// `on_dismiss`, called on Escape and on a click outside. Draw it as the last
+/// child of the control's `relative()` element: while it is open it covers
+/// that element, so pressing the control again only closes it
+/// ([`super::light_dismiss`]).
 #[derive(IntoElement)]
 pub struct Flyout {
     id: ElementId,
@@ -311,8 +325,11 @@ impl RenderOnce for Flyout {
         let dismiss_out = self.on_dismiss.clone();
         // A floating panel takes the pointer: a click on it never reaches
         // the page under it.
+        let order = PanelOrder::default();
+        let out_order = order.clone();
         let panel = panel_frame(div().id(self.id.clone()), p)
             .occlude()
+            .child(panel_marker(&order))
             .pt(px(15.0))
             .pb(px(17.0))
             .px(spacing::LG)
@@ -327,6 +344,11 @@ impl RenderOnce for Flyout {
                 }
             })
             .on_mouse_down_out(move |_, window, cx| {
+                // A menu opened from the flyout's content reaches past its
+                // edge; a press there is not a press outside.
+                if pointer_in_child_panel(&out_order, window, cx) {
+                    return;
+                }
                 if let Some(handler) = dismiss_out.as_ref() {
                     handler(window, cx);
                 }
@@ -338,19 +360,9 @@ impl RenderOnce for Flyout {
         if !focus.contains_focused(window, cx) {
             focus.focus(window, cx);
         }
-        div()
-            .absolute()
-            .top(relative(1.0))
-            .left_0()
-            .child(
-                deferred(
-                    anchored()
-                        .snap_to_window_with_margin(px(8.0))
-                        .child(div().mt(px(4.0)).child(panel)),
-                )
-                .with_priority(1),
-            )
-            .into_any_element()
+        // Over the control it hangs from, so a second press on that control
+        // closes the flyout instead of opening it again.
+        super::light_dismiss::anchored_panel(panel, super::light_dismiss::PanelEdge::Left)
     }
 }
 

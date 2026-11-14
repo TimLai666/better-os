@@ -58,6 +58,93 @@ pub trait JobControl {
 
     /// Records that this job copied a file with this inode to a destination.
     fn record_copied_inode(&mut self, key: InodeKey, copied: CopiedInode);
+
+    /// The home trash a displaced item goes to; `None` is the session's.
+    fn displaced_trash(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// Remembers what the person answered about a folder that was already
+    /// there, so the items inside it follow the same answer.
+    fn record_folder_answer(&mut self, _folder: PathBuf, _answer: FolderAnswer) {}
+
+    /// The answer recorded for `path` or its closest folder above it.
+    fn folder_answer_for(&self, _path: &Path) -> Option<(PathBuf, FolderAnswer)> {
+        None
+    }
+}
+
+/// What the person answered about a folder that was already there.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderAnswer {
+    /// Go into it; every clash inside is a Replace.
+    Merge,
+    /// Leave it, and everything that would have gone into it, alone.
+    Skip,
+    /// Keep both: the folder and everything in it go to this new name.
+    MovedTo(#[serde(with = "crate::store::path_bytes")] PathBuf),
+}
+
+/// Where an item goes once the answers about the folders above it apply:
+/// `None` when one of them was skipped.
+fn mapped_destination(destination: &Path, control: &dyn JobControl) -> Option<PathBuf> {
+    match control.folder_answer_for(destination) {
+        Some((_, FolderAnswer::Skip)) => None,
+        Some((folder, FolderAnswer::MovedTo(new))) => {
+            Some(match destination.strip_prefix(&folder) {
+                Ok(rest) if rest.as_os_str().is_empty() => new,
+                Ok(rest) => new.join(rest),
+                Err(_) => destination.to_path_buf(),
+            })
+        }
+        _ => Some(destination.to_path_buf()),
+    }
+}
+
+/// Whether `path` lies inside a folder being merged into, below its top.
+fn inside_merge(path: &Path, control: &dyn JobControl) -> bool {
+    matches!(
+        control.folder_answer_for(path),
+        Some((folder, FolderAnswer::Merge)) if folder != path
+    )
+}
+
+/// Whether putting `source` at `destination` with Replace or Merge would
+/// put it in place of itself or of a folder it is inside. Compared as
+/// written and, where both exist, as resolved, so a link or `..` cannot
+/// hide it.
+fn replaces_source(source: &Path, destination: &Path) -> bool {
+    let inside = |source: &Path, destination: &Path| source.starts_with(destination);
+    if inside(source, destination) {
+        return true;
+    }
+    match (fs::canonicalize(source), fs::canonicalize(destination)) {
+        (Ok(source), Ok(destination)) => inside(&source, &destination),
+        _ => false,
+    }
+}
+
+/// Moves what Replace or Merge displaces into the trash: the home trash for
+/// the job, or the trash on the item's own device. Nothing a conflict answer
+/// displaces is ever deleted; if it cannot go to the trash, the item fails and
+/// the one already there stays where it was.
+fn displace(existing: &Path, control: &mut dyn JobControl) -> Result<(), ItemOutcome> {
+    let root = control.displaced_trash();
+    match trash_one(existing, root.as_deref(), control) {
+        ItemOutcome::Done { .. } => {
+            control.log(
+                Some(existing.to_path_buf()),
+                LogEvent::Note {
+                    text: "replaced; the one there went to the trash".to_string(),
+                },
+            );
+            Ok(())
+        }
+        // Somebody else removed it in the meantime: nothing is in the way.
+        ItemOutcome::Skipped(SkipReason::SourceGone) => Ok(()),
+        other => Err(other),
+    }
 }
 
 /// A destination this job copied a hard-linked file to, and what it looked
@@ -371,7 +458,7 @@ pub(crate) fn settle_destination(
                 .unwrap_or_else(|| OsStr::new("unnamed"));
             Settled::Proceed(next_available_name(parent, name))
         }
-        Resolution::Overwrite => match fs::symlink_metadata(destination) {
+        Resolution::Overwrite | Resolution::Merge => match fs::symlink_metadata(destination) {
             _ if !kind.accepts_overwrite() => {
                 Settled::Finished(ItemOutcome::Failed(OperationError::ConflictUnresolved {
                     path: destination.to_path_buf(),
@@ -387,7 +474,12 @@ pub(crate) fn settle_destination(
                     path: destination.to_path_buf(),
                 }))
             }
-            _ => Settled::Proceed(destination.to_path_buf()),
+            // The older file goes to the trash before the new one is written.
+            Ok(_) => match displace(destination, control) {
+                Ok(()) => Settled::Proceed(destination.to_path_buf()),
+                Err(outcome) => Settled::Finished(outcome),
+            },
+            Err(_) => Settled::Proceed(destination.to_path_buf()),
         },
     })
 }
@@ -467,21 +559,85 @@ fn transfer(
     is_move: bool,
     control: &mut dyn JobControl,
 ) -> Result<ItemOutcome, OperationError> {
-    let Some(destination) = item.destination.clone() else {
+    let Some(planned) = item.destination.clone() else {
         return Ok(ItemOutcome::Failed(OperationError::Io {
             path: item.source.clone(),
             reason: "no_destination".to_string(),
             errno: None,
         }));
     };
+    // A folder above this item may have been skipped or kept under another
+    // name; the item follows it.
+    let Some(mut destination) = mapped_destination(&planned, control) else {
+        return Ok(ItemOutcome::Skipped(SkipReason::ConflictSkipped));
+    };
 
     match item.kind {
         ItemKind::Directory => {
+            if let Ok(existing) = fs::symlink_metadata(&destination) {
+                if inside_merge(&destination, control) {
+                    // Merging: a folder goes into the one there; a file in
+                    // the way is replaced, into the trash.
+                    if !existing.is_dir()
+                        && let Err(outcome) = displace(&destination, control)
+                    {
+                        return Ok(outcome);
+                    }
+                } else if let Some(conflict) = detect_conflict(&item.source, &destination) {
+                    match control.resolve(conflict)? {
+                        Resolution::Skip => {
+                            control.record_folder_answer(destination, FolderAnswer::Skip);
+                            return Ok(ItemOutcome::Skipped(SkipReason::ConflictSkipped));
+                        }
+                        Resolution::Cancel => {
+                            return Err(OperationError::Cancelled {
+                                path: item.source.clone(),
+                            });
+                        }
+                        Resolution::Rename => {
+                            let parent =
+                                destination.parent().unwrap_or(Path::new("/")).to_path_buf();
+                            let name = destination
+                                .file_name()
+                                .unwrap_or_else(|| OsStr::new("unnamed"))
+                                .to_os_string();
+                            let renamed = next_available_name(&parent, &name);
+                            control.record_folder_answer(
+                                destination.clone(),
+                                FolderAnswer::MovedTo(renamed.clone()),
+                            );
+                            destination = renamed;
+                        }
+                        Resolution::Overwrite | Resolution::Merge
+                            if replaces_source(&item.source, &destination) =>
+                        {
+                            return Ok(ItemOutcome::Failed(OperationError::ReplacesSource {
+                                path: destination.clone(),
+                            }));
+                        }
+                        Resolution::Merge if existing.is_dir() => {
+                            control.record_folder_answer(destination.clone(), FolderAnswer::Merge);
+                        }
+                        // Replace (or Merge onto a file): the one there goes
+                        // to the trash and the folder is copied in fresh.
+                        Resolution::Overwrite | Resolution::Merge => {
+                            if let Err(outcome) = displace(&destination, control) {
+                                return Ok(outcome);
+                            }
+                        }
+                    }
+                }
+            }
             let source_metadata = fs::symlink_metadata(&item.source).ok();
+            // A folder merged into was already there: the job did not make
+            // it, so neither a rollback nor an undo may take it away.
+            let existed = fs::symlink_metadata(&destination).is_ok();
             Ok(
                 match fsops::create_directory(&destination, source_metadata.as_ref(), policy) {
                     Ok(()) => {
-                        control.log(Some(destination.clone()), LogEvent::Created);
+                        if !existed {
+                            control.log(Some(destination.clone()), LogEvent::Created);
+                        }
                         ItemOutcome::Done {
                             bytes: 0,
                             verified: destination.is_dir(),
@@ -492,7 +648,12 @@ fn transfer(
             )
         }
         ItemKind::DirectoryEpilogue => {
-            if let Ok(metadata) = fs::symlink_metadata(&item.source) {
+            // A folder merged into keeps its own mode and dates.
+            let merged = matches!(
+                control.folder_answer_for(&destination),
+                Some((folder, FolderAnswer::Merge)) if folder == destination
+            );
+            if !merged && let Ok(metadata) = fs::symlink_metadata(&item.source) {
                 let _ = fsops::finalize_directory(&destination, &metadata, policy);
             }
             if is_move {
@@ -528,7 +689,13 @@ fn transfer_leaf(
 
     if let Some(conflict) = detect_conflict(&item.source, &destination) {
         let kind = conflict.kind;
-        let resolution = control.resolve(conflict)?;
+        // Inside a folder being merged, a clash is a Replace without asking:
+        // that is what Merge said it would do.
+        let resolution = if inside_merge(&destination, control) {
+            Resolution::Overwrite
+        } else {
+            control.resolve(conflict)?
+        };
         match resolution {
             Resolution::Skip => return Ok(ItemOutcome::Skipped(SkipReason::ConflictSkipped)),
             Resolution::Cancel => {
@@ -544,21 +711,23 @@ fn transfer_leaf(
                     .to_os_string();
                 destination = next_available_name(&parent, &name);
             }
-            Resolution::Overwrite => {
+            Resolution::Overwrite | Resolution::Merge
+                if replaces_source(&item.source, &destination) =>
+            {
+                return Ok(ItemOutcome::Failed(OperationError::ReplacesSource {
+                    path: destination.clone(),
+                }));
+            }
+            Resolution::Overwrite | Resolution::Merge => {
                 if !kind.accepts_overwrite() {
                     return Ok(ItemOutcome::Failed(OperationError::ConflictUnresolved {
                         path: destination.clone(),
                     }));
                 }
-                // An existing directory cannot be replaced by a file with a
-                // rename, and removing it would delete its contents without
-                // being asked. That is a failure, not an overwrite.
-                if let Ok(existing) = fs::symlink_metadata(&destination)
-                    && existing.is_dir()
-                {
-                    return Ok(ItemOutcome::Failed(OperationError::IsADirectory {
-                        path: destination.clone(),
-                    }));
+                // The one there, file or folder, goes to the trash first, so
+                // a Replace can always be undone from the Trash.
+                if let Err(outcome) = displace(&destination, control) {
+                    return Ok(outcome);
                 }
             }
         }
@@ -1045,12 +1214,9 @@ fn restore_one(
                     .to_os_string();
                 destination = next_available_name(&parent, &name);
             }
-            Resolution::Overwrite => {
-                if let Err(error) = fs::remove_file(&destination) {
-                    return Ok(ItemOutcome::Failed(OperationError::from_io(
-                        &destination,
-                        &error,
-                    )));
+            Resolution::Overwrite | Resolution::Merge => {
+                if let Err(outcome) = displace(&destination, control) {
+                    return Ok(outcome);
                 }
             }
         }

@@ -201,6 +201,12 @@ pub enum PlatformError {
     /// machine key.
     #[error("platform.error.daemon_refused:{0}")]
     DaemonRefused(String),
+    /// The privileged service went away in the middle of a call without
+    /// answering — most often because an update of its package from outside
+    /// Better Manager restarted it (ticket 105). Nothing about the step is
+    /// known, and asking again reaches the new service.
+    #[error("platform.error.daemon_interrupted:{0}")]
+    DaemonInterrupted(String),
 }
 
 /// A platform backend that answers from supplied values and never touches the

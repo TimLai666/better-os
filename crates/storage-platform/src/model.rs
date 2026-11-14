@@ -21,6 +21,9 @@ pub struct DeviceAddress {
 /// `org.freedesktop.UDisks2.Drive` properties this crate reads.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DriveInfo {
+    /// The drive's UDisks2 object path: every volume on one drive shares it.
+    #[serde(default)]
+    pub object_path: String,
     pub removable: bool,
     pub media_removable: bool,
     /// The raw `ConnectionBus` string, kept raw so an unrecognized bus stays
@@ -52,6 +55,10 @@ pub struct BlockInfo {
     /// `/dev/disk/by-*` symlinks. The `by-path` entry is the closest thing to
     /// stable topology UDisks2 offers.
     pub symlinks: Vec<String>,
+    /// For an unlocked encrypted volume (LUKS cleartext): the object path of
+    /// the block device it is backed by (`CryptoBackingDevice`).
+    #[serde(default)]
+    pub crypto_backing: Option<String>,
 }
 
 impl BlockInfo {

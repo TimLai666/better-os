@@ -56,6 +56,9 @@ fn empty_log_is_no_commits_and_short_record_fails() {
     assert!(parse_log(b"abc\x1fdef\0").is_err());
     let bad_time = record(&["a", "", "n", "e", "soon", "", "s", ""]);
     assert!(parse_log(&bad_time).is_err());
+    // git prints no time at all for a date it cannot read.
+    let no_time = record(&["a", "", "n", "e", "", "", "s", ""]);
+    assert_eq!(parse_log(&no_time).unwrap()[0].author_time, 0);
 }
 
 #[test]

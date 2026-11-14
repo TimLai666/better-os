@@ -27,7 +27,7 @@ jobs:
         # exits 0 with stale lists in that state, so the retry is around both.
         run: |
           for attempt in 1 2 3 4 5; do
-            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev; then
+            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good; then
               exit 0
             fi
             echo "apt attempt $attempt failed; waiting before the next" >&2
@@ -73,7 +73,7 @@ jobs:
         # exits 0 with stale lists in that state, so the retry is around both.
         run: |
           for attempt in 1 2 3 4 5; do
-            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev; then
+            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good; then
               exit 0
             fi
             echo "apt attempt $attempt failed; waiting before the next" >&2
@@ -158,6 +158,15 @@ jobs:
           bash -n packaging/tests/prune-target.test.sh
           shellcheck packaging/prune-target.sh packaging/tests/prune-target.test.sh
           bash packaging/tests/prune-target.test.sh
+      # Ticket 105: the user-unit half of every package's preinst and postinst,
+      # against a fake systemctl. It needs nothing built either.
+      - name: Lint and test the maintainer script library
+        run: |
+          sh -n packaging/maintainer/user-units.sh packaging/maintainer/daemon.sh
+          bash -n packaging/tests/maintainer-scripts.test.sh
+          shellcheck --shell=sh packaging/maintainer/user-units.sh packaging/maintainer/daemon.sh
+          shellcheck packaging/tests/maintainer-scripts.test.sh
+          bash packaging/tests/maintainer-scripts.test.sh
 
   package:
     needs: rust
@@ -203,7 +212,7 @@ jobs:
         # exits 0 with stale lists in that state, so the retry is around both.
         run: |
           for attempt in 1 2 3 4 5; do
-            if sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev; then
+            if sudo apt-get update && sudo apt-get install -y dpkg-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good; then
               exit 0
             fi
             echo "apt attempt $attempt failed; waiting before the next" >&2

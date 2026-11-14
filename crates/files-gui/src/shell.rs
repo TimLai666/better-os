@@ -1,350 +1,712 @@
-//! Toolbar, tab strip, and sidebar.
+//! The window's frame, in the Fluent kit: the address row (Back, Forward,
+//! Up, Reload, the breadcrumbs, search), the command bar, the tab strip, and
+//! the navigation pane.
+//!
+//! Every control here comes from `better_ui::fluent`. What each one does is
+//! a call on the session; nothing is decided here.
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
-    ActiveTheme, Icon, IconName,
-    button::{Button, ButtonVariants},
-    input::Input,
-    scroll::ScrollableElement,
-    *,
+use std::rc::Rc;
+
+use better_ui::fluent::{
+    self, CAPTION,
+    breadcrumb::BreadcrumbBar,
+    button::Button,
+    command_bar::{Command as BarCommand, CommandBar},
+    menu::{MenuEntry, MenuItem},
+    navigation::{NavAction, NavEntry, NavItem, NavigationView},
+    tabs::{Tab, TabView},
+    text_box::TextBox,
+    words::Locale as KitLocale,
 };
+use gpui::*;
+use gpui_component::IconName;
 
 use crate::app::FilesApp;
 use crate::content::{SORT_KEYS, sort_key_label};
 use crate::devices::DeviceRow;
-use crate::i18n::{copy, scale_label, view_mode_label};
+use crate::i18n::{Copy, Locale, copy};
 use crate::keys::Focus;
-use crate::layout::SIDEBAR_WIDTH;
-use crate::prefs::ItemScale;
+use crate::prefs::{ItemScale, ViewMode};
 use crate::sidebar::{
     FilesystemProbe, NoDeviceStates, SidebarInputs, SidebarRow, SidebarSection, build_rows,
+    shown_rows,
 };
 use crate::toolbar::toolbar_state;
 
-impl FilesApp {
-    /// Back, Forward, Up, the path field, and the view controls.
-    pub(crate) fn toolbar(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale());
-        let state = toolbar_state(self.session.pane().history());
-        let hidden_shown = self.session.preferences.show_hidden;
-        let mode = self.session.preferences.view_mode;
-        let order = self.session.preferences.order();
-        let active_jobs = crate::opcenter::active_count(&self.session.jobs);
-        let archive = self.session.archive_actions();
+/// What one line of the navigation pane stands for.
+#[derive(Clone, Debug)]
+pub(crate) enum NavTarget {
+    /// One of a plugin's items.
+    PluginItem(Box<(crate::plugins::Plugin, crate::plugins::Item)>),
+    /// A plugin's own page (`plugin:<id>`).
+    PluginView(String),
+    Row(SidebarRow),
+    Device(DeviceRow),
+    /// A machine on the tailnet, opened over SFTP.
+    Machine(crate::share::Machine),
+}
 
-        h_flex()
+impl NavTarget {
+    fn location(&self) -> Option<&files_core::Location> {
+        match self {
+            NavTarget::Row(row) => Some(&row.location),
+            NavTarget::Device(_)
+            | NavTarget::Machine(_)
+            | NavTarget::PluginItem(_)
+            | NavTarget::PluginView(_) => None,
+        }
+    }
+}
+
+/// Wraps a window action as a kit handler.
+pub(crate) fn act(
+    cx: &Context<FilesApp>,
+    f: impl Fn(&mut FilesApp, &mut Window, &mut Context<FilesApp>) + 'static,
+) -> impl Fn(&mut Window, &mut App) + 'static {
+    let this = cx.entity().downgrade();
+    move |window, cx| {
+        let _ = this.update(cx, |app, cx| {
+            f(app, window, cx);
+            cx.notify();
+        });
+    }
+}
+
+pub(crate) fn kit_locale(locale: Locale) -> KitLocale {
+    match locale.resolved() {
+        Locale::ZhTw => KitLocale::TraditionalChinese,
+        _ => KitLocale::English,
+    }
+}
+
+impl FilesApp {
+    /// Back, Forward, Up, Reload, the breadcrumbs (or the typed location),
+    /// and the search box.
+    pub(crate) fn address_row(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale());
+        let p = fluent::palette(cx);
+        let state = toolbar_state(self.session.pane().history());
+
+        let nav_button = |id: &'static str, icon: IconName, tip: &'static str, enabled: bool| {
+            Button::icon_button(id, icon, tip).disabled(!enabled)
+        };
+        let back = nav_button("go-back", IconName::ArrowLeft, c.go_back, state.can_go_back)
+            .on_click(act(cx, |app, window, _| {
+                app.session.go_back();
+                app.after_location_change(window);
+            }));
+        let forward = nav_button(
+            "go-forward",
+            IconName::ArrowRight,
+            c.go_forward,
+            state.can_go_forward,
+        )
+        .on_click(act(cx, |app, window, _| {
+            app.session.go_forward();
+            app.after_location_change(window);
+        }));
+        let up = nav_button(
+            "go-up",
+            IconName::ArrowUp,
+            c.go_to_parent,
+            state.can_go_to_parent,
+        )
+        .on_click(act(cx, |app, window, _| {
+            app.session.go_to_parent();
+            app.after_location_change(window);
+        }));
+        let reload = Button::icon_button("reload", IconName::Redo, c.reload)
+            .on_click(act(cx, |app, _, _| app.session.reload()));
+
+        let address: AnyElement = if self.editing_path {
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(TextBox::new("path-field", &self.path_input))
+                .into_any_element()
+        } else {
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            let crumbs = crate::pathbar::crumbs_named(
+                self.session.location(),
+                home.as_deref(),
+                c,
+                &self.session.directories,
+            );
+            let width =
+                (f32::from(self.viewport.width) - self.nav_width() - 180.0 - self.search_width())
+                    .max(120.0);
+            let visible = crate::pathbar::visible_crumbs(&crumbs, width - 24.0);
+            let mut labels: Vec<SharedString> = crumbs
+                .iter()
+                .map(|crumb| SharedString::from(crumb.label.clone()))
+                .collect();
+            // A plugin's page is named by its title, nothing to climb to.
+            let plugin_title = self.plugin_page_title();
+            if let Some(title) = &plugin_title {
+                labels = vec![title.clone().into()];
+            }
+            let crumbs = if plugin_title.is_some() {
+                Vec::new()
+            } else {
+                crumbs
+            };
+            let targets: Rc<Vec<files_core::Location>> =
+                Rc::new(crumbs.into_iter().map(|crumb| crumb.location).collect());
+            let this = cx.entity().downgrade();
+            let bar = BreadcrumbBar::new("breadcrumbs", labels)
+                .single_line()
+                .max_visible(visible)
+                .on_click(move |index, window, cx| {
+                    let Some(location) = targets.get(index).cloned() else {
+                        return;
+                    };
+                    let _ = this.update(cx, |app, cx| {
+                        app.session.navigate_to(location);
+                        app.after_location_change(window);
+                        cx.notify();
+                    });
+                });
+            // The box around the crumbs is the address box: clicking its empty
+            // part turns it into a text field, as File Explorer's does.
+            div()
+                .id("address-box")
+                .flex_1()
+                .min_w_0()
+                .h(px(32.0))
+                .px(px(8.0))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .rounded(fluent::radius::SM)
+                .bg(p.control_fill)
+                .border_1()
+                .border_color(p.stroke)
+                .overflow_hidden()
+                .child(
+                    match self.session.location() {
+                        files_core::Location::Trash(_) => {
+                            gpui_component::Icon::empty().path(crate::icons::TRASH)
+                        }
+                        other => gpui_component::Icon::new(icon_for_location(other)),
+                    }
+                    .size(px(16.0))
+                    .text_color(p.text_secondary),
+                )
+                .child(div().flex().min_w_0().overflow_hidden().child(bar))
+                .child(div().flex_1().h_full())
+                .tooltip(fluent::dialog::tooltip_builder(c.edit_location.into()))
+                .on_click(cx.listener(|app, _, window, cx| {
+                    app.begin_path_edit(window, cx);
+                }))
+                .into_any_element()
+        };
+
+        let search_width = px(self.search_width());
+        let search = div().w(search_width).flex_none().child(
+            TextBox::search("search-field", &self.search_input).on_search(act(
+                cx,
+                |app, window, cx| {
+                    app.editing_search = true;
+                    app.search_input
+                        .update(cx, |state, cx| state.focus(window, cx));
+                },
+            )),
+        );
+
+        div()
             .w_full()
-            .min_h(px(56.0))
-            .px_4()
-            .py_2()
-            .gap_2()
+            .h(px(48.0))
+            .px(px(8.0))
+            .flex()
             .items_center()
-            .flex_wrap()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
-            .child(
-                Button::new("go-back")
-                    .icon(IconName::ArrowLeft)
-                    .tooltip(c.go_back)
-                    .disabled(!state.can_go_back)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.session.go_back();
-                        this.sync_path_field(window, cx);
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("go-forward")
-                    .icon(IconName::ArrowRight)
-                    .tooltip(c.go_forward)
-                    .disabled(!state.can_go_forward)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.session.go_forward();
-                        this.sync_path_field(window, cx);
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("go-up")
-                    .icon(IconName::ArrowUp)
-                    .tooltip(c.go_to_parent)
-                    .disabled(!state.can_go_to_parent)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.session.go_to_parent();
-                        this.sync_path_field(window, cx);
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("reload")
-                    .icon(IconName::Replace)
-                    .tooltip(c.reload)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.session.reload();
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(180.0))
-                    .child(Input::new(&self.path_input).cleanable(true)),
-            )
-            .child(
-                Button::new("path-go")
-                    .label(c.open)
-                    .on_click(cx.listener(|this, _, window, cx| this.submit_path(window, cx))),
-            )
-            .child(
-                Button::new("toggle-view")
-                    .label(view_mode_label(mode, c))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.session.toggle_view_mode();
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("toggle-hidden")
-                    .when(hidden_shown, |button| button.primary())
-                    .label(if hidden_shown {
-                        c.hide_hidden
-                    } else {
-                        c.show_hidden
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.session.toggle_hidden();
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("compress")
-                    .label(c.compress)
-                    .disabled(!archive.compress)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.session.request_compress();
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("extract")
-                    .label(c.extract)
-                    .disabled(!archive.extract)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.session.extract_selection();
-                        cx.notify();
-                    })),
-            )
-            .child(self.sort_controls(cx))
-            .child(self.scale_controls(cx))
-            .child(
-                Button::new("toggle-operations")
-                    .when(self.session.operations_open, |button| button.primary())
-                    .label(if active_jobs > 0 {
-                        format!("{} · {active_jobs}", c.operation_center)
-                    } else {
-                        c.operation_center.to_string()
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.session.operations_open = !this.session.operations_open;
-                        cx.notify();
-                    })),
-            )
-            .child(self.language_control(cx))
-            .child(
-                // The sort order is drawn even when the controls wrap, so the
-                // current order is never off-screen.
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!("{} {}", c.sort_by, sort_key_label(order.key, c))),
-            )
+            .gap(px(4.0))
+            .child(back)
+            .child(forward)
+            .child(up)
+            .child(reload)
+            .child(div().w(px(4.0)))
+            .child(address)
+            .child(div().w(px(4.0)))
+            .child(search)
             .into_any_element()
     }
 
-    /// The current-location search field, and the line that says what it
-    /// covered.
+    /// The command bar, as File Explorer has it: New, the clipboard, Rename,
+    /// Delete, then Sort and View, and the rest behind `…`.
+    pub(crate) fn command_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale());
+        let mut facts = self.session.selection_facts();
+        // On a plugin's page nothing is the folder's: nothing to make, cut,
+        // copy, paste, rename or trash, and no sort or view to change.
+        let on_plugin_page = self.plugin_view.is_some();
+        if on_plugin_page {
+            facts.writable = false;
+            facts.all_local = false;
+            facts.can_paste = false;
+            facts.count = 0;
+            facts.in_trash = false;
+        }
+        let in_trash = facts.in_trash;
+        let has_selection = facts.count > 0;
+        let order = self.session.preferences.order();
+        let mode = self.session.preferences.view_mode;
+        let scale = self.session.preferences.scale;
+        let hidden = self.session.preferences.show_hidden;
+        let active_jobs = crate::opcenter::active_count(&self.session.jobs);
+
+        let new_menu = vec![
+            MenuItem::new(c.new_folder)
+                .icon(IconName::FolderClosed)
+                .shortcut("Ctrl+Shift+N")
+                .disabled(!facts.writable)
+                .on_select(act(cx, |app, window, cx| {
+                    app.session.dialog = Some(crate::session::PendingDialog::NewFolder);
+                    app.prepare_dialog(window, cx);
+                }))
+                .entry(),
+            MenuItem::new(c.new_file)
+                .icon(IconName::File)
+                .disabled(!facts.writable)
+                .on_select(act(cx, |app, window, cx| {
+                    app.session.dialog = Some(crate::session::PendingDialog::NewFile);
+                    app.prepare_dialog(window, cx);
+                }))
+                .entry(),
+        ];
+
+        let mut sort_menu: Vec<MenuEntry> = SORT_KEYS
+            .iter()
+            .map(|&key| {
+                MenuItem::new(sort_key_label(key, c))
+                    .checked(order.key == key)
+                    .on_select(act(cx, move |app, _, _| app.session.set_sort_key(key)))
+                    .entry()
+            })
+            .collect();
+        sort_menu.push(MenuEntry::Separator);
+        let ascending = order.direction == files_core::SortDirection::Ascending;
+        sort_menu.push(
+            MenuItem::new(c.ascending)
+                .checked(ascending)
+                .on_select(act(cx, move |app, _, _| {
+                    if !ascending {
+                        app.session.toggle_sort_direction();
+                    }
+                }))
+                .entry(),
+        );
+        sort_menu.push(
+            MenuItem::new(c.descending)
+                .checked(!ascending)
+                .on_select(act(cx, move |app, _, _| {
+                    if ascending {
+                        app.session.toggle_sort_direction();
+                    }
+                }))
+                .entry(),
+        );
+        sort_menu.push(MenuEntry::Separator);
+        sort_menu.push(
+            MenuItem::new(c.folders_first)
+                .checked(order.folders_first)
+                .on_select(act(cx, |app, _, _| app.session.toggle_folders_first()))
+                .entry(),
+        );
+
+        let mut view_menu = vec![
+            MenuItem::new(c.view_grid)
+                .checked(mode == ViewMode::Grid)
+                .shortcut("Ctrl+1")
+                .on_select(act(cx, |app, _, _| {
+                    app.session.set_view_mode(ViewMode::Grid)
+                }))
+                .entry(),
+            MenuItem::new(c.view_list)
+                .checked(mode == ViewMode::List)
+                .shortcut("Ctrl+2")
+                .on_select(act(cx, |app, _, _| {
+                    app.session.set_view_mode(ViewMode::List)
+                }))
+                .entry(),
+            MenuItem::new(c.view_columns)
+                .checked(mode == ViewMode::Columns)
+                .shortcut("Ctrl+3")
+                .on_select(act(cx, |app, _, _| {
+                    app.session.set_view_mode(ViewMode::Columns)
+                }))
+                .entry(),
+            MenuEntry::Separator,
+        ];
+        for item_scale in ItemScale::ALL {
+            view_menu.push(
+                MenuItem::new(crate::i18n::scale_label(item_scale, c))
+                    .checked(scale == item_scale)
+                    .shortcut(match item_scale {
+                        ItemScale::Small => "Ctrl+−",
+                        ItemScale::Medium => "Ctrl+0",
+                        ItemScale::Large => "Ctrl++",
+                    })
+                    .on_select(act(cx, move |app, _, _| app.session.set_scale(item_scale)))
+                    .entry(),
+            );
+        }
+        view_menu.push(MenuEntry::Separator);
+        view_menu.push(
+            MenuItem::new(c.show_hidden)
+                .checked(hidden)
+                .shortcut("Ctrl+H")
+                .on_select(act(cx, |app, _, _| app.session.toggle_hidden()))
+                .entry(),
+        );
+        view_menu.push(
+            MenuItem::new(c.preview_pane)
+                .checked(self.session.preview.open)
+                .shortcut("Space")
+                .on_select(act(cx, |app, _, _| app.session.toggle_preview()))
+                .entry(),
+        );
+        view_menu.push(MenuEntry::Separator);
+        view_menu.push(
+            MenuItem::new(c.use_view_everywhere)
+                .on_select(act(cx, |app, _, _| app.session.use_view_everywhere()))
+                .entry(),
+        );
+
+        let mut bar = CommandBar::new("files-commands").locale(kit_locale(self.locale()));
+        if in_trash {
+            bar = bar
+                .command(
+                    BarCommand::new(c.restore_from_trash, IconName::Undo2)
+                        .disabled(!has_selection)
+                        .on_click(act(cx, |app, _, _| {
+                            app.session.restore_selection_from_trash()
+                        })),
+                )
+                .command(
+                    BarCommand::new(c.delete_permanently, IconName::Delete)
+                        .disabled(!has_selection)
+                        .shortcut("Shift+Delete")
+                        .on_click(act(cx, |app, _, _| app.session.request_permanent_delete())),
+                )
+                .command(
+                    BarCommand::new(c.empty_trash, IconName::Delete)
+                        .disabled(!facts.has_items)
+                        .on_click(act(cx, |app, window, cx| {
+                            let columns = app.columns();
+                            app.session.empty_trash(columns);
+                            app.prepare_dialog(window, cx);
+                        })),
+                )
+                .separator();
+        } else {
+            bar = bar
+                .menu(
+                    BarCommand::new(c.new_menu, IconName::Plus).disabled(!facts.writable),
+                    new_menu,
+                )
+                .separator()
+                .command(
+                    BarCommand::new(c.cut_items, IconName::Frame)
+                        .shortcut("Ctrl+X")
+                        .disabled(!facts.all_local)
+                        .on_click(act(cx, |app, _, _| app.session.cut_selection())),
+                )
+                .command(
+                    BarCommand::new(c.copy_items, IconName::Copy)
+                        .shortcut("Ctrl+C")
+                        .disabled(!facts.all_local)
+                        .on_click(act(cx, |app, _, _| app.session.copy_selection())),
+                )
+                .command(
+                    BarCommand::new(c.paste_items, IconName::Inbox)
+                        .shortcut("Ctrl+V")
+                        .disabled(!(facts.can_paste && facts.writable))
+                        .on_click(act(cx, |app, _, _| app.session.paste())),
+                )
+                .command(
+                    BarCommand::new(c.rename, IconName::ALargeSmall)
+                        .shortcut("F2")
+                        .disabled(!(facts.count == 1 && facts.all_local && facts.writable))
+                        .on_click(act(cx, |app, window, cx| {
+                            app.session.focus = Focus::Content;
+                            app.session.dispatch(crate::keys::Command::Rename, 1, 1);
+                            app.prepare_dialog(window, cx);
+                        })),
+                )
+                .command(
+                    BarCommand::new(c.move_to_trash, IconName::Delete)
+                        .shortcut("Delete")
+                        .disabled(!(facts.all_local && facts.writable))
+                        .on_click(act(cx, |app, _, _| app.session.trash_selection())),
+                )
+                .separator();
+        }
+        bar = bar
+            .menu(
+                BarCommand::new(c.sort_menu, sort_icon(order.direction)).disabled(on_plugin_page),
+                sort_menu,
+            )
+            .menu(
+                BarCommand::new(c.view_menu, view_icon(mode)).disabled(on_plugin_page),
+                view_menu,
+            )
+            .separator()
+            .command(
+                BarCommand::new(c.preview_pane, IconName::PanelRight)
+                    .icon_only()
+                    .checked(self.session.preview.open)
+                    .on_click(act(cx, |app, _, _| app.session.toggle_preview())),
+            )
+            .command(
+                BarCommand::new(
+                    if active_jobs > 0 {
+                        SharedString::from(format!("{} · {active_jobs}", c.jobs_panel))
+                    } else {
+                        SharedString::from(c.jobs_panel)
+                    },
+                    IconName::LoaderCircle,
+                )
+                .icon_only()
+                .checked(self.session.operations_open)
+                .shortcut("Ctrl+O")
+                .on_click(act(cx, |app, _, _| {
+                    app.session.operations_open = !app.session.operations_open;
+                })),
+            );
+
+        // The rest: the less frequent file commands, then language and
+        // appearance, which every Better OS window keeps in the same place.
+        let archive = facts.archive;
+        // Undo and redo name what they will do, as folio's do ("Undo
+        // Rename"); with nothing to undo they are there, greyed.
+        let undo_label = self
+            .session
+            .history
+            .undo_name(c)
+            .unwrap_or_else(|| c.undo.to_string());
+        let redo_label = self
+            .session
+            .history
+            .redo_name(c)
+            .unwrap_or_else(|| c.redo.to_string());
+        bar = bar
+            .secondary(
+                BarCommand::new(undo_label, IconName::Undo)
+                    .shortcut("Ctrl+Z")
+                    .disabled(!self.session.history.can_undo())
+                    .on_click(act(cx, |app, _, _| app.session.undo())),
+            )
+            .secondary(
+                BarCommand::new(redo_label, IconName::Redo)
+                    .shortcut("Ctrl+Shift+Z")
+                    .disabled(!self.session.history.can_redo())
+                    .on_click(act(cx, |app, _, _| app.session.redo())),
+            )
+            .secondary(
+                BarCommand::new(c.new_window, IconName::ExternalLink)
+                    .shortcut("Ctrl+N")
+                    .on_click(act(cx, |app, _, cx| {
+                        crate::app::open_window_at(
+                            app.session.location().as_local_path().cloned(),
+                            cx,
+                        )
+                    })),
+            )
+            .secondary(
+                BarCommand::new(c.split_view, IconName::PanelRight)
+                    .shortcut("Ctrl+Alt+N")
+                    .checked(self.split.is_some())
+                    .on_click(act(cx, |app, window, cx| app.toggle_split(window, cx))),
+            )
+            .secondary_entry(MenuEntry::Separator)
+            .secondary(
+                BarCommand::new(c.select_all, IconName::CircleCheck)
+                    .shortcut("Ctrl+A")
+                    .on_click(act(cx, |app, _, _| {
+                        let columns = app.columns();
+                        app.session
+                            .apply_selection(crate::content::SelectionInput::SelectAll, columns);
+                    })),
+            )
+            .secondary(
+                BarCommand::new(c.copy_path, IconName::Copy)
+                    .shortcut("Ctrl+Shift+C")
+                    .on_click(act(cx, |app, _, cx| app.copy_path_text(cx))),
+            )
+            .secondary(
+                BarCommand::new(c.duplicate, IconName::Copy)
+                    .shortcut("Ctrl+Shift+D")
+                    .disabled(!(facts.all_local && facts.writable))
+                    .on_click(act(cx, |app, _, _| app.session.duplicate_selection())),
+            )
+            .secondary(
+                BarCommand::new(c.compress, IconName::Inbox)
+                    .shortcut("Ctrl+Shift+P")
+                    .disabled(!archive.compress)
+                    .on_click(act(cx, |app, _, _| app.session.request_compress())),
+            )
+            .secondary(
+                BarCommand::new(c.extract, IconName::FolderOpen)
+                    .shortcut("Ctrl+Shift+E")
+                    .disabled(!archive.extract)
+                    .on_click(act(cx, |app, _, _| app.session.extract_selection())),
+            )
+            .secondary(
+                BarCommand::new(c.pin_to_sidebar, IconName::Star)
+                    .shortcut("Ctrl+P")
+                    .on_click(act(cx, |app, _, _| app.session.toggle_pin())),
+            )
+            .secondary(
+                BarCommand::new(c.open_terminal_here, IconName::SquareTerminal)
+                    .disabled(in_trash)
+                    .on_click(act(cx, |app, _, _| {
+                        app.session.open_terminal_here(&crate::terminal::on_path)
+                    })),
+            )
+            .secondary_entry(MenuEntry::Separator)
+            .secondary_entry(self.language_menu(c, cx))
+            .secondary_entry(self.appearance_menu(c, cx))
+            .secondary(
+                BarCommand::new(c.keyboard_shortcuts, IconName::Info)
+                    .shortcut("?")
+                    .on_click(act(cx, |app, _, _| app.show_shortcuts = true)),
+            );
+
+        // As many primary commands as fit; the rest move behind `…`. Each
+        // command is measured the way the bar draws it: 12px padding, a
+        // 16px icon and an 8px gap, the label, and 2px between buttons; a
+        // menu command adds its chevron.
+        let labeled = |label: &str, menu: bool| {
+            px(12.0
+                + 16.0
+                + 8.0
+                + crate::layout::label_width(label)
+                + 12.0
+                + 4.0
+                + if menu { 20.0 } else { 0.0 })
+        };
+        let icon_only = px(44.0);
+        let widths: Vec<Pixels> = if in_trash {
+            vec![
+                labeled(c.restore_from_trash, false),
+                labeled(c.delete_permanently, false),
+                labeled(c.sort_menu, true),
+                labeled(c.view_menu, true),
+                icon_only,
+                icon_only,
+            ]
+        } else {
+            vec![
+                labeled(c.new_menu, true),
+                labeled(c.cut_items, false),
+                labeled(c.copy_items, false),
+                labeled(c.paste_items, false),
+                labeled(c.rename, false),
+                labeled(c.move_to_trash, false),
+                labeled(c.sort_menu, true),
+                labeled(c.view_menu, true),
+                icon_only,
+                icon_only,
+            ]
+        };
+        let available = px(f32::from(self.viewport.width) - self.nav_width() - 32.0 - 20.0);
+        let fit = better_ui::fluent::command_bar::fit_count(&widths, available, icon_only);
+        let bar = bar.max_primary(fit);
+
+        div().w_full().px(px(4.0)).child(bar).into_any_element()
+    }
+
+    fn language_menu(&self, c: &'static Copy, cx: &mut Context<Self>) -> MenuEntry {
+        let resolved = self.locale().resolved();
+        let system = self.locale() == Locale::System;
+        MenuEntry::submenu(
+            c.language,
+            vec![
+                MenuItem::new(c.english)
+                    .checked(!system && resolved == Locale::EnUs)
+                    .on_select(act(cx, |app, window, cx| {
+                        app.set_locale(Locale::EnUs, window, cx)
+                    }))
+                    .entry(),
+                MenuItem::new(c.chinese)
+                    .checked(!system && resolved == Locale::ZhTw)
+                    .on_select(act(cx, |app, window, cx| {
+                        app.set_locale(Locale::ZhTw, window, cx)
+                    }))
+                    .entry(),
+                MenuItem::new(c.theme_system)
+                    .checked(system)
+                    .on_select(act(cx, |app, window, cx| {
+                        app.set_locale(Locale::System, window, cx)
+                    }))
+                    .entry(),
+            ],
+        )
+    }
+
+    fn appearance_menu(&self, c: &'static Copy, cx: &mut Context<Self>) -> MenuEntry {
+        use better_ui::fluent::theme::Appearance;
+        let current = self.appearance;
+        let item = |label: &'static str, choice: Appearance| {
+            MenuItem::new(label)
+                .checked(current == choice)
+                .on_select(act(cx, move |app, window, cx| {
+                    app.set_appearance(choice, window, cx)
+                }))
+                .entry()
+        };
+        MenuEntry::submenu(
+            c.appearance,
+            vec![
+                item(c.light_theme, Appearance::Light),
+                item(c.dark_theme, Appearance::Dark),
+                item(c.theme_system, Appearance::System),
+            ],
+        )
+    }
+
+    /// The search box's own line while a search runs: what it covers, the
+    /// hidden-file setting, its progress, and Close.
     pub(crate) fn search_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale());
+        let p = fluent::palette(cx);
         let scope = self.session.search.scope_label(self.session.location(), c);
         let status = self.session.search.status_line(c);
         let include_hidden = self.session.search.include_hidden;
 
-        h_flex()
+        div()
             .w_full()
-            .px_4()
-            .py_1()
-            .gap_2()
+            .px(px(16.0))
+            .py(px(4.0))
+            .flex()
             .items_center()
-            .border_b_1()
-            .border_color(cx.theme().border)
+            .gap(px(12.0))
+            .child(fluent::label(scope, CAPTION, p.text_secondary))
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(Input::new(&self.search_input)),
+                Button::toggle("search-hidden", c.search_include_hidden, include_hidden).on_click(
+                    act(cx, |app, _, _| {
+                        app.session.toggle_search_hidden();
+                        app.session.preferences.search_hidden = app.session.search.include_hidden;
+                    }),
+                ),
             )
-            // The scope is beside the field, never implied: an empty result
-            // means nothing unless you know what was searched.
+            .child(div().flex_1())
+            .child(fluent::label(status, CAPTION, p.text_secondary))
             .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(scope),
-            )
-            .child(
-                Button::new("search-hidden")
-                    .ghost()
-                    .xsmall()
-                    .selected(include_hidden)
-                    .tooltip(c.search_include_hidden)
-                    .icon(IconName::Eye)
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        this.session.toggle_search_hidden();
-                        this.session.preferences.search_hidden = this.session.search.include_hidden;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(status),
-            )
-            .child(
-                Button::new("search-close")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Close)
-                    .tooltip(c.search_close)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.editing_search = false;
-                        this.session.close_search();
-                        this.sync_search_field(window, cx);
-                        cx.notify();
-                    })),
+                Button::icon_button("search-close", IconName::Close, c.search_close).on_click(act(
+                    cx,
+                    |app, window, cx| {
+                        app.editing_search = false;
+                        app.session.close_search();
+                        app.sync_search_field(window, cx);
+                    },
+                )),
             )
             .into_any_element()
     }
 
-    fn sort_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale());
-        let order = self.session.preferences.order();
-        h_flex()
-            .gap_1()
-            .items_center()
-            .children(SORT_KEYS.map(|key| {
-                Button::new(SharedString::from(format!("sort-{}", key_id(key))))
-                    .when(order.key == key, |button| button.primary())
-                    .label(sort_key_label(key, c))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.session.set_sort_key(key);
-                        cx.notify();
-                    }))
-            }))
-            .child(
-                Button::new("sort-direction")
-                    .label(if order.direction == files_core::SortDirection::Ascending {
-                        c.ascending
-                    } else {
-                        c.descending
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.session.toggle_sort_direction();
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("folders-first")
-                    .when(order.folders_first, |button| button.primary())
-                    .label(c.folders_first)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.session.toggle_folders_first();
-                        cx.notify();
-                    })),
-            )
-            .into_any_element()
-    }
-
-    fn scale_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale());
-        let current = self.session.preferences.scale;
-        h_flex()
-            .gap_1()
-            .items_center()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(c.item_size),
-            )
-            .children(ItemScale::ALL.map(|scale| {
-                Button::new(SharedString::from(format!("scale-{}", scale.key())))
-                    .when(current == scale, |button| button.primary())
-                    .label(scale_label(scale, c))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.session.set_scale(scale);
-                        cx.notify();
-                    }))
-            }))
-            .into_any_element()
-    }
-
-    fn language_control(&self, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale());
-        let locale = self.locale();
-        h_flex()
-            .gap_1()
-            .child(
-                Button::new("locale-en")
-                    .when(
-                        matches!(locale.resolved(), crate::i18n::Locale::EnUs),
-                        |button| button.primary(),
-                    )
-                    .label(c.english)
-                    .on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.set_locale(crate::i18n::Locale::EnUs, cx)
-                        }),
-                    ),
-            )
-            .child(
-                Button::new("locale-zh")
-                    .when(
-                        matches!(locale.resolved(), crate::i18n::Locale::ZhTw),
-                        |button| button.primary(),
-                    )
-                    .label(c.chinese)
-                    .on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.set_locale(crate::i18n::Locale::ZhTw, cx)
-                        }),
-                    ),
-            )
-            .child(
-                Button::new("theme")
-                    .label(if self.theme == gpui_component::ThemeMode::Dark {
-                        c.light_theme
-                    } else {
-                        c.dark_theme
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let next = if this.theme == gpui_component::ThemeMode::Dark {
-                            gpui_component::ThemeMode::Light
-                        } else {
-                            gpui_component::ThemeMode::Dark
-                        };
-                        this.set_theme(next, window, cx);
-                    })),
-            )
-            .into_any_element()
-    }
-
-    /// The tab strip.
-    pub(crate) fn tab_strip(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale());
-        let active = self.session.active_tab();
+    /// The tab strip, shown once there is more than one tab.
+    pub(crate) fn tab_strip(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let tabs: Vec<(files_core::TabId, String)> = self
             .session
             .tabs()
@@ -352,78 +714,53 @@ impl FilesApp {
             .iter()
             .map(|tab| (tab.id(), tab.title()))
             .collect();
-        let can_restore = self.session.tabs().can_restore();
-
-        h_flex()
-            .w_full()
-            .px_3()
-            .py_1()
-            .gap_1()
-            .items_center()
-            .flex_wrap()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .children(tabs.into_iter().map(|(id, title)| {
-                let is_active = id == active;
-                h_flex()
-                    .id(SharedString::from(format!("tab-{}", id.value())))
-                    .gap_1()
-                    .px_2()
-                    .py_1()
-                    .rounded(cx.theme().radius)
-                    .when(is_active, |row| row.bg(cx.theme().accent))
-                    .child(div().text_sm().truncate().max_w(px(180.0)).child(title))
-                    .child(
-                        Button::new(SharedString::from(format!("tab-close-{}", id.value())))
-                            .icon(IconName::Close)
-                            .tooltip(c.close_tab)
-                            .xsmall()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.session.close_tab(id);
-                                cx.notify();
-                            })),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.session.activate_tab(id);
-                        cx.notify();
-                    }))
-                    // Middle-click closes, the same as every other tab strip.
-                    .on_mouse_down(
-                        MouseButton::Middle,
-                        cx.listener(move |this, _, _, cx| {
-                            this.session.close_tab(id);
+        if tabs.len() < 2 {
+            return None;
+        }
+        let c = copy(self.locale());
+        let active = self.session.active_tab();
+        let selected = tabs.iter().position(|(id, _)| *id == active);
+        let ids: Rc<Vec<files_core::TabId>> = Rc::new(tabs.iter().map(|(id, _)| *id).collect());
+        let kit_tabs = tabs
+            .iter()
+            .map(|(_, title)| Tab::new(title.clone()).icon(IconName::Folder))
+            .collect();
+        let select_ids = ids.clone();
+        let close_ids = ids.clone();
+        let select = cx.entity().downgrade();
+        let close = select.clone();
+        Some(
+            TabView::new("files-tabs", kit_tabs, selected)
+                .tooltips(c.close_tab, c.new_tab)
+                .on_select(move |index, window, cx| {
+                    if let Some(id) = select_ids.get(index).copied() {
+                        let _ = select.update(cx, |app, cx| {
+                            app.session.activate_tab(id);
+                            app.after_location_change(window);
                             cx.notify();
-                        }),
-                    )
-            }))
-            .child(
-                Button::new("tab-new")
-                    .icon(IconName::Plus)
-                    .tooltip(c.new_tab)
-                    .xsmall()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let location = this.session.home_location();
-                        this.session.open_tab(location, true);
-                        cx.notify();
-                    })),
-            )
-            .when(can_restore, |strip| {
-                strip.child(
-                    Button::new("tab-restore")
-                        .label(c.reopen_closed_tab)
-                        .xsmall()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.session.restore_tab();
+                        });
+                    }
+                })
+                .on_close(move |index, window, cx| {
+                    if let Some(id) = close_ids.get(index).copied() {
+                        let _ = close.update(cx, |app, cx| {
+                            app.session.close_tab(id);
+                            app.after_location_change(window);
                             cx.notify();
-                        })),
-                )
-            })
-            .into_any_element()
+                        });
+                    }
+                })
+                .on_add(act(cx, |app, window, _| {
+                    let location = app.session.home_location();
+                    app.session.open_tab(location, true);
+                    app.after_location_change(window);
+                }))
+                .into_any_element(),
+        )
     }
 
-    /// The four-section sidebar.
-    pub(crate) fn sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale());
+    /// What the navigation pane lists, in order, with the line each one is.
+    pub(crate) fn nav_targets(&self, c: &'static Copy) -> Vec<(NavEntry, Option<NavTarget>)> {
         let rows = {
             let inputs = SidebarInputs {
                 directories: &self.session.directories,
@@ -432,409 +769,332 @@ impl FilesApp {
                 states: &NoDeviceStates,
                 probe: &FilesystemProbe,
             };
-            build_rows(&inputs, c)
+            shown_rows(build_rows(&inputs, c))
         };
-        let favorites = rows
+        let mut out: Vec<(NavEntry, Option<NavTarget>)> = Vec::new();
+        let row_item = |row: &SidebarRow| {
+            let mut item = NavItem::new(row.label.clone(), icon_for_row(row));
+            if let Some(path) = crate::icons::place_icon(&row.location, &row.key) {
+                item = item.icon_path(path);
+            }
+            if !row.availability.is_available() {
+                item = item.caption(c.unavailable);
+            } else if row.identity_volatile {
+                item = item.caption(c.identity_volatile);
+            } else if let Some((status, warning)) = row
+                .location
+                .as_local_path()
+                .and_then(|path| self.plugins.place_status(path.as_path()))
+            {
+                // A plugin's status on a row Better Files already has
+                // (folio's `places`).
+                item = item.caption(status).caption_warning(warning);
+            }
+            item.entry()
+        };
+        for row in rows
+            .iter()
+            .filter(|row| row.section == SidebarSection::Places)
+        {
+            out.push((row_item(row), Some(NavTarget::Row(row.clone()))));
+        }
+        let pinned: Vec<&SidebarRow> = rows
             .iter()
             .filter(|row| row.section == SidebarSection::Favorites)
-            .count();
+            .collect();
+        if !pinned.is_empty() {
+            out.push((NavEntry::Header(c.sidebar_favorites.into()), None));
+            for row in pinned {
+                out.push((row_item(row), Some(NavTarget::Row(row.clone()))));
+            }
+        }
+        for row in rows
+            .iter()
+            .filter(|row| row.section == SidebarSection::Applications)
+        {
+            out.push((NavEntry::Separator, None));
+            out.push((row_item(row), Some(NavTarget::Row(row.clone()))));
+        }
 
-        let mut column = v_flex()
-            .w(px(SIDEBAR_WIDTH))
-            .flex_shrink_0()
-            .h_full()
-            .gap_2()
-            .p_2()
-            .border_r_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().sidebar)
-            .overflow_y_scrollbar();
+        // Dropbox, with its sync state, when the Dropbox command and folder
+        // are there.
+        if let Some((folder, status)) = self.sharing.dropbox()
+            && let Ok(location) = files_core::Location::local(&folder)
+        {
+            let mut item = NavItem::new("Dropbox", IconName::Inbox);
+            if let Some(status) = status {
+                item = item.caption(status);
+            }
+            let row = SidebarRow {
+                section: SidebarSection::Places,
+                key: "place-dropbox".to_string(),
+                label: "Dropbox".to_string(),
+                location,
+                availability: crate::sidebar::Availability::Available,
+                bookmark_index: None,
+                device_state: None,
+                identity_volatile: false,
+            };
+            out.push((item.entry(), Some(NavTarget::Row(row))));
+        }
 
-        for section in SidebarSection::ALL {
-            column = column.child(
-                div()
-                    .px_2()
-                    .pt_2()
-                    .text_xs()
-                    .font_semibold()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(section.title(c)),
-            );
-            if section == SidebarSection::Devices {
-                // The link's note comes first, so a state is never read
-                // without the caveat that produced it.
-                if let Some((note, warn)) = self.session.collection.note(c) {
-                    column = column.child(
-                        div()
-                            .mx_1()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_xs()
-                            .when(warn, |el| {
-                                el.bg(cx.theme().warning)
-                                    .text_color(cx.theme().warning_foreground)
-                            })
-                            .when(!warn, |el| el.text_color(cx.theme().muted_foreground))
-                            .child(note),
-                    );
+        // Each plugin's section, while it has items (folio's `section`).
+        for (plugin, poll) in self.plugins.snapshot() {
+            let (Some(section), Some(poll)) = (plugin.manifest.section.clone(), poll) else {
+                continue;
+            };
+            if poll.items.is_empty() {
+                continue;
+            }
+            out.push((
+                NavEntry::Header(plugin.translate(&section.title).into()),
+                None,
+            ));
+            let opened = self
+                .plugin_opened
+                .get(&plugin.id)
+                .cloned()
+                .unwrap_or_default();
+            for item in section.rows(&poll.items, &opened) {
+                let icon = crate::plugin_page::item_icon(item.icon.as_deref());
+                let mut nav = NavItem::new(item.name.clone(), icon);
+                if let Some(subtitle) = &item.subtitle {
+                    nav = nav.caption(subtitle.render(&plugin.catalog));
                 }
-                if self.session.collection.has_states() {
-                    let devices: Vec<DeviceRow> = self.session.device_rows().to_vec();
-                    if devices.is_empty() {
-                        column = column.child(
-                            div()
-                                .px_2()
-                                .py_1()
-                                .text_xs()
-                                .italic()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(c.no_devices),
-                        );
-                    }
-                    for device in devices {
-                        column = column.child(self.device_row(&device, cx));
-                    }
-                    continue;
-                }
-                // No link. The mount table is what a session can honestly
-                // report on its own, and every row reads as unverifiable.
+                out.push((
+                    nav.entry(),
+                    Some(NavTarget::PluginItem(Box::new((
+                        plugin.clone(),
+                        item.clone(),
+                    )))),
+                ));
             }
-            let section_rows: Vec<&SidebarRow> =
-                rows.iter().filter(|row| row.section == section).collect();
-            if section_rows.is_empty() {
-                let empty = match section {
-                    SidebarSection::Devices => c.no_devices,
-                    SidebarSection::Favorites => c.no_favorites,
-                    _ => c.unavailable,
-                };
-                column = column.child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .text_xs()
-                        .italic()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(empty),
-                );
-            }
-            for row in section_rows {
-                column = column.child(self.sidebar_row(row, cx));
-            }
-            if section == SidebarSection::Favorites {
-                column = column.child(self.favorites_drop_zone(favorites, cx));
+            // With a view, the section ends with the row that opens it, and
+            // how many items there are.
+            if let Some(view) = &plugin.manifest.view {
+                let label = view.label.as_deref().unwrap_or(&view.title);
+                let nav = NavItem::new(
+                    plugin.translate(label),
+                    crate::plugin_page::item_icon(view.icon.as_deref()),
+                )
+                .caption(poll.items.len().to_string());
+                out.push((nav.entry(), Some(NavTarget::PluginView(plugin.id.clone()))));
             }
         }
 
-        column.into_any_element()
-    }
+        // The tailnet's machines, online ones first, when Tailscale runs.
+        let machines = self.sharing.machines();
+        if !machines.is_empty() {
+            out.push((NavEntry::Header(c.tailnet.into()), None));
+            for machine in machines {
+                let item = NavItem::new(machine.name.clone(), IconName::Globe)
+                    .caption(if machine.online { c.online } else { c.offline })
+                    .disabled(!machine.online);
+                out.push((item.entry(), Some(NavTarget::Machine(machine))));
+            }
+        }
 
-    fn sidebar_row(&self, row: &SidebarRow, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale());
-        let available = row.availability.is_available();
-        let location = row.location.clone();
-        let bookmark_index = row.bookmark_index;
-        let focused = self.session.focus == Focus::Sidebar
-            && bookmark_index.is_some()
-            && bookmark_index == self.session.sidebar_cursor;
-
-        let detail = if !available {
-            Some(c.unavailable.to_string())
-        } else if row.identity_volatile {
-            Some(c.identity_volatile.to_string())
-        } else if row.device_state == Some(storage_core::DeviceStateKind::Unknown) {
-            Some(c.device_state_unknown_without_service.to_string())
+        // Drives: the storage layer's rows when it reports states, the mount
+        // table's otherwise, every one of them unknown.
+        let note = self.session.collection.note(c);
+        if self.session.collection.has_states() {
+            let devices: Vec<DeviceRow> = self.session.device_rows().to_vec();
+            if !devices.is_empty() || note.is_some() {
+                out.push((NavEntry::Header(c.sidebar_devices.into()), None));
+            }
+            for device in devices {
+                out.push((
+                    self.device_item(&device, c),
+                    Some(NavTarget::Device(device)),
+                ));
+            }
         } else {
-            None
+            let drives: Vec<&SidebarRow> = rows
+                .iter()
+                .filter(|row| row.section == SidebarSection::Devices)
+                .collect();
+            if !drives.is_empty() {
+                out.push((NavEntry::Header(c.sidebar_devices.into()), None));
+                for row in drives {
+                    let item = NavItem::new(row.label.clone(), IconName::HardDrive)
+                        .caption(c.device_state_unknown_without_service);
+                    out.push((item.entry(), Some(NavTarget::Row(row.clone()))));
+                }
+            }
+        }
+        out
+    }
+
+    fn device_item(&self, device: &DeviceRow, c: &'static Copy) -> NavEntry {
+        let mut caption = device.state_label(c);
+        if device.identity_volatile {
+            caption = format!("{caption} · {}", c.identity_volatile);
+        }
+        if device.unsafe_removal.is_some() {
+            caption = format!("{caption} · {}", c.device_unsafe_removal);
+        }
+        let object_path = device.object_path.clone();
+        let this = self.weak.clone();
+        NavItem::new(device.label.clone(), IconName::HardDrive)
+            .caption(caption)
+            .caption_warning(device.is_warning() || device.unsafe_removal.is_some())
+            .action(NavAction::new(
+                IconName::ArrowUp,
+                c.device_eject,
+                move |_window, cx| {
+                    let _ = this.update(cx, |app, cx| {
+                        app.session.eject_device(&object_path);
+                        cx.notify();
+                    });
+                },
+            ))
+            .entry()
+    }
+
+    /// The navigation pane around `content`.
+    pub(crate) fn navigation(&mut self, content: AnyElement, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale());
+        let lines = self.nav_targets(c);
+        let current = self.session.location().clone();
+        // A plugin's page lights its own row, not the folder behind it.
+        let selected = match &self.plugin_view {
+            Some(page) => lines.iter().position(|(_, target)| {
+                matches!(target, Some(NavTarget::PluginView(id)) if *id == page.plugin_id)
+            }),
+            None => lines.iter().position(|(_, target)| {
+                target.as_ref().and_then(NavTarget::location) == Some(&current)
+            }),
         };
+        let targets: Rc<Vec<Option<NavTarget>>> =
+            Rc::new(lines.iter().map(|(_, target)| target.clone()).collect());
+        let entries: Vec<NavEntry> = lines.into_iter().map(|(entry, _)| entry).collect();
+        let compact = self.nav_compact();
 
-        v_flex()
-            .id(SharedString::from(row.key.clone()))
-            .w_full()
-            .min_w_0()
-            .px_2()
-            .py_1()
-            .rounded(cx.theme().radius)
-            .when(focused, |element| element.bg(cx.theme().accent))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .min_w_0()
-                    .child(Icon::new(icon_for(row.section)).small())
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_sm()
-                            .when(!available, |label| {
-                                label.text_color(cx.theme().muted_foreground)
-                            })
-                            .child(row.label.clone()),
-                    ),
-            )
-            .when_some(detail, |element, detail| {
-                element.child(
-                    div()
-                        .pl_6()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(detail),
-                )
-            })
-            .when(bookmark_index.is_some(), |element| {
-                let index = bookmark_index.expect("checked");
-                element.child(
-                    h_flex()
-                        .pl_6()
-                        .gap_1()
-                        .child(
-                            Button::new(SharedString::from(format!("fav-up-{index}")))
-                                .label(c.move_up)
-                                .xsmall()
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.session.move_bookmark_up(index);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!("fav-down-{index}")))
-                                .label(c.move_down)
-                                .xsmall()
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.session.move_bookmark_down(index);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!("fav-rename-{index}")))
-                                .label(c.rename_bookmark)
-                                .xsmall()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.session.dialog =
-                                        Some(crate::session::PendingDialog::RenameBookmark(index));
-                                    this.prepare_dialog(window, cx);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!("fav-remove-{index}")))
-                                .label(c.remove_from_sidebar)
-                                .xsmall()
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.session.remove_bookmark(index);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!("fav-newtab-{index}")))
-                                .label(c.open_in_new_tab)
-                                .xsmall()
-                                .on_click({
-                                    let location = location.clone();
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.session.open_tab(location.clone(), true);
-                                        cx.notify();
-                                    })
-                                }),
-                        ),
-                )
-            })
-            .on_click({
-                let location = location.clone();
-                cx.listener(move |this, _, window, cx| {
-                    if let Some(index) = bookmark_index {
-                        this.session.focus = Focus::Sidebar;
-                        this.session.sidebar_cursor = Some(index);
-                    } else {
-                        this.session.focus = Focus::Content;
-                    }
-                    if available {
-                        this.session.navigate_to(location.clone());
-                        this.sync_path_field(window, cx);
-                    }
+        let select_targets = targets.clone();
+        let select = cx.entity().downgrade();
+        let context_targets = targets.clone();
+        let context = select.clone();
+        let view = NavigationView::new("files-nav", entries, selected)
+            .compact(compact)
+            .title(format!("{} {}", c.brand_name, c.files))
+            .locale(kit_locale(self.locale()))
+            .content(content)
+            .on_select(move |index, window, cx| {
+                let Some(Some(target)) = select_targets.get(index).cloned() else {
+                    return;
+                };
+                let _ = select.update(cx, |app, cx| {
+                    app.open_nav_target(&target, window);
                     cx.notify();
-                })
+                });
             })
-            .into_any_element()
-    }
-
-    /// The drop target at the bottom of Favorites.
-    ///
-    /// Dropping a folder here pins it. The same action is on the content
-    /// area's context menu, because a pointer drag is not a keyboard-reachable
-    /// gesture and Issue #6 asks for both.
-    /// One device, with its state and its Eject action.
-    ///
-    /// The state line is always present and only two of the five states are
-    /// styled as a warning, which is Issue #5's rule that an idle device stays
-    /// visually quiet.
-    fn device_row(&self, row: &DeviceRow, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale());
-        let object_path = row.object_path.clone();
-        let eject_path = row.object_path.clone();
-        let state = row.state_label(c);
-        let warning = row.is_warning();
-        let volatile = row.identity_volatile;
-        let unsafe_removal = row.unsafe_removal.is_some();
-        // The policy the device does not have, offered as one action when
-        // `crate::policy` allows it; a Direct Removal device offers nothing
-        // while Performance mode is held back. Its label is the existing
-        // policy name, so the words match the state line and the confirmation.
-        let offered = crate::policy::offered_switch(row.policy).map(|policy| {
-            let label = match policy {
-                storage_core::RemovalPolicy::Performance => c.device_policy_performance,
-                storage_core::RemovalPolicy::DirectRemoval => c.device_policy_direct_removal,
-            };
-            (policy, label)
-        });
-        let policy_path = row.object_path.clone();
-
-        let line = h_flex()
-            .w_full()
-            .items_start()
-            .gap_1()
-            .child(
-                Button::new(SharedString::from(format!("device-{object_path}")))
-                    .ghost()
-                    .w_full()
-                    .justify_start()
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap_0p5()
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .items_center()
-                                    .child(Icon::new(IconName::Inbox))
-                                    .child(row.label.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .when(warning, |el| el.text_color(cx.theme().warning))
-                                    .when(!warning, |el| el.text_color(cx.theme().muted_foreground))
-                                    .child(state),
-                            )
-                            .when(volatile, |el| {
-                                el.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(c.identity_volatile),
-                                )
-                            })
-                            .when(unsafe_removal, |el| {
-                                el.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().danger)
-                                        .child(c.device_unsafe_removal),
-                                )
-                            }),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        // Mounted: navigate in. Unmounted: mount, then
-                        // navigate in when the mount answers.
-                        this.session.open_device(&object_path);
-                        this.sync_path_field(window, cx);
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new(SharedString::from(format!("eject-{eject_path}")))
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::ArrowUp)
-                    .tooltip(c.device_eject)
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.session.eject_device(&eject_path);
-                        cx.notify();
-                    })),
-            );
-
-        // A clickable line rather than a button: the label has to wrap in a
-        // 236-pixel sidebar at 150%, and a button clips instead. It carries a
-        // click handler and a hover state, which is what makes a `div` an
-        // action under `better_ui`'s affordance rule.
-        let policy_line = offered.map(|(other_policy, other_label)| {
-            div()
-                .id(SharedString::from(format!("policy-{policy_path}")))
-                .ml_8()
-                .mr_2()
-                .px_1()
-                .rounded(cx.theme().radius)
-                .text_xs()
-                .text_color(cx.theme().link)
-                .cursor_pointer()
-                .hover(|style| style.bg(cx.theme().accent))
-                .child(c.device_policy_switch.replace("{policy}", other_label))
-                .on_click(cx.listener(move |this, _, _window, cx| {
-                    this.session.choose_policy(&policy_path, other_policy);
+            .on_toggle(act_bool(cx, |app, compact| app.nav_compact = Some(compact)))
+            .on_context(move |index, position, _window, cx| {
+                let Some(Some(target)) = context_targets.get(index).cloned() else {
+                    return;
+                };
+                let _ = context.update(cx, |app, cx| {
+                    app.open_sidebar_menu(target, position, cx);
                     cx.notify();
-                }))
-        });
+                });
+            });
 
-        v_flex()
-            .w_full()
-            .child(line)
-            .children(policy_line)
-            .into_any_element()
-    }
-
-    fn favorites_drop_zone(&self, count: usize, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale());
+        // A folder dropped anywhere on the pane is pinned, as in folio.
         div()
-            .id("favorites-drop")
-            .w_full()
-            .mt_1()
-            .px_2()
-            .py_2()
-            .rounded(cx.theme().radius)
-            .border_1()
-            .border_dashed()
-            .border_color(cx.theme().border)
-            .text_xs()
-            .text_color(cx.theme().muted_foreground)
-            // The zone says what it is for rather than lighting up mid-drag.
-            // GPUI offers no drag-end hook here, so a highlight switched on
-            // when a drag started would stay on after one was abandoned.
-            .child(if count == 0 {
-                c.no_favorites
-            } else {
-                c.drop_to_pin
-            })
+            .id("files-nav-drop")
+            .size_full()
+            .child(view)
             .on_drop(
                 cx.listener(|this, dragged: &crate::views::DraggedEntry, _window, cx| {
                     this.session.pin(&dragged.location);
                     cx.notify();
                 }),
             )
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.session.pin_current();
-                cx.notify();
-            }))
             .into_any_element()
+    }
+
+    pub(crate) fn open_nav_target(&mut self, target: &NavTarget, window: &mut Window) {
+        // Any other row leaves a plugin's page.
+        if !matches!(target, NavTarget::PluginView(_) | NavTarget::PluginItem(_)) {
+            self.plugin_view = None;
+        }
+        match target {
+            NavTarget::Row(row) => {
+                if let Some(index) = row.bookmark_index {
+                    self.session.focus = Focus::Sidebar;
+                    self.session.sidebar_cursor = Some(index);
+                } else {
+                    self.session.focus = Focus::Content;
+                }
+                if row.availability.is_available() {
+                    self.session.navigate_to(row.location.clone());
+                }
+            }
+            NavTarget::Device(device) => {
+                self.session.open_device(&device.object_path);
+            }
+            NavTarget::PluginItem(pair) => {
+                let (plugin, item) = pair.as_ref();
+                self.open_plugin_item(plugin, item);
+            }
+            NavTarget::PluginView(id) => {
+                self.open_plugin_view(id);
+            }
+            NavTarget::Machine(machine) => {
+                self.session
+                    .mount_server(crate::share::sftp_address(machine), None);
+            }
+        }
+        self.after_location_change(window);
     }
 }
 
-fn icon_for(section: SidebarSection) -> IconName {
-    match section {
-        SidebarSection::Places => IconName::Folder,
+fn act_bool(
+    cx: &Context<FilesApp>,
+    f: impl Fn(&mut FilesApp, bool) + 'static,
+) -> impl Fn(bool, &mut Window, &mut App) + 'static {
+    let this = cx.entity().downgrade();
+    move |value, _window, cx| {
+        let _ = this.update(cx, |app, cx| {
+            f(app, value);
+            cx.notify();
+        });
+    }
+}
+
+fn sort_icon(direction: files_core::SortDirection) -> IconName {
+    match direction {
+        files_core::SortDirection::Ascending => IconName::SortAscending,
+        files_core::SortDirection::Descending => IconName::SortDescending,
+    }
+}
+
+fn view_icon(mode: ViewMode) -> IconName {
+    match mode {
+        ViewMode::Grid => IconName::LayoutDashboard,
+        ViewMode::List => IconName::GalleryVerticalEnd,
+        ViewMode::Columns => IconName::PanelLeft,
+    }
+}
+
+fn icon_for_location(location: &files_core::Location) -> IconName {
+    match location {
+        files_core::Location::Trash(_) => IconName::Delete,
+        files_core::Location::Applications => IconName::LayoutDashboard,
+        _ => IconName::Folder,
+    }
+}
+
+fn icon_for_row(row: &SidebarRow) -> IconName {
+    match row.section {
+        SidebarSection::Places => match &row.location {
+            files_core::Location::Trash(_) => IconName::Delete,
+            files_core::Location::Recent => IconName::Calendar,
+            _ if row.key == "place-home" => IconName::User,
+            _ => IconName::Folder,
+        },
         SidebarSection::Devices => IconName::HardDrive,
         SidebarSection::Applications => IconName::LayoutDashboard,
         SidebarSection::Favorites => IconName::Star,
-    }
-}
-
-fn key_id(key: files_core::SortKey) -> &'static str {
-    match key {
-        files_core::SortKey::Name => "name",
-        files_core::SortKey::Modified => "modified",
-        files_core::SortKey::Size => "size",
-        files_core::SortKey::Type => "type",
-        files_core::SortKey::Extension => "extension",
     }
 }
