@@ -1,0 +1,46 @@
+[Unit]
+Description=Better Awake tray icon
+Documentation=https://github.com/TimLai666/better-os/blob/main/docs/tickets/102-awake-tray-menu.md
+# A user unit rather than an XDG autostart entry, so the tray is one of the
+# component's units: Better Manager enables and starts it on install, restarts
+# it on update and restore (an autostart program kept running the replaced
+# binary, ticket 87), and stops and disables it on disable and uninstall.
+PartOf=graphical-session.target
+After=graphical-session.target better-awake.service
+# A service that is broken for good must not have the tray restarted forever:
+# five failed starts in five minutes and the unit stays failed, which Better
+# Manager's health check reports.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# A tray this unit did not start is an older one an autostart entry started
+# before the tray became a unit. Two trays would be two icons, so it goes.
+# Only this user's processes named exactly awake-tray are matched, and the
+# leading "-" means finding none is not a failure.
+ExecStartPre=-/usr/bin/pkill --uid %U --exact awake-tray
+ExecStart=/usr/bin/awake-tray
+# The tray exits with an error when the service does not answer at login or
+# its bus connection ends, and is started again. Quit from its menu exits
+# successfully and stays quit until the next login or Better Manager.
+Restart=on-failure
+RestartSec=5
+
+# The tray opens the Better Awake window as its own child. The window must
+# outlive a tray restart (an update restarts this unit), so only the tray
+# process itself is stopped with the unit.
+KillMode=process
+
+# Hardening limited to what the window, which inherits it, also tolerates:
+# MemoryDenyWriteExecute, RestrictNamespaces, and RestrictAddressFamilies are
+# left out because a GPU driver's shader compiler and a toolkit's sockets in
+# the child window may need what they forbid.
+NoNewPrivileges=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=graphical-session.target

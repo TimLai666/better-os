@@ -18,11 +18,13 @@ pub use client::{
     ClientError, LowBatteryStop, ServiceClient, ServiceEvent, service_event, start_request,
     status_from_event,
 };
-pub use controller::{APPLICATION_BINARY, Activation, TrayController};
+pub use controller::{
+    APPLICATION_BINARY, Activation, TrayController, change_request, failure_text,
+};
 pub use dbusmenu::DbusMenu;
 pub use item::StatusNotifierItem;
 pub use labels::{Labels, Locale, LocaleLabels};
 pub use localtime::UtcOffset;
 pub use menu::{Menu, MenuAction, MenuItem, QuickOptions, build as build_menu};
 pub use notify::{DesktopNotifier, NotifyError, claim_notifications, handle_event};
-pub use sni::{ITEM_PATH, MENU_PATH, TrayAvailability, register_and_verify};
+pub use sni::{ITEM_PATH, MENU_PATH, TrayAvailability, keep_registered, register_and_verify};

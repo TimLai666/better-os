@@ -108,9 +108,10 @@ required_data_files() {
         better-awake)
             printf '%s\n' \
                 usr/share/applications/better-awake.desktop \
-                etc/xdg/autostart/better-awake-tray.desktop \
                 usr/lib/systemd/user/better-awake.service \
+                usr/lib/systemd/user/better-awake-tray.service \
                 usr/share/dbus-1/services/org.betteros.Awake1.service \
+                usr/share/dbus-1/services/org.betteros.AwakeTray1.service \
                 usr/share/icons/hicolor/scalable/apps/better-awake.svg \
                 usr/share/icons/hicolor/scalable/status/better-awake-inactive-symbolic.svg \
                 usr/share/icons/hicolor/scalable/status/better-awake-active-symbolic.svg \
@@ -389,11 +390,28 @@ for package_name in \
             }
             ;;
         better-awake)
-            # The tray is an indicator for the service, not an application a
-            # user launches out of the menu.
-            grep -q '^NoDisplay=true$' \
-                "$extract_dir/etc/xdg/autostart/better-awake-tray.desktop" || {
-                printf 'The Better Awake tray autostart entry is not hidden from the menu\n' >&2
+            # The tray is a user unit bound to the graphical session, so the
+            # manager's update restarts it. An autostart entry beside it would
+            # start a second tray.
+            if [[ -e "$extract_dir/etc/xdg/autostart/better-awake-tray.desktop" ]]; then
+                printf 'The Better Awake package still ships the tray autostart entry\n' >&2
+                exit 1
+            fi
+            grep -q '^ExecStart=/usr/bin/awake-tray$' \
+                "$extract_dir/usr/lib/systemd/user/better-awake-tray.service" || {
+                printf 'The Better Awake tray unit does not start the packaged tray\n' >&2
+                exit 1
+            }
+            grep -q '^WantedBy=graphical-session.target$' \
+                "$extract_dir/usr/lib/systemd/user/better-awake-tray.service" || {
+                printf 'The Better Awake tray unit is not bound to the graphical session\n' >&2
+                exit 1
+            }
+            # The window brings a missing tray back by asking for its bus name;
+            # that must start the unit, not a second copy of the program.
+            grep -q '^SystemdService=better-awake-tray.service$' \
+                "$extract_dir/usr/share/dbus-1/services/org.betteros.AwakeTray1.service" || {
+                printf 'The Better Awake tray is not activated through its unit\n' >&2
                 exit 1
             }
             grep -q '^ExecStart=/usr/bin/better-awake-service$' \

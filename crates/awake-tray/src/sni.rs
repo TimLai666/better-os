@@ -140,6 +140,37 @@ pub async fn register_and_verify(
     }
 }
 
+/// Registers the item again every time a StatusNotifierWatcher appears, and
+/// reports each result through `report`.
+///
+/// The watcher belongs to the panel, not to the tray: GNOME Shell restarting,
+/// the AppIndicator extension being switched off and on, or the tray simply
+/// starting before the panel at login all leave a tray whose registration went
+/// to a watcher that no longer exists. A tray that registered once and then
+/// waited would be running with no icon.
+pub async fn keep_registered(
+    connection: zbus::Connection,
+    unique_name: String,
+    mut report: impl FnMut(TrayAvailability),
+) -> zbus::Result<()> {
+    use zbus::export::futures_core::Stream;
+
+    let dbus = zbus::fdo::DBusProxy::new(&connection).await?;
+    let changes = dbus
+        .receive_name_owner_changed_with_args(&[(0, WATCHER_SERVICE)])
+        .await?;
+    let mut changes = std::pin::pin!(changes);
+    while let Some(change) =
+        std::future::poll_fn(|context| changes.as_mut().poll_next(context)).await
+    {
+        let Ok(args) = change.args() else { continue };
+        if args.new_owner().is_some() {
+            report(register_and_verify(&connection, &unique_name).await);
+        }
+    }
+    Ok(())
+}
+
 /// The icon name for one state. Distinct names, not a shared icon recolored:
 /// Issue #13 forbids leaning on color alone, and an icon theme is free to make
 /// these look however it likes as long as they differ. They are symbolic
