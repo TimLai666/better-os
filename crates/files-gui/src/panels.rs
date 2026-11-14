@@ -899,10 +899,10 @@ impl FilesApp {
                 close: Some(c.dismiss.into()),
                 default: DefaultButton::Primary,
             })
-            .on_result(move |result, _window, cx| {
+            .on_result(move |result, window, cx| {
                 let _ = this.update(cx, |app, cx| match result {
-                    DialogResult::Primary => app.submit_dialog(cx),
-                    _ => app.dismiss_dialog(cx),
+                    DialogResult::Primary => app.submit_dialog(window, cx),
+                    _ => app.dismiss_dialog(window, cx),
                 });
             });
         content = match &dialog {
@@ -1024,8 +1024,8 @@ impl FilesApp {
                 close: Some(c.dismiss.into()),
                 default: DefaultButton::None,
             })
-            .on_result(move |_result, _window, cx| {
-                let _ = this.update(cx, |app, cx| app.dismiss_dialog(cx));
+            .on_result(move |_result, window, cx| {
+                let _ = this.update(cx, |app, cx| app.dismiss_dialog(window, cx));
             })
             .child(formats)
             .into_any_element()

@@ -220,15 +220,18 @@ impl FilesApp {
         };
 
         let search_width = px(self.search_width());
+        // "This PC" has nothing to search: the field is off there.
         let search = div().w(search_width).flex_none().child(
-            TextBox::search("search-field", &self.search_input).on_search(act(
-                cx,
-                |app, window, cx| {
+            TextBox::search("search-field", &self.search_input)
+                .disabled(self.drives_page.is_some())
+                .on_search(act(cx, |app, window, cx| {
+                    if app.drives_page.is_some() {
+                        return;
+                    }
                     app.editing_search = true;
                     app.search_input
                         .update(cx, |state, cx| state.focus(window, cx));
-                },
-            )),
+                })),
         );
 
         div()
@@ -1000,7 +1003,10 @@ impl FilesApp {
             .icon_path(crate::icons::drive_icon(drive.kind));
         let attention =
             device.filter(|device| device.is_warning() || device.unsafe_removal.is_some());
-        let with_action = drive.ejectable || device.is_some();
+        // Never on the drive the system runs from (Linux on an external SSD,
+        // a live USB), whatever the storage service says.
+        let with_action =
+            drive.kind != crate::drives::DriveKind::System && (drive.ejectable || device.is_some());
         if let Some(device) = attention {
             item = item.caption(device.state_label(c)).caption_warning(true);
         } else if let Some(caption) = drive.caption(c) {

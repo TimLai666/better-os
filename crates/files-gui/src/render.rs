@@ -65,10 +65,6 @@ impl Render for FilesApp {
             // focus to what opened it.
             window.focus(&self.focus_handle, cx);
         }
-        if std::mem::take(&mut self.clear_password) {
-            self.password_input
-                .update(cx, |state, cx| state.set_value("", window, cx));
-        }
         // A sign-in that has just been asked for gets its fields ready.
         if matches!(
             self.session.dialog,

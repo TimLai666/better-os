@@ -210,8 +210,20 @@ pub struct Copy {
     pub drive_passphrase: &'static str,
     /// The page of every drive as tiles.
     pub this_pc: &'static str,
-    /// A drive could not be mounted or ejected; `{drive}` and `{detail}`.
+    /// A drive could not be mounted or unlocked; `{drive}` and `{detail}`.
     pub drive_failed: &'static str,
+    /// The passphrase did not open `{drive}`.
+    pub drive_wrong_passphrase: &'static str,
+    /// `{drive}` unlocked but did not mount; `{detail}`.
+    pub drive_unlocked_not_mounted: &'static str,
+    /// `{drive}` was ejected and can be pulled.
+    pub drive_safe: &'static str,
+    /// `{drive}` is unmounted but was not powered off; `{detail}`.
+    pub drive_not_powered_off: &'static str,
+    /// `{volume}` on `{drive}` is in use, so nothing was powered off.
+    pub drive_in_use: &'static str,
+    /// `{drive}` could not be ejected; `{detail}`.
+    pub drive_eject_failed: &'static str,
     /// A folder on screen was deleted or moved; `{folder}` is its name.
     pub folder_gone: &'static str,
     /// Retry on a failed job the engine no longer keeps.
@@ -698,12 +710,18 @@ pub const EN_US: Copy = Copy {
     drive_free_of: "{free} free of {total}",
     drive_of_size: "{size} drive",
     drive_not_mounted: "Not mounted",
-    drive_locked: "Encrypted",
+    drive_locked: "Locked",
     drive_unlock_title: "Unlock {drive}",
     drive_unlock: "Unlock",
     drive_passphrase: "Passphrase",
     this_pc: "This PC",
-    drive_failed: "Couldn't use {drive}: {detail}",
+    drive_failed: "Couldn't open {drive}: {detail}",
+    drive_wrong_passphrase: "Wrong passphrase for {drive}.",
+    drive_unlocked_not_mounted: "{drive} is unlocked, but it couldn't be opened: {detail}",
+    drive_safe: "{drive} can be safely removed.",
+    drive_not_powered_off: "{drive} is unmounted, but it couldn't be powered off: {detail}",
+    drive_in_use: "Couldn't eject {drive}: {volume} on the same drive is in use. Don't remove it yet. {detail}",
+    drive_eject_failed: "Couldn't eject {drive}: {detail}",
     folder_gone: "“{folder}” was moved or deleted, so this is the folder it was in.",
     retry_gone: "This job is too old to retry. Run the operation again.",
     dismiss_finished: "Dismiss",
@@ -1158,12 +1176,18 @@ pub const ZH_TW: Copy = Copy {
     drive_free_of: "可用 {free}，共 {total}",
     drive_of_size: "{size} 磁碟",
     drive_not_mounted: "未掛載",
-    drive_locked: "已加密",
+    drive_locked: "已鎖定",
     drive_unlock_title: "解鎖「{drive}」",
     drive_unlock: "解鎖",
     drive_passphrase: "密碼",
     this_pc: "本機",
-    drive_failed: "無法使用「{drive}」：{detail}",
+    drive_failed: "無法開啟「{drive}」：{detail}",
+    drive_wrong_passphrase: "「{drive}」的密碼不正確。",
+    drive_unlocked_not_mounted: "「{drive}」已解鎖，但無法開啟：{detail}",
+    drive_safe: "可以安全移除「{drive}」了。",
+    drive_not_powered_off: "「{drive}」已卸載，但無法關閉電源：{detail}",
+    drive_in_use: "無法退出「{drive}」：同一顆磁碟上的「{volume}」正在使用中，先不要拔除。{detail}",
+    drive_eject_failed: "無法退出「{drive}」：{detail}",
     folder_gone: "「{folder}」已被移動或刪除，所以改為顯示它原本所在的資料夾。",
     retry_gone: "這項工作太久以前了，無法重試，請重新執行一次。",
     dismiss_finished: "移除",

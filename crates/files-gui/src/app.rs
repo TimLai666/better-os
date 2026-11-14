@@ -125,9 +125,7 @@ pub struct FilesApp {
     /// The password field of a server sign-in.
     pub(crate) password_input: Entity<InputState>,
     pub(crate) filtering: bool,
-    /// Set after a sign-in is sent, so the next frame empties the password
-    /// field (the submit has no window to do it with).
-    pub(crate) clear_password: bool,
+    /// The sign-in's fields were made ready for the dialog now open.
     pub(crate) login_prepared: bool,
     /// The chooser entity, while Open With is showing one. Held so the window
     /// can keep it alive and hear its event; the chooser performs the launch
@@ -279,6 +277,13 @@ impl FilesApp {
             _ => "en".to_string(),
         };
         let subscriptions = vec![
+            // GPUI tells a Linux window whether it is active, not whether it
+            // is on screen; the drives' 30-second timer runs while it is
+            // active. UDisks2's changes and finished file operations still
+            // refresh them in a window in the background.
+            cx.observe_window_activation(window, |app, window, _cx| {
+                app.session.set_window_visible(window.is_window_active());
+            }),
             cx.subscribe_in(
                 &path_input,
                 window,
@@ -294,9 +299,9 @@ impl FilesApp {
             cx.subscribe_in(
                 &dialog_input,
                 window,
-                |app, _, event: &InputEvent, _window, cx| {
+                |app, _, event: &InputEvent, window, cx| {
                     if let InputEvent::PressEnter { .. } = event {
-                        app.submit_dialog(cx);
+                        app.submit_dialog(window, cx);
                     }
                 },
             ),
@@ -386,7 +391,6 @@ impl FilesApp {
             filter_input,
             password_input,
             filtering: false,
-            clear_password: false,
             login_prepared: false,
             chooser: None,
             _chooser_subscription: None,
@@ -855,8 +859,7 @@ impl FilesApp {
                     self.session.close_search();
                     self.sync_search_field(window, cx);
                 }
-                self.session.dialog = None;
-                cx.notify();
+                self.dismiss_dialog(window, cx);
             } else if self.editing_path && event.keystroke.key == "tab" {
                 // Tab completes the folder being typed, as folio's path bar.
                 let text = self.path_input.read(cx).value().to_string();
@@ -911,29 +914,19 @@ impl FilesApp {
         // somewhere, tabs and windows still work; Escape and Back close the
         // page and F5 reads the drives again.
         if self.drives_page.is_some() {
-            use crate::keys::Command as K;
-            match command {
-                // Back (and Escape) return to the folder under it.
-                K::ClearSelection | K::GoBack => {
+            match crate::keys::on_this_pc(command) {
+                crate::keys::ThisPcKey::Close => {
                     self.drives_page = None;
                     cx.notify();
                     return;
                 }
-                K::Reload => {
+                crate::keys::ThisPcKey::Reload => {
                     self.session.refresh_drives();
                     return;
                 }
-                K::GoForward | K::GoToParent | K::GoHome => self.drives_page = None,
-                K::NewTab
-                | K::CloseTab
-                | K::RestoreClosedTab
-                | K::NextTab
-                | K::PreviousTab
-                | K::NewWindow
-                | K::SplitView
-                | K::ToggleOperations
-                | K::ShowShortcuts => {}
-                _ => return,
+                crate::keys::ThisPcKey::Leave => self.drives_page = None,
+                crate::keys::ThisPcKey::Pass => {}
+                crate::keys::ThisPcKey::Ignore => return,
             }
         }
         match command {
@@ -1096,7 +1089,7 @@ impl FilesApp {
     }
 
     /// Answers the open text dialog with what was typed.
-    pub(crate) fn submit_dialog(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn submit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The dialog's text is read, never written, here.
         let text = self.dialog_input.read(cx).value().to_string();
         let Some(dialog) = self.session.dialog.take() else {
@@ -1123,28 +1116,35 @@ impl FilesApp {
                 self.session.confirm_erase(&text);
             }
             PendingDialog::ServerLogin { address } => {
-                // Read once, handed to the mount, and cleared from the field.
-                let password = self.password_input.read(cx).value().to_string();
+                // Read once, handed to the mount, and cleared from the
+                // field with its undo history.
+                let password = crate::secret::take(&self.password_input, window, cx);
                 self.session.mount_server(
                     address,
                     Some(crate::network::Credentials {
                         user: text,
-                        password,
+                        password: password.expose().to_string(),
                     }),
                 );
-                self.clear_password = true;
             }
             PendingDialog::UnlockDrive { key, .. } => {
-                // Read once, handed to UDisks2, and cleared from the field.
-                let passphrase = self.password_input.read(cx).value().to_string();
+                // Read once, handed to UDisks2, and cleared from the field
+                // with its undo history.
+                let passphrase = crate::secret::take(&self.password_input, window, cx);
                 self.session.unlock_drive(&key, passphrase);
-                self.clear_password = true;
             }
         }
         cx.notify();
     }
 
-    pub(crate) fn dismiss_dialog(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn dismiss_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A password typed and then dismissed is not kept either.
+        if matches!(
+            self.session.dialog,
+            Some(PendingDialog::ServerLogin { .. } | PendingDialog::UnlockDrive { .. })
+        ) {
+            crate::secret::forget(&self.password_input, window, cx);
+        }
         self.session.dialog = None;
         cx.notify();
     }

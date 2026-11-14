@@ -122,3 +122,64 @@ Screenshots in `.shots/`, from a headless GNOME Shell sandbox with fixture
 drives (the "Data" drive is 94% full): `t122-sidebar-default-*`,
 `t122-sidebar-narrowest-*` (sidebar dragged to its 200px minimum),
 `t122-this-pc-*`, `t122-unlock-*`, each `en`/`zh` and `light`/`dark`.
+
+## After review
+
+- **Hidden partitions.** The storage layer now reads UDisks2's
+  `HintIgnore`, the partition type, whether a whole disk holds a partition
+  table, every mount point and the drive's `Optical`. Drives hide what
+  UDisks2's udev rules hide (`80-udisks2.rules`), and, for a UDisks2 that
+  did not mark them, the same partition types: on GPT the EFI system
+  partition, BIOS boot, Microsoft reserved, Windows recovery (an unlabelled
+  NTFS WinRE included), LVM/RAID, XBOOTLDR and Apple boot; on MBR the
+  hidden, recovery, diagnostic, hibernation, EFI and vendor types.
+- **Ejecting a drive with several volumes** unmounts every volume on the
+  same drive (unlocked ones first, then their containers are locked), then
+  powers it off, as Nautilus does. A volume that will not unmount stops the
+  eject with "Couldn't eject A: B on the same drive is in use. Don't remove
+  it yet." and nothing is powered off; a refused power-off says the drive is
+  unmounted but not powered off; success says "A can be safely removed."
+- **The system drive** and every volume on the same drive are never
+  ejectable (Linux on an external SSD or a live USB), whatever the storage
+  service reports; `/` is never let go of by the watches. The system drive
+  is found by any of UDisks2's mount points, by the mount table's source
+  through UDisks2's symlinks or the device it resolves to
+  (`/dev/mapper/luks-…`), and from the mount table alone when no UDisks2
+  volume is `/` (ZFS, an overlay live session, composefs).
+- **Unlocking.** Only a wrong passphrase asks again ("Wrong passphrase for
+  A."), and only when no other dialog is open; a dismissed authentication
+  prompt says nothing; UDisks2 missing or another failure is a notice; a
+  volume that unlocked but did not mount is reported as such and not asked
+  again. The passphrase travels in a type that overwrites its bytes when
+  dropped and cannot be cloned or printed; submitting or dismissing the
+  dialog (Escape too) empties the field and its undo history. No options
+  go with `Unlock`.
+- **Smaller fixes.** UDisks2's `PropertiesChanged` is only listened to for
+  the Block, Filesystem, Drive and Encrypted interfaces (a format's job
+  progress no longer rescans); the watch shares the scanner's connection and
+  ends with the window. An ISO written to a stick is one removable drive,
+  not a disc; a btrfs filesystem on several devices is one drive; the
+  EFI/boot label rules apply only to internal disks; a drive with a mount,
+  unlock or eject running ignores clicks; the search box is off on This PC
+  and This PC ignores every key that would act on the folder under it;
+  `BETTER_FILES_TEST_DRIVES` works in debug builds only; a locked container
+  reads "Locked / 已鎖定"; GVfs names are fully percent-decoded; eject
+  failures read "Couldn't eject A / 無法退出「A」".
+- **The developer folder at small sizes.** The 16px list and columns rows
+  draw one full-colour "code folder" glyph made for that size instead of a
+  mark on a folder; the grid's large tiles keep the folder with its mark.
+  The sidebar, tabs and path bar already drew the single line glyph.
+- **The 30-second refresh** runs while the window is active (GPUI tells a
+  Linux window whether it is active, not whether it is visible); UDisks2's
+  changes and finished operations still refresh a background window.
+
+Tests added: unlabelled WinRE and MBR recovery, HintIgnore, the system's
+drive never ejectable, every mount point and a mapper root, a ZFS root from
+the mount table, an ISO on a stick, a two-device btrfs, removable labels,
+unlock error meanings, GVfs decoding, This PC's keys, the small developer
+glyph, the password fields' undo history (GPUI test window), and on the
+fake UDisks2: a volume in use stops the eject with no power-off, a refused
+power-off is reported, the system drive has no eject, Unlock gets no
+options, a failed unlock keeps another open dialog. The bus tests now fail
+instead of skipping when `dbus-daemon` is missing. Screenshots:
+`t122r-list-developer-*` (and the zoomed crop), `t122r-this-pc-*`.

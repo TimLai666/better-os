@@ -46,6 +46,10 @@ pub trait Block {
     fn id_type(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn hint_system(&self) -> zbus::Result<bool>;
+    /// Set by UDisks2's udev rules for volumes a desktop should not show
+    /// (EFI, recovery, Microsoft reserved, BIOS boot, RAID members…).
+    #[zbus(property)]
+    fn hint_ignore(&self) -> zbus::Result<bool>;
     #[zbus(property)]
     fn read_only(&self) -> zbus::Result<bool>;
     #[zbus(property)]
@@ -70,6 +74,19 @@ pub trait Partition {
     fn number(&self) -> zbus::Result<u32>;
     #[zbus(property)]
     fn table(&self) -> zbus::Result<OwnedObjectPath>;
+    /// The partition type: a GUID on GPT, `0x27` and the like on MBR.
+    #[zbus(property, name = "Type")]
+    fn partition_type(&self) -> zbus::Result<String>;
+}
+
+#[zbus::proxy(
+    interface = "org.freedesktop.UDisks2.PartitionTable",
+    default_service = "org.freedesktop.UDisks2"
+)]
+pub trait PartitionTable {
+    /// `gpt` or `dos`: a whole disk that holds partitions has it.
+    #[zbus(property, name = "Type")]
+    fn table_type(&self) -> zbus::Result<String>;
 }
 
 #[zbus::proxy(
@@ -106,6 +123,9 @@ pub trait Drive {
     fn ejectable(&self) -> zbus::Result<bool>;
     #[zbus(property)]
     fn can_power_off(&self) -> zbus::Result<bool>;
+    /// An optical drive (the media in it may still be a stick's image).
+    #[zbus(property)]
+    fn optical(&self) -> zbus::Result<bool>;
     fn power_off(&self, options: HashMap<&str, Value<'_>>) -> zbus::Result<()>;
 }
 
@@ -178,13 +198,24 @@ impl UDisks2 {
             .build()
             .await
             .ok();
-        let (partition_uuid, partition_number) = match &partition {
+        let (partition_uuid, partition_number, partition_type) = match &partition {
             Some(partition) => (
                 partition.uuid().await.ok().and_then(optional),
                 partition.number().await.ok(),
+                partition.partition_type().await.ok().and_then(optional),
             ),
-            None => (None, None),
+            None => (None, None, None),
         };
+        let partition_table = match PartitionTableProxy::builder(&self.connection)
+            .path(object_path.to_string())
+            .map_err(unreachable)?
+            .build()
+            .await
+        {
+            Ok(table) => table.table_type().await.is_ok_and(|kind| !kind.is_empty()),
+            Err(_) => false,
+        };
+        let mount_points = self.mount_points(object_path).await;
 
         let block_info = BlockInfo {
             device_path: device_path.clone(),
@@ -192,6 +223,10 @@ impl UDisks2 {
             id_label: block.id_label().await.ok().and_then(optional),
             id_type: block.id_type().await.ok().and_then(optional),
             hint_system: block.hint_system().await.unwrap_or(false),
+            hint_ignore: block.hint_ignore().await.unwrap_or(false),
+            partition_type,
+            partition_table,
+            mount_points: mount_points.clone(),
             read_only: block.read_only().await.unwrap_or(false),
             size: block.size().await.unwrap_or(0),
             partition_uuid,
@@ -231,6 +266,7 @@ impl UDisks2 {
                         wwn: drive.wwn().await.ok().and_then(optional),
                         ejectable: drive.ejectable().await.unwrap_or(false),
                         can_power_off: drive.can_power_off().await.unwrap_or(false),
+                        optical: drive.optical().await.unwrap_or(false),
                     }),
                     Err(_) => None,
                 }
@@ -238,7 +274,7 @@ impl UDisks2 {
             _ => None,
         };
 
-        let mount_point = self.mount_point(object_path).await;
+        let mount_point = mount_points.first().cloned();
 
         Ok(PlatformDevice {
             address: DeviceAddress {
@@ -251,15 +287,23 @@ impl UDisks2 {
         })
     }
 
-    async fn mount_point(&self, object_path: &str) -> Option<PathBuf> {
-        let filesystem = FilesystemProxy::builder(&self.connection)
-            .path(object_path.to_string())
-            .ok()?
-            .build()
+    /// Every place the volume is mounted (a btrfs volume is often at `/`
+    /// and `/home`), in UDisks2's order.
+    async fn mount_points(&self, object_path: &str) -> Vec<PathBuf> {
+        let Ok(builder) = FilesystemProxy::builder(&self.connection).path(object_path.to_string())
+        else {
+            return Vec::new();
+        };
+        let Ok(filesystem) = builder.build().await else {
+            return Vec::new();
+        };
+        filesystem
+            .mount_points()
             .await
-            .ok()?;
-        let mounts = filesystem.mount_points().await.ok()?;
-        mounts.first().map(|raw| PathBuf::from(decode_path(raw)))
+            .unwrap_or_default()
+            .iter()
+            .map(|raw| PathBuf::from(decode_path(raw)))
+            .collect()
     }
 
     async fn filesystem(&self, object_path: &str) -> Result<FilesystemProxy<'_>, PlatformError> {

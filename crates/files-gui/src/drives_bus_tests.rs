@@ -33,6 +33,7 @@ const STICK_DRIVE: &str = "/org/freedesktop/UDisks2/drives/Fake_Stick_SN1";
 const VAULT: &str = "/org/freedesktop/UDisks2/block_devices/sdy1";
 const VAULT_DRIVE: &str = "/org/freedesktop/UDisks2/drives/Fake_Vault_SN2";
 const CLEARTEXT: &str = "/org/freedesktop/UDisks2/block_devices/dm_2d9";
+const SECOND: &str = "/org/freedesktop/UDisks2/block_devices/sdx2";
 const DISC: &str = "/org/freedesktop/UDisks2/block_devices/sr9";
 const DISC_DRIVE: &str = "/org/freedesktop/UDisks2/drives/Fake_DVD_SN3";
 const PASSPHRASE: &str = "fixture passphrase";
@@ -102,6 +103,15 @@ impl Drop for PrivateBus {
 /// What the fake was asked to do, in order.
 type Calls = Arc<Mutex<Vec<String>>>;
 
+/// UDisks2's own errors, by its names.
+#[derive(Debug, zbus::DBusError)]
+#[zbus(prefix = "org.freedesktop.UDisks2.Error")]
+enum UdisksError {
+    #[zbus(error)]
+    ZBus(zbus::Error),
+    Failed(String),
+}
+
 fn path_bytes(path: &str) -> Vec<u8> {
     let mut bytes = path.as_bytes().to_vec();
     bytes.push(0);
@@ -154,6 +164,8 @@ struct FakeFilesystem {
     target: PathBuf,
     mounted: Option<PathBuf>,
     calls: Calls,
+    /// Refuses to unmount, as a volume a program still has open does.
+    busy: bool,
 }
 
 #[zbus::interface(name = "org.freedesktop.UDisks2.Filesystem")]
@@ -186,9 +198,18 @@ impl FakeFilesystem {
         &mut self,
         _options: HashMap<String, OwnedValue>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-    ) -> zbus::fdo::Result<()> {
+    ) -> Result<(), UdisksError> {
+        if self.busy {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("unmount refused {}", emitter.path()));
+            return Err(UdisksError::Failed(
+                "Error unmounting: target is busy".into(),
+            ));
+        }
         if self.mounted.take().is_none() {
-            return Err(zbus::fdo::Error::Failed("not mounted".into()));
+            return Err(UdisksError::Failed("not mounted".into()));
         }
         self.calls
             .lock()
@@ -201,6 +222,19 @@ impl FakeFilesystem {
 
 struct FakeDrive {
     calls: Calls,
+    optical: bool,
+    /// Refuses to power off.
+    stubborn: bool,
+}
+
+impl FakeDrive {
+    fn new(calls: &Calls) -> Self {
+        Self {
+            calls: Arc::clone(calls),
+            optical: false,
+            stubborn: false,
+        }
+    }
 }
 
 #[zbus::interface(name = "org.freedesktop.UDisks2.Drive")]
@@ -225,15 +259,27 @@ impl FakeDrive {
     fn can_power_off(&self) -> bool {
         true
     }
+    #[zbus(property)]
+    fn optical(&self) -> bool {
+        self.optical
+    }
     fn power_off(
         &self,
         _options: HashMap<String, OwnedValue>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-    ) {
+    ) -> Result<(), UdisksError> {
+        if self.stubborn {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("power-off refused {}", emitter.path()));
+            return Err(UdisksError::Failed("Error powering off drive".into()));
+        }
         self.calls
             .lock()
             .unwrap()
             .push(format!("power-off {}", emitter.path()));
+        Ok(())
     }
     fn eject(
         &self,
@@ -257,12 +303,17 @@ impl FakeEncrypted {
     async fn unlock(
         &self,
         passphrase: String,
-        _options: HashMap<String, OwnedValue>,
+        options: HashMap<String, OwnedValue>,
         #[zbus(object_server)] server: &zbus::ObjectServer,
-    ) -> zbus::fdo::Result<OwnedObjectPath> {
+    ) -> Result<OwnedObjectPath, UdisksError> {
+        // Nothing but the passphrase goes with it.
+        assert!(options.is_empty(), "Unlock options: {options:?}");
         if passphrase != PASSPHRASE {
             self.calls.lock().unwrap().push("unlock refused".into());
-            return Err(zbus::fdo::Error::AccessDenied("wrong passphrase".into()));
+            return Err(UdisksError::Failed(
+                "Error unlocking /dev/sdy1: Failed to activate device: Operation not permitted"
+                    .into(),
+            ));
         }
         self.calls.lock().unwrap().push("unlock".into());
         server
@@ -285,6 +336,7 @@ impl FakeEncrypted {
                     target: self.root.join("media/Vault"),
                     mounted: None,
                     calls: Arc::clone(&self.calls),
+                    busy: false,
                 },
             )
             .await?;
@@ -315,15 +367,7 @@ fn fake_udisks(bus: &PrivateBus) -> zbus::Connection {
 fn plug_stick(udisks: &zbus::Connection, root: &Path, calls: &Calls) {
     smol::block_on(async {
         let server = udisks.object_server();
-        server
-            .at(
-                STICK_DRIVE,
-                FakeDrive {
-                    calls: Arc::clone(calls),
-                },
-            )
-            .await
-            .unwrap();
+        server.at(STICK_DRIVE, FakeDrive::new(calls)).await.unwrap();
         server
             .at(
                 STICK,
@@ -345,6 +389,7 @@ fn plug_stick(udisks: &zbus::Connection, root: &Path, calls: &Calls) {
                     target: root.join("media/FIELD DATA"),
                     mounted: None,
                     calls: Arc::clone(calls),
+                    busy: false,
                 },
             )
             .await
@@ -428,14 +473,24 @@ fn stick(session: &FilesSession) -> Option<&crate::drives::Drive> {
 #[test]
 fn a_stick_appears_mounts_fills_up_and_ejects() {
     let Some(bus) = PrivateBus::start() else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
+        panic!("dbus-daemon is needed: the CI image has it (package dbus)");
     };
     let udisks = fake_udisks(&bus);
     let calls: Calls = Arc::default();
     let (fixture, mut session) = session_on(&bus);
     session.pump();
     assert!(stick(&session).is_none());
+
+    // The system drive (here from the mount table: no UDisks2 block is
+    // `/`) is listed and has no eject; asking for one does nothing.
+    until(&mut session, "the system drive is listed", |session| {
+        session
+            .drives()
+            .iter()
+            .any(|drive| drive.kind == DriveKind::System && !drive.ejectable)
+    });
+    session.eject_drive("/");
+    assert!(!session.any_drive_busy());
 
     // Plugged in: UDisks2's InterfacesAdded alone brings it to the sidebar,
     // not mounted, named by its label, with its size and an Eject.
@@ -491,10 +546,10 @@ fn a_stick_appears_mounts_fills_up_and_ejects() {
     // Ejected: unmounted, then powered off; the person pulls it and it goes.
     session.eject_drive(STICK);
     until(&mut session, "the eject finishes", |session| {
-        !session.is_drive_busy()
+        !session.any_drive_busy()
     });
     assert!(
-        !matches!(session.notice, Some(Notice::DriveFailed { .. })),
+        matches!(&session.notice, Some(Notice::DriveSafe { drive }) if drive == "FIELD DATA"),
         "{:?}",
         session.notice
     );
@@ -515,8 +570,7 @@ fn a_stick_appears_mounts_fills_up_and_ejects() {
 #[test]
 fn an_encrypted_stick_asks_for_its_passphrase_and_locks_again_on_eject() {
     let Some(bus) = PrivateBus::start() else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
+        panic!("dbus-daemon is needed: the CI image has it (package dbus)");
     };
     let udisks = fake_udisks(&bus);
     let calls: Calls = Arc::default();
@@ -524,12 +578,7 @@ fn an_encrypted_stick_asks_for_its_passphrase_and_locks_again_on_eject() {
     smol::block_on(async {
         let server = udisks.object_server();
         server
-            .at(
-                VAULT_DRIVE,
-                FakeDrive {
-                    calls: Arc::clone(&calls),
-                },
-            )
+            .at(VAULT_DRIVE, FakeDrive::new(&calls))
             .await
             .unwrap();
         server
@@ -573,21 +622,41 @@ fn an_encrypted_stick_asks_for_its_passphrase_and_locks_again_on_eject() {
 
     // A wrong one says so and asks again.
     session.dialog = None;
-    session.unlock_drive(VAULT, "not it".into());
+    session.unlock_drive(VAULT, crate::secret::Secret::new("not it"));
     until(&mut session, "a wrong passphrase is refused", |session| {
-        !session.is_drive_busy()
+        !session.any_drive_busy()
     });
-    assert!(matches!(session.notice, Some(Notice::DriveFailed { .. })));
+    assert!(
+        matches!(session.notice, Some(Notice::WrongPassphrase { .. })),
+        "{:?}",
+        session.notice
+    );
     assert!(matches!(
         &session.dialog,
         Some(PendingDialog::UnlockDrive { key, .. }) if key == VAULT
     ));
 
+    // A wrong one while the person has opened something else meanwhile:
+    // said, and what they opened stays.
+    session.dialog = None;
+    session.unlock_drive(VAULT, crate::secret::Secret::new("still not it"));
+    session.dialog = Some(PendingDialog::NewFolder);
+    until(
+        &mut session,
+        "a second wrong passphrase is refused",
+        |session| !session.any_drive_busy(),
+    );
+    assert!(matches!(
+        session.notice,
+        Some(Notice::WrongPassphrase { .. })
+    ));
+    assert_eq!(session.dialog, Some(PendingDialog::NewFolder));
+
     // The right one unlocks it, mounts what is inside, and goes there; the
     // sidebar shows the volume in place of the locked container.
     session.dialog = None;
     let target = fixture.root.path().join("media/Vault");
-    session.unlock_drive(VAULT, PASSPHRASE.into());
+    session.unlock_drive(VAULT, crate::secret::Secret::new(PASSPHRASE));
     until(
         &mut session,
         "the window opens the unlocked stick",
@@ -612,11 +681,12 @@ fn an_encrypted_stick_asks_for_its_passphrase_and_locks_again_on_eject() {
     // Eject unmounts it, locks the container again and powers it off.
     session.eject_drive(CLEARTEXT);
     until(&mut session, "the eject finishes", |session| {
-        !session.is_drive_busy()
+        !session.any_drive_busy()
     });
     assert_eq!(
         *calls.lock().unwrap(),
         [
+            "unlock refused".to_string(),
             "unlock refused".to_string(),
             "unlock".to_string(),
             format!("mount {CLEARTEXT}"),
@@ -630,8 +700,7 @@ fn an_encrypted_stick_asks_for_its_passphrase_and_locks_again_on_eject() {
 #[test]
 fn a_disc_is_ejected_from_its_tray_rather_than_powered_off() {
     let Some(bus) = PrivateBus::start() else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
+        panic!("dbus-daemon is needed: the CI image has it (package dbus)");
     };
     let udisks = fake_udisks(&bus);
     let calls: Calls = Arc::default();
@@ -644,7 +713,8 @@ fn a_disc_is_ejected_from_its_tray_rather_than_powered_off() {
             .at(
                 DISC_DRIVE,
                 FakeDrive {
-                    calls: Arc::clone(&calls),
+                    optical: true,
+                    ..FakeDrive::new(&calls)
                 },
             )
             .await
@@ -670,6 +740,7 @@ fn a_disc_is_ejected_from_its_tray_rather_than_powered_off() {
                     target: target.clone(),
                     mounted: Some(target.clone()),
                     calls: Arc::clone(&calls),
+                    busy: false,
                 },
             )
             .await
@@ -683,10 +754,148 @@ fn a_disc_is_ejected_from_its_tray_rather_than_powered_off() {
     });
     session.eject_drive(DISC);
     until(&mut session, "the eject finishes", |session| {
-        !session.is_drive_busy()
+        !session.any_drive_busy()
     });
     assert_eq!(
         *calls.lock().unwrap(),
         [format!("unmount {DISC}"), format!("tray {DISC_DRIVE}")]
+    );
+}
+
+/// A stick with two volumes, both mounted; `busy` makes the second refuse
+/// to unmount, `stubborn` the drive refuse to power off.
+fn plug_two_volume_stick(
+    udisks: &zbus::Connection,
+    root: &Path,
+    calls: &Calls,
+    busy: bool,
+    stubborn: bool,
+) {
+    smol::block_on(async {
+        let server = udisks.object_server();
+        server
+            .at(
+                STICK_DRIVE,
+                FakeDrive {
+                    stubborn,
+                    ..FakeDrive::new(calls)
+                },
+            )
+            .await
+            .unwrap();
+        for (object, device, label, refuse) in [
+            (STICK, "/dev/sdx1", "FIELD DATA", false),
+            (SECOND, "/dev/sdx2", "PHOTOS", busy),
+        ] {
+            let target = root.join("media").join(label);
+            fs::create_dir_all(&target).unwrap();
+            server
+                .at(
+                    object,
+                    FakeBlock {
+                        device: device.into(),
+                        label: label.into(),
+                        kind: "exfat".into(),
+                        size: 16 * GIB,
+                        drive: STICK_DRIVE.into(),
+                        backing: "/".into(),
+                    },
+                )
+                .await
+                .unwrap();
+            server
+                .at(
+                    object,
+                    FakeFilesystem {
+                        target: target.clone(),
+                        mounted: Some(target),
+                        calls: Arc::clone(calls),
+                        busy: refuse,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+    });
+}
+
+#[test]
+fn ejecting_one_volume_of_a_stick_stops_while_another_is_in_use() {
+    let Some(bus) = PrivateBus::start() else {
+        panic!("dbus-daemon is needed: the CI image has it (package dbus)");
+    };
+    let udisks = fake_udisks(&bus);
+    let calls: Calls = Arc::default();
+    let (fixture, mut session) = session_on(&bus);
+    plug_two_volume_stick(&udisks, fixture.root.path(), &calls, true, false);
+    until(&mut session, "both volumes appear", |session| {
+        session
+            .drives()
+            .iter()
+            .filter(|drive| drive.object_path.is_some())
+            .count()
+            == 2
+    });
+    session.eject_drive(STICK);
+    until(&mut session, "the eject ends", |session| {
+        !session.any_drive_busy()
+    });
+    // The other volume is named, nothing is powered off, and nothing says
+    // the stick can be pulled.
+    assert!(
+        matches!(
+            &session.notice,
+            Some(Notice::DriveInUse { drive, volume, .. })
+                if drive == "FIELD DATA" && volume == "PHOTOS"
+        ),
+        "{:?}",
+        session.notice
+    );
+    let calls = calls.lock().unwrap().clone();
+    assert!(
+        calls.iter().all(|call| !call.starts_with("power-off")),
+        "{calls:?}"
+    );
+    assert!(
+        calls.contains(&format!("unmount refused {SECOND}")),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn every_volume_of_a_stick_is_unmounted_and_a_refused_power_off_is_said() {
+    let Some(bus) = PrivateBus::start() else {
+        panic!("dbus-daemon is needed: the CI image has it (package dbus)");
+    };
+    let udisks = fake_udisks(&bus);
+    let calls: Calls = Arc::default();
+    let (fixture, mut session) = session_on(&bus);
+    plug_two_volume_stick(&udisks, fixture.root.path(), &calls, false, true);
+    until(&mut session, "both volumes appear", |session| {
+        session
+            .drives()
+            .iter()
+            .filter(|drive| drive.object_path.is_some())
+            .count()
+            == 2
+    });
+    session.eject_drive(STICK);
+    until(&mut session, "the eject ends", |session| {
+        !session.any_drive_busy()
+    });
+    let mut calls = calls.lock().unwrap().clone();
+    calls.sort();
+    assert_eq!(
+        calls,
+        [
+            format!("power-off refused {STICK_DRIVE}"),
+            format!("unmount {STICK}"),
+            format!("unmount {SECOND}"),
+        ]
+    );
+    assert!(
+        matches!(&session.notice, Some(Notice::DriveNotPoweredOff { drive, .. }) if drive == "FIELD DATA"),
+        "{:?}",
+        session.notice
     );
 }

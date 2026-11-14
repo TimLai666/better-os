@@ -14,7 +14,7 @@
 //! [`CAPACITY_TIMEOUT`] (a stalled network share) is listed without a bar.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -60,6 +60,9 @@ pub struct Drive {
     /// An encrypted volume that is still locked: it asks for its passphrase
     /// before it mounts.
     pub locked: bool,
+    /// The filesystem's UUID: a btrfs filesystem on several devices is
+    /// one drive.
+    pub uuid: Option<String>,
     /// The size UDisks2 reports, for a drive that is not mounted.
     pub size: u64,
     /// Whether it can be ejected (a removable or optical drive).
@@ -177,7 +180,8 @@ fn is_system_mount(mount_point: &Path) -> bool {
 }
 
 /// A partition named as the firmware's or the vendor's: EFI, recovery,
-/// Microsoft's reserved one.
+/// Microsoft's reserved one. Only on an internal disk: a Raspberry Pi card's
+/// `boot` partition or a stick someone labelled EFI is still a drive.
 fn is_system_label(label: &str) -> bool {
     let label = label.to_ascii_lowercase();
     ["efi", "esp", "recovery", "system reserved", "msr", "boot"]
@@ -185,16 +189,128 @@ fn is_system_label(label: &str) -> bool {
         .any(|name| label == *name || label.starts_with(&format!("{name} ")))
 }
 
+/// Partition types a desktop never shows, as UDisks2's own udev rules mark
+/// them `UDISKS_IGNORE` (`80-udisks2.rules`), for a UDisks2 that did not:
+/// on GPT the EFI system partition, BIOS boot, Microsoft reserved, Windows
+/// recovery, LVM and RAID, the Linux extended boot partition and Apple's
+/// boot; on MBR the hidden, recovery, diagnostic, hibernation, EFI and
+/// vendor-tool types.
+const HIDDEN_PARTITION_TYPES: &[&str] = &[
+    "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+    "21686148-6449-6e6f-744e-656564454649",
+    "e3c9e316-0b5c-4db8-817d-f92df00215ae",
+    "de94bba4-06d1-4d40-a16a-bfd50179d6ac",
+    "a19d880f-05fc-4d3b-a006-743f0f84911e",
+    "e6d6d379-f507-44c2-a23c-238f2a3df928",
+    "bc13c2ff-59e6-4262-a352-b275fd6f7172",
+    "426f6f74-0000-11aa-aa11-00306543ecac",
+    "0x0",
+    "0x11",
+    "0x12",
+    "0x14",
+    "0x16",
+    "0x17",
+    "0x1b",
+    "0x1c",
+    "0x1e",
+    "0x27",
+    "0x3d",
+    "0x84",
+    "0x8d",
+    "0x8e",
+    "0x90",
+    "0x91",
+    "0x92",
+    "0x93",
+    "0x97",
+    "0x98",
+    "0x9a",
+    "0x9b",
+    "0xab",
+    "0xbb",
+    "0xc2",
+    "0xc3",
+    "0xdd",
+    "0xde",
+    "0xef",
+    "0xfd",
+];
+
+/// Whether a partition's type is one a desktop never shows.
+fn is_hidden_partition_type(kind: &str) -> bool {
+    let kind = kind.to_ascii_lowercase();
+    HIDDEN_PARTITION_TYPES.contains(&kind.as_str())
+}
+
 /// Encrypted containers UDisks2 can unlock: LUKS and BitLocker.
 const ENCRYPTED: &[&str] = &["crypto_LUKS", "crypto_BITLK"];
 
-/// The drives among UDisks2's block devices.
-pub fn drives_from_devices(devices: &[PlatformDevice]) -> Vec<Drive> {
-    let mut drives = Vec::new();
+/// Every place a device is mounted: UDisks2's whole list when the storage
+/// layer has it, else the one it named.
+fn mount_points_of(device: &PlatformDevice) -> Vec<PathBuf> {
+    if device.block.mount_points.is_empty() {
+        device.mount_point.iter().cloned().collect()
+    } else {
+        device.block.mount_points.clone()
+    }
+}
+
+/// Whether `source` (a mount table's `/dev/mapper/luks-…`, say) names
+/// `device`: its node, one of its symlinks, or the same node once links
+/// are followed.
+fn names_device(source: &str, device: &PlatformDevice) -> bool {
+    if source == device.address.device_path
+        || device.block.symlinks.iter().any(|link| link == source)
+    {
+        return true;
+    }
+    let (Ok(source), Ok(node)) = (
+        std::fs::canonicalize(source),
+        std::fs::canonicalize(&device.address.device_path),
+    ) else {
+        return false;
+    };
+    source == node
+}
+
+/// The drives among UDisks2's block devices. `root_source` is the device the
+/// mount table shows at `/`, which UDisks2 may name differently (a btrfs
+/// volume it lists at `/home`, `/dev/mapper/luks-…` for its `/dev/dm-0`).
+pub fn drives_from_devices(devices: &[PlatformDevice], root_source: Option<&str>) -> Vec<Drive> {
+    let mut drives: Vec<Drive> = Vec::new();
     // A container that is unlocked is shown as the volume inside it.
     let unlocked: Vec<&str> = devices
         .iter()
         .filter_map(|device| device.block.crypto_backing.as_deref())
+        .collect();
+    // The drive object each volume is on: an unlocked volume is on its
+    // container's.
+    fn drive_of<'a>(
+        device: &'a PlatformDevice,
+        devices: &'a [PlatformDevice],
+    ) -> Option<&'a storage_platform::model::DriveInfo> {
+        device.drive.as_ref().or_else(|| {
+            let backing = device.block.crypto_backing.as_deref()?;
+            devices
+                .iter()
+                .find(|other| other.address.object_path == backing)?
+                .drive
+                .as_ref()
+        })
+    }
+    let is_root = |device: &PlatformDevice| {
+        mount_points_of(device)
+            .iter()
+            .any(|point| point == Path::new("/"))
+            || root_source.is_some_and(|source| names_device(source, device))
+    };
+    // The drives the running system is on: nothing on them is ejectable.
+    let system_drives: Vec<&str> = devices
+        .iter()
+        .filter(|device| is_root(device))
+        .filter_map(|device| drive_of(device, devices))
+        .map(|drive| drive.object_path.as_str())
+        .filter(|path| !path.is_empty() && *path != "/")
         .collect();
     for device in devices {
         let path = device.address.device_path.as_str();
@@ -202,6 +318,20 @@ pub fn drives_from_devices(devices: &[PlatformDevice]) -> Vec<Drive> {
             .iter()
             .any(|prefix| path.starts_with(prefix))
         {
+            continue;
+        }
+        if device.block.hint_ignore
+            || device
+                .block
+                .partition_type
+                .as_deref()
+                .is_some_and(is_hidden_partition_type)
+        {
+            continue;
+        }
+        // A whole disk that holds partitions is listed through them (an
+        // ISO image written to a stick shows a filesystem on both).
+        if device.block.partition_table && device.block.partition_number.is_none() {
             continue;
         }
         let Some(filesystem) = device.block.id_type.as_deref() else {
@@ -214,42 +344,50 @@ pub fn drives_from_devices(devices: &[PlatformDevice]) -> Vec<Drive> {
         if !locked && !DRIVE_FILESYSTEMS.contains(&filesystem) {
             continue;
         }
-        if let Some(mount_point) = &device.mount_point
-            && is_system_mount(mount_point)
-        {
-            continue;
-        }
+        let system = is_root(device);
+        let points = mount_points_of(device);
+        // Shown at `/` when it is the system's, else at the first place a
+        // person keeps files; a volume mounted only where the system keeps
+        // itself (`/boot/efi`) is not a drive.
+        let mount_point = if system {
+            Some(PathBuf::from("/"))
+        } else {
+            match points.iter().find(|point| !is_system_mount(point)) {
+                Some(point) => Some(point.clone()),
+                None if points.is_empty() => None,
+                None => continue,
+            }
+        };
+        let drive_info = drive_of(device, devices);
+        let removable = drive_info.is_some_and(|drive| drive.removable || drive.media_removable);
         let label = device
             .block
             .id_label
-            .clone()
-            .filter(|label| !label.trim().is_empty());
-        if label.as_deref().is_some_and(is_system_label) {
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .map(str::to_string);
+        if !removable && label.as_deref().is_some_and(is_system_label) {
             continue;
         }
-        // An unlocked volume has no drive of its own: it is on its
-        // container's.
-        let backing = device.block.crypto_backing.clone();
-        let drive_info = device.drive.as_ref().or_else(|| {
-            let backing = backing.as_deref()?;
-            devices
-                .iter()
-                .find(|other| other.address.object_path == backing)?
-                .drive
-                .as_ref()
-        });
-        let removable = drive_info.is_some_and(|drive| drive.removable || drive.media_removable);
-        let optical = matches!(filesystem, "iso9660" | "udf");
+        let optical = drive_info.is_some_and(|drive| drive.optical);
         // An unmounted small FAT partition on an internal disk is the EFI
         // system partition whatever it is called.
         if filesystem == "vfat"
             && !removable
-            && device.mount_point.is_none()
+            && mount_point.is_none()
             && device.block.size <= 1 << 30
         {
             continue;
         }
-        let kind = if device.mount_point.as_deref() == Some(Path::new("/")) {
+        let drive_object = drive_info
+            .map(|drive| drive.object_path.clone())
+            .filter(|path| !path.is_empty() && path != "/");
+        let on_system_drive = system
+            || drive_object
+                .as_deref()
+                .is_some_and(|object| system_drives.contains(&object));
+        let kind = if system {
             DriveKind::System
         } else if optical {
             DriveKind::Optical
@@ -258,20 +396,40 @@ pub fn drives_from_devices(devices: &[PlatformDevice]) -> Vec<Drive> {
         } else {
             DriveKind::Internal
         };
+        let uuid = device.block.id_uuid.clone();
+        // A btrfs filesystem on several devices is one drive: the mounted
+        // device stands for it.
+        if filesystem == "btrfs"
+            && let Some(uuid) = &uuid
+            && let Some(known) = drives
+                .iter_mut()
+                .find(|known| known.uuid.as_ref() == Some(uuid) && !known.locked)
+        {
+            if known.mount_point.is_none() && mount_point.is_some() {
+                known.mount_point = mount_point;
+                known.kind = kind;
+                known.key = device.address.object_path.clone();
+                known.object_path = Some(device.address.object_path.clone());
+                known.device_path = Some(device.address.device_path.clone());
+            }
+            continue;
+        }
         drives.push(Drive {
             key: device.address.object_path.clone(),
             label,
             kind,
-            mount_point: device.mount_point.clone(),
+            mount_point,
             object_path: Some(device.address.object_path.clone()),
             device_path: Some(device.address.device_path.clone()),
-            drive_object: drive_info
-                .map(|drive| drive.object_path.clone())
-                .filter(|path| !path.is_empty() && path != "/"),
-            backing,
+            drive_object,
+            backing: device.block.crypto_backing.clone(),
             locked,
+            uuid,
             size: device.block.size,
-            ejectable: removable || optical || drive_info.is_some_and(|drive| drive.ejectable),
+            // Linux on an external SSD or a live USB: the drive it runs
+            // from is never offered for ejecting.
+            ejectable: !on_system_drive
+                && (removable || optical || drive_info.is_some_and(|drive| drive.ejectable)),
             capacity: None,
         });
     }
@@ -320,6 +478,7 @@ pub fn drives_from_mounts(mounts: &MountTable, devices_known: bool) -> Vec<Drive
             drive_object: None,
             backing: None,
             locked: false,
+            uuid: None,
             size: 0,
             ejectable: false,
             capacity: None,
@@ -348,7 +507,7 @@ pub fn drives_from_gvfs(children: &[PathBuf]) -> Vec<Drive> {
                 .split(',')
                 .filter_map(|pair| pair.split_once('='))
                 .filter(|(key, _)| matches!(*key, "host" | "share"))
-                .map(|(_, value)| value.replace("%20", " "))
+                .map(|(_, value)| percent_decode(value))
                 .collect::<Vec<_>>()
                 .join(" · ");
             Some(Drive {
@@ -361,12 +520,34 @@ pub fn drives_from_gvfs(children: &[PathBuf]) -> Vec<Drive> {
                 drive_object: None,
                 backing: None,
                 locked: false,
+                uuid: None,
                 size: 0,
                 ejectable: false,
                 capacity: None,
             })
         })
         .collect()
+}
+
+/// `%20` and the like in a GVfs folder name, decoded; anything malformed is
+/// kept as it is.
+pub fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && let Some(hex) = text.get(index + 1..index + 3)
+            && let Ok(value) = u8::from_str_radix(hex, 16)
+        {
+            out.push(value);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The order a person reads them in: the system drive, internal, removable,
@@ -470,11 +651,55 @@ pub type CapacityRead = Arc<dyn Fn(&Path) -> Option<Capacity> + Send + Sync>;
 
 /// Unlocks an encrypted drive with a passphrase and says where what is
 /// inside was mounted.
-pub type DriveUnlock = Arc<dyn Fn(&Drive, &str) -> Result<PathBuf, String> + Send + Sync>;
+pub type DriveUnlock =
+    Arc<dyn Fn(&Drive, &crate::secret::Secret) -> Result<PathBuf, UnlockError> + Send + Sync>;
 
-/// A drive operation run off the window's thread: where it mounted, or why
-/// it could not.
-pub type DriveAction<T> = Arc<dyn Fn(&Drive) -> Result<T, String> + Send + Sync>;
+/// Mounts a drive, off the window's thread: where, or why it could not.
+pub type DriveMount = Arc<dyn Fn(&Drive) -> Result<PathBuf, String> + Send + Sync>;
+
+/// Ejects a drive, off the window's thread.
+pub type DriveEject = Arc<dyn Fn(&Drive) -> Result<Ejected, EjectError> + Send + Sync>;
+
+/// Blocks, sending on the channel each time a drive may have come, gone,
+/// mounted or unmounted, until the flag is set or the channel is closed.
+pub type DriveChanges = Arc<dyn Fn(Sender<()>, Arc<AtomicBool>) + Send + Sync>;
+
+/// How an eject ended.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Ejected {
+    /// Every volume on it is unmounted and it is powered off (or cannot
+    /// be): safe to remove.
+    Safe,
+    /// Every volume on it is unmounted, but powering it off (or opening a
+    /// disc's tray) was refused, in UDisks2's words.
+    NotPoweredOff(String),
+}
+
+/// Why an eject stopped before the drive was safe to remove.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EjectError {
+    /// Another volume on the same drive is still in use; nothing was
+    /// powered off.
+    InUse { volume: String, detail: String },
+    /// Anything else, in UDisks2's words.
+    Failed(String),
+}
+
+/// Why an encrypted drive did not open.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UnlockError {
+    /// The passphrase was wrong: asked again.
+    WrongPassphrase,
+    /// The person dismissed the system's authentication prompt: nothing is
+    /// said.
+    Dismissed,
+    /// UDisks2 is not there.
+    Unavailable,
+    /// It did not unlock, in UDisks2's words.
+    Failed(String),
+    /// It unlocked, but what is inside did not mount.
+    MountFailed(String),
+}
 
 /// Where a scan gets what it reads. The real ones read UDisks2, the mount
 /// table and GVfs's folder; tests give their own.
@@ -488,16 +713,14 @@ pub struct DriveSources {
     pub capacity: CapacityRead,
     /// Mounts a drive through UDisks2 and says where. polkit may ask the
     /// person first.
-    pub mount: DriveAction<PathBuf>,
+    pub mount: DriveMount,
     /// Unlocks an encrypted drive with a passphrase and mounts what is in it.
     pub unlock: DriveUnlock,
-    /// Unmounts a drive, locks it again when it is encrypted, and powers it
-    /// off where it can be.
-    pub eject: DriveAction<()>,
-    /// Blocks, sending on the channel each time a drive may have come, gone,
-    /// mounted or unmounted, until the channel is closed. `None` where
-    /// nothing says so.
-    pub changes: Option<Arc<dyn Fn(Sender<()>) + Send + Sync>>,
+    /// Unmounts every volume on the drive, locks what is encrypted, and
+    /// powers it off where it can be.
+    pub eject: DriveEject,
+    /// What says the drives changed; `None` where nothing does.
+    pub changes: Option<DriveChanges>,
     /// A fixed list instead of all of the above, for a sandbox's screenshots
     /// ([`FIXTURE_VARIABLE`]).
     pub fixture: Option<Arc<dyn Fn() -> Vec<Drive> + Send + Sync>>,
@@ -505,8 +728,8 @@ pub struct DriveSources {
 
 /// Names a JSON file of drives a sandbox shows instead of the machine's
 /// own (`[{"label", "kind", "mount_point", "size", "total", "free",
-/// "ejectable", "locked"}]`), so screenshots never show a real drive. Never set on a
-/// desktop.
+/// "ejectable", "locked"}]`), so screenshots never show a real drive.
+/// Honoured in debug builds only.
 pub const FIXTURE_VARIABLE: &str = "BETTER_FILES_TEST_DRIVES";
 
 #[derive(serde::Deserialize)]
@@ -552,6 +775,7 @@ pub fn fixture_drives(path: &Path) -> Vec<Drive> {
             drive_object: None,
             backing: None,
             locked: fixture.locked,
+            uuid: None,
             size: fixture.size,
             ejectable: fixture.ejectable,
             capacity: fixture
@@ -648,90 +872,199 @@ fn address_of(drive: &Drive) -> Result<storage_platform::model::DeviceAddress, S
     })
 }
 
-/// Unmounts, locks the container of an encrypted volume, and opens a disc's
-/// tray or powers the drive off where it can be. Only an unmount or a lock that is refused
-/// fails the eject: once nothing is mounted the drive is safe to pull.
-async fn eject_through(link: &UdisksLink, drive: &Drive) -> Result<(), String> {
-    use storage_platform::traits::DeviceControl;
-    let udisks = link.client().await?;
-    let address = address_of(drive)?;
-    if drive.mount_point.is_some() {
-        udisks
-            .unmount(&address)
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-    let connection = link.connection().await.ok_or("UDisks2 is not available")?;
-    if let Some(backing) = &drive.backing {
-        EncryptedProxy::builder(&connection)
-            .path(backing.clone())
-            .map_err(|error| error.to_string())?
-            .build()
-            .await
-            .map_err(|error| error.to_string())?
-            .lock(std::collections::HashMap::new())
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-    let Some(drive_object) = &drive.drive_object else {
-        return Ok(());
-    };
-    if drive.kind == DriveKind::Optical {
-        // A disc comes out of its tray rather than the drive powering off.
-        if let Ok(builder) = TrayProxy::builder(&connection).path(drive_object.clone())
-            && let Ok(tray) = builder.build().await
-        {
-            let _ = tray.eject(std::collections::HashMap::new()).await;
-        }
-    } else if let Ok(builder) =
-        storage_platform::udisks::DriveProxy::builder(&connection).path(drive_object.clone())
-        && let Ok(proxy) = builder.build().await
-        && proxy.can_power_off().await.unwrap_or(false)
-    {
-        // Refused (another volume on it is still mounted): unmounted is
-        // enough to pull it safely.
-        let _ = proxy.power_off(std::collections::HashMap::new()).await;
-    }
-    Ok(())
+/// The name a volume is called by in a message: its label, else its node.
+fn volume_name(device: &PlatformDevice) -> String {
+    device
+        .block
+        .id_label
+        .clone()
+        .filter(|label| !label.trim().is_empty())
+        .unwrap_or_else(|| device.address.device_path.clone())
 }
 
-/// Unlocks an encrypted drive and mounts the volume inside.
-async fn unlock_through(
-    link: &UdisksLink,
-    drive: &Drive,
-    passphrase: &str,
-) -> Result<PathBuf, String> {
+/// Ejects a drive as Nautilus does: unmounts every volume on the same
+/// drive (unlocked volumes first), locks every container it opened, then
+/// opens a disc's tray or powers the drive off. A volume that will not
+/// unmount stops it there, named, and nothing is powered off; a power-off
+/// that is refused is reported, the volumes being unmounted all the same.
+async fn eject_through(link: &UdisksLink, drive: &Drive) -> Result<Ejected, EjectError> {
     use storage_platform::traits::DeviceControl;
-    let connection = link.connection().await.ok_or("UDisks2 is not available")?;
+    let failed = |detail: String| EjectError::Failed(detail);
+    let udisks = link.client().await.map_err(failed)?;
+    let devices = udisks
+        .enumerate()
+        .await
+        .map_err(|error| failed(error.to_string()))?;
     let object = drive
         .object_path
         .clone()
-        .ok_or("the drive is not a UDisks2 device")?;
-    let cleartext = EncryptedProxy::builder(&connection)
-        .path(object)
-        .map_err(|error| error.to_string())?
+        .ok_or_else(|| failed("the drive is not a UDisks2 device".to_string()))?;
+    let on_drive = |device: &PlatformDevice| match &drive.drive_object {
+        Some(drive_object) => {
+            let own = device.drive.as_ref().map(|info| info.object_path.as_str());
+            let through_backing = device.block.crypto_backing.as_deref().and_then(|backing| {
+                devices
+                    .iter()
+                    .find(|other| other.address.object_path == backing)?
+                    .drive
+                    .as_ref()
+                    .map(|info| info.object_path.as_str())
+            });
+            own == Some(drive_object.as_str()) || through_backing == Some(drive_object.as_str())
+        }
+        None => device.address.object_path == object,
+    };
+    let mut volumes: Vec<&PlatformDevice> =
+        devices.iter().filter(|device| on_drive(device)).collect();
+    // Unlocked volumes before the rest, so their containers can be locked.
+    volumes.sort_by_key(|device| device.block.crypto_backing.is_none());
+    for volume in &volumes {
+        if mount_points_of(volume).is_empty() {
+            continue;
+        }
+        if let Err(error) = udisks.unmount(&volume.address).await {
+            return Err(EjectError::InUse {
+                volume: volume_name(volume),
+                detail: error.to_string(),
+            });
+        }
+    }
+    let connection = link
+        .connection()
+        .await
+        .ok_or_else(|| failed("UDisks2 is not available".to_string()))?;
+    for backing in volumes
+        .iter()
+        .filter_map(|volume| volume.block.crypto_backing.clone())
+    {
+        EncryptedProxy::builder(&connection)
+            .path(backing)
+            .map_err(|error| failed(error.to_string()))?
+            .build()
+            .await
+            .map_err(|error| failed(error.to_string()))?
+            .lock(std::collections::HashMap::new())
+            .await
+            .map_err(|error| failed(error.to_string()))?;
+    }
+    let Some(drive_object) = &drive.drive_object else {
+        return Ok(Ejected::Safe);
+    };
+    if drive.kind == DriveKind::Optical {
+        // A disc comes out of its tray rather than the drive powering off.
+        let tray = TrayProxy::builder(&connection)
+            .path(drive_object.clone())
+            .map_err(|error| failed(error.to_string()))?
+            .build()
+            .await
+            .map_err(|error| failed(error.to_string()))?;
+        return Ok(match tray.eject(std::collections::HashMap::new()).await {
+            Ok(()) => Ejected::Safe,
+            Err(error) => Ejected::NotPoweredOff(error.to_string()),
+        });
+    }
+    let proxy = storage_platform::udisks::DriveProxy::builder(&connection)
+        .path(drive_object.clone())
+        .map_err(|error| failed(error.to_string()))?
         .build()
         .await
-        .map_err(|error| error.to_string())?
-        .unlock(passphrase, std::collections::HashMap::new())
+        .map_err(|error| failed(error.to_string()))?;
+    if !proxy.can_power_off().await.unwrap_or(false) {
+        return Ok(Ejected::Safe);
+    }
+    Ok(
+        match proxy.power_off(std::collections::HashMap::new()).await {
+            Ok(()) => Ejected::Safe,
+            Err(error) => Ejected::NotPoweredOff(error.to_string()),
+        },
+    )
+}
+
+/// What an `Unlock` that failed means. UDisks2 answers a wrong passphrase
+/// with cryptsetup's words (`Failed to activate device: Operation not
+/// permitted`, or "incorrect passphrase" in newer releases); a dismissed
+/// polkit prompt with its own error name.
+pub fn unlock_error(error: &zbus::Error) -> UnlockError {
+    let (name, detail) = match error {
+        zbus::Error::MethodError(name, detail, _) => (
+            name.as_str().to_string(),
+            detail.clone().unwrap_or_default(),
+        ),
+        other => (String::new(), other.to_string()),
+    };
+    if name.ends_with("NotAuthorizedDismissed") {
+        return UnlockError::Dismissed;
+    }
+    if name.ends_with(".ServiceUnknown") || name.ends_with(".NameHasNoOwner") {
+        return UnlockError::Unavailable;
+    }
+    let lower = detail.to_lowercase();
+    if [
+        "passphrase",
+        "operation not permitted",
+        "no key available",
+        "bad password",
+    ]
+    .iter()
+    .any(|words| lower.contains(words))
+    {
+        UnlockError::WrongPassphrase
+    } else {
+        UnlockError::Failed(detail)
+    }
+}
+
+/// Unlocks an encrypted drive and mounts the volume inside. No options go
+/// with the passphrase: UDisks2 keeps nothing of it.
+async fn unlock_through(
+    link: &UdisksLink,
+    drive: &Drive,
+    passphrase: &crate::secret::Secret,
+) -> Result<PathBuf, UnlockError> {
+    use storage_platform::traits::DeviceControl;
+    let connection = link.connection().await.ok_or(UnlockError::Unavailable)?;
+    let object = drive
+        .object_path
+        .clone()
+        .ok_or_else(|| UnlockError::Failed("the drive is not a UDisks2 device".to_string()))?;
+    let proxy = EncryptedProxy::builder(&connection)
+        .path(object)
+        .map_err(|error| unlock_error(&error))?
+        .build()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| unlock_error(&error))?;
+    let cleartext = proxy
+        .unlock(passphrase.expose(), std::collections::HashMap::new())
+        .await
+        .map_err(|error| unlock_error(&error))?;
     let address = storage_platform::model::DeviceAddress {
         object_path: cleartext.as_str().to_string(),
         device_path: String::new(),
     };
     link.client()
-        .await?
+        .await
+        .map_err(|_| UnlockError::Unavailable)?
         .mount(&address)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| UnlockError::MountFailed(error.to_string()))
 }
 
+/// The UDisks2 interfaces whose changes can change the list of drives; job
+/// progress and the rest are left out, so a format or an image write does
+/// not read the drives several times a second.
+const WATCHED_INTERFACES: [&str; 4] = [
+    "org.freedesktop.UDisks2.Block",
+    "org.freedesktop.UDisks2.Filesystem",
+    "org.freedesktop.UDisks2.Drive",
+    "org.freedesktop.UDisks2.Encrypted",
+];
+
 /// Sends on `notify` whenever UDisks2 says a drive came, went or changed,
-/// until `notify` is closed or the bus goes away.
-async fn watch_udisks(address: Option<String>, notify: Sender<()>) {
+/// on the scanner's own connection, until `closed` is set (the window let
+/// go), `notify` is closed or the bus goes away.
+async fn watch_udisks(link: &UdisksLink, notify: Sender<()>, closed: Arc<AtomicBool>) {
     use smol::stream::StreamExt;
-    let Some(connection) = UdisksLink::connect(address.as_deref()).await else {
+    let Some(connection) = link.connection().await else {
         return;
     };
     let Ok(manager) = zbus::fdo::ObjectManagerProxy::builder(&connection)
@@ -749,27 +1082,39 @@ async fn watch_udisks(address: Option<String>, notify: Sender<()>) {
     ) else {
         return;
     };
+    let mut events: std::pin::Pin<Box<dyn smol::stream::Stream<Item = ()> + Send>> =
+        Box::pin(added.map(|_| ()).or(removed.map(|_| ())));
     // Only a rescan follows, so a signal from a spoofed sender costs one
     // read and nothing else.
-    let Ok(rule) = zbus::MatchRule::builder()
-        .msg_type(zbus::message::Type::Signal)
-        .sender(storage_platform::udisks::UDISKS2_SERVICE)
-        .and_then(|rule| rule.interface("org.freedesktop.DBus.Properties"))
-        .and_then(|rule| rule.member("PropertiesChanged"))
-        .map(|rule| rule.build())
-    else {
-        return;
-    };
-    let Ok(changed) = zbus::MessageStream::for_match_rule(rule, &connection, None).await else {
-        return;
-    };
-    let mut events = added
-        .map(|_| ())
-        .or(removed.map(|_| ()))
-        .or(changed.map(|_| ()));
-    while events.next().await.is_some() {
-        if notify.send(()).is_err() {
+    for interface in WATCHED_INTERFACES {
+        let Ok(rule) = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender(storage_platform::udisks::UDISKS2_SERVICE)
+            .and_then(|rule| rule.interface("org.freedesktop.DBus.Properties"))
+            .and_then(|rule| rule.member("PropertiesChanged"))
+            .and_then(|rule| rule.arg(0, interface))
+            .map(|rule| rule.build())
+        else {
             return;
+        };
+        let Ok(changed) = zbus::MessageStream::for_match_rule(rule, &connection, None).await else {
+            return;
+        };
+        events = Box::pin(events.or(changed.map(|_| ())));
+    }
+    loop {
+        let next = smol::future::or(async { events.next().await.map(|_| true) }, async {
+            smol::Timer::after(Duration::from_secs(1)).await;
+            Some(false)
+        })
+        .await;
+        if closed.load(Ordering::Acquire) {
+            return;
+        }
+        match next {
+            None => return,
+            Some(true) if notify.send(()).is_err() => return,
+            Some(_) => {}
         }
     }
 }
@@ -778,7 +1123,11 @@ impl DriveSources {
     /// This session's: UDisks2 on the system bus, or a sandbox's fixture.
     pub fn from_env() -> Self {
         let mut sources = Self::with_udisks(None);
-        if let Some(path) = std::env::var_os(FIXTURE_VARIABLE) {
+        // Debug builds only: a release build never hides the machine's
+        // drives behind a fixture.
+        if cfg!(debug_assertions)
+            && let Some(path) = std::env::var_os(FIXTURE_VARIABLE)
+        {
             let path = PathBuf::from(path);
             sources.fixture = Some(Arc::new(move || fixture_drives(&path)));
             sources.changes = None;
@@ -791,7 +1140,7 @@ impl DriveSources {
     pub fn with_udisks(address: Option<String>) -> Self {
         use storage_platform::traits::DeviceControl;
         let link = Arc::new(UdisksLink {
-            address: address.clone(),
+            address,
             connection: Mutex::new(None),
         });
         let at = Arc::clone(&link);
@@ -815,13 +1164,15 @@ impl DriveSources {
             })
         };
         let at = Arc::clone(&link);
-        let unlock = move |drive: &Drive, passphrase: &str| {
+        let unlock = move |drive: &Drive, passphrase: &crate::secret::Secret| {
             smol::block_on(unlock_through(&at, drive, passphrase))
         };
-        let at = link;
+        let at = Arc::clone(&link);
         let eject = move |drive: &Drive| smol::block_on(eject_through(&at, drive));
-        let changes =
-            move |notify: Sender<()>| smol::block_on(watch_udisks(address.clone(), notify));
+        let at = link;
+        let changes = move |notify: Sender<()>, closed: Arc<AtomicBool>| {
+            smol::block_on(watch_udisks(&at, notify, closed))
+        };
         Self {
             devices: Arc::new(devices),
             mounts: Arc::new(MountTable::from_env),
@@ -842,23 +1193,19 @@ impl DriveSources {
         }
         let devices = (self.devices)();
         let mounts = (self.mounts)();
+        let root_source = mounts
+            .mounts()
+            .iter()
+            .find(|mount| mount.mount_point == Path::new("/"))
+            .map(|mount| mount.source.clone());
         let mut drives = devices
             .as_deref()
-            .map(drives_from_devices)
+            .map(|devices| drives_from_devices(devices, root_source.as_deref()))
             .unwrap_or_default();
-        // UDisks2 names one mount point per volume; a btrfs volume mounted
-        // at `/home` and at `/` is the system drive all the same.
-        if !drives.iter().any(|drive| drive.kind == DriveKind::System)
-            && let Some(root) = mounts
-                .mounts()
-                .iter()
-                .find(|mount| mount.mount_point == Path::new("/"))
-            && let Some(drive) = drives
-                .iter_mut()
-                .find(|drive| drive.device_path.as_deref() == Some(root.source.as_str()))
-        {
-            drive.kind = DriveKind::System;
-            drive.mount_point = Some(PathBuf::from("/"));
+        // No UDisks2 block is `/` (ZFS, an overlay live session, composefs):
+        // the system drive comes from the mount table.
+        if devices.is_some() && !drives.iter().any(|drive| drive.kind == DriveKind::System) {
+            drives.push(system_drive_from_mounts());
         }
         for drive in drives_from_mounts(&mounts, devices.is_some())
             .into_iter()
@@ -884,6 +1231,26 @@ impl DriveSources {
         }
         sort_drives(&mut drives);
         drives
+    }
+}
+
+/// The system drive when only the mount table knows it: `/`, named by its
+/// size, never ejectable.
+fn system_drive_from_mounts() -> Drive {
+    Drive {
+        key: "/".to_string(),
+        label: None,
+        kind: DriveKind::System,
+        mount_point: Some(PathBuf::from("/")),
+        object_path: None,
+        device_path: None,
+        drive_object: None,
+        backing: None,
+        locked: false,
+        uuid: None,
+        size: 0,
+        ejectable: false,
+        capacity: None,
     }
 }
 
@@ -925,7 +1292,7 @@ pub struct DriveScanner {
     requests: Sender<()>,
     /// Set when the window lets go of the scanner, so its thread ends even
     /// while the UDisks2 watcher still holds a way to wake it.
-    closed: Arc<std::sync::atomic::AtomicBool>,
+    closed: Arc<AtomicBool>,
 }
 
 /// How long a burst of changes (a stick's partitions arriving one by one)
@@ -936,13 +1303,14 @@ impl DriveScanner {
     pub fn start(sources: DriveSources) -> Self {
         let latest: Arc<Mutex<Option<Vec<Drive>>>> = Arc::default();
         let generation = Arc::new(AtomicU64::new(0));
-        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let closed = Arc::new(AtomicBool::new(false));
         let (requests, inbox): (Sender<()>, Receiver<()>) = channel();
         if let Some(changes) = sources.changes.clone() {
             let notify = requests.clone();
+            let closed = Arc::clone(&closed);
             let _ = std::thread::Builder::new()
                 .name("files-drives-watch".to_string())
-                .spawn(move || changes(notify));
+                .spawn(move || changes(notify, closed));
         }
         {
             let latest = Arc::clone(&latest);
@@ -1044,6 +1412,9 @@ mod tests {
                 let mut disc = usb_stick("/b/sr0", "/dev/sr0", "disc");
                 disc.block.id_type = Some("iso9660".into());
                 disc.block.id_label = Some("Holiday DVD".into());
+                if let Some(drive) = disc.drive.as_mut() {
+                    drive.optical = true;
+                }
                 disc
             },
             // Not drives:
@@ -1065,7 +1436,7 @@ mod tests {
             partition("/b/loop1", "/dev/loop1", "ext4", None, None),
             partition("/b/raw", "/dev/sdc", "", None, None),
         ];
-        let drives = drives_from_devices(&devices);
+        let drives = drives_from_devices(&devices, None);
         let keys: Vec<&str> = drives.iter().map(|drive| drive.key.as_str()).collect();
         assert_eq!(
             keys,
@@ -1091,12 +1462,15 @@ mod tests {
                 .ejectable
         );
         // An unlocked encrypted volume with a filesystem is a drive too.
-        let unlocked = drives_from_devices(&[luks_cleartext(
-            "/b/dm0",
-            "/dev/dm-0",
-            "/b/sda3",
-            "/media/a/Vault",
-        )]);
+        let unlocked = drives_from_devices(
+            &[luks_cleartext(
+                "/b/dm0",
+                "/dev/dm-0",
+                "/b/sda3",
+                "/media/a/Vault",
+            )],
+            None,
+        );
         assert_eq!(unlocked.len(), 1);
         assert_eq!(unlocked[0].kind, DriveKind::Internal);
     }
@@ -1152,7 +1526,8 @@ mod tests {
 
     #[test]
     fn a_drive_is_named_by_its_label_or_its_size_and_says_how_full_it_is() {
-        let mut drive = drives_from_devices(&[usb_stick("/b/sdb1", "/dev/sdb1", "aaaa")]).remove(0);
+        let mut drive =
+            drives_from_devices(&[usb_stick("/b/sdb1", "/dev/sdb1", "aaaa")], None).remove(0);
         assert_eq!(drive.name(&EN_US), "FIELD DATA");
         drive.label = None;
         assert_eq!(drive.name(&EN_US), "32.0 GB drive");
@@ -1222,18 +1597,18 @@ mod tests {
         let mut container = usb_stick("/b/sdc1", "/dev/sdc1", "cccc");
         container.block.id_type = Some("crypto_LUKS".into());
         container.block.id_label = None;
-        let drives = drives_from_devices(std::slice::from_ref(&container));
+        let drives = drives_from_devices(std::slice::from_ref(&container), None);
         assert_eq!(drives.len(), 1);
         assert!(drives[0].locked);
         assert_eq!(drives[0].kind, DriveKind::Removable);
         assert_eq!(drives[0].name(&EN_US), "32.0 GB drive");
-        assert_eq!(drives[0].caption(&EN_US).as_deref(), Some("Encrypted"));
-        assert_eq!(drives[0].caption(&ZH_TW).as_deref(), Some("已加密"));
+        assert_eq!(drives[0].caption(&EN_US).as_deref(), Some("Locked"));
+        assert_eq!(drives[0].caption(&ZH_TW).as_deref(), Some("已鎖定"));
 
         // Unlocked: the container is not listed again, and the volume in it
         // is on the container's USB drive, so it ejects and locks again.
         let cleartext = luks_cleartext("/b/dm1", "/dev/dm-1", "/b/sdc1", "/media/a/Secret");
-        let drives = drives_from_devices(&[container, cleartext]);
+        let drives = drives_from_devices(&[container, cleartext], None);
         assert_eq!(drives.len(), 1);
         let volume = &drives[0];
         assert_eq!(volume.key, "/b/dm1");
@@ -1337,6 +1712,197 @@ mod tests {
         }
         .line(&ZH_TW);
         assert!(crate::layout::drive_caption_fits(&zh, edge.default, true));
+    }
+
+    const WINRE: &str = "de94bba4-06d1-4d40-a16a-bfd50179d6ac";
+
+    #[test]
+    fn recovery_and_firmware_partitions_and_what_udisks_hides_are_not_drives() {
+        // Windows' recovery partition: NTFS, no label, only its type says
+        // what it is.
+        let mut winre = partition("/b/winre", "/dev/nvme0n1p4", "ntfs", None, None);
+        winre.block.partition_type = Some(WINRE.into());
+        // The same on MBR (type 0x27), and an OEM tool partition UDisks2
+        // marked to hide.
+        let mut mbr_recovery = partition("/b/mbr", "/dev/sda3", "ntfs", None, None);
+        mbr_recovery.block.partition_type = Some("0x27".into());
+        let mut oem = partition("/b/oem", "/dev/sda4", "vfat", Some("TOOLS"), None);
+        oem.block.size = 8 << 30;
+        oem.block.hint_ignore = true;
+        let mut data = partition("/b/data", "/dev/sda5", "ntfs", Some("Data"), None);
+        data.block.partition_type = Some("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7".into());
+        let keys: Vec<String> = drives_from_devices(&[winre, mbr_recovery, oem, data], None)
+            .into_iter()
+            .map(|drive| drive.key)
+            .collect();
+        assert_eq!(keys, ["/b/data"]);
+    }
+
+    #[test]
+    fn nothing_on_the_drive_the_system_runs_from_can_be_ejected() {
+        // Linux on an external SSD: `/` and a data partition on one USB
+        // drive.
+        let mut root = usb_stick("/b/sdb2", "/dev/sdb2", "root");
+        root.block.id_type = Some("ext4".into());
+        root.mount_point = Some(PathBuf::from("/"));
+        let mut data = usb_stick("/b/sdb3", "/dev/sdb3", "root");
+        data.block.id_label = Some("Data".into());
+        data.mount_point = Some(PathBuf::from("/media/a/Data"));
+        let other = usb_stick("/b/sdc1", "/dev/sdc1", "other");
+        let drives = drives_from_devices(&[root, data, other], None);
+        let find = |key: &str| drives.iter().find(|drive| drive.key == key).unwrap();
+        assert_eq!(find("/b/sdb2").kind, DriveKind::System);
+        assert!(!find("/b/sdb2").ejectable);
+        assert!(!find("/b/sdb3").ejectable, "on the system's drive");
+        assert!(find("/b/sdc1").ejectable);
+    }
+
+    #[test]
+    fn every_mount_point_counts_and_the_root_is_found_by_its_mapper_name() {
+        // btrfs at `/home` first and `/` second.
+        let mut btrfs = internal_disk("/b/nvme0n1p2", "/dev/nvme0n1p2");
+        btrfs.block.id_type = Some("btrfs".into());
+        btrfs.mount_point = Some(PathBuf::from("/home"));
+        btrfs.block.mount_points = vec![PathBuf::from("/home"), PathBuf::from("/")];
+        let drives = drives_from_devices(&[btrfs], None);
+        assert_eq!(drives[0].kind, DriveKind::System);
+        assert_eq!(drives[0].mount_point.as_deref(), Some(Path::new("/")));
+
+        // btrfs on LUKS: the mount table says `/dev/mapper/luks-…`,
+        // UDisks2 `/dev/dm-0` with the mapper name among its symlinks.
+        let mut cleartext = luks_cleartext("/b/dm0", "/dev/dm-0", "/b/nvme0n1p3", "/home");
+        cleartext.block.symlinks = vec!["/dev/mapper/luks-1234".into()];
+        let drives = drives_from_devices(&[cleartext], Some("/dev/mapper/luks-1234"));
+        assert_eq!(drives[0].kind, DriveKind::System);
+        assert!(!drives[0].ejectable);
+    }
+
+    #[test]
+    fn a_system_on_zfs_or_an_overlay_comes_from_the_mount_table() {
+        let drives = sources(
+            vec![usb_stick("/b/sdb1", "/dev/sdb1", "aaaa")],
+            concat!(
+                "28 1 0:30 / / rw - zfs rpool/ROOT/ubuntu rw\n",
+                "35 28 8:17 / /media/a/STICK rw - exfat /dev/sdb1 rw\n",
+            ),
+        )
+        .scan();
+        let system = drives
+            .iter()
+            .find(|drive| drive.kind == DriveKind::System)
+            .expect("a system drive");
+        assert_eq!(system.mount_point.as_deref(), Some(Path::new("/")));
+        assert!(!system.ejectable);
+    }
+
+    #[test]
+    fn an_image_written_to_a_stick_is_one_removable_drive_not_a_disc() {
+        // An ISO on a stick: the whole disk and partition 1 both read as
+        // iso9660; the drive is not optical.
+        let mut whole = usb_stick("/b/sdb", "/dev/sdb", "iso");
+        whole.block.id_type = Some("iso9660".into());
+        whole.block.partition_number = None;
+        whole.block.partition_table = true;
+        let mut first = usb_stick("/b/sdb1", "/dev/sdb1", "iso");
+        first.block.id_type = Some("iso9660".into());
+        let drives = drives_from_devices(&[whole, first], None);
+        assert_eq!(drives.len(), 1);
+        assert_eq!(drives[0].key, "/b/sdb1");
+        assert_eq!(drives[0].kind, DriveKind::Removable);
+    }
+
+    #[test]
+    fn a_btrfs_filesystem_on_two_devices_is_one_drive() {
+        let mut first = partition(
+            "/b/sda1",
+            "/dev/sda1",
+            "btrfs",
+            Some("Pool"),
+            Some("/mnt/pool"),
+        );
+        first.block.id_uuid = Some("pool-uuid".into());
+        let mut second = partition("/b/sdb1", "/dev/sdb1", "btrfs", Some("Pool"), None);
+        second.block.id_uuid = Some("pool-uuid".into());
+        let drives = drives_from_devices(&[second, first], None);
+        assert_eq!(drives.len(), 1);
+        assert_eq!(
+            drives[0].mount_point.as_deref(),
+            Some(Path::new("/mnt/pool"))
+        );
+    }
+
+    #[test]
+    fn a_removable_drive_keeps_a_label_an_internal_one_would_be_hidden_for() {
+        // A Raspberry Pi card's `boot` partition and a stick labelled EFI.
+        let mut card = usb_stick("/b/mmc1", "/dev/mmcblk0p1", "card");
+        card.block.id_type = Some("vfat".into());
+        card.block.id_label = Some("boot".into());
+        let mut stick = usb_stick("/b/sdb1", "/dev/sdb1", "efi");
+        stick.block.id_label = Some("EFI".into());
+        let internal = partition("/b/sda1", "/dev/sda1", "ntfs", Some("Recovery"), None);
+        let keys: Vec<String> = drives_from_devices(&[card, stick, internal], None)
+            .into_iter()
+            .map(|drive| drive.key)
+            .collect();
+        assert_eq!(keys, ["/b/mmc1", "/b/sdb1"]);
+    }
+
+    #[test]
+    fn only_a_wrong_passphrase_asks_again_and_a_dismissed_prompt_says_nothing() {
+        let method = |name: &str, detail: &str| {
+            zbus::Error::MethodError(
+                zbus::names::OwnedErrorName::try_from(name).unwrap(),
+                Some(detail.to_string()),
+                zbus::message::Message::method_call("/", "Ping")
+                    .unwrap()
+                    .build(&())
+                    .unwrap(),
+            )
+        };
+        assert_eq!(
+            unlock_error(&method(
+                "org.freedesktop.UDisks2.Error.Failed",
+                "Error unlocking /dev/sdc1: Failed to activate device: Operation not permitted"
+            )),
+            UnlockError::WrongPassphrase
+        );
+        assert_eq!(
+            unlock_error(&method(
+                "org.freedesktop.UDisks2.Error.Failed",
+                "Error unlocking /dev/sdc1: Failed to activate device: Incorrect passphrase."
+            )),
+            UnlockError::WrongPassphrase
+        );
+        assert_eq!(
+            unlock_error(&method(
+                "org.freedesktop.UDisks2.Error.NotAuthorizedDismissed",
+                "Not authorized to perform operation"
+            )),
+            UnlockError::Dismissed
+        );
+        assert_eq!(
+            unlock_error(&method(
+                "org.freedesktop.DBus.Error.ServiceUnknown",
+                "The name is not activatable"
+            )),
+            UnlockError::Unavailable
+        );
+        assert_eq!(
+            unlock_error(&method(
+                "org.freedesktop.UDisks2.Error.Failed",
+                "Device busy"
+            )),
+            UnlockError::Failed("Device busy".into())
+        );
+    }
+
+    #[test]
+    fn a_gvfs_name_is_decoded_whole() {
+        let gvfs = drives_from_gvfs(&[PathBuf::from(
+            "/run/user/1000/gvfs/smb-share:server=nas,share=%E7%85%A7%E7%89%87%20%282024%29",
+        )]);
+        assert_eq!(gvfs[0].label.as_deref(), Some("照片 (2024)"));
+        assert_eq!(percent_decode("50%"), "50%");
     }
 
     #[test]

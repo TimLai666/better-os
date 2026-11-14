@@ -114,8 +114,37 @@ pub enum Notice {
     FolderGone(String),
     /// Retry was asked of a job the engine no longer keeps.
     RetryGone,
-    /// A drive could not be mounted or ejected.
+    /// A drive could not be mounted or unlocked.
     DriveFailed {
+        drive: String,
+        detail: String,
+    },
+    /// The passphrase did not open the drive.
+    WrongPassphrase {
+        drive: String,
+    },
+    /// The drive unlocked but what is inside did not mount.
+    DriveUnlockedNotMounted {
+        drive: String,
+        detail: String,
+    },
+    /// Ejected: safe to remove.
+    DriveSafe {
+        drive: String,
+    },
+    /// Unmounted, but not powered off.
+    DriveNotPoweredOff {
+        drive: String,
+        detail: String,
+    },
+    /// Another volume on the same drive is in use: nothing was powered off.
+    DriveInUse {
+        drive: String,
+        volume: String,
+        detail: String,
+    },
+    /// The eject failed.
+    DriveEjectFailed {
         drive: String,
         detail: String,
     },
@@ -176,9 +205,9 @@ pub enum NoticeTone {
 impl Notice {
     pub fn tone(&self) -> NoticeTone {
         match self {
-            Notice::Undo { outcome: Ok(_), .. } | Notice::Erased { failure: None, .. } => {
-                NoticeTone::Success
-            }
+            Notice::Undo { outcome: Ok(_), .. }
+            | Notice::Erased { failure: None, .. }
+            | Notice::DriveSafe { .. } => NoticeTone::Success,
             Notice::Device(event) => match event.as_ref() {
                 DeviceEvent::Ejected { .. } => NoticeTone::Success,
                 DeviceEvent::EjectedNotPoweredOff { .. }
@@ -204,6 +233,29 @@ impl Notice {
             Notice::RetryGone => c.retry_gone.to_string(),
             Notice::DriveFailed { drive, detail } => c
                 .drive_failed
+                .replace("{drive}", drive)
+                .replace("{detail}", &crate::errors::explain(detail, c)),
+            Notice::WrongPassphrase { drive } => c.drive_wrong_passphrase.replace("{drive}", drive),
+            Notice::DriveUnlockedNotMounted { drive, detail } => c
+                .drive_unlocked_not_mounted
+                .replace("{drive}", drive)
+                .replace("{detail}", &crate::errors::explain(detail, c)),
+            Notice::DriveSafe { drive } => c.drive_safe.replace("{drive}", drive),
+            Notice::DriveNotPoweredOff { drive, detail } => c
+                .drive_not_powered_off
+                .replace("{drive}", drive)
+                .replace("{detail}", &crate::errors::explain(detail, c)),
+            Notice::DriveInUse {
+                drive,
+                volume,
+                detail,
+            } => c
+                .drive_in_use
+                .replace("{drive}", drive)
+                .replace("{volume}", volume)
+                .replace("{detail}", &crate::errors::explain(detail, c)),
+            Notice::DriveEjectFailed { drive, detail } => c
+                .drive_eject_failed
                 .replace("{drive}", drive)
                 .replace("{detail}", &crate::errors::explain(detail, c)),
             Notice::Command(refusal) => match refusal {
@@ -433,13 +485,16 @@ pub struct FilesSession {
     /// its sources (tests read no real drives).
     drive_scanner: Option<crate::drives::DriveScanner>,
     drive_sources: Option<crate::drives::DriveSources>,
+    /// Each finished drive action, by the drive's key.
     drive_outcomes: (
-        std::sync::mpsc::Sender<DriveOutcome>,
-        std::sync::mpsc::Receiver<DriveOutcome>,
+        std::sync::mpsc::Sender<KeyedOutcome>,
+        std::sync::mpsc::Receiver<KeyedOutcome>,
     ),
     last_drive_scan: std::time::Instant,
-    /// Mounts, unlocks and ejects started from a drive and not yet done.
-    drive_actions: usize,
+    /// The drives with a mount, unlock or eject still running.
+    busy_drives: Vec<String>,
+    /// Whether the window is on screen (the drives' timer runs only then).
+    window_visible: bool,
     /// This window's claim on the shared engine's finished jobs.
     _engine_window: files_operations::WindowAttachment,
 
@@ -616,7 +671,8 @@ impl FilesSession {
             drive_sources: None,
             drive_outcomes: std::sync::mpsc::channel(),
             last_drive_scan: std::time::Instant::now(),
-            drive_actions: 0,
+            busy_drives: Vec::new(),
+            window_visible: true,
             _engine_window: engine_window,
             catalog,
             defaults,
@@ -1494,6 +1550,8 @@ impl FilesSession {
                     .as_local_path()
                     .map(|path| path.as_path().to_path_buf())
             })
+            // `/` is never let go of: that would stop every watch there is.
+            .filter(|folder| folder != std::path::Path::new("/"))
         {
             // Every window's watches under the device go first; they come
             // back if the eject does not happen.
@@ -1661,7 +1719,8 @@ impl FilesSession {
     }
 
     /// Takes a new list of drives and the outcome of a mount or eject;
-    /// reads the drives again now and then. Whether the window has to redraw.
+    /// reads the drives again now and then while the window is visible.
+    /// Whether the window has to redraw.
     fn pump_drives(&mut self) -> bool {
         let mut changed = false;
         if let Some(drives) = self
@@ -1672,45 +1731,95 @@ impl FilesSession {
             changed |= drives != self.drives;
             self.drives = drives;
         }
-        if self.last_drive_scan.elapsed() >= crate::drives::DRIVES_REFRESH {
+        if self.window_visible && self.last_drive_scan.elapsed() >= crate::drives::DRIVES_REFRESH {
             self.refresh_drives();
         }
-        while let Ok(outcome) = self.drive_outcomes.1.try_recv() {
+        while let Ok((key, outcome)) = self.drive_outcomes.1.try_recv() {
             changed = true;
-            self.drive_actions = self.drive_actions.saturating_sub(1);
+            self.busy_drives.retain(|busy| *busy != key);
             self.refresh_drives();
-            match outcome {
-                DriveOutcome::Mounted(path) => {
-                    if let Ok(location) = Location::local(path) {
-                        self.notice = None;
-                        self.navigate_to(location);
-                    }
-                }
-                DriveOutcome::Ejected(folder) => {
-                    if let Some(folder) = folder {
-                        files_platform::WatchHub::global().resume_under(&folder);
-                    }
-                }
-                DriveOutcome::UnlockFailed { key, drive, detail } => {
-                    self.notice = Some(Notice::DriveFailed {
-                        drive: drive.clone(),
-                        detail,
-                    });
-                    self.dialog = Some(PendingDialog::UnlockDrive { key, name: drive });
-                }
-                DriveOutcome::Failed {
-                    drive,
-                    detail,
-                    resume,
-                } => {
-                    if let Some(folder) = resume {
-                        files_platform::WatchHub::global().resume_under(&folder);
-                    }
-                    self.notice = Some(Notice::DriveFailed { drive, detail });
-                }
-            }
+            self.apply_drive_outcome(key, outcome);
         }
         changed
+    }
+
+    fn apply_drive_outcome(&mut self, key: String, outcome: DriveOutcome) {
+        use crate::drives::{EjectError, Ejected, UnlockError};
+        match outcome {
+            DriveOutcome::Mounted(path) => {
+                if let Ok(location) = Location::local(path) {
+                    self.notice = None;
+                    self.navigate_to(location);
+                }
+            }
+            DriveOutcome::MountFailed { drive, detail } => {
+                self.notice = Some(Notice::DriveFailed { drive, detail });
+            }
+            DriveOutcome::Ejected {
+                drive,
+                folder,
+                result,
+            } => {
+                if let Some(folder) = &folder {
+                    files_platform::WatchHub::global().resume_under(folder);
+                }
+                self.notice = Some(match result {
+                    Ok(Ejected::Safe) => Notice::DriveSafe { drive },
+                    Ok(Ejected::NotPoweredOff(detail)) => {
+                        Notice::DriveNotPoweredOff { drive, detail }
+                    }
+                    Err(EjectError::InUse { volume, detail }) => Notice::DriveInUse {
+                        drive,
+                        volume,
+                        detail,
+                    },
+                    Err(EjectError::Failed(detail)) => Notice::DriveEjectFailed { drive, detail },
+                });
+            }
+            DriveOutcome::Unlocked { drive, result } => match result {
+                Ok(path) => self.apply_drive_outcome(key, DriveOutcome::Mounted(path)),
+                Err(UnlockError::Dismissed) => {}
+                Err(UnlockError::WrongPassphrase) => {
+                    self.notice = Some(Notice::WrongPassphrase {
+                        drive: drive.clone(),
+                    });
+                    // Asked again only while nothing else is open, and only
+                    // while the container is still there and locked.
+                    let still_locked = self
+                        .drives
+                        .iter()
+                        .any(|known| known.key == key && known.locked);
+                    if self.dialog.is_none() && still_locked {
+                        self.dialog = Some(PendingDialog::UnlockDrive { key, name: drive });
+                    }
+                }
+                Err(UnlockError::Unavailable) => {
+                    self.notice = Some(Notice::DriveFailed {
+                        drive,
+                        detail: "UDisks2 is not available".to_string(),
+                    });
+                }
+                Err(UnlockError::Failed(detail)) => {
+                    self.notice = Some(Notice::DriveFailed { drive, detail });
+                }
+                // Unlocked, and the container's key has left the list: the
+                // name kept from the start says which drive.
+                Err(UnlockError::MountFailed(detail)) => {
+                    self.notice = Some(Notice::DriveUnlockedNotMounted { drive, detail });
+                }
+            },
+        }
+    }
+
+    /// Whether a mount, unlock or eject started from this drive is still
+    /// running: its row ignores clicks until it ends.
+    pub fn is_drive_busy(&self, key: &str) -> bool {
+        self.busy_drives.iter().any(|busy| busy == key)
+    }
+
+    /// Whether any drive action is still running.
+    pub fn any_drive_busy(&self) -> bool {
+        !self.busy_drives.is_empty()
     }
 
     /// Opens a drive: goes there when it is mounted; asks for the
@@ -1719,6 +1828,9 @@ impl FilesSession {
     /// otherwise, off this thread) and goes there once it is. Whether it
     /// went there now.
     pub fn open_drive(&mut self, key: &str) -> bool {
+        if self.is_drive_busy(key) {
+            return false;
+        }
         let Some(drive) = self.drives.iter().find(|drive| drive.key == key).cloned() else {
             return false;
         };
@@ -1748,23 +1860,26 @@ impl FilesSession {
             return false;
         };
         let name = drive.name(c);
-        self.spawn_drive_action("files-drive-mount", move |outcomes| {
-            let _ = outcomes.send(match (sources.mount)(&drive) {
+        let busy = drive.key.clone();
+        self.spawn_drive_action(&busy, "files-drive-mount", move || {
+            match (sources.mount)(&drive) {
                 Ok(path) => DriveOutcome::Mounted(path),
-                Err(detail) => DriveOutcome::Failed {
+                Err(detail) => DriveOutcome::MountFailed {
                     drive: name,
                     detail,
-                    resume: None,
                 },
-            });
+            }
         });
         false
     }
 
     /// Unlocks an encrypted drive with the passphrase typed into its dialog
-    /// and goes there once what is inside is mounted. A wrong passphrase
-    /// asks again.
-    pub fn unlock_drive(&mut self, key: &str, passphrase: String) {
+    /// and goes there once what is inside is mounted. The passphrase goes to
+    /// UDisks2 and is overwritten when the call returns.
+    pub fn unlock_drive(&mut self, key: &str, passphrase: crate::secret::Secret) {
+        if self.is_drive_busy(key) {
+            return;
+        }
         let Some(drive) = self.drives.iter().find(|drive| drive.key == key).cloned() else {
             return;
         };
@@ -1772,25 +1887,34 @@ impl FilesSession {
             return;
         };
         let name = drive.name(crate::i18n::copy(self.locale));
-        self.spawn_drive_action("files-drive-unlock", move |outcomes| {
-            let _ = outcomes.send(match (sources.unlock)(&drive, &passphrase) {
-                Ok(path) => DriveOutcome::Mounted(path),
-                Err(detail) => DriveOutcome::UnlockFailed {
-                    key: drive.key.clone(),
-                    drive: name,
-                    detail,
-                },
-            });
+        let busy = drive.key.clone();
+        self.spawn_drive_action(&busy, "files-drive-unlock", move || {
+            let result = (sources.unlock)(&drive, &passphrase);
+            drop(passphrase);
+            DriveOutcome::Unlocked {
+                drive: name,
+                result,
+            }
         });
     }
 
     /// Ejects a drive: through the storage service when it reports the
     /// device (which says what happened), through UDisks2 otherwise. Every
-    /// window's watches under it go first.
+    /// window's watches under it go first. The system drive is never
+    /// ejected, and `/` is never let go of.
     pub fn eject_drive(&mut self, key: &str) {
+        if self.is_drive_busy(key) {
+            return;
+        }
         let Some(drive) = self.drives.iter().find(|drive| drive.key == key).cloned() else {
             return;
         };
+        if !drive.ejectable
+            || drive.kind == crate::drives::DriveKind::System
+            || drive.mount_point.as_deref() == Some(std::path::Path::new("/"))
+        {
+            return;
+        }
         let Some(object_path) = drive.object_path.clone() else {
             return;
         };
@@ -1806,36 +1930,39 @@ impl FilesSession {
             files_platform::WatchHub::global().suspend_under(folder);
         }
         let name = drive.name(crate::i18n::copy(self.locale));
-        self.spawn_drive_action("files-drive-eject", move |outcomes| {
-            let _ = outcomes.send(match (sources.eject)(&drive) {
-                Ok(()) => DriveOutcome::Ejected(folder),
-                Err(detail) => DriveOutcome::Failed {
-                    drive: name,
-                    detail,
-                    resume: folder,
-                },
-            });
+        let busy = drive.key.clone();
+        self.spawn_drive_action(&busy, "files-drive-eject", move || DriveOutcome::Ejected {
+            drive: name,
+            folder,
+            result: (sources.eject)(&drive),
         });
     }
 
     /// Runs a mount, unlock or eject on a thread of its own; its outcome
-    /// comes back through [`Self::pump`].
+    /// comes back through [`Self::pump`]. The drive is busy until then.
     fn spawn_drive_action(
         &mut self,
+        key: &str,
         name: &str,
-        action: impl FnOnce(std::sync::mpsc::Sender<DriveOutcome>) + Send + 'static,
+        action: impl FnOnce() -> DriveOutcome + Send + 'static,
     ) {
         let outcomes = self.drive_outcomes.0.clone();
-        self.drive_actions += 1;
-        let _ = std::thread::Builder::new()
+        let key = key.to_string();
+        self.busy_drives.push(key.clone());
+        let spawned = std::thread::Builder::new()
             .name(name.to_string())
-            .spawn(move || action(outcomes));
+            .spawn(move || {
+                let _ = outcomes.send((key, action()));
+            });
+        if spawned.is_err() {
+            self.busy_drives.pop();
+        }
     }
 
-    /// Whether a mount, unlock or eject started from a drive is still
-    /// running.
-    pub fn is_drive_busy(&self) -> bool {
-        self.drive_actions > 0
+    /// Whether the window is on screen; the drives are read on a timer only
+    /// while it is.
+    pub fn set_window_visible(&mut self, visible: bool) {
+        self.window_visible = visible;
     }
 
     // --- Removal policy (ticket 52) ----------------------------------------
@@ -3369,22 +3496,25 @@ fn apply_rows(pane: &mut Pane, rows: Vec<files_core::RefreshEvent>) -> bool {
     changed
 }
 
-/// What a mount or eject started from a drive row came to.
+/// A drive action's outcome with the key of the drive it was for.
+type KeyedOutcome = (String, DriveOutcome);
+
+/// What a mount, unlock or eject started from a drive row came to.
 #[derive(Debug)]
 enum DriveOutcome {
     Mounted(std::path::PathBuf),
-    /// Ejected; the folder its watches were let go of.
-    Ejected(Option<std::path::PathBuf>),
-    /// The passphrase did not open it: asked again.
-    UnlockFailed {
-        key: String,
+    MountFailed {
         drive: String,
         detail: String,
     },
-    Failed {
+    Unlocked {
         drive: String,
-        detail: String,
+        result: Result<std::path::PathBuf, crate::drives::UnlockError>,
+    },
+    Ejected {
+        drive: String,
         /// The folder whose watches to take back.
-        resume: Option<std::path::PathBuf>,
+        folder: Option<std::path::PathBuf>,
+        result: Result<crate::drives::Ejected, crate::drives::EjectError>,
     },
 }

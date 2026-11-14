@@ -353,3 +353,39 @@ fn printable(key: &str, key_char: Option<&str>) -> Option<char> {
     }
     (!character.is_control()).then_some(character)
 }
+
+/// What a key does on "This PC" (ticket 122), which covers the folder it
+/// was opened over: nothing that would act on that folder's files happens
+/// out of sight.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThisPcKey {
+    /// Escape and Back return to the folder under it.
+    Close,
+    /// F5 reads the drives again.
+    Reload,
+    /// Going somewhere closes the page and goes.
+    Leave,
+    /// Tabs, windows and the panels work as anywhere.
+    Pass,
+    /// Everything else (Delete, paste, rename, select…) does nothing.
+    Ignore,
+}
+
+pub fn on_this_pc(command: Command) -> ThisPcKey {
+    use Command as K;
+    match command {
+        K::ClearSelection | K::GoBack => ThisPcKey::Close,
+        K::Reload => ThisPcKey::Reload,
+        K::GoForward | K::GoToParent | K::GoHome => ThisPcKey::Leave,
+        K::NewTab
+        | K::CloseTab
+        | K::RestoreClosedTab
+        | K::NextTab
+        | K::PreviousTab
+        | K::NewWindow
+        | K::SplitView
+        | K::ToggleOperations
+        | K::ShowShortcuts => ThisPcKey::Pass,
+        _ => ThisPcKey::Ignore,
+    }
+}

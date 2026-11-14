@@ -48,6 +48,7 @@ pub mod preview;
 pub mod reader;
 pub mod restart;
 pub mod search;
+pub mod secret;
 pub mod session;
 pub mod settings_store;
 pub mod share;
