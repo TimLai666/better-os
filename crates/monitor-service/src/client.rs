@@ -206,27 +206,6 @@ impl MonitorClient {
         }
     }
 
-    pub async fn mark(
-        &self,
-        note: Option<String>,
-        window_before_seconds: u64,
-        window_after_seconds: u64,
-        about_pid: Option<u32>,
-    ) -> Result<IncidentWindowDocument, ClientError> {
-        match self
-            .send(MonitorRequest::new(RequestBody::MarkIncident {
-                note,
-                window_before_seconds,
-                window_after_seconds,
-                about_pid,
-            }))
-            .await?
-        {
-            ResponseBody::IncidentWindow(window) => Ok(*window),
-            _ => Err(ClientError::UnexpectedReply),
-        }
-    }
-
     pub async fn inventory(&self) -> Result<InventoryDocument, ClientError> {
         match self
             .send(MonitorRequest::new(RequestBody::QueryInventory))

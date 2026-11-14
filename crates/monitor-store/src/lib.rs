@@ -39,13 +39,16 @@ use thiserror::Error;
 pub use history::{
     DEFAULT_DISK_BUDGET_BYTES, DEFAULT_MAX_INCIDENTS, DEFAULT_MAX_INVENTORY_RECORDS,
     DEFAULT_RESOLUTION_SECONDS, DEFAULT_RETENTION_SECONDS, HISTORY_FILE_NAME, HistorySlice,
-    HistoryStore, INCIDENTS_FILE_NAME, INVENTORY_FILE_NAME, RecoverySummary, RetentionPolicy,
-    STORE_SCHEMA_VERSION, StoreRecovery, StoreStats,
+    HistoryStore, INCIDENTS_FILE_NAME, INVENTORY_FILE_NAME, PendingSlowdownWrite, RecoverySummary,
+    RetentionPolicy, SLOWDOWNS_FILE_NAME, STORE_SCHEMA_VERSION, SlowdownRecord, StoreRecovery,
+    StoreStats,
 };
 pub use incident::{
-    BaselineShift, DEFAULT_WINDOW_AFTER_SECONDS, DEFAULT_WINDOW_BEFORE_SECONDS, Incident,
-    IncidentWindow, MAX_NOTE_LENGTH, MAX_WINDOW_SECONDS, MIN_WINDOW_SECONDS, baseline_shifts,
-    sanitize_note,
+    BaselineShift, DEFAULT_WINDOW_AFTER_SECONDS, DEFAULT_WINDOW_BEFORE_SECONDS, Detection,
+    Incident, IncidentWindow, MAX_WINDOW_SECONDS, MIN_WINDOW_SECONDS, Round,
+    SLOWDOWN_EXIT_FRACTION, SLOWDOWN_PROCESSES, SUSPEND_SLACK_MS, SlowdownCause, SlowdownDetector,
+    SlowdownEvent, SlowdownKind, SlowdownResource, SlowdownRules, THROTTLE_HOLD_MS,
+    baseline_shifts, busiest_processes,
 };
 pub use inventory::{
     INVENTORY_SCHEMA_VERSION, Inventory, InventoryChange, InventoryDiff, InventoryEntry,
