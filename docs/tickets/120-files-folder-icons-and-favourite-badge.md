@@ -90,3 +90,13 @@ glyph served as SVG (`icons.rs`). Screenshots in `.shots/`:
 `t120-home-grid-light.png`, `t120-home-list-light.png`,
 `t120-home-grid-dark.png`, `t120-home-list-dark.png` (the sidebar with a
 pinned Documents, an ordinary folder and the developer folder).
+
+## After review
+
+- The star on a favourite has no disc behind it (a disc of one fill showed
+  as a wrong dot on a hovered or selected row); it sits off the icon's
+  corner. The content view's `</>` mark is never smaller than 14 px, so it
+  reads on a 16 px list icon (`t120-review-list-100pct.png`).
+- The folder icon decision in the content view is one function
+  (`views::folder_row_icon`), tested; `/Developer` is found when HOME is
+  `/`, and a user folder set to HOME is drawn as home.

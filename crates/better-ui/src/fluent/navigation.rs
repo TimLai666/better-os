@@ -498,19 +498,14 @@ fn item_row(
                     .size(size::ICON),
                 )
                 .children(item.emblem.clone().map(|emblem| {
-                    // On a disc of the pane's own fill, so the mark reads
-                    // over the icon's strokes.
+                    // No disc behind it: a disc of any one fill is a wrong
+                    // dot on a hovered or selected row. The mark sits off the
+                    // icon's corner, clear of its strokes.
                     div()
                         .absolute()
-                        .right(px(-5.0))
-                        .bottom(px(-4.0))
-                        .size(px(11.0))
-                        .rounded_full()
-                        .bg(p.window_background)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(Icon::new(emblem).size(px(9.0)).text_color(p.accent_text))
+                        .right(px(-7.0))
+                        .bottom(px(-5.0))
+                        .child(Icon::new(emblem).size(px(10.0)).text_color(p.accent_text))
                 })),
         ),
     )

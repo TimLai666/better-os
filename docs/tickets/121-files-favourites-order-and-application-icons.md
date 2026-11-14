@@ -89,3 +89,24 @@ with fixture desktop entries and a fixture icon theme:
 `t121-applications-after.png` (each its own; the one whose icon does not
 exist keeps the fallback), `t121-favourite-dragging.png` (the line above
 the target), `t121-favourite-after-restart.png` (the new order kept).
+
+## After review
+
+- **Nothing read while drawing.** Every icon lookup (themed names and
+  applications' own) goes to one thread and is cached, misses too; the row
+  shows a fallback until the answer arrives. That thread asks for the
+  desktop's icon theme every ten seconds, with or without the frame
+  service, and starts over in a new theme.
+- **Absolute `Icon=` paths** (shared with Better Launcher and the app
+  chooser): only a PNG, SVG or XPM file, at most 4 MB, a PNG at most
+  1024 px each way by its header, never under `/proc`, `/sys` or `/dev`;
+  a path that is not UTF-8 is kept as it is.
+- **The bookmarks file is shared.** Every edit reads the file again and
+  applies the change by location, so a favourite added in Nautilus or
+  another window survives; the sidebar follows outside edits; a
+  symbolically linked bookmarks file stays a link; each write has its own
+  temporary name. Moving a favourite moves only bookmarks among the lines
+  bookmarks hold: every other program's line keeps its exact line.
+- **Only folders are pinned** by a drop; a file dragged over Favourites
+  shows no line and is not taken. A folder already pinned and dragged in
+  from the content view shows the same line as a favourite moved by hand.

@@ -71,3 +71,23 @@ Shell, fake `tailscale` from the first launch), in `.shots/`:
 `t118-sidebar-narrowest.png` (200 px), `t118-sidebar-after-restart.png`
 (200 px kept), `t118-sidebar-default.png` (double-click, 320 px, stored as
 no width), `t118-command-bar-1186px.png` ("…" in place at 1,186 px).
+
+## After review
+
+- **One layout.** `layout::pane_layout` decides the sidebar, the preview
+  (or details) and the operations panel together: each at its stored width
+  within its own limits, then narrowed (operations first, then the side
+  column, then the sidebar, never below their minimums) until the folder
+  keeps 320 px. In a split, each half's side panes are a share of that
+  half. The list's columns and the tiles across are computed from the same
+  numbers, so they no longer assume 320/360/420.
+- **Shared, not overwritten.** A window writes only the preference fields
+  it changed over what is on disk (`prefs::merge_preferences`), and takes
+  the pane widths another window stored when the file changes.
+- **Smaller.** Escape during an edge drag puts the width back; the split's
+  right half uses the left half's sidebar width; `compact()` and the
+  sidebar's collapse use the same visible width. A drag released outside
+  the window: Wayland keeps the pointer grabbed while the button is held,
+  so GPUI receives the release and ends the drag (gpui
+  `window.rs` clears `active_drag` on any mouse up); the width is saved
+  and the divider unlit by the next frame.

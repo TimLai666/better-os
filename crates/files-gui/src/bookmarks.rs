@@ -231,7 +231,8 @@ impl BookmarkFile {
     }
 
     /// Moves a bookmark to an arbitrary slot, which is what a drop between two
-    /// rows means.
+    /// rows means. Only the bookmarks move, among the lines they already
+    /// occupy: every foreign line keeps its exact index.
     pub fn move_to(&mut self, from: usize, to: usize) -> bool {
         if from == to {
             return false;
@@ -240,25 +241,23 @@ impl BookmarkFile {
         if from >= positions.len() || to >= positions.len() {
             return false;
         }
-        let moved = self.lines.remove(positions[from]);
-        // Removing the source shifted every later bookmark down by one slot,
-        // so the target is recomputed against what is left rather than
-        // against the indices the caller saw.
-        let remaining = self.positions();
-        let insert_at = if to < from {
-            // Land in front of the bookmark that currently holds the target
-            // index, which is still the one the caller pointed at.
-            remaining.get(to).copied().unwrap_or(self.lines.len())
-        } else {
-            // Land behind the bookmark that used to hold the target index and
-            // is now one slot earlier.
-            remaining
-                .get(to - 1)
-                .map(|position| position + 1)
-                .unwrap_or(self.lines.len())
-        };
-        self.lines.insert(insert_at.min(self.lines.len()), moved);
+        let mut ours: Vec<Line> = positions
+            .iter()
+            .map(|position| self.lines[*position].clone())
+            .collect();
+        let moved = ours.remove(from);
+        ours.insert(to, moved);
+        for (position, line) in positions.into_iter().zip(ours) {
+            self.lines[position] = line;
+        }
         true
+    }
+
+    /// Where `location` is among the bookmarks.
+    pub fn position_of(&self, location: &Location) -> Option<usize> {
+        self.bookmarks()
+            .iter()
+            .position(|bookmark| &bookmark.location == location)
     }
 
     fn swap_positions(&mut self, left: usize, right: usize) -> bool {
@@ -385,12 +384,32 @@ impl BookmarkStore {
 
     /// Writes through a temporary file and a rename, so an interrupted save
     /// cannot leave a half-written bookmarks file for the whole desktop.
+    ///
+    /// A bookmarks file that is a symbolic link (into a dotfiles repository,
+    /// say) stays one: the file it points at is replaced, not the link. The
+    /// temporary name is unique per write, so two windows saving at once
+    /// never write into each other's file.
     pub fn save(&self, file: &BookmarkFile) -> io::Result<()> {
-        if let Some(parent) = self.path.parent() {
+        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let target = match fs::symlink_metadata(&self.path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(&self.path)?,
+            _ => self.path.clone(),
+        };
+        if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
-        let temporary = self.path.with_extension("better-files-tmp");
+        let name = target
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "bookmarks".to_string());
+        let temporary = target.with_file_name(format!(
+            ".{name}.better-files-{}-{}.tmp",
+            std::process::id(),
+            WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         fs::write(&temporary, file.render().as_bytes())?;
-        fs::rename(&temporary, &self.path)
+        fs::rename(&temporary, &target).inspect_err(|_| {
+            let _ = fs::remove_file(&temporary);
+        })
     }
 }

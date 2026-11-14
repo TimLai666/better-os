@@ -47,6 +47,7 @@ impl Render for FilesApp {
             right.update(cx, |right, _| {
                 right.pane_width = Some(own - nav);
                 right.nav_compact = compact;
+                right.nav_width_override = Some(nav);
             });
         }
         let c = copy(self.locale());
@@ -820,26 +821,77 @@ impl FilesApp {
     /// A pane's width now: what the person dragged it to, or its default,
     /// clamped for this window.
     pub(crate) fn pane_edge_width(&self, kind: PaneEdgeKind) -> f32 {
-        let stored = match kind {
-            PaneEdgeKind::Operations => self.session.preferences.operations_width,
-            PaneEdgeKind::Sidebar => self.session.preferences.sidebar_width,
-            PaneEdgeKind::Preview => self.session.preferences.preview_width,
-        };
-        kind.policy().resolve(stored, self.visible_width())
+        let layout = self.pane_layout();
+        match kind {
+            PaneEdgeKind::Sidebar => layout.nav,
+            PaneEdgeKind::Preview => layout.side,
+            PaneEdgeKind::Operations => layout.operations,
+        }
+    }
+
+    /// Every pane's width in this window pane, decided together
+    /// ([`crate::layout::pane_layout`]) from what is drawn.
+    pub(crate) fn pane_layout(&self) -> crate::layout::PaneLayout {
+        let prefs = &self.session.preferences;
+        let side_drawn = self.session.details.is_some()
+            || (self.session.preview.open && !self.compact() && self.plugin_view.is_none());
+        crate::layout::pane_layout(crate::layout::PaneInputs {
+            window: self.visible_width(),
+            pane: f32::from(self.viewport.width),
+            sidebar: (!self.nav_compact()).then_some(prefs.sidebar_width),
+            side: side_drawn.then_some(prefs.preview_width),
+            operations: self
+                .session
+                .operations_open
+                .then_some(prefs.operations_width),
+            // The right half of a split has no sidebar of its own; it is
+            // laid out beside the left half's.
+            fixed_nav: self.nav_width_override,
+        })
     }
 
     /// The window's width as the person sees it, without the frame's shadow.
-    fn visible_width(&self) -> f32 {
+    pub(crate) fn visible_width(&self) -> f32 {
         f32::from(self.window_width - self.frame_inset * 2.0).max(0.0)
+    }
+
+    /// The width a pane's limits are a share of: the window for the
+    /// sidebar, this pane's area beside it for the others.
+    fn edge_reference(&self, kind: PaneEdgeKind) -> f32 {
+        match kind {
+            PaneEdgeKind::Sidebar => self.visible_width(),
+            _ => f32::from(self.viewport.width) - self.pane_layout().nav,
+        }
     }
 
     /// Sets a pane's width (clamped); stored when the drag ends.
     pub(crate) fn set_pane_edge_width(&mut self, kind: PaneEdgeKind, width: f32) {
-        let stored = kind.policy().store(width, self.visible_width());
+        let stored = kind.policy().store(width, self.edge_reference(kind));
         match kind {
             PaneEdgeKind::Operations => self.session.preferences.operations_width = stored,
             PaneEdgeKind::Sidebar => self.session.preferences.sidebar_width = stored,
             PaneEdgeKind::Preview => self.session.preferences.preview_width = stored,
+        }
+        self.edge_dirty = true;
+    }
+
+    /// What is stored for a pane's width now.
+    pub(crate) fn stored_pane_edge(&self, kind: PaneEdgeKind) -> Option<u32> {
+        let prefs = &self.session.preferences;
+        match kind {
+            PaneEdgeKind::Operations => prefs.operations_width,
+            PaneEdgeKind::Sidebar => prefs.sidebar_width,
+            PaneEdgeKind::Preview => prefs.preview_width,
+        }
+    }
+
+    /// Puts a pane's stored width back as it was (Escape during a drag).
+    pub(crate) fn restore_pane_edge(&mut self, kind: PaneEdgeKind, stored: Option<u32>) {
+        let prefs = &mut self.session.preferences;
+        match kind {
+            PaneEdgeKind::Operations => prefs.operations_width = stored,
+            PaneEdgeKind::Sidebar => prefs.sidebar_width = stored,
+            PaneEdgeKind::Preview => prefs.preview_width = stored,
         }
         self.edge_dirty = true;
     }
@@ -895,6 +947,7 @@ impl FilesApp {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |app, event: &MouseDownEvent, _, cx| {
+                    app.edge_drag_start = Some((kind, app.stored_pane_edge(kind)));
                     if event.click_count >= 2 {
                         app.reset_pane_edge(kind);
                         cx.notify();

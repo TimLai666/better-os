@@ -1026,6 +1026,16 @@ impl FilesApp {
                 let rows = targets.clone();
                 let this = cx.entity().downgrade();
                 let accent = fluent::palette(cx).accent;
+                let pinned_now: Rc<Vec<files_core::Location>> = Rc::new(
+                    (0..self.session.bookmarks.len())
+                        .filter_map(|index| {
+                            self.session
+                                .bookmarks
+                                .get(index)
+                                .map(|bookmark| bookmark.location().clone())
+                        })
+                        .collect(),
+                );
                 move |index, row| {
                     let Some(Some(NavTarget::Row(target))) = rows.get(index) else {
                         return row;
@@ -1048,16 +1058,29 @@ impl FilesApp {
                         },
                     )
                     .drag_over::<crate::views::FavouriteDrag>(move |style, drag, _, _| {
-                        if drag.index > at {
-                            style.border_t_2().border_color(accent)
-                        } else if drag.index < at {
-                            style.border_b_2().border_color(accent)
-                        } else {
-                            style
+                        match drop_line(Some(drag.index), at) {
+                            DropLine::Above => style.border_t_2().border_color(accent),
+                            DropLine::Below => style.border_b_2().border_color(accent),
+                            DropLine::None => style,
                         }
                     })
-                    .drag_over::<crate::views::DraggedEntry>(move |style, _, _, _| {
-                        style.border_t_2().border_color(accent)
+                    .drag_over::<crate::views::DraggedEntry>({
+                        let pinned_now = pinned_now.clone();
+                        move |style, dragged, _, _| {
+                            if !dragged.is_folder {
+                                return style;
+                            }
+                            // A folder already pinned moves; a new one is
+                            // put in front of the row it is dropped on.
+                            let from = pinned_now
+                                .iter()
+                                .position(|location| *location == dragged.location);
+                            match drop_line(from, at) {
+                                DropLine::Above => style.border_t_2().border_color(accent),
+                                DropLine::Below => style.border_b_2().border_color(accent),
+                                DropLine::None => style,
+                            }
+                        }
                     })
                     .on_drop(move |drag: &crate::views::FavouriteDrag, _, cx| {
                         let from = drag.index;
@@ -1069,6 +1092,9 @@ impl FilesApp {
                     .on_drop(
                         move |dragged: &crate::views::DraggedEntry, _, cx| {
                             cx.stop_propagation();
+                            if !dragged.is_folder {
+                                return;
+                            }
                             let location = dragged.location.clone();
                             let _ = pinned.update(cx, |app, cx| {
                                 app.session.pin_at(&location, at);
@@ -1096,8 +1122,11 @@ impl FilesApp {
             .child(view)
             .on_drop(
                 cx.listener(|this, dragged: &crate::views::DraggedEntry, _window, cx| {
-                    this.session.pin(&dragged.location);
-                    cx.notify();
+                    // Only folders: the GTK bookmarks file is a list of them.
+                    if dragged.is_folder {
+                        this.session.pin(&dragged.location);
+                        cx.notify();
+                    }
                 }),
             )
             .into_any_element()
@@ -1136,6 +1165,25 @@ impl FilesApp {
             }
         }
         self.after_location_change(window);
+    }
+}
+
+/// Where the line shows on a favourite while something is dragged over
+/// it: a favourite moving up lands above it, one moving down below it, and
+/// a folder not yet pinned (`from` is `None`) is put in front of it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DropLine {
+    Above,
+    Below,
+    None,
+}
+
+pub(crate) fn drop_line(from: Option<usize>, at: usize) -> DropLine {
+    match from {
+        None => DropLine::Above,
+        Some(from) if from > at => DropLine::Above,
+        Some(from) if from < at => DropLine::Below,
+        Some(_) => DropLine::None,
     }
 }
 

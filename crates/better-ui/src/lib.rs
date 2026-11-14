@@ -658,7 +658,7 @@ pub mod icons {
             }
             let as_path = Path::new(icon);
             if as_path.is_absolute() {
-                return as_path.is_file().then(|| as_path.to_path_buf());
+                return acceptable_icon_file(as_path).then(|| as_path.to_path_buf());
             }
             if !valid_name(icon) {
                 return None;
@@ -673,6 +673,62 @@ pub mod icons {
                 .into_iter()
                 .find(|path| path.is_file())
         }
+    }
+
+    /// The largest icon file an `Icon=` path may name. A desktop entry is a
+    /// file anyone can install; an icon is never this big.
+    pub const MAX_ICON_BYTES: u64 = 4 * 1024 * 1024;
+
+    /// The largest PNG an `Icon=` path may name, across and down; decoded
+    /// at full size, anything larger costs memory for nothing.
+    pub const MAX_ICON_PIXELS: u32 = 1024;
+
+    /// Whether an absolute `Icon=` path from a desktop entry, which anyone
+    /// can install, is drawn: a regular PNG, SVG or XPM file (by extension
+    /// and, for a PNG, by its header), at most [`MAX_ICON_BYTES`], a PNG at
+    /// most [`MAX_ICON_PIXELS`] each way, and never under `/proc`, `/sys` or
+    /// `/dev`. Reads the file's metadata and first bytes.
+    pub fn acceptable_icon_file(path: &Path) -> bool {
+        if ["/proc", "/sys", "/dev"]
+            .iter()
+            .any(|kernel| path.starts_with(kernel))
+        {
+            return false;
+        }
+        let extension = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase);
+        let Some(extension) =
+            extension.filter(|extension| matches!(extension.as_str(), "png" | "svg" | "xpm"))
+        else {
+            return false;
+        };
+        // `metadata` follows a link, and the file it lands on is what is
+        // judged: a regular file, not a device or a fifo.
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return false;
+        };
+        if !metadata.is_file() || metadata.len() > MAX_ICON_BYTES {
+            return false;
+        }
+        if extension == "png" {
+            return png_fits(path);
+        }
+        true
+    }
+
+    /// Whether a PNG's header says it is at most [`MAX_ICON_PIXELS`] square.
+    fn png_fits(path: &Path) -> bool {
+        use std::io::Read;
+        let mut header = [0u8; 24];
+        let read = std::fs::File::open(path).and_then(|mut file| file.read_exact(&mut header));
+        if read.is_err() || &header[..8] != b"\x89PNG\r\n\x1a\n" || &header[12..16] != b"IHDR" {
+            return false;
+        }
+        let width = u32::from_be_bytes([header[16], header[17], header[18], header[19]]);
+        let height = u32::from_be_bytes([header[20], header[21], header[22], header[23]]);
+        width > 0 && height > 0 && width <= MAX_ICON_PIXELS && height <= MAX_ICON_PIXELS
     }
 
     /// A theme directory entry that stays inside the theme: relative, with
@@ -1065,6 +1121,49 @@ mod icon_tests {
         assert_eq!(initial("  9 lives").as_ref(), "9");
         assert_eq!(initial("檔案").as_ref(), "檔");
         assert_eq!(initial("—").as_ref(), "?");
+    }
+
+    #[test]
+    fn an_absolute_icon_path_must_be_a_small_image_outside_the_kernel_s_files() {
+        use super::icons::{IconSearch, MAX_ICON_BYTES, acceptable_icon_file};
+        let root = scratch("absolute-icons");
+        let png = |width: u32, height: u32| {
+            let mut bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+            bytes.extend_from_slice(&width.to_be_bytes());
+            bytes.extend_from_slice(&height.to_be_bytes());
+            bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+            bytes
+        };
+        let write = |name: &str, bytes: &[u8]| {
+            let path = root.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let search = IconSearch::new(vec![root.clone()], Vec::new());
+        let small = write("app.png", &png(256, 256));
+        assert_eq!(search.resolve(small.to_str().unwrap()), Some(small.clone()));
+        let svg = write("app.svg", b"<svg/>");
+        assert!(acceptable_icon_file(&svg));
+        assert!(acceptable_icon_file(&write("app.xpm", b"/* XPM */")));
+        // Too many pixels, not a PNG, the wrong kind of file, too big.
+        assert!(!acceptable_icon_file(&write(
+            "huge.png",
+            &png(20_000, 20_000)
+        )));
+        assert!(!acceptable_icon_file(&write(
+            "fake.png",
+            b"not a png at all, honestly"
+        )));
+        assert!(!acceptable_icon_file(&write("notes.txt", b"text")));
+        let big = root.join("big.svg");
+        std::fs::write(&big, vec![b' '; MAX_ICON_BYTES as usize + 1]).unwrap();
+        assert!(!acceptable_icon_file(&big));
+        assert!(!acceptable_icon_file(std::path::Path::new(
+            "/proc/self/environ"
+        )));
+        assert!(!acceptable_icon_file(std::path::Path::new("/dev/zero.png")));
+        assert!(!acceptable_icon_file(&root));
+        assert_eq!(search.resolve("/proc/self/root/etc/passwd"), None);
     }
 
     #[test]

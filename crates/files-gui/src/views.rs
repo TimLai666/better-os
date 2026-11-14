@@ -46,6 +46,9 @@ pub struct Band {
 pub struct DraggedEntry {
     pub location: files_core::Location,
     pub label: String,
+    /// Only a folder can be pinned (the GTK bookmarks file is a list of
+    /// folders); a file is dragged elsewhere but never dropped on Favourites.
+    pub is_folder: bool,
 }
 
 /// The little card that follows the pointer during a drag.
@@ -174,43 +177,112 @@ impl Thumbnails {
     }
 }
 
-/// Themed icon files, looked up once per name; applications' own icons,
-/// resolved on a thread of their own (ticket 121).
+/// Every icon lookup (ticket 121, after review): themed names for files and
+/// folders and applications' own `Icon=` values, all resolved on one thread
+/// of their own and cached, hits and misses alike. The window draws a
+/// fallback until an answer arrives, and never reads an icon directory while
+/// drawing. The thread also notices the desktop's icon theme changing (it
+/// asks every ten seconds, with or without the frame service) and starts
+/// over in the new one.
 pub struct IconCache {
-    search: better_ui::icons::IconSearch,
-    found: RefCell<HashMap<(&'static str, String), Option<PathBuf>>>,
-    applications: ApplicationIcons,
-}
-
-/// An application's `Icon=` resolved the way Better Launcher and the app
-/// chooser resolve it (`better_ui::icons::IconSearch::resolve`: the theme
-/// and what it inherits, Adwaita, `hicolor`, pixmaps, an absolute path; SVG
-/// or PNG), off the UI thread and once per value.
-pub struct ApplicationIcons {
-    known: std::sync::Arc<std::sync::Mutex<HashMap<String, Option<PathBuf>>>>,
-    asked: RefCell<std::collections::HashSet<String>>,
-    queue: Option<std::sync::mpsc::Sender<String>>,
-    /// Set when an icon arrived, so the window draws again.
+    known: std::sync::Arc<std::sync::Mutex<IconAnswers>>,
+    asked: RefCell<std::collections::HashSet<IconQuestion>>,
+    queue: Option<std::sync::mpsc::Sender<IconQuestion>>,
+    /// Set when an answer arrived, so the window draws again.
     pub ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Bumped when the theme changed and every answer was dropped.
+    generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    seen_generation: std::cell::Cell<u64>,
 }
 
-impl ApplicationIcons {
-    /// Starts the resolving thread over `search`.
-    pub fn start(search: better_ui::icons::IconSearch) -> Self {
-        use std::sync::{Arc, Mutex, atomic::AtomicBool, mpsc};
-        let known: Arc<Mutex<HashMap<String, Option<PathBuf>>>> = Arc::default();
+/// What one lookup asks.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum IconQuestion {
+    /// The first of these (context, name) pairs the theme has.
+    Themed(Vec<(&'static str, String)>),
+    /// An application's `Icon=` name.
+    Application(String),
+    /// An application's `Icon=` path, kept as bytes: a path that is not
+    /// UTF-8 is still that path.
+    ApplicationPath(PathBuf),
+}
+
+type IconAnswers = HashMap<IconQuestion, Option<PathBuf>>;
+
+/// How often the resolving thread asks which icon theme the desktop uses.
+pub const ICON_THEME_CHECK: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The search a window's icons are looked up in: the desktop's own theme
+/// (and what it inherits), then Adwaita and Yaru, then `hicolor`.
+fn session_search() -> better_ui::icons::IconSearch {
+    let mut search = better_ui::icons::IconSearch::from_environment();
+    for fallback in ["Adwaita", "Yaru"] {
+        if !search.themes.iter().any(|theme| theme == fallback) {
+            search.themes.push(fallback.to_string());
+        }
+    }
+    search
+}
+
+impl IconCache {
+    pub fn from_env() -> Self {
+        Self::start(session_search, ICON_THEME_CHECK)
+    }
+
+    /// Starts the resolving thread. `search` builds the search (again, when
+    /// its themes change); `check` is how often that is asked.
+    pub fn start(
+        search: impl Fn() -> better_ui::icons::IconSearch + Send + 'static,
+        check: std::time::Duration,
+    ) -> Self {
+        use std::sync::{Arc, Mutex, atomic::AtomicBool, atomic::AtomicU64, mpsc};
+        let known: Arc<Mutex<IconAnswers>> = Arc::default();
         let ready = Arc::new(AtomicBool::new(false));
-        let (sender, receiver) = mpsc::channel::<String>();
+        let generation = Arc::new(AtomicU64::new(0));
+        let (sender, receiver) = mpsc::channel::<IconQuestion>();
         let queue = {
-            let known = Arc::clone(&known);
-            let ready = Arc::clone(&ready);
+            let (known, ready, generation) = (
+                Arc::clone(&known),
+                Arc::clone(&ready),
+                Arc::clone(&generation),
+            );
             std::thread::Builder::new()
-                .name("files-app-icons".to_string())
+                .name("files-icons".to_string())
                 .spawn(move || {
-                    for icon in receiver {
-                        let found = application_icon_file(&search, &icon);
+                    let mut current = search();
+                    let mut checked = std::time::Instant::now();
+                    loop {
+                        let question = match receiver.recv_timeout(check) {
+                            Ok(question) => Some(question),
+                            Err(mpsc::RecvTimeoutError::Timeout) => None,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                        };
+                        if checked.elapsed() >= check {
+                            checked = std::time::Instant::now();
+                            let fresh = search();
+                            if fresh.themes != current.themes {
+                                current = fresh;
+                                if let Ok(mut known) = known.lock() {
+                                    known.clear();
+                                }
+                                generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                                ready.store(true, std::sync::atomic::Ordering::Release);
+                            }
+                        }
+                        let Some(question) = question else { continue };
+                        let answer = match &question {
+                            IconQuestion::Themed(candidates) => candidates
+                                .iter()
+                                .find_map(|(context, name)| current.resolve_in(context, name)),
+                            IconQuestion::Application(icon) => {
+                                application_icon_file(&current, icon)
+                            }
+                            IconQuestion::ApplicationPath(path) => {
+                                better_ui::icons::acceptable_icon_file(path).then(|| path.clone())
+                            }
+                        };
                         if let Ok(mut known) = known.lock() {
-                            known.insert(icon, found);
+                            known.insert(question, answer);
                         }
                         ready.store(true, std::sync::atomic::Ordering::Release);
                     }
@@ -223,35 +295,56 @@ impl ApplicationIcons {
             asked: RefCell::default(),
             queue,
             ready,
+            generation,
+            seen_generation: std::cell::Cell::new(0),
         }
     }
 
-    /// The file for an application's icon when it has been resolved; asks
-    /// for it otherwise and answers `None` until it is.
-    pub fn get(&self, icon: &app_catalog_core::IconReference) -> Option<PathBuf> {
-        let value = icon_value(icon);
+    /// The answer when it is known; asks for it otherwise.
+    fn answer(&self, question: IconQuestion) -> Option<PathBuf> {
+        let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
+        if generation != self.seen_generation.get() {
+            // The theme changed: everything is asked again.
+            self.seen_generation.set(generation);
+            self.asked.borrow_mut().clear();
+        }
         if let Some(found) = self
             .known
             .lock()
             .ok()
-            .and_then(|known| known.get(&value).cloned())
+            .and_then(|known| known.get(&question).cloned())
         {
             return found;
         }
-        if self.asked.borrow_mut().insert(value.clone())
+        if self.asked.borrow_mut().insert(question.clone())
             && let Some(queue) = &self.queue
         {
-            let _ = queue.send(value);
+            let _ = queue.send(question);
         }
         None
     }
-}
 
-/// An `Icon=` value as the desktop entry wrote it: a name or a path.
-fn icon_value(icon: &app_catalog_core::IconReference) -> String {
-    match icon {
-        app_catalog_core::IconReference::Name(name) => name.clone(),
-        app_catalog_core::IconReference::Path(path) => path.display().to_string(),
+    /// The first candidate the theme has, once looked up.
+    pub fn first(&self, candidates: &[(&'static str, String)]) -> Option<PathBuf> {
+        if candidates.is_empty() {
+            return None;
+        }
+        self.answer(IconQuestion::Themed(candidates.to_vec()))
+    }
+
+    /// An application's own icon, once resolved.
+    pub fn application(&self, icon: &app_catalog_core::IconReference) -> Option<PathBuf> {
+        self.answer(match icon {
+            app_catalog_core::IconReference::Name(name) => IconQuestion::Application(name.clone()),
+            app_catalog_core::IconReference::Path(path) => {
+                IconQuestion::ApplicationPath(path.clone())
+            }
+        })
+    }
+
+    /// Whether an answer arrived since the last call.
+    pub fn take_ready(&self) -> bool {
+        self.ready.swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 }
 
@@ -261,56 +354,27 @@ pub fn application_icon_file(search: &better_ui::icons::IconSearch, icon: &str) 
     search.resolve(icon)
 }
 
-impl IconCache {
-    /// The session's data directories, the desktop's own icon theme (and
-    /// what it inherits), then Adwaita and Yaru, then `hicolor`. The
-    /// desktop's theme comes first, so a file looks as it does everywhere
-    /// else on this desktop, light or dark.
-    pub fn from_env() -> Self {
-        let mut search = better_ui::icons::IconSearch::from_environment();
-        for fallback in ["Adwaita", "Yaru"] {
-            if !search.themes.iter().any(|theme| theme == fallback) {
-                search.themes.push(fallback.to_string());
-            }
-        }
-        let applications =
-            ApplicationIcons::start(better_ui::icons::IconSearch::from_environment());
-        Self {
-            search,
-            found: RefCell::new(HashMap::new()),
-            applications,
-        }
-    }
+/// The first of these (context, name) pairs the icon theme has.
+pub(crate) type ThemeLookup<'a> = dyn Fn(&[(&'static str, String)]) -> Option<PathBuf> + 'a;
 
-    /// The first candidate the theme has.
-    pub fn first(&self, candidates: &[(&'static str, String)]) -> Option<PathBuf> {
-        for (context, name) in candidates {
-            let key = (*context, name.clone());
-            if let Some(known) = self.found.borrow().get(&key) {
-                if known.is_some() {
-                    return known.clone();
-                }
-                continue;
-            }
-            let path = self.search.resolve_in(context, name);
-            self.found.borrow_mut().insert(key, path.clone());
-            if path.is_some() {
-                return path;
-            }
-        }
-        None
+/// A folder's icon in the content view: the theme's own icon for what it
+/// is when the theme has one; otherwise the theme's plain folder, with the
+/// glyph's mark on it (the developer folder's `</>`).
+pub(crate) fn folder_row_icon(
+    glyph: crate::icons::FolderGlyph,
+    first: &ThemeLookup<'_>,
+) -> RowIcon {
+    let mut names = glyph.theme_names();
+    let plain = names.pop();
+    if let Some(own) = first(&names) {
+        return RowIcon {
+            file: Some(own),
+            emblem: None,
+        };
     }
-
-    /// An application's own icon, once resolved.
-    pub fn application(&self, icon: &app_catalog_core::IconReference) -> Option<PathBuf> {
-        self.applications.get(icon)
-    }
-
-    /// Whether an application icon arrived since the last call.
-    pub fn take_ready(&self) -> bool {
-        self.applications
-            .ready
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    RowIcon {
+        file: plain.and_then(|plain| first(&[plain])),
+        emblem: glyph.emblem(),
     }
 }
 
@@ -348,18 +412,7 @@ impl FilesApp {
             let glyph = self
                 .session
                 .folder_glyph(&files_core::Location::Local(path.clone()));
-            let mut names = glyph.theme_names();
-            let plain = names.pop();
-            if let Some(own) = self.icons.first(&names) {
-                return RowIcon {
-                    file: Some(own),
-                    emblem: None,
-                };
-            }
-            return RowIcon {
-                file: plain.and_then(|plain| self.icons.first(&[plain])),
-                emblem: glyph.emblem(),
-            };
+            return folder_row_icon(glyph, &|names| self.icons.first(names));
         }
         RowIcon {
             file: self.icons.first(&icon_candidates(entry, icon_names)),
@@ -954,14 +1007,7 @@ impl FilesApp {
     /// The content area's width: the pane less the navigation pane and
     /// every side panel that is drawn.
     pub(crate) fn content_width(&self) -> f32 {
-        f32::from(self.viewport.width)
-            - self.nav_width()
-            - crate::layout::side_panels_width(
-                self.session.details.is_some(),
-                self.session.preview.open,
-                self.compact(),
-                self.session.operations_open,
-            )
+        self.pane_layout().content
     }
 }
 
@@ -991,7 +1037,8 @@ fn entry_icon(icon: RowIcon, fallback: FallbackIcon, size: f32, p: &fluent::Pale
     };
     // The mark sits on the icon's lower right on a disc of the dialog fill,
     // half the icon's size, so it reads at every scale.
-    let mark = (size * 0.5).max(10.0);
+    // Never smaller than 14px, so the brackets read on a 16px list icon.
+    let mark = (size * 0.5).max(14.0);
     div()
         .relative()
         .flex_none()
@@ -1100,7 +1147,15 @@ fn list_row(
                 }),
         );
 
-    element = attach_row_handlers(element, entity, index, location, row.name, row.selected);
+    let is_folder = row.kind == files_core::EntryKind::Directory;
+    element = attach_row_handlers(
+        element,
+        entity,
+        index,
+        location,
+        (row.name, is_folder),
+        row.selected,
+    );
     // The row is inset 4px from the list's sides, as a WinUI list row is,
     // and as wide as the list, so its cells line up under the headers.
     div().w_full().px(px(4.0)).child(element).into_any_element()
@@ -1169,7 +1224,15 @@ fn grid_tile(
             )
         });
 
-    element = attach_row_handlers(element, entity, index, location, row.name, row.selected);
+    let is_folder = row.kind == files_core::EntryKind::Directory;
+    element = attach_row_handlers(
+        element,
+        entity,
+        index,
+        location,
+        (row.name, is_folder),
+        row.selected,
+    );
     element.into_any_element()
 }
 
@@ -1184,7 +1247,7 @@ fn attach_row_handlers(
     entity: &Entity<FilesApp>,
     index: usize,
     location: Option<files_core::Location>,
-    label: String,
+    (label, is_folder): (String, bool),
     selected: bool,
 ) -> Stateful<Div> {
     let clicked = entity.clone();
@@ -1242,6 +1305,7 @@ fn attach_row_handlers(
             DraggedEntry {
                 location,
                 label: label.clone(),
+                is_folder,
             },
             move |dragged, _offset, _window, cx| {
                 let label = dragged.label.clone();

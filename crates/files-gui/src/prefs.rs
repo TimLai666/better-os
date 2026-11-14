@@ -231,6 +231,36 @@ impl Default for FilesPreferences {
     }
 }
 
+/// The preferences a window writes when another window may have written
+/// since it read them: every field this window changed (`ours` differs from
+/// `base`, what it last read or wrote) from `ours`, every other one from
+/// `disk`. One window's sidebar width no longer undoes another's view mode.
+pub fn merge_preferences(
+    base: &FilesPreferences,
+    ours: &FilesPreferences,
+    disk: &FilesPreferences,
+) -> FilesPreferences {
+    let fallback = *ours;
+    let (
+        Ok(serde_json::Value::Object(base_fields)),
+        Ok(serde_json::Value::Object(our_fields)),
+        Ok(serde_json::Value::Object(mut merged)),
+    ) = (
+        serde_json::to_value(base),
+        serde_json::to_value(ours),
+        serde_json::to_value(disk),
+    )
+    else {
+        return fallback;
+    };
+    for (key, value) in &our_fields {
+        if base_fields.get(key) != Some(value) {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(merged)).unwrap_or(fallback)
+}
+
 impl FilesPreferences {
     pub fn order(&self) -> SortOrder {
         SortOrder::new(
