@@ -115,6 +115,15 @@ pub enum Dialog {
         path: PathBuf,
         force: bool,
     },
+    /// texts: [reason, which may be blank]
+    LockWorktree {
+        path: PathBuf,
+    },
+    /// `git worktree prune`: every worktree it would clear from the list
+    /// (Git cannot clear just one).
+    ClearWorktrees {
+        paths: Vec<PathBuf>,
+    },
     /// texts: [name, url]
     Remotes {
         editing: Option<String>,
@@ -247,6 +256,7 @@ pub fn field_count(dialog: &Dialog) -> usize {
         | Dialog::PickBranch { .. }
         | Dialog::CreateTag { .. }
         | Dialog::RenameWorktree { .. }
+        | Dialog::LockWorktree { .. }
         | Dialog::SignIn { enterprise: false } => 1,
         Dialog::SignIn { enterprise: true } => 2,
         Dialog::Clone { .. }

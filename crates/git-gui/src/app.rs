@@ -789,10 +789,17 @@ impl GitApp {
         self.dialog_touched = [false; 3];
         // After the dialog has drawn once: the dialog takes focus for its
         // own trap on its first frame, and the first field takes it next.
+        // A dialog opened from a menu item is drawn one frame later than
+        // one opened from a button (the menu closes first), so the field is
+        // focused on each of the next two frames; the second is a no-op
+        // when the first already held.
         if crate::dialogs::field_count(self.session.dialog.as_ref().expect("opened")) > 0 {
             let first = self.inputs.dialog[0].clone();
             cx.on_next_frame(window, move |_, window, cx| {
                 first.update(cx, |state, cx| state.focus(window, cx));
+                cx.on_next_frame(window, move |_, window, cx| {
+                    first.update(cx, |state, cx| state.focus(window, cx));
+                });
             });
         }
     }

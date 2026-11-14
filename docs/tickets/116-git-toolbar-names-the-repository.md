@@ -125,7 +125,13 @@ both dropdowns, main and linked worktree, both languages, 1280px and 960px.
   write of the recent list starts from the file, which is also re-read when
   the repository dropdown opens; the names are worked out once per frame.
 
-Not built: showing git's lock reason, and Lock, Unlock, and Prune. They need
-`git worktree lock`, `unlock`, and `prune` in `crates/git-platform` and the
-reason parsed in `crates/git-core/src/worktree.rs`, which this ticket's
-change list does not include.
+- **Locked worktrees, and ones that are gone.** Git's lock reason is read
+  (`Worktree::lock_reason`) and shown ("Locked: on a USB stick"). A linked
+  worktree's menu offers "Lock worktree…" (reason optional) and, once
+  locked, "Unlock worktree"; Move and Remove stay off until it is unlocked,
+  and Remove never passes `--force` twice. One whose folder is gone offers
+  "Clear from the list…", which runs `git worktree prune`: Git cannot narrow
+  it to one worktree, so the confirmation names every worktree it would
+  clear when there is more than one, and says no files are deleted; a locked
+  one is not cleared. The new commands go through `git-platform`'s
+  `lock_worktree`, `unlock_worktree`, and `prune_worktrees`.

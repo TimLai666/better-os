@@ -11,6 +11,12 @@ fn reads_worktrees() {
     assert_eq!(worktrees[0].branch.as_deref(), Some("main"));
     assert_eq!(worktrees[1].path, PathBuf::from("/repo-wt"));
     assert!(worktrees[1].detached && worktrees[1].locked);
+    assert_eq!(worktrees[1].lock_reason, None, "locked with no reason");
+    let reasoned =
+        parse_worktrees(b"worktree /r\0HEAD a\0\0worktree /w\0HEAD b\0locked on a USB stick\0\0")
+            .unwrap();
+    assert!(reasoned[1].locked);
+    assert_eq!(reasoned[1].lock_reason.as_deref(), Some("on a USB stick"));
     assert!(worktrees[2].prunable);
     assert!(parse_worktrees(b"HEAD aaa\0").is_err());
     assert!(parse_worktrees(b"").unwrap().is_empty());

@@ -222,8 +222,10 @@ pub struct WorktreeRow {
     pub current: bool,
     /// Its folder is gone; Git would prune it.
     pub missing: bool,
-    /// `git worktree lock`ed: Git will not move or remove it.
+    /// `git worktree lock`ed: Git will not move, remove, or prune it.
     pub locked: bool,
+    /// Why, when the lock gave a reason.
+    pub lock_reason: Option<String>,
 }
 
 /// Something the worktree dropdown offers for one worktree.
@@ -234,6 +236,10 @@ pub enum WorktreeAction {
     CopyPath,
     Move,
     Remove,
+    Lock,
+    Unlock,
+    /// `git worktree prune`, for one whose folder is gone.
+    Clear,
 }
 
 impl WorktreeRow {
@@ -248,7 +254,10 @@ impl WorktreeRow {
     /// What its More button and context menu offer, each with whether it
     /// can be chosen. Moving or removing the open worktree is not offered:
     /// the window's own folder would go from under it, so another worktree
-    /// is opened first. A locked one shows Remove, off, saying why.
+    /// is opened first. A locked one shows Move and Remove, off, saying why,
+    /// and offers Unlock; any other linked one offers Lock (Git does not
+    /// lock the main worktree). One whose folder is gone offers Clear from
+    /// the list, once it is unlocked.
     pub fn actions(&self) -> Vec<(WorktreeAction, bool)> {
         let mut actions = Vec::new();
         if !self.current && !self.missing {
@@ -261,6 +270,15 @@ impl WorktreeRow {
         if !self.main && !self.current && !self.missing {
             actions.push((WorktreeAction::Move, !self.locked));
             actions.push((WorktreeAction::Remove, self.removable()));
+        }
+        if !self.main {
+            if self.locked {
+                actions.push((WorktreeAction::Unlock, true));
+            } else if self.missing {
+                actions.push((WorktreeAction::Clear, true));
+            } else {
+                actions.push((WorktreeAction::Lock, true));
+            }
         }
         actions
     }
@@ -692,6 +710,7 @@ fn worktree_rows(info: &Known, is_current: &impl Fn(&Path) -> bool) -> Vec<Workt
                 current: is_current(&path),
                 missing: w.prunable,
                 locked: w.locked,
+                lock_reason: w.lock_reason.clone(),
                 path,
             })
         })
@@ -1187,6 +1206,7 @@ mod tests {
             current,
             missing,
             locked,
+            lock_reason: None,
         };
         let offered = |r: &WorktreeRow| r.actions();
         // Another linked worktree: everything.
@@ -1197,7 +1217,8 @@ mod tests {
                 (A::ShowInFiles, true),
                 (A::CopyPath, true),
                 (A::Move, true),
-                (A::Remove, true)
+                (A::Remove, true),
+                (A::Lock, true)
             ]
         );
         // The main worktree is never moved or removed.
@@ -1206,25 +1227,32 @@ mod tests {
         assert!(
             offered(&main)
                 .iter()
-                .all(|(a, _)| !matches!(a, A::Move | A::Remove))
+                .all(|(a, _)| !matches!(a, A::Move | A::Remove | A::Lock | A::Unlock | A::Clear))
         );
         // The open one is neither opened again, moved, nor removed.
         let current = row(false, true, false, false);
         assert!(!current.removable());
         assert_eq!(
             offered(&current),
-            [(A::ShowInFiles, true), (A::CopyPath, true)]
+            [(A::ShowInFiles, true), (A::CopyPath, true), (A::Lock, true)]
         );
         // A missing one cannot be opened, shown, moved, or removed.
         let missing = row(false, false, true, false);
         assert!(!missing.removable());
-        assert_eq!(offered(&missing), [(A::CopyPath, true)]);
+        assert_eq!(offered(&missing), [(A::CopyPath, true), (A::Clear, true)]);
+        // Locked and gone: unlocked first, then cleared.
+        assert_eq!(
+            offered(&row(false, false, true, true)),
+            [(A::CopyPath, true), (A::Unlock, true)]
+        );
         // A locked one shows Move and Remove, off.
         let locked = row(false, false, false, true);
         assert!(!locked.removable());
         assert!(offered(&locked).contains(&(A::Move, false)));
         assert!(offered(&locked).contains(&(A::Remove, false)));
         assert!(offered(&locked).contains(&(A::Open, true)));
+        assert!(offered(&locked).contains(&(A::Unlock, true)));
+        assert!(!offered(&locked).iter().any(|(a, _)| *a == A::Lock));
     }
 
     #[test]
@@ -1242,12 +1270,12 @@ mod tests {
             ],
         );
         let rows = worktree_list(&f.known(&f.main).unwrap(), None, "");
-        let locked: Vec<&str> = rows
+        let locked: Vec<(&str, Option<&str>)> = rows
             .iter()
             .filter(|w| w.locked)
-            .map(|w| w.name.as_str())
+            .map(|w| (w.name.as_str(), w.lock_reason.as_deref()))
             .collect();
-        assert_eq!(locked, ["ticket-102"]);
+        assert_eq!(locked, [("ticket-102", Some("on a stick"))]);
     }
 
     #[test]

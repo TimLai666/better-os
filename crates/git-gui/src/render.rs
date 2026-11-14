@@ -3320,6 +3320,54 @@ impl GitApp {
                 primary = Some(c.rename);
                 push(field(0, c.new_folder).into_any_element());
             }
+            Dialog::LockWorktree { path } => {
+                title = c.lock_worktree_title().into();
+                primary = Some(c.lock());
+                push(
+                    label(
+                        fill(
+                            c.lock_worktree_body(),
+                            &[("name", &crate::repositories::folder_name(path))],
+                        ),
+                        BODY,
+                        p.text_primary,
+                    )
+                    .into_any_element(),
+                );
+                push(field(0, c.lock_reason()).into_any_element());
+            }
+            Dialog::ClearWorktrees { paths } => {
+                title = c.clear_worktrees_title().into();
+                primary = Some(c.clear());
+                if let [path] = paths.as_slice() {
+                    push(
+                        label(
+                            fill(
+                                c.clear_worktree_body(),
+                                &[("path", &path.display().to_string())],
+                            ),
+                            BODY,
+                            p.text_primary,
+                        )
+                        .into_any_element(),
+                    );
+                } else {
+                    push(
+                        label(
+                            fill(c.clear_worktrees_body(), &[("n", &paths.len().to_string())]),
+                            BODY,
+                            p.text_primary,
+                        )
+                        .into_any_element(),
+                    );
+                    for path in paths {
+                        push(
+                            label(path.display().to_string(), CODE, p.text_primary)
+                                .into_any_element(),
+                        );
+                    }
+                }
+            }
             Dialog::RemoveWorktree { path, force } => {
                 title = c.remove_worktree_title.into();
                 primary = Some(c.remove);
@@ -4312,6 +4360,8 @@ pub(crate) fn confirm(
         Dialog::AddWorktree { create } => s.add_worktree(PathBuf::from(text(0)), &text(1), create),
         Dialog::RenameWorktree { path } => s.rename_worktree(path, PathBuf::from(text(0))),
         Dialog::RemoveWorktree { path, force } => s.remove_worktree(path, force),
+        Dialog::LockWorktree { path } => s.lock_worktree(path, &text(0)),
+        Dialog::ClearWorktrees { .. } => s.clear_worktrees(),
         Dialog::Remotes { editing } => {
             match editing {
                 Some(name) => s.set_remote_url(name, &text(1)),

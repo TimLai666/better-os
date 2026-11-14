@@ -1659,3 +1659,78 @@ fn two_windows_share_the_recent_list() {
     second.read_worktrees();
     assert_eq!(second.recent, [main, one]);
 }
+
+/// Ticket 116: lock with a reason and unlock from the worktree dropdown;
+/// Remove is not offered while it is locked; a worktree whose folder is gone
+/// is cleared from the list after a confirmation that names every one Git
+/// would clear, and a locked one stays.
+#[test]
+fn worktrees_are_locked_unlocked_and_cleared_from_the_list() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let root = s.tmp.path().canonicalize().unwrap();
+    let [one, gone, also_gone, away] =
+        ["wt-one", "wt-gone", "wt-also-gone", "wt-away"].map(|n| root.join(n));
+    for (path, branch) in [(&one, "one"), (&gone, "g"), (&also_gone, "a"), (&away, "w")] {
+        s.git(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            branch,
+            path.to_str().unwrap(),
+        ]);
+    }
+    let mut session = opened(&s);
+    let row = |session: &GitSession, path: &Path| {
+        session
+            .worktree_rows("")
+            .into_iter()
+            .find(|w| w.path == path)
+            .unwrap()
+    };
+
+    session.lock_worktree(one.clone(), "  on a USB stick ");
+    session.run_git_jobs();
+    let locked = row(&session, &one);
+    assert!(locked.locked);
+    assert_eq!(locked.lock_reason.as_deref(), Some("on a USB stick"));
+    session.ask_remove_worktree(one.clone());
+    assert!(session.dialog.is_none(), "a locked worktree is not removed");
+    session.unlock_worktree(one.clone());
+    session.run_git_jobs();
+    assert!(!row(&session, &one).locked);
+    session.ask_remove_worktree(one.clone());
+    assert!(matches!(
+        session.dialog,
+        Some(Dialog::RemoveWorktree { .. })
+    ));
+    session.dialog = None;
+
+    session.lock_worktree(away.clone(), "");
+    session.run_git_jobs();
+    assert_eq!(row(&session, &away).lock_reason, None);
+    for path in [&gone, &also_gone, &away] {
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    session.refresh();
+    session.run_git_jobs();
+    session.ask_clear_worktrees();
+    let Some(Dialog::ClearWorktrees { paths }) = session.dialog.clone() else {
+        panic!("{:?}", session.dialog);
+    };
+    let mut named = paths.clone();
+    named.sort();
+    let mut expected = vec![gone.clone(), also_gone.clone()];
+    expected.sort();
+    assert_eq!(named, expected, "both, and not the locked one");
+    session.clear_worktrees();
+    session.run_git_jobs();
+    let left: Vec<PathBuf> = session
+        .worktree_rows("")
+        .into_iter()
+        .map(|w| w.path)
+        .collect();
+    assert!(left.contains(&away) && left.contains(&one));
+    assert!(!left.contains(&gone) && !left.contains(&also_gone));
+}

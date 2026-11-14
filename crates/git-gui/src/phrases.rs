@@ -176,6 +176,67 @@ impl Copy {
         self.t("Locked", "已鎖定")
     }
 
+    /// After the branch of a worktree locked with a reason.
+    pub fn worktree_locked_because(&self) -> &'static str {
+        self.t("Locked: {reason}", "已鎖定：{reason}")
+    }
+
+    pub fn lock_worktree(&self) -> &'static str {
+        self.t("Lock worktree…", "鎖定工作樹…")
+    }
+
+    pub fn lock_worktree_title(&self) -> &'static str {
+        self.t("Lock worktree", "鎖定工作樹")
+    }
+
+    pub fn lock_worktree_body(&self) -> &'static str {
+        self.t(
+            "While {name} is locked, Git won't move, remove, or clear it from the list, even when its folder is on a drive that isn't connected.",
+            "{name} 鎖定後，Git 不會移動、移除它，也不會把它從清單清除，即使它的資料夾所在的磁碟沒有接上。",
+        )
+    }
+
+    pub fn lock_reason(&self) -> &'static str {
+        self.t("Reason (optional)", "原因（可不填）")
+    }
+
+    pub fn lock(&self) -> &'static str {
+        self.t("Lock", "鎖定")
+    }
+
+    pub fn unlock_worktree(&self) -> &'static str {
+        self.t("Unlock worktree", "解除鎖定工作樹")
+    }
+
+    /// For a worktree whose folder is gone: `git worktree prune`.
+    pub fn clear_worktree(&self) -> &'static str {
+        self.t("Clear from the list…", "從清單清除…")
+    }
+
+    pub fn clear_worktrees_title(&self) -> &'static str {
+        self.t("Clear from the list", "從清單清除")
+    }
+
+    /// The confirmation for one worktree; nothing on disk changes.
+    pub fn clear_worktree_body(&self) -> &'static str {
+        self.t(
+            "{path} can't be found. Clear it from the list of worktrees? No files are deleted.",
+            "找不到 {path}。要把它從工作樹清單清除嗎？不會刪除任何檔案。",
+        )
+    }
+
+    /// The confirmation when Git would clear more than one.
+    pub fn clear_worktrees_body(&self) -> &'static str {
+        self.t(
+            "Git clears every worktree whose folder can't be found, all at once. These {n} are cleared from the list; no files are deleted:",
+            "Git 會一次清除所有找不到資料夾的工作樹。下面這 {n} 個會從清單清除，不會刪除任何檔案：",
+        )
+    }
+
+    pub fn clear(&self) -> &'static str {
+        self.t("Clear", "清除")
+    }
+
     /// Remove, off, for a locked worktree.
     pub fn remove_locked_worktree(&self) -> &'static str {
         self.t(

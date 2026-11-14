@@ -395,7 +395,11 @@ impl GitApp {
             detail = format!("{detail} · {}", c.worktree_main);
         }
         if w.locked {
-            detail = format!("{detail} · {}", c.worktree_locked());
+            let locked = match &w.lock_reason {
+                Some(reason) => fill(c.worktree_locked_because(), &[("reason", reason)]),
+                None => c.worktree_locked().to_string(),
+            };
+            detail = format!("{detail} · {locked}");
         }
         if w.missing {
             detail = format!("{detail} · {}", c.missing);
@@ -583,6 +587,40 @@ impl GitApp {
                         this.session.ask_remove_worktree(path.clone())
                     }),
                 ),
+                WorktreeAction::Lock => {
+                    entries.push(MenuEntry::Separator);
+                    item(
+                        c.lock_worktree(),
+                        enabled,
+                        cx,
+                        Box::new(move |this, _, _| {
+                            this.flyout = None;
+                            this.session.dialog =
+                                Some(crate::dialogs::Dialog::LockWorktree { path: path.clone() })
+                        }),
+                    )
+                }
+                WorktreeAction::Unlock => {
+                    entries.push(MenuEntry::Separator);
+                    item(
+                        c.unlock_worktree(),
+                        enabled,
+                        cx,
+                        Box::new(move |this, _, _| this.session.unlock_worktree(path.clone())),
+                    )
+                }
+                WorktreeAction::Clear => {
+                    entries.push(MenuEntry::Separator);
+                    item(
+                        c.clear_worktree(),
+                        enabled,
+                        cx,
+                        Box::new(move |this, _, _| {
+                            this.flyout = None;
+                            this.session.ask_clear_worktrees()
+                        }),
+                    )
+                }
             };
             entries.push(entry);
         }

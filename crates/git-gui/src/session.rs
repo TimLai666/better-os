@@ -110,6 +110,9 @@ pub enum OpKind {
     AddWorktree,
     RenameWorktree,
     RemoveWorktree,
+    LockWorktree,
+    UnlockWorktree,
+    PruneWorktrees,
     Fetch,
     BackgroundFetch,
     Pull,
@@ -271,6 +274,12 @@ pub enum Op {
     /// What a worktree holds that removing it would delete, for the
     /// remove confirmation (ticket 116).
     WorktreeChanges(PathBuf),
+    LockWorktree {
+        path: PathBuf,
+        reason: Option<String>,
+    },
+    UnlockWorktree(PathBuf),
+    PruneWorktrees,
 }
 
 impl Op {
@@ -295,6 +304,9 @@ impl Op {
             Op::AddWorktree { .. } => OpKind::AddWorktree,
             Op::RenameWorktree { .. } => OpKind::RenameWorktree,
             Op::RemoveWorktree { .. } => OpKind::RemoveWorktree,
+            Op::LockWorktree { .. } => OpKind::LockWorktree,
+            Op::UnlockWorktree(_) => OpKind::UnlockWorktree,
+            Op::PruneWorktrees => OpKind::PruneWorktrees,
             Op::Fetch {
                 background: true, ..
             } => OpKind::BackgroundFetch,
@@ -566,6 +578,11 @@ impl Job {
                 create,
             } => changed(kind, git.add_worktree(root, &path, &branch, create)),
             Op::RenameWorktree { from, to } => changed(kind, git.move_worktree(root, &from, &to)),
+            Op::LockWorktree { path, reason } => {
+                changed(kind, git.lock_worktree(root, &path, reason.as_deref()))
+            }
+            Op::UnlockWorktree(path) => changed(kind, git.unlock_worktree(root, &path)),
+            Op::PruneWorktrees => changed(kind, git.prune_worktrees(root)),
             Op::RemoveWorktree { path, force } => {
                 changed(kind, git.remove_worktree(root, &path, force))
             }
@@ -2917,6 +2934,37 @@ impl GitSession {
         self.dialog = None;
         self.worktree_changes = None;
         self.push_op(Op::RemoveWorktree { path, force });
+    }
+
+    /// Locks a worktree, with a reason when one was typed.
+    pub fn lock_worktree(&mut self, path: PathBuf, reason: &str) {
+        self.dialog = None;
+        let reason = Some(reason.trim().to_string()).filter(|r| !r.is_empty());
+        self.push_op(Op::LockWorktree { path, reason });
+    }
+
+    pub fn unlock_worktree(&mut self, path: PathBuf) {
+        self.push_op(Op::UnlockWorktree(path));
+    }
+
+    /// Asks before clearing worktrees whose folder is gone from the list.
+    /// Git clears every one of them at once, so the confirmation names
+    /// each; a locked one stays and is not named.
+    pub fn ask_clear_worktrees(&mut self) {
+        let paths: Vec<PathBuf> = self
+            .worktree_rows("")
+            .into_iter()
+            .filter(|w| w.missing && !w.locked)
+            .map(|w| w.path)
+            .collect();
+        if !paths.is_empty() {
+            self.dialog = Some(Dialog::ClearWorktrees { paths });
+        }
+    }
+
+    pub fn clear_worktrees(&mut self) {
+        self.dialog = None;
+        self.push_op(Op::PruneWorktrees);
     }
 
     /// Asks before removing a worktree, and reads in the background what

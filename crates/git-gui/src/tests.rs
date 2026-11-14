@@ -1402,6 +1402,7 @@ fn worktree(path: &str, branch: Option<&str>, main: bool) -> git_core::Worktree 
         bare: false,
         detached: branch.is_none(),
         locked: false,
+        lock_reason: None,
         prunable: false,
         main,
     }
