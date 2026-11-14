@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use better_core::package_health::{HealthProbe, HealthVerdict};
 use manager_ipc::{
-    OutcomeStatus, TransactionOutcome, WireAction, WireArtifact, WirePlan, WireRecovery, WireStep,
+    OutcomeStatus, TransactionOutcome, WireAction, WireArtifact, WireCompanion, WirePlan,
+    WireRecovery, WireStep,
 };
 use manager_platform::download::HttpDownloader;
 use manager_platform::dpkg::PackageStateProbe;
@@ -211,6 +212,17 @@ impl<'a> RealDriver<'a> {
     /// `Ok(None)` when no step crosses the privileged boundary — a plan of
     /// only Verify, Enable, and Disable steps — so nothing is sent at all.
     pub fn wire_plan(&self, plan: &TransactionPlan) -> Result<Option<WirePlan>, FailureEvidence> {
+        self.wire_plan_with(plan, true)
+    }
+
+    /// The same plan, with or without the companion packages (ADR 0018). A
+    /// privileged service from before companions refuses the field, and the
+    /// plan without it is exactly what that service always installed.
+    fn wire_plan_with(
+        &self,
+        plan: &TransactionPlan,
+        with_companions: bool,
+    ) -> Result<Option<WirePlan>, FailureEvidence> {
         let mut steps = Vec::new();
         for step in plan.steps() {
             let Some(action) = wire_action(step.operation) else {
@@ -223,12 +235,32 @@ impl<'a> RealDriver<'a> {
                 sha256: artifact.sha256.clone(),
                 size_bytes: artifact.expected_bytes.unwrap_or(1),
             });
+            let companions = step
+                .artifact
+                .as_ref()
+                .filter(|_| with_companions)
+                .map(|artifact| {
+                    artifact
+                        .companions
+                        .iter()
+                        .map(|companion| WireCompanion {
+                            package: companion.package.clone(),
+                            artifact: WireArtifact {
+                                filename: companion.release_asset.clone(),
+                                sha256: companion.sha256.clone(),
+                                size_bytes: companion.expected_bytes.unwrap_or(1),
+                            },
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             steps.push(WireStep {
                 component: step.component.to_string(),
                 action,
                 before_version: step.before_version.clone(),
                 after_version: step.after_version.clone(),
                 artifact,
+                companions,
             });
         }
 
@@ -262,49 +294,90 @@ impl<'a> RealDriver<'a> {
             let Some(artifact) = &step.artifact else {
                 continue;
             };
-            let Some(url) = &artifact.url else {
-                // A restore reinstalls something already fetched. If it is no
-                // longer cached there is nothing to reinstall, and pretending
-                // otherwise would promise a restore that cannot happen.
-                if self.downloader.cache().holds(&artifact.sha256) {
-                    continue;
+            // The step's own package, then each companion the daemon will
+            // install with it, each verified against its own checksum.
+            let files = std::iter::once((
+                artifact.url.as_ref(),
+                &artifact.sha256,
+                &artifact.release_asset,
+                artifact.expected_bytes,
+            ))
+            .chain(artifact.companions.iter().map(|companion| {
+                (
+                    companion.url.as_ref(),
+                    &companion.sha256,
+                    &companion.release_asset,
+                    companion.expected_bytes,
+                )
+            }));
+            for (url, sha256, release_asset, expected_bytes) in files {
+                let outcome = self.fetch_and_stage(
+                    step,
+                    url,
+                    sha256,
+                    release_asset,
+                    expected_bytes,
+                    progress,
+                );
+                if !matches!(outcome, StageOutcome::Completed) {
+                    return outcome;
                 }
-                return StageOutcome::Failed(FailureEvidence::with_detail(
-                    "restore.artifact_missing",
-                    step.component.to_string(),
-                ));
-            };
-
-            let request = DownloadRequest {
-                component: step.component.clone(),
-                url: url.clone(),
-                sha256: artifact.sha256.clone(),
-                expected_bytes: artifact.expected_bytes,
-            };
-            let component = step.component.clone();
-            let outcome = self.downloader.fetch(&request, &mut |downloaded| {
-                progress(StageProgress::Downloading {
-                    component: component.to_string(),
-                    received_bytes: downloaded.received_bytes,
-                    total_bytes: downloaded.total_bytes,
-                });
-            });
-
-            match outcome {
-                Ok(receipt) => {
-                    if let Err(error) = self.executor.stage_artifact(
-                        &self.transaction_id,
-                        &artifact.release_asset,
-                        &artifact.sha256,
-                        &receipt.artifact_path,
-                    ) {
-                        return StageOutcome::Failed(evidence_for(&error));
-                    }
-                }
-                Err(error) => return StageOutcome::Failed(evidence_for(&error)),
             }
         }
         StageOutcome::Completed
+    }
+
+    fn fetch_and_stage(
+        &self,
+        step: &PlanStep,
+        url: Option<&String>,
+        sha256: &str,
+        release_asset: &str,
+        expected_bytes: Option<u64>,
+        progress: &mut dyn FnMut(StageProgress),
+    ) -> StageOutcome {
+        let Some(url) = url else {
+            // A restore reinstalls something already fetched. If it is no
+            // longer cached there is nothing to reinstall, and pretending
+            // otherwise would promise a restore that cannot happen.
+            if self.downloader.cache().holds(sha256) {
+                return StageOutcome::Completed;
+            }
+            return StageOutcome::Failed(FailureEvidence::with_detail(
+                "restore.artifact_missing",
+                step.component.to_string(),
+            ));
+        };
+
+        let request = DownloadRequest {
+            component: step.component.clone(),
+            url: url.clone(),
+            sha256: sha256.to_string(),
+            expected_bytes,
+        };
+        let component = step.component.clone();
+        let outcome = self.downloader.fetch(&request, &mut |downloaded| {
+            progress(StageProgress::Downloading {
+                component: component.to_string(),
+                received_bytes: downloaded.received_bytes,
+                total_bytes: downloaded.total_bytes,
+            });
+        });
+
+        match outcome {
+            Ok(receipt) => {
+                if let Err(error) = self.executor.stage_artifact(
+                    &self.transaction_id,
+                    release_asset,
+                    sha256,
+                    &receipt.artifact_path,
+                ) {
+                    return StageOutcome::Failed(evidence_for(&error));
+                }
+                StageOutcome::Completed
+            }
+            Err(error) => StageOutcome::Failed(evidence_for(&error)),
+        }
     }
 
     fn apply(
@@ -324,7 +397,22 @@ impl<'a> RealDriver<'a> {
             component: component.clone(),
         });
 
-        match self.executor.execute_plan(&wire, &mut |_, _| {}) {
+        let mut answer = self.executor.execute_plan(&wire, &mut |_, _| {});
+        if let Err(error) = &answer
+            && refuses_companions(error)
+            && wire.steps.iter().any(|step| !step.companions.is_empty())
+        {
+            // A privileged service from before ADR 0018. It never read the
+            // plan, so nothing ran: send what it can install, the step's own
+            // package alone, which recommends rather than depends on its
+            // companion.
+            match self.wire_plan_with(plan, false) {
+                Ok(Some(plain)) => answer = self.executor.execute_plan(&plain, &mut |_, _| {}),
+                Ok(None) => return StageOutcome::Completed,
+                Err(evidence) => return StageOutcome::Failed(evidence),
+            }
+        }
+        match answer {
             Ok(outcome) => {
                 let result = outcome_to_stage(&outcome);
                 self.outcome = Some(outcome);
@@ -738,6 +826,13 @@ fn unit_failure(failure: UnitFailure) -> FailureEvidence {
     )
 }
 
+/// Whether the privileged service refused a plan because it does not know
+/// the `companions` field: one from before ADR 0018, whose plan parser
+/// refuses fields it does not know.
+pub(crate) fn refuses_companions(error: &PlatformError) -> bool {
+    error.to_string().contains("unknown field `companions`")
+}
+
 /// Maps a platform failure onto the stable keys a presentation layer localizes.
 pub(crate) fn evidence_for(error: &PlatformError) -> FailureEvidence {
     match error {
@@ -1125,6 +1220,147 @@ mod tests {
         assert_eq!(wire.steps[0].component, "better-monitor");
         assert_eq!(wire.steps[0].action, WireAction::Install);
         assert!(wire.steps[0].artifact.is_some());
+    }
+
+    /// A privileged service that remembers every plan and, like one from
+    /// before ADR 0018, refuses a plan that names companions.
+    struct OldDaemon {
+        plans: std::sync::Mutex<Vec<WirePlan>>,
+        knows_companions: bool,
+    }
+
+    impl manager_platform::PrivilegedTransactionExecutor for OldDaemon {
+        fn stage_artifact(
+            &self,
+            _transaction_id: &str,
+            _filename: &str,
+            _sha256: &str,
+            _artifact_path: &std::path::Path,
+        ) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn execute_plan(
+            &self,
+            plan: &WirePlan,
+            _progress: &mut dyn FnMut(u32, manager_ipc::ExecutionStage),
+        ) -> Result<TransactionOutcome, PlatformError> {
+            self.plans.lock().unwrap().push(plan.clone());
+            if !self.knows_companions && plan.steps.iter().any(|step| !step.companions.is_empty()) {
+                return Err(PlatformError::DaemonRefused(
+                    "daemon.error.plan_rejected:ipc.error.malformed:unknown field `companions`, expected one of `component`, `action`".to_string(),
+                ));
+            }
+            Ok(TransactionOutcome {
+                protocol_version: manager_ipc::PROTOCOL_VERSION,
+                transaction_id: plan.transaction_id.clone(),
+                status: OutcomeStatus::Succeeded,
+                reports: Vec::new(),
+                rollback_records: Vec::new(),
+            })
+        }
+    }
+
+    /// Better Manager's manifest as a release that ships the shell adapter
+    /// would write it: the 24.04 amd64 artifact names its companion.
+    fn manager_with_companion() -> Manager {
+        // The version follows the workspace, which every manifest carries,
+        // so the fixture keeps matching after a version bump.
+        let version = env!("CARGO_PKG_VERSION");
+        let asset = format!("better-manager_{version}_ubuntu-24.04_amd64.deb");
+        let manifest = include_str!("../../../components/manifests/better-manager.yaml").replace(
+            &format!("    release_asset: {asset}\n"),
+            &format!(
+                "    release_asset: {asset}\n    companions:\n      - package: better-shell-adapter\n        url: https://example.com/better-shell-adapter_{version}_ubuntu-24.04_amd64.deb\n        sha256: {}\n        release_asset: better-shell-adapter_{version}_ubuntu-24.04_amd64.deb\n",
+                "c".repeat(64)
+            ),
+        );
+        let manifest = ComponentManifest::parse_yaml(&manifest).unwrap();
+        assert_eq!(
+            manifest
+                .artifacts
+                .iter()
+                .filter(|a| !a.companions.is_empty())
+                .count(),
+            1
+        );
+        Manager::new(
+            ComponentCatalog::from_manifests(vec![manifest]).unwrap(),
+            crate::SystemProfile::default(),
+        )
+    }
+
+    fn run_install(daemon: &OldDaemon) -> StageOutcome {
+        let manager = manager_with_companion();
+        let plan = manager
+            .plan_in_mode(
+                &ManagerState::default(),
+                &ComponentId::new("better-manager").unwrap(),
+                DesiredOperation::Install,
+                ExecutionMode::Real,
+            )
+            .unwrap();
+        let downloader = HttpDownloader::new(manager_platform::download::ArtifactCache::new(
+            std::env::temp_dir().join("better-os-companion-test"),
+        ));
+        let packages = manager_platform::dpkg::FixedPackageStateProbe::new(&[]);
+        let health = better_core::package_health::FakeHealthProbe::with_files(Vec::new());
+        let mut driver = RealDriver::new(
+            &downloader,
+            daemon,
+            &packages,
+            &health,
+            "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            crate::SystemProfile::default(),
+        );
+        driver.run_stage(
+            OperationStage::Installing,
+            &plan,
+            &mut |_| {},
+            &CancelToken::new(),
+        )
+    }
+
+    /// ADR 0018: the companion travels in the same plan step, so the daemon
+    /// installs both in one APT transaction.
+    #[test]
+    fn a_companion_travels_in_the_same_step_as_its_package() {
+        let daemon = OldDaemon {
+            plans: Default::default(),
+            knows_companions: true,
+        };
+        assert_eq!(run_install(&daemon), StageOutcome::Completed);
+        let plans = daemon.plans.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        let step = &plans[0].steps[0];
+        assert_eq!(step.component, "better-manager");
+        assert_eq!(step.companions.len(), 1);
+        assert_eq!(step.companions[0].package, "better-shell-adapter");
+        assert_eq!(
+            step.companions[0].artifact.filename,
+            format!(
+                "better-shell-adapter_{}_ubuntu-24.04_amd64.deb",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        plans[0].validate().unwrap();
+    }
+
+    /// A privileged service from before companions refuses the field without
+    /// running anything; the manager then installs its own package alone,
+    /// which only recommends the adapter, instead of failing its own update.
+    #[test]
+    fn an_older_privileged_service_gets_the_plan_without_companions() {
+        let daemon = OldDaemon {
+            plans: Default::default(),
+            knows_companions: false,
+        };
+        assert_eq!(run_install(&daemon), StageOutcome::Completed);
+        let plans = daemon.plans.lock().unwrap();
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0].steps[0].companions.len(), 1);
+        assert!(plans[1].steps[0].companions.is_empty());
+        assert_eq!(plans[1].transaction_id, plans[0].transaction_id);
     }
 
     #[test]

@@ -177,6 +177,10 @@ pub(crate) struct ManagerApp {
     pub(crate) _bus_task: Option<Task<()>>,
     /// Watches for an update and restarts into it (ticket 105).
     pub(crate) update_restart: better_ui::restart::UpdateRestart,
+    /// The Window attention page (ticket 106).
+    pub(crate) window_attention: crate::window_attention_app::WindowAttentionState,
+    /// Its "Add an app" search field.
+    pub(crate) window_attention_add: Entity<InputState>,
 }
 
 /// What a real transaction is currently moving.
@@ -230,6 +234,7 @@ impl ManagerApp {
         let subscription = Self::subscribe_to_search(&search, window, cx);
         let nav_search = Self::nav_search_input(locale, "", window, cx);
         let nav_search_subscription = cx.observe(&nav_search, |_, _, cx| cx.notify());
+        let window_attention_add = Self::window_attention_input(locale, window, cx);
         let page = if state.active_operation.is_some() {
             Page::Installing
         } else {
@@ -313,6 +318,8 @@ impl ManagerApp {
                 window,
                 cx,
             ),
+            window_attention: Default::default(),
+            window_attention_add,
         };
         if let Some(view) = handoff.and_then(|h| h.state::<crate::restart::ManagerView>()) {
             app.restore_view(view, window, cx);
@@ -321,6 +328,21 @@ impl ManagerApp {
         app.refresh_catalog_at_launch(cx);
         app.read_package_system_record(cx);
         app
+    }
+
+    /// The Window attention page's "Add an app" field. It is observed so the
+    /// suggestions follow what is typed.
+    fn window_attention_input(
+        locale: Locale,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(crate::window_attention_page::copy(locale).add_placeholder)
+        });
+        cx.observe(&input, |_, _, cx| cx.notify()).detach();
+        input
     }
 
     fn nav_search_input(
@@ -736,6 +758,7 @@ impl ManagerApp {
         // was made in, so it is made again, keeping what was typed.
         let typed = self.nav_search.read(cx).value().to_string();
         self.reset_nav_search(&typed, window, cx);
+        self.window_attention_add = Self::window_attention_input(locale, window, cx);
         let current_value = self.search.read(cx).value().to_string();
         let search = cx.new(|cx| {
             InputState::new(window, cx)
@@ -803,6 +826,11 @@ impl ManagerApp {
         // shown, as its sidebar item used to.
         if page == Page::Defaults && self.defaults.report.is_none() && !self.defaults.busy {
             self.refresh_defaults(cx);
+        }
+        // Window attention reads the shell and the service each time it is
+        // shown: either can change behind the window's back.
+        if page == Page::WindowAttention {
+            self.refresh_window_attention(cx);
         }
         if page != self.page {
             self.focused_card = None;

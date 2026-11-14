@@ -114,14 +114,18 @@ updated, verified, and rolled back through shared manager operations.
   Tauri, or GTK application code. **One bounded exception exists**, granted by
   the project owner on 2026-08-31 and recorded in ADR 0012: GJS is permitted
   inside the Better Touchpad GNOME Shell adapter extension
-  (`adapters/gnome-shell-touchpad/`) and nowhere else. Inside it, JavaScript may
-  only bridge typed events and typed actions — reporting what the compositor
-  saw, and invoking something GNOME Shell already exposes. It may hold no
-  threshold, no cooldown, no cancellation rule, no conflict decision, no
-  configuration, and no gesture decision, it may execute nothing, and no method
-  it serves may take free text. `crates/touchpad-session/tests/extension.rs`
-  asserts those bounds against the file. Widening them needs a new ADR, not a
-  commit.
+  (`adapters/gnome-shell-touchpad/`) and inside the shared Better OS shell
+  adapter extension (`adapters/gnome-shell-adapter/`, ADR 0018, proposed), and
+  nowhere else. Inside them, JavaScript may only bridge typed events and typed
+  actions — reporting what the compositor saw, and invoking something GNOME
+  Shell already exposes. It may hold no threshold, no cooldown, no cancellation
+  rule, no conflict decision, no configuration, no per-application rule, and no
+  decision of any kind, it may store nothing, it may execute nothing, and no
+  method it serves may take free text. Each relay of the shared extension acts
+  only while its Rust counterpart owns its bus name and otherwise leaves GNOME's
+  own behaviour in place. `crates/touchpad-session/tests/extension.rs` and
+  `crates/window-attention-service/tests/extension.rs` assert those bounds
+  against the files. Widening them needs a new ADR, not a commit.
 - Use GPUI with `gpui-component` for first-party desktop GUIs. `better-ui` owns
   shared presentation primitives.
 - Treat manifests as untrusted input: validate schema, targets, artifacts,

@@ -1,0 +1,9 @@
+{
+  "uuid": "shell-adapter@betteros.org",
+  "name": "Better OS shell adapter",
+  "description": "Relays a few GNOME Shell events and shell-owned actions to Better OS services over the session bus. Each relay is active only while the Better OS service that decides owns its bus name; otherwise GNOME's own behaviour is left in place. It stores nothing and decides nothing.",
+  "shell-version": ["46"],
+  "session-modes": ["user", "unlock-dialog"],
+  "url": "https://github.com/TimLai666/better-os",
+  "version": 1
+}

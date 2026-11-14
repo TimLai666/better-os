@@ -28,7 +28,9 @@ EXTENSION_UUID="touchpad-adapter@betteros.org"
 required_executables() {
     case "$1" in
         better-manager)
-            printf '%s\n' usr/bin/better-manager
+            printf '%s\n' \
+                usr/bin/better-manager \
+                usr/libexec/better-window-attention
             ;;
         better-monitor)
             printf '%s\n' \
@@ -71,7 +73,9 @@ required_data_files() {
         better-manager)
             printf '%s\n' \
                 usr/share/applications/io.betteros.Manager.desktop \
-                usr/share/icons/hicolor/scalable/apps/better-manager.svg
+                usr/share/icons/hicolor/scalable/apps/better-manager.svg \
+                usr/lib/systemd/user/better-window-attention.service \
+                usr/share/dbus-1/services/org.betteros.WindowAttention1.service
             ;;
         better-monitor)
             printf '%s\n' \
@@ -379,6 +383,58 @@ for package_name in \
                 printf 'better-manager must depend on libsecret-tools (secret-tool)\n' >&2
                 exit 1
             }
+            # The window attention service (ADR 0018): its unit starts the
+            # packaged binary under the bus name the extension waits for, and
+            # its activation file starts that unit.
+            grep -q '^ExecStart=/usr/libexec/better-window-attention$' \
+                "$extract_dir/usr/lib/systemd/user/better-window-attention.service" || {
+                printf 'The window attention user unit does not start the packaged service\n' >&2
+                exit 1
+            }
+            grep -q '^BusName=org.betteros.WindowAttention1$' \
+                "$extract_dir/usr/lib/systemd/user/better-window-attention.service" || {
+                printf 'The window attention user unit does not claim its bus name\n' >&2
+                exit 1
+            }
+            grep -q '^SystemdService=better-window-attention.service$' \
+                "$extract_dir/usr/share/dbus-1/services/org.betteros.WindowAttention1.service" || {
+                printf 'The window attention activation file does not start its unit\n' >&2
+                exit 1
+            }
+            # The extension that relays to it ships in its own package, at the
+            # same version, as a Recommends: a Depends would make apt refuse
+            # Better Manager's own in-app update, which installs one .deb with
+            # no source for the adapter.
+            recommends="$(dpkg-deb -f "$deb_path" Recommends)"
+            if ! printf '%s\n' "$recommends" | grep -Eq '(^|,)[[:space:]]*better-shell-adapter \(= [^)]+\)([[:space:]]|,|$)'; then
+                printf 'Better Manager does not recommend better-shell-adapter at its own version: %s\n' "$recommends" >&2
+                exit 1
+            fi
+            if printf '%s\n' "$depends" | grep -q 'better-shell-adapter'; then
+                printf 'Better Manager depends on better-shell-adapter, which breaks its in-app update: %s\n' "$depends" >&2
+                exit 1
+            fi
+            # The window attention service is always on: the maintainer
+            # scripts enable it for every user and start it at install, and the
+            # prerm stops and disables it on removal (ADR 0018).
+            control="$WORK_DIR/better-manager.control"
+            mkdir -p "$control"
+            dpkg-deb --control "$deb_path" "$control"
+            for script in postinst prerm; do
+                sh -n "$control/$script" || {
+                    printf 'The Better Manager %s does not parse as sh\n' "$script" >&2
+                    exit 1
+                }
+                grep -qxF "better_os_always_on_units='better-window-attention.service'" \
+                    "$control/$script" 2>/dev/null || {
+                    printf 'The Better Manager %s does not name its always-on unit\n' "$script" >&2
+                    exit 1
+                }
+            done
+            grep -qxF 'better_os_user_units_prerm "$@" || true' "$control/prerm" || {
+                printf 'The Better Manager prerm does not stop and disable the window attention service\n' >&2
+                exit 1
+            }
             ;;
         better-launcher)
             # Clicking a launcher icon opens the launcher. It must never be the
@@ -541,6 +597,76 @@ for package_name in \
 
     printf 'Verified %s (%s)\n' "$deb_path" "$actual_arch"
 done
+
+# The shared GNOME Shell extension (ADR 0018) has no binary and no window: three
+# files under the uuid GNOME looks for, and no dependency it does not need.
+adapter_name="better-shell-adapter"
+SHELL_ADAPTER_UUID="shell-adapter@betteros.org"
+if [[ -n "$RELEASE_TARGET" ]]; then
+    adapter_paths=("$DIST_DIR/${adapter_name}_"*"_${RELEASE_TARGET}_${EXPECTED_ARCH}.deb")
+else
+    adapter_paths=("$DIST_DIR/${adapter_name}_"*.deb)
+fi
+if [[ ${#adapter_paths[@]} -ne 1 ]]; then
+    printf 'Expected exactly one target-specific package for %s\n' "$adapter_name" >&2
+    exit 1
+fi
+adapter_path="${adapter_paths[0]}"
+adapter_extract="$WORK_DIR/$adapter_name"
+if [[ ! -f "$adapter_path" || ! -f "$adapter_path.sha256" ]]; then
+    printf 'Missing package or checksum: %s\n' "$adapter_name" >&2
+    exit 1
+fi
+(
+    cd "$DIST_DIR"
+    sha256sum --check "$(basename "$adapter_path.sha256")"
+)
+[[ "$(dpkg-deb -f "$adapter_path" Package)" == "$adapter_name" ]] || {
+    printf 'Unexpected package name in %s\n' "$adapter_path" >&2
+    exit 1
+}
+adapter_depends="$(dpkg-deb -f "$adapter_path" Depends)"
+if [[ -n "$adapter_depends" ]]; then
+    printf '%s depends on something it does not need: %s\n' "$adapter_name" "$adapter_depends" >&2
+    exit 1
+fi
+dpkg-deb --extract "$adapter_path" "$adapter_extract"
+adapter_dir="usr/share/gnome-shell/extensions/$SHELL_ADAPTER_UUID"
+for required_file in \
+    "$adapter_dir/metadata.json" \
+    "$adapter_dir/extension.js" \
+    "$adapter_dir/org.betteros.ShellAdapter1.WindowAttention.xml" \
+    usr/share/doc/better-shell-adapter/copyright \
+    usr/share/doc/better-shell-adapter/THIRD-PARTY-LICENSES.md; do
+    if [[ ! -s "$adapter_extract/$required_file" ]]; then
+        printf 'Missing %s in %s\n' "$required_file" "$adapter_name" >&2
+        exit 1
+    fi
+done
+# Nothing else: no binary, no unit, no autostart entry.
+adapter_files="$(cd "$adapter_extract" && find . -type f | sort)"
+if [[ "$(printf '%s\n' "$adapter_files" | wc -l)" -ne 5 ]]; then
+    printf '%s ships more than its extension and notices:\n%s\n' "$adapter_name" "$adapter_files" >&2
+    exit 1
+fi
+grep -q "\"uuid\": \"$SHELL_ADAPTER_UUID\"" "$adapter_extract/$adapter_dir/metadata.json" || {
+    printf 'The shell adapter uuid does not match its install directory\n' >&2
+    exit 1
+}
+grep -q 'org.betteros.ShellAdapter1.WindowAttention.xml' "$adapter_extract/$adapter_dir/extension.js" || {
+    printf 'The packaged shell adapter does not load its interface file\n' >&2
+    exit 1
+}
+grep -q '<interface name="org.betteros.ShellAdapter1.WindowAttention">' \
+    "$adapter_extract/$adapter_dir/org.betteros.ShellAdapter1.WindowAttention.xml" || {
+    printf 'The packaged interface file does not declare the window attention relay\n' >&2
+    exit 1
+}
+cmp "$ROOT_DIR/LICENSE" "$adapter_extract/usr/share/doc/better-shell-adapter/copyright" >/dev/null || {
+    printf 'Project license notice does not match repository LICENSE in %s\n' "$adapter_name" >&2
+    exit 1
+}
+printf 'Verified %s (%s)\n' "$adapter_path" "$EXPECTED_ARCH"
 
 # Better Storage has no window, so it is verified the way the privileged
 # service is rather than with the desktop packages: no graphics dependencies,

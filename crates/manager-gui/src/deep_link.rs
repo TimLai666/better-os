@@ -21,9 +21,10 @@ pub(crate) const OBJECT_PATH: &str = "/io/betteros/Manager";
 pub(crate) const INTERFACE: &str = "io.betteros.Manager";
 
 /// Every name `--page` accepts, in the order `--help` lists them.
-pub(crate) const PAGE_NAMES: [&str; 10] = [
+pub(crate) const PAGE_NAMES: [&str; 11] = [
     "home",
     "system",
+    "window-attention",
     "touchpad",
     "keep-awake",
     "keep-awake/until",
@@ -315,6 +316,10 @@ mod tests {
     fn every_spec_page_name_opens_its_page() {
         assert_eq!(parse_page("home"), Some(page(Page::Home)));
         assert_eq!(parse_page("system"), Some(page(Page::System)));
+        assert_eq!(
+            parse_page("window-attention"),
+            Some(page(Page::WindowAttention))
+        );
         assert_eq!(parse_page("touchpad"), Some(page(Page::Touchpad)));
         assert_eq!(parse_page("keep-awake"), Some(page(Page::KeepAwake)));
         assert_eq!(parse_page("apps"), Some(page(Page::Components)));

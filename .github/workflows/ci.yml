@@ -249,7 +249,8 @@ jobs:
             better-git \
             better-touchpad \
             better-awake \
-            better-storage; do
+            better-storage \
+            better-shell-adapter; do
             asset="dist/${{ matrix.target }}/${package}_${version}_${{ matrix.asset_target }}_${{ matrix.architecture }}.deb"
             test -s "$asset" || { echo "Missing package asset: $asset" >&2; exit 1; }
             test -s "$asset.sha256" || { echo "Missing checksum sidecar: $asset.sha256" >&2; exit 1; }

@@ -29,7 +29,7 @@ use crate::{
 
 /// One line of the content column. Every row is a direct child of the
 /// scrolling column, so a search result can scroll its card into view.
-struct Row {
+pub(crate) struct Row {
     /// The card's id, for the search.
     card: Option<&'static str>,
     /// Space above the row: 4px between cards of one group, 8px under a
@@ -39,7 +39,7 @@ struct Row {
 }
 
 impl Row {
-    fn new(gap: f32, element: impl IntoElement) -> Self {
+    pub(crate) fn new(gap: f32, element: impl IntoElement) -> Self {
         Self {
             card: None,
             gap: px(gap),
@@ -47,7 +47,7 @@ impl Row {
         }
     }
 
-    fn card(gap: f32, card: &'static str, element: impl IntoElement) -> Self {
+    pub(crate) fn card(gap: f32, card: &'static str, element: impl IntoElement) -> Self {
         Self {
             card: Some(card),
             ..Self::new(gap, element)
@@ -56,11 +56,11 @@ impl Row {
 }
 
 /// Space above a group header.
-const GROUP_GAP: f32 = 24.0;
+pub(crate) const GROUP_GAP: f32 = 24.0;
 /// Space under a group header, before its first card.
-const FIRST_CARD_GAP: f32 = 8.0;
+pub(crate) const FIRST_CARD_GAP: f32 = 8.0;
 /// Space between the cards of one group.
-const CARD_GAP: f32 = 4.0;
+pub(crate) const CARD_GAP: f32 = 4.0;
 
 fn severity(severity: attention::Severity) -> Severity {
     match severity {
@@ -71,14 +71,14 @@ fn severity(severity: attention::Severity) -> Severity {
 }
 
 impl ManagerApp {
-    fn title_row(&self, title: &'static str, cx: &App) -> Row {
+    pub(crate) fn title_row(&self, title: &'static str, cx: &App) -> Row {
         Row::new(
             0.0,
             label(title, TITLE, palette(cx).text_primary).pb(px(12.0)),
         )
     }
 
-    fn group_header(&self, title: &'static str, cx: &App) -> Row {
+    pub(crate) fn group_header(&self, title: &'static str, cx: &App) -> Row {
         Row::new(
             GROUP_GAP,
             label(title, BODY_STRONG, palette(cx).text_primary),
@@ -489,6 +489,7 @@ impl ManagerApp {
         match (&self.page, pages::module(route).status) {
             (Page::Home, _) => self.home_rows(cx),
             (Page::Settings, _) => self.settings_rows(cx),
+            (Page::WindowAttention, _) => self.window_attention_rows(cx),
             (_, PageStatus::Placeholder { ticket }) => self.placeholder_rows(route, ticket, cx),
             _ => self.interim_rows(window, cx),
         }
