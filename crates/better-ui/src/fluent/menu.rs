@@ -46,6 +46,9 @@ pub enum MenuEntry {
 pub struct MenuItem {
     pub label: SharedString,
     pub icon: Option<IconName>,
+    /// The window's own SVG, drawn instead of `icon` (a command bar
+    /// command that moved behind `…` keeps the glyph it had in the bar).
+    pub icon_path: Option<SharedString>,
     /// The keyboard shortcut text, such as `Ctrl+C`. It is shown, not bound:
     /// the window binds the shortcut itself.
     pub shortcut: Option<SharedString>,
@@ -62,6 +65,7 @@ impl MenuItem {
         Self {
             label: label.into(),
             icon: None,
+            icon_path: None,
             shortcut: None,
             disabled: false,
             shown: ShownState::Live,
@@ -78,6 +82,12 @@ impl MenuItem {
 
     pub fn icon(mut self, icon: IconName) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// Draws the window's own SVG at `path` instead of a kit icon.
+    pub fn icon_path(mut self, path: impl Into<SharedString>) -> Self {
+        self.icon_path = Some(path.into());
         self
     }
 
@@ -137,13 +147,14 @@ impl MenuEntry {
         self.icon().is_some() || matches!(self, MenuEntry::Item(item) if item.checked.is_some())
     }
 
-    fn icon(&self) -> Option<IconName> {
+    fn icon(&self) -> Option<Icon> {
         match self {
-            MenuEntry::Item(item) => match item.checked {
-                Some(true) => Some(IconName::Check),
-                _ => item.icon.clone(),
+            MenuEntry::Item(item) => match (item.checked, &item.icon_path) {
+                (Some(true), _) => Some(Icon::new(IconName::Check)),
+                (_, Some(path)) => Some(Icon::empty().path(path.clone())),
+                _ => item.icon.clone().map(Icon::new),
             },
-            MenuEntry::Submenu { icon, .. } => icon.clone(),
+            MenuEntry::Submenu { icon, .. } => icon.clone().map(Icon::new),
             MenuEntry::Separator => None,
         }
     }
@@ -461,7 +472,7 @@ impl MenuPanel {
 fn row(
     id: ElementId,
     label: SharedString,
-    icon: Option<IconName>,
+    icon: Option<Icon>,
     icon_column: bool,
     trailing: Option<AnyElement>,
     state: Option<Interaction>,
@@ -493,7 +504,7 @@ fn row(
             div()
                 .size(super::size::ICON)
                 .flex_none()
-                .children(icon.map(|icon| Icon::new(icon).size(super::size::ICON))),
+                .children(icon.map(|icon| icon.size(super::size::ICON))),
         );
     }
     let look = look
@@ -665,7 +676,7 @@ impl RenderOnce for MenuPanel {
                     let mut element = row(
                         ElementId::named_usize("submenu", index),
                         label.clone(),
-                        icon.clone(),
+                        icon.clone().map(Icon::new),
                         icon_column,
                         Some(chevron),
                         shown_state,

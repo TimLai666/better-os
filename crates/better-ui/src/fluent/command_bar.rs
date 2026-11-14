@@ -134,6 +134,9 @@ impl Command {
         let mut item = MenuItem::new(self.label.clone())
             .icon(self.icon.clone())
             .disabled(self.disabled);
+        if let Some(path) = self.icon_path.clone() {
+            item = item.icon_path(path);
+        }
         if let Some(shortcut) = self.shortcut.clone() {
             item = item.shortcut(shortcut);
         }
@@ -281,11 +284,14 @@ impl RenderOnce for AppBarButton {
         } else {
             (p.accent, p.text_on_accent)
         };
-        let icon = div()
-            .relative()
-            .child(icon)
-            .when_some(command.badge.clone(), |icon, badge| {
-                icon.child(
+        // Only a command with a badge gets the wrapper the badge hangs on,
+        // so every other command's icon is laid out exactly as before.
+        let icon = match command.badge.clone() {
+            None => icon.into_any_element(),
+            Some(badge) => div()
+                .relative()
+                .child(icon)
+                .child(
                     text(div(), super::CAPTION)
                         .absolute()
                         .top(px(-10.0))
@@ -301,7 +307,8 @@ impl RenderOnce for AppBarButton {
                         .text_color(badge_text)
                         .child(badge),
                 )
-            });
+                .into_any_element(),
+        };
         let mut element = paint(element, colors, forced, radius::SM, p.is_dark())
             .child(icon)
             .when(!command.icon_only, |b| {

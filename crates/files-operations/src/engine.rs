@@ -27,7 +27,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -167,6 +167,9 @@ struct Job {
     shared: Mutex<JobShared>,
     signal: Condvar,
     listeners: Mutex<Vec<Sender<JobEvent>>>,
+    /// How many windows have filed this job since it finished
+    /// ([`JobEngine::mark_recorded`]).
+    recorded: AtomicUsize,
 }
 
 impl Job {
@@ -323,6 +326,8 @@ impl Default for EngineConfig {
 
 struct Inner {
     jobs: Mutex<HashMap<JobId, Arc<Job>>>,
+    /// How many windows read this engine ([`JobEngine::attach_window`]).
+    windows: AtomicUsize,
     queue: Mutex<VecDeque<JobId>>,
     ready: Condvar,
     stopping: AtomicBool,
@@ -393,6 +398,7 @@ impl JobEngine {
     fn build(config: EngineConfig, observer: Option<Arc<dyn JobObserver>>) -> Self {
         let inner = Arc::new(Inner {
             jobs: Mutex::new(HashMap::new()),
+            windows: AtomicUsize::new(0),
             queue: Mutex::new(VecDeque::new()),
             ready: Condvar::new(),
             stopping: AtomicBool::new(false),
@@ -537,6 +543,7 @@ impl JobEngine {
             }),
             signal: Condvar::new(),
             listeners: Mutex::new(Vec::new()),
+            recorded: AtomicUsize::new(0),
         });
         let (sender, receiver) = channel();
         job.listeners.lock().expect("job listeners").push(sender);
@@ -612,17 +619,39 @@ impl JobEngine {
         snapshots
     }
 
+    /// Says a window reads this engine, for as long as the returned value
+    /// lives. A finished job is let go of ([`JobEngine::forget`]) only once
+    /// every such window has filed it.
+    pub fn attach_window(&self) -> WindowAttachment {
+        self.inner.windows.fetch_add(1, Ordering::SeqCst);
+        WindowAttachment {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    /// A window has filed this finished job (its history row, its undo
+    /// entry). Called once per window per job.
+    pub fn mark_recorded(&self, id: JobId) {
+        if let Some(job) = self.job(id) {
+            job.recorded.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     /// Lets go of a finished job: its snapshot, log and failures leave
     /// memory, and [`JobEngine::jobs`] no longer lists it. Refused (`false`)
-    /// for a job that has not finished, which still has work and listeners.
+    /// for a job that has not finished, which still has work and listeners,
+    /// and for one a window has not filed yet, which would lose that
+    /// window's history row and undo entry.
     ///
     /// What is on disk is untouched: recovery reads the store, not this map.
     /// A window calls this when the person dismisses a finished job.
     pub fn forget(&self, id: JobId) -> bool {
+        let windows = self.inner.windows.load(Ordering::SeqCst);
         let mut jobs = self.inner.jobs.lock().expect("engine jobs");
-        let finished = jobs
-            .get(&id)
-            .is_some_and(|job| job.shared.lock().expect("job state").state.is_terminal());
+        let finished = jobs.get(&id).is_some_and(|job| {
+            job.shared.lock().expect("job state").state.is_terminal()
+                && job.recorded.load(Ordering::SeqCst) >= windows
+        });
         if finished {
             jobs.remove(&id);
         }
@@ -806,6 +835,17 @@ impl JobEngine {
     fn persist(&self, job: &Arc<Job>) {
         let mut shared = job.shared.lock().expect("job state");
         job.write_whole(self.inner.store.as_ref(), &mut shared);
+    }
+}
+
+/// A window's claim on an engine's finished jobs ([`JobEngine::attach_window`]).
+pub struct WindowAttachment {
+    inner: Arc<Inner>,
+}
+
+impl Drop for WindowAttachment {
+    fn drop(&mut self) {
+        self.inner.windows.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -1565,5 +1605,20 @@ mod tests {
         assert!(engine.forget(failed.id));
         assert!(engine.snapshot(failed.id).is_none());
         assert!(!engine.forget(failed.id), "already gone");
+    }
+
+    #[test]
+    fn a_job_is_forgotten_only_once_every_window_filed_it() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = LocalPath::new(root.path()).unwrap();
+        let engine = JobEngine::new(EngineConfig::default());
+        let first = engine.attach_window();
+        let second = engine.attach_window();
+        let job = create_folder(&engine, &parent, "made").id;
+        engine.mark_recorded(job);
+        assert!(!engine.forget(job), "the second window has not filed it");
+        engine.mark_recorded(job);
+        assert!(engine.forget(job));
+        drop((first, second));
     }
 }

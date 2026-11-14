@@ -417,6 +417,9 @@ impl FilesApp {
                     if app.session.pump() {
                         cx.notify();
                     }
+                    if !cx.has_active_drag() && app.dragging_edge.take().is_some() {
+                        cx.notify();
+                    }
                     if app.edge_dirty && !cx.has_active_drag() {
                         app.edge_dirty = false;
                         app.session.save_preferences();
@@ -492,6 +495,7 @@ impl FilesApp {
                         cx.notify();
                     }
                     if app.session.is_listing()
+                        || app.session.is_refreshing()
                         || app.session.jobs.iter().any(|job| !job.state.is_terminal())
                     {
                         BUSY_INTERVAL

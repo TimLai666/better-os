@@ -155,3 +155,59 @@ waits on a decision, then gone), `t119-panel-min-width.png` (293 px at the
 Found and not changed here: at about 1,190 px wide the command bar's last
 buttons (the jobs button and "…") run past the window's right edge instead
 of moving into the overflow menu.
+
+## After review
+
+An independent review of the first version found these, all fixed:
+
+- **One watch for the process.** `files_platform::WatchHub` holds the only
+  inotify instance (a tab each would exhaust the kernel's 128 per user) and
+  one thread that makes and drops watches, reads the mount table (fresh for
+  each folder, so a share mounted later is polled), reads `.hidden` (again
+  when it changes), and `lstat`s changed rows. Nothing that can stall on a
+  network filesystem runs on the window's thread. A network or FUSE-daemon
+  folder gets no inotify watch and is read again every 5 s while visible,
+  30 s in the background, and at once when its tab is switched to.
+- **No stale reading wins.** Rows are applied only to a settled list; a
+  change that arrives while the folder is being listed or read again asks
+  for one more reading instead, so a reading taken before the change cannot
+  undo it, and a removal cannot come before the batch carrying the file.
+- **No gap after a navigation.** The watch is asked for in the same frame
+  as the listing, and its arrival reads the folder once more, so a change
+  between the listing and the watch is not lost (one extra reading per
+  folder opened, on the reader's thread).
+- **Lost events.** notify 7 reports a kernel queue overflow as an event
+  flagged `Rescan`, not an error; it now reads the folder again.
+- **The folder itself deleted or moved.** The view goes to the nearest
+  folder above it that still exists and says “"X" was moved or deleted, so
+  this is the folder it was in.”
+- **Bursts.** The hub gathers 30 ms of events and keeps the last word per
+  path, so a file being written is one row per batch; more than 4,096
+  distinct paths read the folder again.
+- **Reconcile is linear.** Changed rows leave the order in one pass; 20,000
+  changed rows reconcile in well under a second in a debug build.
+- **Eject.** Every window's watches under the device are let go of before
+  the eject is asked for, and asked for again when it fails.
+- **Finished jobs and windows.** The engine counts the windows that read it;
+  a finished job is let go of only when every window has filed it, so one
+  window's Clear cannot cost another its undo entry. Retry on a job the
+  engine no longer keeps says why.
+- **Smaller things.** A double-click reset stores no width (so the default
+  returns once the window is wide enough); the divider stops being lit when
+  its drag ends; a window that is reading a folder again polls at the busy
+  rate; a command bar command that moved behind "…" keeps its own glyph
+  (Better Monitor's Refresh); the badge wrapper is drawn only for a command
+  with a badge, so every other command bar icon is laid out as before.
+
+Tests added for each: the hub (`watch.rs`: rows, `.hidden`, suspend and
+resume, the folder gone, a `Rescan` event, one row for many writes), a held
+reading finished after a change (fails without the fix), changes in the gap
+after a navigation (fails without the fix), rows kept while a folder is read
+again, a folder deleted and one renamed, eject through `eject_device` with a
+failed eject, reset at 880 px, two windows and Clear, Retry on a forgotten
+job, and 20,000 changed rows. A real kernel queue overflow was not produced;
+the test feeds the event notify makes of one.
+
+Screenshots: `t119-review-folder-gone.png`, `t119-review-monitor-bar.png`
+(Better Monitor's command bar with the refresh glyph, icons aligned), and
+`t119-review-git-bar.png` (Better Git's toolbar unchanged).

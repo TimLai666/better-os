@@ -34,7 +34,10 @@ pub use trash::{
     current_uid, ensure_trash, move_to_trash, network_or_fuse_mounts, original_path_of, purge,
     read_trash, restore, restore_to, trash_root_of, trashes_on_mount, volume_trash, volume_trashes,
 };
-pub use watch::{DirectoryWatcher, WatchBackend, WatchEvent, refresh_for, refresh_with};
+pub use watch::{
+    DirectoryWatcher, HUB_BATCH, HUB_BURST, HubUpdate, Subscription, WatchBackend, WatchEvent,
+    WatchHub, classify, refresh_for, refresh_with,
+};
 pub use xdg::{ResolvedDirectory, UserDirectories, UserDirectory};
 
 /// Host-side failures. Every variant renders as a stable machine key, the

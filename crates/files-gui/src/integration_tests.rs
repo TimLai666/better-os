@@ -927,6 +927,54 @@ fn eject_is_available_and_reports_what_actually_happened() {
     assert!(!session.device_rows()[0].is_mounted());
 }
 
+/// Pumps until `done` holds or five seconds pass.
+fn pump_until(session: &mut FilesSession, done: impl Fn(&FilesSession) -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        session.pump();
+        if done(session) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    false
+}
+
+#[test]
+fn eject_lets_go_of_the_device_s_watch_first_and_a_failed_eject_takes_it_back() {
+    let (rig, mut session) = plain();
+    settle(&mut session);
+    let mount_point = rig.home.join("media/PHOTOS");
+    fs::create_dir_all(&mount_point).unwrap();
+    rig.link.push(DeviceNotice::Inventory(vec![report(
+        "/dev/obj",
+        Some(mount_point.to_str().unwrap()),
+        ready(),
+    )]));
+    session.pump();
+    session.open_device("/dev/obj");
+    settle(&mut session);
+    let hub = files_platform::WatchHub::global();
+    assert!(pump_until(&mut session, |_| hub.is_watching(&mount_point)));
+
+    session.eject_device("/dev/obj");
+    assert_eq!(rig.link.calls(), ["eject /dev/obj"]);
+    assert!(
+        !hub.is_watching(&mount_point),
+        "let go of before the eject runs"
+    );
+
+    rig.link.push(DeviceNotice::EjectFailed {
+        object_path: "/dev/obj".to_string(),
+        detail: "busy".to_string(),
+    });
+    session.pump();
+    assert!(
+        pump_until(&mut session, |_| hub.is_watching(&mount_point)),
+        "a failed eject leaves the folder followed again"
+    );
+}
+
 #[test]
 fn disconnecting_the_device_being_viewed_returns_to_a_safe_location_with_an_explanation() {
     let (rig, mut session) = plain();

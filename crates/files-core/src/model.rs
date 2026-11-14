@@ -268,16 +268,19 @@ impl DirectoryModel {
 
     fn stage_batch(&mut self, entries: Vec<Entry>) {
         self.pending.reserve(entries.len());
+        // Known entries replaced in place; their slots leave the committed
+        // order together, in one pass, however many there are (a pass per
+        // entry made twenty thousand changed rows take seconds).
+        let mut replaced: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let staged: std::collections::HashSet<u32> = self.pending.iter().copied().collect();
         for entry in entries {
             let id = entry.id();
             if let Some(existing) = self.positions.get(&id).copied() {
                 self.storage[existing as usize] = Some(entry);
-                // The entry is already known. Its sort position may have
-                // changed, so it leaves the committed order and is re-merged
+                // Its sort position may have changed, so it is re-merged
                 // with the rest of the staged entries. A slot already staged
                 // is not staged twice.
-                if !self.pending.contains(&existing) {
-                    self.ordered.retain(|slot| *slot != existing);
+                if !staged.contains(&existing) && replaced.insert(existing) {
                     self.pending.push(existing);
                 }
                 continue;
@@ -294,6 +297,9 @@ impl DirectoryModel {
             };
             self.positions.insert(id, slot);
             self.pending.push(slot);
+        }
+        if !replaced.is_empty() {
+            self.ordered.retain(|slot| !replaced.contains(slot));
         }
     }
 
@@ -656,6 +662,41 @@ mod tests {
         // The same reading again changes nothing.
         let same: Vec<Entry> = model.iter_all().cloned().collect();
         assert!(!model.reconcile(same, Vec::new()));
+    }
+
+    #[test]
+    fn twenty_thousand_changed_rows_are_replaced_quickly() {
+        let mut model = model();
+        let names: Vec<String> = (0..20_000).map(|index| format!("f{index:05}")).collect();
+        model.insert_batch(
+            names
+                .iter()
+                .map(|name| entry(name, EntryKind::File))
+                .collect(),
+        );
+        let changed: Vec<Entry> = names
+            .iter()
+            .map(|name| {
+                let mut entry = entry(name, EntryKind::File);
+                entry.size = crate::entry::EntrySize::Bytes(7);
+                entry
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        assert!(model.reconcile(changed, Vec::new()));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(model.total_len(), 20_000);
+        assert_eq!(names_of(&model)[0], "f00000");
+        assert_eq!(
+            model
+                .get(&EntryId::Name("f12345".into()))
+                .map(|entry| entry.size),
+            Some(crate::entry::EntrySize::Bytes(7))
+        );
     }
 
     #[test]

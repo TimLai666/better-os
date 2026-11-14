@@ -60,6 +60,7 @@ pub use conflict::{
 };
 pub use engine::{
     EngineConfig, FINISHED_KEPT, JobEngine, JobEvent, JobHandle, JobId, JobObserver, JobSnapshot,
+    WindowAttachment,
 };
 pub use error::{ArchiveLimit, OperationError};
 pub use exec::{

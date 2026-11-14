@@ -192,6 +192,10 @@ pub struct Copy {
     pub completed_this_session: &'static str,
     /// Clears the finished list in the operations panel.
     pub clear_finished: &'static str,
+    /// A folder on screen was deleted or moved; `{folder}` is its name.
+    pub folder_gone: &'static str,
+    /// Retry on a failed job the engine no longer keeps.
+    pub retry_gone: &'static str,
     /// Removes one finished job from the list.
     pub dismiss_finished: &'static str,
     pub conflict_needs_a_decision: &'static str,
@@ -669,6 +673,8 @@ pub const EN_US: Copy = Copy {
     failures: "Failed items",
     completed_this_session: "Finished this session",
     clear_finished: "Clear",
+    folder_gone: "“{folder}” was moved or deleted, so this is the folder it was in.",
+    retry_gone: "This job is too old to retry. Run the operation again.",
     dismiss_finished: "Dismiss",
     conflict_needs_a_decision: "Waiting for a decision",
     conflict_from: "From",
@@ -1116,6 +1122,8 @@ pub const ZH_TW: Copy = Copy {
     failures: "失敗項目",
     completed_this_session: "這次工作階段已完成",
     clear_finished: "清除",
+    folder_gone: "「{folder}」已被移動或刪除，所以改為顯示它原本所在的資料夾。",
+    retry_gone: "這項工作太久以前了，無法重試，請重新執行一次。",
     dismiss_finished: "移除",
     conflict_needs_a_decision: "等待你的決定",
     conflict_from: "來源",

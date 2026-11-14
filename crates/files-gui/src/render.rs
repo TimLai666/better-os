@@ -810,6 +810,17 @@ impl FilesApp {
         self.edge_dirty = true;
     }
 
+    /// Back to the default width, stored as no width at all: a window too
+    /// narrow for the default draws it clamped now and at the default once
+    /// it is wide enough again.
+    pub(crate) fn reset_pane_edge(&mut self, kind: PaneEdgeKind) {
+        let stored = kind.policy().reset();
+        match kind {
+            PaneEdgeKind::Operations => self.session.preferences.operations_width = stored,
+        }
+        self.edge_dirty = true;
+    }
+
     /// The grab strip on a pane's leading edge: wider than the divider it
     /// draws, a resize pointer, the divider in accent while hovered or
     /// dragged, and a double-click back to the default width. The pane it
@@ -841,17 +852,21 @@ impl FilesApp {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |app, event: &MouseDownEvent, _, cx| {
-                    app.dragging_edge = Some(kind);
                     if event.click_count >= 2 {
-                        let default = kind.policy().default;
-                        app.set_pane_edge_width(kind, default);
+                        app.reset_pane_edge(kind);
                         cx.notify();
                     }
                     cx.stop_propagation();
                 }),
             )
-            .on_drag(EdgeDrag(kind), |drag, _, _, cx| {
-                cx.new(|_| EdgeDrag(drag.0))
+            .on_drag(EdgeDrag(kind), {
+                let this = cx.entity().downgrade();
+                move |drag, _, _, cx| {
+                    // Lit from the moment the drag starts until it ends
+                    // (cleared by the window's pump once no drag is active).
+                    let _ = this.update(cx, |app, _| app.dragging_edge = Some(drag.0));
+                    cx.new(|_| EdgeDrag(drag.0))
+                }
             })
             .into_any_element()
     }

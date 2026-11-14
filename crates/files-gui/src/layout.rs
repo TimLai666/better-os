@@ -62,8 +62,15 @@ impl PaneEdge {
         )
     }
 
+    /// What a double-click on the edge stores: no width at all, so the pane
+    /// is drawn at its default whenever the window is wide enough, not at
+    /// whatever a narrow window clamped the default to.
+    pub fn reset(&self) -> Option<u32> {
+        None
+    }
+
     /// What to store after a drag: the clamped width in whole pixels, or
-    /// nothing when it is the default, so a reset is stored as a reset.
+    /// nothing when it is the default.
     pub fn store(&self, width: f32, window_width: f32) -> Option<u32> {
         let width = self.clamp(width, window_width).round();
         (width != self.default).then_some(width as u32)
@@ -229,6 +236,20 @@ mod tests {
         assert_eq!(edge.clamp(-5.0, 1_200.0), edge.default);
         assert_eq!(edge.resolve(Some(0), 1_200.0), edge.default);
         assert_eq!(edge.resolve(Some(u32::MAX), 1_200.0), 400.0);
+    }
+
+    #[test]
+    fn a_reset_in_the_narrowest_window_stores_the_default_not_the_clamp() {
+        let edge = OPERATIONS_EDGE;
+        let stored = edge.reset();
+        assert_eq!(stored, None);
+        // Drawn clamped at 880px, at the default once the window is wider.
+        assert!((edge.resolve(stored, MIN_WINDOW_WIDTH) - MIN_WINDOW_WIDTH / 3.0).abs() < 0.01);
+        assert_eq!(edge.resolve(stored, 1_400.0), edge.default);
+        // What the old reset did: the default dragged-to in a narrow window
+        // is stored as the clamp, which is why a reset does not go through
+        // `store`.
+        assert_eq!(edge.store(edge.default, MIN_WINDOW_WIDTH), Some(293));
     }
 
     #[test]
