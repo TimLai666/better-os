@@ -2354,13 +2354,13 @@ impl MonitorApp {
         let appearance = ComboBox::new(
             "appearance",
             vec![
-                ComboItem::new(c.dark_theme),
-                ComboItem::new(c.light_theme),
                 ComboItem::new(c.system_theme),
+                ComboItem::new(c.light_theme),
+                ComboItem::new(c.dark_theme),
             ],
             Appearance::ALL
                 .iter()
-                .position(|choice| *choice == self.appearance),
+                .position(|choice| *choice == Appearance::current(cx)),
         )
         .min_width(px(200.0))
         .on_select(Self::act_with(cx, |this, index: usize, window, cx| {

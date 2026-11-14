@@ -178,3 +178,28 @@ fn the_system_locale_resolves_to_one_of_the_two_shipped_locales() {
     assert!(Locale::ZhTw.entry_locale().is_some());
     assert!(Locale::EnUs.entry_locale().is_some());
 }
+
+/// Ticket 110: the appearance the overlay opens in, read from its word file.
+#[test]
+fn the_appearance_follows_the_desktop_unless_one_was_picked() {
+    use better_ui::fluent::theme::Appearance;
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory
+        .path()
+        .join("better-os")
+        .join("launcher")
+        .join("appearance");
+    // Nothing picked yet.
+    assert_eq!(Appearance::load(&path), Appearance::System);
+    // A word this version does not know.
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "sepia\n").unwrap();
+    assert_eq!(Appearance::load(&path), Appearance::System);
+    // The file is written only when a person picks, so what is in it stays.
+    for picked in [Appearance::Dark, Appearance::Light, Appearance::System] {
+        picked.save(&path).unwrap();
+        assert_eq!(Appearance::load(&path), picked);
+    }
+    assert_eq!(copy(Locale::EnUs).appearance_system, "Use system setting");
+    assert_eq!(copy(Locale::ZhTw).appearance_system, "跟隨系統");
+}

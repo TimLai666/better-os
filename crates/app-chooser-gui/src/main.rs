@@ -14,8 +14,9 @@
 //! launched in a headless smoke test with nothing else installed.
 //!
 //! The window takes the appearance stored for it
-//! (`$XDG_CONFIG_HOME/better-os/app-chooser/appearance`: dark, light, or
-//! system), dark when none is stored, as ADR 0004 sets for every window.
+//! (`$XDG_CONFIG_HOME/better-os/app-chooser/appearance`: system, light, or
+//! dark), and follows the desktop when none is stored, as ADR 0019 sets for
+//! every window.
 
 use app_chooser_gui::cli::{parse_arguments, target_from};
 use app_chooser_gui::{
@@ -38,7 +39,6 @@ use gpui_component_assets::Assets;
 struct StandaloneChooser {
     chooser: Entity<AppChooser>,
     title: &'static str,
-    _appearance: Option<Subscription>,
     _observe: Subscription,
 }
 
@@ -52,6 +52,7 @@ impl StandaloneChooser {
         let appearance = Appearance::default_path("app-chooser")
             .map(|path| Appearance::load(&path))
             .unwrap_or_default();
+        appearance.apply_and_follow(window, cx);
         let observe = cx.observe_in(&chooser, window, |_, chooser, window, cx| {
             let chooser = chooser.read(cx);
             // Asked again on every change, not only when the height moved:
@@ -77,7 +78,6 @@ impl StandaloneChooser {
         Self {
             chooser,
             title,
-            _appearance: appearance.apply_and_follow(window, cx),
             _observe: observe,
         }
     }

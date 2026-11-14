@@ -125,20 +125,21 @@ pub fn apply_to_component_theme(theme: &mut Theme) {
     theme.tokens = ThemeTokens::from(&theme.colors);
 }
 
-/// The appearance a person chose, stored as `dark`, `light`, or `system`
-/// (ADR 0004). Better OS opens dark: a missing or unreadable choice is
-/// [`Appearance::Dark`].
+/// The appearance a person chose, stored as `system`, `light`, or `dark`
+/// (ADR 0019). Better OS follows the desktop: a missing or unreadable choice
+/// is [`Appearance::System`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub enum Appearance {
-    #[default]
-    Dark,
-    Light,
     /// Follow the desktop, and keep following it while the window is open.
+    #[default]
     System,
+    Light,
+    Dark,
 }
 
 impl Appearance {
-    pub const ALL: [Appearance; 3] = [Appearance::Dark, Appearance::Light, Appearance::System];
+    /// In the order a picker lists them: the default first.
+    pub const ALL: [Appearance; 3] = [Appearance::System, Appearance::Light, Appearance::Dark];
 
     /// The stored word.
     pub fn as_str(self) -> &'static str {
@@ -172,8 +173,9 @@ impl Appearance {
         }
     }
 
-    /// The choice stored at `path`, or dark when there is none or it cannot
-    /// be read.
+    /// The choice stored at `path`, or [`Appearance::System`] when there is
+    /// none or it cannot be read. The file is written only when a person
+    /// picks, so a stored word is always a choice they made.
     pub fn load(path: &std::path::Path) -> Appearance {
         std::fs::read_to_string(path)
             .ok()
@@ -209,14 +211,100 @@ impl Appearance {
         set_appearance(dark, Some(window), cx);
     }
 
-    /// Applies the choice, and for [`Appearance::System`] keeps applying it
-    /// whenever the desktop switches. Keep the subscription for as long as
-    /// the choice stands; drop it when the person picks another.
-    pub fn apply_and_follow(self, window: &mut Window, cx: &mut App) -> Option<gpui::Subscription> {
-        self.apply(window, cx);
-        (self == Appearance::System).then(|| {
-            window.observe_window_appearance(|window, cx| Appearance::System.apply(window, cx))
+    /// Makes this the process's appearance, paints this window in the Fluent
+    /// palette, and keeps the window following it. See [`Appearance::follow`].
+    pub fn apply_and_follow(self, window: &mut Window, cx: &mut App) {
+        self.follow(window, cx, |dark, window, cx| {
+            set_appearance(dark, Some(window), cx)
         })
+    }
+
+    /// Makes this the appearance of every window in the process, calls
+    /// `paint` with whether to draw dark now, and keeps this window following
+    /// the process's appearance: while it is [`Appearance::System`], `paint`
+    /// runs again every time the desktop switches. `paint` is for a window
+    /// that draws in something other than the Fluent palette.
+    ///
+    /// The choice is one per process because the theme it paints is one per
+    /// process (gpui-component's `Theme` is a global): two windows that each
+    /// kept their own would fight, the one still following the desktop
+    /// repainting the other after the person picked dark in it (ticket 110).
+    /// So the choice lives in a GPUI global, read with
+    /// [`Appearance::current`], and every window's subscription repaints the
+    /// process's choice rather than its own.
+    ///
+    /// Following is not optional for `System`. When a window opens, GPUI on
+    /// Linux has not heard from the desktop yet: it asks the XDG desktop
+    /// portal in the background and reports light until the answer arrives,
+    /// so a window that reads the desktop only once opens light on a dark
+    /// desktop (ticket 110). The answer arrives as an appearance change. The
+    /// subscription that sees it is kept in the same global, one per window,
+    /// so no window can lose it by dropping a return value.
+    pub fn follow(self, window: &mut Window, cx: &mut App, paint: fn(bool, &mut Window, &mut App)) {
+        let id = window.window_handle().window_id();
+        let open: Vec<gpui::WindowId> = cx
+            .windows()
+            .iter()
+            .map(|handle| handle.window_id())
+            .collect();
+        let subscription = window
+            .observe_window_appearance(move |window, cx| repaint_for_desktop(paint, window, cx));
+        let state = cx.default_global::<ProcessAppearance>();
+        state.choice = self;
+        // A closed window's subscription would never fire again; dropping it
+        // keeps the list from growing with every window ever opened.
+        state.windows.retain(|(window, _)| open.contains(window));
+        state.windows.retain(|(window, _)| *window != id);
+        state.windows.push((id, subscription));
+        paint(self.is_dark(window.appearance()), window, cx);
+        // The theme is shared, so every other window shows the new choice too.
+        cx.refresh_windows();
+    }
+
+    /// The appearance every window in this process shows: the last one set
+    /// through [`Appearance::follow`], or the default before any was.
+    pub fn current(cx: &App) -> Appearance {
+        cx.try_global::<ProcessAppearance>()
+            .map(|state| state.choice)
+            .unwrap_or_default()
+    }
+
+    /// Whether `window` is kept following the process's appearance. A window
+    /// that applied its choice without [`Appearance::follow`] would not be.
+    pub fn is_following(window: &Window, cx: &App) -> bool {
+        let id = window.window_handle().window_id();
+        cx.try_global::<ProcessAppearance>()
+            .is_some_and(|state| state.windows.iter().any(|(window, _)| *window == id))
+    }
+
+    /// Whether this choice keeps changing with the desktop.
+    pub fn follows_desktop(self) -> bool {
+        self == Appearance::System
+    }
+}
+
+/// The process's one appearance choice and every window's subscription to
+/// the desktop's appearance (see [`Appearance::follow`]).
+#[derive(Default)]
+struct ProcessAppearance {
+    choice: Appearance,
+    windows: Vec<(gpui::WindowId, gpui::Subscription)>,
+}
+
+impl gpui::Global for ProcessAppearance {}
+
+/// What a window's subscription does when the desktop switches: repaint the
+/// process's choice, which only changes anything while that choice follows
+/// the desktop. A choice made in another window of the process wins over
+/// whatever this window was opened with.
+pub(crate) fn repaint_for_desktop(
+    paint: fn(bool, &mut Window, &mut App),
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let choice = Appearance::current(cx);
+    if choice.follows_desktop() {
+        paint(choice.is_dark(window.appearance()), window, cx);
     }
 }
 

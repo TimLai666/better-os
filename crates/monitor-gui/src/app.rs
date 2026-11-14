@@ -199,8 +199,6 @@ pub(crate) enum MenuTarget {
 pub(crate) struct MonitorApp {
     pub(crate) page: Page,
     pub(crate) locale: Locale,
-    pub(crate) appearance: Appearance,
-    _follow: Option<Subscription>,
     /// The person's own choice of the navigation pane's width; `None` means
     /// the window decides from its size.
     pub(crate) compact_choice: Option<bool>,
@@ -300,7 +298,7 @@ impl MonitorApp {
         let appearance = Appearance::default_path("monitor")
             .map(|path| Appearance::load(&path))
             .unwrap_or_default();
-        let follow = appearance.apply_and_follow(window, cx);
+        appearance.apply_and_follow(window, cx);
         let filter = cx.new(|cx| {
             InputState::new(window, cx).placeholder(crate::i18n::copy(locale).search_placeholder)
         });
@@ -315,8 +313,6 @@ impl MonitorApp {
         let mut app = Self {
             page: Page::Overview,
             locale,
-            appearance,
-            _follow: follow,
             compact_choice: None,
             paused: false,
             include_command_lines: false,
@@ -635,8 +631,7 @@ impl MonitorApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.appearance = appearance;
-        self._follow = appearance.apply_and_follow(window, cx);
+        appearance.apply_and_follow(window, cx);
         if let Some(path) = Appearance::default_path("monitor") {
             let _ = appearance.save(&path);
         }

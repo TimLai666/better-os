@@ -121,16 +121,12 @@ impl ManagerApp {
                                 .flex_1()
                                 .min_w_0()
                                 .gap_1()
-                                .child(
-                                    div()
-                                        .font_medium()
-                                        .child(format!("{} · {}", line.source, line.age)),
-                                )
+                                .child(div().font_medium().child(line.age.clone()))
                                 .when_some(line.warning, |view, warning| {
                                     view.child(
                                         div()
                                             .text_sm()
-                                            .text_color(cx.theme().warning_foreground)
+                                            .text_color(cx.theme().warning)
                                             .child(warning),
                                     )
                                 })
@@ -160,26 +156,48 @@ impl ManagerApp {
         )
     }
 
-    /// The manual update check: one button, and whatever the last check found.
+    /// The Updates page's one summary card: what was found, when the version
+    /// list was last checked, and the buttons that act on it (ticket 111).
     ///
-    /// The button starts the same catalog refresh the Components screen's does,
-    /// on the same background thread, so the window keeps drawing while the
-    /// fetch runs and the two screens can never disagree about the catalog.
-    fn update_check_row(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The count says what it counts ("8 components have new versions"), the
+    /// primary button names what it leads to ("Review and update all": the
+    /// plan is reviewed before anything runs), and the list's age and any
+    /// warning about it sit under the count instead of on a second card that
+    /// repeated the check button. The check starts the same catalog refresh
+    /// the Apps screen's does, on the same background thread, so the window
+    /// keeps drawing while the fetch runs and the two screens can never
+    /// disagree about the catalog.
+    fn update_summary(&self, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale);
         let check = self.update_check();
-        let (title, detail, warn) = match &check {
-            UpdateCheck::NotRun => (c.updates_title.to_string(), None, false),
-            UpdateCheck::Running => (c.checking_updates.to_string(), None, false),
-            UpdateCheck::Failed(reason) => (c.update_check_failed.to_string(), Some(*reason), true),
-            UpdateCheck::Found(sentence) => (sentence.clone(), None, false),
-            UpdateCheck::UpToDate(age) => (
-                c.update_check_up_to_date.to_string(),
-                Some(age.as_str()),
-                false,
-            ),
+        let line = CatalogLine::present(self.locale, &self.catalog_status, now_unix_seconds());
+        let (title, failure) = match &check {
+            UpdateCheck::Running => (c.checking_updates.to_string(), None),
+            UpdateCheck::Failed(reason) => (c.update_check_failed.to_string(), Some(*reason)),
+            UpdateCheck::Found(sentence) => (sentence.clone(), None),
+            UpdateCheck::UpToDate => (c.update_check_up_to_date.to_string(), None),
+            UpdateCheck::NoneInCurrentList => (c.update_check_none_in_list.to_string(), None),
         };
-        let detail = detail.map(|detail| detail.to_string());
+        // A failed check already says which list is on screen; saying it a
+        // second time as the list's warning would repeat it.
+        let warning = failure.or(line.warning);
+        let rejected = line.rejected_line(self.locale);
+        let has_updates = self.update_plan_count() > 0;
+        let checking = self.catalog_refreshing;
+
+        let check_button = Button::new("check-updates")
+            .label(if checking {
+                c.catalog_refreshing
+            } else if has_updates {
+                c.check_again
+            } else {
+                c.check_updates
+            })
+            .disabled(checking)
+            .when(!has_updates, |button| button.primary())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.check_for_updates(cx);
+            }));
 
         self.surface(
             h_flex()
@@ -190,46 +208,64 @@ impl ManagerApp {
                 .justify_between()
                 .child(
                     h_flex()
-                        .min_w_0()
+                        .min_w(px(220.0))
+                        .flex_1()
                         .gap_3()
                         .items_start()
-                        .child(Icon::new(if warn {
+                        .child(Icon::new(if warning.is_some() {
                             IconName::TriangleAlert
-                        } else {
+                        } else if has_updates {
                             IconName::ArrowDown
+                        } else {
+                            IconName::Check
                         }))
                         .child(
                             v_flex()
                                 .flex_1()
                                 .min_w_0()
                                 .gap_1()
-                                .child(div().font_medium().child(title))
-                                .when_some(detail, |view, detail| {
+                                .child(div().text_lg().font_semibold().child(title))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(line.age.clone()),
+                                )
+                                .when_some(warning, |view, warning| {
                                     view.child(
                                         div()
                                             .text_sm()
-                                            .text_color(if warn {
-                                                cx.theme().warning_foreground
-                                            } else {
-                                                cx.theme().muted_foreground
-                                            })
-                                            .child(detail),
+                                            .text_color(cx.theme().warning)
+                                            .child(warning),
+                                    )
+                                })
+                                .when_some(rejected, |view, rejected| {
+                                    view.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(rejected),
                                     )
                                 }),
                         ),
                 )
                 .child(
-                    Button::new("check-updates")
-                        .primary()
-                        .label(if self.catalog_refreshing {
-                            c.checking_updates
-                        } else {
-                            c.check_updates
-                        })
-                        .disabled(self.catalog_refreshing)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.check_for_updates(cx);
-                        })),
+                    h_flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .items_center()
+                        .child(check_button)
+                        .when(has_updates, |row| {
+                            row.child(
+                                Button::new("updates-review")
+                                    .primary()
+                                    .label(c.review_and_update_all)
+                                    .disabled(checking)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.prepare_update_all(cx);
+                                    })),
+                            )
+                        }),
                 ),
             cx,
         )
@@ -346,11 +382,22 @@ impl ManagerApp {
                         },
                         cx,
                     ))
-                    .child(self.key_value_row(
-                        c.restart_requirement,
-                        self.restart_requirement_label(component.restart_requirement),
-                        cx,
-                    ))
+                    // What happens after the update, and only while one is
+                    // waiting: there is nothing to restart about a component
+                    // that is not about to change (ticket 111).
+                    .when_some(
+                        (component.state == ComponentStatus::UpdateAvailable)
+                            .then(|| {
+                                self.restart_requirement_label(
+                                    DesiredOperation::Update,
+                                    component.restart_requirement,
+                                )
+                            })
+                            .flatten(),
+                        |view, label| {
+                            view.child(self.key_value_row(c.restart_requirement, label, cx))
+                        },
+                    )
                     // Two rows, never one. Folding them into a single "version"
                     // line meant a component that was never installed reported
                     // the catalog's version as its installed version.
@@ -640,72 +687,14 @@ impl ManagerApp {
         v_flex()
             .gap_5()
             .when_some(self.error_banner(cx), |view, error| view.child(error))
-            .child(self.page_heading(c.updates_title, c.components_subtitle, false, compact))
-            // The check and the list it was checked against, in that order: a
-            // count means nothing without saying how old the list behind it is.
-            .child(self.update_check_row(cx))
-            .child(self.catalog_status_row(cx))
-            .when(updates.is_empty(), |view| {
-                view.child(
-                    self.empty_state(
-                        IconName::Check,
-                        c.no_updates_title,
-                        c.no_updates_subtitle,
-                        Button::new("updates-components")
-                            .label(c.components)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.navigate(Page::Components, cx);
-                            })),
-                        cx,
-                    ),
-                )
-            })
-            .when(!updates.is_empty(), |view| {
-                view.child(
-                    self.surface(
-                        h_flex()
-                            .w_full()
-                            .min_w_0()
-                            .gap_4()
-                            .items_center()
-                            .justify_between()
-                            .flex_wrap()
-                            .child(
-                                v_flex()
-                                    .min_w(px(220.0))
-                                    .flex_1()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_2xl()
-                                            .font_bold()
-                                            .child(updates.len().to_string()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(c.ready_to_review),
-                                    ),
-                            )
-                            .child(
-                                Button::new("updates-review")
-                                    .primary()
-                                    .label(c.review_changes)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.prepare_update_all(cx);
-                                    })),
-                            ),
-                        cx,
-                    ),
-                )
-                .children(updates.iter().map(|component| {
-                    v_flex()
-                        .gap_2()
-                        .child(self.component_card(component, compact, cx))
-                        .child(self.release_notes_surface(component, cx))
-                }))
-            })
+            .child(self.page_heading(c.updates_title, c.updates_subtitle, false, compact))
+            .child(self.update_summary(cx))
+            .children(updates.iter().map(|component| {
+                v_flex()
+                    .gap_2()
+                    .child(self.component_card(component, compact, cx))
+                    .child(self.release_notes_surface(component, cx))
+            }))
             .into_any_element()
     }
 

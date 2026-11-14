@@ -311,6 +311,39 @@ impl Menu {
         self
     }
 
+    /// This menu's items in this menu's places, showing what can be carried
+    /// over from `newer`, a menu of another shape: what a host with a
+    /// submenu open is shown while `newer`'s layout waits.
+    ///
+    /// Awake's items have no identity across layouts, so a row takes
+    /// `newer`'s wording only where the two menus line up one to one: at the
+    /// same level, from the first item on, for as long as each pair is the
+    /// same kind of item with the same action and, for a row with no action,
+    /// the same field name before its colon ("Remaining: 3 min"). Past the
+    /// first pair that does not line up, nothing on that level is carried
+    /// over. Any row whose action `newer` no longer offers anywhere is
+    /// greyed out, so it cannot be chosen; a submenu's own row keeps its
+    /// state, because greying the row of an open submenu is not something to
+    /// do under the pointer.
+    pub fn showing(&self, newer: &Menu) -> Menu {
+        let mut shown = self.clone();
+        line_up(&mut shown.items, &newer.items);
+        let mut offered = Vec::new();
+        for item in &newer.items {
+            item.walk(&mut |item| {
+                if item.enabled
+                    && let Some(action) = item.action
+                {
+                    offered.push(action);
+                }
+            });
+        }
+        for item in &mut shown.items {
+            grey_out(item, &offered);
+        }
+        shown
+    }
+
     /// The structure without the wording: what kind each item is, whether it
     /// is drawn, and what hangs under it. Two menus with the same shape map
     /// id for id, so a change between them is a change of properties only.
@@ -336,6 +369,47 @@ impl MenuItem {
             enabled_submenu: self.kind == ItemKind::Submenu && self.enabled,
             children: self.children.iter().map(MenuItem::shape).collect(),
         }
+    }
+}
+
+/// The part of a label before its colon, which names the fact the row
+/// states; the whole label when it has none.
+fn field_name(label: &str) -> &str {
+    label
+        .split_once([':', '：'])
+        .map_or(label, |(field, _)| field)
+}
+
+fn corresponds(shown: &MenuItem, newer: &MenuItem) -> bool {
+    std::mem::discriminant(&shown.kind) == std::mem::discriminant(&newer.kind)
+        && shown.action == newer.action
+        && (shown.action.is_some() || field_name(&shown.label) == field_name(&newer.label))
+}
+
+/// See [`Menu::showing`].
+fn line_up(shown: &mut [MenuItem], newer: &[MenuItem]) {
+    for (shown, newer) in shown.iter_mut().zip(newer) {
+        if !corresponds(shown, newer) {
+            return;
+        }
+        shown.label.clone_from(&newer.label);
+        shown.kind = newer.kind.clone();
+        if shown.kind == ItemKind::Submenu {
+            line_up(&mut shown.children, &newer.children);
+        } else {
+            shown.enabled = newer.enabled;
+        }
+    }
+}
+
+fn grey_out(item: &mut MenuItem, offered: &[MenuAction]) {
+    if let Some(action) = item.action
+        && !offered.contains(&action)
+    {
+        item.enabled = false;
+    }
+    for child in &mut item.children {
+        grey_out(child, offered);
     }
 }
 

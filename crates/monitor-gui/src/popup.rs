@@ -339,7 +339,7 @@ impl PopupView {
         let appearance = better_ui::fluent::theme::Appearance::default_path("monitor")
             .map(|path| better_ui::fluent::theme::Appearance::load(&path))
             .unwrap_or_default();
-        let follow = appearance.apply_and_follow(window, cx);
+        appearance.apply_and_follow(window, cx);
         let (request_sender, request_receiver) = smol::channel::unbounded::<LinkRequest>();
         let (update_sender, update_receiver) = smol::channel::unbounded::<LinkUpdate>();
         link::spawn_with(request_receiver, update_sender, Some(POPUP_TOP as u32 + 2));
@@ -390,7 +390,7 @@ impl PopupView {
             was_active: false,
             _link: request_sender,
             _tasks: vec![pump, history],
-            _subscriptions: std::iter::once(observe).chain(follow).collect(),
+            _subscriptions: vec![observe],
         }
     }
 

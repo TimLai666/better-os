@@ -750,3 +750,50 @@ fn a_click_method_choice_offers_every_method_and_no_others() {
     assert_eq!(row.control, Control::Choice);
     assert_eq!(row.requested_label, copy(Locale::EnUs).method_default);
 }
+
+/// Ticket 110: the window follows the desktop until the person picks.
+#[test]
+fn the_appearance_follows_the_desktop_unless_one_was_picked() {
+    use crate::app::stored_appearance;
+    use better_ui::fluent::theme::Appearance;
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory
+        .path()
+        .join("better-os")
+        .join("touchpad")
+        .join("appearance");
+    // No config directory at all, and no file in it.
+    assert_eq!(stored_appearance(None), Appearance::System);
+    assert_eq!(stored_appearance(Some(&path)), Appearance::System);
+    // A word this version does not know.
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "sepia\n").unwrap();
+    assert_eq!(stored_appearance(Some(&path)), Appearance::System);
+    // A picked appearance stays.
+    for picked in [Appearance::Dark, Appearance::Light, Appearance::System] {
+        picked.save(&path).unwrap();
+        assert_eq!(stored_appearance(Some(&path)), picked);
+    }
+    // The choice is listed with the default first, named as the other
+    // windows name it.
+    assert_eq!(Appearance::ALL[0], Appearance::default());
+    let en = copy(Locale::EnUs);
+    let zh = copy(Locale::ZhTw);
+    assert_eq!(
+        [
+            en.appearance_system,
+            en.appearance_light,
+            en.appearance_dark
+        ],
+        ["Use system setting", "Light", "Dark"]
+    );
+    assert_eq!(
+        [
+            zh.appearance_system,
+            zh.appearance_light,
+            zh.appearance_dark
+        ],
+        ["跟隨系統", "淺色", "深色"]
+    );
+    assert_eq!(zh.appearance, "外觀");
+}

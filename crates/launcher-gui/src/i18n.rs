@@ -184,7 +184,7 @@ const ZH_TW: Copy = Copy {
     appearance: "外觀",
     appearance_dark: "深色",
     appearance_light: "淺色",
-    appearance_system: "跟隨系統設定",
+    appearance_system: "跟隨系統",
 };
 
 pub fn copy(locale: Locale) -> &'static Copy {

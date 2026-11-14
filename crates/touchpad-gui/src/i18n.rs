@@ -51,6 +51,12 @@ pub struct Copy {
     pub application: &'static str,
     pub switch_language: &'static str,
 
+    pub appearance: &'static str,
+    pub appearance_description: &'static str,
+    pub appearance_system: &'static str,
+    pub appearance_light: &'static str,
+    pub appearance_dark: &'static str,
+
     pub nav_overview: &'static str,
     pub nav_pointer: &'static str,
     pub nav_scrolling: &'static str,
@@ -289,6 +295,12 @@ pub const EN_US: Copy = Copy {
     application: "Touchpad",
     switch_language: "中文",
 
+    appearance: "Appearance",
+    appearance_description: "Follows your desktop's light or dark mode unless you pick one.",
+    appearance_system: "Use system setting",
+    appearance_light: "Light",
+    appearance_dark: "Dark",
+
     nav_overview: "Overview",
     nav_pointer: "Pointer",
     nav_scrolling: "Scrolling",
@@ -518,6 +530,12 @@ pub const ZH_TW: Copy = Copy {
     brand: "Better OS",
     application: "觸控板",
     switch_language: "English",
+
+    appearance: "外觀",
+    appearance_description: "預設跟著桌面切換淺色或深色，也可以固定用其中一種。",
+    appearance_system: "跟隨系統",
+    appearance_light: "淺色",
+    appearance_dark: "深色",
 
     nav_overview: "總覽",
     nav_pointer: "游標",
@@ -821,6 +839,11 @@ mod tests {
         vec![
             copy.application,
             copy.switch_language,
+            copy.appearance,
+            copy.appearance_description,
+            copy.appearance_system,
+            copy.appearance_light,
+            copy.appearance_dark,
             copy.nav_overview,
             copy.nav_pointer,
             copy.nav_scrolling,

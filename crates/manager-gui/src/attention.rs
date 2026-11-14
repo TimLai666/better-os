@@ -291,8 +291,8 @@ mod tests {
                 "Better Awake needs attention",
                 "Better Monitor needs attention",
                 "Better Git doesn't match its record",
-                "2 updates available",
-                "The component list may be out of date",
+                "2 components have new versions",
+                "The version list may be out of date",
             ]
         );
         assert!(!everything_fine(&items));
@@ -316,7 +316,7 @@ mod tests {
             "The published catalog could not be reached."
         );
         assert_eq!(items[5].action, AttentionAction::RefreshCatalog);
-        assert_eq!(items[5].action_label, "Refresh list");
+        assert_eq!(items[5].action_label, "Check for updates");
         assert!(items.iter().all(|item| item.source == Route::Apps));
     }
 
@@ -331,8 +331,8 @@ mod tests {
                 "Better Awake 需要處理",
                 "Better Monitor 需要處理",
                 "Better Git 和紀錄對不上",
-                "有 2 個更新",
-                "元件清單可能不是最新的",
+                "2 個元件有新版本",
+                "版本清單可能不是最新的",
             ]
         );
         assert_eq!(
@@ -342,7 +342,7 @@ mod tests {
         assert_eq!(items[0].action_label, "修復");
         assert_eq!(items[4].description, "確認後才會安裝。");
         assert_eq!(items[4].action_label, "查看更新");
-        assert_eq!(items[5].action_label, "更新清單");
+        assert_eq!(items[5].action_label, "檢查更新");
     }
 
     #[test]
@@ -356,7 +356,10 @@ mod tests {
             )],
             ..Snapshot::empty(Locale::EnUs)
         };
-        assert_eq!(apps_attention(&snapshot)[0].header, "1 update available");
+        assert_eq!(
+            apps_attention(&snapshot)[0].header,
+            "1 component has a new version"
+        );
     }
 
     #[test]

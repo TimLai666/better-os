@@ -142,14 +142,12 @@ pub struct LauncherOverlay {
     icons: BTreeMap<DesktopId, AppIcon>,
     sources: OverlaySources,
     started: bool,
-    appearance: Appearance,
     menu: Option<OpenMenu>,
     appearance_menu: Entity<MenuOpen>,
     pinned_scroll: ScrollHandle,
     recommended_scroll: ScrollHandle,
     list_scroll: ScrollHandle,
     results_scroll: ScrollHandle,
-    _appearance: Option<Subscription>,
     _load: Option<Task<()>>,
     _watch: Option<Task<()>>,
     /// Repaints when the desktop's theme changes, so the accent follows it
@@ -217,21 +215,19 @@ impl LauncherOverlay {
             icons: BTreeMap::new(),
             sources,
             started: false,
-            appearance,
             menu: None,
             appearance_menu: better_ui::fluent::menu::new_state(cx),
             pinned_scroll: ScrollHandle::new(),
             recommended_scroll: ScrollHandle::new(),
             list_scroll: ScrollHandle::new(),
             results_scroll: ScrollHandle::new(),
-            _appearance: None,
             _load: None,
             _watch: None,
             _desktop: None,
             _subscriptions: vec![subscription],
             update_restart: better_ui::restart::UpdateRestart::inactive(APP_ID, cx),
         };
-        overlay._appearance = appearance.apply_and_follow(window, cx);
+        appearance.apply_and_follow(window, cx);
         // Issue #2's first requirement about focus: the search row has it
         // before anything has been read, so someone can start typing into a
         // list that is still loading.
@@ -681,14 +677,13 @@ impl LauncherOverlay {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.appearance = appearance;
         if let Some(path) = self.sources.appearance.clone()
             && let Err(error) = appearance.save(&path)
         {
             self.model
                 .set_notice(Some(Notice::NotSaved(error.to_string())));
         }
-        self._appearance = appearance.apply_and_follow(window, cx);
+        appearance.apply_and_follow(window, cx);
         self.search.focus_handle(cx).focus(window, cx);
         cx.notify();
     }
@@ -1381,9 +1376,9 @@ impl LauncherOverlay {
         let status = (self.model.load_state() == LoadState::Refreshing)
             .then(|| label(c.refreshing, CAPTION, p.text_secondary));
         let entries: Vec<MenuEntry> = [
-            (Appearance::Dark, c.appearance_dark),
-            (Appearance::Light, c.appearance_light),
             (Appearance::System, c.appearance_system),
+            (Appearance::Light, c.appearance_light),
+            (Appearance::Dark, c.appearance_dark),
         ]
         .into_iter()
         .map(|(appearance, name)| {
@@ -1392,7 +1387,7 @@ impl LauncherOverlay {
                 this.update(cx, |o, cx| o.set_appearance(appearance, window, cx))
                     .ok();
             });
-            if appearance == self.appearance {
+            if appearance == Appearance::current(cx) {
                 item = item.icon(IconName::Check);
             }
             item.entry()
@@ -1732,6 +1727,49 @@ mod tests {
         Rc::try_unwrap(observed)
             .expect("the application has released the observations")
             .into_inner()
+    }
+
+    /// Ticket 110 review: the overlay keeps following the desktop after it
+    /// is built, so a stored `system` repaints when the portal's answer
+    /// arrives after the window opened.
+    #[test]
+    fn the_overlay_keeps_following_the_desktop_after_it_is_built() {
+        let following = Rc::new(RefCell::new(None));
+        let out = following.clone();
+        gpui_platform::headless().run(move |cx| {
+            gpui_component::init(cx);
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    point(px(0.0), px(0.0)),
+                    size(px(640.0), px(720.0)),
+                ))),
+                ..WindowOptions::default()
+            };
+            let window = cx
+                .open_window(options, move |window, cx| {
+                    let overlay = cx.new(|cx| {
+                        LauncherOverlay::with_sources(Locale::EnUs, scratch_sources(), window, cx)
+                    });
+                    cx.new(|cx| Root::new(overlay, window, cx))
+                })
+                .expect("a headless window opens");
+            cx.spawn(async move |cx| {
+                let window: AnyWindowHandle = window.into();
+                cx.update_window(window, |_, window, cx| {
+                    *out.borrow_mut() = Some((
+                        better_ui::fluent::theme::Appearance::is_following(window, cx),
+                        better_ui::fluent::theme::Appearance::current(cx),
+                    ));
+                })
+                .expect("the window is still open");
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
+        assert_eq!(
+            following.borrow().clone(),
+            Some((true, better_ui::fluent::theme::Appearance::System))
+        );
     }
 
     #[test]

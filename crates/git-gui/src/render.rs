@@ -714,20 +714,18 @@ impl GitApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let query = self.inputs.repo_search.read(cx).value().to_string();
-        let current = self.session.repo.as_ref().map(|r| r.root.as_path());
-        let rows =
-            self.session
-                .repositories
-                .rows(&query, current, &self.session.recent, Path::exists);
+        let rows = self.session.repository_groups(&query);
         let mut list = v_stack()
             .max_h(px(420.0))
             .id("repo-list")
             .overflow_y_scroll();
         for (index, r) in rows.into_iter().enumerate() {
             let path = r.path.clone();
-            let open_path = r.path.clone();
+            let open_path = r.opens.clone();
             let menu_path = r.path.clone();
-            let mut item = row(("repo", index), r.current, TALL_ROW, p)
+            // With worktrees under it, the open one is marked there.
+            let marked = r.current && r.worktrees.is_empty();
+            let mut item = row(("repo", index), marked, TALL_ROW, p)
                 .child(
                     Icon::new(if r.missing {
                         IconName::TriangleAlert
@@ -798,7 +796,7 @@ impl GitApp {
                                 this.session.ask_remove_repository(path.clone())
                             })),
                     );
-            } else {
+            } else if let Some(open_path) = open_path {
                 item = item.on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     if event.is_keyboard() {
                         return;
@@ -809,8 +807,8 @@ impl GitApp {
                 }));
             }
             list = list.child(item);
-            // Its linked worktrees, under it.
-            let worktrees = self.worktree_rows(&r.path, index * 100, p, cx);
+            // Its worktrees, the main one first, under it.
+            let worktrees = self.worktree_rows(&r.worktrees, index, p, cx);
             list = list.children(worktrees);
         }
         Flyout::new("repository-flyout")
@@ -3768,11 +3766,13 @@ impl GitApp {
                     );
             }
             3 => {
-                let theme = match Appearance::from_argument(&s.appearance).unwrap_or_default() {
-                    Appearance::Dark => 0,
-                    Appearance::Light => 1,
-                    Appearance::System => 2,
-                };
+                // What the window is in, which a command-line choice may
+                // differ from the stored one in.
+                let shown = better_ui::fluent::theme::Appearance::current(cx);
+                let theme = Appearance::ALL
+                    .iter()
+                    .position(|a| a.fluent() == shown)
+                    .unwrap_or(0);
                 let language = match Locale::from_argument(&s.language) {
                     Some(Locale::EnUs) => 1,
                     Some(Locale::ZhTw) => 2,
@@ -3785,18 +3785,16 @@ impl GitApp {
                             RadioButtons::new(
                                 "theme-choice",
                                 vec![
-                                    RadioOption::new(c.theme_dark),
-                                    RadioOption::new(c.theme_light),
                                     RadioOption::new(c.theme_system),
+                                    RadioOption::new(c.theme_light),
+                                    RadioOption::new(c.theme_dark),
                                 ],
                                 Some(theme),
                             )
                             .on_select(Self::act_with(
                                 cx,
                                 |this, i: usize, window, cx| {
-                                    let a =
-                                        [Appearance::Dark, Appearance::Light, Appearance::System]
-                                            [i.min(2)];
+                                    let a = Appearance::ALL[i.min(2)];
                                     this.set_appearance(a, window, cx);
                                 },
                             )),

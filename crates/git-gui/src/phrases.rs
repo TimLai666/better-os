@@ -126,12 +126,13 @@ impl Copy {
 
     // --- worktrees in the lists ----------------------------------------------
 
-    pub fn worktree_of(&self) -> &'static str {
-        self.t("Worktree", "工作樹")
-    }
-
     pub fn worktree_detached(&self) -> &'static str {
         self.t("Detached", "分離的 HEAD")
+    }
+
+    /// A detached worktree's secondary text in the repository list.
+    pub fn worktree_detached_at(&self) -> &'static str {
+        self.t("Detached at {sha}", "分離於 {sha}")
     }
 
     pub fn open_in_its_worktree(&self) -> &'static str {

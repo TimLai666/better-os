@@ -111,8 +111,8 @@ fn main() {
         let mut inbox = inbox.take();
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
-                // The overlay applies the stored appearance (dark unless the
-                // person chose light or the system's), ADR 0004.
+                // The overlay applies the stored appearance (the desktop's
+                // unless the person chose light or dark), ADR 0019.
                 let overlay = cx.new(|cx| {
                     let mut overlay = LauncherOverlay::new(Locale::System, window, cx);
                     overlay.watch_for_updates(handoff.as_ref(), window, cx);

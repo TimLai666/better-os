@@ -266,6 +266,8 @@ fn every_status_and_action_string_is_translated_in_both_locales() {
         ),
         (en.language, zh.language),
         (en.appearance, zh.appearance),
+        (en.appearance_description, zh.appearance_description),
+        (en.system_theme, zh.system_theme),
         (en.dark_theme, zh.dark_theme),
         (en.light_theme, zh.light_theme),
         (en.settings_storage_failed, zh.settings_storage_failed),
@@ -735,9 +737,71 @@ fn a_synthetic_long_translation_wraps_in_the_smallest_window_at_every_scale() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_unconfigured_window_opens_dark() {
-    assert_eq!(Preferences::default().theme, StoredTheme::Dark);
+fn an_unconfigured_window_follows_the_desktop() {
+    assert_eq!(Preferences::default().theme, StoredTheme::System);
     assert_eq!(Preferences::default().locale(), Locale::System);
+}
+
+/// Ticket 110: the stored theme as the window reads it at startup.
+fn stored_theme(theme_field: &str) -> (StoredTheme, bool, Vec<PresetLength>) {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("preferences.json");
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"schema_version":2,"presets":[{{"kind":"indefinite"}}],"default_preset":0,"defaults":{{"policy":{{"prevent_system_suspend":true,"prevent_idle":true,"prevent_display_sleep":true,"prevent_automatic_lock":false,"prevent_lid_suspend":true}},"battery_stop_percent":30}},"locale":"en-US"{theme_field}}}"#
+        ),
+    )
+    .unwrap();
+    let (loaded, readable) = PreferencesStore::at_path(&path).load();
+    (loaded.theme, readable, loaded.presets)
+}
+
+#[test]
+fn the_stored_theme_defaults_to_the_system_and_keeps_a_choice() {
+    // No file at all.
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let (loaded, readable) = PreferencesStore::at_path(directory.path().join("none.json")).load();
+    assert!(readable);
+    assert_eq!(loaded.theme, StoredTheme::System);
+
+    // A file from before the setting existed keeps its presets and follows
+    // the desktop.
+    let (theme, readable, presets) = stored_theme("");
+    assert_eq!(theme, StoredTheme::System);
+    assert!(readable);
+    assert_eq!(presets, [PresetLength::Indefinite]);
+
+    // A word this version does not know is the default, and the rest of the
+    // file is kept rather than thrown away with it.
+    let (theme, readable, presets) = stored_theme(r#","theme":"sepia""#);
+    assert_eq!(theme, StoredTheme::System);
+    assert!(readable);
+    assert_eq!(presets, [PresetLength::Indefinite]);
+    let (theme, _, _) = stored_theme(r#","theme":7"#);
+    assert_eq!(theme, StoredTheme::System);
+
+    // A stored choice stays. A stored dark cannot be told from one written
+    // as the old default, so it stays dark too.
+    assert_eq!(stored_theme(r#","theme":"dark""#).0, StoredTheme::Dark);
+    assert_eq!(stored_theme(r#","theme":"light""#).0, StoredTheme::Light);
+    assert_eq!(stored_theme(r#","theme":"system""#).0, StoredTheme::System);
+}
+
+#[test]
+fn the_theme_choices_list_the_default_first_and_system_follows_the_desktop() {
+    assert_eq!(StoredTheme::ALL[0], StoredTheme::default());
+    // `system` is the only one the window keeps following (ticket 110).
+    for theme in StoredTheme::ALL {
+        assert_eq!(
+            theme.appearance().follows_desktop(),
+            theme == StoredTheme::System
+        );
+    }
+    let en = copy(Locale::EnUs);
+    let zh = copy(Locale::ZhTw);
+    assert_eq!(en.system_theme, "Use system setting");
+    assert_eq!(zh.system_theme, "跟隨系統");
 }
 
 #[test]

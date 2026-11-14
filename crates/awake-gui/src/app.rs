@@ -808,12 +808,19 @@ impl AwakeApp {
     }
 }
 
+/// Paints the window in the stored theme, in gpui-component's own palette,
+/// and for `system` keeps repainting it when the desktop switches: the
+/// desktop's appearance reaches GPUI only after the window has opened (ticket
+/// 110), so reading it once at startup opened light on a dark desktop.
 pub(crate) fn apply_theme(theme: StoredTheme, window: &mut Window, cx: &mut App) {
-    match theme {
-        StoredTheme::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
-        StoredTheme::Light => Theme::change(ThemeMode::Light, Some(window), cx),
-        StoredTheme::System => Theme::sync_system_appearance(Some(window), cx),
-    }
+    theme.appearance().follow(window, cx, |dark, window, cx| {
+        let mode = if dark {
+            ThemeMode::Dark
+        } else {
+            ThemeMode::Light
+        };
+        Theme::change(mode, Some(window), cx);
+    })
 }
 
 impl better_ui::restart::Restartable for AwakeApp {

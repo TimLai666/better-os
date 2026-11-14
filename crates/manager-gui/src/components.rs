@@ -485,16 +485,14 @@ impl ManagerApp {
                                 ),
                             )
                         })
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(format!(
-                                    "{}: {}",
-                                    c.restart_requirement,
-                                    self.restart_requirement_label(component.restart_requirement)
-                                )),
-                        )
+                        .when_some(self.restart_note(component), |row, note| {
+                            row.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(note),
+                            )
+                        })
                         .child(action)
                         .child(overflow),
                 ),
@@ -698,18 +696,23 @@ impl ManagerApp {
         }
     }
 
+    /// What happens after this component's update, said on its card only
+    /// when an update is waiting and only when something happens (ticket
+    /// 111). Since ticket 105 a restarted application reopens by itself, so
+    /// that is no longer something the person has to do; logging out and
+    /// restarting the computer still are.
+    pub(crate) fn restart_note(&self, component: &ComponentInfo) -> Option<&'static str> {
+        restart_note(self.locale, component.state, component.restart_requirement)
+    }
+
+    /// What happens after `operation`, for the "Afterwards" row; `None`
+    /// hides the row. See [`restart_effect`].
     pub(crate) fn restart_requirement_label(
         &self,
+        operation: DesiredOperation,
         requirement: RestartRequirement,
-    ) -> &'static str {
-        let c = copy(self.locale);
-        match requirement {
-            RestartRequirement::NotDeclared => c.not_declared,
-            RestartRequirement::NotRequired => c.restart_not_required,
-            RestartRequirement::RestartApplication => c.restart_application,
-            RestartRequirement::LogOut => c.restart_log_out,
-            RestartRequirement::Reboot => c.restart_reboot,
-        }
+    ) -> Option<&'static str> {
+        restart_effect(self.locale, operation, requirement)
     }
 
     /// What a component takes over from or augments, as one line. Returns
@@ -764,5 +767,55 @@ fn format_byte_count(bytes: u64) -> String {
         format!("{} KiB", bytes / KIB)
     } else {
         format!("{bytes} B")
+    }
+}
+
+/// The card's restart note: only for a waiting update, and only when the
+/// update does something the person would notice.
+pub(crate) fn restart_note(
+    locale: Locale,
+    state: ComponentStatus,
+    requirement: RestartRequirement,
+) -> Option<&'static str> {
+    if state != ComponentStatus::UpdateAvailable {
+        return None;
+    }
+    let c = copy(locale);
+    match requirement {
+        RestartRequirement::RestartApplication => Some(c.restart_note_application),
+        RestartRequirement::LogOut => Some(c.restart_note_log_out),
+        RestartRequirement::Reboot => Some(c.restart_note_reboot),
+        RestartRequirement::NotDeclared | RestartRequirement::NotRequired => None,
+    }
+}
+
+/// What happens after `operation`, given the manifest's restart requirement.
+///
+/// `manager-core` attaches the manifest's requirement to every operation that
+/// changes a component, but ticket 105's automatic reopening only happens
+/// when a running app is *updated*: the window notices its own file was
+/// replaced and starts the new program. So only an update says it reopens by
+/// itself, and only "if it is open"; installing, enabling, or restoring takes
+/// effect the next time the app opens; disabling or removing an app that
+/// only needed restarting has nothing left to say. Logging out and
+/// restarting the computer are the person's to do, whatever the operation.
+pub(crate) fn restart_effect(
+    locale: Locale,
+    operation: DesiredOperation,
+    requirement: RestartRequirement,
+) -> Option<&'static str> {
+    let c = copy(locale);
+    match requirement {
+        RestartRequirement::NotDeclared => Some(c.not_declared),
+        RestartRequirement::NotRequired => Some(c.restart_not_required),
+        RestartRequirement::LogOut => Some(c.restart_log_out),
+        RestartRequirement::Reboot => Some(c.restart_reboot),
+        RestartRequirement::RestartApplication => match operation {
+            DesiredOperation::Update => Some(c.restart_application),
+            DesiredOperation::Install | DesiredOperation::Enable | DesiredOperation::Restore => {
+                Some(c.restart_next_open)
+            }
+            DesiredOperation::Disable | DesiredOperation::Remove | DesiredOperation::Verify => None,
+        },
     }
 }

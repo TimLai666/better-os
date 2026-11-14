@@ -4,8 +4,9 @@
 //! branch checked out, sharing one history. Git will not check a branch out
 //! in two worktrees at once, so a branch that is checked out in another
 //! worktree cannot be switched to here; choosing it opens that worktree
-//! instead. The repository list shows each repository's linked worktrees
-//! under it, so they are found where repositories are found.
+//! instead. The repository list shows each repository's worktrees under it
+//! (`crate::repositories::RepositoryList::groups`), so they are found where
+//! repositories are found.
 
 use std::path::{Path, PathBuf};
 

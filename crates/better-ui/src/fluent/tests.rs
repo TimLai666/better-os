@@ -936,9 +936,13 @@ fn the_menu_key_and_shift_f10_ask_for_a_context_menu() {
 }
 
 #[test]
-fn the_appearance_is_stored_as_a_word_and_defaults_to_dark() {
-    // ADR 0004: dark, light, or system; dark by default.
-    assert_eq!(Appearance::default(), Appearance::Dark);
+fn the_appearance_is_stored_as_a_word_and_defaults_to_the_system() {
+    // ADR 0019: system, light, or dark; the system by default, listed first.
+    assert_eq!(Appearance::default(), Appearance::System);
+    assert_eq!(Appearance::ALL[0], Appearance::System);
+    assert!(Appearance::System.follows_desktop());
+    assert!(!Appearance::Dark.follows_desktop());
+    assert!(!Appearance::Light.follows_desktop());
     for appearance in Appearance::ALL {
         assert_eq!(Appearance::parse(appearance.as_str()), Some(appearance));
     }
@@ -950,11 +954,15 @@ fn the_appearance_is_stored_as_a_word_and_defaults_to_dark() {
 
     let dir = std::env::temp_dir().join(format!("fluent-appearance-{}", std::process::id()));
     let path = dir.join("nested").join("appearance");
-    assert_eq!(Appearance::load(&path), Appearance::Dark);
+    // No file: the person never picked.
+    assert_eq!(Appearance::load(&path), Appearance::System);
     Appearance::Light.save(&path).expect("save");
     assert_eq!(Appearance::load(&path), Appearance::Light);
-    std::fs::write(&path, "nonsense").expect("write");
+    // A dark someone picked stays dark.
+    Appearance::Dark.save(&path).expect("save");
     assert_eq!(Appearance::load(&path), Appearance::Dark);
+    std::fs::write(&path, "nonsense").expect("write");
+    assert_eq!(Appearance::load(&path), Appearance::System);
     std::fs::remove_dir_all(&dir).expect("clean up");
 
     assert_eq!(
@@ -1713,4 +1721,106 @@ fn the_row_renderers_use_their_hit_area_inset() {
             "{name} draws a row with margins again"
         );
     }
+}
+
+/// A window with nothing in it, to apply an appearance to.
+struct Blank;
+
+impl gpui::Render for Blank {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        gpui::div()
+    }
+}
+
+thread_local! {
+    static PAINTED: std::cell::RefCell<Vec<bool>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn record_paint(dark: bool, _: &mut gpui::Window, _: &mut gpui::App) {
+    PAINTED.with(|painted| painted.borrow_mut().push(dark));
+}
+
+/// Ticket 110: a window opens before GPUI has heard the desktop's appearance
+/// from the portal, so GPUI reports light at first (its test window does the
+/// same). Following paints now and keeps the window subscribed, in the
+/// process's global, whatever the choice is.
+#[gpui::test]
+fn following_paints_now_and_keeps_the_window_subscribed(cx: &mut gpui::TestAppContext) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|_, _| Blank);
+    cx.update(|window, cx| {
+        assert_eq!(window.appearance(), gpui::WindowAppearance::Light);
+        assert!(!Appearance::is_following(window, cx));
+        assert_eq!(Appearance::current(cx), Appearance::System);
+
+        PAINTED.with(|painted| painted.borrow_mut().clear());
+        Appearance::System.follow(window, cx, record_paint);
+        assert!(Appearance::is_following(window, cx));
+        Appearance::Dark.follow(window, cx, record_paint);
+        assert_eq!(Appearance::current(cx), Appearance::Dark);
+        Appearance::Light.follow(window, cx, record_paint);
+        assert_eq!(
+            PAINTED.with(|painted| painted.borrow().clone()),
+            [false, true, false]
+        );
+        assert!(Appearance::is_following(window, cx));
+
+        // The Fluent windows' own call does the same and repaints the kit.
+        Appearance::System.apply_and_follow(window, cx);
+        assert!(!gpui_component::Theme::global(cx).mode.is_dark());
+        Appearance::Dark.apply_and_follow(window, cx);
+        assert!(gpui_component::Theme::global(cx).mode.is_dark());
+    });
+}
+
+/// Ticket 110 review: the theme is one per process, so the choice is too. A
+/// second window opened following the desktop must not repaint the first
+/// light after the person picked dark in it: when the desktop switches, every
+/// window repaints the process's choice, not the one it was opened with.
+#[gpui::test]
+fn a_choice_in_one_window_holds_in_every_window(cx: &mut gpui::TestAppContext) {
+    use gpui::AppContext as _;
+    cx.update(gpui_component::init);
+    let first: gpui::AnyWindowHandle = cx.add_window(|_, _| Blank).into();
+    let second: gpui::AnyWindowHandle = cx.add_window(|_, _| Blank).into();
+    let mut on = |window: gpui::AnyWindowHandle, f: &dyn Fn(&mut gpui::Window, &mut gpui::App)| {
+        cx.update_window(window, |_, window, cx| f(window, cx))
+            .expect("the window is open")
+    };
+    on(first, &|window, cx| {
+        Appearance::System.follow(window, cx, record_paint)
+    });
+    on(second, &|window, cx| {
+        Appearance::System.follow(window, cx, record_paint);
+        assert!(Appearance::is_following(window, cx));
+    });
+    // Dark picked in the first window.
+    on(first, &|window, cx| {
+        Appearance::Dark.follow(window, cx, record_paint)
+    });
+    on(second, &|window, cx| {
+        assert_eq!(Appearance::current(cx), Appearance::Dark);
+        // The desktop switches; the second window's subscription runs. It
+        // must leave dark alone rather than paint the desktop's light.
+        PAINTED.with(|painted| painted.borrow_mut().clear());
+        super::theme::repaint_for_desktop(record_paint, window, cx);
+        assert_eq!(
+            PAINTED.with(|painted| painted.borrow().clone()),
+            Vec::<bool>::new()
+        );
+    });
+    // Back to following: the subscription paints the desktop's appearance.
+    on(first, &|window, cx| {
+        Appearance::System.follow(window, cx, record_paint)
+    });
+    on(second, &|window, cx| {
+        PAINTED.with(|painted| painted.borrow_mut().clear());
+        super::theme::repaint_for_desktop(record_paint, window, cx);
+        assert_eq!(PAINTED.with(|painted| painted.borrow().clone()), [false]);
+        assert!(Appearance::is_following(window, cx));
+    });
 }

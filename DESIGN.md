@@ -99,7 +99,7 @@ An info bar is drawn on its status background, never on the status color itself:
 
 Accent is for the one primary action on a surface, the selected item's indicator, and a focused field's bottom edge. It is never a decoration. Status colors mark a state and are always paired with words or an icon, never used alone.
 
-Which appearance a window starts in is unchanged: dark by default, with light and system-follow as stored choices ([ADR 0004](docs/decisions/0004-dark-first-themeable-appearance.md)).
+A window starts in the desktop's appearance and keeps following it while open; light and dark are stored choices, and a picker lists "Use system setting" first ([ADR 0019](docs/decisions/0019-appearance-follows-system.md), which replaced ADR 0004's dark default).
 
 ## Typography
 

@@ -173,13 +173,13 @@ impl GitApp {
                 .resolved(),
             other => other.resolved(),
         };
-        let appearance = options.appearance.unwrap_or_else(|| {
-            Appearance::from_argument(&session.settings.appearance).unwrap_or_default()
-        });
+        // The command line's appearance is this window's only: it is never
+        // written into the stored settings, which any later save would keep.
+        // The settings page shows what the window is in from the process's
+        // appearance instead.
+        let appearance =
+            crate::opening_appearance(options.appearance, &session.settings.appearance);
         crate::theme::apply(appearance, window, cx);
-        // The settings page shows what the window is in, including a choice
-        // made on the command line (which is not saved).
-        session.settings.appearance = appearance.as_str().to_string();
         if options.locale != Locale::System {
             session.settings.language = match locale {
                 Locale::ZhTw => "zh-TW",
@@ -343,6 +343,9 @@ impl GitApp {
                 }
             }
         }
+        // The list's worktrees are read once at the start, which also folds
+        // linked worktrees an older list saved as repositories into theirs.
+        session.read_worktrees();
         if let Some(view) = &restored {
             let filter = view.session.filter.clone();
             inputs
@@ -464,6 +467,19 @@ impl GitApp {
                 let outcome = work.await;
                 this.update_in(cx, |app, window, cx| {
                     app.session.apply_background(outcome);
+                    app.drive(window, cx);
+                })
+                .ok();
+            })
+            .detach();
+        }
+        if let Some(job) = self.session.next_list() {
+            let git = self.session.git();
+            let work = cx.background_spawn(async move { job.run(git.as_ref()) });
+            cx.spawn_in(window, async move |this, cx| {
+                let outcome = work.await;
+                this.update_in(cx, |app, window, cx| {
+                    app.session.apply_list(outcome);
                     app.drive(window, cx);
                 })
                 .ok();
@@ -944,7 +960,10 @@ impl GitApp {
             Action::FindInGraph if self.graph_find_allowed(window, cx) => {
                 self.open_graph_find(window, cx);
             }
-            Action::RepositoryList => self.flyout = Some(Flyout::Repositories),
+            Action::RepositoryList => {
+                self.session.read_worktrees();
+                self.flyout = Some(Flyout::Repositories);
+            }
             Action::BranchList if has_repo => {
                 self.flyout = Some(Flyout::Branches);
                 self.branch_tab = 0;

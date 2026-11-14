@@ -646,7 +646,7 @@ impl FilesApp {
 
     fn appearance_menu(&self, c: &'static Copy, cx: &mut Context<Self>) -> MenuEntry {
         use better_ui::fluent::theme::Appearance;
-        let current = self.appearance;
+        let current = Appearance::current(cx);
         let item = |label: &'static str, choice: Appearance| {
             MenuItem::new(label)
                 .checked(current == choice)
@@ -658,9 +658,9 @@ impl FilesApp {
         MenuEntry::submenu(
             c.appearance,
             vec![
+                item(c.theme_system, Appearance::System),
                 item(c.light_theme, Appearance::Light),
                 item(c.dark_theme, Appearance::Dark),
-                item(c.theme_system, Appearance::System),
             ],
         )
     }

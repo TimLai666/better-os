@@ -27,7 +27,7 @@ fn refused(start: Start) -> String {
 }
 
 #[test]
-fn no_argument_opens_an_empty_dark_window() {
+fn no_argument_opens_an_empty_window_in_the_stored_appearance() {
     let options = opened(run(&[]));
     assert_eq!(options.path, None);
     assert_eq!(options.locale, Locale::System);
@@ -92,4 +92,101 @@ fn unknown_flags_second_paths_and_unknown_values_are_refused() {
 fn a_flag_with_no_value_keeps_its_default() {
     let options = opened(run(&["--lang"]));
     assert_eq!(options.locale, Locale::System);
+}
+
+/// Ticket 110: the appearance the window opens in when no flag names one.
+fn stored(file: Option<&str>) -> Appearance {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("git.json");
+    if let Some(text) = file {
+        std::fs::write(&path, text).expect("write the settings file");
+    }
+    let settings = git_gui::settings::Settings::load(Some(&path));
+    Appearance::stored(&settings.appearance)
+}
+
+#[test]
+fn the_stored_appearance_defaults_to_the_system_and_keeps_a_choice() {
+    assert_eq!(Appearance::default(), Appearance::System);
+    // No settings file.
+    assert_eq!(stored(None), Appearance::System);
+    // A file from before the setting existed.
+    assert_eq!(stored(Some(r#"{"language":"zh-TW"}"#)), Appearance::System);
+    // A word this version does not know.
+    assert_eq!(
+        stored(Some(r#"{"appearance":"sepia"}"#)),
+        Appearance::System
+    );
+    assert_eq!(stored(Some(r#"{"appearance":""}"#)), Appearance::System);
+    // A stored choice stays; a stored dark cannot be told from one written
+    // as the old default, so it stays dark too.
+    assert_eq!(stored(Some(r#"{"appearance":"dark"}"#)), Appearance::Dark);
+    assert_eq!(stored(Some(r#"{"appearance":"light"}"#)), Appearance::Light);
+    assert_eq!(
+        stored(Some(r#"{"appearance":"system"}"#)),
+        Appearance::System
+    );
+}
+
+#[test]
+fn the_settings_page_lists_the_default_first_and_only_it_follows_the_desktop() {
+    assert_eq!(Appearance::ALL[0], Appearance::default());
+    for appearance in Appearance::ALL {
+        assert_eq!(
+            appearance.fluent().follows_desktop(),
+            appearance == Appearance::System,
+            "{appearance:?}"
+        );
+        assert_eq!(appearance.fluent().as_str(), appearance.as_str());
+    }
+}
+
+/// Ticket 110 review: an appearance that is not a word does not throw the
+/// rest of the settings away (the next save would have overwritten them).
+#[test]
+fn a_non_word_appearance_keeps_the_rest_of_the_settings() {
+    for value in ["5", "null", "true", "[]"] {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("git.json");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"appearance":{value},"language":"zh-TW","editor":"code","terminal":"kitty","clone_folder":"/work"}}"#
+            ),
+        )
+        .unwrap();
+        let settings = git_gui::settings::Settings::load(Some(&path));
+        assert_eq!(settings.appearance, "system", "{value}");
+        assert_eq!(settings.language, "zh-TW", "{value}");
+        assert_eq!(settings.editor, "code", "{value}");
+        assert_eq!(settings.terminal, "kitty", "{value}");
+        assert_eq!(settings.clone_folder, "/work", "{value}");
+        assert_eq!(Appearance::stored(&settings.appearance), Appearance::System);
+    }
+}
+
+/// Ticket 110 review: `--appearance dark` is for the window it opens, and a
+/// later save keeps the stored choice, not the command line's.
+#[test]
+fn a_command_line_appearance_is_never_saved() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("git.json");
+    std::fs::write(&path, r#"{"appearance":"system","editor":"code"}"#).unwrap();
+    let settings = git_gui::settings::Settings::load(Some(&path));
+
+    let options = opened(run(&["--appearance", "dark"]));
+    assert_eq!(
+        git_gui::opening_appearance(options.appearance, &settings.appearance),
+        Appearance::Dark
+    );
+    // Nothing on the command line: the stored choice.
+    assert_eq!(
+        git_gui::opening_appearance(None, &settings.appearance),
+        Appearance::System
+    );
+    // What the window saves later is the stored choice.
+    settings.save(Some(&path)).unwrap();
+    let saved = git_gui::settings::Settings::load(Some(&path));
+    assert_eq!(saved.appearance, "system");
+    assert_eq!(saved.editor, "code");
 }

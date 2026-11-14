@@ -16,7 +16,6 @@
 //! works even when the configuration itself is the thing that is broken.
 
 use gpui::*;
-use gpui_component::{Theme, ThemeMode};
 use gpui_component_assets::Assets;
 use touchpad_core::TouchpadStore;
 use touchpad_gui::{
@@ -77,9 +76,6 @@ fn main() {
 
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
-                // Better OS is dark-first; gpui-component installs its light
-                // theme at init.
-                Theme::change(ThemeMode::Dark, Some(window), cx);
                 let assembled = std::time::Instant::now();
                 let startup = Startup::run(options);
                 let read_in = assembled.elapsed();

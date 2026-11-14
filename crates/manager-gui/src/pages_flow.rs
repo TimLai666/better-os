@@ -68,11 +68,9 @@ impl ManagerApp {
                                 self.disk_space_label(self.pending_disk_space()),
                                 cx,
                             ))
-                            .child(self.key_value_row(
-                                c.restart_requirement,
-                                self.restart_requirement_label(self.pending_restart_requirement()),
-                                cx,
-                            )),
+                            .when_some(self.pending_restart_label(), |view, label| {
+                                view.child(self.key_value_row(c.restart_requirement, label, cx))
+                            }),
                         cx,
                     ),
                 )
@@ -215,11 +213,10 @@ impl ManagerApp {
                     cx,
                 ))
                 .child(self.key_value_row(c.files_touched, paths, cx))
-                .child(self.key_value_row(
-                    c.restart_requirement,
-                    self.restart_requirement_label(step.restart_requirement),
-                    cx,
-                ))
+                .when_some(
+                    self.restart_requirement_label(step.operation, step.restart_requirement),
+                    |view, label| view.child(self.key_value_row(c.restart_requirement, label, cx)),
+                )
                 .child(self.key_value_row(c.download_size, download, cx))
                 .child(self.key_value_row(c.required_disk_space, required_disk, cx))
                 .child(self.key_value_row(c.release_notes, release_notes, cx))
@@ -494,12 +491,14 @@ impl ManagerApp {
         let Some((component, failure)) = self.current_failure() else {
             return v_flex()
                 .gap_5()
-                .child(self.page_heading(c.restore_title, c.restore_subtitle, false, compact))
+                // Nothing failed, so the heading does not say a component
+                // failed, and the detail is not the Updates page's (ticket 111).
+                .child(self.page_heading(c.restore_none_title, c.restore_subtitle, false, compact))
                 .child(
                     self.empty_state(
                         IconName::Check,
                         c.all_checks_passed,
-                        c.no_updates_subtitle,
+                        c.restore_nothing_failed,
                         Button::new("restore-overview")
                             .label(c.back_to_overview)
                             .on_click(cx.listener(|this, _, _, cx| {

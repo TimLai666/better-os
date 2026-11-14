@@ -681,11 +681,17 @@ mod tests {
         let pages: Vec<Page> = links.iter().map(|link| link.page.clone()).collect();
         assert_eq!(pages, [Page::Updates, Page::Health, Page::Activity]);
         assert_eq!(links[0].header, "更新");
-        assert_eq!(links[0].description, "有 2 個更新");
+        assert_eq!(links[0].description, "2 個元件有新版本");
         assert_eq!(links[1].description, "檢查元件服務、相依套件與復原選項");
         assert_eq!(apps_links(Locale::EnUs, 0)[0].description, "Up to date");
-        assert_eq!(apps_links(Locale::EnUs, 1)[0].description, "1 update");
-        assert_eq!(apps_links(Locale::EnUs, 3)[0].description, "3 updates");
+        assert_eq!(
+            apps_links(Locale::EnUs, 1)[0].description,
+            "1 component has a new version"
+        );
+        assert_eq!(
+            apps_links(Locale::EnUs, 3)[0].description,
+            "3 components have new versions"
+        );
         for locale in [Locale::EnUs, Locale::ZhTw] {
             let index = search_index(locale);
             for link in apps_links(locale, 0) {

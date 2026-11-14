@@ -506,7 +506,44 @@ impl TouchpadApp {
                 }),
                 cx,
             ))
+            .child(self.appearance_card(cx))
             .into_any_element()
+    }
+
+    /// The window's own appearance, as in the other Better OS windows: the
+    /// desktop's by default, listed first.
+    fn appearance_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        use better_ui::fluent::theme::Appearance;
+        let c = copy(self.model.locale());
+        self.card(
+            v_flex()
+                .gap_2()
+                .child(div().text_sm().font_semibold().child(c.appearance))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(c.appearance_description),
+                )
+                .child(h_flex().w_full().min_w_0().gap_2().flex_wrap().children(
+                    Appearance::ALL.into_iter().map(|appearance| {
+                        let (id, label) = match appearance {
+                            Appearance::System => ("appearance-system", c.appearance_system),
+                            Appearance::Light => ("appearance-light", c.appearance_light),
+                            Appearance::Dark => ("appearance-dark", c.appearance_dark),
+                        };
+                        let button = Button::new(id).label(label).small().on_click(cx.listener(
+                            move |this, _, window, cx| this.set_appearance(appearance, window, cx),
+                        ));
+                        if appearance == Appearance::current(cx) {
+                            button.primary()
+                        } else {
+                            button.outline()
+                        }
+                    }),
+                )),
+            cx,
+        )
     }
 
     /// The pointer test surface: a bounded box that shows where the pointer is.
