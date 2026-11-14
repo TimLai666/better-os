@@ -674,7 +674,7 @@ async fn write_image<C: DeviceControl + Clone + 'static>(
                 let report: storage_platform::ImageProgress =
                     std::sync::Arc::new(move |written| progress(written, total));
                 let outcome = control
-                    .write_image(&write.address, &write.image, report)
+                    .write_image(&write.address, &write.image, write.holding(report))
                     .await
                     .map(|_| ())
                     .map_err(|error| error.to_string());

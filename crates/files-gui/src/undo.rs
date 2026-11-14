@@ -277,8 +277,6 @@ fn occupied(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
 
-/// Checks every step, then runs them backwards (undo) or forwards (redo),
-/// returning the change as it stands afterwards.
 /// Checks every step of a change before any runs.
 fn check(change: &Change, undoing: bool) -> Result<(), Refusal> {
     // Check first, all of it. A path an earlier-running step of this same
@@ -394,6 +392,8 @@ impl From<Refusal> for Box<Stopped> {
     }
 }
 
+/// Checks every step, then runs them backwards (undo) or forwards (redo),
+/// returning the change as it stands afterwards.
 fn flip(change: &Change, undoing: bool, trash: Option<&Path>) -> Result<Change, Box<Stopped>> {
     check(change, undoing)?;
 

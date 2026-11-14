@@ -307,3 +307,39 @@ sway with the fake storage service and a fake drive):
 `58-plugin-title-from-catalog-1600-light-zh.png`,
 `59-list-view-960-light-zh.png`,
 `60-open-pane-headers-960-light-zh.png`.
+
+### Third review fixes
+
+- **LocalSend register listener:** each connection is served on a
+  short-lived thread whose reads and writes wait only for the time left in
+  the discovery window, so a client that trickles bytes holds neither the
+  listener nor other devices past it. The listener binds only the address
+  the announcement leaves from (the one the system routes LocalSend's group
+  through), and a register that does not speak HTTPS is ignored, as an
+  announcement is.
+- **Image write busy mark:** the copy holds the drive's mark through the
+  progress it is given (`ImageWrite::holding`), so the drive is released
+  only when the copying thread really ends, even when the caller went away
+  first. Unlocked LUKS volumes backed by the drive join the busy set, so
+  nothing remounts one mid-write.
+- **Error sentences live in `i18n.rs`** (`ErrorCopy`, one table per
+  language; a missing sentence is a compile error), and the disk service's
+  refusals ("unmount was refused for …: target is busy") read as
+  translated sentences naming `/dev/sdc1` rather than the UDisks object
+  path.
+- **Navigation pane:** rows end where the scrollbar begins, and a count
+  badge in the compact pane ends at its row's edge instead of being cut off
+  at the pane's. Checked at a scrolling height in Better Files, Git
+  (settings), Manager, Monitor and the Fluent gallery.
+
+Screenshots (`.shots/`, private headless sway):
+`61-files-scrolling-pane-eject-clear-960-light-en.png`,
+`62-files-compact-pane-scrolling-960x560-light-en.png`,
+`63-git-settings-nav-scrolling-960x340-dark-en.png`,
+`64-gallery-nav-scrolling-960x420-dark-en.png`,
+`65-manager-compact-nav-scrolled-960x380-dark-en.png`,
+`66-manager-open-nav-scrolled-960x380-dark-en.png` (it shows this
+machine's real service states; keep it local),
+`67-monitor-compact-nav-scrolling-960x380-dark-en.png`,
+`68-monitor-open-nav-scrolling-960x380-dark-en.png` (real processor load;
+keep it local), `69-gallery-compact-count-badges-inside-1200-dark-en.png`.

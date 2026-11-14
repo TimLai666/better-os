@@ -970,6 +970,34 @@ async fn an_abandoned_image_write_never_leaves_the_drive_busy() {
     harness.coordinator.mount(&volume).await.unwrap();
 }
 
+/// A caller that goes away while the copy still runs (a cancelled D-Bus
+/// call) does not give the drive back: the copy holds it through its
+/// progress until it really ends.
+#[tokio::test]
+async fn a_copy_that_outlives_its_caller_keeps_the_drive_busy_until_it_ends() {
+    let fixture = Fixture::new("image-outlives");
+    let mut harness = drive_with_two_volumes(&fixture).await;
+    let image = fixture.root.join("installer.iso");
+    std::fs::write(&image, b"ISO").unwrap();
+    let volume = DeviceHandle::new(PART1);
+    let write = harness
+        .coordinator
+        .begin_image_write(&DeviceHandle::new(DISK), &image, true)
+        .await
+        .unwrap();
+    // What the copying thread is given, and keeps until it ends.
+    let copying = write.holding(no_progress());
+    drop(write);
+    assert!(harness.coordinator.is_erasing(&volume));
+    refused_with(
+        harness.coordinator.mount(&volume).await,
+        "storage.erase.busy",
+    );
+    drop(copying);
+    assert!(!harness.coordinator.is_erasing(&volume));
+    harness.coordinator.mount(&volume).await.unwrap();
+}
+
 const CLEARTEXT: &str = "/org/freedesktop/UDisks2/block_devices/dm_2d0";
 
 /// An unlocked LUKS volume on one of the drive's partitions is unmounted
@@ -1012,6 +1040,32 @@ async fn an_unlocked_encrypted_volume_on_the_drive_is_unmounted_first() {
         PART2,
         "/run/media/user/secret",
     ));
+    {
+        let _write = harness
+            .coordinator
+            .begin_image_write(&DeviceHandle::new(DISK), &image, true)
+            .await
+            .unwrap();
+        // Nothing mounts the unlocked volume again while the partition
+        // under it is overwritten.
+        assert!(
+            harness
+                .coordinator
+                .is_erasing(&DeviceHandle::new(CLEARTEXT))
+        );
+        refused_with(
+            harness
+                .coordinator
+                .mount(&DeviceHandle::new(CLEARTEXT))
+                .await,
+            "storage.erase.busy",
+        );
+    }
+    assert!(
+        !harness
+            .coordinator
+            .is_erasing(&DeviceHandle::new(CLEARTEXT))
+    );
     harness
         .coordinator
         .write_image(&DeviceHandle::new(DISK), &image, true, no_progress())

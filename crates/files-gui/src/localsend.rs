@@ -142,14 +142,18 @@ pub fn discover(
         }
         peers.push(peer);
     };
-    let listener = std::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, PORT)).ok();
+    // Only the address the announcement leaves from listens: that is where
+    // the devices that hear it answer, and nothing else on the machine's
+    // other networks is offered the port.
+    let local = announcing_address();
+    let listener = local.and_then(|address| std::net::TcpListener::bind((address, PORT)).ok());
     std::thread::scope(|scope| {
         if let Some(listener) = listener {
             let own = own.clone();
             let report = &report;
             scope.spawn(move || serve_register(&listener, identity, &own, wait, report));
         }
-        let Ok(socket) = multicast_socket() else {
+        let Ok(socket) = multicast_socket(local) else {
             return;
         };
         let announcement = serde_json::to_vec(&own).unwrap_or_default();
@@ -168,10 +172,16 @@ pub fn discover(
     peers.into_inner().unwrap_or_default()
 }
 
+/// How many connections are served at once; more wait to be accepted.
+const REGISTER_CONNECTIONS: usize = 16;
+
 /// Answers LocalSend's `register` requests on `listener` for `wait`: each
 /// device that presents a client certificate whose fingerprint is the one
-/// it claims is reported, and told who this is. Anything else is closed
-/// unanswered. One request per connection; at most 64 KB is read.
+/// it claims, and that speaks HTTPS, is reported and told who this is.
+/// Anything else is closed unanswered. One request per connection; at most
+/// 64 KB is read. Each connection is served on its own short-lived thread
+/// and dropped when `wait` is over, so a client that sends slowly holds
+/// neither the others nor the listener past it.
 pub fn serve_register(
     listener: &std::net::TcpListener,
     identity: &Identity,
@@ -179,68 +189,122 @@ pub fn serve_register(
     wait: Duration,
     report: &(dyn Fn(Peer) + Sync),
 ) {
-    use std::io::Write;
     let Ok(config) = identity.server_config() else {
         return;
     };
     let _ = listener.set_nonblocking(true);
-    let started = Instant::now();
+    let deadline = Instant::now() + wait;
     let answer = serde_json::to_string(own).unwrap_or_default();
-    while started.elapsed() < wait {
-        let (socket, from) = match listener.accept() {
-            Ok(accepted) => accepted,
-            Err(_) => {
+    let serving = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        while Instant::now() < deadline {
+            if serving.load(std::sync::atomic::Ordering::Acquire) >= REGISTER_CONNECTIONS {
                 std::thread::sleep(Duration::from_millis(20));
                 continue;
             }
-        };
-        let _ = socket.set_nonblocking(false);
-        let _ = socket.set_read_timeout(Some(Duration::from_secs(2)));
-        let _ = socket.set_write_timeout(Some(Duration::from_secs(2)));
-        let Ok(connection) = rustls::ServerConnection::new(config.clone()) else {
-            continue;
-        };
-        let mut stream = rustls::StreamOwned::new(connection, socket);
-        let Ok((first, body)) = read_request(&mut stream) else {
-            continue;
-        };
-        let Some(certificate) = stream
-            .conn
-            .peer_certificates()
-            .and_then(|chain| chain.first())
-            .map(|certificate| certificate_fingerprint(certificate.as_ref()))
-        else {
-            continue;
-        };
-        if !first.starts_with("POST /api/localsend/v2/register") {
-            let _ = write!(
-                stream,
-                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            );
-            continue;
+            let (socket, from) = match listener.accept() {
+                Ok(accepted) => accepted,
+                Err(_) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+            };
+            serving.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            let (config, answer, serving) = (config.clone(), &answer, &serving);
+            scope.spawn(move || {
+                if let Some(peer) = register_one(socket, from.ip(), config, answer, deadline) {
+                    report(peer);
+                }
+                serving.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            });
         }
-        let Ok(info) = serde_json::from_slice::<Info>(&body) else {
-            continue;
-        };
-        // As LocalSend does: a claim the certificate does not back is
-        // ignored.
-        if !info.fingerprint.eq_ignore_ascii_case(&certificate) || info.alias.is_empty() {
-            continue;
-        }
+    });
+}
+
+/// One `register` connection, given up at `deadline`.
+fn register_one(
+    socket: std::net::TcpStream,
+    from: IpAddr,
+    config: std::sync::Arc<rustls::ServerConfig>,
+    answer: &str,
+    deadline: Instant,
+) -> Option<Peer> {
+    use std::io::Write;
+    let _ = socket.set_nonblocking(false);
+    let connection = rustls::ServerConnection::new(config).ok()?;
+    let mut stream = rustls::StreamOwned::new(connection, Deadline { socket, deadline });
+    let (first, body) = read_request(&mut stream).ok()?;
+    let certificate = stream
+        .conn
+        .peer_certificates()
+        .and_then(|chain| chain.first())
+        .map(|certificate| certificate_fingerprint(certificate.as_ref()))?;
+    if !first.starts_with("POST /api/localsend/v2/register") {
         let _ = write!(
             stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
-            answer.len()
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
-        stream.conn.send_close_notify();
-        let _ = stream.flush();
-        report(Peer {
-            alias: info.alias,
-            address: from.ip(),
-            port: info.port,
-            protocol: info.protocol,
-            fingerprint: certificate,
-        });
+        return None;
+    }
+    let info = serde_json::from_slice::<Info>(&body).ok()?;
+    // As LocalSend does: a claim the certificate does not back is ignored,
+    // and so (as for announcements) is a device that does not speak HTTPS.
+    if !info.fingerprint.eq_ignore_ascii_case(&certificate)
+        || info.alias.is_empty()
+        || info.protocol != "https"
+    {
+        return None;
+    }
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+        answer.len()
+    )
+    .ok()?;
+    stream.conn.send_close_notify();
+    stream.flush().ok()?;
+    Some(Peer {
+        alias: info.alias,
+        address: from,
+        port: info.port,
+        protocol: info.protocol,
+        fingerprint: certificate,
+    })
+}
+
+/// A socket that gives up at a deadline: each read and write may wait only
+/// for the time left, and none starts once it has passed.
+struct Deadline {
+    socket: std::net::TcpStream,
+    deadline: Instant,
+}
+
+impl Deadline {
+    fn time_left(&self) -> std::io::Result<Duration> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        Ok(left)
+    }
+}
+
+impl Read for Deadline {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.time_left()?;
+        self.socket.set_read_timeout(Some(left))?;
+        self.socket.read(buffer)
+    }
+}
+
+impl std::io::Write for Deadline {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let left = self.time_left()?;
+        self.socket.set_write_timeout(Some(left))?;
+        self.socket.write(buffer)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.socket.flush()
     }
 }
 
@@ -506,13 +570,30 @@ impl KnownPeers {
     }
 }
 
-fn multicast_socket() -> std::io::Result<UdpSocket> {
+/// The address an announcement to LocalSend's group leaves from: the one
+/// the system routes the group through. Nothing is sent to find it out.
+fn announcing_address() -> Option<Ipv4Addr> {
+    let probe = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    probe.connect((MULTICAST, PORT)).ok()?;
+    match probe.local_addr().ok()?.ip() {
+        IpAddr::V4(address) if !address.is_unspecified() => Some(address),
+        _ => None,
+    }
+}
+
+/// LocalSend's multicast group, joined (and announced to) on the interface
+/// of `local` when it is known.
+fn multicast_socket(local: Option<Ipv4Addr>) -> std::io::Result<UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
+    let interface = local.unwrap_or(Ipv4Addr::UNSPECIFIED);
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
     socket.set_reuse_port(true)?;
     socket.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT)).into())?;
-    socket.join_multicast_v4(&MULTICAST, &Ipv4Addr::UNSPECIFIED)?;
+    socket.join_multicast_v4(&MULTICAST, &interface)?;
+    if local.is_some() {
+        socket.set_multicast_if_v4(&interface)?;
+    }
     Ok(socket.into())
 }
 

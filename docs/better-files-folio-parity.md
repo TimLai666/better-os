@@ -247,7 +247,8 @@ Status at the end of the fifth ticket-93 pass: **108 of 113 lines ticked**, 5 de
       `localsend.rs`: LocalSend's protocol v2.2 as v1.18.2 speaks it
       (rustls, socket2, rcgen): a multicast announcement when a selection's
       menu opens (never in the background), answers taken as HTTPS
-      `register` calls, then `prepare-upload` and one `upload` per file
+      `register` calls on the address the announcement leaves from (each
+      connection dropped when the wait is over), then `prepare-upload` and one `upload` per file
       accepted. Better Files makes one self-signed certificate once
       (`$XDG_DATA_HOME/better-os/files/localsend`, key 0600), shows it as
       the TLS client certificate LocalSend requires, and announces its

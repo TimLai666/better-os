@@ -200,7 +200,9 @@ pub trait DeviceControl: Send + Sync {
     /// UDisks2's `OpenForRestore` (polkit asks). `drive` is the drive's own
     /// block device, never a partition: a partition is refused. The caller
     /// unmounts every volume on the drive first. `progress` hears the bytes
-    /// written as they go. Returns the bytes written.
+    /// written as they go, and is dropped only once the copy has really
+    /// ended (a caller holds the drive through it). Returns the bytes
+    /// written.
     fn write_image(
         &self,
         drive: &DeviceAddress,

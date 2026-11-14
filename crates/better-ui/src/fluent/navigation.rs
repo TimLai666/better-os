@@ -489,17 +489,17 @@ fn item_row(
     })
     .when(c.compact, |row| {
         // Over the icon's top trailing corner, so the compact pane still
-        // says which page has something waiting.
+        // says which page has something waiting. A count ends at the row's
+        // trailing edge, so a wide one ("99+") grows over the icon instead
+        // of past the pane, where it would be cut off and lie under the
+        // scrollbar.
         row.children(item.badge.map(|badge| {
-            let (top, left) = match badge {
-                InfoBadge::Dot => (px(7.0), px(27.0)),
-                InfoBadge::Count(_) => (px(2.0), px(22.0)),
-            };
-            div()
-                .absolute()
-                .top(top)
-                .left(left)
-                .child(Badge::new(badge))
+            let at = div().absolute();
+            match badge {
+                InfoBadge::Dot => at.top(px(7.0)).left(px(27.0)),
+                InfoBadge::Count(_) => at.top(px(2.0)).right_0(),
+            }
+            .child(Badge::new(badge))
         }))
     });
     if selected {
@@ -653,6 +653,11 @@ impl RenderOnce for NavigationView {
             .flex_col()
             .flex_1()
             .min_h_0()
+            // Rows end where the scrollbar starts (their own 4px margin and
+            // this make its 8px), so it never lies over a row's highlight,
+            // trailing action or badge. Kept whether or not the pane
+            // overflows, so nothing moves when it starts to.
+            .pr(px(4.0))
             .overflow_y_scroll();
         // A pane taller than the window scrolls, with a scrollbar that stays
         // in sight while there is more below (a compact pane at 960×720

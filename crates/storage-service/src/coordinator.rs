@@ -96,9 +96,12 @@ type Erasing = Arc<Mutex<BTreeSet<DeviceHandle>>>;
 
 /// An image write whose checks passed: the drive is marked as being
 /// written and every volume on it is unmounted. The copy runs without the
-/// coordinator ([`StorageCoordinator::control`]). The mark goes when this
-/// is dropped, however the write ends (finished, failed, or abandoned by a
-/// caller that went away), so a drive is never left refusing everything.
+/// coordinator ([`StorageCoordinator::control`]), given the progress
+/// [`ImageWrite::holding`] returns. The mark goes once this is dropped and
+/// the copy has let go of that progress, however the write ends (finished,
+/// failed, or abandoned by a caller that went away while the copy thread
+/// still runs), so a drive is neither left refusing everything nor taken
+/// back while it is still being written.
 #[derive(Debug)]
 pub struct ImageWrite {
     pub drive: DeviceHandle,
@@ -106,18 +109,36 @@ pub struct ImageWrite {
     pub image: PathBuf,
     /// The image's length, for progress.
     pub total: u64,
-    /// The drive and every volume on it.
+    mark: Arc<BusyMark>,
+}
+
+/// The drive, every volume on it and every unlocked volume they back,
+/// marked as being written until the last holder lets go.
+#[derive(Debug)]
+struct BusyMark {
     members: Vec<DeviceHandle>,
     erasing: Erasing,
 }
 
-impl Drop for ImageWrite {
+impl Drop for BusyMark {
     fn drop(&mut self) {
         if let Ok(mut erasing) = self.erasing.lock() {
             for member in &self.members {
                 erasing.remove(member);
             }
         }
+    }
+}
+
+impl ImageWrite {
+    /// `progress`, holding the drive's mark for as long as the copy keeps
+    /// it: the platform drops it only when its copy has really ended.
+    pub fn holding(&self, progress: ImageProgress) -> ImageProgress {
+        let mark = self.mark.clone();
+        Arc::new(move |written| {
+            let _ = &mark;
+            progress(written)
+        })
     }
 }
 
@@ -565,10 +586,13 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             }
             backed_here.extend(more);
         }
-        for cleartext in everything
+        let cleartexts: Vec<&PlatformDevice> = everything
             .iter()
             .filter(|other| !on_drive.contains(&other.address.object_path))
             .filter(|other| backed_here.contains(&other.address.object_path))
+            .collect();
+        for cleartext in cleartexts
+            .iter()
             .filter(|other| other.mount_point.is_some())
         {
             if let Err(error) = self.control.unmount(&cleartext.address).await {
@@ -577,7 +601,20 @@ impl<C: DeviceControl> StorageCoordinator<C> {
                     cleartext.block.device_path
                 )));
             }
+            let cleartext = DeviceHandle::new(cleartext.address.object_path.clone());
+            if let Some(known) = self.known.get_mut(&cleartext) {
+                known.mount_point = None;
+                self.apply_mount(&cleartext, None).await;
+            }
         }
+        // The unlocked volumes are marked too, so nothing mounts one again
+        // while the partition under it is overwritten.
+        let mut members = members;
+        members.extend(
+            cleartexts
+                .iter()
+                .map(|cleartext| DeviceHandle::new(cleartext.address.object_path.clone())),
+        );
         if let Ok(mut erasing) = self.erasing.lock() {
             erasing.extend(members.iter().cloned());
         }
@@ -586,8 +623,10 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             address: device.address,
             image: image.to_path_buf(),
             total,
-            members,
-            erasing: self.erasing.clone(),
+            mark: Arc::new(BusyMark {
+                members,
+                erasing: self.erasing.clone(),
+            }),
         })
     }
 
@@ -620,7 +659,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             .await?;
         let result = self
             .control
-            .write_image(&write.address, &write.image, progress)
+            .write_image(&write.address, &write.image, write.holding(progress))
             .await;
         self.finish_image_write(write);
         Ok(result?)

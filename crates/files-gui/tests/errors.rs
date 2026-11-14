@@ -25,6 +25,16 @@ fn keys() -> Vec<String> {
         "storage.client.error.protocol_version:3:2",
         "files.prefs.error.unwritable:permission denied",
         "files.plugin.no_view:tailnet",
+        // The disk service's own sentences, as the client relays them.
+        "storage.client.error.rejected:unmount was refused for /org/freedesktop/UDisks2/block_devices/sdc1: GDBus.Error:org.freedesktop.UDisks2.Error.DeviceBusy: Error unmounting /dev/sdc1: target is busy",
+        "storage.client.error.rejected:mount was refused for /org/freedesktop/UDisks2/block_devices/sdc1: GDBus.Error:org.freedesktop.UDisks2.Error.NotAuthorizedDismissed: Not authorized to perform operation",
+        "storage.client.error.rejected:format was refused for /org/freedesktop/UDisks2/block_devices/sda2: it belongs to the running system",
+        "storage.client.error.rejected:write image was refused for /org/freedesktop/UDisks2/block_devices/sdc1: it is a partition, not a whole drive",
+        "storage.client.error.rejected:write image was refused for /org/freedesktop/UDisks2/block_devices/sdc: the image is larger than the drive",
+        "storage.client.error.rejected:write image was refused for /org/freedesktop/UDisks2/block_devices/sdc: GDBus.Error:org.freedesktop.UDisks2.Error.Cancelled: Operation was cancelled",
+        "storage.client.error.rejected:filesystem access is not supported for /org/freedesktop/UDisks2/block_devices/dm_2d0: no filesystem",
+        "storage.client.error.rejected:no device is known at /org/freedesktop/UDisks2/block_devices/sdc",
+        "storage.client.error.rejected:the storage service could not reach org.freedesktop.UDisks2: timed out",
     ]
     .iter()
     .map(|key| key.to_string())
@@ -101,6 +111,24 @@ fn every_key_reads_as_a_sentence_in_both_languages() {
     assert!(explain("storage.image.unmount_failed:/dev/sdc2:busy", &EN_US).contains("/dev/sdc2"));
     assert!(
         explain("files.operation.error.no_space:/media/stick", &ZH_TW).contains("/media/stick")
+    );
+    // The disk service's sentences are translated, its device paths shown as
+    // the device nodes people know, and UDisks' own reasons put plainly.
+    let busy = "storage.client.error.rejected:unmount was refused for /org/freedesktop/UDisks2/block_devices/sdc1: GDBus.Error:org.freedesktop.UDisks2.Error.DeviceBusy: target is busy";
+    assert_eq!(
+        explain(busy, &ZH_TW),
+        "無法卸載 /dev/sdc1：有程式正在使用它。請關閉使用它的程式後再試一次。"
+    );
+    assert_eq!(
+        explain(busy, &EN_US),
+        "Couldn't unmount /dev/sdc1: something is using it. Close what is using it and try again."
+    );
+    assert!(
+        explain(
+            "filesystem access is not supported for /org/freedesktop/UDisks2/block_devices/dm_2d0: no filesystem",
+            &EN_US
+        )
+        .contains("/dev/dm-0")
     );
     // Text that is no key is left as it is.
     assert_eq!(explain("Sent to Phone.", &EN_US), "Sent to Phone.");

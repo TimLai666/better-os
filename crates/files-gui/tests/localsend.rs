@@ -477,50 +477,102 @@ fn a_register_request_is_taken_only_when_its_certificate_backs_its_claim() {
             )
         })
     };
-    // The phone: its own certificate (the stand-in's), as a client.
-    let register = |claimed: &str| -> Option<Info> {
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let config = rustls::ClientConfig::builder_with_provider(provider.clone())
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(AnyServer(provider)))
-            .with_client_auth_cert(
-                vec![CertificateDer::from_pem_slice(CERT).unwrap()],
-                PrivateKeyDer::from_pem_slice(KEY).unwrap(),
-            )
-            .unwrap();
-        let socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let connection = rustls::ClientConnection::new(
-            Arc::new(config),
-            rustls::pki_types::ServerName::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST).into()),
-        )
-        .unwrap();
-        let mut stream = rustls::StreamOwned::new(connection, socket);
-        let body = format!(
-            r#"{{"alias":"Phone","version":"2.1","deviceType":"mobile","fingerprint":"{claimed}","port":53317,"protocol":"https","download":false}}"#
-        );
-        write!(
-            stream,
-            "POST /api/localsend/v2/register HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
-        )
-        .ok()?;
-        let (status, answer) = read_answer(&mut stream).ok()?;
-        (status == 200).then(|| serde_json::from_slice(&answer).unwrap())
-    };
     assert_eq!(
-        register(&"0".repeat(64)),
+        register(port, &"0".repeat(64), "https"),
         None,
         "a claim the certificate does not back"
     );
-    let answer = register(&stand_in_fingerprint().to_lowercase()).expect("an answer");
+    assert_eq!(
+        register(port, &stand_in_fingerprint(), "http"),
+        None,
+        "a device that does not speak HTTPS"
+    );
+    let answer =
+        register(port, &stand_in_fingerprint().to_lowercase(), "https").expect("an answer");
     assert_eq!(answer.fingerprint, me.fingerprint(), "we say who we are");
     server.join().unwrap();
     let found = found.lock().unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].alias, "Phone");
     assert_eq!(found[0].fingerprint, stand_in_fingerprint());
+}
+
+/// A phone registering with the stand-in's certificate as its client
+/// certificate, claiming `claimed` and `protocol`; what we answer, if we do.
+fn register(port: u16, claimed: &str, protocol: &str) -> Option<Info> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AnyServer(provider)))
+        .with_client_auth_cert(
+            vec![CertificateDer::from_pem_slice(CERT).unwrap()],
+            PrivateKeyDer::from_pem_slice(KEY).unwrap(),
+        )
+        .unwrap();
+    let socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let connection = rustls::ClientConnection::new(
+        Arc::new(config),
+        rustls::pki_types::ServerName::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST).into()),
+    )
+    .unwrap();
+    let mut stream = rustls::StreamOwned::new(connection, socket);
+    let body = format!(
+        r#"{{"alias":"Phone","version":"2.1","deviceType":"mobile","fingerprint":"{claimed}","port":53317,"protocol":"{protocol}","download":false}}"#
+    );
+    write!(
+        stream,
+        "POST /api/localsend/v2/register HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .ok()?;
+    let (status, answer) = read_answer(&mut stream).ok()?;
+    (status == 200).then(|| serde_json::from_slice(&answer).unwrap())
+}
+
+#[test]
+fn a_client_that_sends_slowly_holds_neither_the_others_nor_the_listener() {
+    let me = Identity::generate().unwrap();
+    let own = own_info("Me", &me.fingerprint(), true);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let wait = std::time::Duration::from_millis(1500);
+    let found: Arc<Mutex<Vec<Peer>>> = Arc::default();
+    let started = std::time::Instant::now();
+    let server = {
+        let found = found.clone();
+        std::thread::spawn(move || {
+            serve_register(&listener, &me, &own, wait, &|peer| {
+                found.lock().unwrap().push(peer)
+            });
+            started.elapsed()
+        })
+    };
+    // A valid TLS record header, then one byte every 300 ms, for far longer
+    // than the wait.
+    let trickle = std::thread::spawn(move || {
+        let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = socket.write_all(&[0x16, 0x03, 0x01, 0x3f, 0xff]);
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if socket.write_all(&[0]).is_err() {
+                break;
+            }
+        }
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(
+        register(port, &stand_in_fingerprint(), "https").is_some(),
+        "a device that answers while another trickles is still heard"
+    );
+    let served = server.join().unwrap();
+    assert!(
+        served < wait + std::time::Duration::from_millis(500),
+        "the listener stopped {served:?} after it started, for a wait of {wait:?}"
+    );
+    assert_eq!(found.lock().unwrap().len(), 1);
+    trickle.join().unwrap();
 }
 
 /// Takes any server certificate (the register test checks the other way).

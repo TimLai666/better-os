@@ -197,12 +197,13 @@ impl<C: DeviceControl + Clone + 'static> StorageService<C> {
                 }
             })
         };
+        // The copy holds the drive's mark through its progress, so even a
+        // call abandoned on the way leaves the drive refusing requests until
+        // the copying thread has really ended.
         let result = control
-            .write_image(&write.address, &write.image, progress)
+            .write_image(&write.address, &write.image, write.holding(progress))
             .await;
         let _ = signalling_done.await;
-        // The drive takes requests again. Were this call abandoned on the
-        // way, dropping `write` would do the same.
         drop(write);
         result.map_err(|error| refuse(ServiceError::Platform(error)))
     }
