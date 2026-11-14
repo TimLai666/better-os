@@ -1,6 +1,6 @@
 # Ticket 122 — Better Files' sidebar lists every drive with how full it is
 
-**Blocked by:** none · **Status:** open
+**Blocked by:** none · **Status:** merged, not released
 
 ## Why
 
