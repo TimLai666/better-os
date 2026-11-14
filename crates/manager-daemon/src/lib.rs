@@ -33,6 +33,9 @@ pub mod store;
 /// will install from.
 pub const ARCHIVE_DIR: &str = "/var/cache/better-os/archives";
 
+/// Exists exactly while a transaction or a repair runs (ticket 105).
+pub const BUSY_MARKER: &str = "/run/better-os/daemon-busy";
+
 /// Where transaction journals and rollback records live.
 pub const STATE_DIR: &str = "/var/lib/better-os";
 
@@ -52,6 +55,10 @@ pub enum DaemonError {
     Unauthorized,
     #[error("daemon.error.busy")]
     Busy,
+    /// The daemon is leaving (idle, or replaced by an update) and takes no
+    /// new call. A client asks again: the next call starts a new daemon.
+    #[error("daemon.error.shutting_down")]
+    ShuttingDown,
     #[error("daemon.error.protocol:{0}")]
     Protocol(String),
     #[error("daemon.error.plan_rejected:{0}")]

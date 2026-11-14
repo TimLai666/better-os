@@ -144,6 +144,56 @@ assert_nothing_is_enabled_at_install() {
     fi
 }
 
+# Ticket 105: after an upgrade, by Better Manager or by apt, every logged-in
+# person's running user units are restarted so none keeps running the old
+# program. A package that ships a user unit therefore carries the preinst and
+# postinst build-deb.sh makes from packaging/maintainer/user-units.sh, naming
+# exactly the units it ships, and both parse as the /bin/sh dpkg runs them with.
+assert_user_units_restart_on_upgrade() {
+    local package_name="$1"
+    local deb_path="$2"
+    local extract_dir="$3"
+    local control_dir="$WORK_DIR/$package_name-control"
+    local units=("$extract_dir"/usr/lib/systemd/user/*.service)
+    local shipped="" unit script
+    for unit in ${units[@]+"${units[@]}"}; do
+        shipped="${shipped:+$shipped }${unit##*/}"
+    done
+    dpkg-deb --control "$deb_path" "$control_dir"
+    if [[ -z "$shipped" ]]; then
+        for script in preinst postinst; do
+            if [[ -e "$control_dir/$script" ]] && grep -q better_os_user_units "$control_dir/$script"; then
+                printf '%s ships no user unit but its %s restarts some\n' "$package_name" "$script" >&2
+                exit 1
+            fi
+        done
+        return 0
+    fi
+    for script in preinst postinst; do
+        [[ -x "$control_dir/$script" ]] || {
+            printf '%s ships user units and has no executable %s\n' "$package_name" "$script" >&2
+            exit 1
+        }
+        sh -n "$control_dir/$script" || {
+            printf 'The %s of %s does not parse as sh\n' "$script" "$package_name" >&2
+            exit 1
+        }
+        grep -qxF "better_os_user_units='$shipped'" "$control_dir/$script" || {
+            printf 'The %s of %s does not name the units it ships (%s)\n' \
+                "$script" "$package_name" "$shipped" >&2
+            exit 1
+        }
+    done
+    grep -q '^better_os_user_units_before_upgrade "\$1"' "$control_dir/preinst" || {
+        printf 'The preinst of %s does not record the units before an upgrade\n' "$package_name" >&2
+        exit 1
+    }
+    grep -q '^better_os_user_units_postinst "\$@"' "$control_dir/postinst" || {
+        printf 'The postinst of %s does not restart the units after an upgrade\n' "$package_name" >&2
+        exit 1
+    }
+}
+
 # desktop-file-validate is what says a shipped entry actually parses. It is not
 # a build dependency of this project, so a host without it prints a note and the
 # check is skipped rather than failing the whole verification — the same shape
@@ -283,6 +333,7 @@ for package_name in \
     done < <(required_data_files "$package_name")
 
     assert_nothing_is_enabled_at_install "$package_name" "$extract_dir"
+    assert_user_units_restart_on_upgrade "$package_name" "$deb_path" "$extract_dir"
     assert_desktop_entries_are_valid "$package_name" "$extract_dir"
 
     notice_dir="$extract_dir/usr/share/doc/$package_name"
@@ -574,6 +625,7 @@ grep -q '^ExecStart=/usr/bin/better-storage-service$' \
     exit 1
 }
 assert_nothing_is_enabled_at_install "$storage_name" "$storage_extract"
+assert_user_units_restart_on_upgrade "$storage_name" "$storage_path" "$storage_extract"
 
 printf 'Verified %s (%s)\n' "$storage_path" "$EXPECTED_ARCH"
 
@@ -659,6 +711,36 @@ grep -q 'org.betteros.manager.apply-transaction' \
 grep -q 'org.betteros.manager.repair-package-system' \
     "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
     printf 'The polkit policy does not declare the repair action\n' >&2
+    exit 1
+}
+
+# Ticket 105: the daemon is restarted by an upgrade from outside Better
+# Manager, never stopped by one, and never stopped or restarted from inside its
+# own unit, where that would kill the dpkg run installing it.
+daemon_control="$WORK_DIR/$daemon_name-control"
+dpkg-deb --control "$daemon_path" "$daemon_control"
+for script in postinst prerm postrm; do
+    sh -n "$daemon_control/$script" || {
+        printf 'The %s of %s does not parse as sh\n' "$script" "$daemon_name" >&2
+        exit 1
+    }
+done
+grep -q '! better_os_daemon_transaction_in_progress; then' "$daemon_control/postinst" || {
+    printf 'The daemon postinst can restart a daemon in the middle of a transaction\n' >&2
+    exit 1
+}
+grep -q 'try-restart better-manager-daemon.service' "$daemon_control/postinst" || {
+    printf 'The daemon postinst does not restart a running daemon after an upgrade\n' >&2
+    exit 1
+}
+for script in postinst prerm; do
+    grep -q '! inside_daemon_unit' "$daemon_control/$script" || {
+        printf 'The daemon %s can stop the unit it runs inside\n' "$script" >&2
+        exit 1
+    }
+done
+grep -q '^    remove | deconfigure)$' "$daemon_control/prerm" || {
+    printf 'The daemon prerm stops the daemon on an upgrade\n' >&2
     exit 1
 }
 

@@ -87,17 +87,30 @@ pub(crate) struct AwakeApp {
     pub(crate) offset: UtcOffset,
     pub(crate) busy: bool,
     _work: Option<Task<()>>,
+    /// Watches for an update and restarts into it (ticket 105).
+    pub(crate) update_restart: better_ui::restart::UpdateRestart,
 }
 
+/// The window's application id, which the desktop entry is named after.
+pub(crate) const APP_ID: &str = "better-awake";
+
 impl AwakeApp {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        handoff: Option<&better_ui::restart::Handoff>,
+    ) -> Self {
         let store = PreferencesStore::from_default_path();
         let (preferences, readable) = store.load();
         let locale = preferences.locale();
         apply_theme(preferences.theme, window, cx);
 
+        let section = handoff
+            .and_then(|h| h.state::<crate::restart::AwakeView>())
+            .map(|view| view.section())
+            .unwrap_or(Section::Status);
         let mut app = Self {
-            section: Section::Status,
+            section,
             locale,
             preferences,
             store,
@@ -118,6 +131,15 @@ impl AwakeApp {
             offset: UtcOffset::UTC,
             busy: true,
             _work: None,
+            update_restart: better_ui::restart::UpdateRestart::new(
+                APP_ID,
+                "Better Awake",
+                "better-awake",
+                env!("CARGO_PKG_VERSION"),
+                handoff,
+                window,
+                cx,
+            ),
         };
         app.refresh(cx);
         app
@@ -226,7 +248,7 @@ impl AwakeApp {
             };
             runtime.block_on(async move {
                 let client = ServiceClient::connect().await?;
-                client.status_request(body).await.map(|_| ())
+                client.perform(body).await
             })
         });
         self._work = Some(cx.spawn(async move |this, cx| {
@@ -333,6 +355,16 @@ impl AwakeApp {
     pub(crate) fn set_default_policy(&mut self, policy: SessionPolicy, cx: &mut Context<Self>) {
         self.preferences.defaults.policy = policy;
         self.commit_preferences(cx);
+    }
+
+    /// The closed-lid limit is the service's setting, not this window's, so
+    /// it is sent rather than stored here.
+    pub(crate) fn set_lid_battery_limit(
+        &mut self,
+        limit: awake_core::LidBatteryLimit,
+        cx: &mut Context<Self>,
+    ) {
+        self.dispatch(RequestBody::SetLidBatteryLimit { limit }, cx);
     }
 
     pub(crate) fn set_default_battery(&mut self, percent: Option<u8>, cx: &mut Context<Self>) {
@@ -781,5 +813,21 @@ pub(crate) fn apply_theme(theme: StoredTheme, window: &mut Window, cx: &mut App)
         StoredTheme::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
         StoredTheme::Light => Theme::change(ThemeMode::Light, Some(window), cx),
         StoredTheme::System => Theme::sync_system_appearance(Some(window), cx),
+    }
+}
+
+impl better_ui::restart::Restartable for AwakeApp {
+    type State = crate::restart::AwakeView;
+
+    fn update_restart(&mut self) -> &mut better_ui::restart::UpdateRestart {
+        &mut self.update_restart
+    }
+
+    fn restart_blocked(&self, _cx: &App) -> Option<better_ui::restart::Blocker> {
+        crate::restart::restart_blocked(self.draft.is_some(), self.busy)
+    }
+
+    fn restart_state(&self, _window: &Window, _cx: &App) -> crate::restart::AwakeView {
+        crate::restart::AwakeView::of(self.section)
     }
 }

@@ -9,3 +9,8 @@ license.workspace = true
 better-core.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
+serde.workspace = true
+smol = "2"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

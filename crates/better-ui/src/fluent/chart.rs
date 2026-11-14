@@ -46,6 +46,19 @@ pub enum ChartHue {
 }
 
 impl ChartHue {
+    /// The hues a chart with many series of one kind (a branch graph's
+    /// lanes) cycles through, in order: the five resource hues. Red and
+    /// Magenta stay out. Red reads as an alarm, and both are kept for what
+    /// they name (temperatures, neural processors), so a lane is never
+    /// mistaken for either.
+    pub const SEQUENCE: [ChartHue; 5] = [
+        ChartHue::Blue,
+        ChartHue::Green,
+        ChartHue::Purple,
+        ChartHue::Orange,
+        ChartHue::Teal,
+    ];
+
     /// The line color in the given appearance.
     pub fn color(self, dark: bool) -> Rgba {
         let rgb = match (self, dark) {

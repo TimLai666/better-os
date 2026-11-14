@@ -286,6 +286,15 @@ impl Render for FilesApp {
                     .children(sheet),
             )
             .children(menu)
+            .children(self.update_restart.toast_layer(
+                match self.locale() {
+                    crate::i18n::Locale::ZhTw => {
+                        better_ui::fluent::words::Locale::TraditionalChinese
+                    }
+                    _ => better_ui::fluent::words::Locale::English,
+                },
+                cx,
+            ))
     }
 }
 

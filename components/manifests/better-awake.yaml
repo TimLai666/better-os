@@ -53,9 +53,9 @@ benchmarks:
     maximum_regression_percent: 1
 permissions:
   - name: session-bus-name
-    reason: owns org.betteros.Awake1 so the tray and the settings window talk to one service, and the tray owns org.betteros.AwakeTray1 while it raises the low-battery notification so the service raises it only when no tray is running; asking for that name starts the tray through its better-awake-tray user unit
+    reason: owns org.betteros.Awake1 so the tray and the settings window talk to one service, and the tray owns org.betteros.AwakeTray1 while it raises the low-battery notification so the service raises it only when no tray is running; asking for that name starts the tray through its better-awake-tray user unit; that tray also owns org.betteros.AwakeTray1.Protocol3 to say it raises the closed-lid notification too, which the service otherwise raises itself because a tray from before protocol version 3 cannot
   - name: logind-inhibitor
-    reason: holds systemd-logind sleep and idle locks; display-blank and automatic-lock have no logind lock and are reported unmet rather than faked
+    reason: holds systemd-logind sleep and idle locks, and the handle-lid-switch lock while a session keeps awake with the lid closed, all in block mode and without privilege; display-blank and automatic-lock have no logind lock and are reported unmet rather than faked
   - name: status-notifier-item
     reason: the tray needs the StatusNotifierItem protocol; a missing StatusNotifierWatcher host is reported, never assumed present
   - name: systemd-user-unit
@@ -86,7 +86,9 @@ paths:
   - ~/.local/state/better-awake/awake-rules.json
   - ~/.local/state/better-awake/awake-history.json
   - ~/.local/state/better-awake/awake-service-state.json
+  - ~/.local/state/better-awake/awake-service-settings.json
 release_notes:
+  - Keeping awake now also covers closing the lid. A session you start by hand keeps the computer awake with the lid closed (the screen still turns off), and you can turn that off in Quick options, in Session defaults, or per rule; rules leave it off unless you turn it on. On battery, the battery stop threshold still ends the session, and so does the lid staying closed for longer than a limit you choose in Battery & Safety (2 hours unless you change it, or never). A notification says why the session ended.
   - The tray menu always matches the service. A panel now sees every changed menu under new item ids, so it can no longer keep showing the not-awake menu during a session, and every item with an arrow opens.
   - Choosing a length while a session runs changes that session instead of reporting an error, and an action the service refuses is said in a notification.
   - The tray runs as a systemd user unit, so an update restarts it with the service, and it follows the service and the panel across their restarts.

@@ -27,6 +27,7 @@ gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
 gpui-platform.workspace = true
+notify.workspace = true
 
 [dev-dependencies]
 better-core.workspace = true

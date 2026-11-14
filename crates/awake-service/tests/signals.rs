@@ -170,14 +170,19 @@ async fn serve(bus: &PrivateBus) -> Service {
     }
 }
 
-/// Every event the service pushes, in order.
+/// Every event the service pushes, in order, as a current client reads them.
 async fn events(bus: &PrivateBus) -> (zbus::Connection, zbus::MessageStream) {
+    events_on(bus, "Event").await
+}
+
+/// Every event on one of the two signals.
+async fn events_on(bus: &PrivateBus, member: &str) -> (zbus::Connection, zbus::MessageStream) {
     let connection = bus.connect().await;
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
         .interface(INTERFACE_NAME)
         .unwrap()
-        .member("StatusChanged")
+        .member(member)
         .unwrap()
         .build();
     let stream = zbus::MessageStream::for_match_rule(rule, &connection, None)
@@ -240,6 +245,7 @@ async fn a_low_battery_stop_on_a_tick_is_pushed_once_and_then_the_status_follows
             cause: "battery_threshold".to_string(),
             battery_stop_percent: Some(20),
             battery_percent: Some(9),
+            lid_limit_minutes: None,
         })
     );
     let status = next_event(&mut stream, ARRIVES)
@@ -288,6 +294,7 @@ async fn a_session_that_expires_on_a_tick_is_pushed_with_its_cause() {
             cause: "expired".to_string(),
             battery_stop_percent: Some(20),
             battery_percent: None,
+            lid_limit_minutes: None,
         })
     );
 }
@@ -335,6 +342,7 @@ async fn a_battery_stop_found_while_answering_a_request_is_pushed_before_the_sta
             cause: "battery_threshold".to_string(),
             battery_stop_percent: Some(20),
             battery_percent: Some(9),
+            lid_limit_minutes: None,
         }
     );
     assert!(is_status(&next_event(&mut stream, ARRIVES).await.unwrap()));
@@ -385,6 +393,7 @@ async fn a_shutdown_pushes_every_session_it_ends() {
             cause: "service_shutdown".to_string(),
             battery_stop_percent: Some(20),
             battery_percent: None,
+            lid_limit_minutes: None,
         })
     );
     assert!(!service.engine.holds_inhibitor().await);
@@ -515,6 +524,7 @@ async fn a_tick_that_ends_and_starts_sessions_pushes_the_ends_first_and_one_stat
             cause: "expired".to_string(),
             battery_stop_percent: Some(20),
             battery_percent: None,
+            lid_limit_minutes: None,
         })
     );
     let status = status_in(next_event(&mut stream, ARRIVES).await);
@@ -794,4 +804,220 @@ async fn a_notification_service_that_never_answers_does_not_hold_up_the_tick() {
     assert!(next_event(&mut stream, ARRIVES).await.is_some());
     assert!(is_status(&next_event(&mut stream, ARRIVES).await.unwrap()));
     assert!(raised.lock().unwrap().is_empty());
+}
+
+// ---- Also when the lid is closed, and version 2 clients (ticket 109) -------
+
+fn lid_start_request() -> AwakeRequest {
+    AwakeRequest::new(RequestBody::StartSession {
+        reason: "Download is running".to_string(),
+        policy: awake_core::SessionPolicy::manual_default(),
+        battery_stop_percent: Some(20),
+        end: WireEnd::Indefinite,
+        security_confirmed: false,
+    })
+}
+
+/// A session holding the lid, the lid closed on battery, and the limit passed.
+async fn a_lid_session_past_the_limit(service: &Service) -> u64 {
+    service.engine.handle(lid_start_request()).await;
+    let session_id = service.engine.status().await.sessions[0].session_id;
+    service.engine.backend().set_lid_closed(Some(true));
+    service.set_on_ac(false);
+    service.clock.advance(60);
+    service.tick().await;
+    service.clock.advance(2 * 60 * 60);
+    session_id
+}
+
+fn keys_of(value: &serde_json::Value, into: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, child) in object {
+                into.push(key.clone());
+                keys_of(child, into);
+            }
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|item| keys_of(item, into)),
+        _ => {}
+    }
+}
+
+/// The next raw document on a stream, for reading a legacy one as text.
+async fn next_document(stream: &mut zbus::MessageStream, wait: Duration) -> Option<String> {
+    let mut stream = std::pin::Pin::new(stream);
+    let message = tokio::time::timeout(
+        wait,
+        std::future::poll_fn(|context| stream.as_mut().poll_next(context)),
+    )
+    .await
+    .ok()??
+    .ok()?;
+    message.body().deserialize().ok()
+}
+
+#[tokio::test]
+async fn with_no_tray_the_service_says_why_the_closed_lid_ended_a_session() {
+    let bus = bus_or_skip!();
+    let (_daemon, raised) = serve_notifications(&bus, Behaviour::Accept).await;
+    let service = serve(&bus).await;
+    let session_id = a_lid_session_past_the_limit(&service).await;
+    let (_listener, mut stream) = events(&bus).await;
+
+    service.tick().await;
+
+    let raised = settle(&raised, 1).await;
+    assert_eq!(raised.len(), 1);
+    let expected = awake_ipc::notification::lid_closed_notification(Locale::EnUs, 120);
+    assert_eq!(raised[0].summary, expected.summary);
+    assert_eq!(raised[0].body, expected.body);
+    assert_eq!(
+        next_event(&mut stream, ARRIVES)
+            .await
+            .map(|event| event.body),
+        Some(EventBody::SessionEnded {
+            session_id,
+            cause: "lid_closed_on_battery".to_string(),
+            battery_stop_percent: Some(20),
+            battery_percent: None,
+            lid_limit_minutes: Some(120),
+        })
+    );
+    assert!(is_status(&next_event(&mut stream, ARRIVES).await.unwrap()));
+    assert!(!service.engine.holds_inhibitor().await);
+}
+
+#[tokio::test]
+async fn with_a_version_3_tray_on_the_bus_the_closed_lid_notification_is_left_to_it() {
+    let bus = bus_or_skip!();
+    let (_daemon, raised) = serve_notifications(&bus, Behaviour::Accept).await;
+    let service = serve(&bus).await;
+    let tray = tray_on(&bus).await;
+    tray.request_name(awake_ipc::notification::TRAY_LID_NOTIFY_BUS_NAME)
+        .await
+        .unwrap();
+    a_lid_session_past_the_limit(&service).await;
+
+    let ended = service.tick().await;
+
+    assert_eq!(ended.len(), 1);
+    assert!(settle(&raised, 0).await.is_empty());
+}
+
+#[tokio::test]
+async fn with_only_a_tray_from_before_version_3_the_service_says_why_the_lid_ended_it() {
+    let bus = bus_or_skip!();
+    let (_daemon, raised) = serve_notifications(&bus, Behaviour::Accept).await;
+    let service = serve(&bus).await;
+    // An installed version 2 tray: it owns the tray name and nothing else, and
+    // cannot read a closed-lid stop.
+    let _old_tray = tray_on(&bus).await;
+    a_lid_session_past_the_limit(&service).await;
+
+    service.tick().await;
+
+    let raised = settle(&raised, 1).await;
+    assert_eq!(raised.len(), 1, "exactly one notification");
+    assert_eq!(
+        raised[0].sender,
+        service.connection.unique_name().unwrap().to_string()
+    );
+    assert_eq!(
+        raised[0].summary,
+        awake_ipc::notification::lid_closed_notification(Locale::EnUs, 120).summary
+    );
+}
+
+#[tokio::test]
+async fn the_legacy_signal_carries_every_event_in_version_2s_shape() {
+    let bus = bus_or_skip!();
+    let service = serve(&bus).await;
+    let (_listener, mut legacy) = events_on(&bus, "StatusChanged").await;
+    let session_id = a_lid_session_past_the_limit(&service).await;
+    // The start's status, and the status of the tick that started the clock.
+    let _ = next_document(&mut legacy, ARRIVES).await;
+    while next_document(&mut legacy, QUIET).await.is_some() {}
+
+    service.tick().await;
+
+    let ended: serde_json::Value =
+        serde_json::from_str(&next_document(&mut legacy, ARRIVES).await.unwrap()).unwrap();
+    assert_eq!(
+        ended,
+        serde_json::json!({
+            "protocol_version": 2,
+            "body": {
+                "event": "session_ended",
+                "session_id": session_id,
+                "cause": "lid_closed_on_battery",
+                "battery_stop_percent": 20
+            }
+        })
+    );
+    let status: serde_json::Value =
+        serde_json::from_str(&next_document(&mut legacy, ARRIVES).await.unwrap()).unwrap();
+    assert_eq!(status["protocol_version"], 2);
+    assert_eq!(status["body"]["event"], "status_changed");
+    let mut keys = Vec::new();
+    keys_of(&status, &mut keys);
+    for key in [
+        "prevent_lid_suspend",
+        "lid_switch",
+        "lid",
+        "lid_limit_minutes",
+    ] {
+        assert!(!keys.iter().any(|found| found == key), "{key} in {status}");
+    }
+}
+
+#[tokio::test]
+async fn a_version_2_request_over_the_bus_is_answered_in_version_2s_shape() {
+    let bus = bus_or_skip!();
+    let service = serve(&bus).await;
+    service.engine.handle(lid_start_request()).await;
+    let client = bus.connect().await;
+    let reply = client
+        .call_method(
+            Some(SERVICE_NAME),
+            OBJECT_PATH,
+            Some(INTERFACE_NAME),
+            "Request",
+            &(r#"{"protocol_version":2,"body":{"request":"query_status"}}"#),
+        )
+        .await
+        .unwrap();
+    let document: String = reply.body().deserialize().unwrap();
+    let value: serde_json::Value = serde_json::from_str(&document).unwrap();
+    assert_eq!(value["protocol_version"], 2);
+    assert_eq!(value["body"]["response"], "status");
+    assert_eq!(
+        value["body"]["sessions"][0]["reason"],
+        "Download is running"
+    );
+    let mut keys = Vec::new();
+    keys_of(&value, &mut keys);
+    assert!(
+        !keys.iter().any(|key| key == "prevent_lid_suspend"),
+        "{document}"
+    );
+
+    // A version 3 request on the same bus gets the lid fields.
+    let reply = client
+        .call_method(
+            Some(SERVICE_NAME),
+            OBJECT_PATH,
+            Some(INTERFACE_NAME),
+            "Request",
+            &AwakeRequest::new(RequestBody::QueryStatus)
+                .to_json()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let document: String = reply.body().deserialize().unwrap();
+    let response = awake_ipc::AwakeResponse::from_json(&document).unwrap();
+    let awake_ipc::ResponseBody::Status(status) = response.body else {
+        panic!("{document}");
+    };
+    assert!(status.effective_policy.prevent_lid_suspend);
 }

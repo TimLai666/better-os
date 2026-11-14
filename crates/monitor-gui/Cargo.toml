@@ -24,6 +24,8 @@ gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
 gpui-platform.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 smol = "2"
 # Startup app copies are written to a temporary file in the same folder and
 # renamed into place, so a crash never leaves half a desktop entry.

@@ -1,3 +1,4 @@
+use better_ui::fluent::tabs::{SelectorBar, SelectorItem};
 use better_ui::{StatusPill, StatusTone};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -42,39 +43,22 @@ impl ManagerApp {
             .when_some(self.error_banner(cx), |view, error| view.child(error))
             .child(self.page_heading(c.components_title, c.components_subtitle, true, compact))
             .child(self.catalog_status_row(cx))
+            // Views of one list: a selector bar, not a row of buttons.
             .child(
-                h_flex()
+                div()
                     .min_w_0()
-                    .gap_2()
-                    .flex_wrap()
-                    .child(self.component_filter_button(
-                        "filter-all",
-                        ComponentFilterPreference::All,
-                        c.all_activity,
-                        cx,
-                    ))
-                    .child(self.component_filter_button(
-                        "filter-installed",
-                        ComponentFilterPreference::Installed,
-                        c.installed,
-                        cx,
-                    ))
-                    .child(self.component_filter_button(
-                        "filter-updates",
-                        ComponentFilterPreference::Updates,
-                        c.updates,
-                        cx,
-                    ))
-                    .child(self.component_filter_button(
-                        "filter-disabled",
-                        ComponentFilterPreference::Disabled,
-                        c.disabled,
-                        cx,
-                    ))
-                    .child(self.component_filter_button(
-                        "filter-attention",
-                        ComponentFilterPreference::NeedsAttention,
-                        c.degraded,
+                    .overflow_x_hidden()
+                    .child(self.view_switcher(
+                        "component-filter",
+                        &[
+                            (ComponentFilterPreference::All, c.all_activity),
+                            (ComponentFilterPreference::Installed, c.installed),
+                            (ComponentFilterPreference::Updates, c.updates),
+                            (ComponentFilterPreference::Disabled, c.disabled),
+                            (ComponentFilterPreference::NeedsAttention, c.degraded),
+                        ],
+                        self.state.settings.component_filter,
+                        |this, filter, cx| this.set_component_filter(filter, cx),
                         cx,
                     )),
             )
@@ -251,19 +235,28 @@ impl ManagerApp {
         )
     }
 
-    fn component_filter_button(
+    /// A row that switches what the page lists: the kit's selector bar
+    /// (ticket 103), one item per view, the current one marked.
+    fn view_switcher<T: Copy + PartialEq + 'static>(
         &self,
         id: &'static str,
-        filter: ComponentFilterPreference,
-        label: &'static str,
+        views: &[(T, &'static str)],
+        current: T,
+        choose: fn(&mut Self, T, &mut Context<Self>),
         cx: &mut Context<Self>,
-    ) -> Button {
-        Button::new(id)
-            .label(label)
-            .selected(self.state.settings.component_filter == filter)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.set_component_filter(filter, cx);
-            }))
+    ) -> SelectorBar {
+        let values: Vec<T> = views.iter().map(|(value, _)| *value).collect();
+        let selected = values.iter().position(|value| *value == current);
+        let items = views
+            .iter()
+            .map(|(_, label)| SelectorItem::new(*label))
+            .collect();
+        let view = cx.entity().downgrade();
+        SelectorBar::new(id, items, selected).on_select(move |index, _, cx| {
+            if let Some(value) = values.get(index).copied() {
+                let _ = view.update(cx, |this, cx| choose(this, value, cx));
+            }
+        })
     }
 
     fn matches_component_filter(
@@ -286,22 +279,6 @@ impl ManagerApp {
                     | ComponentStatus::Incompatible
             ),
         }
-    }
-
-    fn detail_tab_button(
-        &self,
-        id: &'static str,
-        tab: DetailTab,
-        label: &'static str,
-        cx: &mut Context<Self>,
-    ) -> Button {
-        Button::new(id)
-            .label(label)
-            .selected(self.detail_tab == tab)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.detail_tab = tab;
-                cx.notify();
-            }))
     }
 
     pub(crate) fn component_detail_page(
@@ -483,29 +460,20 @@ impl ManagerApp {
                             })),
                     ),
             )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .flex_wrap()
-                    .child(self.detail_tab_button(
-                        "detail-overview",
-                        DetailTab::Overview,
-                        c.overview_tab,
-                        cx,
-                    ))
-                    .child(self.detail_tab_button(
-                        "detail-versions",
-                        DetailTab::Versions,
-                        c.versions_tab,
-                        cx,
-                    ))
-                    .child(self.detail_tab_button(
-                        "detail-paths",
-                        DetailTab::Permissions,
-                        c.files_touched,
-                        cx,
-                    )),
-            )
+            .child(self.view_switcher(
+                "detail-tabs",
+                &[
+                    (DetailTab::Overview, c.overview_tab),
+                    (DetailTab::Versions, c.versions_tab),
+                    (DetailTab::Permissions, c.files_touched),
+                ],
+                self.detail_tab,
+                |this, tab, cx| {
+                    this.detail_tab = tab;
+                    cx.notify();
+                },
+                cx,
+            ))
             // A blocking drift is the reason nothing else on this page will
             // work, so it goes above the failure that may have caused it. Until
             // ticket 49 the window said nothing at all about drift: the actions
@@ -763,35 +731,21 @@ impl ManagerApp {
                     .items_center()
                     .justify_between()
                     .flex_wrap()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .flex_wrap()
-                            .child(self.activity_filter_button(
-                                "activity-all",
-                                ActivityFilter::All,
-                                c.all_activity,
-                                cx,
-                            ))
-                            .child(self.activity_filter_button(
-                                "activity-success",
-                                ActivityFilter::Success,
-                                c.successful,
-                                cx,
-                            ))
-                            .child(self.activity_filter_button(
-                                "activity-warning",
-                                ActivityFilter::Warning,
-                                c.warnings,
-                                cx,
-                            ))
-                            .child(self.activity_filter_button(
-                                "activity-failure",
-                                ActivityFilter::Failure,
-                                c.failures,
-                                cx,
-                            )),
-                    )
+                    .child(self.view_switcher(
+                        "activity-filter",
+                        &[
+                            (ActivityFilter::All, c.all_activity),
+                            (ActivityFilter::Success, c.successful),
+                            (ActivityFilter::Warning, c.warnings),
+                            (ActivityFilter::Failure, c.failures),
+                        ],
+                        self.activity_filter,
+                        |this, filter, cx| {
+                            this.activity_filter = filter;
+                            cx.notify();
+                        },
+                        cx,
+                    ))
                     .child(
                         Button::new("activity-clear")
                             .label(c.clear_history)
@@ -821,22 +775,6 @@ impl ManagerApp {
                 )
             })
             .into_any_element()
-    }
-
-    fn activity_filter_button(
-        &self,
-        id: &'static str,
-        filter: ActivityFilter,
-        label: &'static str,
-        cx: &mut Context<Self>,
-    ) -> Button {
-        Button::new(id)
-            .label(label)
-            .selected(self.activity_filter == filter)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.activity_filter = filter;
-                cx.notify();
-            }))
     }
 
     /// How one activity entry reads. A record of something that already

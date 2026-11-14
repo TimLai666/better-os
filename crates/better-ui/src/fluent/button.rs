@@ -474,3 +474,144 @@ impl RenderOnce for SplitButton {
         div().relative().flex_none().child(root).children(menu)
     }
 }
+
+/// `DropDownButton`: a button whose only job is to open a menu of commands,
+/// with a chevron after its label. A press opens the menu, a second press on
+/// the button closes it ([`super::light_dismiss`]), and Enter, Space,
+/// Alt+Down, and F4 open it with the first item highlighted.
+#[derive(IntoElement)]
+pub struct DropDownButton {
+    id: ElementId,
+    kind: ButtonKind,
+    label: Option<SharedString>,
+    icon: Option<Icon>,
+    entries: Vec<MenuEntry>,
+    disabled: bool,
+    shown: ShownState,
+    tooltip: Option<SharedString>,
+    edge: super::light_dismiss::PanelEdge,
+    chevron: bool,
+}
+
+impl DropDownButton {
+    pub fn new(id: impl Into<ElementId>, kind: ButtonKind) -> Self {
+        Self {
+            id: id.into(),
+            kind,
+            label: None,
+            icon: None,
+            entries: Vec::new(),
+            disabled: false,
+            shown: ShownState::Live,
+            tooltip: None,
+            edge: super::light_dismiss::PanelEdge::Left,
+            chevron: true,
+        }
+    }
+
+    /// A "More" button: an ellipsis icon and no chevron, as a command bar's
+    /// More button opens its menu.
+    pub fn more(id: impl Into<ElementId>, tooltip: impl Into<SharedString>) -> Self {
+        let mut button = Self::new(id, ButtonKind::Subtle)
+            .icon(Icon::new(IconName::Ellipsis))
+            .tooltip(tooltip);
+        button.chevron = false;
+        button
+    }
+
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    pub fn entries(mut self, entries: Vec<MenuEntry>) -> Self {
+        self.entries = entries;
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn shown(mut self, shown: ShownState) -> Self {
+        self.shown = shown;
+        self
+    }
+
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// Lines the menu up with the button's right edge, for a button at the
+    /// end of a row.
+    pub fn align_right(mut self) -> Self {
+        self.edge = super::light_dismiss::PanelEdge::Right;
+        self
+    }
+}
+
+impl RenderOnce for DropDownButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let open = MenuOpen::keyed(child_id(&self.id, "menu"), window, cx);
+        let is_open = open.read(cx).is_open();
+        let mut button = Button::new(self.id.clone(), self.kind)
+            .disabled(self.disabled)
+            .shown(self.shown);
+        if self.chevron {
+            button = button.trailing_icon(Icon::new(IconName::ChevronDown));
+        }
+        if let Some(icon) = self.icon {
+            button = button.icon(icon);
+        }
+        if let Some(label) = self.label {
+            button = button.label(label);
+        }
+        if let Some(tooltip) = self.tooltip {
+            button = button.tooltip(tooltip);
+        }
+        let toggle = open.clone();
+        button = button.on_click(move |window, cx| {
+            if toggle.read(cx).is_open() {
+                toggle.update(cx, |state, cx| {
+                    state.close();
+                    cx.notify();
+                });
+            } else {
+                // A key opens it on its first item, as WinUI's does.
+                let highlight = window.last_input_was_keyboard().then_some(0);
+                open_menu(&toggle, highlight, window, cx);
+            }
+        });
+        let focus = keyed_focus(self.id.clone(), window, cx);
+        let key_open = open.clone();
+        let menu: Option<AnyElement> = is_open.then(|| {
+            let panel = MenuFlyout::new(child_id(&self.id, "flyout"), self.entries)
+                .state(open.clone())
+                .return_focus(focus.clone());
+            match self.edge {
+                super::light_dismiss::PanelEdge::Left => panel.into_any_element(),
+                super::light_dismiss::PanelEdge::Right => panel.align_right().into_any_element(),
+            }
+        });
+        div()
+            .relative()
+            .flex_none()
+            .on_key_down(move |event, window, cx| {
+                if Key::from_keystroke(&event.keystroke) == Some(Key::OpenDropDown)
+                    && !key_open.read(cx).is_open()
+                {
+                    cx.stop_propagation();
+                    open_menu(&key_open, Some(0), window, cx);
+                }
+            })
+            .child(button)
+            .children(menu)
+    }
+}

@@ -67,10 +67,12 @@ fn main() {
     app.run(move |cx| {
         gpui_component::init(cx);
 
+        let handoff = better_ui::restart::take_handoff(touchpad_gui::app::APP_ID);
         let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1040.0), px(720.0)), cx)),
+            window_bounds: better_ui::restart::window_bounds(handoff.as_ref())
+                .or_else(|| Some(WindowBounds::centered(size(px(1040.0), px(720.0)), cx))),
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-            ..better_ui::window_chrome::window_options("better-touchpad")
+            ..better_ui::window_chrome::window_options(touchpad_gui::app::APP_ID)
         };
 
         cx.spawn(async move |cx| {
@@ -81,7 +83,7 @@ fn main() {
                 let assembled = std::time::Instant::now();
                 let startup = Startup::run(options);
                 let read_in = assembled.elapsed();
-                let app = cx.new(|cx| TouchpadApp::new(startup, window, cx));
+                let app = cx.new(|cx| TouchpadApp::new(startup, handoff.as_ref(), window, cx));
                 let root = cx.new(|cx| Root::new(app, window, cx));
                 if trace {
                     eprintln!(

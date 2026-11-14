@@ -4,6 +4,7 @@ pub mod defaults;
 pub mod host;
 pub mod manifest;
 pub mod package_health;
+pub mod self_update;
 
 pub use defaults::{
     AdapterId, DefaultIntegration, DefaultsValue, HealthPrerequisite, IntegrationExclusivity,

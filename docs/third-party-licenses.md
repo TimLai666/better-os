@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 962.
-- Packages with an SPDX license expression: 960.
+- Resolved Cargo packages: 972.
+- Packages with an SPDX license expression: 970.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `688f4f52f556d9d635f4f001318f0c97032be7a39ede941a9a1ce9aac6a588fd`.
+- `Cargo.lock` SHA-256: `ad7fe61c6744a8d050a7a12e4db77414f7dca727c49cda8c6bc535ec3b120155`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -25,11 +25,11 @@ source of truth for those packages.
 
 | License expression | Package records |
 | --- | ---: |
-| `MIT OR Apache-2.0` | 420 |
-| `MIT` | 201 |
-| `Apache-2.0 OR MIT` | 77 |
+| `MIT OR Apache-2.0` | 424 |
+| `MIT` | 202 |
+| `Apache-2.0 OR MIT` | 79 |
 | `GPL-3.0-or-later` | 61 |
-| `MIT/Apache-2.0` | 38 |
+| `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
 | `Zlib OR Apache-2.0 OR MIT` | 17 |
@@ -239,7 +239,9 @@ name them, and linked at run time; each keeps its own license.
 | `better-core` | `0.2.12` | `GPL-3.0-or-later` | workspace |
 | `better-ui` | `0.2.12` | `GPL-3.0-or-later` | workspace |
 | `bindgen` | `0.71.1` | `BSD-3-Clause` | [crates.io](https://crates.io/crates/bindgen/0.71.1) |
+| `bit-set` | `0.8.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/bit-set/0.8.0) |
 | `bit-set` | `0.9.1` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/bit-set/0.9.1) |
+| `bit-vec` | `0.8.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/bit-vec/0.8.0) |
 | `bit-vec` | `0.9.1` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/bit-vec/0.9.1) |
 | `bit_field` | `0.10.3` | `Apache-2.0/MIT` | [crates.io](https://crates.io/crates/bit_field/0.10.3) |
 | `bitflags` | `1.3.2` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/bitflags/1.3.2) |
@@ -296,6 +298,7 @@ name them, and linked at run time; each keeps its own license.
 | `const-random` | `0.1.18` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/const-random/0.1.18) |
 | `const-random-macro` | `0.1.16` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/const-random-macro/0.1.16) |
 | `convert_case` | `0.10.0` | `MIT` | [crates.io](https://crates.io/crates/convert_case/0.10.0) |
+| `convert_case` | `0.11.0` | `MIT` | [crates.io](https://crates.io/crates/convert_case/0.11.0) |
 | `core-foundation` | `0.10.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/core-foundation/0.10.1) |
 | `core-foundation` | `0.9.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/core-foundation/0.9.4) |
 | `core-foundation-sys` | `0.8.7` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/core-foundation-sys/0.8.7) |
@@ -709,11 +712,14 @@ name them, and linked at run time; each keeps its own license.
 | `proc-macro2` | `1.0.107` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/proc-macro2/1.0.107) |
 | `profiling` | `1.0.18` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/profiling/1.0.18) |
 | `profiling-procmacros` | `1.0.18` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/profiling-procmacros/1.0.18) |
+| `proptest` | `1.10.0` | `MIT OR Apache-2.0` | `git+https://github.com/proptest-rs/proptest?rev=3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b#3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b` |
+| `proptest-macro` | `0.5.0` | `MIT OR Apache-2.0` | `git+https://github.com/proptest-rs/proptest?rev=3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b#3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b` |
 | `psm` | `0.1.31` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/psm/0.1.31) |
 | `pulp` | `0.22.3` | `MIT` | [crates.io](https://crates.io/crates/pulp/0.22.3) |
 | `pulp-wasm-simd-flag` | `0.1.1` | `MIT` | [crates.io](https://crates.io/crates/pulp-wasm-simd-flag/0.1.1) |
 | `pxfm` | `0.1.30` | `BSD-3-Clause OR Apache-2.0` | [crates.io](https://crates.io/crates/pxfm/0.1.30) |
 | `qoi` | `0.4.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/qoi/0.4.1) |
+| `quick-error` | `1.2.3` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/quick-error/1.2.3) |
 | `quick-error` | `2.0.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/quick-error/2.0.1) |
 | `quick-xml` | `0.30.0` | `MIT` | [crates.io](https://crates.io/crates/quick-xml/0.30.0) |
 | `quick-xml` | `0.41.0` | `MIT` | [crates.io](https://crates.io/crates/quick-xml/0.41.0) |
@@ -732,6 +738,7 @@ name them, and linked at run time; each keeps its own license.
 | `rand_core` | `0.6.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/rand_core/0.6.4) |
 | `rand_core` | `0.9.5` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/rand_core/0.9.5) |
 | `rand_pcg` | `0.10.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/rand_pcg/0.10.2) |
+| `rand_xorshift` | `0.4.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/rand_xorshift/0.4.0) |
 | `range-alloc` | `0.1.5` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/range-alloc/0.1.5) |
 | `rangemap` | `1.7.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/rangemap/1.7.1) |
 | `rav1e` | `0.8.1` | `BSD-2-Clause` | [crates.io](https://crates.io/crates/rav1e/0.8.1) |
@@ -780,6 +787,7 @@ name them, and linked at run time; each keeps its own license.
 | `rustls-pki-types` | `1.15.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/rustls-pki-types/1.15.1) |
 | `rustls-webpki` | `0.103.13` | `ISC` | [crates.io](https://crates.io/crates/rustls-webpki/0.103.13) |
 | `rustversion` | `1.0.23` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/rustversion/1.0.23) |
+| `rusty-fork` | `0.3.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/rusty-fork/0.3.1) |
 | `rustybuzz` | `0.20.1` | `MIT` | [crates.io](https://crates.io/crates/rustybuzz/0.20.1) |
 | `ruzstd` | `0.9.0` | `MIT` | [crates.io](https://crates.io/crates/ruzstd/0.9.0) |
 | `ryu` | `1.0.23` | `Apache-2.0 OR BSL-1.0` | [crates.io](https://crates.io/crates/ryu/1.0.23) |
@@ -930,6 +938,7 @@ name them, and linked at run time; each keeps its own license.
 | `typeid` | `1.0.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/typeid/1.0.3) |
 | `typenum` | `1.20.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/typenum/1.20.1) |
 | `uds_windows` | `1.2.1` | `MIT` | [crates.io](https://crates.io/crates/uds_windows/1.2.1) |
+| `unarray` | `0.1.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/unarray/0.1.4) |
 | `unicase` | `2.9.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/unicase/2.9.0) |
 | `unicode-bidi` | `0.3.18` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/unicode-bidi/0.3.18) |
 | `unicode-bidi-mirroring` | `0.4.0` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/unicode-bidi-mirroring/0.4.0) |
@@ -965,6 +974,7 @@ name them, and linked at run time; each keeps its own license.
 | `version_check` | `0.9.5` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/version_check/0.9.5) |
 | `vswhom` | `0.1.0` | `MIT` | [crates.io](https://crates.io/crates/vswhom/0.1.0) |
 | `vswhom-sys` | `0.1.3` | `MIT` | [crates.io](https://crates.io/crates/vswhom-sys/0.1.3) |
+| `wait-timeout` | `0.2.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/wait-timeout/0.2.1) |
 | `waker-fn` | `1.2.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/waker-fn/1.2.0) |
 | `walkdir` | `2.5.0` | `Unlicense/MIT` | [crates.io](https://crates.io/crates/walkdir/2.5.0) |
 | `want` | `0.3.1` | `MIT` | [crates.io](https://crates.io/crates/want/0.3.1) |

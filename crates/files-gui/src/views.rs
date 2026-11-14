@@ -676,6 +676,7 @@ impl FilesApp {
                 out
             },
         )
+        .track_scroll(&self.content_scroll)
         .h_full()
         .track_scroll(&self.content_scroll)
         .into_any_element()

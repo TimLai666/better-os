@@ -158,6 +158,15 @@ jobs:
           bash -n packaging/tests/prune-target.test.sh
           shellcheck packaging/prune-target.sh packaging/tests/prune-target.test.sh
           bash packaging/tests/prune-target.test.sh
+      # Ticket 105: the user-unit half of every package's preinst and postinst,
+      # against a fake systemctl. It needs nothing built either.
+      - name: Lint and test the maintainer script library
+        run: |
+          sh -n packaging/maintainer/user-units.sh packaging/maintainer/daemon.sh
+          bash -n packaging/tests/maintainer-scripts.test.sh
+          shellcheck --shell=sh packaging/maintainer/user-units.sh packaging/maintainer/daemon.sh
+          shellcheck packaging/tests/maintainer-scripts.test.sh
+          bash packaging/tests/maintainer-scripts.test.sh
 
   package:
     needs: rust

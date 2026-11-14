@@ -35,6 +35,13 @@ trait LogindManager {
 
     #[zbus(name = "ListInhibitors")]
     fn list_inhibitors(&self) -> zbus::Result<Vec<InhibitorEntry>>;
+
+    #[zbus(property)]
+    fn lid_closed(&self) -> zbus::Result<bool>;
+
+    /// True with a docking station or an external display connected.
+    #[zbus(property)]
+    fn docked(&self) -> zbus::Result<bool>;
 }
 
 pub struct LogindBackend {
@@ -82,11 +89,17 @@ impl InhibitorBackend for LogindBackend {
         // ScreenSaver backends, which are Phase 4. Reporting them as
         // unsupported is the honest answer, and the service surfaces it rather
         // than pretending the session covers them.
+        //
+        // `handle-lid-switch` is a lock any session user may take too, and it
+        // is what stops logind suspending on the lid while a `sleep` lock does
+        // not (`LidSwitchIgnoreInhibited=yes` by default). A machine with no
+        // lid accepts it and it does nothing there.
         Ok(BackendCapabilities {
             system_suspend: true,
             idle: true,
             display_sleep: false,
             automatic_lock: false,
+            lid_switch: true,
         })
     }
 
@@ -99,7 +112,8 @@ impl InhibitorBackend for LogindBackend {
             .await
             .map_err(|error| match error {
                 zbus::Error::MethodError(ref name, _, _)
-                    if name.as_str().contains("AccessDenied") =>
+                    if name.as_str().contains("AccessDenied")
+                        || name.as_str().contains("InteractiveAuthorizationRequired") =>
                 {
                     BackendError::Denied(error.to_string())
                 }
@@ -139,5 +153,26 @@ impl InhibitorBackend for LogindBackend {
         // Closing the descriptor is the release. There is no call to make.
         drop(lease);
         Ok(())
+    }
+
+    async fn lid_closed(&self) -> Option<bool> {
+        // Asked each time rather than read from a property cache, so the answer
+        // never depends on a change signal having arrived. A machine with no
+        // lid answers `false`, which never starts the closed-lid clock.
+        let proxy = LogindManagerProxy::builder(&self.connection)
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await
+            .ok()?;
+        proxy.lid_closed().await.ok()
+    }
+
+    async fn docked(&self) -> Option<bool> {
+        let proxy = LogindManagerProxy::builder(&self.connection)
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await
+            .ok()?;
+        proxy.docked().await.ok()
     }
 }

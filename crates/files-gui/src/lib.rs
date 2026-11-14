@@ -45,6 +45,7 @@ pub mod policy;
 pub mod prefs;
 pub mod preview;
 pub mod reader;
+pub mod restart;
 pub mod search;
 pub mod session;
 pub mod settings_store;

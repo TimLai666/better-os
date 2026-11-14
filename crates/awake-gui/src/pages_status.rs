@@ -16,10 +16,24 @@ use gpui_component::{
 
 use crate::{
     app::AwakeApp,
-    i18n::{copy, fill},
-    model::{BatteryView, ReasonRow, Section, remaining_label, started_label, suppression_label},
+    i18n::{copy, fill, limit_words},
+    model::{
+        BatteryView, ReasonRow, Section, lid_safety_note, remaining_label, started_label,
+        suppression_label,
+    },
     settings::PresetLength,
 };
+
+/// The closed-lid limits Battery & Safety offers, in minutes, with "Never"
+/// after them. Fixed choices, like the battery stepper's bounds, so a limit the
+/// service refuses cannot be picked.
+const LID_LIMIT_CHOICES: [(&str, u32); 5] = [
+    ("lid-limit-30", 30),
+    ("lid-limit-60", 60),
+    ("lid-limit-120", 120),
+    ("lid-limit-240", 240),
+    ("lid-limit-480", 480),
+];
 
 /// The lengths the Extend action offers. Fixed rather than free-text, because
 /// an extension is a decision made in a hurry.
@@ -69,19 +83,32 @@ impl AwakeApp {
             cx,
         );
 
-        let policy = self.surface(
-            v_flex()
-                .gap_1()
-                .child(self.card_title(c.effective_policy))
-                .children(
-                    status
-                        .policy
-                        .iter()
-                        .map(|row| self.key_value(row.field.label(c), row.value(c), cx)),
-                )
-                .child(self.key_value(c.field_battery_threshold, status.battery.summary(c), cx)),
-            cx,
-        );
+        let policy =
+            self.surface(
+                v_flex()
+                    .gap_1()
+                    .child(self.card_title(c.effective_policy))
+                    .children(
+                        status
+                            .policy
+                            .iter()
+                            .map(|row| self.key_value(row.field.label(c), row.value(c), cx)),
+                    )
+                    .child(self.key_value(c.field_battery_threshold, status.battery.summary(c), cx))
+                    // The safety that goes with holding the lid, stated beside it.
+                    .when(status.lid.held, |view| {
+                        view.child(self.key_value(
+                            c.lid_battery_limit,
+                            status.lid.limit_summary(
+                                self.locale,
+                                status.now_unix_seconds,
+                                self.offset,
+                            ),
+                            cx,
+                        ))
+                    }),
+                cx,
+            );
 
         let health = self.surface(
             v_flex()
@@ -486,7 +513,116 @@ impl AwakeApp {
             .when(policy.needs_security_confirmation(), |view| {
                 view.child(self.warning(c.reduced_security_warning, cx))
             })
+            .child(self.lid_choice(
+                "policy-lid",
+                policy.prevent_lid_suspend,
+                self.preferences.defaults.battery_stop_percent,
+                |this, cx| {
+                    let mut policy = this.preferences.defaults.policy;
+                    policy.prevent_lid_suspend = !policy.prevent_lid_suspend;
+                    this.set_default_policy(policy, cx);
+                },
+                cx,
+            ))
             .into_any_element()
+    }
+
+    /// "Also when the lid is closed", with its safety stated next to it. The
+    /// Session Defaults, Quick Sessions, and the rule editor all draw this one.
+    pub(crate) fn lid_choice(
+        &self,
+        id: &'static str,
+        on: bool,
+        battery_stop_percent: Option<u8>,
+        toggle: fn(&mut AwakeApp, &mut Context<AwakeApp>),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = copy(self.locale);
+        let unavailable = self.lid_unavailable_reason();
+        v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_3()
+                    .py_1p5()
+                    .items_center()
+                    .justify_between()
+                    .flex_wrap()
+                    .child(
+                        div()
+                            .min_w(px(200.0))
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .child(c.keep_awake_lid_closed),
+                    )
+                    .child(
+                        Button::new(id)
+                            .label(match unavailable {
+                                Some(_) => c.lid_unavailable,
+                                None if on => c.on,
+                                None => c.off,
+                            })
+                            .selected(on && unavailable.is_none())
+                            .when(on && unavailable.is_none(), |button| button.primary())
+                            .disabled(unavailable.is_some())
+                            .on_click(cx.listener(move |this, _, _, cx| toggle(this, cx))),
+                    ),
+            )
+            .when_some(unavailable, |view, reason| {
+                view.child(self.warning(reason, cx))
+            })
+            .child(self.explanation(
+                lid_safety_note(
+                    self.lid_limit(),
+                    battery_stop_percent,
+                    self.has_battery(),
+                    self.locale,
+                ),
+                cx,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(c.lid_external_display_note),
+            )
+            .into_any_element()
+    }
+
+    /// Why the lid choice cannot be used right now, or `None` when it can. A
+    /// window that has not heard from the service yet does not guess.
+    pub(crate) fn lid_unavailable_reason(&self) -> Option<&'static str> {
+        let c = copy(self.locale);
+        if self.protocol_version == Some(awake_ipc::LEGACY_PROTOCOL_VERSION) {
+            return Some(c.lid_needs_service_restart);
+        }
+        match self.status.as_ref() {
+            Some(status) if status.backend.available && !status.lid.available => {
+                Some(c.lid_backend_cannot)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether this machine has a battery, as the service reported. Before it
+    /// has, the battery sentences are kept: leaving out a safety it might
+    /// have is the worse mistake.
+    pub(crate) fn has_battery(&self) -> bool {
+        self.status
+            .as_ref()
+            .map(|status| status.battery.offers_threshold())
+            .unwrap_or(true)
+    }
+
+    /// The closed-lid limit the service reported, or its default before it has.
+    pub(crate) fn lid_limit(&self) -> awake_core::LidBatteryLimit {
+        self.status
+            .as_ref()
+            .map(|status| status.lid.limit)
+            .unwrap_or_default()
     }
 
     fn policy_choice(
@@ -663,6 +799,7 @@ impl AwakeApp {
                 cx,
             ),
         )
+        .child(self.lid_limit_card(cx))
         .child(
             self.surface(
                 v_flex()
@@ -687,6 +824,65 @@ impl AwakeApp {
             ),
         )
         .into_any_element()
+    }
+
+    /// How long the lid may stay closed on battery: a service setting, so the
+    /// tray's sessions follow it too.
+    fn lid_limit_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = copy(self.locale);
+        let current = self.lid_limit();
+        let connected = self.status.is_some() && self.lid_unavailable_reason().is_none();
+        let mut choices = h_flex().gap_2().flex_wrap();
+        for (id, minutes) in LID_LIMIT_CHOICES {
+            let limit = awake_core::LidBatteryLimit::Minutes { minutes };
+            let selected = current == limit;
+            choices = choices.child(
+                Button::new(id)
+                    .label(limit_words(self.locale, minutes))
+                    .selected(selected)
+                    .when(selected, |button| button.primary())
+                    .disabled(!connected)
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.set_lid_battery_limit(limit, cx)),
+                    ),
+            );
+        }
+        let never = current == awake_core::LidBatteryLimit::Never;
+        choices = choices.child(
+            Button::new("lid-limit-never")
+                .label(c.lid_limit_never)
+                .selected(never)
+                .when(never, |button| button.primary())
+                .disabled(!connected)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.set_lid_battery_limit(awake_core::LidBatteryLimit::Never, cx)
+                })),
+        );
+        self.surface(
+            v_flex()
+                .gap_3()
+                .child(self.card_title(c.lid_limit_heading))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(c.lid_limit_description),
+                )
+                .child(choices)
+                .when_some(self.lid_unavailable_reason(), |view, reason| {
+                    view.child(self.warning(reason, cx))
+                })
+                .child(self.explanation(
+                    lid_safety_note(
+                        current,
+                        self.preferences.defaults.battery_stop_percent,
+                        self.has_battery(),
+                        self.locale,
+                    ),
+                    cx,
+                )),
+            cx,
+        )
     }
 
     /// The battery readings, or the statement that there is no battery. Shared

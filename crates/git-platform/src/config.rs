@@ -55,6 +55,7 @@ pub fn init(new: &NewRepository) -> Result<(), GitError> {
     if new.path.join(".git").exists() {
         return Err(refused("that folder is already a repository"));
     }
+    let existed = new.path.exists();
     fs::create_dir_all(&new.path).map_err(io_error)?;
     let branch = if new.default_branch.trim().is_empty() {
         "main"
@@ -62,6 +63,21 @@ pub fn init(new: &NewRepository) -> Result<(), GitError> {
         new.default_branch.trim()
     };
     Run::new(&new.path, ["init", "-q", "-b", branch]).run()?;
+    // The first commit needs a name and an email. Git is asked inside the
+    // new repository, where its own and `includeIf` settings apply; when it
+    // has none, what was just made is taken away again and the caller asks
+    // the person (nothing is committed, so nothing was needed otherwise).
+    let commits = new.readme.is_some() || new.gitignore.is_some() || new.license.is_some();
+    if commits && let Ok(Some(refusal)) = crate::watching::identity_refusal(&new.path) {
+        let _ = fs::remove_dir_all(new.path.join(".git"));
+        if !existed {
+            let _ = fs::remove_dir(&new.path);
+        }
+        return Err(GitError::Failed {
+            exit_code: None,
+            message: refusal,
+        });
+    }
     let mut written = Vec::new();
     for (name, text) in [
         ("README.md", &new.readme),

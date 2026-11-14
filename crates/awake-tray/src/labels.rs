@@ -27,6 +27,12 @@ pub struct Labels {
     pub quick_options: &'static str,
     pub allow_display_off: &'static str,
     pub stop_below_battery: &'static str,
+    /// The lid choice, in the window's words (ticket 109).
+    pub keep_awake_lid_closed: &'static str,
+    /// The lid choice while the service cannot give it (one from before
+    /// protocol version 3 that has not restarted yet).
+    pub keep_awake_lid_closed_unavailable: &'static str,
+    pub lid_unavailable: &'static str,
     pub reason: &'static str,
     pub remaining: &'static str,
     pub started: &'static str,
@@ -42,6 +48,14 @@ pub struct Labels {
     pub battery_off: &'static str,
     /// The battery row on a machine with no battery.
     pub battery_not_applicable: &'static str,
+    /// The lid row of "Current settings", in the window's words.
+    pub lid_sleep: &'static str,
+    pub lid_battery_limit: &'static str,
+    /// `{limit}` is the limit, worded by `awake_ipc::notification::limit_words`.
+    pub lid_stops_after: &'static str,
+    pub lid_never_stops: &'static str,
+    /// While the closed-lid clock runs: `{time}` and `{remaining}`.
+    pub lid_stops_at: &'static str,
     pub extend_session: &'static str,
     pub change_session: &'static str,
     pub end_session: &'static str,
@@ -119,6 +133,9 @@ pub const ZH_TW: Labels = Labels {
     quick_options: "快速選項",
     allow_display_off: "允許螢幕關閉",
     stop_below_battery: "低於 20% 電量時停止",
+    keep_awake_lid_closed: "闔上螢幕時也保持清醒",
+    keep_awake_lid_closed_unavailable: "闔上螢幕時也保持清醒：目前無法使用",
+    lid_unavailable: "目前無法使用",
     reason: "原因",
     remaining: "剩餘",
     started: "開始於",
@@ -133,6 +150,11 @@ pub const ZH_TW: Labels = Labels {
     battery_stops_at: "低於 {percent}% 時停止",
     battery_off: "不因電量停止",
     battery_not_applicable: "這台機器不適用",
+    lid_sleep: "闔上螢幕時睡眠",
+    lid_battery_limit: "闔上螢幕並使用電池時",
+    lid_stops_after: "{limit}後停止",
+    lid_never_stops: "不會因此停止",
+    lid_stops_at: "{time} 停止（還有 {remaining}）",
     extend_session: "延長工作階段",
     change_session: "工作階段設定…",
     end_session: "結束工作階段",
@@ -191,6 +213,9 @@ pub const EN_US: Labels = Labels {
     quick_options: "Quick options",
     allow_display_off: "Allow display to turn off",
     stop_below_battery: "Stop below 20% battery",
+    keep_awake_lid_closed: "Also when the lid is closed",
+    keep_awake_lid_closed_unavailable: "Also when the lid is closed: not available right now",
+    lid_unavailable: "Not available right now",
     reason: "Reason",
     remaining: "Remaining",
     started: "Started",
@@ -205,6 +230,11 @@ pub const EN_US: Labels = Labels {
     battery_stops_at: "Stops below {percent}%",
     battery_off: "Never stops for battery level",
     battery_not_applicable: "Not applicable on this machine",
+    lid_sleep: "Sleep when the lid is closed",
+    lid_battery_limit: "Lid closed on battery",
+    lid_stops_after: "Stops after {limit}",
+    lid_never_stops: "Never stops for this",
+    lid_stops_at: "Stops at {time} ({remaining} left)",
     extend_session: "Extend session",
     change_session: "Session settings…",
     end_session: "End session",
@@ -418,6 +448,43 @@ mod tests {
         assert_ne!(ZH_TW.change_length, EN_US.change_length);
         assert_ne!(ZH_TW.current_settings, EN_US.current_settings);
         assert_ne!(ZH_TW.failed_other, EN_US.failed_other);
+    }
+
+    #[test]
+    fn the_lid_rows_use_the_windows_words() {
+        // Copied from awake-gui's i18n, like the rows below.
+        assert_eq!(
+            [
+                ZH_TW.keep_awake_lid_closed,
+                ZH_TW.lid_sleep,
+                ZH_TW.lid_battery_limit,
+                ZH_TW.lid_stops_after,
+                ZH_TW.lid_never_stops,
+            ],
+            [
+                "闔上螢幕時也保持清醒",
+                "闔上螢幕時睡眠",
+                "闔上螢幕並使用電池時",
+                "{limit}後停止",
+                "不會因此停止",
+            ]
+        );
+        assert_eq!(
+            [
+                EN_US.keep_awake_lid_closed,
+                EN_US.lid_sleep,
+                EN_US.lid_battery_limit,
+                EN_US.lid_stops_after,
+                EN_US.lid_never_stops,
+            ],
+            [
+                "Also when the lid is closed",
+                "Sleep when the lid is closed",
+                "Lid closed on battery",
+                "Stops after {limit}",
+                "Never stops for this",
+            ]
+        );
     }
 
     #[test]

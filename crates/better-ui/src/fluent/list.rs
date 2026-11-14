@@ -32,6 +32,7 @@ use gpui_component::{Icon, IconName};
 use crate::AppIcon;
 
 use super::ValueHandler;
+use super::hit_area::{RowInset, group_look, hit_row};
 use super::{
     BODY, BODY_STRONG, CAPTION, Interaction, Key, Palette, ShownState, keyed_focus, palette,
     radius, shows_focus, size, step_index, text, with_alpha, with_focus_ring,
@@ -162,7 +163,9 @@ impl RenderOnce for ListView {
         let focus = keyed_focus(self.id.clone(), window, cx);
         let ring = shows_focus(&focus, self.shown, window);
         let items = Rc::new(self.items);
-        let mut list = div().id(self.id.clone()).flex().flex_col().gap(px(2.0));
+        // Rows 2px apart, as `ListViewItem`, but the 2px belong to the rows'
+        // hit areas (`hit_area`), so there is no dead line between two.
+        let mut list = div().id(self.id.clone()).flex().flex_col();
         for (index, item) in items.iter().enumerate() {
             let selected = self.selected == Some(index);
             let forced = super::resolve(item.disabled, item.shown);
@@ -177,7 +180,7 @@ impl RenderOnce for ListView {
                 (p.text_primary, p.text_secondary)
             };
             let mut row = div()
-                .id(ElementId::named_usize("row", index))
+                .id("look")
                 .relative()
                 .h(if two_line {
                     size::TWO_LINE_ROW_HEIGHT
@@ -191,9 +194,7 @@ impl RenderOnce for ListView {
                 .rounded(radius::SM)
                 .bg(fill);
             if forced.is_none() {
-                row = row
-                    .hover(move |s| s.bg(hover))
-                    .active(move |s| s.bg(pressed));
+                row = group_look(row, hover, pressed);
             }
             if selected {
                 row = row.child(
@@ -207,6 +208,7 @@ impl RenderOnce for ListView {
                         .child(selection_bar(p, disabled)),
                 );
             }
+            let mut hit = hit_row(ElementId::named_usize("row", index), RowInset::LIST);
             row = row
                 .children(
                     item.icon
@@ -236,7 +238,7 @@ impl RenderOnce for ListView {
                 let select = self.on_select.clone();
                 let invoke = self.on_invoke.clone();
                 let focus = focus.clone();
-                row = row.on_click(move |event, window, cx| {
+                hit = hit.on_click(move |event, window, cx| {
                     focus.focus(window, cx);
                     if event.click_count() >= 2 {
                         if let Some(invoke) = invoke.as_ref() {
@@ -248,7 +250,7 @@ impl RenderOnce for ListView {
                 });
             }
             let row = with_focus_ring(row, ring && selected, radius::SM, p);
-            list = list.child(row);
+            list = list.child(hit.child(row));
         }
         let selected = self.selected;
         let select = self.on_select.clone();

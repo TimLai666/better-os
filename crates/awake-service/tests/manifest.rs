@@ -107,8 +107,11 @@ fn the_bus_name_the_tray_owns_is_named_in_the_manifest() {
         manifest
             .permissions
             .iter()
-            .any(|permission| permission.reason.contains(TRAY_BUS_NAME)),
-        "the bus name the tray owns must be named in the manifest, not just in code"
+            .any(|permission| permission.reason.contains(TRAY_BUS_NAME)
+                && permission
+                    .reason
+                    .contains(awake_ipc::notification::TRAY_LID_NOTIFY_BUS_NAME)),
+        "the bus names the tray owns must be named in the manifest, not just in code"
     );
 }
 
@@ -121,7 +124,7 @@ fn the_unmet_inhibitor_capabilities_are_declared_rather_than_implied() {
         .find(|permission| permission.name == "logind-inhibitor")
         .expect("the inhibitor capability must be declared");
     let reason = inhibitor.reason.to_lowercase();
-    for locked in ["sleep", "idle"] {
+    for locked in ["sleep", "idle", "handle-lid-switch"] {
         assert!(
             reason.contains(locked),
             "the {locked} lock the service actually takes is not named"
@@ -145,12 +148,21 @@ fn the_manifest_declares_the_binaries_and_the_state_files() {
         "~/.local/state/better-awake/awake-rules.json",
         "~/.local/state/better-awake/awake-history.json",
         "~/.local/state/better-awake/awake-service-state.json",
+        "~/.local/state/better-awake/awake-service-settings.json",
     ] {
         assert!(
             manifest.paths.iter().any(|declared| declared == path),
             "the manifest does not declare {path}"
         );
     }
+    assert!(
+        manifest.paths.iter().any(|declared| declared
+            == &format!(
+                "~/.local/state/better-awake/{}",
+                awake_service::settings::SETTINGS_FILE_NAME
+            )),
+        "the service's settings file is the one the manifest names"
+    );
 }
 
 #[test]

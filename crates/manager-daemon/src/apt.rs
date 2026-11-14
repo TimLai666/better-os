@@ -336,6 +336,7 @@ pub struct FakeAptDriver {
     /// How long `dpkg --configure -a` takes, for a repair that outlasts the
     /// daemon's idle period.
     configure_duration: Mutex<std::time::Duration>,
+    install_duration: Mutex<std::time::Duration>,
 }
 
 impl Default for FakeAptDriver {
@@ -359,10 +360,17 @@ impl FakeAptDriver {
             after_repair: Mutex::new(PackageSystemState::clean()),
             failing_configure: Mutex::new(false),
             configure_duration: Mutex::new(std::time::Duration::ZERO),
+            install_duration: Mutex::new(std::time::Duration::ZERO),
         }
     }
 
     /// Makes `dpkg --configure -a` take this long.
+    /// Makes every install take this long, as a real dpkg run does.
+    pub fn with_install_duration(self, duration: std::time::Duration) -> Self {
+        *self.install_duration.lock().unwrap() = duration;
+        self
+    }
+
     pub fn with_configure_duration(self, duration: std::time::Duration) -> Self {
         *self.configure_duration.lock().unwrap() = duration;
         self
@@ -503,6 +511,7 @@ impl AptDriver for FakeAptDriver {
             .lock()
             .unwrap()
             .push(format!("install:{package}:downgrade={allow_downgrade}"));
+        std::thread::sleep(*self.install_duration.lock().unwrap());
 
         let failed = self.failing_install.lock().unwrap().contains(&package);
         if !failed && let Some(fields) = fields {
