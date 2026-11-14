@@ -1,6 +1,6 @@
 # Ticket 105 — After an update, everything runs the new version
 
-**Blocked by:** none · **Status:** merged, not released
+**Blocked by:** none · **Status:** released in v0.2.13
 
 ## Why
 
