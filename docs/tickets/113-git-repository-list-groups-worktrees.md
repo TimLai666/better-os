@@ -1,6 +1,6 @@
 # Ticket 113 — Better Git's repository list keeps worktrees under their repository
 
-**Blocked by:** none · **Status:** done, not merged
+**Blocked by:** none · **Status:** merged, not released
 
 ## Why
 
