@@ -43,9 +43,11 @@ pub use history::{
     STORE_SCHEMA_VERSION, StoreRecovery, StoreStats,
 };
 pub use incident::{
-    BaselineShift, DEFAULT_WINDOW_AFTER_SECONDS, DEFAULT_WINDOW_BEFORE_SECONDS, Incident,
-    IncidentWindow, MAX_NOTE_LENGTH, MAX_WINDOW_SECONDS, MIN_WINDOW_SECONDS, baseline_shifts,
-    sanitize_note,
+    BaselineShift, DEFAULT_WINDOW_AFTER_SECONDS, DEFAULT_WINDOW_BEFORE_SECONDS, Detection,
+    Incident, IncidentWindow, MAX_WINDOW_SECONDS, MIN_WINDOW_SECONDS, SLOWDOWN_EXIT_FRACTION,
+    SLOWDOWN_MAX_SAMPLE_GAP_MS, SLOWDOWN_PROCESSES, SlowdownCause, SlowdownDetector, SlowdownEvent,
+    SlowdownKind, SlowdownResource, SlowdownRules, THROTTLE_HOLD_MS, baseline_shifts,
+    busiest_processes,
 };
 pub use inventory::{
     INVENTORY_SCHEMA_VERSION, Inventory, InventoryChange, InventoryDiff, InventoryEntry,

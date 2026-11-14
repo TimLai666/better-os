@@ -33,9 +33,8 @@ use std::collections::BTreeMap;
 
 use monitor_core::{CollectorHealth, CollectorId, CollectorReport};
 use monitor_store::{
-    CoverageCounts, Gap, HistorySlice, Incident, IncidentWindow, Inventory, InventoryDiff,
-    MAX_NOTE_LENGTH, MAX_WINDOW_SECONDS, MIN_WINDOW_SECONDS, RetentionPolicy, StoreStats,
-    TimeRange,
+    CoverageCounts, Gap, HistorySlice, Incident, Inventory, InventoryDiff, RetentionPolicy,
+    StoreStats, TimeRange,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -111,7 +110,11 @@ pub enum RequestBody {
     QueryIncidentWindow {
         incident_id: u64,
     },
-    /// Mark this moment. The service captures the surrounding state.
+    /// Retired in ticket 115: the service records slowdowns by itself and
+    /// nobody marks one by hand any more. The request is still parsed, so a
+    /// window from before then that sends it is told so with
+    /// [`IpcError::ManualMarkingRemoved`] instead of getting a parse error,
+    /// and it is never carried out.
     MarkIncident {
         #[serde(default)]
         note: Option<String>,
@@ -205,20 +208,7 @@ impl MonitorRequest {
                 from_unix_ms,
                 to_unix_ms,
             } => validate_range(*from_unix_ms, *to_unix_ms)?,
-            RequestBody::MarkIncident {
-                note,
-                window_before_seconds,
-                window_after_seconds,
-                ..
-            } => {
-                if let Some(note) = note {
-                    validate_note(note)?;
-                }
-                validate_window(IncidentWindow {
-                    before_seconds: *window_before_seconds,
-                    after_seconds: *window_after_seconds,
-                })?;
-            }
+            RequestBody::MarkIncident { .. } => return Err(IpcError::ManualMarkingRemoved),
             RequestBody::RequestExport {
                 from_unix_ms,
                 to_unix_ms,
@@ -277,37 +267,6 @@ fn validate_range(from_unix_ms: u64, to_unix_ms: u64) -> Result<(), IpcError> {
         });
     }
     Ok(())
-}
-
-fn validate_note(note: &str) -> Result<(), IpcError> {
-    if note.len() > MAX_NOTE_LENGTH {
-        return Err(IpcError::NoteTooLong {
-            bytes: note.len(),
-            limit: MAX_NOTE_LENGTH,
-        });
-    }
-    // A newline is fine in a note. A NUL or an escape sequence is not: it would
-    // reach a terminal through the CLI and a text file through the export.
-    if note
-        .chars()
-        .any(|character| character.is_control() && character != '\n')
-    {
-        return Err(IpcError::NoteControlCharacter);
-    }
-    Ok(())
-}
-
-fn validate_window(window: IncidentWindow) -> Result<(), IpcError> {
-    if window.is_valid() {
-        Ok(())
-    } else {
-        Err(IpcError::InvalidWindow {
-            before_seconds: window.before_seconds,
-            after_seconds: window.after_seconds,
-            minimum: MIN_WINDOW_SECONDS,
-            maximum: MAX_WINDOW_SECONDS,
-        })
-    }
 }
 
 /// A destination has to be an absolute local path with no traversal in it.
@@ -526,7 +485,8 @@ impl MonitorResponse {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "event", deny_unknown_fields)]
 pub enum EventBody {
-    /// A new incident was marked, by this client or another one.
+    /// A new incident was recorded. The name is the one a window from before
+    /// ticket 115 listens for.
     IncidentMarked { incident_id: u64 },
     /// An export changed state.
     ExportProgress(Box<ExportDocument>),
@@ -589,19 +549,10 @@ pub enum IpcError {
     InvalidRange { from_unix_ms: u64, to_unix_ms: u64 },
     #[error("monitor.ipc.error.invalid_sample_limit:{requested}:{limit}")]
     InvalidSampleLimit { requested: u32, limit: u32 },
-    #[error("monitor.ipc.error.note_too_long:{bytes}:{limit}")]
-    NoteTooLong { bytes: usize, limit: usize },
-    #[error("monitor.ipc.error.note_control_character")]
-    NoteControlCharacter,
-    #[error(
-        "monitor.ipc.error.invalid_window:{before_seconds}:{after_seconds}:{minimum}:{maximum}"
-    )]
-    InvalidWindow {
-        before_seconds: u64,
-        after_seconds: u64,
-        minimum: u64,
-        maximum: u64,
-    },
+    /// A client asked to mark an incident by hand, which no version since
+    /// ticket 115 does: slowdowns are recorded by the service itself.
+    #[error("monitor.ipc.error.manual_marking_removed")]
+    ManualMarkingRemoved,
     #[error("monitor.ipc.error.invalid_destination:{destination}")]
     InvalidDestination { destination: String },
     #[error("monitor.ipc.error.unknown_incident:{incident_id}")]
@@ -971,12 +922,13 @@ mod tests {
     use super::*;
     use monitor_store::{RecoverySummary, StoreRecovery};
 
-    fn mark() -> MonitorRequest {
-        MonitorRequest::new(RequestBody::MarkIncident {
-            note: Some("系統剛剛卡住".to_string()),
-            window_before_seconds: 300,
-            window_after_seconds: 120,
-            about_pid: Some(4242),
+    fn export() -> MonitorRequest {
+        MonitorRequest::new(RequestBody::RequestExport {
+            from_unix_ms: 1_000,
+            to_unix_ms: 2_000,
+            destination: "/tmp/系統監控".to_string(),
+            include_processes: true,
+            preview_only: true,
         })
     }
 
@@ -1002,8 +954,8 @@ mod tests {
 
     #[test]
     fn a_well_formed_request_survives_a_json_round_trip() {
-        let document = mark().to_json().unwrap();
-        assert_eq!(MonitorRequest::from_json(&document).unwrap(), mark());
+        let document = export().to_json().unwrap();
+        assert_eq!(MonitorRequest::from_json(&document).unwrap(), export());
     }
 
     #[test]
@@ -1108,58 +1060,24 @@ mod tests {
     }
 
     #[test]
-    fn a_note_longer_than_the_store_accepts_is_refused_at_the_protocol_edge() {
-        let mut request = mark();
-        let RequestBody::MarkIncident { note, .. } = &mut request.body else {
-            unreachable!()
-        };
-        *note = Some("x".repeat(MAX_NOTE_LENGTH + 1));
-        assert!(matches!(
-            MonitorRequest::from_json(&request.to_json().unwrap()),
-            Err(IpcError::NoteTooLong { .. })
-        ));
-    }
-
-    #[test]
-    fn a_note_carrying_a_control_character_is_refused() {
-        let mut request = mark();
-        let RequestBody::MarkIncident { note, .. } = &mut request.body else {
-            unreachable!()
-        };
-        *note = Some("before\u{0}after".to_string());
+    fn marking_by_hand_is_refused_with_its_own_key_whatever_it_carries() {
+        // Exactly what a Better Monitor window from before ticket 115 sends.
+        let older_window = r#"{"protocol_version":2,"body":{"request":"mark_incident","note":null,"window_before_seconds":300,"window_after_seconds":120,"about_pid":4242}}"#;
+        let refused = MonitorRequest::from_json(older_window).unwrap_err();
+        assert_eq!(refused, IpcError::ManualMarkingRemoved);
         assert_eq!(
-            MonitorRequest::from_json(&request.to_json().unwrap()),
-            Err(IpcError::NoteControlCharacter)
+            refused.to_string(),
+            "monitor.ipc.error.manual_marking_removed"
         );
-    }
-
-    #[test]
-    fn a_note_may_still_contain_a_line_break() {
-        let mut request = mark();
-        let RequestBody::MarkIncident { note, .. } = &mut request.body else {
-            unreachable!()
-        };
-        *note = Some("froze\nwhile saving".to_string());
-        assert!(MonitorRequest::from_json(&request.to_json().unwrap()).is_ok());
-    }
-
-    #[test]
-    fn an_impossible_incident_window_is_refused() {
-        for (before, after) in [(0, 60), (60, 0), (MAX_WINDOW_SECONDS + 1, 60)] {
-            let request = MonitorRequest::new(RequestBody::MarkIncident {
-                note: None,
-                window_before_seconds: before,
-                window_after_seconds: after,
-                about_pid: None,
-            });
-            assert!(
-                matches!(
-                    MonitorRequest::from_json(&request.to_json().unwrap()),
-                    Err(IpcError::InvalidWindow { .. })
-                ),
-                "expected {before}/{after} to be refused"
-            );
-        }
+        // A note or a window that used to be refused for itself is refused for
+        // the same reason now: nothing about the request is carried out.
+        let request = MonitorRequest::new(RequestBody::MarkIncident {
+            note: Some("before\u{0}after".to_string()),
+            window_before_seconds: 0,
+            window_after_seconds: 0,
+            about_pid: None,
+        });
+        assert_eq!(request.validate(), Err(IpcError::ManualMarkingRemoved));
     }
 
     #[test]

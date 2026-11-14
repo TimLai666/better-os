@@ -488,6 +488,27 @@ impl HistoryStore {
         Ok(())
     }
 
+    /// Replace a recorded incident with a newer version of itself: a
+    /// slowdown that went on after it was first recorded. The log is
+    /// rewritten whole, so this is for the few times a slowdown's record
+    /// changes, not for every sample. Returns whether the incident was there.
+    pub fn update_incident(&mut self, incident: Incident) -> Result<bool, StoreError> {
+        let Some(slot) = self
+            .incidents
+            .iter_mut()
+            .find(|candidate| candidate.id == incident.id)
+        else {
+            return Ok(false);
+        };
+        if *slot == incident {
+            return Ok(true);
+        }
+        *slot = incident;
+        self.incidents_log
+            .rewrite(&self.incidents, STORE_SCHEMA_VERSION)?;
+        Ok(true)
+    }
+
     /// Store an inventory capture, but only when it differs from the last one.
     /// Returns whether anything was written.
     pub fn record_inventory(&mut self, inventory: Inventory) -> Result<bool, StoreError> {
@@ -908,6 +929,7 @@ mod tests {
                 baseline: baseline_shifts(&marker, &[]),
                 snapshot: Box::new(marker),
                 about_pid: None,
+                detection: None,
             })
             .unwrap();
         for index in 0..40u64 {
@@ -936,11 +958,58 @@ mod tests {
                     baseline: Default::default(),
                     snapshot: Box::new(marker),
                     about_pid: None,
+                    detection: None,
                 })
                 .unwrap();
         }
         let store = HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
         assert_eq!(store.next_incident_id(), 2);
+    }
+
+    #[test]
+    fn an_updated_incident_replaces_the_first_record_and_survives_a_restart() {
+        use crate::incident::{Detection, SlowdownCause, SlowdownKind, SlowdownResource};
+        let directory = tempfile::tempdir().unwrap();
+        let detection = |ended: u64, ongoing: bool| Detection {
+            started_at_unix_ms: 1_000,
+            ended_at_unix_ms: ended,
+            ongoing,
+            causes: vec![SlowdownCause {
+                kind: SlowdownKind::MemoryPressure,
+                seconds: (ended - 1_000) / 1_000,
+                worst: 40.0,
+                count: 0,
+            }],
+            processes_by: SlowdownResource::Memory,
+            processes: Vec::new(),
+        };
+        let first = Incident {
+            id: 1,
+            marked_at_unix_ms: 1_000,
+            monotonic_ns: 0,
+            note: None,
+            window: IncidentWindow::default(),
+            baseline: Default::default(),
+            snapshot: Box::new(sample(1_000)),
+            about_pid: None,
+            detection: Some(detection(11_000, true)),
+        };
+        {
+            let mut store =
+                HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
+            store.record_incident(first.clone()).unwrap();
+            let mut later = first.clone();
+            later.detection = Some(detection(91_000, false));
+            assert!(store.update_incident(later).unwrap());
+            let mut unknown = first.clone();
+            unknown.id = 9;
+            assert!(!store.update_incident(unknown).unwrap());
+        }
+        let store = HistoryStore::open(directory.path(), RetentionPolicy::default()).unwrap();
+        assert_eq!(store.incidents().len(), 1, "one slowdown, one record");
+        let kept = store.incidents()[0].detection.as_ref().unwrap();
+        assert_eq!(kept.ended_at_unix_ms, 91_000);
+        assert!(!kept.ongoing);
     }
 
     #[test]
@@ -963,6 +1032,7 @@ mod tests {
                 baseline: Default::default(),
                 snapshot: Box::new(marker),
                 about_pid: None,
+                detection: None,
             })
             .unwrap();
         let (incident, slice) = store.incident_window(1).unwrap();
@@ -1025,6 +1095,7 @@ mod tests {
                     baseline: Default::default(),
                     snapshot: Box::new(sample(index * 1_000)),
                     about_pid: None,
+                    detection: None,
                 })
                 .unwrap();
             let mut inventory = Inventory::new(index * 1_000);
@@ -1107,6 +1178,7 @@ mod tests {
             snapshot: Box::new(sample(2_000)),
             baseline: BTreeMap::new(),
             about_pid: None,
+            detection: None,
         };
         old_incidents.append(&incident).unwrap();
         drop(old_incidents);
@@ -1141,6 +1213,7 @@ mod tests {
             snapshot: Box::new(sample(marked_at_unix_ms)),
             baseline: BTreeMap::new(),
             about_pid: None,
+            detection: None,
         };
         let mut old = AppendLog::open(legacy.join(INCIDENTS_FILE_NAME), 1)
             .unwrap()

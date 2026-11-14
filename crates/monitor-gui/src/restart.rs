@@ -88,6 +88,9 @@ pub(crate) struct MonitorView {
     pub(crate) history_seconds: Option<u64>,
     pub(crate) grouping_open: bool,
     pub(crate) sources_open: bool,
+    /// The Events page's "what counts as a slowdown", when the person opened
+    /// or closed it; `None` leaves it to the page.
+    pub(crate) slowdown_rules_open: Option<bool>,
 }
 
 impl Default for MonitorView {
@@ -109,6 +112,7 @@ impl Default for MonitorView {
             history_seconds: None,
             grouping_open: false,
             sources_open: false,
+            slowdown_rules_open: None,
         }
     }
 }

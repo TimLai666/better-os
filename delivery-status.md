@@ -1923,3 +1923,15 @@ Better Monitor's items have an id per role now. Reproduced before and checked
 after in a headless GNOME Shell with the AppIndicator extension; the ticket
 file says what was found.
 
+## Better Monitor records slowdowns by itself (ticket 115)
+
+Implemented, not merged. The service recognizes slowdowns in the rounds it
+already takes (memory, disk, or processor pressure held for 10 seconds,
+memory nearly gone while swapping, an out-of-memory kill, thermal throttling
+where Intel's counters exist) and records one incident per slowdown, with
+what held, for how long, how bad, and the processes using the most of it.
+The "It was just slow" button, its copy, `better-monitor-cli mark`, and the
+client's `mark` are gone; `MarkIncident` is refused with its own key. Records
+marked by hand stay and are labelled so. Store schema unchanged (optional
+fields); the released 0.2.13 service read a store this build wrote. The
+ticket file has the thresholds, caps, and what was checked.

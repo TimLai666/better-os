@@ -71,7 +71,6 @@ fn every_visible_string(c: &'static Copy) -> Vec<&'static str> {
         c.pause_process,
         c.resume_process,
         c.lower_priority,
-        c.mark_incident,
         c.cpu,
         c.memory,
         c.disk,
@@ -326,11 +325,11 @@ fn every_visible_string(c: &'static Copy) -> Vec<&'static str> {
         c.gap_interrupted_write,
         c.gap_retention,
         c.events_intro_title,
-        c.events_intro,
-        c.mark_unavailable,
+        c.events_rules_title,
+        c.events_not_recording,
         c.no_events_yet,
         c.no_events_explained,
-        c.marked_moments,
+        c.recorded_slowdowns,
         c.what_changed,
         c.baseline_none,
         c.busiest_then,
@@ -457,7 +456,6 @@ fn no_page_title_or_command_is_cut_off_at_960_pixels() {
             (c.processes, vec![c.end_task, c.properties, c.pause_updates]),
             (c.startup_apps, vec![c.enable, c.disable, c.refresh]),
             (c.services, vec![c.enable, c.disable, c.refresh]),
-            (c.events, vec![c.mark_incident]),
         ] {
             let fit = commands_that_fit(content_at_960(), title, &commands);
             assert!(fit >= 1, "{locale:?} {title}: no command fits");
@@ -1080,22 +1078,179 @@ fn the_history_page_never_asks_for_more_than_the_protocol_allows() {
 }
 
 #[test]
-fn marking_is_offered_only_when_something_is_actually_recording() {
-    use crate::app::Collection;
-    for (collection, expected) in [
-        (Collection::Connecting, false),
-        (Collection::Service, true),
-        (Collection::InProcess { detail: "x".into() }, true),
-        (Collection::Unavailable { detail: "x".into() }, false),
-    ] {
-        assert_eq!(
-            matches!(
-                collection,
-                Collection::Service | Collection::InProcess { .. }
-            ),
-            expected
-        );
+fn the_events_page_offers_no_way_to_mark_a_slowdown_by_hand() {
+    // Ticket 115: no command on the page, no string for one in either
+    // language, and the page says the records are made by themselves.
+    for locale in LOCALES {
+        let c = copy(locale);
+        for text in every_visible_string(c) {
+            assert!(!text.contains("It was just slow"), "{text}");
+            assert!(!text.contains("剛剛變慢了"), "{text}");
+        }
     }
+    assert!(copy(Locale::EnUs).events_intro_title.contains("by itself"));
+    assert!(copy(Locale::ZhTw).events_intro_title.contains("自動"));
+}
+
+#[test]
+fn what_counts_as_a_slowdown_is_written_from_the_rules_the_service_uses() {
+    let rules = monitor_store::SlowdownRules::default();
+    let en = i18n::slowdown_rules(&rules, Locale::EnUs);
+    let zh = i18n::slowdown_rules(&rules, Locale::ZhTw);
+    // One row per kind the service detects, and one on how records are kept,
+    // in both languages.
+    assert_eq!(en.len(), monitor_store::SlowdownKind::DETECTED.len() + 1);
+    assert_eq!(zh.len(), en.len());
+    assert!(en[0].1.contains("10 seconds") && en[0].1.contains("20%") && en[0].1.contains("10%"));
+    assert!(zh[0].1.contains("10 秒") && zh[0].1.contains("20%"));
+    assert!(en[2].1.contains("50%"), "{}", en[2].1);
+    let (en_once, zh_once) = (&en[6].1, &zh[6].1);
+    assert!(en_once.contains("1 minute") && en_once.contains("24"));
+    assert!(zh_once.contains("1 分鐘") && zh_once.contains("24"));
+    for (name, rule) in en.iter().chain(&zh) {
+        assert!(!looks_like_a_key(name), "{name}");
+        assert!(!looks_like_a_key(rule), "{rule}");
+    }
+    // A changed rule changes the sentence.
+    let stricter = monitor_store::SlowdownRules {
+        onset_seconds: 30,
+        ..rules
+    };
+    assert!(
+        i18n::slowdown_rules(&stricter, Locale::EnUs)[0]
+            .1
+            .contains("30 seconds")
+    );
+}
+
+#[test]
+fn every_kind_of_slowdown_is_named_in_plain_words_in_both_languages() {
+    use monitor_store::{SlowdownCause, SlowdownKind};
+    let mut kinds = SlowdownKind::DETECTED.to_vec();
+    kinds.push(SlowdownKind::Other);
+    for locale in LOCALES {
+        let mut titles = std::collections::BTreeSet::new();
+        for kind in &kinds {
+            let cause = SlowdownCause {
+                kind: *kind,
+                seconds: 40,
+                worst: 37.4,
+                count: 3,
+            };
+            let title = i18n::slowdown_title(Some(&cause), locale);
+            assert!(!looks_like_a_key(&title), "{title}");
+            assert!(!title.contains(kind.key()), "{title}");
+            titles.insert(title);
+            let also = i18n::slowdown_also(&cause, locale);
+            assert!(!looks_like_a_key(&also), "{also}");
+        }
+        assert_eq!(titles.len(), kinds.len(), "two kinds share a title");
+    }
+    let pressure = SlowdownCause {
+        kind: SlowdownKind::MemoryPressure,
+        seconds: 130,
+        worst: 63.6,
+        count: 0,
+    };
+    assert_eq!(
+        i18n::slowdown_severity(&pressure, Locale::EnUs).unwrap(),
+        "At worst, programs were waiting 64% of the time."
+    );
+    assert_eq!(
+        i18n::slowdown_severity(&pressure, Locale::ZhTw).unwrap(),
+        "最嚴重的時候，程式有 64% 的時間在等。"
+    );
+    assert_eq!(
+        i18n::slowdown_also(&pressure, Locale::EnUs),
+        "Also: waiting for memory (2 min 10 s)"
+    );
+    let killed = SlowdownCause {
+        kind: SlowdownKind::OutOfMemoryKill,
+        seconds: 0,
+        worst: 0.0,
+        count: 2,
+    };
+    assert_eq!(
+        i18n::slowdown_title(Some(&killed), Locale::EnUs),
+        "2 programs were closed because memory ran out"
+    );
+    assert_eq!(
+        i18n::slowdown_title(Some(&killed), Locale::ZhTw),
+        "記憶體不夠，有 2 個程式被強制關掉"
+    );
+}
+
+#[test]
+fn a_slowdown_says_how_long_it_lasted_or_that_it_is_still_going() {
+    use monitor_store::{Detection, SlowdownResource};
+    let mut detection = Detection {
+        started_at_unix_ms: 0,
+        ended_at_unix_ms: 130_000,
+        ongoing: false,
+        causes: Vec::new(),
+        processes_by: SlowdownResource::Memory,
+        processes: Vec::new(),
+    };
+    assert_eq!(
+        i18n::slowdown_when(600_000, &detection, Locale::EnUs),
+        "10 minutes ago · lasted 2 min 10 s"
+    );
+    assert_eq!(
+        i18n::slowdown_when(600_000, &detection, Locale::ZhTw),
+        "10 分鐘前 · 持續 2 分 10 秒"
+    );
+    detection.ongoing = true;
+    assert_eq!(
+        i18n::slowdown_when(600_000, &detection, Locale::EnUs),
+        "Began 10 minutes ago · still going, 2 min 10 s so far"
+    );
+    assert_eq!(
+        i18n::slowdown_when(600_000, &detection, Locale::ZhTw),
+        "10 分鐘前開始 · 還在持續，已經 2 分 10 秒"
+    );
+}
+
+#[test]
+fn a_record_made_by_hand_is_labelled_as_one() {
+    assert_eq!(
+        i18n::marked_title("2 hours ago", Locale::EnUs),
+        "Marked by hand 2 hours ago"
+    );
+    assert_eq!(
+        i18n::marked_title("2 小時前", Locale::ZhTw),
+        "2 小時前手動標記"
+    );
+}
+
+#[test]
+fn the_events_page_asks_again_when_the_service_recorded_something_new() {
+    use crate::app::{ONGOING_REFRESH_MS, list_is_stale};
+    let finished = monitor_store::Incident {
+        id: 1,
+        marked_at_unix_ms: 0,
+        monotonic_ns: 0,
+        note: None,
+        window: monitor_store::IncidentWindow::default(),
+        snapshot: Box::new(sample_at(0, None)),
+        baseline: Default::default(),
+        about_pid: None,
+        detection: Some(monitor_store::Detection {
+            started_at_unix_ms: 0,
+            ended_at_unix_ms: 20_000,
+            ongoing: false,
+            causes: Vec::new(),
+            processes_by: monitor_store::SlowdownResource::Memory,
+            processes: Vec::new(),
+        }),
+    };
+    let shown = vec![finished.clone()];
+    assert!(!list_is_stale(&shown, 1, 0, 60_000));
+    assert!(list_is_stale(&shown, 2, 0, 1_000), "a new one was recorded");
+    let mut ongoing = finished;
+    ongoing.detection.as_mut().unwrap().ongoing = true;
+    let shown = vec![ongoing];
+    assert!(!list_is_stale(&shown, 1, 0, ONGOING_REFRESH_MS - 1));
+    assert!(list_is_stale(&shown, 1, 0, ONGOING_REFRESH_MS));
 }
 
 // Actions.

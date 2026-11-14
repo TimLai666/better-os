@@ -35,6 +35,11 @@ pub struct ProcessSample {
     pub cpu_utilization: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_resident: Option<u64>,
+    /// Bytes read and written per second. Filled in only on the list of a
+    /// detected slowdown, where the disk is what it is ranked by; a stored
+    /// sample's own list leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_bytes_rate: Option<f64>,
 }
 
 /// Readings about one non-process entity: a CPU, a disk, a link, a PSI
@@ -150,7 +155,7 @@ impl Sample {
     }
 }
 
-fn process_sample(key: &str, metrics: &MetricSet) -> ProcessSample {
+pub(crate) fn process_sample(key: &str, metrics: &MetricSet) -> ProcessSample {
     let text = |name: &str| {
         MetricId::new(name)
             .ok()
@@ -169,6 +174,7 @@ fn process_sample(key: &str, metrics: &MetricSet) -> ProcessSample {
         user: text("process.user"),
         cpu_utilization: number("process.cpu.utilization"),
         memory_resident: number("process.memory.resident").map(|bytes| bytes as u64),
+        disk_bytes_rate: None,
     }
 }
 

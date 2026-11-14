@@ -19,7 +19,9 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::IconName;
 use monitor_core::{EntityKind, MetricId};
-use monitor_store::{GapReason, Incident, Sample, Sensitivity};
+use monitor_store::{
+    Detection, GapReason, Incident, Sample, Sensitivity, SlowdownResource, SlowdownRules,
+};
 
 use crate::app::MonitorApp;
 use crate::i18n::{self, Copy, copy};
@@ -426,51 +428,152 @@ impl MonitorApp {
         let p = palette(cx);
         let c = copy(self.locale);
         let incidents = self.incidents.clone();
-        let intro = card(p)
-            .child(label(c.events_intro_title, BODY_STRONG, p.text_primary))
-            .child(label(
-                if self.can_mark() {
-                    c.events_intro
-                } else {
-                    c.mark_unavailable
-                },
-                BODY,
-                p.text_secondary,
-            ));
-        let mut page = div().flex().flex_col().gap(spacing::LG).child(intro);
+        // Open while there is nothing recorded, when the explanation is the
+        // whole page; out of the records' way once there are some.
+        let open = self.slowdown_rules_open.unwrap_or(incidents.is_empty());
+        let intro = SettingsExpander::new("slowdown-rules", c.events_rules_title, open)
+            .icon(IconName::Info)
+            .description(c.events_intro_title)
+            .on_toggle(Self::act_with(cx, |this, open: bool, _, _| {
+                this.slowdown_rules_open = Some(open)
+            }));
+        let intro = i18n::slowdown_rules(&SlowdownRules::default(), self.locale)
+            .into_iter()
+            .fold(intro, |intro, (name, rule)| {
+                intro.row(SettingsRow::new(name).description(rule))
+            });
+        let mut page = div()
+            .flex()
+            .flex_col()
+            .gap(spacing::LG)
+            .when(!self.is_recording(), |page| {
+                page.child(
+                    InfoBar::new(
+                        "bar-not-recording",
+                        Severity::Warning,
+                        c.events_not_recording,
+                    )
+                    .locale(self.locale.words()),
+                )
+            })
+            .child(intro);
         if incidents.is_empty() {
             page = page.child(note_card(c.no_events_yet, c.no_events_explained, cx));
         } else {
-            page = page.child(section_title(c.marked_moments, p));
+            page = page.child(section_title(c.recorded_slowdowns, p));
             for incident in incidents.iter().rev() {
-                page = page.child(self.incident_card(incident, cx));
+                page = page.child(match &incident.detection {
+                    Some(detection) => self.slowdown_card(incident, detection, cx),
+                    None => self.marked_card(incident, cx),
+                });
             }
         }
         page.into_any_element()
     }
 
-    fn incident_card(&self, incident: &Incident, cx: &mut Context<Self>) -> AnyElement {
-        let p = palette(cx);
-        let c = copy(self.locale);
-        let latest = self.last_marked == Some(incident.id);
-        let when = i18n::ago(self.now_unix_ms, incident.marked_at_unix_ms, self.locale);
-        let shifts: Vec<(String, String)> = incident
+    /// The readings that moved most from just before, as name and change.
+    fn shifts(&self, incident: &Incident) -> Vec<(String, String)> {
+        incident
             .largest_shifts(8)
             .into_iter()
             .filter_map(|(id, shift)| {
                 i18n::shift_sentence(id, shift.baseline, shift.at_marker, self.locale)
             })
             .take(4)
-            .collect();
+            .collect()
+    }
+
+    /// A slowdown the service recorded by itself: what it was, how long and
+    /// how bad, what else held, and who was using the most of it.
+    fn slowdown_card(
+        &self,
+        incident: &Incident,
+        detection: &Detection,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        let leading = detection.leading();
+        let mut body = card(p).child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap(spacing::MD)
+                .child(label(
+                    i18n::slowdown_title(leading, self.locale),
+                    BODY_STRONG,
+                    p.text_primary,
+                ))
+                .child(label(
+                    i18n::slowdown_when(self.now_unix_ms, detection, self.locale),
+                    CAPTION,
+                    p.text_secondary,
+                )),
+        );
+        if let Some(severity) =
+            leading.and_then(|cause| i18n::slowdown_severity(cause, self.locale))
+        {
+            body = body.child(label(severity, BODY, p.text_primary));
+        }
+        for cause in detection.causes.iter().skip(1) {
+            body = body.child(label(
+                i18n::slowdown_also(cause, self.locale),
+                BODY,
+                p.text_secondary,
+            ));
+        }
+        if !detection.processes.is_empty() {
+            body = body.child(label(
+                i18n::slowdown_processes_heading(detection.processes_by, self.locale),
+                CAPTION,
+                p.text_secondary,
+            ));
+            let processors = snapshot_processors(&incident.snapshot).or(self.processors());
+            for process in &detection.processes {
+                let value = match detection.processes_by {
+                    SlowdownResource::Memory => process.memory_resident.map(|b| bytes(b as f64)),
+                    SlowdownResource::Disk => process.disk_bytes_rate.map(rate),
+                    SlowdownResource::Processor | SlowdownResource::Other => {
+                        machine_share(process.cpu_utilization, processors)
+                    }
+                };
+                body = body.child(property_row(
+                    process.name.clone(),
+                    value.clone().unwrap_or_else(|| c.not_collected.to_string()),
+                    value.is_none(),
+                    p,
+                ));
+            }
+        }
+        let shifts = self.shifts(incident);
+        if !shifts.is_empty() {
+            body = body.child(label(c.what_changed, CAPTION, p.text_secondary));
+            for (name, change) in shifts {
+                body = body.child(property_row(name, change, false, p));
+            }
+        }
+        body.into_any_element()
+    }
+
+    /// A moment a person marked by hand with a version from before slowdowns
+    /// were recorded automatically, shown as it was recorded.
+    fn marked_card(&self, incident: &Incident, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let c = copy(self.locale);
+        let when = i18n::ago(self.now_unix_ms, incident.marked_at_unix_ms, self.locale);
+        let shifts = self.shifts(incident);
         let mut body = card(p)
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .justify_between()
                     .gap(spacing::MD)
                     .child(label(
-                        i18n::marked_title(&when, latest, self.locale),
+                        i18n::marked_title(&when, self.locale),
                         BODY_STRONG,
                         p.text_primary,
                     ))

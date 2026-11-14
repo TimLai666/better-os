@@ -373,6 +373,46 @@ fn counter_rate(earlier: Option<u64>, later: Option<u64>, seconds: Option<f64>) 
 struct CpuSnapshot {
     at: Timestamp,
     stat: ProcStat,
+    /// The sum of the thermal throttle counters, where the kernel has them.
+    throttle_events: Option<u64>,
+}
+
+/// The thermal throttle counters the kernel keeps for every logical CPU on
+/// processors that report thermal events (Intel's `therm_throt` driver):
+/// `core_throttle_count` and `package_throttle_count` under
+/// `/sys/devices/system/cpu/cpuN/thermal_throttle`. Documented in the
+/// kernel's `Documentation/ABI/testing/sysfs-devices-system-cpu`. They are
+/// world-readable and go up each time a core or the package is held back
+/// because it is too hot.
+///
+/// Every logical CPU of a core repeats its core's count, and every CPU of a
+/// package repeats the package's, so the sum is a count of what the kernel
+/// reports rather than of distinct events. It is only ever read as "did it
+/// go up", which the repetition does not change. Absent when the first CPU
+/// has no `thermal_throttle` directory (AMD processors and most virtual
+/// machines), checked with one look per round.
+fn read_throttle_events(roots: &Roots, cpus: &[u32]) -> Option<u64> {
+    let first = cpus.first()?;
+    if !roots
+        .sys(&format!("devices/system/cpu/cpu{first}/thermal_throttle"))
+        .is_dir()
+    {
+        return None;
+    }
+    let mut total = 0u64;
+    let mut found = false;
+    for index in cpus {
+        for counter in ["core_throttle_count", "package_throttle_count"] {
+            let path = roots.sys(&format!(
+                "devices/system/cpu/cpu{index}/thermal_throttle/{counter}"
+            ));
+            if let Ok(value) = read_u64_attribute(&path) {
+                total = total.saturating_add(value);
+                found = true;
+            }
+        }
+    }
+    found.then_some(total)
 }
 
 /// CPU utilization, load, frequency, and temperature.
@@ -458,6 +498,13 @@ impl CpuCollector {
                 Unit::CountPerSecond,
                 proc_source("stat"),
                 "forks per second, from the processes counter",
+            ),
+            rate(
+                "cpu.thermal_throttle.rate",
+                Unit::CountPerSecond,
+                sys_source("devices/system/cpu/cpuN/thermal_throttle"),
+                "thermal throttle counter increases per second, summed over every logical \
+                 CPU's core and package counters (Intel processors publish them)",
             ),
             gauge(
                 "cpu.logical.count",
@@ -613,6 +660,26 @@ impl CpuCollector {
             },
         );
 
+        let cpus: Vec<u32> = stat.per_cpu.iter().map(|(index, _)| *index).collect();
+        let throttle_events = read_throttle_events(roots, &cpus);
+        report.metrics.insert(
+            metric_id("cpu.thermal_throttle.rate"),
+            match throttle_events {
+                Some(_) => counter_rate(
+                    self.previous
+                        .as_ref()
+                        .and_then(|previous| previous.throttle_events),
+                    throttle_events,
+                    if interval_long_enough { seconds } else { None },
+                ),
+                None => Observation::Unsupported(UnsupportedReason::NotReported {
+                    detail: "no thermal_throttle counters under /sys/devices/system/cpu; \
+                             only processors that report thermal events publish them"
+                        .into(),
+                }),
+            },
+        );
+
         self.read_load_average(roots, &mut report);
         let temperatures = scan_cpu_temperatures(roots);
         report.metrics.insert(
@@ -648,7 +715,11 @@ impl CpuCollector {
             ));
         }
 
-        self.previous = Some(CpuSnapshot { at, stat });
+        self.previous = Some(CpuSnapshot {
+            at,
+            stat,
+            throttle_events,
+        });
         report
     }
 
@@ -1048,6 +1119,55 @@ mod tests {
             report
                 .metrics
                 .state_of(&metric_id("cpu.package.temperature")),
+            ObservationState::Unsupported
+        );
+    }
+
+    #[test]
+    fn thermal_throttling_is_a_rate_of_the_counters_where_the_kernel_keeps_them() {
+        let temporary = crate::test_support::TempTree::copy_of("synthetic-a");
+        let roots = temporary.roots();
+        let write = |cpu: u32, core: u64, package: u64| {
+            let directory = roots.sys(&format!("devices/system/cpu/cpu{cpu}/thermal_throttle"));
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("core_throttle_count"), format!("{core}\n")).unwrap();
+            std::fs::write(
+                directory.join("package_throttle_count"),
+                format!("{package}\n"),
+            )
+            .unwrap();
+        };
+        let mut collector = CpuCollector::new(roots.clone());
+        let first_cpu = parse_proc_stat(&read_text(&roots.proc("stat")).unwrap())
+            .unwrap()
+            .per_cpu[0]
+            .0;
+        write(first_cpu, 10, 4);
+        let first = collector.sample(&roots, crate::test_support::at(0));
+        assert_eq!(
+            first.metrics.get(&metric_id("cpu.thermal_throttle.rate")),
+            Some(&Observation::Unknown(UnknownReason::NotYetSampled))
+        );
+        write(first_cpu, 16, 6);
+        let second = collector.sample(&roots, crate::test_support::at(2_000));
+        let rate = second
+            .metrics
+            .get(&metric_id("cpu.thermal_throttle.rate"))
+            .and_then(Observation::as_f64)
+            .expect("a rate");
+        assert!(
+            (rate - 4.0).abs() < 1e-9,
+            "eight increases over two seconds"
+        );
+
+        // Without the counters (an AMD processor, a virtual machine) it says
+        // so rather than reading as no throttling.
+        let plain = Roots::at(crate::test_support::fixture("snapshot-a"));
+        let report = CpuCollector::new(plain.clone()).sample(&plain, crate::test_support::at(0));
+        assert_eq!(
+            report
+                .metrics
+                .state_of(&metric_id("cpu.thermal_throttle.rate")),
             ObservationState::Unsupported
         );
     }
