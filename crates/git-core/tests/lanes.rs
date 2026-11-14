@@ -629,7 +629,6 @@ fn lane_names_laid_out_page_by_page_match_one_layout_of_everything() {
         (false, true) => LaneLabel::Tag,
         _ => LaneLabel::None,
     };
-    let is_named = |i: usize| label(i) != LaneLabel::None;
     let mut whole_layout = LaneLayout::new();
     let mut whole = LaneRefs::new();
     let rows: Vec<GraphRow> = commits
@@ -660,12 +659,164 @@ fn lane_names_laid_out_page_by_page_match_one_layout_of_everything() {
                 paged.named_row(edge.lane, index),
                 whole.named_row(edge.lane, index)
             );
-            // A label found for a line is on its lane, at or above it, or
-            // the first commit of a lane that starts below.
-            if let Some(found) = whole.named_row(edge.lane, index) {
-                assert!(is_named(found));
-                assert_eq!(rows[found].lane, edge.lane);
+            assert_eq!(
+                paged.named_above(edge.lane, index),
+                whole.named_above(edge.lane, index)
+            );
+        }
+    }
+}
+
+/// What names `lane` at `row`, worked out the slow way from the rows and
+/// the commits alone, by the rule: among the lane's commits at or above
+/// `row` (strictly above for the line into the commit at `row`), walk up
+/// from the nearest for the nearest with a branch, else the nearest with a
+/// tag; a lane with none above is named by its first commit's own labels,
+/// and a lane that never held a commit by the commit it ended in.
+fn oracle(
+    rows: &[GraphRow],
+    labels: &[LaneLabel],
+    lane: u32,
+    row: usize,
+    inclusive: bool,
+) -> Option<usize> {
+    let own: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].lane == lane).collect();
+    let above: Vec<usize> = own
+        .iter()
+        .copied()
+        .filter(|&i| if inclusive { i <= row } else { i < row })
+        .collect();
+    let mine = |i: usize| -> Option<usize> { (labels[i] != LaneLabel::None).then_some(i) };
+    if above.is_empty() {
+        let first = match own.first() {
+            Some(&first) => first,
+            None => (0..rows.len()).find(|&i| {
+                rows[i]
+                    .edges
+                    .iter()
+                    .any(|e| e.kind == EdgeKind::In && e.lane == lane && e.column != rows[i].column)
+            })?,
+        };
+        return mine(first);
+    }
+    above
+        .iter()
+        .rev()
+        .find(|&&i| labels[i] == LaneLabel::Branch)
+        .or_else(|| above.iter().rev().find(|&&i| labels[i] == LaneLabel::Tag))
+        .copied()
+}
+
+#[test]
+fn lane_names_agree_with_the_rule_worked_out_the_slow_way() {
+    let commits = shuffled(1_200, 0xfeed_0042);
+    let labels: Vec<LaneLabel> = (0..commits.len())
+        .map(|i| match (i.is_multiple_of(53), i % 29 == 3) {
+            (true, _) => LaneLabel::Branch,
+            (false, true) => LaneLabel::Tag,
+            _ => LaneLabel::None,
+        })
+        .collect();
+    let mut layout = LaneLayout::new();
+    let mut refs = LaneRefs::new();
+    let rows: Vec<GraphRow> = commits
+        .iter()
+        .zip(&labels)
+        .map(|((s, p), label)| {
+            let row = layout.push(s, p);
+            refs.push(&row, *label);
+            row
+        })
+        .collect();
+    let at: std::collections::HashMap<&str, usize> = commits
+        .iter()
+        .enumerate()
+        .map(|(i, (s, _))| (s.as_str(), i))
+        .collect();
+    let mut checked = 0;
+    for (index, row) in rows.iter().enumerate() {
+        for edge in &row.edges {
+            let into_node = edge.kind == EdgeKind::In && edge.column == row.column;
+            let found = if into_node {
+                refs.named_above(edge.lane, index)
+            } else {
+                refs.named_row(edge.lane, index)
+            };
+            assert_eq!(
+                found,
+                oracle(&rows, &labels, edge.lane, index, !into_node),
+                "{edge:?} in row {index}"
+            );
+            // A name found above the line is the line's own history: the
+            // nearest commit of the lane at the line is reached from it by
+            // first parents.
+            if let Some(found) = found
+                && found <= index
+                && rows[found].lane == edge.lane
+            {
+                // (The line into a lane's first commit is named by that
+                // commit itself: there is nothing to walk.)
+                let Some(nearest) = (found..=index)
+                    .rev()
+                    .find(|&i| rows[i].lane == edge.lane && (i < index || !into_node))
+                else {
+                    continue;
+                };
+                let mut walk = found;
+                while walk != nearest {
+                    let first = commits[walk].1.first().expect("a first parent");
+                    walk = at[first.as_str()];
+                    assert!(walk <= nearest, "{found} does not lead to {nearest}");
+                }
+                checked += 1;
             }
         }
     }
+    assert!(checked > 500, "only {checked} names checked");
+}
+
+#[test]
+fn the_line_into_a_labelled_commit_is_named_from_above_it() {
+    // main on m2, release on c: the line from m2 down into c is main's.
+    let (rows, refs) = named(&[("m2", &["c"], B), ("c", &["base"], B), ("base", &[], N)]);
+    let lane = rows[0].lane;
+    assert_eq!(refs.named_above(lane, 1), Some(0), "the edge m2 -> c");
+    assert_eq!(refs.named_row(lane, 1), Some(1), "the edge c -> base");
+    // With nothing labelled above, nothing names it; the tip describes it.
+    let (rows, refs) = named(&[("m2", &["c"], N), ("c", &["base"], B), ("base", &[], N)]);
+    assert_eq!(refs.named_above(rows[0].lane, 1), None);
+    assert_eq!(refs.tip(rows[0].lane), Some(0));
+}
+
+#[test]
+fn a_lane_a_merge_opened_that_ends_without_a_commit_is_named_by_its_end() {
+    // develop: C2 -> C1 -> P; main: M merges P (opening a lane in column
+    // 2 while column 1 holds main), then main1 -> Q. P is taken by
+    // develop's lane in column 0, so the merge's lane ends in P without a
+    // commit of its own.
+    let graph = |p: LaneLabel| {
+        named(&[
+            ("C2", &["C1"], B),
+            ("M", &["main1", "P"], B),
+            ("C1", &["P"], N),
+            ("main1", &["Q"], N),
+            ("P", &["Q"], p),
+            ("Q", &[], N),
+        ])
+    };
+    let (rows, refs) = graph(T);
+    let merged = lane_of(&rows[1], EdgeKind::Out, 2);
+    assert!(!refs.has_commits(merged));
+    assert_eq!(lane_of(&rows[4], EdgeKind::In, 2), merged, "it ends in P");
+    assert_eq!(refs.tip(merged), Some(4));
+    assert_eq!(refs.named_row(merged, 1), Some(4), "P's own tag");
+    assert_eq!(refs.named_row(merged, 3), Some(4));
+    let (rows, refs) = graph(N);
+    let merged = lane_of(&rows[1], EdgeKind::Out, 2);
+    assert_eq!(
+        refs.named_row(merged, 2),
+        None,
+        "develop's name above P is not this line's"
+    );
+    assert_eq!(refs.tip(merged), Some(4));
 }

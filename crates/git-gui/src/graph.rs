@@ -170,6 +170,8 @@ pub struct GraphPage {
     /// What each lane of the page's rows is named after, laid out with
     /// them.
     pub lanes: LaneRefs,
+    /// The filter the page was read and named with.
+    pub query: GraphQuery,
     /// The page's part of the hash-to-row index, built off the window's
     /// thread: the whole index for a replacing page, the entries to add for
     /// any other.
@@ -202,6 +204,7 @@ impl GraphJob {
                 replace: self.replace,
                 rows: GraphRows::starting_at(feed.read, feed.layout.tops()),
                 lanes: LaneRefs::starting_at(feed.read, feed.lane_refs.clone()),
+                query: self.query,
                 ..GraphPage::default()
             };
             if feed.source.is_none() && !feed.exhausted {
@@ -333,6 +336,11 @@ pub struct GraphView {
     pub rows: GraphRows,
     /// What each lane is named after when the pointer rests on it.
     pub lanes: LaneRefs,
+    /// The filter `lanes` was laid out with: until a new filter's first
+    /// page arrives, the old lanes are named by the old filter's labels.
+    pub lanes_query: GraphQuery,
+    /// What the pointer rests on in the graph.
+    pub hover: Hovering,
     /// The first page has arrived.
     pub loaded: bool,
     /// Every commit has been read.
@@ -465,6 +473,7 @@ impl GraphView {
             let old_commits = std::mem::replace(&mut self.commits, page.commits);
             let old_rows = std::mem::replace(&mut self.rows, page.rows);
             let old_lanes = std::mem::replace(&mut self.lanes, page.lanes);
+            self.lanes_query = page.query;
             let index = page.index.unwrap_or_else(|| {
                 self.commits
                     .iter()
@@ -669,8 +678,9 @@ pub enum GraphSpot {
     /// The commit's dot.
     Dot { lane: u32 },
     /// A line of `lane`: straight through the row, or into or out of the
-    /// dot in the dot's own column.
-    Line { lane: u32 },
+    /// dot in the dot's own column. `into_node` is the line coming down
+    /// into the dot, the edge from the commit above it on the lane.
+    Line { lane: u32, into_node: bool },
     /// The curve from a merge commit to a parent other than its first: the
     /// parent's lane `from` merged into the commit's lane `into`.
     Merge { from: u32, into: u32 },
@@ -684,10 +694,197 @@ impl GraphSpot {
     /// the merged branch's, the branch that forked, or the dot's.
     pub fn lane(self) -> u32 {
         match self {
-            GraphSpot::Dot { lane } | GraphSpot::Line { lane } => lane,
+            GraphSpot::Dot { lane } | GraphSpot::Line { lane, .. } => lane,
             GraphSpot::Merge { from, .. } => from,
             GraphSpot::Fork { branch, .. } => branch,
         }
+    }
+}
+
+/// How long the pointer rests on a line before it says what it is: GPUI's
+/// own tooltip delay.
+pub const REST: std::time::Duration = std::time::Duration::from_millis(500);
+/// How soon after one tooltip closes the next one shows without waiting,
+/// as GPUI's own tooltips do.
+pub const TIP_HANDOVER: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Where the pointer is over the graph, as the window found it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pointer {
+    /// The row and what lies under the pointer in its graph cell.
+    pub index: usize,
+    pub spot: GraphSpot,
+    /// The pointer, in window coordinates, for the tooltip.
+    pub at: (f32, f32),
+    /// The list's scroll offset at the time.
+    pub scroll: (f32, f32),
+}
+
+/// A line, curve, or dot the pointer rests on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hover {
+    pub index: usize,
+    pub spot: GraphSpot,
+    pub text: String,
+    /// Where the pointer was when it came to rest.
+    pub at: (f32, f32),
+    pub scroll: (f32, f32),
+    /// The pointer has rested long enough: the tooltip shows and the lane
+    /// is highlighted.
+    pub shown: bool,
+    /// The list it was found in ([`GraphView::replaced`]) and the row's
+    /// commit, so a hover left over from another list is never drawn.
+    pub replaced: u64,
+    pub sha: String,
+}
+
+/// What the window does after the pointer moved.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HoverChange {
+    Nothing,
+    /// Draw again: a tooltip came or went.
+    Redraw,
+    /// Wait [`REST`], then call [`GraphView::hover_rested`] with this.
+    Wait(u64),
+}
+
+/// The pointer's rest in the graph, with no GPUI in it.
+#[derive(Clone, Debug, Default)]
+pub struct Hovering {
+    current: Option<Hover>,
+    /// Counts changes, so a rest timer knows whether it is still current.
+    epoch: u64,
+    /// When the last shown tooltip was put away.
+    closed: Option<std::time::Instant>,
+}
+
+impl Hovering {
+    pub fn current(&self) -> Option<&Hover> {
+        self.current.as_ref()
+    }
+}
+
+impl GraphView {
+    /// The pointer moved: onto `pointer`, or onto no graph cell (or a part
+    /// of one with nothing under it).
+    ///
+    /// Expected results:
+    /// - Off every line puts the hover away; [`HoverChange::Redraw`] when a
+    ///   tooltip was showing.
+    /// - The same spot of the same row of the same list only follows the
+    ///   pointer until the tooltip shows.
+    /// - Anything else is described afresh; it shows at once when a
+    ///   tooltip is showing or closed within [`TIP_HANDOVER`], and after
+    ///   [`REST`] otherwise.
+    pub fn hover_pointer(
+        &mut self,
+        pointer: Option<Pointer>,
+        g: &GraphCopy,
+        now: i64,
+        instant: std::time::Instant,
+    ) -> HoverChange {
+        let Some(pointer) = pointer else {
+            return self.hover_change_off(instant);
+        };
+        let Some(sha) = self.commits.get(pointer.index).map(|c| c.sha.clone()) else {
+            return self.hover_change_off(instant);
+        };
+        let replaced = self.replaced;
+        if let Some(hover) = self.hover.current.as_mut()
+            && hover.index == pointer.index
+            && hover.spot == pointer.spot
+            && hover.sha == sha
+            && hover.replaced == replaced
+        {
+            if !hover.shown {
+                hover.at = pointer.at;
+                hover.scroll = pointer.scroll;
+            }
+            return HoverChange::Nothing;
+        }
+        let Some(text) = self.describe(pointer.index, pointer.spot, g, now) else {
+            return self.hover_change_off(instant);
+        };
+        let at_once = self.hover.current.as_ref().is_some_and(|h| h.shown)
+            || self
+                .hover
+                .closed
+                .is_some_and(|t| instant.saturating_duration_since(t) < TIP_HANDOVER);
+        self.hover.epoch += 1;
+        self.hover.current = Some(Hover {
+            index: pointer.index,
+            spot: pointer.spot,
+            text,
+            at: pointer.at,
+            scroll: pointer.scroll,
+            shown: at_once,
+            replaced,
+            sha,
+        });
+        if at_once {
+            HoverChange::Redraw
+        } else {
+            HoverChange::Wait(self.hover.epoch)
+        }
+    }
+
+    fn hover_change_off(&mut self, instant: std::time::Instant) -> HoverChange {
+        if self.hover_off(instant) {
+            HoverChange::Redraw
+        } else {
+            HoverChange::Nothing
+        }
+    }
+
+    /// The rest timer of `epoch` ran out: the tooltip shows when nothing
+    /// changed meanwhile and the window is `active`. True to draw again.
+    pub fn hover_rested(&mut self, epoch: u64, active: bool) -> bool {
+        if epoch != self.hover.epoch || !active {
+            return false;
+        }
+        match self.hover.current.as_mut() {
+            Some(hover) if !hover.shown => {
+                hover.shown = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Puts the hover away, and any timer waiting for it. True when a
+    /// tooltip was showing.
+    pub fn hover_off(&mut self, instant: std::time::Instant) -> bool {
+        self.hover.epoch += 1;
+        match self.hover.current.take() {
+            Some(hover) if hover.shown => {
+                self.hover.closed = Some(instant);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The list scrolled to `scroll`: a hover found at another offset is
+    /// over a row that moved, so it is put away. True to draw again.
+    pub fn hover_scrolled(&mut self, scroll: (f32, f32), instant: std::time::Instant) -> bool {
+        let moved = self
+            .hover
+            .current
+            .as_ref()
+            .is_some_and(|h| h.scroll != scroll || h.index >= self.commits.len());
+        moved && self.hover_off(instant)
+    }
+
+    /// The hover to draw: rested on, in the list shown now, on the commit
+    /// it was found on.
+    pub fn live_hover(&self) -> Option<&Hover> {
+        let hover = self.hover.current.as_ref().filter(|h| h.shown)?;
+        let same = hover.replaced == self.replaced
+            && self
+                .commits
+                .get(hover.index)
+                .is_some_and(|c| c.sha == hover.sha);
+        same.then_some(hover)
     }
 }
 
@@ -802,7 +999,10 @@ pub fn spot_at(
                 branch: edge.lane,
                 from: row.lane,
             },
-            _ => GraphSpot::Line { lane: edge.lane },
+            kind => GraphSpot::Line {
+                lane: edge.lane,
+                into_node: kind == EdgeKind::In,
+            },
         };
         nearest = Some((distance, spot));
     }
@@ -827,48 +1027,135 @@ pub fn ago(g: &GraphCopy, now: i64, then: i64) -> String {
     }
 }
 
-/// How many names a line's tooltip lists before counting the rest.
+/// How many names a tooltip lists before counting the rest.
 const NAMES_SHOWN: usize = 3;
 
+/// The names a commit's labels give a lane: its branches, or its tags when
+/// it has no branch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Names {
+    names: Vec<String>,
+    tags: bool,
+}
+
+impl Names {
+    /// The first few names, joined.
+    fn shown(&self, g: &GraphCopy) -> String {
+        self.names[..self.names.len().min(NAMES_SHOWN)].join(g.name_separator)
+    }
+
+    fn more(&self) -> usize {
+        self.names.len().saturating_sub(NAMES_SHOWN)
+    }
+
+    /// The names as one item of a sentence, counting what is not shown.
+    fn listed(&self, g: &GraphCopy) -> String {
+        let shown = self.shown(g);
+        if self.more() == 0 {
+            return shown;
+        }
+        crate::i18n::fill(
+            g.names_more,
+            &[
+                ("names", &shown),
+                ("more", &self.more().to_string()),
+                ("total", &self.names.len().to_string()),
+            ],
+        )
+    }
+}
+
 impl GraphView {
-    /// What names `lane` at `row`: the branches on the nearest commit at or
-    /// above it on the lane that has any, or else the tags on the nearest
-    /// tagged one, as the filter shows them; `None` when no label points
-    /// into the lane.
-    fn lane_names(&self, lane: u32, row: usize, g: &GraphCopy) -> Option<String> {
-        let commit = self.commits.get(self.lanes.named_row(lane, row)?)?;
-        let labels = labels_for(commit, &self.query);
+    /// The names on the commit at `row` itself, under the filter the lanes
+    /// were laid out with.
+    fn names_on(&self, row: usize) -> Option<Names> {
+        let commit = self.commits.get(row)?;
+        let labels = labels_for(commit, &self.lanes_query);
         let branch = |l: &RefLabel| matches!(l.kind, RefKind::Local | RefKind::Remote);
-        let branches = labels.iter().any(branch);
+        let tags = !labels.iter().any(branch);
         let names: Vec<String> = labels
             .into_iter()
             .filter(|l| {
-                if branches {
-                    branch(l)
-                } else {
+                if tags {
                     l.kind == RefKind::Tag
+                } else {
+                    branch(l)
                 }
             })
             .map(|l| l.name)
             .collect();
-        if names.is_empty() {
-            return None;
-        }
-        let mut text = names[..names.len().min(NAMES_SHOWN)].join(g.name_separator);
-        if names.len() > NAMES_SHOWN {
-            text.push_str(&crate::i18n::fill(
-                g.names_more,
-                &[("n", &(names.len() - NAMES_SHOWN).to_string())],
-            ));
-        }
-        Some(text)
+        (!names.is_empty()).then_some(Names { names, tags })
     }
 
-    /// A commit in a sentence: its short hash and subject.
+    /// What names `lane` at `row` ([`LaneRefs::named_row`]), or the line
+    /// into the commit at `row` from above ([`LaneRefs::named_above`]).
+    fn lane_names(&self, lane: u32, row: usize, into_node: bool) -> Option<Names> {
+        let named = if into_node {
+            self.lanes.named_above(lane, row)
+        } else {
+            self.lanes.named_row(lane, row)
+        };
+        self.names_on(named?)
+    }
+
+    /// A commit in a sentence: its short hash and subject; a commit not
+    /// loaded yet is "older commits".
     fn commit_words(&self, row: Option<usize>, g: &GraphCopy) -> String {
         match row.and_then(|i| self.commits.get(i)) {
-            Some(c) => format!("{} {}", c.short_sha(), c.summary),
+            Some(c) => crate::i18n::fill(
+                g.commit_words,
+                &[("sha", c.short_sha()), ("subject", &c.summary)],
+            ),
             None => g.unread_commit.to_string(),
+        }
+    }
+
+    /// Names in a sentence, set off so a list reads as one side of it.
+    fn quoted(names: &Names, g: &GraphCopy) -> String {
+        crate::i18n::fill(g.quoted, &[("text", &names.listed(g))])
+    }
+
+    /// The row of the parent the merge at `index` draws its line in lane
+    /// `lane` to: the merge's lines leave in its parents' order.
+    fn merged_parent(&self, index: usize, lane: u32) -> Option<usize> {
+        let row = self.rows.rows(index..index + 1).pop()?;
+        let k = row
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Out)
+            .position(|e| e.lane == lane && e.column != row.column)?;
+        let mut parents: Vec<&String> = Vec::new();
+        for parent in &self.commits.get(index)?.parents {
+            if !parents.contains(&parent) {
+                parents.push(parent);
+            }
+        }
+        self.index_of(parents.get(k)?)
+    }
+
+    fn line_words(&self, lane: u32, index: usize, into_node: bool, g: &GraphCopy) -> String {
+        use crate::i18n::fill;
+        match self.lane_names(lane, index, into_node) {
+            Some(names) if names.more() == 0 => fill(g.line_of, &[("names", &names.shown(g))]),
+            Some(names) => fill(
+                if names.tags {
+                    g.line_of_many_tags
+                } else {
+                    g.line_of_many
+                },
+                &[
+                    ("names", &names.shown(g)),
+                    ("more", &names.more().to_string()),
+                    ("total", &names.names.len().to_string()),
+                ],
+            ),
+            None => match self.lanes.tip(lane).filter(|&t| t < self.commits.len()) {
+                Some(tip) => fill(
+                    g.line_leads_to,
+                    &[("commit", &self.commit_words(Some(tip), g))],
+                ),
+                None => g.line_unread.to_string(),
+            },
         }
     }
 
@@ -878,11 +1165,13 @@ impl GraphView {
     /// Expected results:
     /// - A line names the branches on the nearest commit of its lane at or
     ///   above it that has any, or failing that the tags on the nearest
-    ///   tagged one; with neither, the commit the lane leads up to, by short
-    ///   hash and subject.
-    /// - A merge curve says which branch was merged into which, a fork
-    ///   curve which branch branched from which; a side with no label is the
-    ///   commit itself (the merged parent, or the commit forked from).
+    ///   tagged one; the line coming down into a commit is named from
+    ///   above that commit. With neither, the commit the lane leads up to,
+    ///   by short hash and subject.
+    /// - A merge curve says what was merged into what: the merged parent's
+    ///   own labels, else its lane's name, else the parent itself, merged
+    ///   into the merge's lane's name or the merge commit. A fork curve says
+    ///   which branch branched from which the same way.
     /// - A dot gives the commit's short hash and subject, then its author
     ///   and how long ago.
     pub fn describe(
@@ -894,6 +1183,10 @@ impl GraphView {
     ) -> Option<String> {
         use crate::i18n::fill;
         let commit = self.commits.get(index)?;
+        let side = |names: Option<Names>, or: Option<usize>| match names {
+            Some(names) => Self::quoted(&names, g),
+            None => self.commit_words(or, g),
+        };
         let text = match spot {
             GraphSpot::Dot { .. } => format!(
                 "{} {}\n{} · {}",
@@ -902,29 +1195,27 @@ impl GraphView {
                 commit.author_name,
                 ago(g, now, commit.author_time)
             ),
-            GraphSpot::Line { lane } => match self.lane_names(lane, index, g) {
-                Some(names) => fill(g.line_of, &[("names", &names)]),
-                None => fill(
-                    g.line_leads_to,
-                    &[("commit", &self.commit_words(self.lanes.tip(lane), g))],
-                ),
-            },
+            GraphSpot::Line { lane, into_node } => self.line_words(lane, index, into_node, g),
             GraphSpot::Merge { from, into } => {
-                let from = self.lane_names(from, index, g).unwrap_or_else(|| {
-                    self.commit_words(self.lanes.node_at_or_below(from, index + 1), g)
-                });
-                let into = self
-                    .lane_names(into, index, g)
-                    .unwrap_or_else(|| self.commit_words(Some(index), g));
+                let parent = self.merged_parent(index, from);
+                let names = parent
+                    .and_then(|p| self.names_on(p))
+                    .or_else(|| self.lane_names(from, index, false));
+                let from = side(names, parent);
+                let into = side(self.lane_names(into, index, false), Some(index));
                 fill(g.merged_into, &[("from", &from), ("into", &into)])
             }
             GraphSpot::Fork { branch, from } => {
-                let branch = self
-                    .lane_names(branch, index, g)
-                    .unwrap_or_else(|| self.commit_words(self.lanes.tip(branch), g));
-                let from = self
-                    .lane_names(from, index, g)
-                    .unwrap_or_else(|| self.commit_words(Some(index), g));
+                if !self.lanes.has_commits(branch) {
+                    // A merge's line that ended here without a commit of
+                    // its own: what it is, is what the line is.
+                    return Some(self.line_words(branch, index, false, g));
+                }
+                let branch = side(
+                    self.lane_names(branch, index, false),
+                    self.lanes.tip(branch),
+                );
+                let from = side(self.lane_names(from, index, false), Some(index));
                 fill(g.branched_from, &[("branch", &branch), ("from", &from)])
             }
         };
@@ -1008,12 +1299,17 @@ graph_strings! {
     select_hint: "Select a commit to see its changes", "選取一個提交來查看變更";
     shortcut_find: "Find in graph", "在分支圖中尋找";
     line_of: "Line of {names}", "{names} 的分支線";
+    line_of_many: "Line of {names} and {more} more", "{names} 等 {total} 個分支的線";
+    line_of_many_tags: "Line of {names} and {more} more", "{names} 等 {total} 個標籤的線";
     line_leads_to: "Leads to {commit}", "通往 {commit}";
-    merged_into: "{from} merged into {into}", "{from} 合併到 {into}";
-    branched_from: "{branch} branched from {from}", "{branch} 從 {from} 分出";
-    unread_commit: "older commits not read yet", "還沒讀取的較舊提交";
+    line_unread: "Leads to older commits not loaded yet", "通往還沒載入的較舊提交";
+    merged_into: "{from} merged into {into}", "{from}合併到{into}";
+    branched_from: "{branch} branched from {from}", "{branch}從{from}分出";
+    unread_commit: "Older commits (not loaded yet)", "還沒載入的較舊提交";
+    commit_words: "{sha} “{subject}”", "{sha}「{subject}」";
+    quoted: "“{text}”", "「{text}」";
     name_separator: ", ", "、";
-    names_more: " and {n} more", " 等另外 {n} 個";
+    names_more: "{names} and {more} more", "{names} 等 {total} 個";
     ago_now: "just now", "剛剛";
     ago_minute: "1 minute ago", "1 分鐘前";
     ago_minutes: "{n} minutes ago", "{n} 分鐘前";
@@ -1618,7 +1914,10 @@ mod tests {
                 branch: edge.lane,
                 from: row.lane,
             },
-            _ => GraphSpot::Line { lane: edge.lane },
+            _ => GraphSpot::Line {
+                lane: edge.lane,
+                into_node: kind == EdgeKind::In,
+            },
         }
     }
 
@@ -1643,13 +1942,28 @@ mod tests {
         let at = |x: f32, y: f32| spot_at(&row, (x, y), 16.0, 36.0, 12);
         assert_eq!(at(8.0, 18.0), Some(GraphSpot::Dot { lane: 0 }));
         assert_eq!(at(14.0, 18.0), Some(GraphSpot::Dot { lane: 0 }));
-        assert_eq!(at(8.0, 2.0), Some(GraphSpot::Line { lane: 0 }));
-        assert_eq!(at(8.0, 33.0), Some(GraphSpot::Line { lane: 0 }));
+        assert_eq!(
+            at(8.0, 2.0),
+            Some(GraphSpot::Line {
+                lane: 0,
+                into_node: true
+            })
+        );
+        assert_eq!(
+            at(8.0, 33.0),
+            Some(GraphSpot::Line {
+                lane: 0,
+                into_node: false
+            })
+        );
         // The hit area is wider than 8px around a 1.5px line.
         for dx in -4..=4 {
             assert_eq!(
                 at(24.0 + dx as f32, 6.0),
-                Some(GraphSpot::Line { lane: 5 }),
+                Some(GraphSpot::Line {
+                    lane: 5,
+                    into_node: false
+                }),
                 "{dx}px off the line"
             );
         }
@@ -1730,11 +2044,11 @@ mod tests {
         );
         assert_eq!(
             say(0, spot_of(&view, 0, EdgeKind::Out, 1)),
-            "feature merged into main, origin/main"
+            "“feature” merged into “main, origin/main”"
         );
         assert_eq!(
             say(3, spot_of(&view, 3, EdgeKind::In, 1)),
-            "feature branched from main, origin/main",
+            "“feature” branched from “main, origin/main”",
             "a branch names main's lane before the tag on the base"
         );
         assert_eq!(
@@ -1744,11 +2058,11 @@ mod tests {
         let zh = view
             .describe(0, spot_of(&view, 0, EdgeKind::Out, 1), &GRAPH_ZH_TW, 0)
             .unwrap();
-        assert_eq!(zh, "feature 合併到 main、origin/main");
+        assert_eq!(zh, "「feature」合併到「main、origin/main」");
         let zh = view
             .describe(3, spot_of(&view, 3, EdgeKind::In, 1), &GRAPH_ZH_TW, 0)
             .unwrap();
-        assert_eq!(zh, "feature 從 main、origin/main 分出");
+        assert_eq!(zh, "「feature」從「main、origin/main」分出");
         assert_eq!(
             view.describe(2, spot_of(&view, 2, EdgeKind::Pass, 1), &GRAPH_ZH_TW, 0)
                 .unwrap(),
@@ -1768,11 +2082,11 @@ mod tests {
         let say = |index, spot| view.describe(index, spot, &GRAPH_EN_US, 0).unwrap();
         assert_eq!(
             say(3, spot_of(&view, 3, EdgeKind::In, 1)),
-            "feature branched from main"
+            "“feature” branched from “main”"
         );
         assert_eq!(
             say(0, spot_of(&view, 0, EdgeKind::Out, 1)),
-            "feature merged into main"
+            "“feature” merged into “main”"
         );
     }
 
@@ -1789,20 +2103,211 @@ mod tests {
         let say = |index, spot| view.describe(index, spot, &GRAPH_EN_US, 0).unwrap();
         assert_eq!(
             say(2, spot_of(&view, 2, EdgeKind::Out, 1)),
-            "Leads to 1000000 Second step"
+            "Leads to 1000000 “Second step”"
         );
         assert_eq!(
             say(0, spot_of(&view, 0, EdgeKind::Out, 1)),
-            "1000000 Second step merged into 0000000 Merge"
+            "1000000 “Second step” merged into 0000000 “Merge”"
         );
         assert_eq!(
             say(3, spot_of(&view, 3, EdgeKind::In, 1)),
-            "1000000 Second step branched from 3000000 Start"
+            "1000000 “Second step” branched from 3000000 “Start”"
         );
         assert_eq!(
             say(3, spot_of(&view, 3, EdgeKind::In, 0)),
-            "Leads to 0000000 Merge"
+            "Leads to 0000000 “Merge”"
         );
+    }
+
+    #[test]
+    fn the_line_into_a_labelled_commit_is_named_from_above_it() {
+        // main is ahead of release: the line from m2 down into c is main's,
+        // the one leaving c is release's.
+        let commits = vec![
+            commit(0, &[1], &["HEAD -> refs/heads/main"], "Ahead"),
+            commit(1, &[2], &["refs/heads/release"], "Released"),
+            commit(2, &[], &[], "Start"),
+        ];
+        let view = read_graph(commits, GraphQuery::default());
+        let say = |index, spot| view.describe(index, spot, &GRAPH_EN_US, 0).unwrap();
+        assert_eq!(say(1, spot_of(&view, 1, EdgeKind::In, 0)), "Line of main");
+        assert_eq!(
+            say(1, spot_of(&view, 1, EdgeKind::Out, 0)),
+            "Line of release"
+        );
+        assert_eq!(
+            say(2, spot_of(&view, 2, EdgeKind::In, 0)),
+            "Line of release"
+        );
+    }
+
+    /// develop: C2 -> C1 -> P; main: M merges P while develop's lane still
+    /// waits for C1, so the merge opens a lane that ends in P without a
+    /// commit of its own (develop's lane takes P).
+    fn gitflow(p_refs: &[&str]) -> Vec<Commit> {
+        vec![
+            commit(0, &[2], &["refs/heads/develop"], "C2"),
+            commit(1, &[3, 4], &["HEAD -> refs/heads/main"], "Merge P"),
+            commit(2, &[4], &[], "C1"),
+            commit(3, &[5], &[], "main1"),
+            commit(4, &[5], p_refs, "P"),
+            commit(5, &[], &[], "Q"),
+        ]
+    }
+
+    #[test]
+    fn a_merge_line_that_never_holds_a_commit_is_named_by_the_merged_commit() {
+        let view = read_graph(gitflow(&["refs/heads/hotfix"]), GraphQuery::default());
+        let say = |index, spot| view.describe(index, spot, &GRAPH_EN_US, 0).unwrap();
+        let merge = spot_of(&view, 1, EdgeKind::Out, 2);
+        assert!(!view.lanes.has_commits(merge.lane()), "the case is real");
+        assert_eq!(say(1, merge), "“hotfix” merged into “main”");
+        assert_eq!(
+            say(3, spot_of(&view, 3, EdgeKind::Pass, 2)),
+            "Line of hotfix"
+        );
+        assert_eq!(say(4, spot_of(&view, 4, EdgeKind::In, 2)), "Line of hotfix");
+        // Without a label, the merged commit itself, loaded and named.
+        let view = read_graph(gitflow(&[]), GraphQuery::default());
+        let say = |index, spot| view.describe(index, spot, &GRAPH_EN_US, 0).unwrap();
+        assert_eq!(
+            say(1, spot_of(&view, 1, EdgeKind::Out, 2)),
+            "4000000 “P” merged into “main”"
+        );
+        assert_eq!(
+            say(3, spot_of(&view, 3, EdgeKind::Pass, 2)),
+            "Leads to 4000000 “P”"
+        );
+    }
+
+    #[test]
+    fn a_merged_commit_is_named_by_its_own_labels_before_its_lane() {
+        // release/1.0 -> P, main merges P (joining release's lane); P
+        // carries hotfix.
+        let commits = vec![
+            commit(0, &[2], &["refs/heads/release/1.0"], "R"),
+            commit(1, &[3, 2], &["HEAD -> refs/heads/main"], "Merge hotfix"),
+            commit(2, &[3], &["refs/heads/hotfix"], "P"),
+            commit(3, &[], &[], "Start"),
+        ];
+        let view = read_graph(commits, GraphQuery::default());
+        // M sits in column 1; its line to P curves left into release's.
+        let merge = spot_of(&view, 1, EdgeKind::Out, 0);
+        assert!(matches!(merge, GraphSpot::Merge { .. }));
+        assert_eq!(
+            view.describe(1, merge, &GRAPH_EN_US, 0).unwrap(),
+            "“hotfix” merged into “main”"
+        );
+    }
+
+    #[test]
+    fn lanes_are_named_by_the_filter_they_were_laid_out_with() {
+        let commits = vec![
+            commit(0, &[1], &["tag: refs/tags/v2"], "Release"),
+            commit(1, &[], &[], "Start"),
+        ];
+        let mut view = read_graph(commits, GraphQuery::default());
+        // The filter changed; the new page has not arrived yet.
+        view.query.tags = false;
+        assert_eq!(
+            view.describe(1, spot_of(&view, 1, EdgeKind::In, 0), &GRAPH_EN_US, 0)
+                .unwrap(),
+            "Line of v2"
+        );
+    }
+
+    #[test]
+    fn a_hover_rests_shows_moves_on_and_goes_away() {
+        use super::{HoverChange, Pointer, TIP_HANDOVER};
+        use std::time::{Duration, Instant};
+        let mut view = read_graph(merged(), GraphQuery::default());
+        let g = &GRAPH_EN_US;
+        let line = spot_of(&view, 2, EdgeKind::Pass, 1);
+        let at = |index, spot| Pointer {
+            index,
+            spot,
+            at: (10.0, 20.0),
+            scroll: (0.0, 0.0),
+        };
+        let t0 = Instant::now();
+        // Resting: nothing shows until the timer of this change runs out.
+        let HoverChange::Wait(first) = view.hover_pointer(Some(at(2, line)), g, 0, t0) else {
+            panic!("a new spot waits");
+        };
+        assert!(view.live_hover().is_none());
+        assert_eq!(
+            view.hover_pointer(Some(at(2, line)), g, 0, t0),
+            HoverChange::Nothing,
+            "the same spot only follows the pointer"
+        );
+        assert!(
+            !view.hover_rested(first, false),
+            "not on an inactive window"
+        );
+        assert!(view.hover_rested(first, true));
+        assert_eq!(view.live_hover().unwrap().text, "Line of feature");
+        // Straight on to another spot: at once.
+        let main = spot_of(&view, 2, EdgeKind::Out, 0);
+        assert_eq!(
+            view.hover_pointer(Some(at(2, main)), g, 0, t0),
+            HoverChange::Redraw
+        );
+        assert_eq!(view.live_hover().unwrap().text, "Line of main, origin/main");
+        // Off every line: gone, and back within the handover at once.
+        assert_eq!(view.hover_pointer(None, g, 0, t0), HoverChange::Redraw);
+        assert!(view.live_hover().is_none());
+        assert_eq!(
+            view.hover_pointer(Some(at(2, line)), g, 0, t0 + TIP_HANDOVER / 2),
+            HoverChange::Redraw
+        );
+        view.hover_off(t0);
+        let later = t0 + TIP_HANDOVER + Duration::from_millis(1);
+        let HoverChange::Wait(stale) = view.hover_pointer(Some(at(2, line)), g, 0, later) else {
+            panic!("after the handover a spot waits again");
+        };
+        // A timer of a change that was superseded does nothing.
+        let HoverChange::Wait(fresh) = view.hover_pointer(Some(at(2, main)), g, 0, later) else {
+            panic!("waits");
+        };
+        assert!(!view.hover_rested(stale, true));
+        assert!(view.hover_rested(fresh, true));
+        // Scrolling puts it away.
+        assert!(view.hover_scrolled((0.0, 36.0), later));
+        assert!(view.hover.current().is_none());
+    }
+
+    #[test]
+    fn a_replaced_list_hides_the_hover_and_the_same_spot_is_described_again() {
+        use super::{HoverChange, Pointer};
+        use std::time::Instant;
+        let git = fake(merged());
+        let mut view = GraphView::default();
+        let job = view.start(1, PathBuf::from("/r"), true);
+        run(&mut view, job, &git);
+        let g = &GRAPH_EN_US;
+        let line = spot_of(&view, 2, EdgeKind::Pass, 1);
+        let pointer = Pointer {
+            index: 2,
+            spot: line,
+            at: (0.0, 0.0),
+            scroll: (0.0, 0.0),
+        };
+        let t = Instant::now();
+        let HoverChange::Wait(epoch) = view.hover_pointer(Some(pointer), g, 0, t) else {
+            panic!("waits");
+        };
+        assert!(view.hover_rested(epoch, true));
+        assert!(view.live_hover().is_some());
+        // A refresh swaps the list in (as on the window's focus).
+        let job = view.start(1, PathBuf::from("/r"), true);
+        run(&mut view, job, &git);
+        assert!(view.live_hover().is_none(), "not for the old list");
+        assert_eq!(
+            view.hover_pointer(Some(pointer), g, 0, t),
+            HoverChange::Redraw,
+            "the same spot is described for the new list and shows again"
+        );
+        assert_eq!(view.live_hover().unwrap().text, "Line of feature");
     }
 
     #[test]
@@ -1837,14 +2342,30 @@ mod tests {
         let view = read_graph(commits, GraphQuery::default());
         let lane = view.rows.rows(0..1)[0].lane;
         assert_eq!(
-            view.describe(0, GraphSpot::Line { lane }, &GRAPH_EN_US, 0)
-                .unwrap(),
+            view.describe(
+                0,
+                GraphSpot::Line {
+                    lane,
+                    into_node: false
+                },
+                &GRAPH_EN_US,
+                0
+            )
+            .unwrap(),
             "Line of a, b, c and 2 more"
         );
         assert_eq!(
-            view.describe(0, GraphSpot::Line { lane }, &GRAPH_ZH_TW, 0)
-                .unwrap(),
-            "a、b、c 等另外 2 個 的分支線"
+            view.describe(
+                0,
+                GraphSpot::Line {
+                    lane,
+                    into_node: false
+                },
+                &GRAPH_ZH_TW,
+                0
+            )
+            .unwrap(),
+            "a、b、c 等 5 個分支的線"
         );
     }
 

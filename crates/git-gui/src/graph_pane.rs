@@ -68,20 +68,8 @@ pub(crate) struct GraphUi {
     placed: u64,
     /// How many lanes the person dragged the graph column to.
     pub lanes: Option<u16>,
-    /// What the pointer rests on in the graph column.
-    pub hover: Option<GraphHover>,
-    /// Counts hover changes, so a rest timer knows it is still current.
-    hover_epoch: u64,
-    /// When the last tooltip was put away: moving straight on to another
-    /// line shows its tooltip at once, as GPUI's own tooltips do.
-    tip_closed: Option<std::time::Instant>,
 }
 
-/// How long the pointer rests on a line before it says what it is: GPUI's
-/// own tooltip delay.
-const REST: std::time::Duration = std::time::Duration::from_millis(500);
-/// How soon after one tooltip closes the next one shows without waiting.
-const TIP_HANDOVER: std::time::Duration = std::time::Duration::from_millis(300);
 /// How much the lanes other than the highlighted one fade.
 const DIMMED: f32 = 0.3;
 /// The highlighted lane's stroke.
@@ -89,22 +77,17 @@ const HIGHLIGHT_WIDTH: f32 = 2.5;
 /// The widest a graph tooltip grows before it wraps.
 const TIP_WIDTH: Pixels = px(480.0);
 
-/// A line, curve, or dot the pointer rests on.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct GraphHover {
-    pub index: usize,
-    pub spot: GraphSpot,
-    pub text: SharedString,
-    /// Where the pointer was when it came to rest, for the tooltip.
-    pub at: Point<Pixels>,
-    /// The pointer has rested long enough: the tooltip shows and the lane
-    /// is highlighted.
-    pub shown: bool,
-    /// The list it was found in ([`crate::graph::GraphView::replaced`]).
-    pub replaced: u64,
-    /// The commit of the row, so a hover left over from another list or
-    /// repository is never shown.
-    pub sha: String,
+/// What one pointer move found in the graph cells painted this frame:
+/// every cell reports whether the pointer is in it, and the last to report
+/// decides, so a pointer outside every cell is noticed too.
+#[derive(Default)]
+struct PointerFrame {
+    /// How many cells were painted.
+    cells: usize,
+    /// How many have reported for the move being handled.
+    reported: usize,
+    /// The cell the pointer is in, and what lies under it there.
+    found: Option<(usize, Option<GraphSpot>)>,
 }
 
 impl GraphUi {
@@ -142,9 +125,6 @@ impl GraphUi {
                 top: Vec::new(),
                 placed: 0,
                 lanes: None,
-                hover: None,
-                hover_epoch: 0,
-                tip_closed: None,
             },
             subscription,
         )
@@ -628,6 +608,7 @@ impl GitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        let scroll = self.graph_scroll();
         let Some(repo) = self.session.repo.as_mut() else {
             return Vec::new();
         };
@@ -637,6 +618,12 @@ impl GitApp {
                 .scroll_to_item(index, ScrollStrategy::Center);
             cx.notify();
         }
+        // A tooltip found before the list scrolled (by the keyboard, by
+        // find, by the wheel) is about a row that moved away.
+        if repo.graph.hover_scrolled(scroll, std::time::Instant::now()) {
+            cx.notify();
+        }
+        let frame = std::rc::Rc::new(std::cell::RefCell::new(PointerFrame::default()));
         let repo = self.session.repo.as_ref().expect("checked above");
         let graph = &repo.graph;
         // A list scrolled to its top stays at the top, so new commits show;
@@ -824,7 +811,15 @@ impl GitApp {
                         s.border_1().border_color(p.accent)
                     })
                 })
-                .child(self.graph_cell(index, row, lines, node, columns, lanes, p, cx))
+                .child(self.graph_cell(
+                    index,
+                    row,
+                    lines,
+                    (node, columns, lanes),
+                    frame.clone(),
+                    p,
+                    cx,
+                ))
                 .child(chips)
                 .child(
                     label(commit.summary.clone(), BODY, p.text_primary)
@@ -932,9 +927,8 @@ impl GitApp {
         index: usize,
         row: git_core::GraphRow,
         lines: Vec<LaneLine>,
-        node: NodeStyle,
-        columns: u16,
-        lanes: u16,
+        (node, columns, lanes): (NodeStyle, u16, u16),
+        frame: std::rc::Rc<std::cell::RefCell<PointerFrame>>,
         p: &'static Palette,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -955,28 +949,40 @@ impl GitApp {
                         &lines, &row, node, lane, lanes, columns, origin, height, dark, window,
                     );
                 }
+                frame.borrow_mut().cells += 1;
                 let (moved, pressed, scrolled) = (app.clone(), app.clone(), app);
                 let watched = hitbox.clone();
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Bubble {
+                    if phase == DispatchPhase::Capture {
+                        // Every cell clears the same report before any adds
+                        // to it.
+                        let mut f = frame.borrow_mut();
+                        f.reported = 0;
+                        f.found = None;
                         return;
                     }
-                    let inside = watched.is_hovered(window);
-                    let spot = inside
-                        .then(|| {
+                    let decided = {
+                        let mut f = frame.borrow_mut();
+                        if watched.is_hovered(window) {
                             let at = event.position - origin;
-                            crate::graph::spot_at(
+                            let spot = crate::graph::spot_at(
                                 &row,
                                 (f32::from(at.x), f32::from(at.y)),
                                 lane_width,
                                 height,
                                 lanes,
-                            )
-                        })
-                        .flatten();
-                    let _ = moved.update(cx, |this, cx| {
-                        this.graph_pointer(index, inside, spot, event.position, cx)
-                    });
+                            );
+                            f.found = Some((index, spot));
+                        }
+                        f.reported += 1;
+                        (f.reported == f.cells).then_some(f.found)
+                    };
+                    if let Some(found) = decided {
+                        let target = found.and_then(|(i, spot)| spot.map(|s| (i, s)));
+                        let _ = moved.update(cx, |this, cx| {
+                            this.graph_pointer(target, event.position, window, cx)
+                        });
+                    }
                 });
                 window.on_mouse_event(move |_: &MouseDownEvent, phase, _, cx| {
                     if phase == DispatchPhase::Capture {
@@ -1007,113 +1013,87 @@ impl GitApp {
             .child(overlay)
     }
 
-    /// The pointer moved, inside the cell of the row at `index` or not,
-    /// resting on `spot` there.
-    fn graph_pointer(
-        &mut self,
-        index: usize,
-        inside: bool,
-        spot: Option<GraphSpot>,
-        at: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        let current = self.graph.hover.as_ref().map(|h| (h.index, h.spot));
-        if !inside {
-            // Only the row that has the hover puts it away.
-            if current.is_some_and(|(i, _)| i == index) {
-                self.graph_hover_off(cx);
-            }
-            return;
-        }
-        let Some(spot) = spot else {
-            self.graph_hover_off(cx);
-            return;
-        };
-        if current == Some((index, spot)) {
-            if let Some(hover) = self.graph.hover.as_mut()
-                && !hover.shown
-            {
-                hover.at = at;
-            }
-            return;
-        }
-        let Some(repo) = self.session.repo.as_ref() else {
-            return;
-        };
-        let g = graph_copy(self.locale);
-        let Some(text) = repo.graph.describe(index, spot, g, crate::github::now()) else {
-            return;
-        };
-        let at_once = self.graph.hover.as_ref().is_some_and(|h| h.shown)
-            || self
-                .graph
-                .tip_closed
-                .is_some_and(|t| t.elapsed() < TIP_HANDOVER);
-        self.graph.hover_epoch += 1;
-        let epoch = self.graph.hover_epoch;
-        self.graph.hover = Some(GraphHover {
-            index,
-            spot,
-            text: text.into(),
-            at,
-            shown: at_once,
-            replaced: repo.graph.replaced,
-            sha: repo.graph.commits[index].sha.clone(),
-        });
-        if at_once {
-            cx.notify();
-            return;
-        }
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(REST).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.graph.hover_epoch == epoch
-                    && let Some(hover) = this.graph.hover.as_mut()
-                {
-                    hover.shown = true;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
+    /// The graph list's scroll offset.
+    fn graph_scroll(&self) -> (f32, f32) {
+        let offset = self.graph.scroll.0.borrow().base_handle.offset();
+        (f32::from(offset.x), f32::from(offset.y))
     }
 
-    /// The hover to draw: rested on, in the list shown now, on the commit it
-    /// was found on, and not while a commit is dragged.
-    fn live_hover(&self, cx: &App) -> Option<&GraphHover> {
-        let hover = self.graph.hover.as_ref().filter(|h| h.shown)?;
-        let graph = &self.session.repo.as_ref()?.graph;
-        let same = hover.replaced == graph.replaced
-            && graph
-                .commits
-                .get(hover.index)
-                .is_some_and(|c| c.sha == hover.sha);
-        (same && !cx.has_active_drag()).then_some(hover)
+    /// The pointer moved: onto `target` (a row and what lies under the
+    /// pointer in its graph cell) or off every line.
+    fn graph_pointer(
+        &mut self,
+        target: Option<(usize, GraphSpot)>,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let scroll = self.graph_scroll();
+        let g = graph_copy(self.locale);
+        let Some(repo) = self.session.repo.as_mut() else {
+            return;
+        };
+        let pointer = target.map(|(index, spot)| crate::graph::Pointer {
+            index,
+            spot,
+            at: (f32::from(at.x), f32::from(at.y)),
+            scroll,
+        });
+        let change =
+            repo.graph
+                .hover_pointer(pointer, g, crate::github::now(), std::time::Instant::now());
+        match change {
+            crate::graph::HoverChange::Nothing => {}
+            crate::graph::HoverChange::Redraw => cx.notify(),
+            crate::graph::HoverChange::Wait(epoch) => {
+                cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor().timer(crate::graph::REST).await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        let active = window.is_window_active();
+                        if let Some(repo) = this.session.repo.as_mut()
+                            && repo.graph.hover_rested(epoch, active)
+                        {
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// The hover to draw ([`crate::graph::GraphView::live_hover`]), never
+    /// while a commit is dragged.
+    fn live_hover(&self, cx: &App) -> Option<&crate::graph::Hover> {
+        if cx.has_active_drag() {
+            return None;
+        }
+        self.session.repo.as_ref()?.graph.live_hover()
     }
 
     /// Puts the tooltip and the highlight away.
     fn graph_hover_off(&mut self, cx: &mut Context<Self>) {
-        let Some(hover) = self.graph.hover.take() else {
-            return;
-        };
-        self.graph.hover_epoch += 1;
-        if hover.shown {
-            self.graph.tip_closed = Some(std::time::Instant::now());
+        if let Some(repo) = self.session.repo.as_mut()
+            && repo.graph.hover_off(std::time::Instant::now())
+        {
             cx.notify();
         }
     }
 
     /// The tooltip of what the pointer rests on, beside the pointer, once
-    /// it has rested; never while a commit is dragged, nor for a list that
-    /// was replaced since.
+    /// it has rested.
     fn graph_tooltip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let hover = self.live_hover(cx)?;
+        let at = point(px(hover.at.0 + 12.0), px(hover.at.1 + 20.0));
         Some(
             deferred(
                 anchored()
-                    .position(hover.at + point(px(12.0), px(20.0)))
+                    .position(at)
                     .snap_to_window_with_margin(px(8.0))
-                    .child(graph_tip(hover.text.clone(), fluent::palette(cx))),
+                    .child(graph_tip(
+                        SharedString::from(hover.text.clone()),
+                        fluent::palette(cx),
+                    )),
             )
             .with_priority(1)
             .into_any_element(),
