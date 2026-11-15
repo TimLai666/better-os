@@ -151,6 +151,15 @@ PACKAGE_DATA_ONLY=0
 #                      switch: enabled globally and started at install, and
 #                      stopped and disabled by a prerm on removal
 PACKAGE_ALWAYS_ON_UNITS=""
+#   PACKAGE_DAEMON_HANDOFF  1 for better-manager: ships the privileged service
+#                      handoff (ADR 0028) and the checksums of the service and
+#                      adapter packages built beside it, and its postinst
+#                      starts the handoff
+PACKAGE_DAEMON_HANDOFF=0
+#   PACKAGE_HANDOFF_RETRY  1 for better-shell-adapter: its postinst starts the
+#                      handoff Better Manager installed, which is how a failed
+#                      handoff is retried once Better Manager is current
+PACKAGE_HANDOFF_RETRY=0
 
 reset_package_inputs() {
     PACKAGE_BINARIES=()
@@ -159,6 +168,8 @@ reset_package_inputs() {
     PACKAGE_RECOMMENDS=""
     PACKAGE_DATA_ONLY=0
     PACKAGE_ALWAYS_ON_UNITS=""
+    PACKAGE_DAEMON_HANDOFF=0
+    PACKAGE_HANDOFF_RETRY=0
 }
 
 # The GPUI toolkit dlopens fontconfig and the Wayland client libraries, so they
@@ -219,6 +230,43 @@ write_user_unit_scripts() {
         } > "$staging_dir/DEBIAN/$script"
         chmod 0755 "$staging_dir/DEBIAN/$script"
     done
+}
+
+# ADR 0028: a privileged service of 0.2.12 or older cannot install its own
+# successor, so the Better Manager it installs does. The checksums are those of
+# the packages this run built for the same release and architecture, so only
+# those exact files are ever handed over.
+add_daemon_handoff() {
+    local staging_dir="$1"
+    local name sidecar
+    mkdir -p "$staging_dir/usr/libexec/better-os" "$staging_dir/usr/lib/better-os/daemon-handoff"
+    install -m 0755 "$ROOT_DIR/packaging/maintainer/daemon-handoff.sh" \
+        "$staging_dir/usr/libexec/better-os/daemon-handoff"
+    : > "$staging_dir/usr/lib/better-os/daemon-handoff/packages"
+    for name in better-manager-daemon better-shell-adapter; do
+        sidecar="$OUTPUT_DIR/${name}_${VERSION}_${RELEASE_TARGET}_${ARCH}.deb.sha256"
+        if [[ ! -f "$sidecar" ]]; then
+            printf 'The handoff needs %s built first\n' "$name" >&2
+            exit 1
+        fi
+        cat "$sidecar" >> "$staging_dir/usr/lib/better-os/daemon-handoff/packages"
+    done
+    chmod 0644 "$staging_dir/usr/lib/better-os/daemon-handoff/packages"
+    add_handoff_hook "$staging_dir"
+}
+
+# The postinst line that starts the handoff, if Better Manager installed it.
+add_handoff_hook() {
+    local staging_dir="$1"
+    if [[ ! -f "$staging_dir/DEBIAN/postinst" ]]; then
+        printf '#!/bin/sh\nset -e\n\n' > "$staging_dir/DEBIAN/postinst"
+        chmod 0755 "$staging_dir/DEBIAN/postinst"
+    fi
+    {
+        printf '\n# ADR 0028: hand a staged privileged service to a unit of its own.\n'
+        # shellcheck disable=SC2016 # expanded by the maintainer script
+        printf 'if [ "$1" = configure ] && [ -x /usr/libexec/better-os/daemon-handoff ]; then\n    /usr/libexec/better-os/daemon-handoff start || true\nfi\n'
+    } >> "$staging_dir/DEBIAN/postinst"
 }
 
 make_package() {
@@ -353,6 +401,13 @@ make_package() {
 ' "${user_units[@]}" | LC_ALL=C sort | paste -sd' ' -)"
         write_user_unit_scripts "$staging_dir" "$package_name" "$sorted_units" \
             "$PACKAGE_ALWAYS_ON_UNITS"
+    fi
+
+    if ((PACKAGE_DAEMON_HANDOFF == 1)); then
+        add_daemon_handoff "$staging_dir"
+    fi
+    if ((PACKAGE_HANDOFF_RETRY == 1)); then
+        add_handoff_hook "$staging_dir"
     fi
 
     dpkg-deb --build --root-owner-group "$staging_dir" "$deb_path" >/dev/null
@@ -585,6 +640,29 @@ POSTRM
     printf 'Depends: %s\n' "$runtime_dependencies"
 }
 
+SHELL_ADAPTER_UUID="shell-adapter@betteros.org"
+
+# The privileged service and the shell adapter are built before Better
+# Manager, whose handoff (ADR 0028) carries their checksums.
+make_daemon_package
+
+# The shared Better OS GNOME Shell extension (ADR 0018): three files and no
+# binary. It relays only while the service that decides owns its bus name, so
+# installing it alone changes nothing about the desktop. Every component that
+# needs a relay recommends it; Better Manager does now. It is not a catalog
+# component, so it has no manifest, no record, and no user unit.
+PACKAGE_DATA_ONLY=1
+PACKAGE_DATA=(
+    "adapters/gnome-shell-adapter/metadata.json:usr/share/gnome-shell/extensions/$SHELL_ADAPTER_UUID/metadata.json"
+    "adapters/gnome-shell-adapter/extension.js:usr/share/gnome-shell/extensions/$SHELL_ADAPTER_UUID/extension.js"
+    "adapters/gnome-shell-adapter/org.betteros.ShellAdapter1.WindowAttention.xml:usr/share/gnome-shell/extensions/$SHELL_ADAPTER_UUID/org.betteros.ShellAdapter1.WindowAttention.xml"
+)
+PACKAGE_RECOMMENDS="gnome-shell"
+PACKAGE_HANDOFF_RETRY=1
+make_package better-shell-adapter \
+    'Better OS GNOME Shell adapter extension' \
+    'Relays a few GNOME Shell events and shell actions to Better OS services, only while they run.'
+
 # Every package with a window ships its own scalable icon into the hicolor
 # theme under the name its desktop entry asks for. A theme name with no file
 # behind it draws a blank tile in the applications grid, which is what every
@@ -604,7 +682,6 @@ POSTRM
 # dependency package with no record of its own: a unit there would never be
 # enabled by anything. Its page is Better Manager's, so the service lives with
 # the window that sets it (ADR 0018).
-SHELL_ADAPTER_UUID="shell-adapter@betteros.org"
 PACKAGE_BINARIES=(
     "manager-gui:usr/bin/better-manager"
     "manager-cli:usr/bin/better-manager-cli"
@@ -636,25 +713,11 @@ PACKAGE_RECOMMENDS="better-manager-daemon (= $VERSION), better-shell-adapter (= 
 # enables it for every user and starts it for everyone logged in, and removing
 # it stops and disables it, so nothing it started outlives it.
 PACKAGE_ALWAYS_ON_UNITS="better-window-attention.service"
+PACKAGE_DAEMON_HANDOFF=1
 make_package better-manager \
     'Better OS manager desktop application' \
     'Better OS desktop application built with the shared manager and monitor contracts.'
 
-# The shared Better OS GNOME Shell extension (ADR 0018): three files and no
-# binary. It relays only while the service that decides owns its bus name, so
-# installing it alone changes nothing about the desktop. Every component that
-# needs a relay recommends it; Better Manager does now. It is not a catalog
-# component, so it has no manifest, no record, and no user unit.
-PACKAGE_DATA_ONLY=1
-PACKAGE_DATA=(
-    "adapters/gnome-shell-adapter/metadata.json:usr/share/gnome-shell/extensions/$SHELL_ADAPTER_UUID/metadata.json"
-    "adapters/gnome-shell-adapter/extension.js:usr/share/gnome-shell/extensions/$SHELL_ADAPTER_UUID/extension.js"
-    "adapters/gnome-shell-adapter/org.betteros.ShellAdapter1.WindowAttention.xml:usr/share/gnome-shell/extensions/$SHELL_ADAPTER_UUID/org.betteros.ShellAdapter1.WindowAttention.xml"
-)
-PACKAGE_RECOMMENDS="gnome-shell"
-make_package better-shell-adapter \
-    'Better OS GNOME Shell adapter extension' \
-    'Relays a few GNOME Shell events and shell actions to Better OS services, only while they run.'
 
 # The window, the session service, and the command line are one component and
 # one version: the CLI speaks the service's own IPC contract, so shipping them
@@ -813,5 +876,3 @@ PACKAGE_DEPENDS=("dbus" "udisks2")
 make_package better-storage \
     'Better OS external device removal service' \
     'Direct removal for external drives, with an honest ready-to-unplug state.'
-
-make_daemon_package

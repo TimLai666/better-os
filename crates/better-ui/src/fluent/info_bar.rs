@@ -11,6 +11,7 @@
 
 use std::rc::Rc;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClipboardItem, ElementId, InteractiveElement, IntoElement, ParentElement,
     RenderOnce, Rgba, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
@@ -242,6 +243,13 @@ impl ErrorReport {
         }
         Self::new(summary, details)
     }
+
+    /// Whether there is anything behind "Show details". A report with none
+    /// offers no toggle: an empty box under a button that promised more is
+    /// worse than no button.
+    pub fn has_details(&self) -> bool {
+        !self.details.trim().is_empty()
+    }
 }
 
 /// The error bar: an error info bar with the summary, the advice, a
@@ -298,7 +306,8 @@ impl RenderOnce for ErrorBar {
         let p = palette(cx);
         let open_state =
             window.use_keyed_state(super::child_id(&self.id, "details"), cx, |_, _| false);
-        let expanded = self.expanded.unwrap_or(*open_state.read(cx));
+        let has_details = self.report.has_details();
+        let expanded = has_details && self.expanded.unwrap_or(*open_state.read(cx));
         let toggle_label = if expanded {
             action(self.locale, Action::HideDetails)
         } else {
@@ -318,7 +327,7 @@ impl RenderOnce for ErrorBar {
             .items_center()
             .gap(spacing::SM)
             .children(self.next_step)
-            .child(toggle);
+            .when(has_details, |actions| actions.child(toggle));
         let mut bar = InfoBar::new(self.id.clone(), Severity::Error, self.report.summary)
             .locale(self.locale)
             .action(actions);

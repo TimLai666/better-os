@@ -1875,3 +1875,16 @@ fn a_window_that_loses_client_decorations_takes_input_everywhere_again() {
         .unwrap();
     assert!(early.contains("self.set_input(None, window);"), "{early}");
 }
+
+/// An error bar with nothing behind "Show details" offers no toggle
+/// (ticket 124: Better Manager's banners opened an empty box).
+#[test]
+fn an_error_with_no_details_offers_no_details_toggle() {
+    use crate::fluent::info_bar::ErrorReport;
+    assert!(!ErrorReport::new("Something failed", "").has_details());
+    assert!(!ErrorReport::new("Something failed", "  \n").has_details());
+    assert!(ErrorReport::new("Something failed", "io: denied").has_details());
+    let source = include_str!("info_bar.rs");
+    assert!(source.contains(".when(has_details, |actions| actions.child(toggle))"));
+    assert!(source.contains("let expanded = has_details &&"));
+}

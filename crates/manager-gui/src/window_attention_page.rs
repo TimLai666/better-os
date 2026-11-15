@@ -86,6 +86,7 @@ pub(crate) struct WindowAttentionCopy {
     pub(crate) sign_out_body: &'static str,
     pub(crate) not_installed_title: &'static str,
     pub(crate) not_installed_body: &'static str,
+    pub(crate) install: &'static str,
     pub(crate) failed_title: &'static str,
     pub(crate) unsupported_title: &'static str,
     pub(crate) unsupported_body: &'static str,
@@ -129,7 +130,8 @@ static EN: WindowAttentionCopy = WindowAttentionCopy {
     sign_out_title: "Sign out to finish setting this up",
     sign_out_body: "The Better OS shell adapter was installed after you signed in. GNOME loads it the next time you sign in.",
     not_installed_title: "The Better OS shell adapter is not installed",
-    not_installed_body: "It is the better-shell-adapter package, which the Better OS installer puts beside Better Manager. Run the installer again to add it, then sign out and back in.",
+    not_installed_body: "It is the better-shell-adapter package, which belongs with Better Manager and is missing on this computer. Install adds it through Better Manager.",
+    install: "Install",
     failed_title: "The Better OS shell adapter could not start",
     unsupported_title: "This version of GNOME Shell is not supported",
     unsupported_body: "The Better OS shell adapter works with GNOME Shell 46.",
@@ -173,7 +175,8 @@ static ZH_TW: WindowAttentionCopy = WindowAttentionCopy {
     sign_out_title: "登出再登入就能完成設定",
     sign_out_body: "Better OS 的 GNOME 擴充功能是在你登入之後才安裝的，GNOME 會在下次登入時載入它。",
     not_installed_title: "沒有安裝 Better OS 的 GNOME 擴充功能",
-    not_installed_body: "它是 better-shell-adapter 套件，Better OS 安裝程式會和 Better Manager 一起裝上。重新執行安裝程式，再登出並重新登入就能補上。",
+    not_installed_body: "它是 better-shell-adapter 套件，應該和 Better Manager 一起安裝，但這台電腦少了它。按「安裝」就會透過 Better Manager 補上。",
+    install: "安裝",
     failed_title: "Better OS 的 GNOME 擴充功能無法啟動",
     unsupported_title: "不支援這個版本的 GNOME Shell",
     unsupported_body: "Better OS 的 GNOME 擴充功能適用於 GNOME Shell 46。",
@@ -449,6 +452,10 @@ pub(crate) struct Notice {
 pub(crate) enum NoticeAction {
     TurnOn,
     StartService,
+    /// The adapter package is missing: install it through Better Manager's
+    /// own path (ticket 124). Signing out is said afterwards, by the
+    /// NeedsSignOut state, only if GNOME then needs it.
+    Install,
 }
 
 /// The extension notice. The settings are shown only while the extension is
@@ -473,9 +480,11 @@ pub(crate) fn extension_notice(locale: Locale, state: &ExtensionState) -> Option
             Some(notice(w.turn_on_title, &body, Some(NoticeAction::TurnOn)))
         }
         ExtensionState::NeedsSignOut => Some(notice(w.sign_out_title, w.sign_out_body, None)),
-        ExtensionState::NotInstalled => {
-            Some(notice(w.not_installed_title, w.not_installed_body, None))
-        }
+        ExtensionState::NotInstalled => Some(notice(
+            w.not_installed_title,
+            w.not_installed_body,
+            Some(NoticeAction::Install),
+        )),
         ExtensionState::Failed(error) => Some(notice(w.failed_title, error, None)),
         ExtensionState::Unsupported => Some(notice(w.unsupported_title, w.unsupported_body, None)),
         ExtensionState::NoShell => Some(notice(w.no_shell_title, w.no_shell_body, None)),

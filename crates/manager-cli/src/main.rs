@@ -177,6 +177,8 @@ enum OperationArg {
     Verify,
     Restore,
     Remove,
+    /// Installs the companion packages an installed component is missing.
+    AddCompanions,
 }
 
 impl From<OperationArg> for DesiredOperation {
@@ -189,6 +191,7 @@ impl From<OperationArg> for DesiredOperation {
             OperationArg::Verify => Self::Verify,
             OperationArg::Restore => Self::Restore,
             OperationArg::Remove => Self::Remove,
+            OperationArg::AddCompanions => Self::AddCompanions,
         }
     }
 }
@@ -299,6 +302,19 @@ fn doctor_lines(check: &DoctorCheck) -> Vec<String> {
         lines.push(format!(
             "  to manage it here: remove it with `sudo apt remove {component}`, \
              then install it from Better Manager"
+        ));
+    }
+    if let (DoctorCheckKind::CompanionMissing, Some(component), Some(package)) =
+        (check.kind, &check.component, &check.package)
+    {
+        lines.push(match &check.host_version {
+            Some(version) => {
+                format!("  {component} needs {package} at its own version; dpkg has {version}")
+            }
+            None => format!("  {component} needs {package}, which is not installed"),
+        });
+        lines.push(format!(
+            "  to add it: better-manager-cli run add-companions {component}"
         ));
     }
     lines
@@ -969,6 +985,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // A simulation's state is a fabrication, so dpkg is not asked.
             if cli.execution == ExecutionArg::Real {
                 checks.extend(manager.unorderable_host_checks(&state, &DpkgProbe)?);
+                let gaps = manager.companion_gaps(&state, &DpkgProbe)?;
+                manager_core::merge_companion_findings(&mut checks, &gaps);
             }
             for check in &checks {
                 for line in doctor_lines(check) {
@@ -1151,6 +1169,7 @@ mod tests {
             status: manager_core::DoctorCheckStatus::Warning,
             component: Some(ComponentId::new("better-monitor").unwrap()),
             host_version: Some("1:0.2.8~rc1-1".to_string()),
+            package: None,
         };
         let lines = doctor_lines(&check);
         assert_eq!(
@@ -1169,6 +1188,7 @@ mod tests {
             status: manager_core::DoctorCheckStatus::Passed,
             component: None,
             host_version: None,
+            package: None,
         };
         assert_eq!(
             doctor_lines(&other),
