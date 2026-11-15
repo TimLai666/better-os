@@ -60,11 +60,21 @@ fn write_avi(path: &Path) {
 /// Polls until `done` says so or ten seconds pass; returns every event.
 fn run_until(
     player: &mut Player,
+    done: impl FnMut(&Player, &[MediaEvent]) -> bool,
+) -> Vec<MediaEvent> {
+    run_until_within(player, Duration::from_secs(10), done)
+}
+
+/// `run_until` with its own deadline, for work whose cost grows with the
+/// machine's speed rather than with the file.
+fn run_until_within(
+    player: &mut Player,
+    deadline: Duration,
     mut done: impl FnMut(&Player, &[MediaEvent]) -> bool,
 ) -> Vec<MediaEvent> {
     let started = Instant::now();
     let mut events = Vec::new();
-    while started.elapsed() < Duration::from_secs(10) {
+    while started.elapsed() < deadline {
         events.extend(player.poll());
         if done(player, &events) {
             break;
@@ -151,7 +161,10 @@ fn pause_holds_the_position_and_seek_moves_it() {
     run_until(&mut player, |player, _| player.duration().is_some());
 
     player.seek(Duration::from_millis(2_000));
-    run_until(&mut player, |player, _| {
+    // One key frame for the whole file, so an exact seek decodes every frame
+    // before the target; on a two-core CI runner that took longer than the
+    // ordinary ten seconds. The assertion below is what the test is about.
+    run_until_within(&mut player, Duration::from_secs(60), |player, _| {
         player
             .position()
             .is_some_and(|at| at >= Duration::from_millis(1_900))
@@ -272,7 +285,10 @@ fn a_seek_lands_where_asked_even_between_key_frames() {
     let mut player = Player::open(&webm, AudioOut::Discard, (1920, 1080)).unwrap();
     run_until(&mut player, |player, _| player.duration().is_some());
     player.seek(Duration::from_millis(2_000));
-    run_until(&mut player, |player, _| {
+    // One key frame for the whole file, so an exact seek decodes every frame
+    // before the target; on a two-core CI runner that took longer than the
+    // ordinary ten seconds. The assertion below is what the test is about.
+    run_until_within(&mut player, Duration::from_secs(60), |player, _| {
         player
             .position()
             .is_some_and(|at| at >= Duration::from_millis(1_500))
