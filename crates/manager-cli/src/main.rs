@@ -548,6 +548,65 @@ type RealContext = (HttpDownloader, DbusPrivilegedExecutor);
 /// It is a side errand of whatever command was asked for, so nothing it meets
 /// stops that command: a failure is a warning on `messages` (standard error in
 /// the product, so a command's own output stays clean), and the command runs.
+/// Finishes the touchpad restore a removal with no session left, or drops it
+/// when Better Touchpad is installed again (ticket 88). A side errand like
+/// the others: what it meets is a line on `messages`.
+fn finish_touchpad_restore(
+    state: &ManagerState,
+    packages: &dyn PackageStateProbe,
+    finish: &dyn Fn(bool) -> Result<bool, String>,
+    messages: &mut dyn std::io::Write,
+) {
+    // Installed again, through Better Manager or apt: the pending restore is
+    // dropped. Unknown (dpkg unreadable): it waits for the next start.
+    let Some(installed_again) =
+        state.installed_by_record_or_dpkg(touchpad_platform::removal::PACKAGE, packages)
+    else {
+        return;
+    };
+    let _ = match finish(installed_again) {
+        Ok(true) => writeln!(
+            messages,
+            "better-touchpad: the touchpad settings it changed were put back"
+        ),
+        Ok(false) => Ok(()),
+        Err(error) => writeln!(
+            messages,
+            "warning: better-touchpad: the touchpad settings could not be put back yet: {error}"
+        ),
+    };
+}
+
+/// Turns on the GNOME Shell extensions of enabled components that are off
+/// (ticket 88), a side errand like [`heal_user_units`]: what it meets is a
+/// line on `messages` and never stops the command.
+fn heal_shell_extensions(
+    manager: &Manager,
+    state: &ManagerState,
+    packages: &dyn PackageStateProbe,
+    extensions: &dyn manager_platform::shell_extensions::ShellExtensionController,
+    messages: &mut dyn std::io::Write,
+) {
+    let Ok(report) = manager.heal_shell_extensions(state, packages, extensions) else {
+        return;
+    };
+    for healing in report {
+        let _ = match healing.failure {
+            Some(failure) => writeln!(
+                messages,
+                "warning: {}: its GNOME Shell extension could not be turned on: {}",
+                healing.component, failure.message
+            ),
+            None => writeln!(
+                messages,
+                "{}: turned on {} (takes effect at the next login)",
+                healing.component,
+                healing.turned_on.join(", ")
+            ),
+        };
+    }
+}
+
 fn heal_user_units(
     manager: &Manager,
     state: &mut ManagerState,
@@ -628,6 +687,9 @@ fn advance_until_done(
     // no privilege, so it never crosses the daemon. Declared outside the match
     // so the borrow outlives the boxed driver.
     let user_units = SystemdUserUnitController::new();
+    let extensions =
+        manager_platform::shell_extensions::GsettingsShellExtensions::from_environment();
+    let removal_hooks = manager_platform::removal_hooks::ProcessHookRunner::from_environment();
     let driver: Box<dyn StageDriver> = match &real {
         None => Box::new(MockDriver::new(fail_at, restore_outcome)),
         Some((downloader, executor)) => Box::new(
@@ -639,7 +701,9 @@ fn advance_until_done(
                 uuid::Uuid::new_v4().to_string(),
                 manager.profile().clone(),
             )
-            .with_user_units(&user_units),
+            .with_user_units(&user_units)
+            .with_shell_extensions(&extensions)
+            .with_removal_hooks(&removal_hooks),
         ),
     };
     let mut runner = TransactionRunner::new(manager, driver, store);
@@ -790,6 +854,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &SystemdUserUnitController::new(),
             &mut std::io::stderr(),
         );
+        heal_shell_extensions(
+            &manager,
+            &state,
+            &DpkgProbe,
+            &manager_platform::shell_extensions::GsettingsShellExtensions::from_environment(),
+            &mut std::io::stderr(),
+        );
+        if std::env::var_os(manager_platform::user_units::SYSTEMCTL_GUARD_VARIABLE).is_none() {
+            finish_touchpad_restore(
+                &state,
+                &DpkgProbe,
+                &touchpad_platform::removal::finish_pending_in_session,
+                &mut std::io::stderr(),
+            );
+        }
     }
 
     match cli.command {
@@ -1051,6 +1130,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_startup_pass_finishes_a_pending_touchpad_restore_or_drops_it_on_reinstall() {
+        use std::cell::RefCell;
+        let asked = RefCell::new(Vec::new());
+        let finish = |installed_again: bool| {
+            asked.borrow_mut().push(installed_again);
+            Ok(!installed_again)
+        };
+
+        let nothing = manager_platform::dpkg::FixedPackageStateProbe::new(&[]);
+        let mut said = Vec::new();
+        finish_touchpad_restore(&ManagerState::default(), &nothing, &finish, &mut said);
+        assert!(String::from_utf8(said).unwrap().contains("were put back"));
+
+        // Installed again through apt, with no record of it in Better Manager.
+        let apt =
+            manager_platform::dpkg::FixedPackageStateProbe::new(&[("better-touchpad", "0.2.16")]);
+        let mut said = Vec::new();
+        finish_touchpad_restore(&ManagerState::default(), &apt, &finish, &mut said);
+        assert!(said.is_empty());
+
+        let mut state = ManagerState::default();
+        state.components.insert(
+            better_core::ComponentId::new("better-touchpad").unwrap(),
+            manager_core::ComponentRecord {
+                installed_version: Some("0.2.16".to_string()),
+                enabled: true,
+                health: manager_core::HealthState::Healthy,
+                installed_artifact: None,
+                provenance: manager_core::InstallProvenance::Manager,
+                restore_snapshot: None,
+                failure: None,
+                recovery: None,
+                drift: None,
+            },
+        );
+        let mut said = Vec::new();
+        finish_touchpad_restore(&state, &nothing, &finish, &mut said);
+        assert!(said.is_empty());
+        assert_eq!(*asked.borrow(), [false, true, true]);
+    }
+
+    /// The real start runs it, behind the same guard as the other repairs.
+    #[test]
+    fn the_real_start_runs_the_touchpad_restore() {
+        let source = include_str!("main.rs");
+        assert!(source.contains("&touchpad_platform::removal::finish_pending_in_session,"));
+    }
 
     /// Every component the release publishes must be in the catalog the CLI
     /// ships, or Better Manager cannot offer a package that exists.

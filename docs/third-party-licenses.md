@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 974.
-- Packages with an SPDX license expression: 972.
+- Resolved Cargo packages: 978.
+- Packages with an SPDX license expression: 976.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `00148a807f13e22d0bfaedc699e6bab73afbb1db5883e25c41fbc07fdc563932`.
+- `Cargo.lock` SHA-256: `fbcbcec647272814c907fc6551dbf13dbbce26363eda9a7f3de013aaee837809`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 424 |
 | `MIT` | 202 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 63 |
+| `GPL-3.0-or-later` | 67 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -104,6 +104,8 @@ Better OS does not relicense or silently select a different expression.
 | `git-gui` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `git-platform` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `github-api` | `0.2.15` | `GPL-3.0-or-later` | workspace |
+| `hardware-core` | `0.2.15` | `GPL-3.0-or-later` | workspace |
+| `hardware-platform` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `launcher-core` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `launcher-gui` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `launcher-platform` | `0.2.15` | `GPL-3.0-or-later` | workspace |
@@ -139,7 +141,9 @@ Better OS does not relicense or silently select a different expression.
 | `touchpad-gestures` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `touchpad-gui` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `touchpad-platform` | `0.2.15` | `GPL-3.0-or-later` | workspace |
+| `touchpad-scroll` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `touchpad-session` | `0.2.15` | `GPL-3.0-or-later` | workspace |
+| `touchpad-views` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `window-attention-core` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `window-attention-service` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `zlog` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
@@ -468,6 +472,8 @@ keeps its own license.
 | `gstreamer-video-sys` | `0.25.4` | `MIT` | [crates.io](https://crates.io/crates/gstreamer-video-sys/0.25.4) |
 | `h2` | `0.4.15` | `MIT` | [crates.io](https://crates.io/crates/h2/0.4.15) |
 | `half` | `2.7.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/half/2.7.1) |
+| `hardware-core` | `0.2.15` | `GPL-3.0-or-later` | workspace |
+| `hardware-platform` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `harfrust` | `0.5.2` | `MIT` | [crates.io](https://crates.io/crates/harfrust/0.5.2) |
 | `hash32` | `0.3.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/hash32/0.3.1) |
 | `hashbrown` | `0.14.5` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/hashbrown/0.14.5) |
@@ -927,7 +933,9 @@ keeps its own license.
 | `touchpad-gestures` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `touchpad-gui` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `touchpad-platform` | `0.2.15` | `GPL-3.0-or-later` | workspace |
+| `touchpad-scroll` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `touchpad-session` | `0.2.15` | `GPL-3.0-or-later` | workspace |
+| `touchpad-views` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `tower` | `0.5.3` | `MIT` | [crates.io](https://crates.io/crates/tower/0.5.3) |
 | `tower-layer` | `0.3.3` | `MIT` | [crates.io](https://crates.io/crates/tower-layer/0.3.3) |
 | `tower-service` | `0.3.3` | `MIT` | [crates.io](https://crates.io/crates/tower-service/0.3.3) |

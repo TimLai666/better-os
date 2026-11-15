@@ -605,6 +605,8 @@ fn three_failed_gestures_in_a_row_turn_the_integration_off_and_write_that_down()
     );
     // And the window will open on the same state, because it is in the file.
     assert!(!store.load_config().expect("a saved configuration").enabled);
+    // Better Manager's Home learns why from the marker beside it.
+    assert!(store.turned_off_by_itself());
 }
 
 #[test]

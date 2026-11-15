@@ -1,0 +1,32 @@
+[package]
+name = "touchpad-views"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# What Better Touchpad's screens decide, with no GPUI in it: which controls
+# exist and whether each is available, the staged changes and the apply,
+# capture and restore around them, the gesture screen's preview, conflicts,
+# editor, profiles, export and import, and the copy in both languages. The
+# Touchpad page of Better Manager and the older `better-touchpad` window both
+# draw from it.
+
+[lib]
+name = "touchpad_views"
+path = "src/lib.rs"
+
+[dependencies]
+better-actions.workspace = true
+touchpad-core.workspace = true
+touchpad-gestures.workspace = true
+# Startup reaches the gesture adapter over the session bus so that applying
+# the preset can ask GNOME to give up the gestures the user chose to take, and
+# so the Gestures screen reports what a real adapter says rather than what a
+# recording one would.
+touchpad-session = { workspace = true, features = ["gnome-shell", "launcher-activation"] }
+launcher-platform = { workspace = true, features = ["session-bus"] }
+touchpad-platform.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

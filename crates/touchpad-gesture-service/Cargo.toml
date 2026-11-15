@@ -17,6 +17,9 @@ path = "src/lib.rs"
 better-actions.workspace = true
 touchpad-core.workspace = true
 touchpad-gestures.workspace = true
+# Only for the clone's phys prefix (ADR 0030): a gesture on the scroll
+# pass-through's clone belongs to the touchpad it stands in for.
+touchpad-scroll.workspace = true
 # The session-bus transport, and the launcher route the launcher action needs.
 touchpad-session = { workspace = true, features = ["gnome-shell", "launcher-activation"] }
 launcher-platform = { workspace = true, features = ["session-bus"] }

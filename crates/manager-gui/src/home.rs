@@ -4,7 +4,7 @@
 //! items replace "Everything's fine", the quick settings, and which activity
 //! entries are recent. The window only draws what this says.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use manager_core::{ActivityKind, ActivityRecord};
 
@@ -45,36 +45,19 @@ pub(crate) struct Battery {
     pub(crate) status: BatteryStatus,
 }
 
-/// The kernel's `status` words for a battery.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BatteryStatus {
-    Charging,
-    Discharging,
-    Full,
-    NotCharging,
-    Unknown,
-}
+/// The kernel's `status` words for a battery, read in one place for Home and
+/// System (`hardware-core`).
+pub(crate) use hardware_core::battery::BatteryStatus;
 
-impl BatteryStatus {
-    pub(crate) fn parse(word: &str) -> BatteryStatus {
-        match word.trim() {
-            "Charging" => BatteryStatus::Charging,
-            "Discharging" => BatteryStatus::Discharging,
-            "Full" => BatteryStatus::Full,
-            "Not charging" => BatteryStatus::NotCharging,
-            _ => BatteryStatus::Unknown,
-        }
-    }
-
-    pub(crate) fn words(self, locale: Locale) -> &'static str {
-        let s = shell(locale);
-        match self {
-            BatteryStatus::Charging => s.battery_charging,
-            BatteryStatus::Discharging => s.battery_discharging,
-            BatteryStatus::Full => s.battery_full,
-            BatteryStatus::NotCharging => s.battery_not_charging,
-            BatteryStatus::Unknown => s.battery_unknown,
-        }
+/// The words for a status: 充電中 / Charging, and the rest.
+pub(crate) fn battery_words(status: BatteryStatus, locale: Locale) -> &'static str {
+    let s = shell(locale);
+    match status {
+        BatteryStatus::Charging => s.battery_charging,
+        BatteryStatus::Discharging => s.battery_discharging,
+        BatteryStatus::Full => s.battery_full,
+        BatteryStatus::NotCharging => s.battery_not_charging,
+        BatteryStatus::Unknown => s.battery_unknown,
     }
 }
 
@@ -157,34 +140,18 @@ impl HostRoot {
         }
     }
 
-    /// The system battery: a `power_supply` of type `Battery` whose scope is
-    /// not `Device` (a mouse or a headset reports its own battery as one).
+    /// The system battery, as the System page reads it
+    /// (`hardware_platform::sysfs::battery`): not a mouse's, and only when its
+    /// charge can be read.
     pub(crate) fn battery(&self) -> Option<Battery> {
-        let directory = self.0.join("sys/class/power_supply");
-        let mut supplies: Vec<PathBuf> = std::fs::read_dir(&directory)
-            .ok()?
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .collect();
-        supplies.sort();
-        supplies.into_iter().find_map(|supply| battery_at(&supply))
+        let root = hardware_platform::sysfs::SysRoot::at(&self.0);
+        let battery = hardware_platform::sysfs::battery(&root);
+        let facts = battery.value()?;
+        Some(Battery {
+            percent: facts.capacity?.min(100),
+            status: facts.status,
+        })
     }
-}
-
-fn battery_at(supply: &Path) -> Option<Battery> {
-    let read = |name: &str| std::fs::read_to_string(supply.join(name)).ok();
-    if read("type")?.trim() != "Battery" {
-        return None;
-    }
-    if read("scope").is_some_and(|scope| scope.trim() == "Device") {
-        return None;
-    }
-    let percent: u8 = read("capacity")?.trim().parse().ok()?;
-    Some(Battery {
-        percent: percent.min(100),
-        status: read("status")
-            .map(|status| BatteryStatus::parse(&status))
-            .unwrap_or(BatteryStatus::Unknown),
-    })
 }
 
 /// The banner's second line: `{distribution} · Better OS {version}`, or the
@@ -201,7 +168,11 @@ pub(crate) fn banner_line(locale: Locale, distribution: Option<&str>, version: &
 
 /// The battery's words at the banner's trailing edge: `87% · 充電中`.
 pub(crate) fn battery_line(locale: Locale, battery: Battery) -> String {
-    format!("{}% · {}", battery.percent, battery.status.words(locale))
+    format!(
+        "{}% · {}",
+        battery.percent,
+        battery_words(battery.status, locale)
+    )
 }
 
 /// Whether the first-run info bar is shown: until it is closed once.
@@ -214,13 +185,20 @@ pub(crate) fn shows_welcome(onboarding_complete: bool) -> bool {
 /// leaves out a card whose hardware or component is missing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum QuickSetting {
+    /// System's Power mode combo box (ticket 86), drawn only where
+    /// power-profiles-daemon answers.
+    PowerMode,
     /// Keep awake's toggle (ticket 87), drawn only while its service runs.
     KeepAwake,
     Appearance,
 }
 
 pub(crate) fn quick_settings() -> Vec<QuickSetting> {
-    vec![QuickSetting::KeepAwake, QuickSetting::Appearance]
+    vec![
+        QuickSetting::PowerMode,
+        QuickSetting::KeepAwake,
+        QuickSetting::Appearance,
+    ]
 }
 
 /// The tone an activity entry is drawn in.
@@ -265,6 +243,7 @@ pub(crate) fn ago(locale: Locale, now_unix_seconds: u64, then_unix_seconds: u64)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn a_repeated_model_suffix_is_dropped_from_the_product_name() {
@@ -430,10 +409,14 @@ mod tests {
     fn the_welcome_bar_shows_until_it_is_closed() {
         assert!(shows_welcome(false));
         assert!(!shows_welcome(true));
-        // Keep awake (ticket 87) before Appearance, as the spec orders them.
+        // Power mode, Keep awake, then Appearance, as the spec orders them.
         assert_eq!(
             quick_settings(),
-            [QuickSetting::KeepAwake, QuickSetting::Appearance]
+            [
+                QuickSetting::PowerMode,
+                QuickSetting::KeepAwake,
+                QuickSetting::Appearance
+            ]
         );
     }
 }

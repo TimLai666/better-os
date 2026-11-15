@@ -15,6 +15,8 @@ path = "src/lib.rs"
 
 [dependencies]
 better-core.workspace = true
+hardware-core.workspace = true
+hardware-platform.workspace = true
 manager-ipc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -37,5 +39,13 @@ zbus_polkit = { version = "5" }
 test-support = []
 
 [dev-dependencies]
+tempfile.workspace = true
+hardware-platform = { workspace = true, features = ["test-support"] }
 manager-daemon = { path = ".", features = ["test-support"] }
 tokio = { version = "1", features = ["test-util"] }
+
+# Stand-ins for the System page's services on a private bus, for screenshots
+# in a sandbox desktop (ticket 86). Not in any package.
+[[example]]
+name = "hardware_standin"
+required-features = ["test-support"]

@@ -29,7 +29,6 @@ impl Locale {
 pub(crate) struct Copy {
     // Shared shell
     pub(crate) manager: &'static str,
-    pub(crate) components: &'static str,
     pub(crate) search: &'static str,
     pub(crate) back: &'static str,
     pub(crate) cancel: &'static str,
@@ -78,7 +77,6 @@ pub(crate) struct Copy {
     pub(crate) files_name: &'static str,
     pub(crate) update: &'static str,
     pub(crate) install: &'static str,
-    pub(crate) details: &'static str,
     pub(crate) disable: &'static str,
     pub(crate) update_available: &'static str,
     pub(crate) available: &'static str,
@@ -124,8 +122,6 @@ pub(crate) struct Copy {
     pub(crate) files_detail: &'static str,
 
     // Updates and review
-    pub(crate) review_changes: &'static str,
-
     pub(crate) restore_available: &'static str,
     pub(crate) files_touched: &'static str,
     pub(crate) none: &'static str,
@@ -242,10 +238,7 @@ pub(crate) struct Copy {
     pub(crate) restore_recheck_failed: &'static str,
 
     // Defaults: navigation and summary
-    pub(crate) defaults_title: &'static str,
     pub(crate) defaults_subtitle: &'static str,
-    pub(crate) defaults_are_default: &'static str,
-    pub(crate) defaults_can_change: &'static str,
     pub(crate) defaults_changed_externally: &'static str,
     pub(crate) defaults_empty_title: &'static str,
     pub(crate) defaults_empty_detail: &'static str,
@@ -269,7 +262,10 @@ pub(crate) struct Copy {
     pub(crate) saved_previous_value: &'static str,
     pub(crate) no_saved_previous_value: &'static str,
     pub(crate) time_just_now: &'static str,
+    pub(crate) time_minute: &'static str,
     pub(crate) time_minutes: &'static str,
+    pub(crate) time_hour: &'static str,
+    pub(crate) time_day: &'static str,
     pub(crate) time_hours: &'static str,
     pub(crate) time_days: &'static str,
 
@@ -338,6 +334,9 @@ pub(crate) struct Copy {
     pub(crate) skip_requires_administrator: &'static str,
     pub(crate) skip_no_adapter: &'static str,
     pub(crate) skip_nothing_captured: &'static str,
+    pub(crate) skip_left_in_place: &'static str,
+    pub(crate) value_no_such_setting: &'static str,
+    pub(crate) state_not_used_here: &'static str,
     pub(crate) skip_value_unknown: &'static str,
     pub(crate) skip_changed_externally: &'static str,
     pub(crate) skip_conflict: &'static str,
@@ -365,7 +364,6 @@ pub(crate) struct Copy {
 
 static EN: Copy = Copy {
     manager: "Manager",
-    components: "Components",
     search: "Search components",
     back: "Back",
     cancel: "Cancel",
@@ -403,7 +401,6 @@ static EN: Copy = Copy {
     files_name: "Better Files",
     update: "Update",
     install: "Install",
-    details: "Details",
     disable: "Disable",
     update_available: "Update available",
     available: "Available",
@@ -443,8 +440,6 @@ static EN: Copy = Copy {
     manager_detail: "Provides one safe place to install, update, verify, disable, and restore Better OS components.",
     monitor_detail: "Records low-overhead history, detects regressions, and exports structured incidents for AI analysis.",
     files_detail: "Provides fast navigation, durable file jobs, previews, applications, and external-storage integration.",
-
-    review_changes: "Review changes",
 
     restore_available: "Previous versions can be restored",
     files_touched: "Files and settings affected",
@@ -549,10 +544,7 @@ static EN: Copy = Copy {
     failure_technical_detail: "Technical detail",
     restore_recheck_failed: "The restored version did not pass its health check.",
 
-    defaults_title: "Defaults",
     defaults_subtitle: "Which Better OS components the system currently opens, and what changing that would do.",
-    defaults_are_default: "Are defaults",
-    defaults_can_change: "Can be changed",
     defaults_changed_externally: "Changed elsewhere",
     defaults_empty_title: "No component asks to be a default yet",
     defaults_empty_detail: "None of the components in this catalog declares a default it wants to own, so there is nothing to change here.",
@@ -574,7 +566,10 @@ static EN: Copy = Copy {
     saved_previous_value: "Previous value saved",
     no_saved_previous_value: "No previous value saved",
     time_just_now: "Just now",
+    time_minute: "minute ago",
     time_minutes: "minutes ago",
+    time_hour: "hour ago",
+    time_day: "day ago",
     time_hours: "hours ago",
     time_days: "days ago",
 
@@ -638,6 +633,9 @@ static EN: Copy = Copy {
     skip_requires_administrator: "Would need administrator access, which is not requested here",
     skip_no_adapter: "Better OS cannot change this setting yet",
     skip_nothing_captured: "No previous value was saved for this setting",
+    skip_left_in_place: "Stays: putting things back leaves this in place",
+    value_no_such_setting: "This desktop has no such setting, so nothing reads it",
+    state_not_used_here: "Not used on this desktop",
     skip_value_unknown: "The current value cannot be read clearly",
     skip_changed_externally: "Changed by another program; confirm it to replace",
     skip_conflict: "Another installed component owns this setting",
@@ -663,7 +661,6 @@ static EN: Copy = Copy {
 
 static ZH_TW: Copy = Copy {
     manager: "元件管理器",
-    components: "元件",
     search: "搜尋元件",
     back: "返回",
     cancel: "取消",
@@ -701,7 +698,6 @@ static ZH_TW: Copy = Copy {
     files_name: "Better Files",
     update: "更新",
     install: "安裝",
-    details: "詳細資料",
     disable: "停用",
     update_available: "有新版可用",
     available: "可安裝",
@@ -741,8 +737,6 @@ static ZH_TW: Copy = Copy {
     manager_detail: "提供單一且可還原的介面，用來安裝、更新、檢查、停用與還原 Better OS 元件。",
     monitor_detail: "以低負擔方式記錄系統歷史、找出效能退化，並匯出可供 AI 分析的結構化事件。",
     files_detail: "提供快速導覽、可持續的檔案工作、預覽、應用程式與外接儲存整合。",
-
-    review_changes: "確認變更",
 
     restore_available: "可還原上一個版本",
     files_touched: "會變更的檔案與設定",
@@ -847,10 +841,7 @@ static ZH_TW: Copy = Copy {
     failure_technical_detail: "技術細節",
     restore_recheck_failed: "還原後的版本沒有通過狀態檢查。",
 
-    defaults_title: "預設值",
     defaults_subtitle: "目前系統用哪些 Better OS 元件開啟檔案與功能，以及變更後會發生什麼事。",
-    defaults_are_default: "已是預設值",
-    defaults_can_change: "可以變更",
     defaults_changed_externally: "已由其他程式變更",
     defaults_empty_title: "目前沒有元件要求成為預設值",
     defaults_empty_detail: "這份元件清單裡沒有任何元件宣告要接管的預設值，所以這裡沒有東西可以變更。",
@@ -872,7 +863,10 @@ static ZH_TW: Copy = Copy {
     saved_previous_value: "已保存先前的值",
     no_saved_previous_value: "沒有保存先前的值",
     time_just_now: "剛剛",
+    time_minute: "分鐘前",
     time_minutes: "分鐘前",
+    time_hour: "小時前",
+    time_day: "天前",
     time_hours: "小時前",
     time_days: "天前",
 
@@ -936,6 +930,9 @@ static ZH_TW: Copy = Copy {
     skip_requires_administrator: "需要系統管理員權限，這裡不會要求",
     skip_no_adapter: "Better OS 目前還無法變更這項設定",
     skip_nothing_captured: "沒有保存這項設定先前的值",
+    skip_left_in_place: "保留：恢復時不會移除這一項",
+    value_no_such_setting: "這個桌面沒有這項設定，所以不會有程式讀取它",
+    state_not_used_here: "這個桌面不使用",
     skip_value_unknown: "目前的值無法明確讀取",
     skip_changed_externally: "已由其他程式變更，確認後才會取代",
     skip_conflict: "這項設定由其他已安裝的元件擁有",

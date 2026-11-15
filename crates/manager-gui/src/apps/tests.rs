@@ -639,3 +639,17 @@ fn the_service_and_adapter_buttons_start_at_once() {
         app.contains("self.read_service_facts();\n        if self.page == Page::WindowAttention")
     );
 }
+
+/// The remove confirmation says up front that a setting that cannot be put
+/// back never stops the removal, and where it is reported (ticket 88 review).
+#[test]
+fn the_remove_confirmation_says_settings_are_put_back_or_reported() {
+    assert!(
+        copy(Locale::EnUs)
+            .remove_body
+            .contains("removal still finishes")
+    );
+    assert!(copy(Locale::EnUs).remove_body.contains("Activity"));
+    assert!(copy(Locale::ZhTw).remove_body.contains("移除仍會完成"));
+    assert!(copy(Locale::ZhTw).remove_body.contains("活動紀錄"));
+}

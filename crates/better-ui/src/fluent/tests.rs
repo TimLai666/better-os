@@ -1000,6 +1000,12 @@ fn shared_words_read_the_same_in_every_window() {
     assert_eq!(words::percent(0.426), "43%");
     assert_eq!(words::percent(f32::NAN), "0%");
     assert_eq!(words::percent(2.0), "100%");
+    assert_eq!(words::celsius(52.375), "52 °C");
+    assert_eq!(words::celsius(-3.6), "-4 °C");
+    assert_eq!(words::rpm(4800.0), "4,800 RPM");
+    assert_eq!(words::rpm(950.0), "950 RPM");
+    assert_eq!(words::rpm(12_345_678.0), "12,345,678 RPM");
+    assert_eq!(words::rpm(-1.0), "0 RPM");
     assert_eq!(words::duration(Locale::English, 45), "45 s");
     assert_eq!(words::duration(Locale::English, 200), "3 min 20 s");
     assert_eq!(words::duration(Locale::English, 7500), "2 h 5 min");
@@ -1823,6 +1829,22 @@ fn a_choice_in_one_window_holds_in_every_window(cx: &mut gpui::TestAppContext) {
         assert_eq!(PAINTED.with(|painted| painted.borrow().clone()), [false]);
         assert!(Appearance::is_following(window, cx));
     });
+}
+
+/// Ticket 88: the staged-changes bar is there only while something waits,
+/// and neither of its actions can be pressed while the changes are being
+/// applied.
+#[test]
+fn the_staged_changes_bar_shows_only_while_something_waits() {
+    use super::staged_bar::{BAR_HEIGHT, actions_enabled, shows};
+    assert!(!shows(0));
+    assert!(shows(1));
+    assert!(shows(12));
+    assert_eq!(actions_enabled(0, false), (false, false));
+    assert_eq!(actions_enabled(3, false), (true, true));
+    assert_eq!(actions_enabled(3, true), (false, false));
+    // One line: 12px, a 32px button, 12px, and the 1px rule.
+    assert_eq!(BAR_HEIGHT, px(57.0));
 }
 
 /// Audit A7: every language picker in the suite reads the same three words.

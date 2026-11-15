@@ -59,6 +59,7 @@ fn header_block(
     leading: Option<CardLeading>,
     header: SharedString,
     description: Option<SharedString>,
+    cautions: Vec<SharedString>,
     disabled: bool,
     p: &Palette,
 ) -> gpui::Div {
@@ -106,6 +107,24 @@ fn header_block(
                         .text_color(caption)
                         .whitespace_normal()
                         .child(description)
+                }))
+                .children(cautions.into_iter().map(|line| {
+                    let color = if disabled { p.text_disabled } else { p.caution };
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .child(
+                            Icon::new(IconName::TriangleAlert)
+                                .size(px(12.0))
+                                .text_color(color),
+                        )
+                        .child(
+                            text(div(), CAPTION)
+                                .text_color(color)
+                                .whitespace_normal()
+                                .child(line),
+                        )
                 })),
         )
 }
@@ -118,6 +137,7 @@ pub struct SettingsCard {
     icon: Option<CardLeading>,
     header: SharedString,
     description: Option<SharedString>,
+    cautions: Vec<SharedString>,
     content: Option<AnyElement>,
     disabled: bool,
     shown: ShownState,
@@ -131,6 +151,7 @@ impl SettingsCard {
             icon: None,
             header: header.into(),
             description: None,
+            cautions: Vec::new(),
             content: None,
             disabled: false,
             shown: ShownState::Live,
@@ -160,6 +181,14 @@ impl SettingsCard {
 
     pub fn description(mut self, description: impl Into<SharedString>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    /// A further description line in the caution colour with a caution
+    /// icon, as Windows Settings marks a setting something else is holding
+    /// back ("Performance is reduced while the PC is on your lap").
+    pub fn caution(mut self, line: impl Into<SharedString>) -> Self {
+        self.cautions.push(line.into());
         self
     }
 
@@ -216,6 +245,7 @@ impl RenderOnce for SettingsCard {
                 self.icon,
                 self.header,
                 self.description,
+                self.cautions,
                 disabled,
                 p,
             ))
@@ -392,6 +422,7 @@ impl RenderOnce for SettingsExpander {
                 self.icon,
                 self.header,
                 self.description,
+                Vec::new(),
                 disabled,
                 p,
             ))
@@ -471,7 +502,14 @@ impl RenderOnce for SettingsExpander {
                         .when(index + 1 < count, |r| {
                             r.border_b_1().border_color(p.divider)
                         })
-                        .child(header_block(None, row.header, row.description, false, p))
+                        .child(header_block(
+                            None,
+                            row.header,
+                            row.description,
+                            Vec::new(),
+                            false,
+                            p,
+                        ))
                         .children(row.content.map(|content| div().flex_none().child(content))),
                 );
             }

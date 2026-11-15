@@ -193,12 +193,6 @@ pub(crate) fn landing(route: Route) -> Page {
     route.landing()
 }
 
-/// Whether today's Better Manager screens draw their narrow layout: only in
-/// a narrow window, never because the new pane is beside them.
-pub(crate) fn legacy_compact(width: f32) -> bool {
-    is_narrow(width)
-}
-
 /// How the pane is drawn at one window width.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PaneLayout {
@@ -318,13 +312,6 @@ mod tests {
             back_target(&mut history, &Page::Updates),
             Some(Page::Components)
         );
-    }
-
-    #[test]
-    fn today_s_screens_are_compact_only_in_a_narrow_window() {
-        assert!(!legacy_compact(1600.0));
-        assert!(!legacy_compact(1000.0));
-        assert!(legacy_compact(960.0));
     }
 
     #[test]

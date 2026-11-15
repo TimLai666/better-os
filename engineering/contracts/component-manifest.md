@@ -136,11 +136,17 @@ arbitrary asset, path, or command.
 - `target.keys` — the exact settings the adapter reads and writes, such as the
   MIME types of a handler group or a dconf path. Never a command.
 - `platforms` and `sessions` — where the declaration applies. Elsewhere the
-  integration reports as unavailable rather than being attempted.
+  integration reports as unavailable rather than being attempted. So does a
+  `target.keys` setting that no installed GSettings schema defines: nothing in
+  the session reads it. Such a per-setting gap is shown on its own row and
+  left out of the component's state; only an unmet prerequisite or an
+  administrator-scope declaration makes the whole component unavailable.
 - `apply_adapter` and `verify_adapter` — typed adapter IDs. A read-only adapter
   such as `xdg-effective-default` is rejected as an apply adapter, and an adapter
   that cannot serve the declared kind is rejected outright.
 - `restore_policy` — `captured-value`, `leave-in-place`, or `manual-only`.
+  `leave-in-place` means a restore never touches it: what Better OS added is
+  additive (a dock entry) and displaced nothing, so it stays.
 - `privileges` — `user` or `administrator`. There is no privileged executor for
   defaults, so an administrator-scope integration is reported, never attempted.
 - `session_effect` — `immediate`, `sign-out`, or `restart`.

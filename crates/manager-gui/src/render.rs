@@ -1,7 +1,7 @@
 //! Draws the window: the shell around the page, and the pages ticket 84
 //! builds (Home, Settings, and the placeholders for the pages to come).
-//! Apps is drawn by `render_apps` (ticket 85); today's Defaults screens by
-//! `pages_defaults`, inside the same content column, until ticket 89.
+//! Apps is drawn by `render_apps` (ticket 85), Keep awake and Default apps
+//! by their own page modules.
 
 use better_ui::fluent::button::Button;
 use better_ui::fluent::chrome::is_back_shortcut;
@@ -52,6 +52,10 @@ impl Row {
             card: Some(card),
             ..Self::new(gap, element)
         }
+    }
+
+    pub(crate) fn set_gap(&mut self, gap: f32) {
+        self.gap = px(gap);
     }
 }
 
@@ -208,8 +212,21 @@ impl ManagerApp {
                         move |this, _, cx| match &action {
                             AttentionAction::Open(page) => this.navigate(page.clone(), cx),
                             AttentionAction::RefreshCatalog => this.refresh_catalog(cx),
+                            AttentionAction::TurnOffTouchpadSafeMode => {
+                                this.turn_off_touchpad_safe_mode(cx)
+                            }
+                            AttentionAction::OpenTouchpad(sub_page) => {
+                                this.open_touchpad(*sub_page, cx)
+                            }
                             AttentionAction::StartKeepAwakeService => {
                                 this.start_keep_awake_service(cx)
+                            }
+                            AttentionAction::OpenSystemBattery => {
+                                let battery = crate::pages::system::card::BATTERY;
+                                this.open_system_card(battery);
+                                this.navigate(Page::System, cx);
+                                this.pending_card = Some(battery);
+                                this.focused_card = Some(battery);
                             }
                             AttentionAction::OpenKeepAwakeDiagnostics => {
                                 this.keep_awake.sub =
@@ -228,6 +245,13 @@ impl ManagerApp {
         let mut gap = FIRST_CARD_GAP;
         for quick in home::quick_settings() {
             match quick {
+                // Not drawn without power-profiles-daemon (ticket 86).
+                QuickSetting::PowerMode => {
+                    if let Some(card) = self.power_mode_quick_card(cx) {
+                        rows.push(Row::new(gap, card));
+                        gap = CARD_GAP;
+                    }
+                }
                 // Not drawn while the component or its service is missing.
                 QuickSetting::KeepAwake => {
                     if let Some(card) = self.keep_awake_quick_card(cx) {
@@ -447,29 +471,23 @@ impl ManagerApp {
         rows
     }
 
-    /// Today's Defaults screens, unchanged, as one row, until ticket 89.
-    fn interim_rows(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Row> {
-        let compact = crate::navigation::legacy_compact(f32::from(window.viewport_size().width));
-        let element = match &self.page {
-            Page::Defaults => self.defaults_page(compact, cx),
-            Page::DefaultsComponent(_) => self.defaults_component_page(compact, cx),
-            Page::DefaultsReview => self.defaults_review_page(compact, cx),
-            Page::DefaultsResults => self.defaults_results_page(compact, cx),
-            _ => div().into_any_element(),
-        };
-        vec![Row::new(0.0, element)]
-    }
-
     fn page_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Row> {
         let route = Route::of(&self.page);
         match (&self.page, pages::module(route).status) {
             (Page::Home, _) => self.home_rows(cx),
             (Page::KeepAwake, _) => self.keep_awake_rows(window, cx),
+            (Page::System, _) => self.system_rows(cx),
             (Page::Settings, _) => self.settings_rows(cx),
             (Page::WindowAttention, _) => self.window_attention_rows(cx),
+            (Page::Touchpad, _) => {
+                let installed = self.touchpad_facts().installed;
+                let page = self.touchpad_page(window, cx);
+                page.update(cx, |page, cx| page.rows(installed.as_deref(), cx))
+            }
             (_, _) if route == Route::Apps => self.apps_rows(cx),
+            (_, _) if route == Route::DefaultApps => self.default_apps_rows(cx),
             (_, PageStatus::Placeholder { ticket }) => self.placeholder_rows(route, ticket, cx),
-            _ => self.interim_rows(window, cx),
+            _ => Vec::new(),
         }
     }
 
@@ -522,7 +540,22 @@ impl ManagerApp {
             }
             column = column.child(wrapper);
         }
-        column.into_any_element()
+        // A page's staged-changes bar sits below the scrolling column, so it
+        // stays at the bottom of the content area while the cards scroll.
+        let footer = match (&self.page, &self.touchpad) {
+            (Page::Touchpad, Some(page)) => page.update(cx, |page, cx| page.apply_bar(cx)),
+            _ => None,
+        };
+        match footer {
+            None => column.into_any_element(),
+            Some(footer) => div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(div().flex_1().min_h_0().child(column))
+                .child(footer)
+                .into_any_element(),
+        }
     }
 }
 

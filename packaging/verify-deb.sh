@@ -54,7 +54,9 @@ required_executables() {
         better-touchpad)
             printf '%s\n' \
                 usr/bin/better-touchpad \
-                usr/bin/better-touchpad-gestured
+                usr/bin/better-touchpad-gestured \
+                usr/lib/better-os/before-removal/better-touchpad
+                usr/libexec/better-touchpad-scrolld
             ;;
         better-awake)
             printf '%s\n' \
@@ -110,7 +112,13 @@ required_data_files() {
                 "usr/share/gnome-shell/extensions/$EXTENSION_UUID/metadata.json" \
                 "usr/share/gnome-shell/extensions/$EXTENSION_UUID/extension.js" \
                 "usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml" \
-                usr/share/icons/hicolor/scalable/apps/better-touchpad.svg
+                usr/share/icons/hicolor/scalable/apps/better-touchpad.svg \
+                usr/lib/systemd/system/better-touchpad-scroll@.service \
+                usr/lib/systemd/system/better-touchpad-scroll-coldplug.service \
+                usr/lib/udev/rules.d/90-better-touchpad-scroll.rules \
+                usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf \
+                usr/lib/sysusers.d/better-touchpad-scroll.conf \
+                usr/lib/tmpfiles.d/better-touchpad-scroll.conf
             ;;
         better-awake)
             printf '%s\n' \
@@ -521,6 +529,20 @@ for package_name in \
             fi
             ;;
         better-touchpad)
+            # Ticket 88: removal deletes the autostart overrides the Touchpad
+            # page wrote for Touchégg and fusuma, and nothing else.
+            control="$WORK_DIR/better-touchpad.control"
+            mkdir -p "$control"
+            dpkg-deb --control "$deb_path" "$control"
+            sh -n "$control/postrm" || {
+                printf 'The Better Touchpad postrm does not parse as sh\n' >&2
+                exit 1
+            }
+            grep -qxF "better_os_override_files='touchegg.desktop fusuma.desktop'" "$control/postrm" &&
+                grep -qxF 'better_os_forget_autostart_overrides "$1" || true' "$control/postrm" || {
+                printf 'The Better Touchpad postrm does not remove its autostart overrides\n' >&2
+                exit 1
+            }
             # The recovery entry point has to work when the configuration is
             # what broke the desktop, so it ships beside the window rather than
             # in a package the user would have to install after the fact.
@@ -549,6 +571,87 @@ for package_name in \
                 printf 'The packaged extension does not load its interface file\n' >&2
                 exit 1
             }
+            # The scroll pass-through (ADR 0030). Its security review
+            # (engineering/specs/touchpad-input-passthrough-security.md) rests
+            # on these lines: the unit can open its own touchpad node and
+            # /dev/uinput and no other device, starts the packaged binary, and
+            # the account it drops to is created by the package.
+            scroll_unit="$extract_dir/usr/lib/systemd/system/better-touchpad-scroll@.service"
+            for line in \
+                '^ExecStart=/usr/libexec/better-touchpad-scrolld %I$' \
+                '^DevicePolicy=closed$' \
+                '^DeviceAllow=/dev/input/%I r$' \
+                '^DeviceAllow=/dev/uinput w$' \
+                '^CapabilityBoundingSet=CAP_SETUID CAP_SETGID$' \
+                '^WatchdogSec=' \
+                '^PrivateNetwork=yes$' \
+                '^BindsTo=dev-input-%i.device$' \
+                '^RestartPreventExitStatus=69$' \
+                '^After=dev-input-%i.device$'; do
+                grep -q "$line" "$scroll_unit" || {
+                    printf 'The scroll unit is missing %s\n' "$line" >&2
+                    exit 1
+                }
+            done
+            if [[ "$(grep -c '^DeviceAllow=' "$scroll_unit")" != 2 ]]; then
+                printf 'The scroll unit allows a device beyond its touchpad and uinput\n' >&2
+                exit 1
+            fi
+            grep -q '^ExecStart=/usr/bin/udevadm trigger --action=change --subsystem-match=input --property-match=ID_INPUT_TOUCHPAD=1$' \
+                "$extract_dir/usr/lib/systemd/system/better-touchpad-scroll-coldplug.service" || {
+                printf 'The coldplug unit does not trigger the touchpads alone\n' >&2
+                exit 1
+            }
+            grep -q 'ENV{SYSTEMD_WANTS}+="better-touchpad-scroll@%k.service"' \
+                "$extract_dir/usr/lib/udev/rules.d/90-better-touchpad-scroll.rules" || {
+                printf 'The udev rule does not start a pass-through per touchpad\n' >&2
+                exit 1
+            }
+            scroll_policy="$extract_dir/usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf"
+            if [[ "$RELEASE_TARGET" == ubuntu-22.04 ]]; then
+                if grep -q 'send_destination_prefix=' "$scroll_policy"; then
+                    printf 'The 22.04 bus policy uses an attribute its dbus-daemon cannot read\n' >&2
+                    exit 1
+                fi
+                # Every send rule names one instance's own bus name.
+                if grep -E '<allow send_' "$scroll_policy" | grep -Evq 'send_destination="org\.betteros\.TouchpadScroll1\.event[0-9]+"'; then
+                    printf 'The 22.04 bus policy allows a send without a pass-through destination\n' >&2
+                    exit 1
+                fi
+                if [[ "$(grep -c 'send_destination="org.betteros.TouchpadScroll1.event' "$scroll_policy")" != 512 ]]; then
+                    printf 'The 22.04 bus policy does not name event0 to event511\n' >&2
+                    exit 1
+                fi
+            else
+                grep -q 'send_destination_prefix="org.betteros.TouchpadScroll1"' "$scroll_policy" || {
+                    printf 'The bus policy does not narrow sends to the pass-through names\n' >&2
+                    exit 1
+                }
+            fi
+            grep -q 'own_prefix="org.betteros.TouchpadScroll1"' "$scroll_policy" || {
+                printf 'The bus policy does not limit who owns a pass-through name\n' >&2
+                exit 1
+            }
+            grep -q '^u _better-touchpad-scroll ' \
+                "$extract_dir/usr/lib/sysusers.d/better-touchpad-scroll.conf" || {
+                printf 'The package does not create the pass-through account\n' >&2
+                exit 1
+            }
+            # Installing turns it on and removing stops it: all three scripts
+            # carry the fragment.
+            scroll_control="$WORK_DIR/better-touchpad-scroll-control"
+            dpkg-deb --control "$deb_path" "$scroll_control"
+            for script in postinst prerm postrm; do
+                sh -n "$scroll_control/$script" || {
+                    printf 'better-touchpad %s does not parse as sh\n' "$script" >&2
+                    exit 1
+                }
+                grep -q "^better_os_scroll_$script \"\$@\" || true$" \
+                    "$scroll_control/$script" || {
+                    printf 'better-touchpad %s does not run the scroll pass-through half\n' "$script" >&2
+                    exit 1
+                }
+            done
             grep -q '<interface name="org.betteros.TouchpadAdapter1">' \
                 "$extract_dir/usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml" || {
                 printf 'The packaged interface file does not declare the adapter interface\n' >&2
@@ -847,6 +950,7 @@ dpkg-deb --extract "$daemon_path" "$daemon_extract"
 for required_file in \
     usr/libexec/better-manager-daemon \
     usr/lib/systemd/system/better-manager-daemon.service \
+    usr/lib/systemd/system/better-hardware-restore.service \
     usr/share/dbus-1/system-services/org.betteros.Manager1.service \
     usr/share/dbus-1/system.d/org.betteros.Manager1.conf \
     usr/share/polkit-1/actions/org.betteros.manager.policy \
@@ -883,6 +987,40 @@ grep -q 'org.betteros.manager.apply-transaction' \
 grep -q 'org.betteros.manager.repair-package-system' \
     "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
     printf 'The polkit policy does not declare the repair action\n' >&2
+    exit 1
+}
+
+# Ticket 86: each hardware control has its own polkit action, the bus policy
+# lets callers reach the interface, /sys stays read-only to the daemon (the
+# writes go through a transient helper unit, ADR 0029), and the boot-time
+# restore is enabled by the postinst.
+for action in org.betteros.manager.set-charge-limit org.betteros.manager.set-fan-mode; do
+    grep -q "$action" "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
+        printf 'The polkit policy does not declare %s\n' "$action" >&2
+        exit 1
+    }
+done
+grep -q 'send_interface="org.betteros.Hardware1"' \
+    "$daemon_extract/usr/share/dbus-1/system.d/org.betteros.Manager1.conf" || {
+    printf 'The bus policy does not let callers reach org.betteros.Hardware1\n' >&2
+    exit 1
+}
+for unit in better-manager-daemon.service better-hardware-restore.service; do
+    unit_file="$daemon_extract/usr/lib/systemd/system/$unit"
+    if ! grep -qx 'BindReadOnlyPaths=/sys' "$unit_file" \
+        || ! grep -qx 'ProtectKernelTunables=yes' "$unit_file" \
+        || grep -Eq '^(ReadWritePaths|BindPaths)=.*/sys' "$unit_file"; then
+        printf '%s must keep /sys read-only and open nothing under it (ADR 0029)\n' "$unit" >&2
+        exit 1
+    fi
+done
+grep -q '^ExecStart=/usr/libexec/better-manager-daemon --restore-hardware$' \
+    "$daemon_extract/usr/lib/systemd/system/better-hardware-restore.service" || {
+    printf 'The restore unit does not run the daemon with --restore-hardware\n' >&2
+    exit 1
+}
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./postinst | grep -q 'enable better-hardware-restore.service' || {
+    printf 'The daemon postinst does not enable better-hardware-restore.service\n' >&2
     exit 1
 }
 

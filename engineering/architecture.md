@@ -72,11 +72,19 @@ touchpad-gestures ──> touchpad-session ──> better-actions ──> launch
         └──> touchpad-gesture-service ──> better-touchpad-gestured
              resident pipeline: compositor events in, typed actions out
 adapters/gnome-shell-touchpad/   GJS under ADR 0012's bounded exception
+touchpad-scroll ──> better-touchpad-scrolld (one system service per touchpad)
+   device rule, frame scaling, grab lifetime, evdev/uinput layer (ADR 0030)
+        └──> touchpad-platform::scroll   the window's system-bus client
 
 window-attention-core ──> window-attention-service ──> better-window-attention
    choices, decision, store   resident relay counterpart (ships in better-manager)
         └──> manager-gui                               Window attention page
 adapters/gnome-shell-adapter/    shared relay-only GJS extension (ADR 0018)
+
+hardware-core ──> hardware-platform ──┬──> manager-gui        System page (ticket 86)
+   what a machine has, each card's     ├──> manager-daemon     org.betteros.Hardware1
+   rules, no I/O                       └──> better-window-attention  charger switch
+   sysfs under a root, PPD / UPower / gsd-power clients, the Hardware1 client
 
 defaults-core ──> defaults-platform ──> defaults-store ──> manager-gui / CLI
    declarations, aggregate status, plans   typed adapters   snapshots + history
@@ -232,6 +240,14 @@ suite, not only the two that exist today.
   machinery. A failing gesture adapter, or a gesture configuration that will
   not parse, cannot reach pointer movement or two-finger scrolling — which is
   asserted, not reasoned about.
+- **The scroll factors are the one input path Better OS sits in.**
+  `touchpad-scroll` grabs a touchpad's evdev node and re-emits it through a
+  uinput clone with two-finger and wheel motion scaled (ADR 0030). It is the
+  only first-party code that opens `/dev/input` or `/dev/uinput`, it runs as a
+  udev-started system service per touchpad that drops privilege after opening
+  its two nodes, and every decision (which device, how a frame is scaled, when
+  the grab is taken and released) is in the library behind a device seam. The
+  security review is `engineering/specs/touchpad-input-passthrough-security.md`.
 
 ### Trust boundaries
 
@@ -402,6 +418,24 @@ collection is explicitly configured to include them.
   crate: its read helpers return `monitor_core::Observation`, so reusing them
   would put the whole Better Monitor metric-contract stack in every Better Awake
   binary to answer whether the charger is plugged in.
+- `hardware-platform` reads hwmon through `monitor-collectors-linux`'s
+  `scan_hwmon`, behind its `sensors` feature, so the suite has one reader of
+  `class/hwmon`. That puts `monitor-core` in Better Manager's window, which
+  `awake-platform` avoided for Better Awake; the window already carries far
+  more, and two hwmon readers would disagree about a chip sooner or later. The
+  daemon asks for no features: it only finds two attributes, and their
+  discovery (`sysfs::charge_limit_attribute`, `sysfs::fan_mode_attribute`) is
+  the same code the window reads with.
+- The two root writes of the System page go through `manager-daemon`'s
+  `org.betteros.Hardware1` (ADR 0017), one polkit action per method, the
+  argument checked against its closed set before polkit is asked. The daemon
+  cannot write `/sys` itself (`BindReadOnlyPaths=/sys`); each write is a
+  transient helper unit that sees only the one attribute file (ADR 0029). Everything
+  else on the page needs no root and goes to the desktop's own services:
+  power-profiles-daemon, gsd-power, UPower. "Switch power mode with the
+  charger" runs in `better-window-attention`, the session service the
+  `better-manager` package already ships, reading the person's choice from
+  `$XDG_CONFIG_HOME/better-os/power-follow.json` at each plug event.
 - `touchpad-platform` writes and reads what it claims. Its GVariant change-set
   encoder, which lives in `defaults-platform` and is shared with Better
   Defaults, is pinned byte-for-byte against values GLib produced, including the
@@ -546,3 +580,4 @@ verification contract.
 - [ADR 0026: The Ready to unplug rule and its two thresholds](decisions/0026-storage-readiness-rule.md)
 - [ADR 0027: Better Storage stays unprivileged](decisions/0027-storage-privileged-boundary.md)
 - [ADR 0028: The privileged service is upgraded outside its own unit](decisions/0028-daemon-upgrades-outside-its-own-unit.md)
+- [ADR 0030: Touchpad scroll speed through an evdev/uinput pass-through](decisions/0030-touchpad-scroll-passthrough.md)
