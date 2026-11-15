@@ -459,11 +459,18 @@ GUI or dependency compiles when the relevant command was not executed.
   on a private bus. Nobody has watched GNOME Shell or Settings pick up a change
   it made. No shipped manifest declares a GNOME integration yet, so the path is
   unreachable from the built-in catalog until one does.
-- Better Touchpad shows vertical scroll factor, horizontal scroll factor, and
-  smooth scrolling as unavailable, because GNOME 46 has no key for any of them.
-  The model and the mock backend carry all three; making them live is one table
-  row in `touchpad-platform`'s GNOME backend when a GNOME that has the key is a
-  supported target.
+- Better Touchpad's scroll factors are live on GNOME 46 through the scroll
+  pass-through (ticket 125, ADR 0030): `better-touchpad-scroll@eventN.service`,
+  one per touchpad, started by udev, grabs the touchpad's evdev node only while
+  a factor other than 1 is set and re-emits it through a uinput clone with
+  two-finger motion scaled. It is the only first-party code that opens
+  `/dev/input` or `/dev/uinput`; its security review is
+  `engineering/specs/touchpad-input-passthrough-security.md`, and a change to
+  the device rule, the unit's sandbox, or the bus interface updates that review
+  in the same commit. Nothing has run against a real touchpad yet:
+  `packaging/tests/touchpad-scroll-hardware-check.sh` is the owner's check.
+  Smooth scrolling stays unavailable, because it is each application's drawing
+  decision and not an input setting.
 - Restore checks the shared application catalog and writes nothing for an
   application that is gone; the person chooses another or clears the default.
   Two limits: an entry whose `TryExec` program is missing still counts as

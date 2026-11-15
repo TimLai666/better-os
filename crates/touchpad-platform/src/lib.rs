@@ -24,6 +24,7 @@ pub mod gnome;
 pub mod keybindings;
 pub mod mock;
 pub mod roots;
+pub mod scroll;
 pub mod session;
 
 /// The change-set encoder, shared with Better Defaults. It lives in

@@ -333,7 +333,7 @@ pub const EN_US: Copy = Copy {
     pointer_test_idle: "Move the pointer here",
 
     scrolling_title: "Scrolling",
-    scrolling_subtitle: "How far the content moves for the same two-finger movement.",
+    scrolling_subtitle: "How far the content moves for the same two-finger movement. The speed applies to every touchpad on this computer.",
     scroll_sensitivity: "Scrolling sensitivity",
     vertical_axis: "Vertical",
     horizontal_axis: "Horizontal",
@@ -569,7 +569,7 @@ pub const ZH_TW: Copy = Copy {
     pointer_test_idle: "把游標移到這裡",
 
     scrolling_title: "捲動",
-    scrolling_subtitle: "同樣的雙指移動，內容會捲多遠。",
+    scrolling_subtitle: "同樣的雙指移動，內容會捲多遠。速度會套用到這台電腦的每個觸控板。",
     scroll_sensitivity: "捲動靈敏度",
     vertical_axis: "垂直",
     horizontal_axis: "水平",
@@ -772,6 +772,14 @@ pub fn copy(locale: Locale) -> &'static Copy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_scrolling_page_says_the_speed_is_for_every_touchpad() {
+        // The scroll pass-through sets the same factors on every touchpad
+        // (ADR 0030); the page must not let a person think it is per pad.
+        assert!(EN_US.scrolling_subtitle.contains("every touchpad"));
+        assert!(ZH_TW.scrolling_subtitle.contains("每個觸控板"));
+    }
 
     #[test]
     fn the_fixed_traditional_chinese_terms_are_used_verbatim() {
