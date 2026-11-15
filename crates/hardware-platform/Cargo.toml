@@ -1,0 +1,29 @@
+[package]
+name = "hardware-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+hardware-core.workspace = true
+# The hwmon reading Better Monitor already does: one reader of
+# `class/hwmon` for the whole suite (AGENTS.md, one rule in one place).
+monitor-collectors-linux = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+# Blocking API on the default async-io flavor, like every client here.
+zbus.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+hardware-platform = { path = ".", features = ["sensors", "test-support"] }
+
+[features]
+# The sensor rows read hwmon through Better Monitor's reader. The daemon only
+# finds and writes two attributes and does not ask for it; the workspace entry
+# turns default features off so each user says what it needs.
+default = ["sensors"]
+sensors = ["dep:monitor-collectors-linux"]
+# Stand-ins for the desktop's services, for tests and sandbox screenshots.
+test-support = []

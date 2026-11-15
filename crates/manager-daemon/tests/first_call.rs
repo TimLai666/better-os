@@ -239,7 +239,13 @@ async fn every_start_answers_the_call_that_activated_it() {
             artifacts.clone(),
             journal.clone(),
         );
-        let connection = manager_daemon::service::serve(bus.builder(), name, service)
+        let hardware = manager_daemon::hardware::HardwareService::new(
+            FakeAuthorizer(false),
+            Arc::new(manager_daemon::hardware::DirectWriter),
+            hardware_platform::sysfs::SysRoot::at(bus.directory.join("empty-root")),
+            service.gate(),
+        );
+        let connection = manager_daemon::service::serve(bus.builder(), name, service, hardware)
             .await
             .expect("the daemon started on the bus");
 

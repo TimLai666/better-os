@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 975.
-- Packages with an SPDX license expression: 973.
+- Resolved Cargo packages: 977.
+- Packages with an SPDX license expression: 975.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `61db96815c2e2378a6118773fda11e1aebe1b7197cc6267ccdc2f96c2dee4a40`.
+- `Cargo.lock` SHA-256: `3c61aa6f98749dc58e5b1d698e917b6c1aaeb01bf284f160d12d4cdae196df30`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 424 |
 | `MIT` | 202 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 64 |
+| `GPL-3.0-or-later` | 66 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -104,6 +104,8 @@ Better OS does not relicense or silently select a different expression.
 | `git-gui` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `git-platform` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `github-api` | `0.2.15` | `GPL-3.0-or-later` | workspace |
+| `hardware-core` | `0.2.15` | `GPL-3.0-or-later` | workspace |
+| `hardware-platform` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `launcher-core` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `launcher-gui` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `launcher-platform` | `0.2.15` | `GPL-3.0-or-later` | workspace |
@@ -469,6 +471,8 @@ keeps its own license.
 | `gstreamer-video-sys` | `0.25.4` | `MIT` | [crates.io](https://crates.io/crates/gstreamer-video-sys/0.25.4) |
 | `h2` | `0.4.15` | `MIT` | [crates.io](https://crates.io/crates/h2/0.4.15) |
 | `half` | `2.7.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/half/2.7.1) |
+| `hardware-core` | `0.2.15` | `GPL-3.0-or-later` | workspace |
+| `hardware-platform` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `harfrust` | `0.5.2` | `MIT` | [crates.io](https://crates.io/crates/harfrust/0.5.2) |
 | `hash32` | `0.3.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/hash32/0.3.1) |
 | `hashbrown` | `0.14.5` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/hashbrown/0.14.5) |

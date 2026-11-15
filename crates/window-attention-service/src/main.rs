@@ -38,6 +38,23 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The System page's "Switch power mode with the charger" (ticket 86). It
+    // needs the system bus; without one the attention half still runs.
+    match (
+        zbus::blocking::Connection::system(),
+        hardware_platform::follow_store::path_for_user(),
+    ) {
+        (Ok(system), Some(settings)) => {
+            std::thread::spawn(move || {
+                window_attention_service::charger::follow(system, settings, |event| {
+                    eprintln!("power mode with the charger: {event:?}");
+                    true
+                })
+            });
+        }
+        (Err(error), _) => eprintln!("the system bus is not reachable: {error}"),
+        (_, None) => eprintln!("no config directory: the charger switch is off"),
+    }
     let relay = Relay::new(Store::for_user());
     match serve_until(connection, relay, |line| eprintln!("{line}"), stop) {
         Ok(()) => ExitCode::SUCCESS,

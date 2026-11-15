@@ -678,6 +678,36 @@ fn a_bookmark_whose_folder_is_gone_stays_visible_as_unavailable() {
 
 // --- Sidebar -------------------------------------------------------------
 
+/// xdg-user-dirs writes Documents, Music, … into the shared bookmarks file at
+/// login. Places already lists them, so Favorites shows only the person's own
+/// pins, as GNOME Files does; the lines stay and keep their indexes.
+#[test]
+fn a_bookmark_of_a_place_is_not_listed_again_under_favorites() {
+    let home = tempfile::tempdir().unwrap();
+    let directories = UserDirectories::from_values(Some(home.path()), None);
+    let mut bookmarks = BookmarkFile::default();
+    bookmarks.pin(&at(home.path().join("Documents").to_str().unwrap()));
+    bookmarks.pin(&at(home.path().join("Developer").to_str().unwrap()));
+    bookmarks.pin(&at(home.path().join("Music").to_str().unwrap()));
+    let mounts = MountTable::new(Vec::new());
+    let inputs = SidebarInputs {
+        directories: &directories,
+        mounts: &mounts,
+        bookmarks: &bookmarks,
+        states: &NoDeviceStates,
+        probe: &FixedProbe::default(),
+    };
+    let rows = build_rows(&inputs, &EN_US);
+    let favorites: Vec<_> = rows
+        .iter()
+        .filter(|row| row.section == SidebarSection::Favorites)
+        .collect();
+    assert_eq!(favorites.len(), 1, "{favorites:?}");
+    assert_eq!(favorites[0].label, "Developer");
+    assert_eq!(favorites[0].bookmark_index, Some(1));
+    assert_eq!(bookmarks.len(), 3, "nothing was deleted");
+}
+
 #[test]
 fn the_sidebar_keeps_its_four_sections_distinct() {
     let home = tempfile::tempdir().unwrap();
@@ -3470,4 +3500,22 @@ fn home_at_the_root_and_a_user_folder_set_to_home_are_told_apart() {
     fs::write(config.join("user-dirs.dirs"), "XDG_DESKTOP_DIR=\"$HOME\"\n").unwrap();
     let dirs = UserDirectories::from_values(Some(&home), Some(&config));
     assert_eq!(glyph(&dirs, home.to_str().unwrap()), G::Home);
+}
+
+/// A folder dragged in from another application is pinned; a file, a
+/// missing path and a relative one are not.
+#[test]
+fn only_folders_dropped_from_another_application_are_pinned() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("Projects");
+    fs::create_dir(&folder).unwrap();
+    let file = dir.path().join("notes.txt");
+    fs::write(&file, "x").unwrap();
+    let pinned = crate::shell::external_folders(&[
+        folder.clone(),
+        file,
+        dir.path().join("gone"),
+        PathBuf::from("relative"),
+    ]);
+    assert_eq!(pinned, vec![files_core::Location::local(&folder).unwrap()]);
 }
