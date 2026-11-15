@@ -140,6 +140,17 @@ pub struct GitApp {
     /// The diff's text area as last laid out, so wrapped lines break at its
     /// real width; zero until it has been drawn once.
     pub(crate) diff_width: std::rc::Rc<std::cell::Cell<f32>>,
+    /// The repository view's own width as last laid out (the window's
+    /// content, without the frame's shadow), which the list pane's limits are
+    /// a share of; zero until drawn once.
+    pub(crate) view_width: std::rc::Rc<std::cell::Cell<f32>>,
+    /// What the list pane's width was stored as when a drag started, for
+    /// Escape to put back; `Some` while a drag is on.
+    pub(crate) edge_drag_start: Option<Option<u32>>,
+    /// Escape ended this drag: the pointer's moves no longer move the edge.
+    pub(crate) edge_cancelled: bool,
+    /// The shown diff laid out as rows, until it or its width changes.
+    pub(crate) diff_layout: std::cell::RefCell<Option<crate::render::DiffLayout>>,
     pub(crate) context: Option<(ContextTarget, Point<Pixels>)>,
     pub(crate) show_filter: bool,
     pub(crate) show_commit_options: bool,
@@ -560,6 +571,10 @@ impl GitApp {
             dragging_edge: false,
             edge_dirty: false,
             diff_width: std::rc::Rc::new(std::cell::Cell::new(0.0)),
+            view_width: std::rc::Rc::new(std::cell::Cell::new(0.0)),
+            edge_drag_start: None,
+            edge_cancelled: false,
+            diff_layout: std::cell::RefCell::new(None),
             context: None,
             show_filter: false,
             show_commit_options: false,

@@ -1312,8 +1312,15 @@ impl Git for SystemGit {
         options: &CommitOptions,
     ) -> Result<(), GitError> {
         history::check_message(message, options)?;
+        let saved = patch::save_index(repository);
         patch::build_index(repository, files)?;
-        history::commit(repository, message, options)
+        history::commit(repository, message, options)?;
+        // The commit is made; putting back what was staged and left out is
+        // best effort, and failing it leaves the index as the commit has it.
+        if let Some(tree) = saved {
+            let _ = patch::restore_index(repository, &tree, files);
+        }
+        Ok(())
     }
 
     fn discard_files(&self, repository: &Path, files: &[FileSelection]) -> Result<(), GitError> {

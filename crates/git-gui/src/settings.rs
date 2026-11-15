@@ -34,6 +34,8 @@ pub struct Settings {
     pub terminal: String,
     #[serde(default = "yes")]
     pub confirm_discard: bool,
+    /// No longer read: a force push is always asked (ticket 123). Kept so
+    /// settings files that have it still load and save it unchanged.
     #[serde(default = "yes")]
     pub confirm_force_push: bool,
     #[serde(default = "yes")]

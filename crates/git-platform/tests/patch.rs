@@ -799,3 +799,105 @@ fn an_unstaged_move_is_shown_as_git_shows_it_until_both_sides_are_staged() {
     assert_eq!(rows[0].1.as_deref(), Some("old.txt"));
     assert_eq!(rows[0].2, Some(git_core::ChangeKind::Renamed));
 }
+
+#[test]
+fn discarding_a_rename_row_puts_the_old_path_back_and_removes_the_new() {
+    let s = sandbox();
+    s.commit_file("old.txt", BASE, "base");
+    s.git(&["mv", "old.txt", "new.txt"]);
+    s.write("new.txt", &BASE.replace("five", "FIVE"));
+    SystemGit
+        .discard_files(
+            &s.repo,
+            &[FileSelection {
+                path: PathBuf::from("new.txt"),
+                original_path: Some(PathBuf::from("old.txt")),
+                lines: None,
+            }],
+        )
+        .unwrap();
+    assert_eq!(s.porcelain(), "", "both paths back as HEAD has them");
+    assert_eq!(s.read("old.txt"), BASE);
+    assert!(!s.repo.join("new.txt").exists());
+}
+
+#[test]
+fn a_rename_left_out_of_a_commit_stays_a_rename_with_both_paths() {
+    let s = sandbox();
+    s.commit_file("old.txt", BASE, "base");
+    s.commit_file("other.txt", "o\n", "other");
+    s.git(&["mv", "old.txt", "new.txt"]);
+    s.write("other.txt", "o2\n");
+    SystemGit
+        .commit_selection(
+            &s.repo,
+            &[FileSelection::whole("other.txt")],
+            &message("only other"),
+            &CommitOptions::default(),
+        )
+        .unwrap();
+    let files = SystemGit.commit_files(&s.repo, &s.head()).unwrap();
+    let paths: Vec<_> = files.iter().map(|f| f.path.clone()).collect();
+    assert_eq!(
+        paths,
+        [PathBuf::from("other.txt")],
+        "neither side of the rename"
+    );
+    let rows = rename_rows(&s);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].0, "new.txt");
+    assert_eq!(rows[0].1.as_deref(), Some("old.txt"));
+}
+
+#[test]
+fn unstaging_a_rename_takes_both_paths_back_to_head() {
+    let s = sandbox();
+    s.commit_file("old.txt", BASE, "base");
+    s.git(&["mv", "old.txt", "new.txt"]);
+    SystemGit
+        .unstage(
+            &s.repo,
+            &[PathBuf::from("new.txt"), PathBuf::from("old.txt")],
+        )
+        .unwrap();
+    // As git shows an unstaged move: the old path deleted, the new untracked.
+    let rows = rename_rows(&s);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows.iter().any(|r| r.0 == "new.txt" && r.4));
+    assert!(
+        rows.iter()
+            .any(|r| r.0 == "old.txt" && r.3 == Some(git_core::ChangeKind::Deleted))
+    );
+}
+
+#[test]
+fn a_rename_with_a_mode_change_is_one_row_and_a_copy_is_an_added_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = sandbox();
+    s.commit_file("run.sh", "echo hi\n", "base");
+    s.git(&["mv", "run.sh", "start.sh"]);
+    fs::set_permissions(s.repo.join("start.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    s.git(&["add", "start.sh"]);
+    let rows = rename_rows(&s);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1.as_deref(), Some("run.sh"));
+    // The content is the same: no hunks, only the mode git notes.
+    assert_eq!(
+        working_diff(&s, "start.sh", Some("run.sh")),
+        FileDiff::Text { hunks: vec![] }
+    );
+    s.git(&["commit", "-q", "-m", "rename and chmod"]);
+    let files = SystemGit.commit_files(&s.repo, &s.head()).unwrap();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(files[0].kind, git_core::ChangeKind::Renamed);
+
+    // A copy: history reads renames only (-M), so the copy is the new file
+    // it is, and the original is untouched.
+    fs::copy(s.repo.join("start.sh"), s.repo.join("copy.sh")).unwrap();
+    s.git(&["add", "copy.sh"]);
+    s.git(&["commit", "-q", "-m", "copy"]);
+    let files = SystemGit.commit_files(&s.repo, &s.head()).unwrap();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(files[0].kind, git_core::ChangeKind::Added);
+    assert_eq!(files[0].original_path, None);
+}

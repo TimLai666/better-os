@@ -81,6 +81,15 @@ pub enum DiffContent {
 pub struct ShownDiff {
     pub key: DiffKey,
     pub content: DiffContent,
+    /// Different for every diff read, so the window lays a diff's wrapped
+    /// rows out once and not once per frame (ticket 123).
+    pub version: u64,
+}
+
+/// The next [`ShownDiff::version`].
+fn next_diff_version() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// What kind of job a git answer was for, to pick messages and follow-ups.
@@ -729,6 +738,22 @@ fn diff_content(
     }
 }
 
+/// How many lost commits a force push question lists by name.
+pub const FORCE_PUSH_LISTED: usize = 5;
+/// How many it reads to count them; past this it says "more than".
+pub const FORCE_PUSH_READ: usize = 1000;
+
+/// The commits a force push removes from the remote branch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ForcePushLoss {
+    /// How many there are (at most [`FORCE_PUSH_READ`]).
+    pub total: usize,
+    /// There are at least [`FORCE_PUSH_READ`].
+    pub more_than: bool,
+    /// The newest few: short sha and subject.
+    pub listed: Vec<(String, String)>,
+}
+
 /// How many commits one page of history reads.
 pub const LOG_PAGE: usize = 200;
 
@@ -1005,11 +1030,15 @@ impl Repo {
     /// The remote a push goes to: the upstream's, else `origin`, else the
     /// first.
     pub fn push_remote(&self) -> Option<String> {
-        if let Some(upstream) = &self.status.upstream
-            && let Some((remote, _)) = upstream.split_once('/')
-            && self.info.remotes.iter().any(|r| r.name == remote)
+        // A remote's name may itself hold a `/`: the longest remote the
+        // upstream starts with is the one.
+        if let Some((remote, _)) = self
+            .status
+            .upstream
+            .as_deref()
+            .and_then(|u| self.split_remote_branch(u))
         {
-            return Some(remote.to_string());
+            return Some(remote);
         }
         self.info
             .remotes
@@ -1132,6 +1161,8 @@ impl Files {
 
 pub struct GitSession {
     git: Arc<dyn Git>,
+    /// What the open force push question would remove from the remote.
+    pub force_push_loss: Option<ForcePushLoss>,
     pub settings: Settings,
     settings_file: Option<PathBuf>,
     pub repositories: RepositoryList,
@@ -1215,6 +1246,7 @@ impl GitSession {
             problem: None,
             notice: None,
             dialog: None,
+            force_push_loss: None,
             github: GitHub::default(),
             git_config: GitConfig::default(),
             identity_pending: None,
@@ -1574,7 +1606,8 @@ impl GitSession {
                 &repo.diff,
                 Some(ShownDiff {
                     key: DiffKey::Working(_),
-                    content: DiffContent::Text(_)
+                    content: DiffContent::Text(_),
+                    ..
                 })
             )
     }
@@ -1590,6 +1623,7 @@ impl GitSession {
         let Some(ShownDiff {
             key: DiffKey::Working(path),
             content: DiffContent::Text(diff),
+            ..
         }) = &repo.diff
         else {
             return;
@@ -3131,13 +3165,34 @@ impl GitSession {
     /// Asks before a force push, remembering what the remote branch was on
     /// when asked: a background fetch while the question is open must not
     /// widen what the push may overwrite.
+    ///
+    /// Always asked, whatever `confirm_force_push` says (ticket 123: the
+    /// owner keeps "always ask"), and the question names what the remote
+    /// loses ([`GitSession::force_push_loss`]).
     pub fn ask_force_push(&mut self) {
         let expected = self.repo.as_ref().and_then(Repo::seen_on_remote);
-        if self.settings.confirm_force_push {
-            self.dialog = Some(Dialog::ForcePush { expected });
-        } else {
-            self.push_with(Some(Lease { expected }));
-        }
+        self.force_push_loss = self.lost_by_force_push(expected.as_deref());
+        self.dialog = Some(Dialog::ForcePush { expected });
+    }
+
+    /// The commits on the remote branch (as last seen) that the branch here
+    /// does not have, which a force push removes from the remote:
+    /// `git log HEAD..<expected>`, newest first, at most
+    /// [`FORCE_PUSH_LISTED`] + 1 read so the dialog can say "and N more".
+    fn lost_by_force_push(&self, expected: Option<&str>) -> Option<ForcePushLoss> {
+        let expected = expected?;
+        let repo = self.repo.as_ref()?;
+        let range = format!("HEAD..{expected}");
+        let commits = self.git.log(&repo.root, &range, 0, FORCE_PUSH_READ).ok()?;
+        Some(ForcePushLoss {
+            total: commits.len(),
+            more_than: commits.len() >= FORCE_PUSH_READ,
+            listed: commits
+                .into_iter()
+                .take(FORCE_PUSH_LISTED)
+                .map(|c| (c.short_sha().to_string(), c.summary))
+                .collect(),
+        })
     }
 
     pub fn add_remote(&mut self, name: &str, url: &str) {
@@ -3710,7 +3765,11 @@ impl GitSession {
                 if let (DiffKey::Working(path), DiffContent::Text(diff)) = (&key, &content) {
                     repo.inclusion.reconcile(path, diff);
                 }
-                repo.diff = Some(ShownDiff { key, content });
+                repo.diff = Some(ShownDiff {
+                    key,
+                    content,
+                    version: next_diff_version(),
+                });
                 self.idle();
             }
             Answer::Log { skip, result } => {

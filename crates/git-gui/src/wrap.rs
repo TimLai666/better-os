@@ -1,20 +1,21 @@
 //! Where a wrapped diff line breaks, as columns of the code font.
 //!
 //! A diff row keeps a fixed height, so wrapping is not the text system's
-//! automatic wrap: the session lays a line out as several rows of equal
+//! automatic wrap: the window lays a line out as several rows of equal
 //! height, the first with the line's numbers and mark and the rest indented
 //! under it. That makes the layout a decision this module can state and a test
-//! can assert, and it keeps the diff a `uniform_list` — only the rows on
+//! can assert, and it keeps the diff a `uniform_list`: only the rows on
 //! screen are built, however long the file.
 //!
-//! The code font is the platform monospace one, so a character is one column
-//! wide and one advance unit costs the same at any position on the row. Wide
-//! scripts (CJK, fullwidth forms) are two columns, as they are in the font.
-//! The estimate is deliberately the font's own advance rather than a
-//! character-count guess: the window measures one row of the code font and
-//! passes the advance in ([`columns`]).
+//! The code font is the platform monospace one, so a narrow character is one
+//! column and a wide one (CJK, fullwidth forms, emoji) two, as the font draws
+//! them; combining marks, joiners and variation selectors take none
+//! (`unicode-width`'s East Asian Width tables). The window measures one
+//! column of the code font and passes the advance in ([`columns`]).
 
 use std::ops::Range;
+
+use unicode_width::UnicodeWidthChar;
 
 /// A tab is drawn as four spaces, as [`crate::render`] always has, so the
 /// layout counts it that way too.
@@ -22,35 +23,48 @@ pub const TAB_SPACES: usize = 4;
 
 /// The most rows one line may take. A minified file can be one line of
 /// hundreds of kilobytes; laying all of it out would make a list row per
-/// screenful of a line nobody reads in a diff. Past this the last row runs to
-/// the end of the line and is clipped, and the line's own actions (staging it,
-/// ticking it) are unaffected because they work from the line's number and
-/// text, not from the rows.
+/// screenful of a line nobody reads in a diff. The last row ends where it
+/// fills and says how much of the line is not shown ([`Rows::hidden`]); the
+/// line's own actions (staging it, ticking it) are unaffected because they
+/// work from the line's number and text, not from the rows.
 pub const MAX_ROWS: usize = 4096;
+
+/// Zero width joiner: the characters either side of it are one glyph.
+const ZWJ: char = '\u{200D}';
+/// Emoji presentation selector: the character before it is drawn as a
+/// two-column emoji.
+const VS16: char = '\u{FE0F}';
 
 /// The line as it is drawn: tabs as spaces.
 pub fn expand(text: &str) -> String {
     text.replace('\t', &" ".repeat(TAB_SPACES))
 }
 
-/// How many columns one character takes: a wide character is two.
+/// How many columns one character takes on its own: two for a wide one,
+/// none for a combining mark, a joiner, a variation selector or a control.
 pub fn char_columns(character: char) -> usize {
-    let wide = matches!(
-        character as u32,
-        0x1100..=0x115F
-            | 0x2E80..=0xA4CF
-            | 0xAC00..=0xD7A3
-            | 0xF900..=0xFAFF
-            | 0xFE30..=0xFE6F
-            | 0xFF00..=0xFF60
-            | 0xFFE0..=0xFFE6
-    );
-    if wide { 2 } else { 1 }
+    character.width().unwrap_or(0)
 }
 
-/// How many columns a string takes.
+/// How many columns a string takes, a narrow character followed by the
+/// emoji presentation selector counting as the two-column emoji it is.
 pub fn columns_of(text: &str) -> usize {
-    text.chars().map(char_columns).sum()
+    let mut total = 0;
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        total += step(character, chars.peek().copied());
+    }
+    total
+}
+
+/// The columns `character` adds when `next` follows it.
+fn step(character: char, next: Option<char>) -> usize {
+    let own = char_columns(character);
+    if own == 1 && next == Some(VS16) {
+        2
+    } else {
+        own
+    }
 }
 
 /// How many columns fit in `width` pixels when one column advances `advance`
@@ -63,36 +77,52 @@ pub fn columns(width: f32, advance: f32) -> usize {
     ((width / advance).floor() as usize).max(1)
 }
 
-/// The visual rows of one line, as byte ranges into the expanded line.
+/// A line's visual rows, and how many characters past the last one are not
+/// drawn because the line reached [`MAX_ROWS`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Rows {
+    /// Byte ranges into the expanded line.
+    pub ranges: Vec<Range<usize>>,
+    /// Characters after the last row, not shown; zero for every line under
+    /// the cap.
+    pub hidden: usize,
+}
+
+/// The visual rows of one line.
 ///
 /// A row takes `columns` columns at most, excepting a single wide character
 /// where not even that fits. A row ends at the last space in its second half
 /// when there is one, so words and code stay together the way a browser's
 /// `pre-wrap` would break them, and breaks mid-token only when a token is
-/// longer than a row. The last row runs to the end of the line.
-pub fn rows(text: &str, columns: usize) -> Vec<Range<usize>> {
+/// longer than a row. A row never ends inside a joined emoji or before a
+/// combining mark: zero-width characters stay with the one before them.
+pub fn rows(text: &str, columns: usize) -> Rows {
     rows_capped(text, columns, MAX_ROWS)
 }
 
 /// [`rows`] with the cap given, for the test that the cap holds.
-pub fn rows_capped(text: &str, columns: usize, max_rows: usize) -> Vec<Range<usize>> {
+pub fn rows_capped(text: &str, columns: usize, max_rows: usize) -> Rows {
     let columns = columns.max(1);
+    let mut ranges = Vec::new();
     if text.is_empty() {
-        return std::iter::once(0..0).collect();
+        ranges.push(0..0);
+        return Rows { ranges, hidden: 0 };
     }
-    let mut out = Vec::new();
     let mut start = 0;
     while start < text.len() {
-        if out.len() + 1 >= max_rows {
-            out.push(start..text.len());
-            return out;
-        }
+        let last = ranges.len() + 1 >= max_rows;
         let mut used = 0;
         let mut end = start;
         let mut last_space = None;
-        for (offset, character) in text[start..].char_indices() {
-            let width = char_columns(character);
-            if used + width > columns {
+        let mut chars = text[start..].char_indices().peekable();
+        let mut after_joiner = false;
+        while let Some((offset, character)) = chars.next() {
+            let width = step(character, chars.peek().map(|(_, c)| *c));
+            // Marks, selectors and joiners draw on the glyph before them, and
+            // what a joiner joins is the same glyph: none of them starts a
+            // row.
+            let attached = width == 0 || after_joiner;
+            if !attached && used + width > columns && end > start {
                 break;
             }
             if character == ' ' {
@@ -100,23 +130,25 @@ pub fn rows_capped(text: &str, columns: usize, max_rows: usize) -> Vec<Range<usi
             }
             used += width;
             end = start + offset + character.len_utf8();
+            after_joiner = character == ZWJ;
         }
-        if end == start {
-            // One character wider than the whole row: it still gets a row of
-            // its own rather than looping for ever.
-            let character = text[start..].chars().next().expect("not empty");
-            end = start + character.len_utf8();
-        } else if end < text.len() {
+        if end < text.len() && !last {
             // A break that splits a word is the last resort: prefer a space
             // in the second half of the row, and keep it at the row's end.
             if let Some(space) = last_space.filter(|space| *space > start + (end - start) / 2) {
                 end = space + 1;
             }
         }
-        out.push(start..end);
+        ranges.push(start..end);
+        if last {
+            return Rows {
+                ranges,
+                hidden: text[end..].chars().count(),
+            };
+        }
         start = end;
     }
-    out
+    Rows { ranges, hidden: 0 }
 }
 
 #[cfg(test)]
@@ -125,6 +157,7 @@ mod tests {
 
     fn texts(text: &str, columns: usize) -> Vec<&str> {
         rows(text, columns)
+            .ranges
             .into_iter()
             .map(|range| &text[range])
             .collect()
@@ -164,23 +197,48 @@ mod tests {
         // A wide character in a one-column row gets a row of its own.
         assert_eq!(texts("日", 1), ["日"]);
         // Multi-byte characters are never cut in half.
-        for range in rows("héllo→wörld", 3) {
+        for range in rows("héllo→wörld", 3).ranges {
             assert!("héllo→wörld".is_char_boundary(range.start));
             assert!("héllo→wörld".is_char_boundary(range.end));
         }
     }
 
     #[test]
-    fn tabs_are_four_spaces_and_the_cap_holds() {
+    fn emoji_marks_joiners_selectors_and_extension_b_are_counted_as_drawn() {
+        // Emoji are two columns.
+        assert_eq!(columns_of("😀"), 2);
+        assert_eq!(texts("😀😀😀", 4), ["😀😀", "😀"]);
+        // A combining mark takes none and stays with its letter.
+        assert_eq!(columns_of("e\u{301}"), 1);
+        assert_eq!(texts("abe\u{301}cd", 3), ["abe\u{301}", "cd"]);
+        // A joined family is one glyph: never broken at the joiner.
+        let family = "👨\u{200D}👩\u{200D}👧";
+        assert_eq!(char_columns('\u{200D}'), 0);
+        assert_eq!(
+            texts(&format!("ab{family}cd"), 4),
+            [&format!("ab{family}") as &str, "cd"]
+        );
+        // The emoji presentation selector makes a narrow symbol two columns
+        // and stays with it.
+        assert_eq!(columns_of("\u{2764}\u{FE0F}"), 2);
+        assert_eq!(texts("a\u{2764}\u{FE0F}b", 3), ["a\u{2764}\u{FE0F}", "b"]);
+        // CJK Extension B (outside the Basic Multilingual Plane) is wide.
+        assert_eq!(columns_of("\u{20000}\u{2A6DF}"), 4);
+        assert_eq!(
+            texts("\u{20000}\u{20001}\u{20002}", 4),
+            ["\u{20000}\u{20001}", "\u{20002}"]
+        );
+    }
+
+    #[test]
+    fn tabs_are_four_spaces_and_the_cap_says_what_it_hides() {
         assert_eq!(expand("\tx"), "    x");
         assert_eq!(columns_of(&expand("\t")), 4);
         let text = "a".repeat(100);
         let capped = rows_capped(&text, 2, 3);
-        assert_eq!(capped.len(), 3);
-        assert_eq!(capped[0], 0..2);
-        assert_eq!(capped[1], 2..4);
-        // The last row runs to the end, so no cell is silently dropped from
-        // the line the row's actions apply to.
-        assert_eq!(capped[2], 4..100);
+        assert_eq!(capped.ranges, [0..2, 2..4, 4..6]);
+        // The rest of the line is counted, for the "truncated" marker.
+        assert_eq!(capped.hidden, 94);
+        assert_eq!(rows(&text, 10).hidden, 0);
     }
 }

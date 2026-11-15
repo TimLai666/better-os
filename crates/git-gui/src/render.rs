@@ -185,6 +185,9 @@ struct Part {
     from: usize,
     to: usize,
     first: bool,
+    /// On a line's last row when the line reached the row cap: how many
+    /// characters are not drawn, said at the row's end.
+    hidden: usize,
 }
 
 /// One row of the flattened diff.
@@ -198,20 +201,34 @@ enum DiffRow {
     Split(usize, git_core::SplitRow, Option<Part>, Option<Part>),
 }
 
+/// A diff laid out as rows, kept between frames: expanding tabs and
+/// wrapping a long diff is the costly part of drawing it, so it is done when
+/// the diff, the wrap width or the mode changes, not on every frame.
+pub(crate) struct DiffLayout {
+    key: (u64, bool, Option<(usize, usize)>),
+    rows: Arc<Vec<DiffRow>>,
+    texts: Arc<Vec<Vec<String>>>,
+    hunks: Arc<Vec<git_core::Hunk>>,
+}
+
 /// How many text columns a diff row has room for: `None` when lines do not
 /// wrap. `unified` and `split` are the columns of a unified row and of one
 /// half of a side by side row.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct WrapAt {
     unified: usize,
     split: usize,
 }
 
 fn parts(text: &str, columns: Option<usize>) -> Vec<Part> {
-    let ranges = match columns {
-        Some(columns) => crate::wrap::rows(text, columns),
-        None => std::iter::once(0..text.len()).collect(),
+    let (ranges, hidden) = match columns {
+        Some(columns) => {
+            let rows = crate::wrap::rows(text, columns);
+            (rows.ranges, rows.hidden)
+        }
+        None => (std::iter::once(0..text.len()).collect(), 0),
     };
+    let count = ranges.len();
     ranges
         .into_iter()
         .enumerate()
@@ -219,6 +236,7 @@ fn parts(text: &str, columns: Option<usize>) -> Vec<Part> {
             from: r.start,
             to: r.end,
             first: i == 0,
+            hidden: if i + 1 == count { hidden } else { 0 },
         })
         .collect()
 }
@@ -707,8 +725,11 @@ impl GitApp {
                     .border_l_1()
                     .border_color(p.divider)
                     .child(
-                        Button::icon_button("sync-more", IconName::ChevronDown, c.sync_more)
-                            .kind(ButtonKind::Subtle)
+                        // Its tooltip only while the menu is shut: open, the
+                        // menu itself says what is there.
+                        Button::new("sync-more", ButtonKind::Subtle)
+                            .icon(IconName::ChevronDown)
+                            .when(!open, |b| b.tooltip(c.sync_more))
                             .disabled(busy)
                             .on_click(move |window, cx| open_menu(&opener, None, window, cx)),
                     ),
@@ -731,19 +752,19 @@ impl GitApp {
         cx: &mut Context<Self>,
     ) -> Vec<MenuEntry> {
         use crate::remote::MenuAction;
-        let upstream = repo.status.upstream.clone().unwrap_or_default();
-        let remote = upstream
-            .split_once('/')
-            .map(|(remote, _)| remote.to_string())
-            .or_else(|| repo.info.remotes.first().map(|r| r.name.clone()))
+        // Where Fetch, Pull and Push go: the push target's remote (whose
+        // name may hold a `/`), and the upstream, or the branch it would
+        // get when published.
+        let target = repo.push_target();
+        let remote = target
+            .as_ref()
+            .map(|(remote, _, _)| remote.clone())
+            .or_else(|| repo.push_remote())
             .unwrap_or_else(|| "origin".to_string());
-        let upstream = if upstream.is_empty() {
-            match repo.branch() {
-                Some(branch) => format!("{remote}/{branch}"),
-                None => remote.clone(),
-            }
-        } else {
-            upstream
+        let upstream = match (&repo.status.upstream, &target) {
+            (Some(upstream), _) => upstream.clone(),
+            (None, Some((remote, name, _))) => format!("{remote}/{name}"),
+            (None, None) => remote.clone(),
         };
         let busy = self.session.is_network_busy();
         let rows = crate::remote::sync_menu(
@@ -778,10 +799,7 @@ impl GitApp {
                     MenuAction::Push { .. } | MenuAction::PublishBranch => this.session.push(false),
                     // Always asked, whatever the setting: from this menu it
                     // is one click away from the plain push.
-                    MenuAction::ForcePush { .. } => {
-                        let expected = this.session.repo.as_ref().and_then(Repo::seen_on_remote);
-                        this.session.dialog = Some(Dialog::ForcePush { expected });
-                    }
+                    MenuAction::ForcePush { .. } => this.session.ask_force_push(),
                     MenuAction::PublishRepository => this.sync_button(true),
                 }))
                 .entry(),
@@ -1621,8 +1639,8 @@ impl GitApp {
         } else {
             PaneKind::List
         };
-        let viewport = f32::from(window.viewport_size().width);
-        let width = crate::pane::width(kind, self.session.pane_width(kind), viewport);
+        let view = self.view_width(window);
+        let width = crate::pane::width(kind, self.session.pane_width(kind), view);
         let pane = div()
             .flex()
             .flex_col()
@@ -1670,14 +1688,37 @@ impl GitApp {
                 (Tab::Graph, _) => self.graph_pane(repo, p, c, window, cx).into_any_element(),
             });
         let follow = cx.listener(move |this, event: &DragMoveEvent<EdgeDrag>, window, cx| {
-            let viewport = f32::from(window.viewport_size().width);
+            if this.edge_cancelled {
+                return;
+            }
+            let view = this.view_width(window);
             let width = f32::from(event.event.position.x - event.bounds.left());
             this.session
-                .set_pane_width(kind, crate::pane::store(kind, width, viewport));
+                .set_pane_width(kind, crate::pane::store(kind, width, view));
             this.dragging_edge = true;
             this.edge_dirty = true;
             cx.notify();
         });
+        // The view's real width, measured as it is laid out: the pane's
+        // limits are a share of it, not of the window with its shadow.
+        let measured = self.view_width.clone();
+        let probe = canvas(
+            move |bounds, window, _| {
+                let width = f32::from(bounds.size.width);
+                if (measured.get() - width).abs() >= 1.0 {
+                    measured.set(width);
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
+        // The drag ends where the button comes up, in the view or anywhere
+        // else in the window: the width is saved once, not per move.
+        let end = |this: &mut Self, cx: &mut Context<Self>| this.end_edge_drag(cx);
         h_stack()
             .id("repository-view")
             .relative()
@@ -1685,27 +1726,49 @@ impl GitApp {
             .flex_1()
             .min_h_0()
             .w_full()
+            .child(probe)
             .child(pane)
             .child(self.detail_pane(repo, p, c, window, cx))
             .on_drag_move(follow)
-            // The drag ends here: the width is saved once, not per move.
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    if std::mem::take(&mut this.edge_dirty) {
-                        this.session.save_settings();
-                    }
-                    this.dragging_edge = false;
-                    cx.notify();
-                }),
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| end(this, cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| end(this, cx)),
             )
             .child(self.pane_edge(kind, width, window, cx))
     }
 
+    /// The repository view's width: as measured, or the window's before the
+    /// first layout.
+    pub(crate) fn view_width(&self, window: &Window) -> f32 {
+        match self.view_width.get() {
+            width if width > 0.0 => width,
+            _ => f32::from(window.viewport_size().width),
+        }
+    }
+
+    /// A drag of the list pane's edge is over: save what it set.
+    fn end_edge_drag(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.edge_dirty) {
+            self.session.save_settings();
+        }
+        let was = self.dragging_edge || self.edge_drag_start.is_some();
+        self.dragging_edge = false;
+        self.edge_drag_start = None;
+        self.edge_cancelled = false;
+        if was {
+            cx.notify();
+        }
+    }
+
     /// The grab strip on the list pane's right edge, as Better Files' pane
     /// edges are (ticket 118): wider than the divider it lights, a resize
-    /// pointer, a double-click back to the default width, and a keyboard
-    /// stop where Left and Right move it 16px and Enter puts it back.
+    /// pointer, a double-click back to the default width, Escape during a
+    /// drag puts the width back, and a keyboard stop where Left and Right
+    /// move it 16px and Enter puts it back. Every change is saved.
     fn pane_edge(
         &self,
         kind: PaneKind,
@@ -1738,7 +1801,12 @@ impl GitApp {
             )
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    // Pressed, it is the keyboard's stop too, so the arrow
+                    // keys and Escape reach it.
+                    this.edge_focus.focus(window, cx);
+                    this.edge_drag_start = Some(this.session.pane_width(kind));
+                    this.edge_cancelled = false;
                     if event.click_count >= 2 {
                         this.session
                             .set_pane_width(kind, crate::pane::edge(kind, 0.0).reset());
@@ -1757,17 +1825,29 @@ impl GitApp {
             })
             .track_focus(&self.edge_focus.clone().tab_index(0).tab_stop(true))
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                let viewport = f32::from(window.viewport_size().width);
-                let now = crate::pane::width(kind, this.session.pane_width(kind), viewport);
-                let stored = match event.keystroke.key.as_str() {
-                    "right" => crate::pane::store(kind, now + 16.0, viewport),
-                    "left" => crate::pane::store(kind, now - 16.0, viewport),
-                    "enter" => crate::pane::edge(kind, viewport).reset(),
+                let key = event.keystroke.key.as_str();
+                if key == "escape" {
+                    // During a drag: back to the width it started at.
+                    if let Some(start) = this.edge_drag_start.filter(|_| this.dragging_edge) {
+                        cx.stop_propagation();
+                        this.session.set_pane_width(kind, start);
+                        this.edge_dirty = false;
+                        this.edge_cancelled = true;
+                        cx.notify();
+                    }
+                    return;
+                }
+                let view = this.view_width(window);
+                let now = crate::pane::width(kind, this.session.pane_width(kind), view);
+                let stored = match key {
+                    "right" => crate::pane::store(kind, now + 16.0, view),
+                    "left" => crate::pane::store(kind, now - 16.0, view),
+                    "enter" => crate::pane::edge(kind, view).reset(),
                     _ => return,
                 };
                 cx.stop_propagation();
                 this.session.set_pane_width(kind, stored);
-                this.edge_dirty = true;
+                this.session.save_settings();
                 cx.notify();
             }))
             .into_any_element()
@@ -2778,7 +2858,11 @@ impl GitApp {
         };
         let header = h_stack()
             .flex_none()
-            .h(px(44.0))
+            // A narrow diff (the Graph's details) puts its controls on a
+            // second line instead of pushing them out of the pane.
+            .min_h(px(44.0))
+            .flex_wrap()
+            .py(px(4.0))
             .px(spacing::MD)
             .gap(spacing::SM)
             .border_b_1()
@@ -2786,6 +2870,7 @@ impl GitApp {
             .child(
                 label(shown_path, BODY_STRONG, p.text_primary)
                     .flex_1()
+                    .min_w(px(160.0))
                     .truncate(),
             )
             .child(
@@ -2845,7 +2930,7 @@ impl GitApp {
                     diff,
                     &path,
                     working && selectable,
-                    (split, wrap, renamed),
+                    (split, wrap, renamed, shown.version),
                     p,
                     c,
                     window,
@@ -2857,7 +2942,7 @@ impl GitApp {
                     diff,
                     &path,
                     working && selectable,
-                    (split, wrap, renamed),
+                    (split, wrap, renamed, shown.version),
                     p,
                     c,
                     window,
@@ -2937,15 +3022,16 @@ impl GitApp {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// `(split, wrap, renamed)`: side by side, lines wrapped, and whether
-    /// the file is a rename, which says so when its content is unchanged.
+    /// `(split, wrap, renamed, version)`: side by side, lines wrapped,
+    /// whether the file is a rename (which says so when its content is
+    /// unchanged), and the diff's [`crate::session::ShownDiff::version`].
     #[allow(clippy::too_many_arguments)]
     fn text_diff(
         &self,
         diff: &FileDiff,
         path: &Path,
         selectable: bool,
-        (split, wrap, renamed): (bool, bool, bool),
+        (split, wrap, renamed, version): (bool, bool, bool, u64),
         p: &'static Palette,
         c: &'static Copy,
         window: &Window,
@@ -2967,17 +3053,6 @@ impl GitApp {
             .into_any_element();
         }
         let mono = cx.theme().mono_font_family.clone();
-        let texts: Arc<Vec<Vec<String>>> = Arc::new(
-            hunks
-                .iter()
-                .map(|hunk| {
-                    hunk.lines
-                        .iter()
-                        .map(|line| crate::wrap::expand(&line.text))
-                        .collect()
-                })
-                .collect(),
-        );
         // Where lines break: the diff's own width as last laid out (the
         // canvas below measures it), less the gutter, the two number
         // columns and the mark, in columns of the code font.
@@ -3004,23 +3079,54 @@ impl GitApp {
                 split: crate::wrap::columns(split, advance),
             }
         });
-        let rows = flatten(hunks, &texts, split, wrap_at);
-        let hunks = Arc::new(hunks.clone());
-        let included: Arc<Vec<Vec<bool>>> = Arc::new(
-            hunks
-                .iter()
-                .map(|hunk| {
-                    hunk.lines
+        let key = (version, split, wrap_at.map(|w| (w.unified, w.split)));
+        let (rows, texts, hunks) = {
+            let mut cache = self.diff_layout.borrow_mut();
+            match cache.as_ref() {
+                Some(layout) if layout.key == key => {}
+                // Same diff, other width or mode: the expanded text stays.
+                Some(layout) if layout.key.0 == version => {
+                    let rows = flatten(&layout.hunks, &layout.texts, split, wrap_at);
+                    let (texts, hunks) = (layout.texts.clone(), layout.hunks.clone());
+                    *cache = Some(DiffLayout {
+                        key,
+                        rows: Arc::new(rows),
+                        texts,
+                        hunks,
+                    });
+                }
+                _ => {
+                    let texts: Vec<Vec<String>> = hunks
                         .iter()
-                        .map(|line| {
-                            self.session
-                                .repo
-                                .as_ref()
-                                .is_some_and(|r| r.inclusion.line_included(path, line))
+                        .map(|hunk| {
+                            hunk.lines
+                                .iter()
+                                .map(|line| crate::wrap::expand(&line.text))
+                                .collect()
                         })
-                        .collect()
-                })
-                .collect(),
+                        .collect();
+                    let rows = flatten(hunks, &texts, split, wrap_at);
+                    *cache = Some(DiffLayout {
+                        key,
+                        rows: Arc::new(rows),
+                        texts: Arc::new(texts),
+                        hunks: Arc::new(hunks.clone()),
+                    });
+                }
+            }
+            let layout = cache.as_ref().expect("filled above");
+            (
+                layout.rows.clone(),
+                layout.texts.clone(),
+                layout.hunks.clone(),
+            )
+        };
+        // What is ticked, read per row on screen.
+        let included: Arc<Option<crate::changes::Include>> = Arc::new(
+            self.session
+                .repo
+                .as_ref()
+                .and_then(|r| r.inclusion.include_of(path).cloned()),
         );
         let weak = cx.entity().downgrade();
         let list = uniform_list("diff", rows.len(), move |range, _window, _cx| {
@@ -3034,6 +3140,7 @@ impl GitApp {
                         &included,
                         selectable,
                         &mono,
+                        c,
                         p,
                         weak.clone(),
                     )
@@ -3740,6 +3847,49 @@ impl GitApp {
                 primary = Some(c.force_push);
                 destructive = true;
                 push(label(c.force_push_body, BODY, p.text_primary).into_any_element());
+                // What the remote loses: how many commits, and the newest by
+                // sha and subject.
+                match &self.session.force_push_loss {
+                    None => push(caption(c.force_push_unknown, p).into_any_element()),
+                    Some(loss) if loss.total == 0 => {
+                        push(caption(c.force_push_loses_none, p).into_any_element())
+                    }
+                    Some(loss) => {
+                        let n = loss.total.to_string();
+                        let head = if loss.more_than {
+                            fill(c.force_push_loses_many, &[("n", &n)])
+                        } else if loss.total == 1 {
+                            c.force_push_loses_one.to_string()
+                        } else {
+                            fill(c.force_push_loses, &[("n", &n)])
+                        };
+                        let mut list =
+                            v_stack()
+                                .gap(px(2.0))
+                                .child(label(head, BODY_STRONG, p.text_primary));
+                        for (sha, summary) in &loss.listed {
+                            list = list.child(
+                                h_stack()
+                                    .gap(spacing::SM)
+                                    .child(
+                                        t(div().flex_none(), CODE, p.text_secondary)
+                                            .child(sha.clone()),
+                                    )
+                                    .child(
+                                        label(summary.clone(), BODY, p.text_primary)
+                                            .min_w_0()
+                                            .truncate(),
+                                    ),
+                            );
+                        }
+                        let rest = loss.total.saturating_sub(loss.listed.len());
+                        if rest > 0 && !loss.more_than {
+                            list = list
+                                .child(caption(fill(c.and_more, &[("n", &rest.to_string())]), p));
+                        }
+                        push(list.into_any_element());
+                    }
+                }
             }
             Dialog::CreateTag { .. } => {
                 title = c.tag_title.into();
@@ -4403,11 +4553,6 @@ impl GitApp {
                         s.confirm_discard,
                         |s, v| s.confirm_discard = v,
                     )))
-                    .child(card("p-force", c.confirm_force_push).content(toggle(
-                        "t-force",
-                        s.confirm_force_push,
-                        |s, v| s.confirm_force_push = v,
-                    )))
                     .child(card("p-remove", c.confirm_remove).content(toggle(
                         "t-remove",
                         s.confirm_remove_repository,
@@ -4545,8 +4690,8 @@ fn number(n: Option<u32>, p: &Palette) -> Div {
 /// One row's part of a line, in the code font. A continuation row starts
 /// with nothing in the number columns and an indent marker in the mark's
 /// place, drawn by the caller.
-fn line_text(text: &str, part: Part, mono: &SharedString, p: &Palette) -> Div {
-    t(
+fn line_text(text: &str, part: Part, mono: &SharedString, c: &Copy, p: &Palette) -> Div {
+    let shown = t(
         div()
             .whitespace_nowrap()
             .flex_1()
@@ -4556,11 +4701,33 @@ fn line_text(text: &str, part: Part, mono: &SharedString, p: &Palette) -> Div {
         CODE,
         p.text_primary,
     )
-    .child(text.get(part.from..part.to).unwrap_or_default().to_string())
+    .child(text.get(part.from..part.to).unwrap_or_default().to_string());
+    if part.hidden == 0 {
+        return shown;
+    }
+    // A line past the row cap says so, rather than ending as if it ended.
+    h_stack().flex_1().min_w_0().child(shown).child(
+        label(
+            fill(c.line_truncated, &[("n", &part.hidden.to_string())]),
+            CAPTION,
+            p.text_tertiary,
+        )
+        .flex_none()
+        .px(spacing::SM),
+    )
 }
 
-/// The mark column: `+`, `-` or nothing on a line's first row, and a
-/// continuation arrow under it on the rows it wraps onto.
+/// Whether a diff line is ticked for the commit.
+fn ticked(include: &Option<crate::changes::Include>, line: &git_core::DiffLine) -> bool {
+    match include {
+        Some(crate::changes::Include::All) => true,
+        Some(crate::changes::Include::Lines { lines, .. }) => {
+            lines.contains(&git_core::line_key(line))
+        }
+        _ => false,
+    }
+}
+
 /// How far one column of the code font advances at the diff's size,
 /// measured by the window's own text system.
 fn code_advance(window: &Window, mono: &SharedString) -> f32 {
@@ -4582,6 +4749,8 @@ fn code_advance(window: &Window, mono: &SharedString) -> f32 {
     (f32::from(width) / SAMPLE.len() as f32).max(1.0)
 }
 
+/// The mark column: `+`, `-` or nothing on a line's first row, and a
+/// continuation arrow under it on the rows it wraps onto.
 fn mark_cell(mark: &'static str, color: Rgba, first: bool, p: &Palette) -> Div {
     let (text, color) = if first {
         (mark, color)
@@ -4637,9 +4806,10 @@ fn diff_row(
     kind: DiffRow,
     hunks: &Arc<Vec<git_core::Hunk>>,
     texts: &Arc<Vec<Vec<String>>>,
-    included: &Arc<Vec<Vec<bool>>>,
+    included: &Arc<Option<crate::changes::Include>>,
     selectable: bool,
     mono: &SharedString,
+    c: &'static Copy,
     p: &'static Palette,
     weak: WeakEntity<GitApp>,
 ) -> AnyElement {
@@ -4670,10 +4840,10 @@ fn diff_row(
                 r = r.child(gutter(
                     ("hunk-g", index).into(),
                     Some(
-                        included[h]
+                        hunks[h]
+                            .lines
                             .iter()
-                            .zip(&hunks[h].lines)
-                            .any(|(on, l)| *on && l.kind != DiffLineKind::Context),
+                            .any(|l| l.kind != DiffLineKind::Context && ticked(included, l)),
                     ),
                     p,
                     Some(toggler(Vec::new(), Some(h))),
@@ -4696,7 +4866,7 @@ fn diff_row(
             if selectable {
                 r = r.child(gutter(
                     ("line-g", index).into(),
-                    changed.then(|| included[h][l]),
+                    changed.then(|| ticked(included, line)),
                     p,
                     changed.then(|| toggler(vec![(h, l)], None)),
                 ));
@@ -4705,7 +4875,7 @@ fn diff_row(
             r.child(number(line.old_line.filter(|_| first), p))
                 .child(number(line.new_line.filter(|_| first), p))
                 .child(mark_cell(mark, mark_color, first, p))
-                .child(line_text(&texts[h][l], part, mono, p))
+                .child(line_text(&texts[h][l], part, mono, c, p))
                 .into_any_element()
         }
         DiffRow::Split(h, pair, left_part, right_part) => {
@@ -4735,7 +4905,7 @@ fn diff_row(
                         if selectable && changed {
                             d = d.child(gutter(
                                 (if left { "slg" } else { "srg" }, index).into(),
-                                Some(included[h][l]),
+                                Some(ticked(included, line)),
                                 p,
                                 Some(toggler(vec![(h, l)], None)),
                             ));
@@ -4743,7 +4913,7 @@ fn diff_row(
                         let n = if left { line.old_line } else { line.new_line };
                         d.child(number(n.filter(|_| first), p))
                             .child(mark_cell(mark, mark_color, first, p))
-                            .child(line_text(&texts[h][l], part, mono, p))
+                            .child(line_text(&texts[h][l], part, mono, c, p))
                             .into_any_element()
                     }
                     None => div()
@@ -5020,6 +5190,67 @@ mod wrap_rows {
                 (Some(10), None),
                 (Some(2), None),
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod wrap_cost {
+    use super::{DiffLineKind, WrapAt, flatten};
+    use git_core::DiffLine;
+
+    /// What laying out a 50,000-line diff costs, which before the cache was
+    /// paid on every frame and now only when the diff, its width or its mode
+    /// changes. Run with `--ignored --nocapture` to read the numbers.
+    #[test]
+    #[ignore]
+    fn laying_out_fifty_thousand_lines() {
+        let lines: Vec<DiffLine> = (0..50_000)
+            .map(|i| DiffLine {
+                kind: if i % 3 == 0 {
+                    DiffLineKind::Added
+                } else {
+                    DiffLineKind::Context
+                },
+                text: format!("\tlet value_{i} = compute(\"{}\");", "x".repeat(i % 160)),
+                old_line: Some(i as u32),
+                new_line: Some(i as u32),
+                no_newline_at_end: false,
+            })
+            .collect();
+        let hunks = vec![git_core::Hunk {
+            header: "@@ -1,50000 +1,50000 @@".into(),
+            lines,
+        }];
+        let at = WrapAt {
+            unified: 100,
+            split: 48,
+        };
+        let started = std::time::Instant::now();
+        let texts: Vec<Vec<String>> = hunks
+            .iter()
+            .map(|h| {
+                h.lines
+                    .iter()
+                    .map(|l| crate::wrap::expand(&l.text))
+                    .collect()
+            })
+            .collect();
+        let rows = flatten(&hunks, &texts, false, Some(at));
+        let full = started.elapsed();
+        let started = std::time::Instant::now();
+        let split = flatten(&hunks, &texts, true, Some(at));
+        let relayout = started.elapsed();
+        let cached = std::sync::Arc::new(rows);
+        let started = std::time::Instant::now();
+        for _ in 0..1000 {
+            std::hint::black_box(cached.clone());
+        }
+        let hit = started.elapsed() / 1000;
+        println!(
+            "50k lines: expand+wrap {full:?} ({} rows), split re-wrap {relayout:?} ({} rows), cache hit {hit:?}",
+            cached.len(),
+            split.len()
         );
     }
 }

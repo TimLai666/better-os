@@ -22,60 +22,9 @@ pub const SIDEBAR_WIDTH: f32 = 236.0;
 pub const SIDEBAR_ROW_CHROME: f32 = 62.0;
 
 /// A pane whose edge the person can drag (ticket 119's operations panel,
-/// ticket 118's sidebar): the width it starts at, how narrow it may get, and
-/// how much of the window it may take. One policy for every such edge, so
-/// they clamp, remember and reset alike.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PaneEdge {
-    /// The width it has until dragged, and after a double-click.
-    pub default: f32,
-    /// Narrower than this and its labels stop being readable.
-    pub min: f32,
-    /// The most of the window it may take, so the folder keeps a usable
-    /// width.
-    pub max_fraction: f32,
-}
-
-impl PaneEdge {
-    /// The widest the pane may be in a window this wide; never below `min`.
-    pub fn max(&self, window_width: f32) -> f32 {
-        (window_width * self.max_fraction).max(self.min)
-    }
-
-    /// `width`, kept between the edge's limits for this window. Anything
-    /// that is not a width (not a number, below zero) is the default.
-    pub fn clamp(&self, width: f32, window_width: f32) -> f32 {
-        let width = if width.is_finite() && width > 0.0 {
-            width
-        } else {
-            self.default
-        };
-        width.clamp(self.min, self.max(window_width))
-    }
-
-    /// The width to draw from what was stored: the stored width when there
-    /// is one, the default otherwise, either clamped for this window.
-    pub fn resolve(&self, stored: Option<u32>, window_width: f32) -> f32 {
-        self.clamp(
-            stored.map_or(self.default, |width| width as f32),
-            window_width,
-        )
-    }
-
-    /// What a double-click on the edge stores: no width at all, so the pane
-    /// is drawn at its default whenever the window is wide enough, not at
-    /// whatever a narrow window clamped the default to.
-    pub fn reset(&self) -> Option<u32> {
-        None
-    }
-
-    /// What to store after a drag: the clamped width in whole pixels, or
-    /// nothing when it is the default.
-    pub fn store(&self, width: f32, window_width: f32) -> Option<u32> {
-        let width = self.clamp(width, window_width).round();
-        (width != self.default).then_some(width as u32)
-    }
-}
+/// ticket 118's sidebar). The policy is better-ui's, shared with Better Git
+/// since ticket 123, so every such edge clamps, remembers and resets alike.
+pub use better_ui::pane_edge::{PANE_EDGE_HIT_WIDTH, PaneEdge};
 
 /// The file operations panel (ticket 119): about what a job's title, its
 /// progress bar and a count need, and at most a third of the window.
@@ -102,10 +51,6 @@ pub const PREVIEW_EDGE: PaneEdge = PaneEdge {
     min: 240.0,
     max_fraction: 1.0 / 3.0,
 };
-
-/// How wide the strip a person grabs to drag a pane's edge is: wider than the
-/// 1px divider drawn in it, as in Windows 11 File Explorer.
-pub const PANE_EDGE_HIT_WIDTH: f32 = 8.0;
 
 /// Advance width of one Latin character at the body text size.
 const LATIN_ADVANCE: f32 = 7.6;

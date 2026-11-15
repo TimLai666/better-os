@@ -172,6 +172,12 @@ impl Inclusion {
     }
 
     /// Whether a changed line is ticked.
+    /// What is chosen of one file, for the diff to read per row on screen
+    /// rather than for every line on every frame.
+    pub fn include_of(&self, path: &Path) -> Option<&Include> {
+        self.files.get(path)
+    }
+
     pub fn line_included(&self, path: &Path, line: &DiffLine) -> bool {
         match self.files.get(path) {
             Some(Include::All) => true,

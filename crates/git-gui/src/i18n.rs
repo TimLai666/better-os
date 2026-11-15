@@ -108,7 +108,9 @@ strings! {
     why_ahead: "nothing to pull: only yours has commits", "沒有可拉取的內容：只有你的分支有提交";
     why_diverged: "a push would be refused: both branches have moved", "推送會被拒絕：兩個分支都有新的提交";
     just_now: "just now", "剛剛";
+    minute_ago: "1 minute ago", "1 分鐘前";
     minutes_ago: "{n} minutes ago", "{n} 分鐘前";
+    hour_ago: "1 hour ago", "1 小時前";
     hours_ago: "{n} hours ago", "{n} 小時前";
     menu: "Menu", "選單";
     settings: "Settings", "設定";
@@ -194,6 +196,7 @@ strings! {
     split: "Split", "並排";
     hide_whitespace: "Hide whitespace changes", "隱藏空白變更";
     wrap_lines: "Wrap lines", "自動換行";
+    line_truncated: "… (truncated, {n} more characters)", "…（已截斷，還有 {n} 個字元）";
     renamed_no_content: "Renamed, no content change.", "已重新命名，內容沒有變更。";
     expand_file: "Expand whole file", "展開整個檔案";
     whitespace_hidden_note: "Lines can't be chosen while whitespace changes are hidden.", "隱藏空白變更時無法選擇個別行。";
@@ -359,6 +362,12 @@ strings! {
     force_push_title: "Force push?", "要強制推送嗎？";
     force_push_body: "This replaces the branch on the remote with yours. Only the commits you last saw there are replaced: if anyone pushed since, the push is refused.", "這會用你的分支取代遠端上的分支。只會取代你上次看到的那些提交：之後只要有人推送過，推送就會被拒絕。";
     force_push: "Force push", "強制推送";
+    force_push_loses_one: "The remote loses 1 commit:", "遠端會失去 1 個提交：";
+    force_push_loses: "The remote loses {n} commits:", "遠端會失去 {n} 個提交：";
+    force_push_loses_many: "The remote loses more than {n} commits, the newest:", "遠端會失去超過 {n} 個提交，最新的幾個：";
+    force_push_loses_none: "No commit on the remote is lost.", "遠端不會失去任何提交。";
+    force_push_unknown: "Better Git could not read what the remote has; fetch first to see what it loses.", "Better Git 讀不到遠端有哪些提交；先擷取，才能看到會失去什麼。";
+    and_more: "and {n} more", "還有 {n} 個";
     tag_title: "Create a tag", "建立標籤";
     tag_name: "Name", "名稱";
     delete_tag_title: "Delete tag", "刪除標籤";
@@ -436,7 +445,6 @@ strings! {
     language: "Language", "語言";
     language_system: "Use system setting", "跟隨系統";
     confirm_discard: "Before discarding changes", "捨棄變更前";
-    confirm_force_push: "Before force pushing", "強制推送前";
     confirm_remove: "Before removing a repository", "移除儲存庫前";
     confirm_undo: "Before undoing a commit", "復原提交前";
     background_fetch: "Fetch in the background every five minutes", "每五分鐘在背景擷取";
@@ -864,8 +872,12 @@ impl Copy {
     pub fn ago(&self, seconds: i64) -> String {
         if seconds < 60 {
             self.just_now.to_string()
+        } else if seconds < 120 {
+            self.minute_ago.to_string()
         } else if seconds < 3600 {
             fill(self.minutes_ago, &[("n", &(seconds / 60).to_string())])
+        } else if seconds < 7200 {
+            self.hour_ago.to_string()
         } else {
             fill(self.hours_ago, &[("n", &(seconds / 3600).to_string())])
         }

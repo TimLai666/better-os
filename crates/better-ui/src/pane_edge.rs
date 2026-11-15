@@ -2,12 +2,9 @@
 //! may get, and how much of the window it may take, so every such edge
 //! clamps, remembers and resets alike.
 //!
-//! This is Better Files' policy from `crates/files-gui/src/layout.rs`
-//! (tickets 118 and 119) moved here in ticket 123, so Better Git's list pane
-//! follows the same rule instead of growing a second one. The measurements and
-//! the `PaneEdge` there are a copy that stays until a change may touch
-//! `files-gui`: nothing may import that crate from here, and a window that
-//! needs an edge should take it from this module.
+//! Better Files' policy from its `layout.rs` (tickets 118 and 119), moved
+//! here in ticket 123: Better Files and Better Git both take their edges from
+//! this module, so there is one rule.
 
 /// One draggable pane edge.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,7 +77,7 @@ mod tests {
     fn a_stored_width_is_kept_between_the_limits() {
         assert_eq!(EDGE.resolve(None, 1280.0), 320.0);
         assert_eq!(EDGE.resolve(Some(400), 1280.0), 400.0);
-        // Below the minimum, or not a width at all, is the default.
+        // Below the minimum is the minimum; not a width at all is the default.
         assert_eq!(EDGE.resolve(Some(100), 1280.0), 240.0);
         assert_eq!(EDGE.clamp(f32::NAN, 1280.0), 320.0);
         // A window too narrow for the default takes the minimum, not less.

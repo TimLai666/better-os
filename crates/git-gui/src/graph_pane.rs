@@ -271,11 +271,7 @@ impl GitApp {
     /// of the window (ticket 123).
     pub(crate) fn graph_list_width(&self, window: &Window) -> f32 {
         let kind = crate::pane::PaneKind::Graph;
-        crate::pane::width(
-            kind,
-            self.session.pane_width(kind),
-            f32::from(window.viewport_size().width),
-        )
+        crate::pane::width(kind, self.session.pane_width(kind), self.view_width(window))
     }
 
     pub(crate) fn graph_find_allowed(&self, window: &Window, cx: &App) -> bool {
