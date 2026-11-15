@@ -1,0 +1,43 @@
+[package]
+name = "touchpad-scroll"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The scroll-speed pass-through (ADR 0030). The library is the whole decision —
+# which device may be opened, how a frame is scaled, when the grab is taken and
+# released — behind a device seam, so every rule is tested without opening a
+# real /dev/input node. The binary is the per-touchpad system service.
+
+[[bin]]
+name = "better-touchpad-scrolld"
+path = "src/main.rs"
+required-features = ["service"]
+
+[lib]
+name = "touchpad_scroll"
+path = "src/lib.rs"
+
+[[bench]]
+name = "transform"
+harness = false
+
+[features]
+default = ["service"]
+# The system-bus half of the binary. The settings window's client lives in
+# touchpad-platform and needs only the names in `ipc`, so it does not pull
+# this in.
+service = ["dep:zbus"]
+
+[dependencies]
+libc.workspace = true
+touchpad-core.workspace = true
+zbus = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[example]]
+name = "fake-scroll-bus"
+required-features = ["service"]

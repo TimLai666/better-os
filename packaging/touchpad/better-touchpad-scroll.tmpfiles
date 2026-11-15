@@ -1,0 +1,2 @@
+# The scroll factors, kept for the next start. Removed with the package.
+d /var/lib/better-touchpad-scroll 0700 _better-touchpad-scroll _better-touchpad-scroll -

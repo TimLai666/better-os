@@ -72,6 +72,9 @@ touchpad-gestures ──> touchpad-session ──> better-actions ──> launch
         └──> touchpad-gesture-service ──> better-touchpad-gestured
              resident pipeline: compositor events in, typed actions out
 adapters/gnome-shell-touchpad/   GJS under ADR 0012's bounded exception
+touchpad-scroll ──> better-touchpad-scrolld (one system service per touchpad)
+   device rule, frame scaling, grab lifetime, evdev/uinput layer (ADR 0030)
+        └──> touchpad-platform::scroll   the window's system-bus client
 
 window-attention-core ──> window-attention-service ──> better-window-attention
    choices, decision, store   resident relay counterpart (ships in better-manager)
@@ -237,6 +240,14 @@ suite, not only the two that exist today.
   machinery. A failing gesture adapter, or a gesture configuration that will
   not parse, cannot reach pointer movement or two-finger scrolling — which is
   asserted, not reasoned about.
+- **The scroll factors are the one input path Better OS sits in.**
+  `touchpad-scroll` grabs a touchpad's evdev node and re-emits it through a
+  uinput clone with two-finger and wheel motion scaled (ADR 0030). It is the
+  only first-party code that opens `/dev/input` or `/dev/uinput`, it runs as a
+  udev-started system service per touchpad that drops privilege after opening
+  its two nodes, and every decision (which device, how a frame is scaled, when
+  the grab is taken and released) is in the library behind a device seam. The
+  security review is `engineering/specs/touchpad-input-passthrough-security.md`.
 
 ### Trust boundaries
 
@@ -569,3 +580,4 @@ verification contract.
 - [ADR 0026: The Ready to unplug rule and its two thresholds](decisions/0026-storage-readiness-rule.md)
 - [ADR 0027: Better Storage stays unprivileged](decisions/0027-storage-privileged-boundary.md)
 - [ADR 0028: The privileged service is upgraded outside its own unit](decisions/0028-daemon-upgrades-outside-its-own-unit.md)
+- [ADR 0030: Touchpad scroll speed through an evdev/uinput pass-through](decisions/0030-touchpad-scroll-passthrough.md)

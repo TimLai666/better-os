@@ -58,23 +58,59 @@ immediately, and all are verified by reading the key back.
 
 ### The three controls GNOME has no key for
 
-GNOME 46 — the release Zorin 18 ships — has no key for these, so they are shown
-as unavailable with the reason attached and are never written:
+GNOME 46 — the release Zorin 18 ships — has no key for the scroll factors or
+for smooth scrolling.
 
-| Control | Reason key | What the screen says |
+**The two scroll factors are carried by the scroll pass-through** (ticket 125,
+[ADR 0030](/engineering/decisions/0030-touchpad-scroll-passthrough.md)). One
+system service per touchpad, `better-touchpad-scroll@eventN.service`, owns
+`org.betteros.TouchpadScroll1.eventN` on the system bus. The GNOME backend's
+`crate::scroll` client reads the factors in force from the first of them,
+writes both factors to every one of them in one call (a change to one keeps the
+other at what is in force), and verifies by reading back, like every other
+control. Resetting a factor is setting it to 1, at which the service holds
+nothing. The factors are offered exactly when a pass-through answers:
+
+| State | Reason key | What the screen says |
 | --- | --- | --- |
-| Vertical scroll factor | `gnome.no_scroll_factor_key` | GNOME's touchpad settings have no scroll-factor key, so scrolling distance follows the pointer speed |
-| Horizontal scroll factor | `gnome.no_scroll_factor_key` | as above |
-| Smooth scrolling | `gnome.no_smooth_scroll_key` | decided by the compositor and each application |
+| a pass-through answers | — | the factors are live sliders, applied at the next touchpad frame |
+| no touchpad has one | `gnome.scroll_passthrough_absent` | no touchpad has Better Touchpad's scroll service running, so scroll distance follows the pointer speed |
+| the system bus fails | `gnome.scroll_passthrough_unreachable` | the bus error |
+| smooth scrolling, always | `gnome.no_smooth_scroll_key` | whether scrolling animates is decided by each application |
 
-This is the capability rule working, not a gap in the model: `touchpad-core`
-carries both scroll factors as independent, linkable values, and the mock
-backend applies and verifies both, so the behaviour is proven and ready for a
-backend that has the key. Adding it when GNOME grows one is a row in `MAPPED`.
+What a factor does, exactly: while two fingers are on the pad and both move
+the same way along an axis, their movement along it is multiplied before
+libinput sees it, the vertical factor on the y axis and the horizontal one on
+the x axis, so libinput's two-finger scroll travels that much further or less
+far. Pointer motion and three- and four-finger gestures are not scaled; a
+touchpad that reports a wheel has its wheel (including the high-resolution
+one) scaled by the same factors. The scaling rules are in
+`crates/touchpad-scroll/src/transform.rs`, and four consequences of them
+belong on the record:
 
-The scroll factors are also the reason the model keeps a requested value and an
-effective value apart everywhere: on this backend the two genuinely differ for
-those controls, and showing only one of them would be a lie either way.
+- Fingers moving toward or away from each other (a pinch, a rotation) are not
+  scaled on that axis, so a pinch keeps its scale and angle whatever the two
+  factors are.
+- The distance a scroll added is dropped in the very frame where a finger
+  lifts out of two-finger mode or a button goes down, for every contact, so a
+  finger left resting to click lands in the clickpad button zone it is really
+  in.
+- A scaled finger stops at the pad's edge, so at factor 5 the scroll can end
+  when the fingers are halfway across.
+- The factors belong to the machine's touchpads, not to one person's session
+  or one pad: every touchpad gets the same pair, the Scrolling page says so,
+  and a person who logs in later scrolls with them until they change them.
+  Only the person in the active local session may change them.
+
+**Smooth scrolling stays unavailable.** A touchpad's scroll is already
+continuous when it leaves libinput; whether a view glides on after the fingers
+lift is each application's own decision (GTK and the browsers make it), and no
+input-device setting reaches it. The pass-through changes how far a scroll
+goes, not how an application draws it.
+
+The model keeps a requested value and an effective value apart everywhere,
+which is what lets a factor the service refused read as refused rather than as
+applied.
 
 ### Hardware can override the backend
 
@@ -127,8 +163,9 @@ Two consequences of these numbers are load-bearing:
 - **No polling.** Nothing in Better Touchpad runs while idle. Values are read
   when the window opens, when the user asks, and after a change.
 
-Not measured, and not claimed: pointer-event overhead and scroll-event latency.
-Better Touchpad sits in no input path — it writes a setting and the compositor
-does the rest — so there is no Better OS code between a finger and a pointer to
-measure. Issue #3 lists both because a gesture adapter would have them; ticket
-30 owns that, and the figures belong with it.
+Pointer-event overhead and scroll-event latency: with every factor at 1 Better
+Touchpad sits in no input path. With a factor set, the scroll pass-through does,
+and its added cost per frame is recorded in
+[touchpad-scroll-performance.md](/engineering/performance/touchpad-scroll-performance.md):
+about 60 ns to scale a frame and about 160 ns for the whole forwarding turn in
+process, with the kernel's evdev-to-uinput hop owed to a run on real hardware.

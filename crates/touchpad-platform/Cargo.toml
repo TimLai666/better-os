@@ -13,7 +13,7 @@ default = ["dconf-write"]
 # device enumeration, session detection, and reading can turn it off and link
 # no D-Bus stack.
 # The writer itself lives in `defaults-platform`, which Better Defaults shares.
-dconf-write = ["defaults-platform/dconf-write"]
+dconf-write = ["defaults-platform/dconf-write", "dep:zbus"]
 
 [[bin]]
 name = "better-touchpad-before-removal"
@@ -23,7 +23,12 @@ required-features = ["dconf-write"]
 [dependencies]
 defaults-platform.workspace = true
 touchpad-core.workspace = true
+# The scroll pass-through's names and factor rule (ADR 0030); without its
+# service feature this is the library alone.
+touchpad-scroll.workspace = true
 thiserror.workspace = true
+# The scroll pass-through's client, on the system bus.
+zbus = { workspace = true, optional = true }
 
 [dev-dependencies]
 # `tests/manifest.rs` validates the shipped Better Touchpad manifest the way
@@ -33,3 +38,5 @@ tempfile.workspace = true
 # The integration tests speak the core vocabulary, which a dependency of the
 # library is not automatically lent to them.
 touchpad-core.workspace = true
+# tests/scroll_bus.rs serves a fake pass-through on a private bus.
+zbus.workspace = true

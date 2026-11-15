@@ -8178,6 +8178,7 @@ dependencies = [
  "tokio",
  "touchpad-core",
  "touchpad-gestures",
+ "touchpad-scroll",
  "touchpad-session",
  "zbus",
 ]
@@ -8225,6 +8226,18 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "touchpad-core",
+ "touchpad-scroll",
+ "zbus",
+]
+
+[[package]]
+name = "touchpad-scroll"
+version = "0.2.15"
+dependencies = [
+ "libc",
+ "tempfile",
+ "touchpad-core",
+ "zbus",
 ]
 
 [[package]]

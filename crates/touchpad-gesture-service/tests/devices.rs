@@ -64,6 +64,16 @@ fn plug(sys: &Path, handler: &str, uniq: &str, id: [&str; 4], name: &str) -> std
     Ok(())
 }
 
+/// The scroll pass-through's clone of a pad (ADR 0030): the same bus, vendor,
+/// product, version, and name, no `uniq`, and the pass-through's `phys`.
+fn plug_clone(sys: &Path, handler: &str, id: [&str; 4], name: &str) -> std::io::Result<()> {
+    plug(sys, handler, "", id, name)?;
+    std::fs::write(
+        sys.join("class/input").join(handler).join("device/phys"),
+        "better-touchpad-scroll/external/-\n",
+    )
+}
+
 struct Machine {
     root: tempfile::TempDir,
 }
@@ -192,6 +202,65 @@ fn completed_profiles(pipeline: &GesturePipeline) -> Vec<Option<String>> {
 }
 
 // ── The tests ───────────────────────────────────────────────────────────────
+
+#[test]
+fn a_gesture_on_a_held_pad_uses_that_pads_profile_not_the_global_one() {
+    // The pass-through holds the Bluetooth trackpad, so the shell names the
+    // clone's node, which has no `uniq` of its own.
+    let machine = Machine::new();
+    let sys = machine.root.path().join("sys");
+    plug_clone(
+        &sys,
+        "event40",
+        ["0005", "05ac", "0265", "0001"],
+        "Magic Trackpad",
+    )
+    .expect("the clone");
+    let (mut pipeline, shell) = pipeline(&machine, profiles(), Box::new(machine.identities()));
+
+    run(
+        &mut pipeline,
+        whole_swipe(Some(InputDeviceNode::new(40)), 0),
+    );
+
+    assert_eq!(
+        shell.calls(),
+        vec![ShellRequest::SwitchWorkspace(WorkspaceDirection::Next)]
+    );
+    assert_eq!(
+        completed_profiles(&pipeline),
+        vec![Some(TRACKPAD.to_string())]
+    );
+}
+
+#[test]
+fn a_clone_that_matches_two_different_pads_goes_to_the_global_profile() {
+    let machine = Machine::new();
+    let sys = machine.root.path().join("sys");
+    // A second trackpad of the same model with its own `uniq`.
+    plug(
+        &sys,
+        "event11",
+        "ff:ee:dd:cc:bb:aa",
+        ["0005", "05ac", "0265", "0001"],
+        "Magic Trackpad",
+    )
+    .expect("the twin");
+    plug_clone(
+        &sys,
+        "event40",
+        ["0005", "05ac", "0265", "0001"],
+        "Magic Trackpad",
+    )
+    .expect("the clone");
+    let identities = machine.identities();
+    assert_eq!(identities.identity(InputDeviceNode::new(40)), None);
+    // A pad that is not a clone is still itself.
+    assert_eq!(
+        identities.identity(TRACKPAD_NODE),
+        Some(TRACKPAD.to_string())
+    );
+}
 
 #[test]
 fn each_pad_performs_its_own_profile() {
