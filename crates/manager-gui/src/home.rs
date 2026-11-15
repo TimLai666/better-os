@@ -214,11 +214,13 @@ pub(crate) fn shows_welcome(onboarding_complete: bool) -> bool {
 /// leaves out a card whose hardware or component is missing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum QuickSetting {
+    /// Keep awake's toggle (ticket 87), drawn only while its service runs.
+    KeepAwake,
     Appearance,
 }
 
 pub(crate) fn quick_settings() -> Vec<QuickSetting> {
-    vec![QuickSetting::Appearance]
+    vec![QuickSetting::KeepAwake, QuickSetting::Appearance]
 }
 
 /// The tone an activity entry is drawn in.
@@ -428,6 +430,10 @@ mod tests {
     fn the_welcome_bar_shows_until_it_is_closed() {
         assert!(shows_welcome(false));
         assert!(!shows_welcome(true));
-        assert_eq!(quick_settings(), [QuickSetting::Appearance]);
+        // Keep awake (ticket 87) before Appearance, as the spec orders them.
+        assert_eq!(
+            quick_settings(),
+            [QuickSetting::KeepAwake, QuickSetting::Appearance]
+        );
     }
 }

@@ -326,14 +326,30 @@ impl AwakeApp {
                                 .child(self.locale_button(
                                     "locale-system",
                                     Locale::System,
-                                    c.system_default,
+                                    better_ui::fluent::words::follow_system_language(
+                                        match self.locale.resolved() {
+                                            Locale::ZhTw => {
+                                                better_ui::fluent::words::Locale::TraditionalChinese
+                                            }
+                                            _ => better_ui::fluent::words::Locale::English,
+                                        },
+                                    ),
                                     cx,
                                 ))
-                                .child(self.locale_button("locale-en", Locale::EnUs, c.english, cx))
+                                .child(self.locale_button(
+                                    "locale-en",
+                                    Locale::EnUs,
+                                    better_ui::fluent::words::language_name(
+                                        better_ui::fluent::words::Locale::English,
+                                    ),
+                                    cx,
+                                ))
                                 .child(self.locale_button(
                                     "locale-zh-tw",
                                     Locale::ZhTw,
-                                    c.traditional_chinese,
+                                    better_ui::fluent::words::language_name(
+                                        better_ui::fluent::words::Locale::TraditionalChinese,
+                                    ),
                                     cx,
                                 )),
                         ),

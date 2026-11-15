@@ -288,13 +288,16 @@ printf 'better-storage-service is running and owns org.betteros.Storage1\n'
 
 # Better Manager stops the service before it removes the package; dpkg never
 # stops a user service. This stands in for that step.
-kill -INT "$STORAGE_PID"
+# systemd stops a unit with SIGTERM; a background job of a non-interactive
+# shell starts with SIGINT ignored, so SIGINT here would test the shell.
+kill -TERM "$STORAGE_PID"
 for _ in $(seq 1 50); do
     kill -0 "$STORAGE_PID" 2>/dev/null || break
     sleep 0.1
 done
 if kill -0 "$STORAGE_PID" 2>/dev/null; then
-    printf 'better-storage-service did not stop on SIGINT\n' >&2
+    printf 'better-storage-service did not stop on SIGTERM\n' >&2
+    cat /tmp/storage-service.log >&2 || true
     exit 1
 fi
 DEBIAN_FRONTEND=noninteractive apt-get remove -y better-storage

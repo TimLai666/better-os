@@ -314,9 +314,6 @@ pub(crate) struct Copy {
     // ---- Settings --------------------------------------------------------
     pub(crate) language: &'static str,
     pub(crate) language_description: &'static str,
-    pub(crate) system_default: &'static str,
-    pub(crate) english: &'static str,
-    pub(crate) traditional_chinese: &'static str,
     pub(crate) appearance: &'static str,
     pub(crate) appearance_description: &'static str,
     pub(crate) system_theme: &'static str,
@@ -605,9 +602,6 @@ static EN_US: Copy = Copy {
 
     language: "Language",
     language_description: "Takes effect immediately. Nothing is restarted.",
-    system_default: "Match the system",
-    english: "English (US)",
-    traditional_chinese: "Chinese (Taiwan)",
     appearance: "Appearance",
     appearance_description: "Follows your desktop's light or dark mode unless you pick one.",
     system_theme: "Use system setting",
@@ -884,9 +878,6 @@ static ZH_TW: Copy = Copy {
 
     language: "語言",
     language_description: "立即生效，不需要重新啟動。",
-    system_default: "跟隨系統",
-    english: "English (US)",
-    traditional_chinese: "中文（台灣）",
     appearance: "外觀",
     appearance_description: "預設跟著桌面切換淺色或深色，也可以固定用其中一種。",
     system_theme: "跟隨系統",

@@ -208,6 +208,14 @@ impl ManagerApp {
                         move |this, _, cx| match &action {
                             AttentionAction::Open(page) => this.navigate(page.clone(), cx),
                             AttentionAction::RefreshCatalog => this.refresh_catalog(cx),
+                            AttentionAction::StartKeepAwakeService => {
+                                this.start_keep_awake_service(cx)
+                            }
+                            AttentionAction::OpenKeepAwakeDiagnostics => {
+                                this.keep_awake.sub =
+                                    crate::pages::keep_awake::decide::SubPage::Diagnostics;
+                                this.navigate(Page::KeepAwake, cx)
+                            }
                         },
                     )),
                 ),
@@ -217,11 +225,19 @@ impl ManagerApp {
 
         // Quick settings.
         rows.push(self.group_header(s.quick_header, cx));
-        for (index, quick) in home::quick_settings().into_iter().enumerate() {
-            let gap = if index == 0 { FIRST_CARD_GAP } else { CARD_GAP };
+        let mut gap = FIRST_CARD_GAP;
+        for quick in home::quick_settings() {
             match quick {
+                // Not drawn while the component or its service is missing.
+                QuickSetting::KeepAwake => {
+                    if let Some(card) = self.keep_awake_quick_card(cx) {
+                        rows.push(Row::new(gap, card));
+                        gap = CARD_GAP;
+                    }
+                }
                 QuickSetting::Appearance => {
-                    rows.push(Row::new(gap, self.appearance_card("home-appearance", cx)))
+                    rows.push(Row::new(gap, self.appearance_card("home-appearance", cx)));
+                    gap = CARD_GAP;
                 }
             }
         }
@@ -484,10 +500,11 @@ impl ManagerApp {
         rows
     }
 
-    fn page_rows(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Row> {
+    fn page_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Row> {
         let route = Route::of(&self.page);
         match (&self.page, pages::module(route).status) {
             (Page::Home, _) => self.home_rows(cx),
+            (Page::KeepAwake, _) => self.keep_awake_rows(window, cx),
             (Page::Settings, _) => self.settings_rows(cx),
             (Page::WindowAttention, _) => self.window_attention_rows(cx),
             (_, PageStatus::Placeholder { ticket }) => self.placeholder_rows(route, ticket, cx),
@@ -571,6 +588,17 @@ impl Render for ManagerApp {
                 if is_back_shortcut(&keystroke.key, m.control, m.alt, m.shift, m.platform) {
                     cx.stop_propagation();
                     this.go_back(cx);
+                } else if this.page == Page::KeepAwake
+                    && this.keep_awake.draft.is_none()
+                    && let Some(sub) = crate::pages::keep_awake::decide::SubPage::for_key(
+                        &keystroke.key,
+                        m.control,
+                        m.alt,
+                        m.shift,
+                    )
+                {
+                    cx.stop_propagation();
+                    this.set_keep_awake_sub(sub, cx);
                 }
             }))
             .on_mouse_down(
@@ -579,6 +607,7 @@ impl Render for ManagerApp {
             )
             .child(title_bar)
             .child(div().flex_1().min_h_0().child(navigation))
+            .children(self.keep_awake_dialog(cx))
             .children(self.update_restart.toast_layer(self.locale.words(), cx))
     }
 }

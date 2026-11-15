@@ -393,6 +393,8 @@ pub struct SelectorItem {
     pub icon: Option<IconName>,
     pub disabled: bool,
     pub shown: ShownState,
+    /// Shown under the pointer, such as the item's keyboard shortcut.
+    pub tooltip: Option<SharedString>,
 }
 
 impl SelectorItem {
@@ -402,7 +404,13 @@ impl SelectorItem {
             icon: None,
             disabled: false,
             shown: ShownState::Live,
+            tooltip: None,
         }
+    }
+
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
     }
 
     pub fn icon(mut self, icon: IconName) -> Self {
@@ -510,6 +518,9 @@ impl RenderOnce for SelectorBar {
                 cell = cell
                     .hover(move |s| s.text_color(hover))
                     .active(move |s| s.text_color(pressed));
+            }
+            if let Some(tooltip) = item.tooltip.clone() {
+                cell = cell.tooltip(super::dialog::tooltip_builder(tooltip));
             }
             if selected {
                 let pill = if forced == Some(Interaction::Disabled) {

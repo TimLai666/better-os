@@ -19,13 +19,17 @@ pub use client::{
     status_from_event,
 };
 pub use controller::{
-    APPLICATION_BINARY, Activation, TrayController, change_request, failure_text,
+    APPLICATION_BINARY, Activation, FALLBACK_BINARY, KEEP_AWAKE_PAGE, TrayController,
+    UNTIL_A_TIME_PAGE, change_request, failure_text, window_command,
 };
 pub use dbusmenu::DbusMenu;
 pub use item::StatusNotifierItem;
 pub use labels::{Labels, Locale, LocaleLabels};
 pub use localtime::UtcOffset;
-pub use menu::{Menu, MenuAction, MenuItem, QuickOptions, build as build_menu};
+pub use menu::{
+    Menu, MenuAction, MenuItem, QuickOptions, build as build_menu,
+    build_offered as build_offered_menu,
+};
 pub use notify::{DesktopNotifier, NotifyError, claim_notifications, handle_event};
 pub use sni::{
     ITEM_PATH, MENU_PATH, TrayAvailability, keep_registered, register_and_verify, serve,
