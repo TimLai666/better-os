@@ -1,0 +1,57 @@
+[Unit]
+Description=Better Touchpad scroll speed for %I
+Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/specs/touchpad-input-passthrough-security.md
+# Started by udev for each touchpad (70-better-touchpad-scroll.rules), and by
+# the package's postinst for the touchpads already there. It exits by itself
+# when its touchpad goes away (the node answers ENODEV).
+# Five failures in a minute and systemd stops restarting it. A dead instance
+# holds nothing: the kernel ends the grab and the clone with its descriptors.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=notify
+ExecStart=/usr/libexec/better-touchpad-scrolld %I
+Restart=on-failure
+RestartSec=1
+# The event loop beats this from the thread that forwards events. A loop that
+# stops turning is killed, which releases the touchpad.
+WatchdogSec=5
+TimeoutStopSec=3
+
+# The device boundary, enforced by the kernel's device cgroup: this instance
+# can open its own touchpad node and /dev/uinput, and no other device at all,
+# whatever its uid or groups would allow.
+DevicePolicy=closed
+DeviceAllow=/dev/input/%I r
+DeviceAllow=/dev/uinput w
+
+# It starts as root only to open those two nodes, then drops to
+# _better-touchpad-scroll with no groups. setuid and setgid are the only
+# capabilities it ever has, and the drop clears them.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=-/var/lib/better-touchpad-scroll
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+# No [Install] section: udev starts an instance for every touchpad, at boot and
+# when one is plugged in, so installing the package is what enables it.

@@ -132,8 +132,8 @@ fn the_manifest_declares_every_gnome_key_the_backend_can_write() {
     let manifest = manifest();
     for setting in SettingId::ALL {
         let Some(path) = GnomeBackend::key_path(setting) else {
-            // GNOME 46 has no key for the scroll factors or smooth scrolling.
-            // Those are shown as unavailable and never written.
+            // GNOME 46 has no key for the scroll factors, which the scroll
+            // pass-through carries, or for smooth scrolling, which nothing does.
             continue;
         };
         assert!(

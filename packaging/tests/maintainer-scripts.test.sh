@@ -442,8 +442,109 @@ else
 fi
 rm -f "$WORK_DIR/run/better-os/daemon-busy"
 
+# --- the scroll pass-through's system half (ADR 0030) -------------------------
+SCROLL_LIBRARY="$ROOT_DIR/packaging/maintainer/touchpad-scroll.sh"
+SCROLL_DIR="$WORK_DIR/scroll"
+SCROLL_BIN="$SCROLL_DIR/bin"
+mkdir -p "$SCROLL_BIN" "$SCROLL_DIR/systemd"
+for tool in systemctl udevadm systemd-sysusers systemd-tmpfiles userdel groupdel; do
+    cat > "$SCROLL_BIN/$tool" <<FAKE
+#!/bin/sh
+printf '%s %s\n' "$tool" "\$*" >> "$SCROLL_DIR/log"
+FAKE
+done
+# getent answers that the account and its group exist.
+cat > "$SCROLL_BIN/getent" <<FAKE
+#!/bin/sh
+printf 'getent %s\n' "\$*" >> "$SCROLL_DIR/log"
+exit 0
+FAKE
+# The service binary's --eligible: two touchpads, and a line that is not one.
+cat > "$SCROLL_BIN/scrolld" <<'FAKE'
+#!/bin/sh
+[ "$1" = --eligible ] || exit 2
+printf 'event7\nevent12\n../sda\n'
+FAKE
+chmod +x "$SCROLL_BIN"/*
+
+scroll() {
+    (
+        PATH="$SCROLL_BIN:/usr/bin:/bin"
+        better_os_scroll_libexec="$SCROLL_BIN/scrolld"
+        better_os_scroll_state="$SCROLL_DIR/state"
+        better_os_scroll_user='_better-touchpad-scroll'
+        better_os_scroll_systemd_dir="$SCROLL_DIR/systemd"
+        . "$SCROLL_LIBRARY"
+        "$@"
+    )
+}
+
+: > "$SCROLL_DIR/log"
+scroll better_os_scroll_postinst configure ""
+if grep -qx 'systemd-sysusers better-touchpad-scroll.conf' "$SCROLL_DIR/log" \
+    && grep -qx 'systemd-tmpfiles --create better-touchpad-scroll.conf' "$SCROLL_DIR/log" \
+    && grep -qx 'systemctl start --no-block better-touchpad-scroll@event7.service' "$SCROLL_DIR/log" \
+    && grep -qx 'systemctl start --no-block better-touchpad-scroll@event12.service' "$SCROLL_DIR/log" \
+    && ! grep -q 'sda' "$SCROLL_DIR/log" \
+    && ! grep -q 'try-restart' "$SCROLL_DIR/log" \
+    && ! grep -q 'udevadm trigger' "$SCROLL_DIR/log"; then
+    pass "a fresh install creates the account and starts one pass-through per touchpad"
+else
+    fail "a fresh install did not turn the pass-through on: $(cat "$SCROLL_DIR/log")"
+fi
+
+: > "$SCROLL_DIR/log"
+scroll better_os_scroll_postinst configure 0.2.15
+if grep -qx 'systemctl try-restart better-touchpad-scroll@\*.service' "$SCROLL_DIR/log"; then
+    pass "an upgrade restarts the running pass-throughs on the new program"
+else
+    fail "an upgrade left the old pass-through running: $(cat "$SCROLL_DIR/log")"
+fi
+
+: > "$SCROLL_DIR/log"
+scroll better_os_scroll_prerm upgrade
+if [[ ! -s "$SCROLL_DIR/log" ]]; then
+    pass "an upgrade's prerm stops nothing"
+else
+    fail "an upgrade's prerm touched the pass-through: $(cat "$SCROLL_DIR/log")"
+fi
+scroll better_os_scroll_prerm remove
+if grep -qx 'systemctl stop better-touchpad-scroll@\*.service' "$SCROLL_DIR/log"; then
+    pass "removal stops every pass-through, which gives every touchpad back"
+else
+    fail "removal left a pass-through running: $(cat "$SCROLL_DIR/log")"
+fi
+
+: > "$SCROLL_DIR/log"
+mkdir -p "$SCROLL_DIR/state"
+printf 'vertical=2\nhorizontal=1\n' > "$SCROLL_DIR/state/factors"
+scroll better_os_scroll_postrm upgrade
+if [[ -d "$SCROLL_DIR/state" ]]; then
+    pass "an upgrade keeps the stored factors"
+else
+    fail "an upgrade deleted the stored factors"
+fi
+scroll better_os_scroll_postrm remove
+if [[ ! -e "$SCROLL_DIR/state" ]] \
+    && grep -qx 'userdel _better-touchpad-scroll' "$SCROLL_DIR/log" \
+    && grep -qx 'groupdel _better-touchpad-scroll' "$SCROLL_DIR/log" \
+    && grep -qx 'udevadm control --reload-rules' "$SCROLL_DIR/log"; then
+    pass "removal deletes the state, the account, and its group"
+else
+    fail "removal left something behind: $(cat "$SCROLL_DIR/log")"
+fi
+
+: > "$SCROLL_DIR/log"
+rmdir "$SCROLL_DIR/systemd"
+scroll better_os_scroll_postinst configure ""
+if ! grep -q '^systemctl' "$SCROLL_DIR/log" && grep -q '^systemd-sysusers' "$SCROLL_DIR/log"; then
+    pass "without a running systemd (a container, a chroot) nothing is started"
+else
+    fail "systemctl was called with no systemd running: $(cat "$SCROLL_DIR/log")"
+fi
+
 # --- the file is POSIX sh, as dpkg runs it ------------------------------------
-if sh -n "$LIBRARY" && sh -n "$DAEMON_LIBRARY"; then
+if sh -n "$LIBRARY" && sh -n "$DAEMON_LIBRARY" && sh -n "$SCROLL_LIBRARY"; then
     pass "the library parses as sh"
 else
     fail "the library does not parse as sh"

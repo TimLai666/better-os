@@ -166,9 +166,9 @@ jobs:
       # against a fake systemctl. It needs nothing built either.
       - name: Lint and test the maintainer script library
         run: |
-          sh -n packaging/maintainer/user-units.sh packaging/maintainer/daemon.sh
+          sh -n packaging/maintainer/user-units.sh packaging/maintainer/daemon.sh packaging/maintainer/touchpad-scroll.sh
           bash -n packaging/tests/maintainer-scripts.test.sh
-          shellcheck --shell=sh packaging/maintainer/user-units.sh packaging/maintainer/daemon.sh
+          shellcheck --shell=sh packaging/maintainer/user-units.sh packaging/maintainer/daemon.sh packaging/maintainer/touchpad-scroll.sh
           shellcheck packaging/tests/maintainer-scripts.test.sh
           bash packaging/tests/maintainer-scripts.test.sh
 

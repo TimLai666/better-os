@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 974.
-- Packages with an SPDX license expression: 972.
+- Resolved Cargo packages: 975.
+- Packages with an SPDX license expression: 973.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `00148a807f13e22d0bfaedc699e6bab73afbb1db5883e25c41fbc07fdc563932`.
+- `Cargo.lock` SHA-256: `232833074a39e4e87536f2ca122bc162d2c9746df58b2a03ec2275b106a432d1`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 424 |
 | `MIT` | 202 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 63 |
+| `GPL-3.0-or-later` | 64 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -139,6 +139,7 @@ Better OS does not relicense or silently select a different expression.
 | `touchpad-gestures` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `touchpad-gui` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `touchpad-platform` | `0.2.15` | `GPL-3.0-or-later` | workspace |
+| `touchpad-scroll` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `touchpad-session` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `window-attention-core` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `window-attention-service` | `0.2.15` | `GPL-3.0-or-later` | workspace |
@@ -927,6 +928,7 @@ keeps its own license.
 | `touchpad-gestures` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `touchpad-gui` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `touchpad-platform` | `0.2.15` | `GPL-3.0-or-later` | workspace |
+| `touchpad-scroll` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `touchpad-session` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `tower` | `0.5.3` | `MIT` | [crates.io](https://crates.io/crates/tower/0.5.3) |
 | `tower-layer` | `0.3.3` | `MIT` | [crates.io](https://crates.io/crates/tower-layer/0.3.3) |
