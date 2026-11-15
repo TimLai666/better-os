@@ -330,9 +330,8 @@ mod tests {
         for tool in Tool::ALL {
             if let Some(file) = tool.autostart_file() {
                 assert!(
-                    build.contains(&format!(
-                        "PACKAGE_AUTOSTART_OVERRIDES='touchegg.desktop fusuma.desktop'"
-                    )) && build.contains(file),
+                    build.contains("PACKAGE_AUTOSTART_OVERRIDES='touchegg.desktop fusuma.desktop'")
+                        && build.contains(file),
                     "{file}"
                 );
             }
