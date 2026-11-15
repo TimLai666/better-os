@@ -593,10 +593,7 @@ impl FilesApp {
             .secondary(
                 BarCommand::new(c.show_other_drives, IconName::HardDrive)
                     .checked(self.session.preferences.show_other_drives)
-                    .on_click(act(cx, |app, _, _| {
-                        app.session.preferences.show_other_drives =
-                            !app.session.preferences.show_other_drives;
-                    })),
+                    .on_click(act(cx, |app, _, _| app.session.toggle_show_other_drives())),
             )
             .secondary_entry(self.language_menu(c, cx))
             .secondary_entry(self.appearance_menu(c, cx))

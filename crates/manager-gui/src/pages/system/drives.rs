@@ -60,6 +60,7 @@ pub(crate) struct Copy {
     pub(crate) not_mounted: &'static str,
     pub(crate) locked_encrypted: &'static str,
     pub(crate) failed: &'static str,
+    pub(crate) failed_refused: &'static str,
     pub(crate) failed_timeout: &'static str,
     pub(crate) retry: &'static str,
     /// `{line}`.
@@ -95,7 +96,8 @@ static EN: Copy = Copy {
     mounted_at: "Mounted at {path}",
     not_mounted: "Not mounted",
     locked_encrypted: "Encrypted · locked",
-    failed: "Couldn't mount: the system refused it",
+    failed: "Couldn't mount",
+    failed_refused: "Couldn't mount: the system refused it",
     failed_timeout: "Couldn't mount: the drive didn't respond in time",
     retry: "Retry",
     system_table: "Set up in the system's mount table (/etc/fstab, line {line}), so it's changed there",
@@ -126,7 +128,8 @@ static ZH_TW: Copy = Copy {
     mounted_at: "掛載於 {path}",
     not_mounted: "未掛載",
     locked_encrypted: "已加密・已鎖定",
-    failed: "無法掛載：系統拒絕掛載",
+    failed: "無法掛載",
+    failed_refused: "無法掛載：系統拒絕掛載",
     failed_timeout: "無法掛載：磁碟沒有及時回應",
     retry: "重試",
     system_table: "已在系統的掛載表（/etc/fstab 第 {line} 行）設定，請在那裡變更",
@@ -151,22 +154,9 @@ pub(crate) fn copy(locale: Locale) -> &'static Copy {
     }
 }
 
-/// Sizes as Better Files writes them: decimal units, one decimal under 100.
+/// Sizes in the kit's binary units, as Better Files and Windows show them.
 pub(crate) fn bytes(size: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = size as f64;
-    let mut unit = 0;
-    while value >= 1000.0 && unit + 1 < UNITS.len() {
-        value /= 1000.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{size} B")
-    } else if value < 100.0 {
-        format!("{value:.1} {}", UNITS[unit])
-    } else {
-        format!("{value:.0} {}", UNITS[unit])
-    }
+    better_ui::fluent::words::bytes(size)
 }
 
 /// The drives this section lists: block drives with a UUID (the choice is
@@ -226,7 +216,8 @@ pub(crate) fn description(drive: &Drive, c: &Copy) -> String {
         None if drive.locked => c.locked_encrypted.to_string(),
         None if choice::failed(drive) => match auto.and_then(|auto| auto.failure.as_deref()) {
             Some("timeout") => c.failed_timeout,
-            _ => c.failed,
+            Some(_) => c.failed_refused,
+            None => c.failed,
         }
         .to_string(),
         None => c.not_mounted.to_string(),
@@ -584,7 +575,7 @@ mod tests {
                 failure: None,
             });
             assert_eq!(description(&system, c), c.system_drive);
-            assert_eq!(name(&system, c), c.unnamed.replace("{size}", "512 GB"));
+            assert_eq!(name(&system, c), c.unnamed.replace("{size}", "477 GB"));
             for outcome in [
                 SetOutcome::NotAllowed,
                 SetOutcome::Absent,
@@ -596,7 +587,7 @@ mod tests {
                 assert!(!reason(&outcome, c).is_empty());
             }
         }
-        assert_eq!(bytes(32_000_000_000), "32.0 GB");
-        assert_eq!(bytes(512_000_000_000), "512 GB");
+        assert_eq!(bytes(32_000_000_000), "29.8 GB");
+        assert_eq!(bytes(512_000_000_000), "477 GB");
     }
 }

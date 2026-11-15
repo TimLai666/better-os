@@ -1875,6 +1875,13 @@ impl FilesSession {
             .collect()
     }
 
+    /// "Show other drives" in the window's `…` menu, remembered with the
+    /// other preferences.
+    pub fn toggle_show_other_drives(&mut self) {
+        self.preferences.show_other_drives = !self.preferences.show_other_drives;
+        self.persist_preferences();
+    }
+
     /// Turns a drive's "Mount automatically" on or off through
     /// `manager-daemon` (polkit asks once), then mounts a removable one
     /// turned on, or unmounts one turned off that is still mounted, through

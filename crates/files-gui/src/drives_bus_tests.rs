@@ -1008,14 +1008,17 @@ fn a_drive_turned_off_leaves_the_sidebar_and_turned_on_comes_back_mounted() {
         "a drive switched off is not in the sidebar"
     );
     assert_eq!(session.notice, None);
-    session.preferences.show_other_drives = true;
+    session.toggle_show_other_drives();
     assert!(shown(&session), "Show other drives brings it back");
+    let stored = std::fs::read_to_string(fixture.root.path().join("prefs.json")).unwrap();
+    let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(stored["show_other_drives"], serde_json::Value::Bool(true));
     let c = &crate::i18n::EN_US;
     assert_eq!(
         stick(&session).unwrap().caption(c).as_deref(),
         Some("32.0 GB · Doesn't mount automatically")
     );
-    session.preferences.show_other_drives = false;
+    session.toggle_show_other_drives();
 
     session.set_auto_mount(STICK, true);
     until(

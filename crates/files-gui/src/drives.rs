@@ -85,13 +85,15 @@ impl DriveText for Drive {
             (Some(capacity), _) => Some(capacity.line(c)),
             (None, None) if self.locked => Some(state(c.drive_locked)),
             // On and not mounted: why, with Retry on the row (ticket 127).
-            (None, None) if drive_mounts::choice::failed(self) => {
-                Some(state(match auto.and_then(|auto| auto.failure.as_deref()) {
+            // Without its size: the reason is what the narrow row has room for.
+            (None, None) if drive_mounts::choice::failed(self) => Some(
+                match auto.and_then(|auto| auto.failure.as_deref()) {
                     Some("timeout") => c.drive_mount_timeout,
                     Some(_) => c.drive_mount_refused,
                     None => c.drive_mount_failed,
-                }))
-            }
+                }
+                .to_string(),
+            ),
             (None, None) if auto.is_some_and(|auto| !auto.on) => Some(state(c.drive_off)),
             (None, None) if self.size > 0 => Some(state(c.drive_not_mounted)),
             _ => None,
