@@ -1,10 +1,11 @@
-# ADR 0029: Touchpad scroll speed needs a privileged input pass-through
+# ADR 0031: Touchpad scroll speed needs a privileged input pass-through
 
 ## Status
 
 Superseded on 2026-11-15 by ADR 0030: the owner decided scroll speed is to
 be built, and ticket 125 builds it. Proposed for ticket 88 until then; kept for
-the experiment's evidence.
+the experiment's evidence. Numbered 0031 because 0029 and 0030 were taken
+on main while it was proposed.
 
 ## Context
 

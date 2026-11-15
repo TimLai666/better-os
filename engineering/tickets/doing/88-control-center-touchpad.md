@@ -113,7 +113,7 @@ Built and tested since the first pass (all of the first pass's list stands):
   page's "Turn back on" still removes it.
 - Scroll speed: tested on a private GNOME Shell 46.0; an extension cannot see
   a client's scroll at all. Evidence and the alternative's estimate are in
-  ADR 0029, superseded by ADR 0030: the owner decided it is built, in
+  ADR 0031, superseded by ADR 0030: the owner decided it is built, in
   ticket 125. The Vertical and Horizontal rows stay unavailable on GNOME 46
   here until ticket 125 lands.
 
