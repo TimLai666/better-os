@@ -171,6 +171,15 @@ jobs:
           shellcheck --shell=sh packaging/maintainer/user-units.sh packaging/maintainer/daemon.sh
           shellcheck packaging/tests/maintainer-scripts.test.sh
           bash packaging/tests/maintainer-scripts.test.sh
+      # ADR 0028: the handoff a privileged service of 0.2.12 or older is
+      # updated through, against fake dpkg, systemd, and apt.
+      - name: Lint and test the privileged service handoff
+        run: |
+          sh -n packaging/maintainer/daemon-handoff.sh
+          bash -n packaging/tests/daemon-handoff.test.sh
+          shellcheck --shell=sh packaging/maintainer/daemon-handoff.sh
+          shellcheck packaging/tests/daemon-handoff.test.sh
+          bash packaging/tests/daemon-handoff.test.sh
 
   package:
     needs: rust
@@ -285,11 +294,19 @@ jobs:
           cargo build --release -p manager-platform --features dbus-client --example e2e_client
           mkdir -p dist/e2e-client
           cp target/release/examples/e2e_client dist/e2e-client/
+          # The published 0.2.9 privileged service the handoff check upgrades
+          # from (ADR 0028). Downloaded here, where there is network.
+          mkdir -p dist/e2e-legacy
+          gh release download v0.2.9 --repo "${{ github.repository }}" \
+            --pattern "better-manager-daemon_0.2.9_${{ matrix.asset_target }}_${{ matrix.architecture }}.deb" \
+            --dir dist/e2e-legacy
           docker build -f packaging/e2e/Dockerfile \
             --build-arg "UBUNTU_RELEASE=${UBUNTU_RELEASE}" \
             -t "better-os-e2e:${{ matrix.target }}" .
           docker run --rm "better-os-e2e:${{ matrix.target }}"
-          rm -rf dist/e2e dist/e2e-client
+          rm -rf dist/e2e dist/e2e-client dist/e2e-legacy
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Upload Debian packages
         uses: actions/upload-artifact@v7
         with:

@@ -318,7 +318,10 @@ pub(crate) fn restart_effect(
             DesiredOperation::Install | DesiredOperation::Enable | DesiredOperation::Restore => {
                 Some(c.restart_next_open)
             }
-            DesiredOperation::Disable | DesiredOperation::Remove | DesiredOperation::Verify => None,
+            DesiredOperation::Disable
+            | DesiredOperation::Remove
+            | DesiredOperation::Verify
+            | DesiredOperation::AddCompanions => None,
         },
     }
 }

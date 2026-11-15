@@ -228,6 +228,7 @@ pub(crate) fn result_line(locale: Locale, step: &PlanStep) -> String {
             None => c.result_restored_unknown.to_string(),
         },
         DesiredOperation::Remove => c.result_removed.to_string(),
+        DesiredOperation::AddCompanions => c.result_parts_added.to_string(),
     }
 }
 
@@ -320,6 +321,7 @@ pub(crate) fn action_label(locale: Locale, operation: DesiredOperation) -> &'sta
         DesiredOperation::Verify => c.action_check,
         DesiredOperation::Restore => c.action_restore,
         DesiredOperation::Remove => c.action_remove,
+        DesiredOperation::AddCompanions => c.action_add_parts,
     }
 }
 
@@ -361,6 +363,19 @@ pub(crate) fn update_facts(locale: Locale, step: &PlanStep, afterwards: Option<&
         (Some(before), Some(after)) => parts.push(format!("{before} → {after}")),
         (None, Some(after)) => parts.push(after.clone()),
         _ => {}
+    }
+    // Adding missing parts names them: nothing else about the row changes
+    // (ticket 124).
+    if step.operation == DesiredOperation::AddCompanions
+        && let Some(artifact) = &step.artifact
+        && !artifact.companions.is_empty()
+    {
+        let packages: Vec<&str> = artifact
+            .companions
+            .iter()
+            .map(|companion| companion.package.as_str())
+            .collect();
+        parts.push(c.adds_parts.replace("{parts}", &packages.join(", ")));
     }
     if let Some(bytes) = step.estimated_download_bytes {
         parts.push(c.download_size.replace("{size}", &megabytes(bytes)));
@@ -461,6 +476,8 @@ pub(crate) struct AppsCopy {
     pub(crate) progress_downloading_unknown: &'static str,
     pub(crate) progress_downloaded: &'static str,
     pub(crate) result_installed: &'static str,
+    pub(crate) result_parts_added: &'static str,
+    pub(crate) action_add_parts: &'static str,
     pub(crate) result_updated: &'static str,
     pub(crate) result_turned_on: &'static str,
     pub(crate) result_turned_off: &'static str,
@@ -482,6 +499,8 @@ pub(crate) struct AppsCopy {
     pub(crate) download_size: &'static str,
     pub(crate) previous_kept: &'static str,
     pub(crate) self_update_title: &'static str,
+    pub(crate) change_failed_title: &'static str,
+    pub(crate) adds_parts: &'static str,
     pub(crate) self_update_detail: &'static str,
     pub(crate) failed_health: &'static str,
     pub(crate) kind: &'static str,
@@ -541,6 +560,8 @@ static EN: AppsCopy = AppsCopy {
     progress_downloading_unknown: "Downloading {received}",
     progress_downloaded: "Downloaded",
     result_installed: "Installed {version}",
+    result_parts_added: "Missing parts added",
+    action_add_parts: "Add missing parts",
     result_updated: "Updated to {version}",
     result_turned_on: "Turned on",
     result_turned_off: "Turned off",
@@ -562,6 +583,8 @@ static EN: AppsCopy = AppsCopy {
     download_size: "{size} download",
     previous_kept: "Previous version kept",
     self_update_title: "This updates Better Manager itself",
+    change_failed_title: "That did not finish",
+    adds_parts: "Adds {parts}",
     self_update_detail: "When the update finishes, it reopens on the new version by itself.",
     failed_health: "It didn't pass its health check.",
     kind: "Type",
@@ -621,6 +644,8 @@ static ZH_TW: AppsCopy = AppsCopy {
     progress_downloading_unknown: "正在下載 {received}",
     progress_downloaded: "已下載",
     result_installed: "已安裝 {version}",
+    result_parts_added: "已補上缺少的部分",
+    action_add_parts: "補上缺少的部分",
     result_updated: "已更新到 {version}",
     result_turned_on: "已啟用",
     result_turned_off: "已停用",
@@ -642,6 +667,8 @@ static ZH_TW: AppsCopy = AppsCopy {
     download_size: "下載 {size}",
     previous_kept: "會保留上一個版本",
     self_update_title: "這次會更新 Better Manager 本身",
+    change_failed_title: "沒有完成",
+    adds_parts: "補上 {parts}",
     self_update_detail: "更新完成後，它會自己以新版本重新開啟。",
     failed_health: "沒有通過健康檢查。",
     kind: "類型",

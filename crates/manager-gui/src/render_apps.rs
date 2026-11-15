@@ -91,7 +91,7 @@ impl ManagerApp {
                 div().pb(px(12.0)).child(
                     ErrorBar::new(
                         "planning-error",
-                        ErrorReport::new(c.planning_failed_detail, String::new()),
+                        ErrorReport::new(c.planning_failed_detail, self.error_details.clone()),
                     )
                     .locale(self.locale.words())
                     .on_close(Self::act(cx, |this, _, cx| {
@@ -831,6 +831,10 @@ impl ManagerApp {
             }
         }
 
+        if let Some(notice) = self.service_notice() {
+            rows.push(Row::new(CARD_GAP, self.service_notice_card(notice, cx)));
+        }
+
         // The rows: every waiting update, and whatever the running or the
         // finished change touched, so its progress and result stay in view.
         let plan = self.update_all_plan();
@@ -857,10 +861,17 @@ impl ManagerApp {
                     || finished.contains(&component.core_id)
             })
             .collect();
-        let updates_manager = shown
-            .iter()
-            .any(|component| is_self_component(&component.core_id))
-            && (count > 0 || !running.is_empty());
+        // Only a change that replaces Better Manager's own package reopens
+        // it; adding its missing parts does not (ticket 124).
+        let updates_manager = match self.run_facts() {
+            Some(run) => Self::updates_the_manager(run.steps),
+            None => {
+                count > 0
+                    && plan
+                        .as_ref()
+                        .is_some_and(|plan| Self::updates_the_manager(plan.steps()))
+            }
+        };
         if updates_manager {
             rows.push(Row::new(
                 GROUP_GAP,
@@ -935,6 +946,92 @@ impl ManagerApp {
             ));
         }
         rows
+    }
+
+    /// 「需要先更新系統服務」 (ticket 124). Its button starts the change at
+    /// once, with no review page (ticket 85).
+    fn service_notice_card(
+        &self,
+        notice: crate::model::ServiceNotice,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = copy(self.locale);
+        let card = SettingsCard::new("updates-service", notice.title)
+            .status(if notice.failed {
+                Severity::Error
+            } else {
+                Severity::Warning
+            })
+            .description(notice.body);
+        let Some(action) = notice.action else {
+            return card.into_any_element();
+        };
+        self.service_change_card(
+            card,
+            "updates-service-update",
+            c.service_update_button,
+            cx,
+            move |this, cx| this.start_service_update(action, cx),
+        )
+    }
+
+    /// A card whose one button changes Better Manager's own package (the
+    /// service notice, the window-attention Install), shown in place as
+    /// that change goes: its progress while it runs, and, when it failed,
+    /// why with a Retry that starts the same change again. The row's own
+    /// Retry would run a health check, which adds nothing that is missing.
+    pub(crate) fn service_change_card(
+        &self,
+        card: SettingsCard,
+        button_id: &'static str,
+        button_label: &'static str,
+        cx: &mut Context<Self>,
+        start: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+    ) -> AnyElement {
+        let manager = ComponentId::new(manager_core::SELF_COMPONENT_ID)
+            .ok()
+            .and_then(|id| self.component_by_id(&id));
+        let trailing = manager
+            .as_ref()
+            .map(|component| self.row_trailing(component));
+        let start = std::rc::Rc::new(start);
+        match (manager, trailing) {
+            (Some(component), Some(trailing @ Trailing::Progress(_))) => card
+                .content(self.trailing_element(&component, &trailing, cx))
+                .into_any_element(),
+            (Some(component), Some(Trailing::Failed { .. })) if component.failure.is_some() => {
+                let reason = self.failure_sentence(&component);
+                let a = apps::copy(self.locale);
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(CARD_GAP))
+                    .child(
+                        card.content(
+                            Button::accent(button_id, a.action_retry)
+                                .disabled(self.transaction_running())
+                                .on_click(Self::act(cx, move |this, _, cx| start(this, cx))),
+                        ),
+                    )
+                    .child(
+                        InfoBar::new(
+                            ElementId::Name(format!("{button_id}-failed").into()),
+                            Severity::Error,
+                            a.change_failed_title,
+                        )
+                        .message(reason)
+                        .locale(self.locale.words()),
+                    )
+                    .into_any_element()
+            }
+            _ => card
+                .content(
+                    Button::accent(button_id, button_label)
+                        .disabled(self.transaction_running())
+                        .on_click(Self::act(cx, move |this, _, cx| start(this, cx))),
+                )
+                .into_any_element(),
+        }
     }
 
     /// Apps › Health: the interrupted-package card with Repair, the full
@@ -1050,6 +1147,7 @@ impl ManagerApp {
                 DoctorCheckKind::RestoreData => c.restore_available,
                 DoctorCheckKind::HostReconciliation => c.check_host_reconciliation,
                 DoctorCheckKind::UnorderableHostVersion => c.check_unorderable_version,
+                DoctorCheckKind::CompanionMissing => c.check_companion_missing,
             };
             let (icon, severity) = match check.status {
                 DoctorCheckStatus::Passed => (IconName::CircleCheck, Severity::Success),
@@ -1058,6 +1156,15 @@ impl ManagerApp {
             };
             let mut caption = self.component_name_for_core(check.component.as_ref());
             if let Some(detail) = unorderable_detail(self.locale, check) {
+                caption = format!("{caption} · {detail}");
+            } else if let Some(detail) = crate::model::companion_detail(self.locale, check) {
+                // The component by the name the rest of the screen uses.
+                let detail = match &check.component {
+                    Some(id) => {
+                        detail.replacen(id.as_str(), &self.component_name_for_core(Some(id)), 1)
+                    }
+                    None => detail,
+                };
                 caption = format!("{caption} · {detail}");
             }
             let mut row = ListRow::new(ElementId::named_usize("doctor", index), title)

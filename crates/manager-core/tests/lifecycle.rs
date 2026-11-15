@@ -1742,6 +1742,7 @@ mod unorderable_host_versions {
                         component: Some(id("better-monitor")),
                         // As dpkg reports it, epoch and revision included.
                         host_version: Some(host.to_string()),
+                        package: None,
                     }],
                     "{host}"
                 ),

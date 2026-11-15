@@ -124,10 +124,19 @@ contract.
     D-Bus starts the new one. It leaves by refusing new calls with the
     retryable `daemon.error.shutting_down` (the client asks again), letting
     the calls inside finish, and only then giving its bus name up: releasing
-    the name of a `Type=dbus` unit first makes systemd stop it at once. Better Manager does not update the daemon
-    through itself today (there is no manifest for it); a plan that did would
-    still run the *installed* version's prerm, so the first such update from
-    0.2.12 or older is the one these scripts cannot protect.
+    the name of a `Type=dbus` unit first makes systemd stop it at once. Better Manager updates the daemon as a
+    companion of its own package (ADR 0028, ticket 124), and never inside
+    the daemon's unit when the installed prerm could stop it: from 0.2.16 the
+    daemon installs its own package last, with `systemd-run --wait` in a
+    transient unit; 0.2.13 to 0.2.15 install it as their own last step under
+    the scripts above; 0.2.12 and older are never sent it, and the Better
+    Manager they install starts `/usr/libexec/better-os/daemon-handoff` in a
+    transient unit, which waits for the old daemon to go idle and installs the
+    staged daemon and adapter from outside it. A plan whose companions the
+    daemon cannot take is refused as `daemon.outdated`, never resent without
+    them. `SELF_UPGRADING_SINCE` and `HANDOFF_SINCE` in
+    `manager_core::exec` name 0.2.16 and move with a version bump that is not
+    0.2.16.
 - Use Rust for first-party production code. Use Go only after recording a
   concrete reason in an ADR. Do not add C, C++, Python, JavaScript, Electron,
   Tauri, or GTK application code. **One bounded exception exists**, granted by

@@ -556,3 +556,86 @@ fn every_built_in_component_has_its_own_glyph() {
     unique.dedup();
     assert_eq!(unique.len(), glyphs.len(), "{glyphs:?}");
 }
+
+/// Ticket 124: adding Better Manager's missing parts starts at once like
+/// every other row action, names the parts on the row, and says what it did.
+#[test]
+fn adding_missing_parts_names_them_and_reports_its_own_result() {
+    let manager = manager();
+    let self_id = id(manager_core::SELF_COMPONENT_ID);
+    let version = manager
+        .manifests()
+        .find(|manifest| manifest.id == self_id)
+        .unwrap()
+        .version
+        .to_string();
+    let mut state = manager_core::ManagerState::default();
+    state.set_installed(self_id.clone(), version, true);
+    let plan = manager
+        .plan(&state, &self_id, DesiredOperation::AddCompanions)
+        .expect("the shipped manifest names companions");
+    let step = &plan.steps()[0];
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let facts = update_facts(locale, step, None);
+        assert!(facts.contains("better-shell-adapter"), "{facts}");
+        assert!(facts.contains("better-manager-daemon"), "{facts}");
+        assert_eq!(result_line(locale, step), copy(locale).result_parts_added);
+        assert_eq!(
+            action_label(locale, DesiredOperation::AddCompanions),
+            copy(locale).action_add_parts
+        );
+    }
+    assert_ne!(
+        copy(Locale::EnUs).result_parts_added,
+        copy(Locale::ZhTw).result_parts_added
+    );
+}
+
+/// Ticket 124 on ticket 85's design: the service notice and the
+/// window-attention Install start the change with no review page, and the
+/// notice shows the running change in place of its button.
+#[test]
+fn the_service_and_adapter_buttons_start_at_once() {
+    let app = include_str!("../app.rs");
+    let service = app
+        .split("pub(crate) fn start_service_update(")
+        .nth(1)
+        .unwrap()
+        .split("\n    }\n")
+        .next()
+        .unwrap();
+    assert!(service.contains("self.start_operation(&id, operation, cx)"));
+    let attention = include_str!("../window_attention_app.rs")
+        .split("pub(crate) fn install_shell_adapter(")
+        .nth(1)
+        .unwrap()
+        .split("\n    }\n")
+        .next()
+        .unwrap();
+    assert!(attention.contains("self.start_operation(&id, operation, cx)"));
+    let card = include_str!("../render_apps.rs")
+        .split("fn service_notice_card(")
+        .nth(1)
+        .unwrap()
+        .split("\n    }\n")
+        .next()
+        .unwrap();
+    assert!(card.contains("this.start_service_update(action, cx)"));
+    let in_place = include_str!("../render_apps.rs")
+        .split("pub(crate) fn service_change_card(")
+        .nth(1)
+        .unwrap()
+        .split("\n    }\n")
+        .next()
+        .unwrap();
+    // Progress in place, and a Retry that starts the same change again.
+    assert!(in_place.contains("Trailing::Progress(_)"));
+    assert!(in_place.contains("a.action_retry"));
+    assert_eq!(in_place.matches("start(this, cx)").count(), 2);
+    let attention = include_str!("../render_window_attention.rs");
+    assert!(attention.contains("|this, cx| this.install_shell_adapter(cx)"));
+    // A finished change reads the service again, so the notice goes away.
+    assert!(
+        app.contains("self.read_service_facts();\n        if self.page == Page::WindowAttention")
+    );
+}
