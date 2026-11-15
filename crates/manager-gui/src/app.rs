@@ -7,9 +7,9 @@ use manager_core::catalog::{CatalogStatus, RefreshOutcome, now_unix_seconds};
 use manager_core::exec::{CancelToken, RealDriver, RunnerEvent, StageProgress, TransactionRunner};
 use manager_core::repair::{self, PackageSystemState, RepairResult};
 use manager_core::{
-    ActivityKind, ActivityRecord, ComponentFilterPreference, ComponentStatus, DesiredOperation,
-    DiskSpaceCheck, DoctorCheck, Manager, ManagerSettings, ManagerState, MockOutcome,
-    OperationProgress, OperationStage, PlanStep, StoredLocale, StoredTheme, TransactionPlan,
+    ActivityRecord, ComponentFilterPreference, ComponentStatus, DesiredOperation, DoctorCheck,
+    Manager, ManagerSettings, ManagerState, MockOutcome, OperationProgress, OperationStage,
+    PlanStep, StoredLocale, StoredTheme, TransactionPlan,
 };
 use manager_platform::catalog_fetch::HttpManifestFetcher;
 use manager_platform::download::{ArtifactCache, HttpDownloader};
@@ -65,15 +65,25 @@ pub(crate) fn platform_for(execution: ExecutionMode) -> ClientPlatform {
 /// manifest declares, so every screen keeps working and every plan fails with
 /// "this component ships nothing for this host" instead of naming packages
 /// built for a release the machine is not running.
+#[cfg(test)]
 pub(crate) fn probe_manager(
     catalog: better_core::manifest::ComponentCatalog,
     platform: &dyn SystemCapabilities,
 ) -> (Manager, Option<AppError>) {
+    let (manager, error) = probe_manager_explained(catalog, platform);
+    (manager, error.map(|(error, _)| error))
+}
+
+/// `probe_manager`, with why the host could not be identified.
+fn probe_manager_explained(
+    catalog: better_core::manifest::ComponentCatalog,
+    platform: &dyn SystemCapabilities,
+) -> (Manager, Option<(AppError, String)>) {
     match Manager::probe(catalog.clone(), platform) {
         Ok(manager) => (manager, None),
-        Err(_) => (
+        Err(error) => (
             Manager::new(catalog, SystemProfile::unidentified()),
-            Some(AppError::UnsupportedHost),
+            Some((AppError::UnsupportedHost, error_chain(&error))),
         ),
     }
 }
@@ -123,18 +133,25 @@ pub(crate) struct ManagerApp {
     /// Where the catalog on screen came from and how far behind it may be.
     pub(crate) catalog_status: CatalogStatus,
     pub(crate) catalog_refreshing: bool,
+    /// When this window last asked for the published list, whether or not
+    /// it arrived, so the periodic check does not retry every tick.
+    pub(crate) catalog_attempted_at: Option<u64>,
+    /// Checks for updates every few hours while the window stays open
+    /// (ticket 46).
+    _periodic_task: Task<()>,
     /// Whether someone asked this window to check for updates. Until they have,
     /// the Updates screen states nothing about a check that never ran.
     pub(crate) update_check_requested: bool,
     /// The running catalog refresh. Dropping it abandons the fetch, which
     /// changes nothing: a refresh writes only after it has something to write.
     pub(crate) catalog_task: Option<Task<()>>,
-    pub(crate) pending_plan: Option<TransactionPlan>,
-    /// The transaction that just ran. The result screens describe this rather
-    /// than `pending_plan`, so a finished plan stops looking like one still
-    /// waiting to be approved.
+    /// The change that just ran. Its rows say what it did ("Updated to
+    /// 0.2.15") until the next change starts.
     pub(crate) finished_plan: Option<TransactionPlan>,
     pub(crate) planning_error: Option<AppError>,
+    /// What went wrong behind `planning_error`, verbatim, for the error
+    /// bar's details: the error and its causes. Empty when there is none.
+    pub(crate) error_details: String,
     /// Whether this window simulates transactions or actually performs them.
     pub(crate) execution: ExecutionMode,
     /// The Defaults section's own state, read and changed through
@@ -145,16 +162,30 @@ pub(crate) struct ManagerApp {
     /// Set while a real transaction is running. Dropping it stops the work.
     pub(crate) running: Option<Task<()>>,
     pub(crate) cancel: Option<CancelToken>,
-    /// The component whose drift card is currently asking "are you sure".
-    ///
-    /// Adoption throws away the recorded restore point, so it is not something
-    /// one click does. The confirmation lives here rather than in a modal
-    /// because the sentence a person needs is already on the card they clicked.
-    pub(crate) adopt_confirm: Option<ComponentId>,
+    /// The question Apps is asking: remove, restore an older version, adopt
+    /// the system's state, or clear the activity log. Nothing else asks
+    /// first (owner, 2026-11-15).
+    pub(crate) dialog: Option<crate::apps::Dialog>,
+    /// Steps a demo window's change through its stages by itself.
+    pub(crate) demo_task: Option<Task<()>>,
+    /// The component whose settings and history go to the trash once its
+    /// removal has succeeded.
+    pub(crate) remove_data_for: Option<ComponentId>,
+    /// What happened to them.
+    pub(crate) data_removal: Option<(ComponentId, manager_platform::personal_data::DataRemoval)>,
+    /// When Health's full check last ran in this window.
+    pub(crate) doctor_checked_at: Option<u64>,
+    /// The update rows whose release notes are open.
+    pub(crate) notes_open: std::collections::BTreeSet<ComponentId>,
     /// Better OS packages dpkg holds at a version nothing can order, found
     /// when the window last reconciled. Shown by the doctor, managed by
     /// nothing (ticket 69).
     pub(crate) unorderable: Vec<DoctorCheck>,
+    /// Companion packages installed components are missing, the privileged
+    /// service's generation, and what its handoff last wrote (ticket 124),
+    /// read with the reconciliation and again when a page that shows them
+    /// opens. A demo window reads none of them.
+    pub(crate) service: ServiceFacts,
     /// What the privileged service last said about dpkg's own record. `None`
     /// until it has been asked, and in a demo window, which never asks.
     pub(crate) package_system: Option<PackageSystemState>,
@@ -211,6 +242,33 @@ pub(crate) enum AppError {
     /// honest screen: the alternative was a plan aimed at Ubuntu 24.04 amd64
     /// whatever the host actually was.
     UnsupportedHost,
+    /// A change was started and the privileged service could not be
+    /// reached, so nothing was changed.
+    ServiceUnavailable,
+}
+
+/// An error and its causes, one per line, as an error bar's details show
+/// them.
+pub(crate) fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut details = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        details.push_str("\nCaused by: ");
+        details.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    details
+}
+
+/// Whether the change that just ended did what it set out to: its last
+/// record is a success. A cancellation or a failure is not.
+pub(crate) fn ended_in_success(state: &ManagerState) -> bool {
+    state.activity.last().is_some_and(|record| {
+        matches!(
+            record.kind,
+            manager_core::ActivityKind::Success | manager_core::ActivityKind::RecoverySuccess
+        )
+    })
 }
 
 impl ManagerApp {
@@ -227,18 +285,36 @@ impl ManagerApp {
         // thread below, so a slow or absent network never delays the window.
         let (catalog, catalog_status) = start_catalog(&catalog_store);
         let execution = default_execution_mode();
-        let (manager, host_error) = probe_manager(catalog, &platform_for(execution));
-        let (state, planning_error) = match store.load() {
-            Ok(outcome) if manager.validate_state(&outcome.state).is_ok() => (
-                outcome.state,
-                outcome.recovered_corrupt_state.map(|_| AppError::Storage),
+        let (manager, host_error) = probe_manager_explained(catalog, &platform_for(execution));
+        let (state, planning_error, error_details) = match store.load() {
+            Ok(outcome) => match manager.validate_state(&outcome.state) {
+                Ok(()) => match outcome.recovered_corrupt_state {
+                    Some(moved) => (
+                        outcome.state,
+                        Some(AppError::Storage),
+                        format!("The unreadable state file was moved to {}", moved.display()),
+                    ),
+                    None => (outcome.state, None, String::new()),
+                },
+                Err(error) => (
+                    ManagerState::default(),
+                    Some(AppError::Storage),
+                    error_chain(&error),
+                ),
+            },
+            Err(error) => (
+                ManagerState::default(),
+                Some(AppError::Storage),
+                error_chain(&error),
             ),
-            Ok(_) | Err(_) => (ManagerState::default(), Some(AppError::Storage)),
         };
         // An unidentified host outranks a storage problem: it is why nothing
         // on this machine can be planned at all, and the state file is beside
         // the point until it is resolved.
-        let planning_error = host_error.or(planning_error);
+        let (planning_error, error_details) = match host_error {
+            Some((error, details)) => (Some(error), details),
+            None => (planning_error, error_details),
+        };
         let locale = locale_from_stored(state.settings.locale);
         appearance_of(state.settings.theme).apply_and_follow(window, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(copy(locale).search));
@@ -246,11 +322,7 @@ impl ManagerApp {
         let nav_search = Self::nav_search_input(locale, "", window, cx);
         let nav_search_subscription = cx.observe(&nav_search, |_, _, cx| cx.notify());
         let window_attention_add = Self::window_attention_input(locale, window, cx);
-        let page = if state.active_operation.is_some() {
-            Page::Installing
-        } else {
-            Page::Home
-        };
+        let page = Page::Home;
         let bus_task = bus_owner.as_ref().map(|owner| {
             let requests = owner.requests.clone();
             cx.spawn_in(window, async move |this, cx| {
@@ -267,10 +339,6 @@ impl ManagerApp {
         });
         let root_focus = cx.focus_handle();
         root_focus.focus(window, cx);
-        let pending_plan = state
-            .active_operation
-            .as_ref()
-            .map(|active| active.plan.clone());
 
         let mut app = Self {
             page,
@@ -296,21 +364,37 @@ impl ManagerApp {
             manager,
             state,
             store,
-            pending_plan,
             finished_plan: None,
             planning_error,
+            error_details,
             execution,
             defaults: DefaultsState::default(),
             catalog_store,
             catalog_status,
             catalog_refreshing: false,
+            catalog_attempted_at: None,
+            _periodic_task: cx.spawn(async move |this, cx| {
+                loop {
+                    smol::Timer::after(crate::apps::PERIODIC_TICK).await;
+                    let alive = this.update(cx, |app, cx| app.periodic_check(cx));
+                    if alive.is_err() {
+                        break;
+                    }
+                }
+            }),
             update_check_requested: false,
             catalog_task: None,
             transfer: None,
             running: None,
             cancel: None,
-            adopt_confirm: None,
+            dialog: None,
+            demo_task: None,
+            remove_data_for: None,
+            data_removal: None,
+            doctor_checked_at: None,
+            notes_open: Default::default(),
             unorderable: Vec::new(),
+            service: ServiceFacts::default(),
             package_system: None,
             package_system_task: None,
             repair_task: None,
@@ -359,6 +443,11 @@ impl ManagerApp {
         app.reconcile_with_host(cx);
         app.refresh_catalog_at_launch(cx);
         app.read_package_system_record(cx);
+        // A demo change that was running when its window closed carries on
+        // by itself, as it would have.
+        if app.is_demo() && app.state.active_operation.is_some() {
+            app.start_demo_steps(cx);
+        }
         // Home's Keep awake items and the pane's dot need the service's
         // state from the start, and follow it from then on.
         app.refresh_keep_awake(cx);
@@ -506,10 +595,6 @@ impl ManagerApp {
     /// An operation in progress keeps the screen, as `--component` always
     /// did; a component the catalog does not know is ignored.
     pub(crate) fn show_request(&mut self, request: Request, cx: &mut Context<Self>) {
-        if self.page == Page::Installing {
-            cx.notify();
-            return;
-        }
         match request {
             Request::Raise => cx.notify(),
             Request::Component(id) => self.open_requested_component(&id, cx),
@@ -527,8 +612,7 @@ impl ManagerApp {
 
     /// Goes back one page, if there is one to go back to.
     pub(crate) fn go_back(&mut self, cx: &mut Context<Self>) {
-        let running = self.transaction_running();
-        if let Some(page) = crate::navigation::back_target(&mut self.history, &self.page, running) {
+        if let Some(page) = crate::navigation::back_target(&mut self.history, &self.page) {
             self.enter(page, cx);
         }
     }
@@ -583,16 +667,20 @@ impl ManagerApp {
     /// privileged service. The Health screen still asks the service, which
     /// is the one that repairs. A demo window reads nothing from the host.
     fn read_package_system_record(&mut self, cx: &mut Context<Self>) {
-        if self.is_demo() {
-            return;
-        }
+        // A demo reads nothing from the host. `BETTER_MANAGER_DEMO_DPKG_DIR`
+        // lets a demo show the interrupted-package card from a fixture copy
+        // of dpkg's directory, for screenshots; a real window never reads it.
+        let directory = if self.is_demo() {
+            match std::env::var_os("BETTER_MANAGER_DEMO_DPKG_DIR") {
+                Some(directory) => std::path::PathBuf::from(directory),
+                None => return,
+            }
+        } else {
+            std::path::PathBuf::from(manager_core::dpkg_record::DPKG_ADMIN_DIR)
+        };
         cx.spawn(async move |this, cx| {
             let record = cx
-                .background_spawn(async move {
-                    manager_core::dpkg_record::read(std::path::Path::new(
-                        manager_core::dpkg_record::DPKG_ADMIN_DIR,
-                    ))
-                })
+                .background_spawn(async move { manager_core::dpkg_record::read(&directory) })
                 .await;
             if let Some(record) = record {
                 let _ = this.update(cx, |app, cx| {
@@ -633,6 +721,7 @@ impl ManagerApp {
             .manager
             .unorderable_host_checks(&self.state, &DpkgProbe)
             .unwrap_or_default();
+        self.read_service_facts();
         self.heal_user_units(cx);
     }
 
@@ -693,12 +782,13 @@ impl ManagerApp {
 
     /// Asks for confirmation before adopting what the machine has, or takes
     /// the confirmation back.
-    pub(crate) fn ask_to_adopt_host_state(
+    /// Opens one of Apps' confirmation dialogs, or closes it with `None`.
+    pub(crate) fn set_dialog(
         &mut self,
-        id: Option<ComponentId>,
+        dialog: Option<crate::apps::Dialog>,
         cx: &mut Context<Self>,
     ) {
-        self.adopt_confirm = id;
+        self.dialog = dialog;
         cx.notify();
     }
 
@@ -709,7 +799,7 @@ impl ManagerApp {
     /// same whether the request came from here or from the command line. This
     /// window only asks, and saves what comes back.
     pub(crate) fn adopt_host_state(&mut self, id: &ComponentId, cx: &mut Context<Self>) {
-        self.adopt_confirm = None;
+        self.dialog = None;
         // A demo window's state is a fabrication for screenshots; writing a
         // real machine's package state into it would make it neither.
         if self.execution == ExecutionMode::Mock {
@@ -725,23 +815,28 @@ impl ManagerApp {
                 self.commit_state(candidate);
             }
             Ok(_) => {}
-            Err(_) => self.planning_error = Some(AppError::Planning),
+            Err(error) => self.fail(AppError::Planning, error_chain(&error)),
         }
         cx.notify();
     }
 
-    /// Starts the launch-time catalog refresh, unless this run was told to stay
-    /// offline.
+    /// Starts the launch-time catalog refresh when Settings' "Check for
+    /// updates when opened" is on, and the run was not told to stay offline
+    /// (`apps::refreshes_at_launch`, ticket 85).
     ///
     /// `BETTER_MANAGER_OFFLINE=1` exists so a headless smoke, a test, or a
     /// machine with no network can open the window without a fetch being
     /// attempted at all. It does not fake a result: the window then shows the
-    /// catalog it has and says where that came from.
+    /// catalog it has and says where that came from. With the setting off the
+    /// window does the same until someone presses Check for updates or
+    /// Refresh list.
     fn refresh_catalog_at_launch(&mut self, cx: &mut Context<Self>) {
-        if std::env::var_os("BETTER_MANAGER_OFFLINE").is_some() {
-            return;
+        if crate::apps::refreshes_at_launch(
+            self.state.settings.check_updates,
+            std::env::var_os("BETTER_MANAGER_OFFLINE").is_some(),
+        ) {
+            self.refresh_catalog(cx);
         }
-        self.refresh_catalog(cx);
     }
 
     /// Fetches the published catalog off the UI thread.
@@ -754,6 +849,7 @@ impl ManagerApp {
             return;
         }
         self.catalog_refreshing = true;
+        self.catalog_attempted_at = Some(now_unix_seconds());
         let base = self.manager.catalog().clone();
         let status = self.catalog_status.clone();
         let store = self.catalog_store.clone();
@@ -777,6 +873,23 @@ impl ManagerApp {
             let _ = this.update(cx, |app, cx| app.adopt_catalog(outcome, cx));
         }));
         cx.notify();
+    }
+
+    /// The open window's own check, every few hours, by the rule
+    /// `apps::periodic_check_due` decides. It is the same refresh the buttons
+    /// run; its result is the launch check's kind, reported as a count and
+    /// never as a failure the person did not ask about.
+    fn periodic_check(&mut self, cx: &mut Context<Self>) {
+        if crate::apps::periodic_check_due(
+            self.state.settings.check_updates,
+            std::env::var_os("BETTER_MANAGER_OFFLINE").is_some(),
+            self.catalog_refreshing || self.transaction_running(),
+            self.catalog_status.fetched_at_unix_seconds,
+            self.catalog_attempted_at,
+            now_unix_seconds(),
+        ) {
+            self.refresh_catalog(cx);
+        }
     }
 
     /// Checks for updates, which is the catalog refresh followed by a recount.
@@ -857,8 +970,8 @@ impl ManagerApp {
                 }
                 true
             }
-            Err(_) => {
-                self.planning_error = Some(AppError::Storage);
+            Err(error) => {
+                self.fail(AppError::Storage, error_chain(&error));
                 false
             }
         }
@@ -940,7 +1053,7 @@ impl ManagerApp {
         // The Health screen is where an interrupted dpkg run is shown, so it
         // asks the privileged service each time it is opened rather than at
         // launch: opening the window should not start a root process.
-        if matches!(page, Page::Health | Page::DoctorResults) {
+        if page == Page::Health {
             self.check_package_system(cx);
         }
         if page == Page::Home {
@@ -960,6 +1073,9 @@ impl ManagerApp {
         // shown: either can change behind the window's back.
         if page == Page::WindowAttention {
             self.refresh_window_attention(cx);
+        }
+        if matches!(page, Page::Updates | Page::Health | Page::WindowAttention) {
+            self.read_service_facts();
         }
         // Keep awake reads the service again whenever it is shown, and opens
         // the time dialog when `keep-awake/until` asked for it.
@@ -1046,6 +1162,17 @@ impl ManagerApp {
         cx.notify();
     }
 
+    /// Health's "Run the full check": reads dpkg and the record again, and
+    /// asks the privileged service what dpkg left unfinished. The results
+    /// are the doctor's, drawn from what this reads.
+    pub(crate) fn run_full_check(&mut self, cx: &mut Context<Self>) {
+        self.reconcile_with_host(cx);
+        self.read_package_system_record(cx);
+        self.check_package_system(cx);
+        self.doctor_checked_at = Some(now_unix_seconds());
+        cx.notify();
+    }
+
     /// Closes Home's first-run info bar for good.
     pub(crate) fn complete_onboarding(&mut self, cx: &mut Context<Self>) {
         let mut candidate = self.state.clone();
@@ -1056,39 +1183,62 @@ impl ManagerApp {
         cx.notify();
     }
 
-    pub(crate) fn prepare_update_all(&mut self, cx: &mut Context<Self>) {
+    /// Update all: every waiting update, as one change, started at once.
+    pub(crate) fn start_update_all(&mut self, cx: &mut Context<Self>) {
+        if self.transaction_running() {
+            return;
+        }
         match self.manager.plan_all_in_mode(&self.state, self.execution) {
-            Ok(plan) if !plan.is_empty() => {
-                self.pending_plan = Some(plan);
-                self.planning_error = None;
-                self.navigate(Page::ReviewChanges, cx);
-            }
-            Ok(_) => {
-                self.pending_plan = None;
-                self.navigate(Page::Updates, cx);
-            }
-            Err(_) => self.show_planning_error(Page::Updates, cx),
+            Ok(plan) if !plan.is_empty() => self.begin_plan(plan, cx),
+            Ok(_) => cx.notify(),
+            Err(error) => self.show_planning_error(&error, cx),
         }
     }
 
-    pub(crate) fn prepare_component_change(&mut self, id: &ComponentId, cx: &mut Context<Self>) {
+    /// What a row's or the details page's button asks for. Removing and
+    /// restoring an older version ask first; everything else starts at once.
+    pub(crate) fn request_operation(
+        &mut self,
+        id: &ComponentId,
+        operation: DesiredOperation,
+        cx: &mut Context<Self>,
+    ) {
+        if self.transaction_running() {
+            return;
+        }
+        if !crate::apps::asks_first(operation) {
+            self.start_operation(id, operation, cx);
+        } else if operation == DesiredOperation::Remove {
+            self.set_dialog(Some(crate::apps::Dialog::remove(id.clone())), cx);
+        } else {
+            self.set_dialog(Some(crate::apps::Dialog::Restore { id: id.clone() }), cx);
+        }
+    }
+
+    /// The one action a component's row offers (Install, Update, Turn on),
+    /// started at once, for a page outside Apps that says a component is
+    /// missing or too old. Anything else opens the component's page.
+    pub(crate) fn start_component_action(&mut self, id: &ComponentId, cx: &mut Context<Self>) {
         let Some(component) = self.component_by_id(id) else {
-            self.show_planning_error(Page::Components, cx);
             return;
         };
-        let operation = match component.state {
-            ComponentStatus::Available => Some(DesiredOperation::Install),
-            ComponentStatus::UpdateAvailable => Some(DesiredOperation::Update),
-            ComponentStatus::Disabled => Some(DesiredOperation::Enable),
-            ComponentStatus::RestoreAvailable => Some(DesiredOperation::Restore),
-            ComponentStatus::Degraded | ComponentStatus::Failed => Some(self.retry_operation(id)),
-            _ => None,
-        };
-        if let Some(operation) = operation {
-            self.prepare_component_operation(id, operation, cx);
-        } else {
-            self.open_component(id, cx);
+        match self.row_trailing(&component) {
+            crate::apps::Trailing::Action(operation) => self.request_operation(id, operation, cx),
+            _ => self.open_component(id, cx),
         }
+    }
+
+    /// Removes a component the person confirmed, keeping or deleting their
+    /// data as the dialog's check box said.
+    pub(crate) fn confirm_remove(
+        &mut self,
+        id: &ComponentId,
+        delete_data: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.dialog = None;
+        self.remove_data_for = delete_data.then(|| id.clone());
+        self.start_operation(id, DesiredOperation::Remove, cx);
     }
 
     /// What "try again" means for a component that recorded a failure.
@@ -1112,25 +1262,32 @@ impl ManagerApp {
     }
 
     /// Whether a transaction would replace this application's own package.
+    /// Adding its missing companions hands its own package over unchanged,
+    /// so Better Manager does not reopen (ticket 124).
     pub(crate) fn updates_the_manager(steps: &[PlanStep]) -> bool {
         steps.iter().any(|step| {
-            manager_core::is_self_component(&step.component) && step.operation.mutates_component()
+            manager_core::is_self_component(&step.component)
+                && step.operation.mutates_component()
+                && step.operation != DesiredOperation::AddCompanions
         })
     }
 
-    pub(crate) fn prepare_component_operation(
+    /// Plans one operation and starts it at once.
+    pub(crate) fn start_operation(
         &mut self,
         id: &ComponentId,
         operation: DesiredOperation,
         cx: &mut Context<Self>,
     ) {
+        if self.transaction_running() {
+            return;
+        }
         match self.plan_operation(id, operation) {
-            Ok(plan) => {
-                self.pending_plan = Some(plan);
-                self.planning_error = None;
-                self.navigate(Page::ReviewChanges, cx);
+            Ok(plan) => self.begin_plan(plan, cx),
+            Err(error) => {
+                self.remove_data_for = None;
+                self.show_planning_error(&error, cx);
             }
-            Err(_) => self.show_planning_error(Page::Components, cx),
         }
     }
 
@@ -1167,25 +1324,39 @@ impl ManagerApp {
             .find(|check| check.component.as_ref() == Some(id))
     }
 
-    pub(crate) fn begin_install(&mut self, cx: &mut Context<Self>) {
-        let Some(plan) = self.pending_plan.clone() else {
-            self.show_planning_error(Page::Updates, cx);
-            return;
-        };
+    /// Records the change as started and runs it: off the UI thread through
+    /// the privileged service, or, in a demo, a stage a second.
+    fn begin_plan(&mut self, plan: TransactionPlan, cx: &mut Context<Self>) {
         let mut candidate = self.state.clone();
         match self.manager.begin(&mut candidate, plan) {
             Ok(_) => {
                 if self.commit_state(candidate) {
-                    self.navigate(Page::Installing, cx);
-                    if !self.is_demo() {
+                    self.planning_error = None;
+                    self.finished_plan = None;
+                    self.data_removal = None;
+                    if self.is_demo() {
+                        self.start_demo_steps(cx);
+                    } else {
                         self.run_real_transaction(cx);
                     }
-                } else {
-                    cx.notify();
                 }
+                cx.notify();
             }
-            Err(_) => self.show_planning_error(Page::ReviewChanges, cx),
+            Err(error) => {
+                self.remove_data_for = None;
+                self.show_planning_error(&error, cx);
+            }
         }
+    }
+
+    /// Carries on with a real change a closed window left part way, from
+    /// the stage the state file recorded.
+    pub(crate) fn resume_transaction(&mut self, cx: &mut Context<Self>) {
+        if self.is_demo() || self.running.is_some() || self.state.active_operation.is_none() {
+            return;
+        }
+        self.run_real_transaction(cx);
+        cx.notify();
     }
 
     /// Runs the whole transaction off the UI thread.
@@ -1215,13 +1386,18 @@ impl ManagerApp {
             let downloader = HttpDownloader::new(ArtifactCache::from_default_path());
             let executor = match DbusPrivilegedExecutor::connect() {
                 Ok(executor) => executor,
-                Err(_) => {
+                Err(error) => {
                     // Nothing was applied, so abandoning is honest here.
                     let _ = manager.cancel(&mut state);
                     let _ = store.save(&state);
                     let _ = sender
                         .send(crate::runner_end::WorkerEvent::Runner(
                             RunnerEvent::StateSaved(Box::new(state)),
+                        ))
+                        .await;
+                    let _ = sender
+                        .send(crate::runner_end::WorkerEvent::ServiceUnavailable(
+                            error_chain(&error),
                         ))
                         .await;
                     return;
@@ -1249,6 +1425,10 @@ impl ManagerApp {
                 let applied = this.update(cx, |app, cx| match event {
                     crate::runner_end::WorkerEvent::Runner(event) => {
                         app.apply_runner_event(event, cx)
+                    }
+                    crate::runner_end::WorkerEvent::ServiceUnavailable(details) => {
+                        app.fail(AppError::ServiceUnavailable, details);
+                        cx.notify();
                     }
                     crate::runner_end::WorkerEvent::Ended => app.runner_ended(cx),
                 });
@@ -1278,12 +1458,6 @@ impl ManagerApp {
         }
         self.transfer = None;
         self.cancel = None;
-        if let Some(page) = crate::runner_end::page_after_unfinished_end(
-            self.page == Page::Installing,
-            self.state.active_operation.is_some(),
-        ) {
-            self.navigate(page, cx);
-        }
         cx.notify();
     }
 
@@ -1308,70 +1482,138 @@ impl ManagerApp {
                 cx.notify();
             }
             RunnerEvent::StateSaved(state) => {
+                let plan = self
+                    .state
+                    .active_operation
+                    .as_ref()
+                    .map(|active| active.plan.clone());
                 self.state = *state;
-                match self.state.active_operation.as_ref() {
-                    Some(active) => self.pending_plan = Some(active.plan.clone()),
-                    // The transaction is over. The plan stops being something
-                    // awaiting review — leaving it there made every component
-                    // in it keep offering "Review changes" — and becomes what
-                    // the result screens describe.
-                    None => self.finished_plan = self.pending_plan.take(),
+                // The change is over: its plan is what the rows describe now,
+                // but only when it did what it set out to. A cancelled change,
+                // or one that never reached the service, changed nothing, and
+                // a row saying "Updated" over it would be false.
+                if self.state.active_operation.is_none() && plan.is_some() {
+                    self.finished_plan = plan.filter(|_| ended_in_success(&self.state));
                 }
                 cx.notify();
             }
             RunnerEvent::Finished(progress) => {
                 self.transfer = None;
                 self.cancel = None;
-                match progress {
-                    OperationProgress::Finished { operation } => self.navigate(
-                        if operation == DesiredOperation::Restore {
-                            Page::Restored
-                        } else {
-                            Page::Finished
-                        },
-                        cx,
-                    ),
-                    OperationProgress::Failed { .. } => {
-                        // A failure is the moment a person needs to know if
-                        // dpkg is the reason, before they try again.
-                        self.check_package_system(cx);
-                        self.navigate(Page::Restore, cx);
-                    }
-                    OperationProgress::InProgress { .. } => cx.notify(),
-                }
+                self.change_finished(&progress, cx);
             }
         }
     }
 
-    pub(crate) fn advance_install(&mut self, cx: &mut Context<Self>) {
+    /// What follows a change, however it ended. A failure is the moment a
+    /// person needs to know whether dpkg is the reason, before they retry;
+    /// a removal that succeeded is when the person's data may go.
+    fn change_finished(&mut self, progress: &OperationProgress, cx: &mut Context<Self>) {
+        // The service and the adapter may have just arrived (ticket 124);
+        // the window-attention page then says whether to sign out.
+        self.read_service_facts();
+        if self.page == Page::WindowAttention {
+            self.refresh_window_attention(cx);
+        }
+        match progress {
+            OperationProgress::Finished { operation } => {
+                if *operation == DesiredOperation::Remove {
+                    self.remove_personal_data();
+                }
+                self.remove_data_for = None;
+            }
+            OperationProgress::Failed { .. } => {
+                self.remove_data_for = None;
+                self.check_package_system(cx);
+            }
+            OperationProgress::InProgress { .. } => {}
+        }
+        cx.notify();
+    }
+
+    /// Moves the removed component's settings and history to the trash, by
+    /// `manager_core::personal_data`'s rule, when the dialog's box was
+    /// ticked. A demo changes nothing on the machine.
+    fn remove_personal_data(&mut self) {
+        let Some(id) = self.remove_data_for.take() else {
+            return;
+        };
+        if self.is_demo() {
+            return;
+        }
+        let Some(manifest) = self.manager.manifests().find(|manifest| manifest.id == id) else {
+            return;
+        };
+        for refused in
+            manager_core::personal_data::refused_manifest_paths(id.as_str(), &manifest.paths)
+        {
+            eprintln!("{}", refused.log_line(id.as_str()));
+        }
+        let paths = manager_core::personal_data::owned_by(id.as_str());
+        if paths.is_empty() {
+            return;
+        }
+        let Some((home, trash)) = manager_platform::personal_data::home_and_trash() else {
+            return;
+        };
+        let relative: Vec<&str> = paths.iter().map(|entry| entry.path).collect();
+        let report =
+            manager_platform::personal_data::move_personal_data_to_trash(&home, &relative, &trash);
+        if !report.trashed.is_empty() || !report.failed.is_empty() {
+            self.data_removal = Some((id, report));
+        }
+    }
+
+    /// Steps a demo change through its stages by itself, one a second, as
+    /// a real one moves by itself.
+    pub(crate) fn start_demo_steps(&mut self, cx: &mut Context<Self>) {
+        self.demo_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                smol::Timer::after(crate::apps::DEMO_STEP).await;
+                let more = this.update(cx, |app, cx| app.demo_step(cx));
+                if !matches!(more, Ok(true)) {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// One stage of a demo change. Returns whether there is more to do.
+    fn demo_step(&mut self, cx: &mut Context<Self>) -> bool {
+        let plan = self
+            .state
+            .active_operation
+            .as_ref()
+            .map(|active| active.plan.clone());
+        let Some(plan) = plan else {
+            self.demo_task = None;
+            return false;
+        };
         let mut candidate = self.state.clone();
-        match self
+        let progress = match self
             .manager
             .advance_mock(&mut candidate, MockOutcome::Succeed)
         {
-            Ok(progress) => {
-                if !self.commit_state(candidate) {
-                    cx.notify();
-                    return;
-                }
-                if !matches!(progress, OperationProgress::InProgress { .. }) {
-                    self.finished_plan = self.pending_plan.take();
-                }
-                match progress {
-                    OperationProgress::InProgress { .. } => self.navigate(Page::Installing, cx),
-                    OperationProgress::Finished { operation } => self.navigate(
-                        if operation == DesiredOperation::Restore {
-                            Page::Restored
-                        } else {
-                            Page::Finished
-                        },
-                        cx,
-                    ),
-                    OperationProgress::Failed { .. } => self.navigate(Page::Restore, cx),
-                }
+            Ok(progress) => progress,
+            Err(error) => {
+                self.demo_task = None;
+                self.show_planning_error(&error, cx);
+                return false;
             }
-            Err(_) => self.show_planning_error(Page::Installing, cx),
+        };
+        if !self.commit_state(candidate) {
+            self.demo_task = None;
+            cx.notify();
+            return false;
         }
+        if matches!(progress, OperationProgress::InProgress { .. }) {
+            cx.notify();
+            return true;
+        }
+        self.finished_plan = Some(plan);
+        self.demo_task = None;
+        self.change_finished(&progress, cx);
+        false
     }
 
     pub(crate) fn cancel_install(&mut self, cx: &mut Context<Self>) {
@@ -1385,30 +1627,12 @@ impl ManagerApp {
         let mut candidate = self.state.clone();
         match self.manager.cancel(&mut candidate) {
             Ok(()) => {
-                if self.commit_state(candidate) {
-                    self.pending_plan = None;
-                    self.navigate(Page::Updates, cx);
-                } else {
-                    cx.notify();
-                }
+                self.demo_task = None;
+                self.remove_data_for = None;
+                self.commit_state(candidate);
+                cx.notify();
             }
-            Err(_) => self.show_planning_error(Page::Installing, cx),
-        }
-    }
-
-    pub(crate) fn prepare_recovery(
-        &mut self,
-        component: ComponentId,
-        operation: DesiredOperation,
-        cx: &mut Context<Self>,
-    ) {
-        match self.plan_operation(&component, operation) {
-            Ok(plan) => {
-                self.pending_plan = Some(plan);
-                self.planning_error = None;
-                self.navigate(Page::ReviewChanges, cx);
-            }
-            Err(_) => self.show_planning_error(Page::Restore, cx),
+            Err(error) => self.show_planning_error(&error, cx),
         }
     }
 
@@ -1486,38 +1710,53 @@ impl ManagerApp {
             .count()
     }
 
-    pub(crate) fn is_pending(&self, id: &ComponentId) -> bool {
-        self.pending_plan
-            .as_ref()
-            .is_some_and(|plan| plan.steps().iter().any(|step| &step.component == id))
+    /// What the running change is doing, for the rows it touches.
+    pub(crate) fn run_facts(&self) -> Option<crate::apps::RunFacts<'_>> {
+        let active = self.state.active_operation.as_ref()?;
+        Some(crate::apps::RunFacts {
+            steps: active.plan.steps(),
+            stage: active.stage,
+            transfer: self.transfer.as_ref().map(|transfer| {
+                (
+                    transfer.component.as_str(),
+                    transfer.received_bytes,
+                    transfer.total_bytes,
+                )
+            }),
+        })
     }
 
-    pub(crate) fn pending_steps(&self) -> Vec<PlanStep> {
-        self.pending_plan
-            .as_ref()
-            .map(|plan| plan.steps().to_vec())
-            .unwrap_or_default()
+    /// What one row shows at its trailing edge.
+    pub(crate) fn row_trailing(&self, component: &ComponentInfo) -> crate::apps::Trailing {
+        let id = &component.core_id;
+        let progress = self
+            .run_facts()
+            .and_then(|run| crate::apps::row_progress(&run, id));
+        let result = self.finished_plan.as_ref().and_then(|plan| {
+            plan.steps()
+                .iter()
+                .find(|step| &step.component == id)
+                .map(|step| crate::apps::result_line(self.locale, step))
+        });
+        crate::apps::trailing(
+            self.locale,
+            &crate::apps::RowFacts {
+                component,
+                unorderable: self.unorderable_check(id).is_some(),
+                progress,
+                result,
+                retry: self.retry_operation(id),
+            },
+        )
     }
 
-    /// What the pending transaction as a whole leaves to happen afterwards,
-    /// for the review's summary row; `None` hides the row.
-    pub(crate) fn pending_restart_label(&self) -> Option<&'static str> {
-        let plan = self.pending_plan.as_ref()?;
-        let requirement = plan.restart_requirement();
-        let operations: Vec<DesiredOperation> = plan
-            .steps()
-            .iter()
-            .filter(|step| step.restart_requirement == requirement)
-            .map(|step| step.operation)
-            .collect();
-        crate::components::restart_effect(self.locale, plan_operation(&operations), requirement)
-    }
-
-    pub(crate) fn pending_disk_space(&self) -> DiskSpaceCheck {
-        self.pending_plan
-            .as_ref()
-            .map(|plan| plan.disk_space())
-            .unwrap_or(DiskSpaceCheck::NotRequired)
+    /// The plan Update all would start, for the size and afterwards lines
+    /// under each update. Planning reads only the record, never the host.
+    pub(crate) fn update_all_plan(&self) -> Option<TransactionPlan> {
+        self.manager
+            .plan_all_in_mode(&self.state, self.execution)
+            .ok()
+            .filter(|plan| !plan.is_empty())
     }
 
     /// The steps of the transaction that just ran.
@@ -1528,19 +1767,11 @@ impl ManagerApp {
             .unwrap_or_default()
     }
 
-    pub(crate) fn active_steps(&self) -> Vec<PlanStep> {
-        self.state
-            .active_operation
-            .as_ref()
-            .map(|active| active.plan.steps().to_vec())
-            .unwrap_or_else(|| self.pending_steps())
-    }
-
     /// Opens a component's page because another window asked for it
     /// (`better-manager --component <id>`). An operation in progress and the
     /// first-run page keep the screen; an unknown component is ignored.
     pub(crate) fn open_requested_component(&mut self, id: &ComponentId, cx: &mut Context<Self>) {
-        if opens_requested_component(&self.page, self.component_by_id(id).is_some()) {
+        if opens_requested_component(self.component_by_id(id).is_some()) {
             self.open_component(id, cx);
         }
     }
@@ -1548,13 +1779,6 @@ impl ManagerApp {
     pub(crate) fn open_component(&mut self, id: &ComponentId, cx: &mut Context<Self>) {
         self.detail_tab = DetailTab::Overview;
         self.navigate(Page::ComponentDetail(id.clone()), cx);
-    }
-
-    pub(crate) fn selected_component(&self) -> Option<ComponentInfo> {
-        match &self.page {
-            Page::ComponentDetail(id) => self.component_by_id(id),
-            _ => None,
-        }
     }
 
     /// Presentation text for a value a component did not declare.
@@ -1571,41 +1795,100 @@ impl ManagerApp {
             .unwrap_or_else(|| copy(self.locale).manager.to_string())
     }
 
-    pub(crate) fn stage(&self) -> Option<OperationStage> {
-        self.state
-            .active_operation
-            .as_ref()
-            .map(|active| active.stage)
-    }
-
-    pub(crate) fn current_failure(&self) -> Option<(ComponentId, manager_core::FailureRecord)> {
-        self.state
-            .components
-            .iter()
-            .find_map(|(id, record)| record.failure.clone().map(|failure| (id.clone(), failure)))
-    }
-
     pub(crate) fn doctor_checks(&self) -> Vec<DoctorCheck> {
         let mut checks = self.manager.doctor(&self.state).unwrap_or_default();
         checks.extend(self.unorderable.iter().cloned());
+        manager_core::merge_companion_findings(&mut checks, &self.service.gaps);
         checks
     }
 
-    pub(crate) fn activity_matches(&self, entry: &ActivityRecord) -> bool {
-        match self.activity_filter {
-            ActivityFilter::All => true,
-            ActivityFilter::Success => matches!(
-                entry.kind,
-                ActivityKind::Success | ActivityKind::RecoverySuccess
-            ),
-            ActivityFilter::Warning => matches!(
-                entry.kind,
-                ActivityKind::Warning
-                    | ActivityKind::RecoveryPartial
-                    | ActivityKind::ManualRecovery
-            ),
-            ActivityFilter::Failure => entry.kind == ActivityKind::Failure,
+    /// Reads dpkg and the handoff's state file. Read-only host queries, so
+    /// they need no privilege; a demo window reads nothing.
+    pub(crate) fn read_service_facts(&mut self) {
+        if self.execution == ExecutionMode::Mock {
+            return;
         }
+        use manager_platform::dpkg::PackageStateProbe;
+        self.service = ServiceFacts {
+            gaps: self
+                .manager
+                .companion_gaps(&self.state, &DpkgProbe)
+                .unwrap_or_default(),
+            generation: Some(manager_core::exec::ServiceGeneration::of(
+                DpkgProbe
+                    .installed_version(manager_core::exec::SERVICE_PACKAGE)
+                    .ok()
+                    .flatten()
+                    .as_deref(),
+            )),
+            handoff: std::fs::read_to_string(manager_core::exec::HANDOFF_STATUS_PATH)
+                .ok()
+                .and_then(|text| manager_core::exec::HandoffStatus::parse(&text)),
+        };
+    }
+
+    /// What the Updates screen says about the privileged service.
+    pub(crate) fn service_notice(&self) -> Option<crate::model::ServiceNotice> {
+        let generation = self.service.generation?;
+        let manager_id = ComponentId::new(manager_core::SELF_COMPONENT_ID).ok()?;
+        let manager_update = self
+            .component_by_id(&manager_id)
+            .is_some_and(|component| component.state == ComponentStatus::UpdateAvailable);
+        let manager_gaps: Vec<_> = self
+            .service
+            .gaps
+            .iter()
+            .filter(|gap| gap.component == manager_id)
+            .cloned()
+            .collect();
+        // What the update would carry beside the service.
+        let waiting = if manager_update {
+            self.manager
+                .catalog()
+                .get(&manager_id)
+                .into_iter()
+                .flat_map(|manifest| manifest.artifacts.iter())
+                .filter(|artifact| {
+                    artifact.release == self.manager.profile().release
+                        && artifact
+                            .architecture
+                            .eq_ignore_ascii_case(&self.manager.profile().architecture)
+                })
+                .flat_map(|artifact| artifact.companions.iter())
+                .map(|companion| companion.package.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        crate::model::service_notice(
+            self.locale,
+            generation,
+            &manager_gaps,
+            manager_update,
+            &waiting,
+            self.service.handoff.as_ref(),
+        )
+    }
+
+    /// The notice's button: Better Manager's own update when it has one, or
+    /// the missing companions at its current version.
+    pub(crate) fn start_service_update(
+        &mut self,
+        action: crate::model::ServiceAction,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(id) = ComponentId::new(manager_core::SELF_COMPONENT_ID) else {
+            return;
+        };
+        let operation = match action {
+            crate::model::ServiceAction::UpdateManager => DesiredOperation::Update,
+            crate::model::ServiceAction::AddCompanions => DesiredOperation::AddCompanions,
+        };
+        self.start_operation(&id, operation, cx);
+    }
+
+    pub(crate) fn activity_matches(&self, entry: &ActivityRecord) -> bool {
+        crate::apps::activity_matches(self.activity_filter, entry.kind)
     }
 
     pub(crate) fn stage_label(&self, stage: OperationStage) -> &'static str {
@@ -1678,6 +1961,8 @@ impl ManagerApp {
             Some(other) if plan_rejection_is_host_mismatch(other, detail) => {
                 c.evidence_plan_rejected
             }
+            Some("companion.missing") => c.evidence_companion_missing,
+            Some("daemon.outdated") => c.evidence_daemon_outdated,
             Some(other) if other.starts_with("daemon.") => c.evidence_daemon_refused,
             _ => c.none,
         }
@@ -1693,7 +1978,14 @@ impl ManagerApp {
             DesiredOperation::Verify => c.health_check_label,
             DesiredOperation::Restore => c.restore_previous,
             DesiredOperation::Remove => c.remove,
+            DesiredOperation::AddCompanions => c.add_companions,
         }
+    }
+
+    /// Shows `error` with what went wrong behind it.
+    pub(crate) fn fail(&mut self, error: AppError, details: String) {
+        self.planning_error = Some(error);
+        self.error_details = details;
     }
 
     pub(crate) fn error_message(&self) -> &'static str {
@@ -1702,13 +1994,16 @@ impl ManagerApp {
             Some(AppError::Planning) => c.planning_failed_detail,
             Some(AppError::Storage) => c.storage_error,
             Some(AppError::UnsupportedHost) => c.unsupported_host,
+            Some(AppError::ServiceUnavailable) => c.service_unavailable_detail,
             None => c.none,
         }
     }
 
-    fn show_planning_error(&mut self, page: Page, cx: &mut Context<Self>) {
-        self.planning_error = Some(AppError::Planning);
-        self.navigate(page, cx);
+    /// A change could not be planned or started. Nothing changed; the page
+    /// the person is on says so.
+    fn show_planning_error(&mut self, error: &dyn std::error::Error, cx: &mut Context<Self>) {
+        self.fail(AppError::Planning, error_chain(error));
+        cx.notify();
     }
 }
 
@@ -1722,24 +2017,6 @@ pub(crate) const AGE_REFRESH: std::time::Duration = std::time::Duration::from_se
 /// list.
 pub(crate) fn shows_catalog_age(page: &Page) -> bool {
     matches!(page, Page::Updates | Page::Components)
-}
-
-/// The operation whose wording a plan's summary row uses, from the
-/// operations of the steps that set its restart requirement: an update only
-/// when every one of them is an update, nothing to say only when every one
-/// takes the component away, and the neutral wording otherwise.
-pub(crate) fn plan_operation(operations: &[DesiredOperation]) -> DesiredOperation {
-    if !operations.is_empty() && operations.iter().all(|op| *op == DesiredOperation::Update) {
-        DesiredOperation::Update
-    } else if !operations.is_empty()
-        && operations
-            .iter()
-            .all(|op| matches!(op, DesiredOperation::Remove | DesiredOperation::Disable))
-    {
-        DesiredOperation::Remove
-    } else {
-        DesiredOperation::Install
-    }
 }
 
 pub(crate) fn appearance_of(theme: StoredTheme) -> Appearance {
@@ -1782,7 +2059,13 @@ pub(crate) fn translated_component(
             summary: c.files_purpose,
             detail: c.files_detail,
         }),
-        _ => None,
+        other => crate::apps::first_party(locale, other).map(|(name, summary, detail)| {
+            ComponentTranslation {
+                name,
+                summary,
+                detail,
+            }
+        }),
     }
 }
 
@@ -1881,8 +2164,8 @@ pub(crate) fn activity_evidence_text(label: &str, evidence: Option<&str>) -> Str
 /// Whether a requested component's page may replace the page the window
 /// is on: not over an operation in progress, and only for a component the
 /// catalog knows.
-pub(crate) fn opens_requested_component(page: &Page, known: bool) -> bool {
-    known && !matches!(page, Page::Installing)
+pub(crate) fn opens_requested_component(known: bool) -> bool {
+    known
 }
 
 impl ManagerApp {
@@ -1894,20 +2177,11 @@ impl ManagerApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.pending_plan.is_none() {
-            self.pending_plan = view.pending_plan;
-        }
         self.touchpad_restored = view.touchpad;
         self.finished_plan = view.finished_plan;
-        let pending = self.pending_plan.is_some();
-        let finished = self.finished_plan.is_some();
         let knows = |id: &ComponentId| self.component_by_id(id).is_some();
-        let page = view.page.page(&knows, pending, finished);
-        let back = view
-            .back
-            .iter()
-            .map(|key| key.page(&knows, pending, finished))
-            .collect();
+        let page = view.page.page(&knows);
+        let back = view.back.iter().map(|key| key.page(&knows)).collect();
         self.history = crate::navigation::History::from_pages(back);
         self.detail_tab = view.detail_tab.tab();
         self.activity_filter = view.activity_filter.filter();
@@ -1925,12 +2199,10 @@ impl ManagerApp {
             self.nav_search
                 .update(cx, |state, cx| state.set_value(text, window, cx));
         }
-        if self.page != Page::Installing {
-            self.enter(page, cx);
-            self.narrow_open = view.narrow_open;
-            self.content_scroll
-                .set_offset(gpui::point(gpui::px(0.0), gpui::px(-view.scroll.max(0.0))));
-        }
+        self.enter(page, cx);
+        self.narrow_open = view.narrow_open;
+        self.content_scroll
+            .set_offset(gpui::point(gpui::px(0.0), gpui::px(-view.scroll.max(0.0))));
     }
 }
 
@@ -1945,8 +2217,7 @@ impl better_ui::restart::Restartable for ManagerApp {
         crate::restart::restart_blocked(
             self.transaction_running(),
             self.repair_task.is_some(),
-            self.heal_task.is_some(),
-            self.page == Page::Installing || self.keep_awake.blocks_restart(),
+            self.heal_task.is_some() || self.keep_awake.blocks_restart(),
         )
         .or_else(|| {
             self.touchpad
@@ -1969,7 +2240,7 @@ impl better_ui::restart::Restartable for ManagerApp {
             about_expanded: self.about_expanded,
             update_check_requested: self.update_check_requested,
             scroll: -f32::from(self.content_scroll.offset().y),
-            pending_plan: self.pending_plan.clone(),
+            pending_plan: None,
             finished_plan: self.finished_plan.clone(),
             touchpad: self
                 .touchpad
@@ -1982,15 +2253,14 @@ impl better_ui::restart::Restartable for ManagerApp {
 
 #[cfg(test)]
 mod requested_component_tests {
-    use super::{Page, appearance_of, opens_requested_component};
+    use super::{appearance_of, opens_requested_component};
     use better_ui::fluent::theme::Appearance;
     use manager_core::StoredTheme;
 
     #[test]
-    fn a_requested_page_never_replaces_an_operation() {
-        assert!(opens_requested_component(&Page::Home, true));
-        assert!(!opens_requested_component(&Page::Home, false));
-        assert!(!opens_requested_component(&Page::Installing, true));
+    fn only_a_component_the_catalog_knows_is_opened() {
+        assert!(opens_requested_component(true));
+        assert!(!opens_requested_component(false));
     }
 
     #[test]
@@ -1999,4 +2269,13 @@ mod requested_component_tests {
         assert_eq!(appearance_of(StoredTheme::Light), Appearance::Light);
         assert_eq!(appearance_of(StoredTheme::System), Appearance::System);
     }
+}
+
+/// What the window last read about the privileged service (ticket 124).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ServiceFacts {
+    pub(crate) gaps: Vec<manager_core::CompanionGap>,
+    /// `None` until read, and always in a demo window.
+    pub(crate) generation: Option<manager_core::exec::ServiceGeneration>,
+    pub(crate) handoff: Option<manager_core::exec::HandoffStatus>,
 }

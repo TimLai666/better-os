@@ -551,15 +551,48 @@ touched, health checks, release notes, and the action row: 安裝 / 更新 / 停
 present only when the planning API offers it. Better Manager's own remove is
 replaced by today's `cannot_remove_self` sentence.
 
-**Updates** keeps the review → installing → finished / restore → restored
-flow and all of today's copy (`review_changes`, `installing_title`, the
-stage names, `restore_title`, …), drawn with `ProgressBar`, settings cards,
-and one accent button per screen. The accent button only exists when there is
-something to install (audit M4). The self-update notice stays.
+**Updates** works like Windows Update (owner, 2026-11-15). There is no
+review page before a change: 全部更新 / Update all and a component's own
+安裝 / Install, 更新 / Update, 啟用 / Turn on, 停用 / Turn off and 重新檢查 /
+Check again start at once, as one transaction, so the administrator's
+password is asked for once per run. Each affected row shows its own
+progress in place (a `ProgressBar` and the stage in Caption: 正在下載 12.0 /
+48.3 MB, 正在安裝, 正在套用設定, 正在確認可以使用), and when the run ends
+it says what happened on the same row (已更新到 0.2.15 / Updated to
+0.2.15). A row that failed says why in one sentence, keeps the details in an
+expandable `ErrorBar`, and offers 重試 / Retry and, when a previous version
+is kept, 還原上一個版本 / Restore previous version. What the change costs
+(download size, what happens afterwards, whether a previous version is
+kept) is small text on the row, never a gate. A running transaction is a
+card at the top of Apps, Updates, and the component's page, with 取消 /
+Cancel while cancelling can still put the machine back. Only removing a
+component and restoring an older version ask first, in a `ContentDialog`;
+nothing says 等待確認 / "waiting for confirmation". The accent button only
+exists when there is something to install (audit M4). The self-update
+notice stays: 這次會更新 Better Manager 本身。更新完成後，它會自己以新版本重新開啟。
+/ This updates Better Manager itself. When the update finishes, it reopens
+on the new version by itself. Demo mode steps through the stages by itself,
+a second apart.
 
-**Health** keeps the doctor (run the full check, results list), the
-interrupted-package card with Repair, view recovery, and all evidence
-sentences.
+**Remove** asks 要移除 {component} 嗎？ / Remove {component}? with 移除 /
+Remove and 取消 / Cancel, and a check box, ticked by default, 同時刪除我的
+設定和紀錄 / Also delete my settings and history, shown only when the
+component owns entries on the list of Better OS data directories. That
+list is closed and kept in one place (`manager_core::personal_data`, owner
+2026-11-15): every directory or file a component has ever kept the person's
+data in, current and historical, each with its owning component. Removing a
+component deletes only its own entries, including historical ones no version
+writes any more, and never another component's, never Better Manager's own
+state, and never anything off the list: `~/.config/mimeapps.list` and GTK's
+bookmarks stay. A home path in a manifest's `paths` that is not one of its
+own entries is refused and logged, not deleted. What is deleted is moved to the trash after the
+removal succeeded, never before and never unlinked. **Restore** asks
+要把 {component} 還原成 {version} 嗎？ / Restore {component} to {version}?
+
+**Health** keeps the doctor (執行完整檢查 / Run the full check, which reads
+dpkg again, and the results list with how long ago it ran), the
+interrupted-package card with Repair, a 查看 / View button on each failed
+component's result that opens its page, and all evidence sentences.
 
 **Activity** keeps the filters (All, Successful, Warnings, Failures), the
 list, and Clear history (now behind a `ContentDialog`: 清除所有活動紀錄？ /
@@ -738,12 +771,12 @@ with its new place. "Same" means behaviour and copy are kept.
 | Last install failed, Try install again | Apps › {component} | same |
 | Unorderable version explanation | Apps › {component}, Health results | same |
 | Cannot remove self | Apps › Better Manager | same |
-| Self-update notice | Apps › Updates review | same |
+| Self-update notice | Apps › Updates | reworded: it reopens by itself (ticket 105) |
 | Sidebar: Updates (count), Update all, Review changes | Apps › Updates; nav badge | |
-| Review changes: affected components, download size, disk space, restore available, dependencies, files touched, before / after | Apps › Updates › Review | same |
-| Installing: stages, progress, details, Cancel installation | Apps › Updates › Installing | same |
-| Finished, Back to overview | Apps › Updates › Done → Home | |
-| Restore page, Restore previous version, Retry check, Restored page | Apps › Updates › Restore | same |
+| Review changes: affected components, download size, disk space, restore available, dependencies, files touched, before / after | the row's small text (size, afterwards, previous version kept); dependencies and files touched on Apps › {component} | no review page (owner, 2026-11-15) |
+| Installing: stages, progress, details, Cancel installation | each affected row's progress; the running card with Cancel | |
+| Finished, Back to overview | the row's result line | |
+| Restore page, Restore previous version, Retry check, Restored page | the failed row's Retry and Restore previous version (confirmed), its result line | |
 | Sidebar: System health; Run full check; doctor results; Run again; Back | Apps › Health | |
 | Interrupted package system card, Repair | Apps › Health; Home attention card | same |
 | Sidebar: Activity; filters; Clear history | Apps › Activity | Clear now confirms |

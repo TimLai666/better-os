@@ -14,7 +14,7 @@ bench = false
 [dependencies]
 better-ui.workspace = true
 manager-core.workspace = true
-manager-platform = { workspace = true, features = ["dbus-client"] }
+manager-platform = { workspace = true, features = ["dbus-client", "personal-data"] }
 manager-store.workspace = true
 better-core.workspace = true
 defaults-core.workspace = true

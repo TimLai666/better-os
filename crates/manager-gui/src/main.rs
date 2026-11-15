@@ -1,4 +1,5 @@
 mod app;
+mod apps;
 mod attention;
 mod components;
 mod deep_link;
@@ -17,10 +18,8 @@ mod model;
 mod navigation;
 mod pages;
 mod pages_defaults;
-mod pages_flow;
-mod pages_main;
-mod pages_settings;
 mod render;
+mod render_apps;
 mod render_window_attention;
 mod restart;
 mod runner_end;

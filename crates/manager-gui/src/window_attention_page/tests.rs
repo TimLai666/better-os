@@ -233,7 +233,6 @@ fn the_page_offers_to_turn_the_extension_on_and_hides_the_settings_until_then() 
     for state in [
         ExtensionState::Checking,
         ExtensionState::NeedsSignOut,
-        ExtensionState::NotInstalled,
         ExtensionState::Failed("e".to_string()),
         ExtensionState::Unsupported,
         ExtensionState::NoShell,
@@ -241,6 +240,21 @@ fn the_page_offers_to_turn_the_extension_on_and_hides_the_settings_until_then() 
         let notice = extension_notice(Locale::EnUs, &state).unwrap();
         assert!(!notice.settings_shown, "{state:?}");
         assert_eq!(notice.action, None, "{state:?}");
+    }
+}
+
+/// Ticket 124: a missing adapter is installed from this page, through
+/// Better Manager, and the page no longer sends anyone to the installer or
+/// tells them to sign out before anything was installed.
+#[test]
+fn a_missing_adapter_is_offered_an_install_button() {
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let notice = extension_notice(locale, &ExtensionState::NotInstalled).unwrap();
+        assert_eq!(notice.action, Some(NoticeAction::Install));
+        assert!(!notice.settings_shown);
+        for stale in ["installer again", "sign out", "安裝程式", "登出"] {
+            assert!(!notice.body.contains(stale), "{locale:?}: {}", notice.body);
+        }
     }
 }
 

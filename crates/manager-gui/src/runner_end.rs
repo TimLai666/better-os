@@ -13,6 +13,8 @@
 pub(crate) enum WorkerEvent<E> {
     /// Something the runner reported.
     Runner(E),
+    /// The privileged service could not be reached; nothing was changed.
+    ServiceUnavailable(String),
     /// The work is over, whatever happened.
     Ended,
 }
@@ -35,20 +37,9 @@ impl<F: FnOnce()> Drop for EndsOnce<F> {
     }
 }
 
-/// The page to leave the installation screen for when the work ended without
-/// reporting a finish: the components, where the record shows what happened.
-/// `None` keeps the page.
-pub(crate) fn page_after_unfinished_end(
-    on_installing_page: bool,
-    operation_recorded: bool,
-) -> Option<crate::model::Page> {
-    (on_installing_page && !operation_recorded).then_some(crate::model::Page::Components)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{EndsOnce, page_after_unfinished_end};
-    use crate::model::Page;
+    use super::EndsOnce;
     use std::cell::Cell;
 
     /// The work as the window runs it: connect, run, report — with the guard
@@ -81,19 +72,5 @@ mod tests {
         }));
         assert!(result.is_err());
         assert_eq!(ended.load(std::sync::atomic::Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn an_end_without_a_finish_leaves_the_installation_screen() {
-        assert_eq!(
-            page_after_unfinished_end(true, false),
-            Some(Page::Components)
-        );
-        assert_eq!(
-            page_after_unfinished_end(true, true),
-            None,
-            "an operation still recorded is shown where it is"
-        );
-        assert_eq!(page_after_unfinished_end(false, false), None);
     }
 }

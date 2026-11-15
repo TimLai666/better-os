@@ -2,18 +2,15 @@
 //! with no GPUI in it.
 //!
 //! The view is the page, the way back from it, the component or tab it is
-//! about, the search, and the pane's state. A page that is about a plan — the
-//! review before a change, the result after one — carries the plan with it,
-//! which is what lets Better Manager update itself: it finishes the
-//! transaction, the runner records the result in the state file, the window
-//! restarts into the new program, and the new window opens on the result page
-//! for that plan. A page that cannot stand on its own after a restart opens
-//! the place it belongs to instead.
+//! about, the search, and the pane's state. The change that just finished
+//! travels with it, which is what lets Better Manager update itself: it
+//! finishes the transaction, the runner records the result in the state file,
+//! the window restarts into the new program, and the new window's rows say
+//! "Updated to …" for that change. A page that cannot stand on its own after a
+//! restart opens the place it belongs to instead.
 //!
 //! A restart waits while a transaction, a repair, or the startup pass that
-//! starts the record's user units is running, and while the window is on the
-//! installation screen, which is the moment between the transaction ending and
-//! the result page appearing.
+//! starts the record's user units is running.
 
 use better_core::ComponentId;
 use better_ui::restart::Blocker;
@@ -66,29 +63,22 @@ impl PageKey {
             Page::DefaultsReview => PageKey::DefaultsReview,
             Page::DefaultsResults => PageKey::DefaultsResults,
             Page::Updates => PageKey::Updates,
-            Page::ReviewChanges => PageKey::ReviewChanges,
-            Page::Installing => PageKey::Installing,
-            Page::Finished => PageKey::Finished,
-            Page::Restore => PageKey::Restore,
-            Page::Restored => PageKey::Restored,
             Page::Health => PageKey::Health,
-            Page::DoctorResults => PageKey::DoctorResults,
             Page::Activity => PageKey::Activity,
             Page::Settings => PageKey::Settings,
         }
     }
 
     /// The page this key names, given what the new window has. A component
-    /// page needs a component the catalog knows; a plan page needs its plan.
-    /// The Defaults flow's review and results are worked out from the
-    /// Defaults section's live state, which a restart does not carry, so they
-    /// open the section itself; so does the doctor's results page.
-    pub(crate) fn page(
-        &self,
-        knows: &dyn Fn(&ComponentId) -> bool,
-        pending_plan: bool,
-        finished_plan: bool,
-    ) -> Page {
+    /// page needs a component the catalog knows. The Defaults flow's review
+    /// and results are worked out from the Defaults section's live state,
+    /// which a restart does not carry, so they open the section itself.
+    ///
+    /// The review, installing, result, and restore pages are gone (owner,
+    /// 2026-11-15); a hand-off from a version that still had them opens
+    /// Updates, where the rows say what happened, and the doctor's results
+    /// open Health, which now shows them.
+    pub(crate) fn page(&self, knows: &dyn Fn(&ComponentId) -> bool) -> Page {
         let component = |id: &str| ComponentId::new(id).ok().filter(|id| knows(id));
         match self {
             PageKey::Home => Page::Home,
@@ -109,16 +99,12 @@ impl PageKey {
                 Some(id) => Page::DefaultsComponent(id),
                 None => Page::Defaults,
             },
-            PageKey::Updates => Page::Updates,
-            PageKey::ReviewChanges if pending_plan => Page::ReviewChanges,
-            PageKey::Restore if pending_plan => Page::Restore,
-            PageKey::ReviewChanges | PageKey::Restore => Page::Components,
-            PageKey::Finished if finished_plan => Page::Finished,
-            PageKey::Restored if finished_plan => Page::Restored,
-            PageKey::Finished | PageKey::Restored => Page::Components,
-            // The installation screen is never left for a restart; a window
-            // that finds itself on it is the one the state file put there.
-            PageKey::Installing => Page::Components,
+            PageKey::Updates
+            | PageKey::ReviewChanges
+            | PageKey::Installing
+            | PageKey::Finished
+            | PageKey::Restore
+            | PageKey::Restored => Page::Updates,
             PageKey::Health | PageKey::DoctorResults => Page::Health,
             PageKey::Activity => Page::Activity,
             PageKey::Settings => Page::Settings,
@@ -132,6 +118,7 @@ pub(crate) enum TabKey {
     #[default]
     Overview,
     Versions,
+    /// A tab of an older version; its contents are on Overview now.
     Permissions,
 }
 
@@ -150,15 +137,13 @@ impl TabKey {
         match tab {
             DetailTab::Overview => TabKey::Overview,
             DetailTab::Versions => TabKey::Versions,
-            DetailTab::Permissions => TabKey::Permissions,
         }
     }
 
     pub(crate) fn tab(self) -> DetailTab {
         match self {
-            TabKey::Overview => DetailTab::Overview,
             TabKey::Versions => DetailTab::Versions,
-            TabKey::Permissions => DetailTab::Permissions,
+            TabKey::Overview | TabKey::Permissions => DetailTab::Overview,
         }
     }
 }
@@ -199,6 +184,9 @@ pub(crate) struct ManagerView {
     pub(crate) about_expanded: bool,
     pub(crate) update_check_requested: bool,
     pub(crate) scroll: f32,
+    /// The plan an older version's review page was showing. Read and
+    /// ignored: a change starts at once now, and a running one is in the
+    /// state file.
     pub(crate) pending_plan: Option<TransactionPlan>,
     pub(crate) finished_plan: Option<TransactionPlan>,
     /// The Touchpad page's sub-page, gesture profile, and paths (ticket 88),
@@ -228,16 +216,13 @@ impl Default for ManagerView {
 }
 
 /// What a restart would lose, if anything. `transaction_running` is the
-/// window's own `transaction_running()`; `on_installing_page` covers the
-/// moment after the transaction's last state was saved and before the result
-/// page opened.
+/// window's own `transaction_running()`.
 pub(crate) fn restart_blocked(
     transaction_running: bool,
     repairing: bool,
     healing: bool,
-    on_installing_page: bool,
 ) -> Option<Blocker> {
-    (transaction_running || repairing || healing || on_installing_page).then_some(Blocker::Task)
+    (transaction_running || repairing || healing).then_some(Blocker::Task)
 }
 
 #[cfg(test)]
@@ -263,10 +248,6 @@ mod tests {
             Page::Defaults,
             Page::DefaultsComponent(id("better-files")),
             Page::Updates,
-            Page::ReviewChanges,
-            Page::Finished,
-            Page::Restore,
-            Page::Restored,
             Page::Health,
             Page::Activity,
             Page::Settings,
@@ -280,39 +261,42 @@ mod tests {
             let key = PageKey::of(&page);
             let text = serde_json::to_string(&key).unwrap();
             let read: PageKey = serde_json::from_str(&text).unwrap();
-            assert_eq!(read.page(&knows, true, true), page, "{text}");
+            assert_eq!(read.page(&knows), page, "{text}");
         }
     }
 
     #[test]
-    fn a_plan_page_without_its_plan_opens_apps() {
+    fn an_older_version_s_flow_pages_open_updates_and_health() {
         let knows = |_: &ComponentId| true;
-        for key in [
-            PageKey::ReviewChanges,
-            PageKey::Restore,
-            PageKey::Finished,
-            PageKey::Restored,
-            PageKey::Installing,
+        for name in [
+            "review_changes",
+            "installing",
+            "finished",
+            "restore",
+            "restored",
         ] {
-            assert_eq!(key.page(&knows, false, false), Page::Components, "{key:?}");
+            let key: PageKey = serde_json::from_str(&format!(r#"{{"page":"{name}"}}"#)).unwrap();
+            assert_eq!(key.page(&knows), Page::Updates, "{name}");
         }
+        let doctor: PageKey = serde_json::from_str(r#"{"page":"doctor_results"}"#).unwrap();
+        assert_eq!(doctor.page(&knows), Page::Health);
     }
 
     #[test]
     fn a_component_the_catalog_does_not_know_opens_its_section() {
         let knows = |_: &ComponentId| false;
         assert_eq!(
-            PageKey::ComponentDetail("better-files".into()).page(&knows, false, false),
+            PageKey::ComponentDetail("better-files".into()).page(&knows),
             Page::Components
         );
         assert_eq!(
-            PageKey::DefaultsComponent("better-files".into()).page(&knows, false, false),
+            PageKey::DefaultsComponent("better-files".into()).page(&knows),
             Page::Defaults
         );
         // Not a component's shape at all.
         let all = |_: &ComponentId| true;
         assert_eq!(
-            PageKey::ComponentDetail("../etc".into()).page(&all, false, false),
+            PageKey::ComponentDetail("../etc".into()).page(&all),
             Page::Components
         );
     }
@@ -321,28 +305,22 @@ mod tests {
     fn pages_worked_out_from_live_state_open_their_section() {
         let knows = |_: &ComponentId| true;
         assert_eq!(
-            PageKey::of(&Page::DefaultsReview).page(&knows, true, true),
+            PageKey::of(&Page::DefaultsReview).page(&knows),
             Page::Defaults
         );
         assert_eq!(
-            PageKey::of(&Page::DefaultsResults).page(&knows, true, true),
+            PageKey::of(&Page::DefaultsResults).page(&knows),
             Page::Defaults
-        );
-        assert_eq!(
-            PageKey::of(&Page::DoctorResults).page(&knows, true, true),
-            Page::Health
         );
     }
 
     #[test]
     fn tabs_and_filters_round_trip() {
-        for tab in [
-            DetailTab::Overview,
-            DetailTab::Versions,
-            DetailTab::Permissions,
-        ] {
+        for tab in [DetailTab::Overview, DetailTab::Versions] {
             assert_eq!(TabKey::of(tab).tab(), tab);
         }
+        // The files tab of an older version opens Overview, which shows them.
+        assert_eq!(TabKey::Permissions.tab(), DetailTab::Overview);
         for filter in [
             ActivityFilter::All,
             ActivityFilter::Success,
@@ -362,16 +340,15 @@ mod tests {
     }
 
     #[test]
-    fn a_transaction_a_repair_or_the_installation_screen_holds_the_restart() {
-        assert_eq!(restart_blocked(false, false, false, false), None);
+    fn a_transaction_or_a_repair_holds_the_restart() {
+        assert_eq!(restart_blocked(false, false, false), None);
         for flags in [
-            (true, false, false, false),
-            (false, true, false, false),
-            (false, false, true, false),
-            (false, false, false, true),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
         ] {
             assert_eq!(
-                restart_blocked(flags.0, flags.1, flags.2, flags.3),
+                restart_blocked(flags.0, flags.1, flags.2),
                 Some(Blocker::Task),
                 "{flags:?}"
             );

@@ -680,6 +680,18 @@ pub fn input_region(width: f32, height: f32, inset: Insets) -> (f32, f32, f32, f
     (left, top, (right - left).max(0.0), (bottom - top).max(0.0))
 }
 
+/// Whether the input region the window wants now differs from the one it
+/// last gave the compositor. `last` is `None` before the first one, which
+/// always counts as a change: a window that never set a region has none set
+/// by anyone, and one that set a smaller region and then lost its client
+/// decorations must set the whole surface again.
+pub fn input_region_changes(
+    last: Option<Option<(f32, f32, f32, f32)>>,
+    wanted: Option<(f32, f32, f32, f32)>,
+) -> bool {
+    last != Some(wanted)
+}
+
 /// How far a window's frame reaches on each side: the inset on every side
 /// that is neither tiled nor part of a maximized (or fullscreen) window.
 pub fn frame_insets(inset: f32, tiled: Tiled, maximized: bool) -> Insets {

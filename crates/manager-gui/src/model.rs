@@ -45,10 +45,6 @@ impl CatalogLine {
         }
     }
 
-    pub(crate) fn is_degraded(&self) -> bool {
-        self.warning.is_some()
-    }
-
     /// The count of refused manifests, as a line, when there were any.
     pub(crate) fn rejected_line(&self, locale: Locale) -> Option<String> {
         let c = copy(locale);
@@ -187,14 +183,11 @@ pub(crate) enum Page {
     DefaultsComponent(ComponentId),
     DefaultsReview,
     DefaultsResults,
+    /// Apps › Updates. A change starts at once from here and shows its
+    /// progress and result on its rows; there is no review, installing, or
+    /// result page (owner, 2026-11-15).
     Updates,
-    ReviewChanges,
-    Installing,
-    Finished,
-    Restore,
-    Restored,
     Health,
-    DoctorResults,
     Activity,
     Settings,
 }
@@ -203,7 +196,6 @@ pub(crate) enum Page {
 pub(crate) enum DetailTab {
     Overview,
     Versions,
-    Permissions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,6 +260,14 @@ pub(crate) struct ComponentInfo {
     pub(crate) enhances: Vec<String>,
     pub(crate) paths: Vec<String>,
     pub(crate) release_notes: Vec<String>,
+    /// The health checks its manifest declares, by name.
+    pub(crate) health_checks: Vec<String>,
+    /// Whether it declares a default it can own, which is what puts the
+    /// "Default apps" card on its page.
+    pub(crate) declares_defaults: bool,
+    /// Whether its manifest names personal data the uninstall check box
+    /// would delete (`manager_core::personal_data`).
+    pub(crate) has_personal_data: bool,
 }
 
 /// The drift card's words. Three sentences, in the order a person needs them:
@@ -323,6 +323,9 @@ impl ComponentInfo {
             enhances: manifest.enhances.clone(),
             paths: manifest.paths.clone(),
             release_notes: manifest.release_notes.clone(),
+            health_checks: manifest.health_checks.clone(),
+            declares_defaults: !manifest.default_integrations.is_empty(),
+            has_personal_data: manager_core::personal_data::has_personal_data(manifest.id.as_str()),
         }
     }
 
@@ -379,12 +382,6 @@ impl ComponentInfo {
             Some(current) => current.to_string(),
             None => format!("{not_installed} · {}", self.available_version),
         }
-    }
-
-    /// A stable element-ID fragment. Component IDs are already restricted to
-    /// lowercase ASCII, digits, and dashes by the manifest parser.
-    pub(crate) fn element_id(&self, prefix: &str) -> String {
-        format!("{prefix}-{}", self.core_id)
     }
 }
 
@@ -496,4 +493,136 @@ pub(crate) fn repair_result_line(
         RepairResult::NothingToRepair => c.repair_result_nothing,
         RepairResult::Failed { .. } => c.repair_result_failed,
     }
+}
+
+/// What the Updates screen offers about the privileged service (ticket 124,
+/// ADR 0028).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ServiceNotice {
+    pub(crate) title: &'static str,
+    pub(crate) body: String,
+    pub(crate) action: Option<ServiceAction>,
+    /// The handoff recorded a failure.
+    pub(crate) failed: bool,
+}
+
+/// The one button the notice carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ServiceAction {
+    /// Better Manager's own update carries the service (and, for a service of
+    /// 0.2.12 or older, the handoff).
+    UpdateManager,
+    /// Better Manager is current; the service goes as a missing companion.
+    AddCompanions,
+}
+
+/// The notice, from what dpkg says about the service, what Better Manager is
+/// missing, whether Better Manager itself has an update, and what the handoff
+/// last wrote. `None` when the service needs nothing.
+pub(crate) fn service_notice(
+    locale: Locale,
+    generation: manager_core::exec::ServiceGeneration,
+    manager_gaps: &[manager_core::CompanionGap],
+    manager_update: bool,
+    waiting_companions: &[String],
+    handoff: Option<&manager_core::exec::HandoffStatus>,
+) -> Option<ServiceNotice> {
+    use manager_core::exec::{HandoffStatus, SERVICE_PACKAGE, ServiceGeneration};
+    let c = copy(locale);
+    if let Some(status) = handoff
+        && status.in_progress()
+    {
+        return Some(ServiceNotice {
+            title: c.service_update_running_title,
+            body: c.service_update_running_body.to_string(),
+            action: None,
+            failed: false,
+        });
+    }
+    let service_gap = manager_gaps
+        .iter()
+        .any(|gap| gap.package == SERVICE_PACKAGE);
+    // An update of Better Manager carries the service as its own step to any
+    // service that takes it, and only an old one needs saying.
+    let old_service = matches!(
+        generation,
+        ServiceGeneration::Legacy | ServiceGeneration::Stepwise
+    );
+    if !service_gap && !(manager_update && old_service) {
+        return None;
+    }
+    let mut packages: Vec<String> = manager_gaps
+        .iter()
+        .map(|gap| gap.package.clone())
+        .chain(waiting_companions.iter().cloned())
+        .filter(|package| package != SERVICE_PACKAGE)
+        .collect();
+    packages.dedup();
+    let packages = if packages.is_empty() {
+        SERVICE_PACKAGE.to_string()
+    } else {
+        packages.join(", ")
+    };
+    let (body, action) = match (generation, manager_update) {
+        (ServiceGeneration::Legacy, true) => (
+            c.service_update_handoff_body,
+            Some(ServiceAction::UpdateManager),
+        ),
+        // Better Manager is current: the missing adapter carries the handoff
+        // again (ADR 0028). With nothing missing, nothing can.
+        (ServiceGeneration::Legacy, false)
+            if manager_gaps.iter().any(|gap| {
+                gap.package == manager_core::exec::HANDOFF_CARRIER
+                    && manager_core::exec::carries_handoff(&gap.wanted_version)
+            }) =>
+        {
+            (
+                c.service_update_retry_body,
+                Some(ServiceAction::AddCompanions),
+            )
+        }
+        (ServiceGeneration::Legacy, false) => (c.service_update_blocked_body, None),
+        (_, true) => (c.service_update_body, Some(ServiceAction::UpdateManager)),
+        (_, false) => (c.service_update_body, Some(ServiceAction::AddCompanions)),
+    };
+    let body = body.replace("{packages}", &packages);
+    Some(match handoff {
+        Some(HandoffStatus::Failed { reason }) => ServiceNotice {
+            title: c.service_update_failed_title,
+            body: format!("{reason}\n{body}"),
+            action,
+            failed: true,
+        },
+        _ => ServiceNotice {
+            title: c.service_update_title,
+            body,
+            action,
+            failed: false,
+        },
+    })
+}
+
+/// The sentence under a missing-companion doctor finding. `None` for every
+/// other kind of check.
+pub(crate) fn companion_detail(
+    locale: Locale,
+    check: &manager_core::DoctorCheck,
+) -> Option<String> {
+    if check.kind != manager_core::DoctorCheckKind::CompanionMissing {
+        return None;
+    }
+    let c = copy(locale);
+    let component = check.component.as_ref()?;
+    let package = check.package.as_deref()?;
+    Some(match &check.host_version {
+        Some(version) => c
+            .companion_older_detail
+            .replace("{component}", component.as_str())
+            .replace("{package}", package)
+            .replace("{version}", version),
+        None => c
+            .companion_missing_detail
+            .replace("{component}", component.as_str())
+            .replace("{package}", package),
+    })
 }

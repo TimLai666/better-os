@@ -13,7 +13,7 @@ defaults-core.workspace = true
 defaults-platform.workspace = true
 defaults-store.workspace = true
 manager-core.workspace = true
-manager-platform = { workspace = true, features = ["dbus-client"] }
+manager-platform = { workspace = true, features = ["dbus-client", "personal-data"] }
 uuid = { version = "1", features = ["v4"] }
 manager-store.workspace = true
 
