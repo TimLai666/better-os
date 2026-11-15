@@ -22,8 +22,6 @@ fn required_visible_copy_exists_in_both_locales() {
     for locale in [Locale::EnUs, Locale::ZhTw] {
         let c = copy(locale);
         for value in [
-            c.components,
-            c.review_changes,
             c.applying_settings,
             c.checking_works,
             c.restore_previous,
@@ -1457,8 +1455,8 @@ mod version_and_update_check {
 mod affordance {
     use super::*;
     use crate::app::ManagerApp;
-    use crate::defaults_model::PrimaryAction;
     use crate::model::ComponentKind;
+    use crate::pages::default_apps::model::PrimaryAction;
     use better_ui::{Affordance, StatusPill, StatusTone};
     use defaults_core::AggregateState;
     use manager_core::HealthState;
@@ -1600,7 +1598,10 @@ mod affordance {
         for (name, source) in [
             ("components.rs", include_str!("components.rs")),
             ("render_apps.rs", include_str!("render_apps.rs")),
-            ("pages_defaults.rs", include_str!("pages_defaults.rs")),
+            (
+                "pages/default_apps/render.rs",
+                include_str!("pages/default_apps/render.rs"),
+            ),
         ] {
             assert!(
                 !source.contains("Tag::"),
@@ -1633,14 +1634,21 @@ mod affordance {
     /// The Defaults row, locked at the call site, for the same reason.
     #[test]
     fn the_defaults_row_draws_no_button_for_a_component_already_the_default() {
-        let source = include_str!("pages_defaults.rs");
+        let source = include_str!("pages/default_apps/render.rs");
         assert!(
             !source.contains(".disabled(true)"),
             "a Defaults control is a permanently disabled button again"
         );
         assert!(
-            source.contains("PrimaryAction::AlreadyDefault => {"),
-            "the AlreadyDefault arm no longer decides on its own"
+            source.contains("if menu.make_default {"),
+            "Make default is drawn whether or not the component already is the default"
+        );
+        let model = include_str!("pages/default_apps/model.rs");
+        assert!(
+            model.contains(
+                "make_default: row.primary.affordance() == better_ui::Affordance::Action"
+            ),
+            "the AlreadyDefault state no longer decides on its own"
         );
     }
 

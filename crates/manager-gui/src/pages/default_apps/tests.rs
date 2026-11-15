@@ -18,14 +18,14 @@ use defaults_core::{
 };
 use defaults_store::{RestoreState, Snapshot, SnapshotEntry, SnapshotStore, SystemIdentity};
 
-use crate::defaults_model::{
+use crate::i18n::{Locale, copy};
+use crate::layout::{ActionLayout, MIN_CONTENT_WIDTH, action_layout};
+use crate::pages::default_apps::model::{
     ApprovedPlan, DefaultsSummary, PrimaryAction, RestoreClass, ResultTone, ReviewModel,
     SecondaryAction, aggregate_label, component_rows, integration_state_label, kind_label,
     last_verified_times, observed_label, outcome_headline, relative_time, result_rows,
     session_effect_label, skip_reason_label, value_label, warning_label,
 };
-use crate::i18n::{Locale, copy};
-use crate::layout::{ActionLayout, MIN_CONTENT_WIDTH, action_layout};
 
 fn component(value: &str) -> ComponentId {
     ComponentId::new(value).expect("a valid component id")
@@ -73,7 +73,7 @@ fn defaults_of(id: &str, integrations: Vec<IntegrationStatus>) -> ComponentDefau
     }
 }
 
-fn rows_of(report: &DefaultsReport) -> Vec<crate::defaults_model::DefaultsRow> {
+fn rows_of(report: &DefaultsReport) -> Vec<crate::pages::default_apps::model::DefaultsRow> {
     component_rows(
         Locale::EnUs,
         report,
@@ -361,13 +361,21 @@ fn a_plan_with_nothing_to_change_cannot_be_approved() {
 /// cannot say that no second call site exists, so the source is checked too.
 #[test]
 fn no_code_path_executes_a_plan_without_a_review() {
-    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut call_sites = Vec::new();
-    for file in std::fs::read_dir(&source_root).expect("the crate's sources") {
-        let path = file.expect("a readable entry").path();
-        if path.extension().is_none_or(|extension| extension != "rs") {
-            continue;
+    fn sources(directory: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+        for file in std::fs::read_dir(directory).expect("the crate's sources") {
+            let path = file.expect("a readable entry").path();
+            if path.is_dir() {
+                sources(&path, found);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                found.push(path);
+            }
         }
+    }
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&source_root, &mut files);
+    let mut call_sites = Vec::new();
+    for path in files {
         // The scan cannot count itself: this file quotes the pattern it looks
         // for, and so does the crate's other test module if it ever does.
         if path
@@ -380,7 +388,10 @@ fn no_code_path_executes_a_plan_without_a_review() {
         for line in body.lines() {
             if line.contains(".execute(") {
                 call_sites.push((
-                    path.file_name().unwrap().to_string_lossy().to_string(),
+                    path.strip_prefix(&source_root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string(),
                     line.trim().to_string(),
                 ));
             }
@@ -392,8 +403,8 @@ fn no_code_path_executes_a_plan_without_a_review() {
         1,
         "a defaults plan is executed from more than one place: {call_sites:?}"
     );
-    assert_eq!(call_sites[0].0, "defaults_app.rs");
-    let body = std::fs::read_to_string(source_root.join("defaults_app.rs"))
+    assert_eq!(call_sites[0].0, "pages/default_apps/jobs.rs");
+    let body = std::fs::read_to_string(source_root.join("pages/default_apps/jobs.rs"))
         .expect("a readable source file");
     let guarded = body
         .split("impl ApprovedPlan {")
@@ -939,10 +950,7 @@ fn every_defaults_word_the_screens_use_exists_in_both_locales() {
     for locale in [Locale::EnUs, Locale::ZhTw] {
         let c = copy(locale);
         for text in [
-            c.defaults_title,
             c.defaults_subtitle,
-            c.defaults_are_default,
-            c.defaults_can_change,
             c.defaults_changed_externally,
             c.defaults_empty_title,
             c.defaults_empty_detail,
@@ -1149,11 +1157,11 @@ mod through_the_engine {
     use better_core::ComponentManifest;
     use defaults_core::{AdapterMode, ComponentReadiness, Confirmations, Selection, SystemContext};
 
-    use crate::defaults_app::{DefaultsEvent, DefaultsInputs, DefaultsJob, run_job};
+    use crate::pages::default_apps::jobs::{DefaultsEvent, DefaultsInputs, DefaultsJob, run_job};
 
     fn fixture() -> ComponentManifest {
         ComponentManifest::parse_yaml(include_str!(
-            "../../better-core/tests/fixtures/every-integration-kind.yaml"
+            "../../../../better-core/tests/fixtures/every-integration-kind.yaml"
         ))
         .expect("the schema-coverage fixture must stay valid")
     }
@@ -1619,5 +1627,375 @@ fn a_chosen_application_that_went_missing_is_not_called_the_previous_one() {
         assert_eq!(row.label, c.chosen_application_missing);
         assert_eq!(row.tone, ResultTone::Warning);
         assert_eq!(row.detail.as_deref(), Some("org.gnome.Loupe.desktop"));
+    }
+}
+
+/// What the control center's page adds on top of today's Defaults screens
+/// (ticket 89): the summary line, the overflow menu, the filter a details
+/// page opens, the integration rows, the Home card, and the search.
+mod control_center {
+    use super::*;
+    use crate::attention::{AttentionAction, Severity, Snapshot};
+    use crate::model::Page;
+    use crate::navigation::Route;
+    use crate::pages::default_apps::model::{
+        ComponentMenu, changed_elsewhere, changes_label, holds_restart, integration_line,
+        outcome_tone, summary_line, visible_rows,
+    };
+
+    fn mixed_report() -> DefaultsReport {
+        report_of(vec![
+            defaults_of(
+                "better-files",
+                vec![status(
+                    "file-manager",
+                    IntegrationState::Default,
+                    observed("io.betteros.Files.desktop"),
+                )],
+            ),
+            defaults_of(
+                "better-git",
+                vec![
+                    status(
+                        "git-gui",
+                        IntegrationState::ChangedExternally { last_known: None },
+                        observed("org.gnome.gitg.desktop"),
+                    ),
+                    status(
+                        "git-links",
+                        IntegrationState::ChangedExternally { last_known: None },
+                        observed("org.gnome.gitg.desktop"),
+                    ),
+                ],
+            ),
+            defaults_of(
+                "better-monitor",
+                vec![status(
+                    "monitor",
+                    IntegrationState::NotDefault,
+                    observed("org.gnome.SystemMonitor.desktop"),
+                )],
+            ),
+        ])
+    }
+
+    #[test]
+    fn the_summary_line_reads_the_spec_s_words_in_both_languages() {
+        let summary = DefaultsSummary::of(&mixed_report());
+        assert_eq!(
+            summary_line(Locale::EnUs, &summary),
+            "1 are defaults · 2 can change · 1 changed elsewhere"
+        );
+        assert_eq!(
+            summary_line(Locale::ZhTw, &summary),
+            "1 個已是預設 · 2 個可以變更 · 1 個被其他程式變更"
+        );
+    }
+
+    /// Home counts settings, not components: one component with two changed
+    /// settings is two.
+    #[test]
+    fn home_counts_the_settings_changed_elsewhere() {
+        assert_eq!(changed_elsewhere(&mixed_report()), 2);
+        assert_eq!(changed_elsewhere(&report_of(Vec::new())), 0);
+    }
+
+    #[test]
+    fn home_says_a_default_was_changed_elsewhere_and_opens_the_page() {
+        let module = crate::pages::module(Route::DefaultApps);
+        let quiet = Snapshot::empty(Locale::EnUs);
+        assert!((module.attention)(&quiet).is_empty());
+
+        let one = Snapshot {
+            default_apps_changed: 1,
+            ..Snapshot::empty(Locale::EnUs)
+        };
+        let items = (module.attention)(&one);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].header, "A default was changed by another app");
+        assert_eq!(
+            items[0].description,
+            "1 setting no longer matches what Better OS set."
+        );
+        assert_eq!(items[0].action_label, "View");
+        assert_eq!(items[0].action, AttentionAction::Open(Page::Defaults));
+        assert_eq!(items[0].severity, Severity::Warning);
+        assert_eq!(items[0].source, Route::DefaultApps);
+
+        let three = Snapshot {
+            default_apps_changed: 3,
+            ..Snapshot::empty(Locale::ZhTw)
+        };
+        let items = (module.attention)(&three);
+        assert_eq!(items[0].header, "有預設值被其他程式變更");
+        assert_eq!(items[0].description, "3 項設定和 Better OS 套用的不同。");
+        assert_eq!(items[0].action_label, "查看");
+        // It takes "Everything's fine" away, as a warning does.
+        assert!(!crate::attention::everything_fine(&items));
+    }
+
+    #[test]
+    fn the_overflow_menu_offers_only_what_can_happen() {
+        let rows = rows_of(&mixed_report());
+        let menu = |id: &str| {
+            ComponentMenu::of(
+                rows.iter()
+                    .find(|row| row.component.as_str() == id)
+                    .expect("the component is listed"),
+            )
+        };
+        // Already the default, nothing saved: Check again only.
+        assert_eq!(
+            menu("better-files"),
+            ComponentMenu {
+                make_default: false,
+                restore: false
+            }
+        );
+        assert!(menu("better-git").make_default);
+        assert!(menu("better-monitor").make_default);
+
+        let mut saved = status(
+            "file-manager",
+            IntegrationState::Default,
+            observed("io.betteros.Files.desktop"),
+        );
+        saved.restore_available = true;
+        let rows = rows_of(&report_of(vec![defaults_of("better-files", vec![saved])]));
+        assert_eq!(
+            ComponentMenu::of(&rows[0]),
+            ComponentMenu {
+                make_default: false,
+                restore: true
+            }
+        );
+    }
+
+    #[test]
+    fn a_details_page_link_shows_only_its_component() {
+        let rows = rows_of(&mixed_report());
+        assert_eq!(visible_rows(rows.clone(), None).len(), 3);
+        let only = visible_rows(rows.clone(), Some(&component("better-git")));
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].component.as_str(), "better-git");
+        assert!(visible_rows(rows, Some(&component("better-awake"))).is_empty());
+    }
+
+    #[test]
+    fn an_integration_row_names_owner_target_check_saved_value_and_effect() {
+        let rows = rows_of(&mixed_report());
+        let monitor = rows
+            .iter()
+            .find(|row| row.component.as_str() == "better-monitor")
+            .unwrap();
+        let line = integration_line(Locale::EnUs, &monitor.integrations[0], 1_000);
+        assert_eq!(
+            line,
+            "Opens with: org.gnome.SystemMonitor.desktop → Better OS would use: \
+             io.betteros.Files.desktop · Last checked: Not checked yet · \
+             No previous value saved · Takes effect immediately"
+        );
+        let line = integration_line(Locale::ZhTw, &monitor.integrations[0], 1_000);
+        let c = copy(Locale::ZhTw);
+        for part in [
+            c.current_owner,
+            c.better_target,
+            c.last_verified,
+            c.never_verified,
+            c.no_saved_previous_value,
+        ] {
+            assert!(line.contains(part), "{line} lacks {part}");
+        }
+    }
+
+    #[test]
+    fn a_review_row_counts_its_settings_in_both_languages() {
+        assert_eq!(changes_label(Locale::EnUs, 1), "1 setting affected");
+        assert_eq!(changes_label(Locale::EnUs, 3), "3 settings affected");
+        assert_eq!(changes_label(Locale::ZhTw, 2), "影響 2 項設定");
+    }
+
+    /// An update waits while a plan is written and while a review holds
+    /// choices a restart would lose.
+    #[test]
+    fn writing_or_reviewing_holds_an_update_restart() {
+        assert!(!holds_restart(false, false));
+        assert!(holds_restart(true, false));
+        assert!(holds_restart(false, true));
+    }
+
+    #[test]
+    fn the_results_headline_is_drawn_as_honestly_as_it_reads() {
+        let run = |outcomes: Vec<EntryOutcome>| DefaultsOutcome {
+            kind: PlanKind::Apply,
+            results: outcomes
+                .into_iter()
+                .enumerate()
+                .map(|(index, outcome)| EntryResult {
+                    component: component("better-files"),
+                    integration: integration(&format!("i-{index}")),
+                    outcome,
+                })
+                .collect(),
+            baseline_snapshot: None,
+            recorded_snapshot: None,
+        };
+        let applied = || EntryOutcome::Applied {
+            value: desktop("io.betteros.Files.desktop"),
+        };
+        let not_verified = || EntryOutcome::NotVerified {
+            observed: observed("org.gnome.Nautilus.desktop"),
+        };
+        assert_eq!(outcome_tone(&run(vec![applied()])), ResultTone::Success);
+        assert_eq!(
+            outcome_tone(&run(vec![applied(), not_verified()])),
+            ResultTone::Warning
+        );
+        assert_eq!(
+            outcome_tone(&run(vec![not_verified()])),
+            ResultTone::Failure
+        );
+        // The words and the drawing agree.
+        let partial = run(vec![applied(), not_verified()]);
+        assert_eq!(
+            outcome_headline(Locale::EnUs, &partial),
+            copy(Locale::EnUs).result_partial
+        );
+    }
+
+    #[test]
+    fn the_page_is_built_and_findable_in_both_languages() {
+        let module = crate::pages::module(Route::DefaultApps);
+        assert_eq!(module.status, crate::pages::PageStatus::Built);
+        assert_eq!(module.name, "default-apps");
+        for (locale, query, card) in [
+            (
+                Locale::EnUs,
+                "use better",
+                crate::pages::default_apps::card::COMMANDS,
+            ),
+            (
+                Locale::EnUs,
+                "changed else",
+                crate::pages::default_apps::card::SUMMARY,
+            ),
+            (
+                Locale::EnUs,
+                "default apps",
+                crate::pages::default_apps::card::SUMMARY,
+            ),
+            (
+                Locale::ZhTw,
+                "預設應用程式",
+                crate::pages::default_apps::card::SUMMARY,
+            ),
+            (
+                Locale::ZhTw,
+                "恢復先前",
+                crate::pages::default_apps::card::COMMANDS,
+            ),
+            (
+                Locale::ZhTw,
+                "要求的設定",
+                crate::pages::default_apps::card::COMPONENTS,
+            ),
+        ] {
+            let index = crate::pages::search_index(locale);
+            let found = crate::search::find(&index, query);
+            assert!(
+                found
+                    .iter()
+                    .any(|entry| entry.route == Route::DefaultApps && entry.card == card),
+                "{locale:?} {query:?} found {found:?}"
+            );
+        }
+    }
+
+    /// Every card id the search scrolls to is one the page draws.
+    #[test]
+    fn every_search_card_is_drawn_by_the_page() {
+        let source = include_str!("render.rs");
+        for card in ["card::SUMMARY", "card::COMMANDS", "card::COMPONENTS"] {
+            assert!(source.contains(card), "the page never draws {card}");
+        }
+    }
+
+    #[test]
+    fn the_page_s_own_words_exist_in_both_languages() {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let w = crate::pages::default_apps::copy::page_copy(locale);
+            for text in [
+                w.description,
+                w.summary,
+                w.restore,
+                w.more_actions,
+                w.review_summary,
+                w.review_changes_one,
+                w.review_changes,
+                w.home_changed_header,
+                w.home_changed_description_one,
+                w.home_changed_description,
+                w.view,
+            ] {
+                assert!(!text.trim().is_empty(), "{locale:?}");
+            }
+        }
+        assert_eq!(
+            crate::pages::default_apps::copy::page_copy(Locale::ZhTw).description,
+            "讓 Better OS 元件成為開啟檔案、連結與功能的預設程式，並可隨時恢復。"
+        );
+    }
+
+    /// The first time Better OS changes a setting it captures what was there
+    /// before it writes, so the review must not say that value is lost; only
+    /// a value that cannot be read clearly is.
+    #[test]
+    fn a_first_change_says_the_value_it_replaces_can_be_put_back() {
+        let mut first = applying("better-files", "file-manager");
+        first.captured_previous = None;
+        let review = review_of(PlanKind::Apply, vec![first]);
+        assert!(review.components()[0].entries[0].restorable);
+
+        let mut unreadable = applying("better-files", "file-manager");
+        unreadable.captured_previous = None;
+        unreadable.current = ObservedValue::Unknown {
+            reason: "xdg.unreadable".to_string(),
+        };
+        let review = review_of(PlanKind::Apply, vec![unreadable]);
+        assert!(!review.components()[0].entries[0].restorable);
+
+        // A setting this plan leaves alone puts nothing back.
+        let skipped = skipping("better-files", "file-manager", SkipReason::AlreadyDefault);
+        let mut skipped = skipped;
+        skipped.captured_previous = None;
+        let review = review_of(PlanKind::Apply, vec![skipped]);
+        assert!(!review.components()[0].entries[0].restorable);
+    }
+
+    /// "1 minutes ago" read wrong on the page; one of a unit is singular.
+    #[test]
+    fn one_minute_hour_or_day_is_said_in_the_singular() {
+        let now = 1_000_000;
+        assert_eq!(
+            relative_time(Locale::EnUs, Some(now - 60), now),
+            "1 minute ago"
+        );
+        assert_eq!(
+            relative_time(Locale::EnUs, Some(now - 120), now),
+            "2 minutes ago"
+        );
+        assert_eq!(
+            relative_time(Locale::EnUs, Some(now - 3600), now),
+            "1 hour ago"
+        );
+        assert_eq!(
+            relative_time(Locale::EnUs, Some(now - 86_400), now),
+            "1 day ago"
+        );
+        assert_eq!(
+            relative_time(Locale::EnUs, Some(now - 3 * 86_400), now),
+            "3 days ago"
+        );
+        assert_eq!(relative_time(Locale::ZhTw, Some(now - 60), now), "1 分鐘前");
     }
 }
