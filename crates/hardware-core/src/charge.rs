@@ -51,13 +51,6 @@ pub fn charge_limit_view(current: u8) -> ChargeLimitView {
     ChargeLimitView { choices, selected }
 }
 
-/// Whether the limit is known to survive a restart on this machine.
-///
-/// `None` until the owner's machine has answered it (ticket 86's first
-/// machine fact). The card's "This resets to 100% on restart" line is shown
-/// only for `Some(false)`, so the window never states what nobody observed.
-pub const PERSISTS_ACROSS_RESTART: Option<bool> = None;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,10 +82,5 @@ mod tests {
         assert_eq!(view.choices.len(), 4);
         assert_eq!(view.choices[view.selected], ChargeChoice::SetElsewhere(75));
         assert_eq!(view.choices[view.selected].percent(), 75);
-    }
-
-    #[test]
-    fn nothing_claims_the_limit_resets_until_it_was_observed() {
-        assert_eq!(PERSISTS_ACROSS_RESTART, None);
     }
 }

@@ -40,7 +40,9 @@ pub(crate) struct Copy {
     /// `{n}`.
     pub(crate) charge_other: &'static str,
     pub(crate) charge_auth_note: &'static str,
-    pub(crate) charge_not_persistent: &'static str,
+    /// Not the spec's "resets to 100%" line, which nobody has observed
+    /// (ticket 86): a neutral one, true whether or not the firmware keeps it.
+    pub(crate) charge_at_startup: &'static str,
 
     pub(crate) battery: &'static str,
     /// `{percent}`.
@@ -129,7 +131,7 @@ static EN: Copy = Copy {
     charge_60: "Charge to 60% (longest battery life)",
     charge_other: "Charge to {n}% (set elsewhere)",
     charge_auth_note: "You'll be asked for an administrator password.",
-    charge_not_persistent: "This resets to 100% on restart; Better OS sets it again at startup.",
+    charge_at_startup: "Better OS sets it again each time the PC starts.",
     battery: "Battery",
     battery_health: "Battery health: holds {percent}% of its original capacity",
     battery_cycles: "Charge cycles: {n}",
@@ -199,7 +201,7 @@ static ZH_TW: Copy = Copy {
     charge_60: "充到 60%（電池壽命最長）",
     charge_other: "充到 {n}%（在其他地方設定的）",
     charge_auth_note: "變更時會要求輸入管理者密碼。",
-    charge_not_persistent: "重新開機後會回到 100%，Better OS 會在開機時重新套用。",
+    charge_at_startup: "每次開機時，Better OS 會重新套用這個上限。",
     battery: "電池",
     battery_health: "電池健康度：目前可充到出廠容量的 {percent}%",
     battery_cycles: "充電次數：{n}",

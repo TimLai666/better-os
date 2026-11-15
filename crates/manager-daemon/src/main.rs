@@ -33,20 +33,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `better-hardware-restore.service` at boot (ticket 86): write the stored
     // charge limit and nothing else, then leave. No bus, no polkit: it runs
     // as root from a unit only the package installs.
-    if let Some(argument) = std::env::args().nth(1) {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    // The hardware helper (ADR 0029): started by the daemon or the restore in
+    // a transient unit whose /sys holds only this one file. It checks the
+    // file and the value again, writes, and prints what it reads back.
+    if arguments.first().map(String::as_str) == Some("--write-attribute") {
+        let (Some(path), Some(value), None) =
+            (arguments.get(1), arguments.get(2), arguments.get(3))
+        else {
+            return Err("--write-attribute takes a path and a value".into());
+        };
+        let read = manager_daemon::hardware::helper_main(std::path::Path::new(path), value)
+            .map_err(|error| error.to_string())?;
+        println!("{read}");
+        return Ok(());
+    }
+    // The same helper started from here, as the daemon starts it: used by
+    // packaging/hardware-unit/check.sh to show the path works from inside the
+    // daemon's own sandbox. Root only, and the same checks as the helper.
+    if arguments.first().map(String::as_str) == Some("--write-via-helper") {
+        let (Some(path), Some(value), None) =
+            (arguments.get(1), arguments.get(2), arguments.get(3))
+        else {
+            return Err("--write-via-helper takes a path and a value".into());
+        };
+        use manager_daemon::hardware::AttributeWriter as _;
+        let writer = manager_daemon::hardware::SandboxedWriter {
+            program: std::env::current_exe()?,
+        };
+        let read = writer
+            .write(std::path::Path::new(path), value)
+            .map_err(|error| error.to_string())?;
+        println!("{read}");
+        return Ok(());
+    }
+    if let Some(argument) = arguments.first() {
         if argument == "--restore-hardware" {
             let root = hardware_platform::sysfs::SysRoot::system();
             let state = std::path::Path::new(manager_daemon::HARDWARE_STATE);
             // The threshold file belongs to a platform driver that can bind
             // after this unit starts; wait for it a little before saying the
             // battery has none.
-            let mut result = manager_daemon::hardware::restore(&root, state);
+            let writer = manager_daemon::hardware::SandboxedWriter {
+                program: std::env::current_exe()?,
+            };
+            let mut result = manager_daemon::hardware::restore(&root, &writer, state);
             for _ in 0..30 {
                 if result != Err(manager_daemon::DaemonError::HardwareAbsent) {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(500));
-                result = manager_daemon::hardware::restore(&root, state);
+                result = manager_daemon::hardware::restore(&root, &writer, state);
             }
             return match result {
                 Ok(restored) => {
@@ -57,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
         }
         return Err(format!(
-            "better-manager-daemon takes no argument but --restore-hardware; got {argument:?}"
+            "better-manager-daemon takes no argument but --restore-hardware, --write-attribute, or --write-via-helper; got {argument:?}"
         )
         .into());
     }
@@ -98,6 +135,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gate = service.gate();
     let hardware = HardwareService::new(
         PolkitAuthorizer::new(zbus::connection::Builder::system()?.build().await?),
+        Arc::new(manager_daemon::hardware::SandboxedWriter {
+            program: std::env::current_exe()?,
+        }),
         hardware_platform::sysfs::SysRoot::system(),
         gate.clone(),
     )

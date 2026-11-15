@@ -14,7 +14,7 @@ use std::sync::Arc;
 use hardware_platform::fakes::{self, FakeProfiles};
 use hardware_platform::sysfs::SysRoot;
 use manager_daemon::authorize::{FakeAuthorizer, FakeDismissingAuthorizer};
-use manager_daemon::hardware::HardwareService;
+use manager_daemon::hardware::{DirectWriter, HardwareService};
 use manager_daemon::service::{CallGate, OBJECT_PATH};
 
 fn stand_in_root() -> tempfile::TempDir {
@@ -65,19 +65,34 @@ async fn main() {
                 "grant" => builder
                     .serve_at(
                         OBJECT_PATH,
-                        HardwareService::new(FakeAuthorizer(true), sys, gate),
+                        HardwareService::new(
+                            FakeAuthorizer(true),
+                            Arc::new(DirectWriter),
+                            sys,
+                            gate,
+                        ),
                     )
                     .unwrap(),
                 "deny" => builder
                     .serve_at(
                         OBJECT_PATH,
-                        HardwareService::new(FakeAuthorizer(false), sys, gate),
+                        HardwareService::new(
+                            FakeAuthorizer(false),
+                            Arc::new(DirectWriter),
+                            sys,
+                            gate,
+                        ),
                     )
                     .unwrap(),
                 _ => builder
                     .serve_at(
                         OBJECT_PATH,
-                        HardwareService::new(FakeDismissingAuthorizer, sys, gate),
+                        HardwareService::new(
+                            FakeDismissingAuthorizer,
+                            Arc::new(DirectWriter),
+                            sys,
+                            gate,
+                        ),
                     )
                     .unwrap(),
             }

@@ -4,21 +4,23 @@ Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/decis
 # Only a limit the person chose in Better Manager is ever written, and only
 # that: the fan mode is never restored and always starts on automatic.
 ConditionPathExists=/var/lib/better-os/hardware.json
-After=systemd-udev-settle.service systemd-modules-load.service
+After=systemd-udev-settle.service systemd-modules-load.service dbus.service
+Wants=dbus.service
 
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/better-manager-daemon --restore-hardware
 
-# The daemon's hardening, with the battery directories alone opened again.
+# The daemon's hardening. /sys is read-only here too (ADR 0029): the limit is
+# written by the same transient helper unit the daemon uses, which sees only
+# the battery's one attribute file.
 ProtectHome=yes
 PrivateTmp=yes
 PrivateNetwork=yes
 ProtectSystem=strict
-ReadWritePaths=-/sys/class/power_supply/BAT0 -/sys/class/power_supply/BAT1
-ReadWritePaths=-/sys/class/power_supply/BAT2 -/sys/class/power_supply/BATT
-ProtectKernelModules=yes
 ProtectKernelTunables=yes
+BindReadOnlyPaths=/sys
+ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectClock=yes
 ProtectControlGroups=yes

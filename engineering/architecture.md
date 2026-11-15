@@ -412,12 +412,14 @@ collection is explicitly configured to include them.
   `class/hwmon`. That puts `monitor-core` in Better Manager's window, which
   `awake-platform` avoided for Better Awake; the window already carries far
   more, and two hwmon readers would disagree about a chip sooner or later. The
-  daemon asks for no features: it only finds and writes two attributes, and
-  their discovery (`sysfs::writable_charge_limit_attribute`,
-  `sysfs::fan_mode_attribute`) is the same code the window reads with.
+  daemon asks for no features: it only finds two attributes, and their
+  discovery (`sysfs::charge_limit_attribute`, `sysfs::fan_mode_attribute`) is
+  the same code the window reads with.
 - The two root writes of the System page go through `manager-daemon`'s
   `org.betteros.Hardware1` (ADR 0017), one polkit action per method, the
-  argument checked against its closed set before polkit is asked. Everything
+  argument checked against its closed set before polkit is asked. The daemon
+  cannot write `/sys` itself (`BindReadOnlyPaths=/sys`); each write is a
+  transient helper unit that sees only the one attribute file (ADR 0029). Everything
   else on the page needs no root and goes to the desktop's own services:
   power-profiles-daemon, gsd-power, UPower. "Switch power mode with the
   charger" runs in `better-window-attention`, the session service the

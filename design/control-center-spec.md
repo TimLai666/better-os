@@ -269,7 +269,7 @@ caution colour with a caution icon.
 | 60 | 充到 60%（電池壽命最長） | Charge to 60% (longest battery life) |
 | Other value found | 充到 {n}%（在其他地方設定的） | Charge to {n}% (set elsewhere) |
 | Authentication note (Caption, shown once the combo box opens) | 變更時會要求輸入管理者密碼。 | You'll be asked for an administrator password. |
-| Not persistent (see 11.2) | 重新開機後會回到 100%，Better OS 會在開機時重新套用。 | This resets to 100% on restart; Better OS sets it again at startup. |
+| Restore at startup (see 11.2; always shown, neutral until a reboot on the machine says whether the firmware keeps the limit) | 每次開機時，Better OS 會重新套用這個上限。 | Better OS sets it again each time the PC starts. |
 
 **Battery** — a `SettingsExpander`, read only.
 
@@ -737,23 +737,27 @@ per method. Nothing crosses as free text or a path:
 
 The unit keeps `ProtectKernelTunables=yes`, which makes `/sys` read-only, and
 adds `ReadWritePaths=` for the two attribute files' real paths under
-`/sys/devices` at the narrowest directory that holds them. Whether systemd's
+`/sys/devices` at the narrowest directory that holds them (superseded by ADR
+0029, below). Whether systemd's
 more specific mount wins over `ProtectKernelTunables` is to be shown in a VM
 by ticket 86 before the unit change merges; if it does not, the ticket stops
 and asks rather than dropping the protection.
 
 Observed by ticket 86 on 2026-11-15, in a disposable Ubuntu 24.04 VM
-(systemd 255.4-1ubuntu8.18, kernel 6.8) and in a container of the same
-systemd: the daemon, under its unit, writes both attributes (stand-ins on a
-tmpfs over `/sys/devices/platform` and `/sys/class`). But on that systemd
-`ProtectKernelTunables=yes` does not make `/sys` read-only at all: a unit
-with it, and with `ReadOnlyPaths=/sys` added, still wrote a real sysfs file
-(`/sys/kernel/mm/transparent_hugepage/enabled`). systemd's debug log says why:
-the read-only `/sys` entry is dropped as a duplicate of the API file system
-bind mount the option implies. So the `ReadWritePaths=` lines are inert on
-24.04 today and only narrow anything on a systemd that honours the read-only
-`/sys`; the protection ADR 0017 counted on is not there. That is the owner's
-decision (ticket 86's Notes), and the unit is unchanged otherwise.
+(systemd 255.4-1ubuntu8.18, kernel 6.8): `ProtectKernelTunables=yes` does
+not make `/sys` read-only there (its read-only `/sys` entry is dropped as a
+duplicate of the API file system mount it and `ProtectControlGroups=` imply;
+so is `ReadOnlyPaths=/sys`), so the `ReadWritePaths=` plan above narrowed
+nothing. The owner decided the narrowing on 2026-11-15, recorded in
+[ADR 0029](/engineering/decisions/0029-hardware-writes-in-a-helper-unit.md)
+and built: both units bind `/sys` read-only (`BindReadOnlyPaths=/sys`, which
+is not dropped) and keep `ProtectKernelTunables=yes` for `/proc/sys`; the
+daemon and the restore write nothing under `/sys` themselves; each write is a
+transient oneshot helper unit whose `/sys` is an empty read-only tmpfs with
+only the one attribute file bound in, running
+`better-manager-daemon --write-attribute PATH VALUE`, which checks the file
+and value again. `packaging/hardware-unit/check.sh` shows it in the VM and in
+a container.
 
 If the charge limit does not survive a reboot, the daemon stores the chosen
 value in `/var/lib/better-os/hardware.json` and a oneshot system unit,

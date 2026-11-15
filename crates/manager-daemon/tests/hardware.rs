@@ -108,6 +108,7 @@ async fn serve<A: Authorizer + 'static>(
     let address: zbus::Address = bus.address.parse().unwrap();
     let service = HardwareService::new(
         authorizer,
+        Arc::new(manager_daemon::hardware::DirectWriter),
         SysRoot::at(machine.dir.path()),
         Arc::new(CallGate::default()),
     )

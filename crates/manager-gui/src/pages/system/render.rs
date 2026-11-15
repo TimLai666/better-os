@@ -11,7 +11,7 @@ use better_ui::fluent::{BODY, CAPTION, label, palette};
 use gpui::*;
 use gpui_component::IconName;
 use hardware_core::Card;
-use hardware_core::charge::{ChargeChoice, PERSISTS_ACROSS_RESTART};
+use hardware_core::charge::ChargeChoice;
 use hardware_core::fan::{FanMode, FanState};
 use hardware_core::follow::ChargerFollow;
 use hardware_core::page::{CoolingGroup, DisplayGroup, PowerGroup, system_view};
@@ -216,17 +216,12 @@ impl ManagerApp {
                             .disabled(matches!(choice, ChargeChoice::SetElsewhere(_)))
                     })
                     .collect();
-                let not_persistent = if PERSISTS_ACROSS_RESTART == Some(false) {
-                    c.charge_not_persistent
-                } else {
-                    ""
-                };
                 let description = decide::sentences(
                     self.locale,
                     &[
                         c.charge_limit_description,
+                        c.charge_at_startup,
                         c.charge_auth_note,
-                        not_persistent,
                     ],
                 );
                 rows.push(Row::card(

@@ -31,6 +31,9 @@ fn the_spec_lines_are_word_for_word() {
         "It always goes back to Automatic when the PC restarts."
     );
     assert_eq!(zh.about, "裝置規格");
+    // Neutral about restarts until the owner has seen one (ticket 86).
+    assert!(!en.charge_at_startup.contains("100%"));
+    assert!(!zh.charge_at_startup.contains("100%"));
 }
 
 #[test]

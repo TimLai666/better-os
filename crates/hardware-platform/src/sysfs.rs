@@ -13,16 +13,8 @@ use monitor_collectors_linux::Roots;
 use monitor_collectors_linux::hwmon::{SensorKind as MonitorKind, scan_hwmon};
 
 /// The platform devices whose `pwm1_enable` the daemon recognises as a fan
-/// mode switch, first match wins (spec 11.2). `better-manager-daemon.service`
-/// opens each one's directory with `ReadWritePaths=`; a test holds the two
-/// lists together.
+/// mode switch, first match wins (spec 11.2).
 pub const FAN_PLATFORM_DEVICES: [&str; 1] = ["asus-nb-wmi"];
-
-/// The names a system battery is published under that the daemon writes.
-/// Each is a `ReadWritePaths=` line in the daemon's unit, which resolves the
-/// class symlink to the device directory; a battery under any other name is
-/// read and shown, and the daemon reports it absent.
-pub const BATTERY_NAMES: [&str; 4] = ["BAT0", "BAT1", "BAT2", "BATT"];
 
 /// Where the machine is: `/` on a real one.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -108,14 +100,6 @@ pub fn battery(root: &SysRoot) -> Presence<BatteryFacts> {
 pub fn charge_limit_attribute(root: &SysRoot) -> Option<PathBuf> {
     let path = system_battery(root)?.join("charge_control_end_threshold");
     path.exists().then_some(path)
-}
-
-/// The same attribute, only under a name the daemon's unit opens. This is
-/// what the daemon writes.
-pub fn writable_charge_limit_attribute(root: &SysRoot) -> Option<PathBuf> {
-    let path = charge_limit_attribute(root)?;
-    let name = path.parent()?.file_name()?.to_str()?;
-    BATTERY_NAMES.contains(&name).then_some(path)
 }
 
 pub fn charge_limit(root: &SysRoot) -> Presence<u8> {
@@ -217,17 +201,5 @@ pub fn about(root: &SysRoot) -> AboutFiles {
     AboutFiles {
         product_name: read_text(&root.path("sys/class/dmi/id/product_name")).ok(),
         kernel: read_text(&root.path("proc/sys/kernel/osrelease")).ok(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_writable_battery_names_are_ordinary_names() {
-        for name in BATTERY_NAMES {
-            assert!(name.chars().all(|c| c.is_ascii_alphanumeric()));
-        }
     }
 }

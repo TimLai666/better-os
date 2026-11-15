@@ -888,8 +888,9 @@ grep -q 'org.betteros.manager.repair-package-system' \
 }
 
 # Ticket 86: each hardware control has its own polkit action, the bus policy
-# lets callers reach the interface, /sys stays read-only apart from the two
-# attributes, and the boot-time restore is enabled by the postinst.
+# lets callers reach the interface, /sys stays read-only to the daemon (the
+# writes go through a transient helper unit, ADR 0029), and the boot-time
+# restore is enabled by the postinst.
 for action in org.betteros.manager.set-charge-limit org.betteros.manager.set-fan-mode; do
     grep -q "$action" "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
         printf 'The polkit policy does not declare %s\n' "$action" >&2
@@ -902,11 +903,13 @@ grep -q 'send_interface="org.betteros.Hardware1"' \
     exit 1
 }
 for unit in better-manager-daemon.service better-hardware-restore.service; do
-    grep -q '^ProtectKernelTunables=yes$' "$daemon_extract/usr/lib/systemd/system/$unit" \
-        && grep -Eq '^ReadWritePaths=.*-/sys/class/power_supply/BAT1( |$)' "$daemon_extract/usr/lib/systemd/system/$unit" || {
-        printf '%s must keep ProtectKernelTunables=yes and open only the battery and fan paths\n' "$unit" >&2
+    unit_file="$daemon_extract/usr/lib/systemd/system/$unit"
+    if ! grep -qx 'BindReadOnlyPaths=/sys' "$unit_file" \
+        || ! grep -qx 'ProtectKernelTunables=yes' "$unit_file" \
+        || grep -Eq '^(ReadWritePaths|BindPaths)=.*/sys' "$unit_file"; then
+        printf '%s must keep /sys read-only and open nothing under it (ADR 0029)\n' "$unit" >&2
         exit 1
-    }
+    fi
 done
 grep -q '^ExecStart=/usr/libexec/better-manager-daemon --restore-hardware$' \
     "$daemon_extract/usr/lib/systemd/system/better-hardware-restore.service" || {

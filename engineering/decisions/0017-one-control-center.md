@@ -129,7 +129,8 @@ protocol version 1 has one interface and one polkit action:
 - The unit keeps `ProtectKernelTunables=yes` and opens only the attribute
   files it writes with `ReadWritePaths=`. That this works under systemd 255 is
   shown in a VM before the change merges; if it does not, the protection is
-  not dropped without a new decision.
+  not dropped without a new decision. (It did not: superseded by
+  [ADR 0029](/engineering/decisions/0029-hardware-writes-in-a-helper-unit.md).)
 - If the charge limit does not survive a reboot, a oneshot system unit
   restores the stored value at boot and does nothing else. Fan mode is never
   restored.

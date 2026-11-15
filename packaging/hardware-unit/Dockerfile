@@ -6,7 +6,7 @@
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends systemd systemd-sysv util-linux \
+    && apt-get install -y --no-install-recommends systemd systemd-sysv util-linux dbus \
     && rm -rf /var/lib/apt/lists/*
 STOPSIGNAL SIGRTMIN+3
 CMD ["/usr/sbin/init"]

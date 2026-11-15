@@ -18,18 +18,16 @@ Restart=no
 ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelModules=yes
+# /sys and the kernel tunables are read-only to the daemon and to everything
+# it runs (ADR 0029). ProtectKernelTunables= covers /proc/sys, but on Ubuntu
+# 24.04's systemd 255 it leaves /sys writable: its read-only /sys entry is
+# dropped as a duplicate of the API file system mount it (and
+# ProtectControlGroups=) imply, and so is ReadOnlyPaths=/sys (seen in a VM,
+# ticket 86). A read-only bind of /sys is not dropped. The two hardware writes
+# are made by a transient helper unit whose /sys holds only the one attribute
+# file it writes.
 ProtectKernelTunables=yes
-# ProtectKernelTunables makes /sys read-only. The two hardware writes (ADR
-# 0017, ticket 86) are opened again here and nowhere else, each at the
-# narrowest directory that holds it: the battery's own device directory,
-# reached through its class link (systemd resolves the link to the device),
-# and the platform device of the fan switch, whose hwmonN below it changes
-# between boots. "-" skips a path this machine does not have. These names are
-# hardware_platform::sysfs::BATTERY_NAMES and FAN_PLATFORM_DEVICES; a test
-# holds the two lists together.
-ReadWritePaths=-/sys/class/power_supply/BAT0 -/sys/class/power_supply/BAT1
-ReadWritePaths=-/sys/class/power_supply/BAT2 -/sys/class/power_supply/BATT
-ReadWritePaths=-/sys/devices/platform/asus-nb-wmi
+BindReadOnlyPaths=/sys
 ProtectKernelLogs=yes
 ProtectClock=yes
 ProtectControlGroups=yes

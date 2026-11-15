@@ -1,53 +1,36 @@
-//! The daemon's unit opens exactly the paths the daemon writes (ticket 86):
-//! `/sys` stays read-only through `ProtectKernelTunables=yes`, and each
-//! battery name and fan platform device the daemon recognises has its own
-//! `ReadWritePaths=` entry, in both units that write.
-
-use hardware_platform::sysfs::{BATTERY_NAMES, FAN_PLATFORM_DEVICES};
+//! `/sys` is read-only to the daemon and to the boot-time restore (ADR 0029):
+//! both units bind it read-only (`BindReadOnlyPaths=/sys`, the one form
+//! systemd 255 does not drop beside the API file systems that
+//! `ProtectKernelTunables=` and `ProtectControlGroups=` imply), keep
+//! `ProtectKernelTunables=` for `/proc/sys`, and open nothing under `/sys`.
 
 const DAEMON: &str = include_str!("../../../packaging/daemon/better-manager-daemon.service");
 const RESTORE: &str = include_str!("../../../packaging/daemon/better-hardware-restore.service");
 
-fn read_write_paths(unit: &str) -> Vec<String> {
+fn values(unit: &str, key: &str) -> Vec<String> {
     unit.lines()
-        .filter_map(|line| line.strip_prefix("ReadWritePaths="))
+        .filter_map(|line| line.strip_prefix(&format!("{key}=")))
         .flat_map(|paths| paths.split_whitespace().map(str::to_string))
         .collect()
 }
 
 #[test]
-fn the_daemon_unit_opens_each_battery_and_fan_device_and_nothing_else() {
-    assert!(DAEMON.lines().any(|l| l == "ProtectKernelTunables=yes"));
-    let mut wanted: Vec<String> = BATTERY_NAMES
-        .iter()
-        .map(|n| format!("-/sys/class/power_supply/{n}"))
-        .chain(
-            FAN_PLATFORM_DEVICES
-                .iter()
-                .map(|d| format!("-/sys/devices/platform/{d}")),
-        )
-        .collect();
-    let mut got = read_write_paths(DAEMON);
-    wanted.sort();
-    got.sort();
-    assert_eq!(got, wanted);
+fn both_units_keep_sys_read_only_and_open_nothing_under_it() {
+    for unit in [DAEMON, RESTORE] {
+        assert_eq!(values(unit, "BindReadOnlyPaths"), ["/sys"]);
+        assert!(unit.lines().any(|l| l == "ProtectKernelTunables=yes"));
+        assert!(values(unit, "ReadWritePaths").is_empty());
+        assert!(values(unit, "BindPaths").is_empty());
+    }
 }
 
 #[test]
-fn the_restore_unit_opens_only_the_batteries() {
-    assert!(RESTORE.lines().any(|l| l == "ProtectKernelTunables=yes"));
+fn the_restore_unit_runs_the_daemon_once_after_the_bus() {
     assert!(RESTORE.lines().any(|l| l == "Type=oneshot"));
     assert!(
         RESTORE
             .lines()
             .any(|l| l == "ExecStart=/usr/libexec/better-manager-daemon --restore-hardware")
     );
-    let mut wanted: Vec<String> = BATTERY_NAMES
-        .iter()
-        .map(|n| format!("-/sys/class/power_supply/{n}"))
-        .collect();
-    let mut got = read_write_paths(RESTORE);
-    wanted.sort();
-    got.sort();
-    assert_eq!(got, wanted);
+    assert!(RESTORE.contains("dbus.service"));
 }

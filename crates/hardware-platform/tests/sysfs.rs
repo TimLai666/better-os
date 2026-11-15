@@ -29,7 +29,7 @@ fn the_owners_machine_has_a_battery_a_limit_and_a_fan_switch() {
     assert_eq!(battery.cycles, Some(0));
     assert_eq!(battery.model.as_deref(), Some("A32-K55"));
     assert_eq!(sysfs::charge_limit(&root), Presence::Present(100));
-    let attribute = sysfs::writable_charge_limit_attribute(&root).unwrap();
+    let attribute = sysfs::charge_limit_attribute(&root).unwrap();
     assert!(attribute.ends_with("power_supply/BAT1/charge_control_end_threshold"));
     assert_eq!(
         sysfs::fan_mode(&root),
@@ -148,17 +148,4 @@ fn a_fan_with_a_writable_pwm_is_not_a_mode_switch_and_an_unknown_device_is_ignor
     let asus = sys.join("devices/platform/asus-nb-wmi/hwmon/hwmon1/pwm1");
     std::fs::write(&asus, "128\n").unwrap();
     assert_eq!(sysfs::fan_mode_attribute(&root), None);
-}
-
-#[test]
-fn a_battery_under_a_name_the_unit_does_not_open_is_read_and_not_writable() {
-    let dir = tempfile::tempdir().unwrap();
-    let bat = dir.path().join("sys/class/power_supply/CMB0");
-    std::fs::create_dir_all(&bat).unwrap();
-    std::fs::write(bat.join("type"), "Battery\n").unwrap();
-    std::fs::write(bat.join("capacity"), "50\n").unwrap();
-    std::fs::write(bat.join("charge_control_end_threshold"), "80\n").unwrap();
-    let root = SysRoot::at(dir.path());
-    assert_eq!(sysfs::charge_limit(&root), Presence::Present(80));
-    assert_eq!(sysfs::writable_charge_limit_attribute(&root), None);
 }
