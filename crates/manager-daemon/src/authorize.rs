@@ -26,6 +26,10 @@ pub const CHARGE_LIMIT_ACTION: &str = "org.betteros.manager.set-charge-limit";
 /// The action that gates `org.betteros.Hardware1.SetFanMode`.
 pub const FAN_MODE_ACTION: &str = "org.betteros.manager.set-fan-mode";
 
+/// The action that gates `org.betteros.Drives1.SetMountAutomatically`
+/// (ADR 0032, ticket 127).
+pub const DRIVE_MOUNTING_ACTION: &str = "org.betteros.manager.drive-mounting";
+
 /// What polkit answered, with a cancelled prompt told apart from a refusal
 /// so the window can say "authentication wasn't completed" rather than "not
 /// allowed".

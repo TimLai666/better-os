@@ -293,7 +293,9 @@ fn home_raises_a_worn_battery_and_nothing_else() {
 fn every_card_is_findable_in_both_languages() {
     for locale in BOTH {
         let entries = (super::PAGE.search_entries)(locale);
-        assert_eq!(entries.len(), 9);
+        // Nine hardware cards and the Drives section (ticket 127).
+        assert_eq!(entries.len(), 10);
+        assert!(entries.iter().any(|e| e.card == super::drives::CARD));
         for entry in &entries {
             assert_eq!(entry.route, crate::navigation::Route::System);
         }

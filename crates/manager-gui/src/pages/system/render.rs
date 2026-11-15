@@ -78,6 +78,7 @@ impl ManagerApp {
             rows.extend(self.bar_rows(Group::Cooling, cx));
             rows.extend(self.cooling_rows(cooling, cx));
         }
+        rows.extend(self.drive_rows(cx));
         rows.push(self.group_header(c.group_about, cx));
         rows.push(Row::card(
             FIRST_CARD_GAP,

@@ -666,8 +666,14 @@ PRERM
     cat >> "$staging_dir/DEBIAN/prerm" <<'PRERM'
 
 # Removal takes the boot-time charge limit's enablement with it (AGENTS.md:
-# nothing a component installed outlives it).
+# nothing a component installed outlives it). It also takes every
+# /etc/fstab line and udev rule the drive choices wrote (ADR 0032, ticket
+# 127): the program stops their mounts and removes only its own block and
+# its own rules file, and never fails the removal.
 if [ "$1" = "remove" ]; then
+    if [ -x /usr/libexec/better-manager-daemon ]; then
+        /usr/libexec/better-manager-daemon --remove-drive-entries || true
+    fi
     if command -v deb-systemd-helper >/dev/null 2>&1; then
         deb-systemd-helper disable better-hardware-restore.service >/dev/null 2>&1 || true
     elif [ -d /run/systemd/system ]; then

@@ -399,6 +399,104 @@ install -m 0644 /opt/better-os/e2e/50-better-os-e2e.pkla \
 # polkit reloads its policy on its own, but not instantly.
 sleep 2
 
+printf '== drive mounting choices: an fstab entry written and removed through the service ==\n'
+# Ticket 127, ADR 0032. The container has no block device the service may
+# touch, so a stand-in UDisks2 answers for two drives; the service, polkit,
+# /etc/fstab, the udev rules file, and findmnt are the real ones. The
+# internal drive reads as mounted already, so the service writes its line and
+# starts no unit: there is no systemd here.
+[[ -f /etc/fstab ]] || printf '# UNCONFIGURED FSTAB\n' > /etc/fstab
+cp -p /etc/fstab /tmp/fstab.before
+INTERNAL_UUID=e2e00001-0000-4000-8000-000000000001
+STICK_UUID=E2E0-0002
+DRIVE_RULES=/etc/udev/rules.d/90-better-os-drives.rules
+/opt/better-os/e2e_udisks >/tmp/e2e-udisks.log 2>&1 &
+E2E_UDISKS_PID=$!
+for _ in $(seq 1 50); do
+    busctl --system list 2>/dev/null | grep -q 'org.freedesktop.UDisks2' && break
+    sleep 0.1
+done
+busctl --system list 2>/dev/null | grep -q 'org.freedesktop.UDisks2' || {
+    printf 'The stand-in UDisks2 did not claim its name\n' >&2
+    cat /tmp/e2e-udisks.log >&2 || true
+    exit 1
+}
+drive_call() {
+    busctl --system call org.betteros.Manager1 /org/betteros/Manager1 \
+        org.betteros.Drives1 SetMountAutomatically sb "$1" "$2"
+}
+output="$(drive_call "$INTERNAL_UUID" true 2>&1)" || {
+    printf 'Turning the drive on failed: %s\n' "$output" >&2
+    exit 1
+}
+entry="UUID=$INTERNAL_UUID /mnt/better-os/$INTERNAL_UUID ext4 nosuid,nodev,nofail,x-gvfs-show,x-systemd.device-timeout=10s 0 0"
+grep -qxF "$entry" /etc/fstab || {
+    printf 'The entry was not written as expected:\n' >&2
+    cat /etc/fstab >&2
+    exit 1
+}
+head -c "$(stat -c %s /tmp/fstab.before)" /etc/fstab | cmp -s - /tmp/fstab.before || {
+    printf 'Lines Better OS did not write were changed\n' >&2
+    exit 1
+}
+[[ "$(stat -c '%a %u %g' /etc/fstab)" == "$(stat -c '%a %u %g' /tmp/fstab.before)" ]] || {
+    printf 'The fstab lost its mode or owner\n' >&2
+    exit 1
+}
+mkdir -p "/mnt/better-os/$INTERNAL_UUID"
+findmnt --verify --tab-file /etc/fstab || {
+    printf 'findmnt --verify refused the file with the entry\n' >&2
+    exit 1
+}
+# A UUID with a path in it never reaches the file.
+if drive_call "../../etc" true >/dev/null 2>&1; then
+    printf 'The service accepted a UUID that is not one\n' >&2
+    exit 1
+fi
+drive_call "$INTERNAL_UUID" false >/dev/null || {
+    printf 'Turning the drive off failed\n' >&2
+    exit 1
+}
+cmp -s /etc/fstab /tmp/fstab.before || {
+    printf 'Turning the drive off did not give the file back as it was\n' >&2
+    diff /tmp/fstab.before /etc/fstab >&2 || true
+    exit 1
+}
+[[ ! -e "/mnt/better-os/$INTERNAL_UUID" ]] || {
+    printf 'The empty mount point was left behind\n' >&2
+    exit 1
+}
+findmnt --verify --tab-file /etc/fstab || {
+    printf 'findmnt --verify refused the file after the entry was removed\n' >&2
+    exit 1
+}
+drive_call "$STICK_UUID" false >/dev/null || {
+    printf 'Turning the stick off failed\n' >&2
+    exit 1
+}
+grep -qxF "ENV{ID_FS_UUID}==\"$STICK_UUID\", ENV{UDISKS_AUTO}=\"0\"" "$DRIVE_RULES" || {
+    printf 'The stick turned off has no udev rule\n' >&2
+    exit 1
+}
+# What the package's prerm runs on removal takes every entry and rule.
+drive_call "$INTERNAL_UUID" true >/dev/null
+grep -q "$INTERNAL_UUID" /etc/fstab
+[[ -e /run/better-os/fstab.lock ]] || {
+    printf 'The service did not take its lock\n' >&2
+    exit 1
+}
+/usr/libexec/better-manager-daemon --remove-drive-entries
+cmp -s /etc/fstab /tmp/fstab.before || {
+    printf 'Removing the drive entries did not give the file back as it was\n' >&2
+    exit 1
+}
+[[ ! -e "$DRIVE_RULES" ]] || {
+    printf 'Removing the drive entries left the udev rules file\n' >&2
+    exit 1
+}
+kill "$E2E_UDISKS_PID" 2>/dev/null || true
+printf 'Drive choices were written and removed, and findmnt --verify accepted the file\n'
+
 printf '== a real failed install is rolled back by removing the package ==\n'
 [[ -f "$ROLLBACK_OLD_DEB" && -f "$ROLLBACK_NEW_DEB" ]] || {
     printf 'The rollback fixture packages were not built in the container\n' >&2

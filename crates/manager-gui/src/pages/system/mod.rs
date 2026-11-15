@@ -1,4 +1,5 @@
-//! System (ticket 86, spec sections 4 and 11): the hardware controls. Power
+//! System (ticket 86, spec sections 4 and 11): the hardware controls, and
+//! which drives mount automatically (ticket 127). Power
 //! mode, the charger switch, the battery charge limit, the battery, display
 //! brightness, the keyboard backlight, fan mode, temperatures and fans, and
 //! About this PC, each drawn only where the machine has it.
@@ -9,6 +10,7 @@
 
 pub(crate) mod copy;
 pub(crate) mod decide;
+pub(crate) mod drives;
 pub(crate) mod render;
 pub(crate) mod state;
 #[cfg(test)]
@@ -88,6 +90,10 @@ fn search_entries(locale: Locale) -> Vec<SearchEntry> {
             card::FAN_MODE,
         ),
         entry(c.sensors, "", c.group_cooling, card::SENSORS),
+        {
+            let d = drives::copy(locale);
+            entry(d.mount_automatically, d.description, d.group, drives::CARD)
+        },
         entry(c.about, "", c.group_about, card::ABOUT),
     ]
 }
