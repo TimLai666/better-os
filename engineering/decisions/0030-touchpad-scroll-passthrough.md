@@ -4,14 +4,14 @@
 
 Accepted on 2026-11-15 by the project owner's decision ("everything gets
 done"; ticket 125). Supersedes the recommendation of ticket 88's proposed
-ADR 0029, which found the route and advised not to build it before a security
+ADR 0031, which found the route and advised not to build it before a security
 review existed. That review is
 [touchpad-input-passthrough-security.md](/engineering/specs/touchpad-input-passthrough-security.md).
 
 ## Context
 
 GNOME 46 has no scroll-speed key, libinput leaves scroll scaling to the
-compositor, and ADR 0029's experiment showed a GNOME Shell extension never
+compositor, and ADR 0031's experiment showed a GNOME Shell extension never
 sees a scroll event aimed at a client. The only place left to change scroll
 distance on Zorin 18 is below libinput: the events a touchpad produces.
 

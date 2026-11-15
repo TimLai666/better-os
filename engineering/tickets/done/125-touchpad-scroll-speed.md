@@ -6,7 +6,7 @@
 
 The owner decided on 2026-11-15 that Better Touchpad's vertical and horizontal
 scroll speed must work on GNOME 46 ("everything gets done"). GNOME 46 has no
-key for either, and ticket 88's experiment (proposed ADR 0029) showed a GNOME
+key for either, and ticket 88's experiment (proposed ADR 0031) showed a GNOME
 Shell extension never sees a client's scroll events, so the only route is
 below libinput: grab the touchpad's evdev node, scale its scroll motion, and
 re-emit it through a uinput device. ADR 0008 and ADR 0012 require a security
