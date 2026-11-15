@@ -11,7 +11,7 @@
 //! links, and search already know them; the ones not built yet are
 //! placeholders, which a debug build draws as "not built yet". None may ship
 //! in a release; ticket 91's release gate fails on any entry that is not
-//! [`PageStatus::Built`].
+//! [`PageStatus::Built`]. Touchpad is built (ticket 88).
 
 use crate::attention::{self, AttentionItem, Snapshot};
 use crate::i18n::{Locale, Shell, shell};
@@ -22,6 +22,7 @@ use crate::{home, settings_page, window_attention_page};
 pub(crate) mod default_apps;
 pub(crate) mod keep_awake;
 pub(crate) mod system;
+pub(crate) mod touchpad;
 
 /// How far along a page is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,16 +170,6 @@ const APPS: PageModule = PageModule {
     },
 };
 
-const TOUCHPAD: PageModule = PageModule {
-    route: Route::Touchpad,
-    name: "touchpad",
-    status: PageStatus::Placeholder { ticket: 88 },
-    title: |s| s.touchpad,
-    search_entries: no_entries,
-    attention: no_attention,
-    badge: no_badge,
-};
-
 const FIXES: PageModule = PageModule {
     route: Route::Fixes,
     name: "fixes",
@@ -194,7 +185,7 @@ pub(crate) static PAGES: [PageModule; 9] = [
     home::PAGE,
     system::PAGE,
     window_attention_page::PAGE,
-    TOUCHPAD,
+    touchpad::PAGE,
     keep_awake::PAGE,
     APPS,
     default_apps::PAGE,
@@ -614,10 +605,7 @@ mod tests {
         assert_eq!(status(Route::Apps), PageStatus::Built);
         assert_eq!(status(Route::System), PageStatus::Built);
         assert_eq!(status(Route::KeepAwake), PageStatus::Built);
-        assert_eq!(
-            status(Route::Touchpad),
-            PageStatus::Placeholder { ticket: 88 }
-        );
+        assert_eq!(status(Route::Touchpad), PageStatus::Built);
         assert_eq!(status(Route::DefaultApps), PageStatus::Built);
         assert_eq!(status(Route::Fixes), PageStatus::Placeholder { ticket: 90 });
         assert_eq!(shows_not_built_notice(), cfg!(debug_assertions));

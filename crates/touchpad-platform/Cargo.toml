@@ -15,6 +15,11 @@ default = ["dconf-write"]
 # The writer itself lives in `defaults-platform`, which Better Defaults shares.
 dconf-write = ["defaults-platform/dconf-write", "dep:zbus"]
 
+[[bin]]
+name = "better-touchpad-before-removal"
+path = "src/bin/before_removal.rs"
+required-features = ["dconf-write"]
+
 [dependencies]
 defaults-platform.workspace = true
 touchpad-core.workspace = true
@@ -22,6 +27,8 @@ touchpad-core.workspace = true
 # service feature this is the library alone.
 touchpad-scroll.workspace = true
 thiserror.workspace = true
+# The pending restore and the undo file a removal keeps (ticket 88).
+serde_json.workspace = true
 # The scroll pass-through's client, on the system bus.
 zbus = { workspace = true, optional = true }
 

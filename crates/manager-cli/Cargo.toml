@@ -16,6 +16,8 @@ manager-core.workspace = true
 manager-platform = { workspace = true, features = ["dbus-client", "personal-data"] }
 uuid = { version = "1", features = ["v4"] }
 manager-store.workspace = true
+# Finishing a Better Touchpad restore a session-less removal left (ticket 88).
+touchpad-platform.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

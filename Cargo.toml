@@ -57,6 +57,7 @@ members = [
     "crates/touchpad-session",
     "crates/touchpad-scroll",
     "crates/touchpad-gui",
+    "crates/touchpad-views",
     "crates/storage-core",
     "crates/storage-platform",
     "crates/storage-service",
@@ -127,6 +128,7 @@ touchpad-gesture-service = { path = "crates/touchpad-gesture-service" }
 touchpad-gestures = { path = "crates/touchpad-gestures" }
 touchpad-platform = { path = "crates/touchpad-platform" }
 touchpad-session = { path = "crates/touchpad-session" }
+touchpad-views = { path = "crates/touchpad-views" }
 touchpad-scroll = { path = "crates/touchpad-scroll", default-features = false }
 storage-core = { path = "crates/storage-core" }
 storage-platform = { path = "crates/storage-platform" }

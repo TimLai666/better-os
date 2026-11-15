@@ -55,6 +55,7 @@ required_executables() {
             printf '%s\n' \
                 usr/bin/better-touchpad \
                 usr/bin/better-touchpad-gestured \
+                usr/lib/better-os/before-removal/better-touchpad
                 usr/libexec/better-touchpad-scrolld
             ;;
         better-awake)
@@ -528,6 +529,20 @@ for package_name in \
             fi
             ;;
         better-touchpad)
+            # Ticket 88: removal deletes the autostart overrides the Touchpad
+            # page wrote for Touchégg and fusuma, and nothing else.
+            control="$WORK_DIR/better-touchpad.control"
+            mkdir -p "$control"
+            dpkg-deb --control "$deb_path" "$control"
+            sh -n "$control/postrm" || {
+                printf 'The Better Touchpad postrm does not parse as sh\n' >&2
+                exit 1
+            }
+            grep -qxF "better_os_override_files='touchegg.desktop fusuma.desktop'" "$control/postrm" &&
+                grep -qxF 'better_os_forget_autostart_overrides "$1" || true' "$control/postrm" || {
+                printf 'The Better Touchpad postrm does not remove its autostart overrides\n' >&2
+                exit 1
+            }
             # The recovery entry point has to work when the configuration is
             # what broke the desktop, so it ships beside the window rather than
             # in a package the user would have to install after the fact.
