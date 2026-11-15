@@ -871,6 +871,7 @@ impl FilesApp {
             PendingDialog::ConfirmDelete { .. } => (c.confirm_delete_title, c.confirm),
             PendingDialog::Compress(_) => (c.compress_title, c.compress),
             PendingDialog::ServerLogin { .. } => (c.server_sign_in, c.server_connect),
+            PendingDialog::UnlockDrive { .. } => (c.drive_unlock_title, c.drive_unlock),
             PendingDialog::Format { .. } => (c.format_title, c.format_confirm),
             PendingDialog::WriteImage { .. } => (c.write_image_title, c.write_image_confirm),
         };
@@ -878,6 +879,7 @@ impl FilesApp {
             PendingDialog::Format { device_label, .. } => {
                 title.replace("{device}", device_label).into()
             }
+            PendingDialog::UnlockDrive { name, .. } => title.replace("{drive}", name).into(),
             PendingDialog::WriteImage {
                 device_label,
                 image,
@@ -897,10 +899,10 @@ impl FilesApp {
                 close: Some(c.dismiss.into()),
                 default: DefaultButton::Primary,
             })
-            .on_result(move |result, _window, cx| {
+            .on_result(move |result, window, cx| {
                 let _ = this.update(cx, |app, cx| match result {
-                    DialogResult::Primary => app.submit_dialog(cx),
-                    _ => app.dismiss_dialog(cx),
+                    DialogResult::Primary => app.submit_dialog(window, cx),
+                    _ => app.dismiss_dialog(window, cx),
                 });
             });
         content = match &dialog {
@@ -916,6 +918,10 @@ impl FilesApp {
                     TextBox::password("server-password", &self.password_input)
                         .header(c.server_password),
                 ),
+            PendingDialog::UnlockDrive { .. } => content.child(
+                TextBox::password("drive-passphrase", &self.password_input)
+                    .header(c.drive_passphrase),
+            ),
             PendingDialog::Format { filesystem, .. } => {
                 use better_ui::fluent::toggle::{RadioButtons, RadioOption};
                 use storage_platform::FilesystemKind;
@@ -1018,8 +1024,8 @@ impl FilesApp {
                 close: Some(c.dismiss.into()),
                 default: DefaultButton::None,
             })
-            .on_result(move |_result, _window, cx| {
-                let _ = this.update(cx, |app, cx| app.dismiss_dialog(cx));
+            .on_result(move |_result, window, cx| {
+                let _ = this.update(cx, |app, cx| app.dismiss_dialog(window, cx));
             })
             .child(formats)
             .into_any_element()
@@ -1126,4 +1132,87 @@ fn row_owned(label: String, value: String, p: &better_ui::fluent::Palette) -> Di
         .gap(px(2.0))
         .child(fluent::label(label, CAPTION, p.text_secondary))
         .child(fluent::label(value, BODY, p.text_primary))
+}
+
+impl FilesApp {
+    /// "This PC" (ticket 122): every drive as a tile with its icon, name,
+    /// a bar of how full it is and the free space, as File Explorer draws
+    /// them. A click opens the drive, mounting it first when it is not.
+    pub(crate) fn drives_tiles(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        use better_ui::fluent::{self, BODY_STRONG, CAPTION, SUBTITLE};
+        let c = copy(self.locale());
+        let p = fluent::palette(cx);
+        let drives = self.session.drives().to_vec();
+        let tiles = drives.into_iter().map(|drive| {
+            let key = drive.key.clone();
+            let this = cx.entity().downgrade();
+            let capacity = drive.capacity;
+            let warning = capacity.is_some_and(|capacity| capacity.is_nearly_full());
+            let hover = p.subtle_fill;
+            div()
+                .id(SharedString::from(format!("drive-tile-{}", drive.key)))
+                .w(px(280.0))
+                .min_h(px(84.0))
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .p(px(12.0))
+                .rounded(fluent::radius::SM)
+                .bg(p.card)
+                .border_1()
+                .border_color(p.card_stroke)
+                .hover(move |style| style.bg(hover))
+                .cursor_pointer()
+                .child(
+                    Icon::empty()
+                        .path(crate::icons::drive_icon(drive.kind))
+                        .size(px(32.0))
+                        .text_color(p.text_secondary),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(4.0))
+                        .child(fluent::label(drive.name(c), BODY_STRONG, p.text_primary).truncate())
+                        .children(capacity.map(|capacity| {
+                            div()
+                                .w_full()
+                                .h(px(6.0))
+                                .rounded(px(3.0))
+                                .bg(p.strong_stroke_disabled)
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(relative(capacity.used_fraction() as f32))
+                                        .bg(if warning { p.caution } else { p.accent }),
+                                )
+                        }))
+                        .children(drive.caption(c).map(|caption| {
+                            fluent::label(caption, CAPTION, p.text_secondary).truncate()
+                        })),
+                )
+                .on_click(move |_, window, cx| {
+                    let _ = this.update(cx, |app, cx| {
+                        // The page stays while a drive asks for its
+                        // passphrase or mounts; going there closes it.
+                        if app.session.open_drive(&key) {
+                            app.drives_page = None;
+                        }
+                        app.after_location_change(window);
+                        cx.notify();
+                    });
+                })
+        });
+        v_flex()
+            .id("this-pc")
+            .size_full()
+            .p(px(24.0))
+            .gap(px(16.0))
+            .overflow_y_scroll()
+            .child(fluent::label(c.this_pc, SUBTITLE, p.text_primary))
+            .child(div().flex().flex_wrap().gap(px(12.0)).children(tiles))
+            .into_any_element()
+    }
 }

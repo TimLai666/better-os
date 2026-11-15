@@ -25,6 +25,7 @@ pub mod content;
 pub mod context_menu;
 pub mod devicelink;
 pub mod devices;
+pub mod drives;
 pub mod errors;
 pub mod filemanager1;
 pub mod format;
@@ -47,6 +48,7 @@ pub mod preview;
 pub mod reader;
 pub mod restart;
 pub mod search;
+pub mod secret;
 pub mod session;
 pub mod settings_store;
 pub mod share;
@@ -64,6 +66,8 @@ mod render;
 mod shell;
 mod views;
 
+#[cfg(test)]
+mod drives_bus_tests;
 #[cfg(test)]
 mod integration_tests;
 #[cfg(test)]

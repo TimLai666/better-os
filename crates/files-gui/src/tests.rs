@@ -3350,6 +3350,48 @@ fn a_folder_s_icon_is_the_theme_s_own_else_the_plain_folder_with_its_mark() {
 }
 
 #[test]
+fn this_pc_lets_no_key_act_on_the_folder_under_it() {
+    use crate::keys::{Command as K, ThisPcKey, on_this_pc};
+    for command in [
+        K::MoveToTrash,
+        K::DeletePermanently,
+        K::Paste,
+        K::Copy,
+        K::Cut,
+        K::Rename,
+        K::NewFolder,
+        K::SelectAll,
+        K::Open,
+        K::FocusSearch,
+        K::Compress,
+    ] {
+        assert_eq!(on_this_pc(command), ThisPcKey::Ignore, "{command:?}");
+    }
+    assert_eq!(on_this_pc(K::ClearSelection), ThisPcKey::Close);
+    assert_eq!(on_this_pc(K::GoBack), ThisPcKey::Close);
+    assert_eq!(on_this_pc(K::Reload), ThisPcKey::Reload);
+    assert_eq!(on_this_pc(K::GoHome), ThisPcKey::Leave);
+    assert_eq!(on_this_pc(K::NewTab), ThisPcKey::Pass);
+}
+
+#[test]
+fn a_small_row_draws_the_developer_folder_whole_and_a_large_one_marks_the_folder() {
+    use crate::views::small_glyph;
+    // 16px list and columns rows: one glyph, no mark stacked on a folder.
+    assert_eq!(
+        small_glyph(crate::icons::CODE_MARK, 16.0),
+        Some(crate::icons::CODE_FOLDER_SMALL)
+    );
+    assert_eq!(
+        small_glyph(crate::icons::CODE_MARK, 24.0),
+        Some(crate::icons::CODE_FOLDER_SMALL)
+    );
+    // The grid's large tiles keep the folder with its mark.
+    assert_eq!(small_glyph(crate::icons::CODE_MARK, 48.0), None);
+    assert_eq!(small_glyph(crate::icons::CODE_MARK, 96.0), None);
+}
+
+#[test]
 fn home_at_the_root_and_a_user_folder_set_to_home_are_told_apart() {
     use crate::icons::{FolderGlyph as G, folder_glyph};
     let mounts = MountTable::new(Vec::new());

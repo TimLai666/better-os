@@ -138,6 +138,19 @@ pub fn header_fits(label: &str, column_width: f32) -> bool {
     label_width(label) + CELL_PADDING <= column_width
 }
 
+/// The caption's text size against the body's (12px against 14px).
+const CAPTION_SCALE: f32 = 12.0 / 14.0;
+/// What a row's trailing Eject button takes, with its margin.
+const ROW_ACTION_WIDTH: f32 = 36.0;
+
+/// Whether a drive's "12.0 GB free of 256 GB" fits under its name in a
+/// sidebar `nav` pixels wide (ticket 122). When it does not, the row keeps
+/// its name and its bar and drops the line, rather than cutting it short.
+pub fn drive_caption_fits(caption: &str, nav: f32, with_action: bool) -> bool {
+    let action = if with_action { ROW_ACTION_WIDTH } else { 0.0 };
+    label_width(caption) * CAPTION_SCALE + SIDEBAR_ROW_CHROME + action <= nav
+}
+
 /// Whether a sidebar row's label fits the sidebar at this scale.
 ///
 /// The sidebar is a fixed width, so a label that does not fit is truncated

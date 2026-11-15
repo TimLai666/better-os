@@ -44,6 +44,11 @@ pub(crate) enum NavTarget {
     Device(DeviceRow),
     /// A machine on the tailnet, opened over SFTP.
     Machine(crate::share::Machine),
+    /// A drive the storage layer does not report on (ticket 122), by its
+    /// key in the session's drive list.
+    Drive(String),
+    /// The page of every drive as tiles.
+    ThisPc,
 }
 
 impl NavTarget {
@@ -53,7 +58,9 @@ impl NavTarget {
             NavTarget::Device(_)
             | NavTarget::Machine(_)
             | NavTarget::PluginItem(_)
-            | NavTarget::PluginView(_) => None,
+            | NavTarget::PluginView(_)
+            | NavTarget::Drive(_)
+            | NavTarget::ThisPc => None,
         }
     }
 }
@@ -144,8 +151,11 @@ impl FilesApp {
                 .iter()
                 .map(|crumb| SharedString::from(crumb.label.clone()))
                 .collect();
-            // A plugin's page is named by its title, nothing to climb to.
-            let plugin_title = self.plugin_page_title();
+            // A plugin's page and "This PC" are named by their title,
+            // nothing to climb to.
+            let plugin_title = self
+                .plugin_page_title()
+                .or_else(|| self.drives_page.is_some().then(|| c.this_pc.to_string()));
             if let Some(title) = &plugin_title {
                 labels = vec![title.clone().into()];
             }
@@ -188,6 +198,9 @@ impl FilesApp {
                 .overflow_hidden()
                 .child(
                     match self.session.location() {
+                        _ if self.drives_page.is_some() => {
+                            gpui_component::Icon::empty().path(crate::icons::COMPUTER)
+                        }
                         location @ (files_core::Location::Local(_)
                         | files_core::Location::Trash(_)
                         | files_core::Location::Network(_)) => gpui_component::Icon::empty()
@@ -207,15 +220,18 @@ impl FilesApp {
         };
 
         let search_width = px(self.search_width());
+        // "This PC" has nothing to search: the field is off there.
         let search = div().w(search_width).flex_none().child(
-            TextBox::search("search-field", &self.search_input).on_search(act(
-                cx,
-                |app, window, cx| {
+            TextBox::search("search-field", &self.search_input)
+                .disabled(self.drives_page.is_some())
+                .on_search(act(cx, |app, window, cx| {
+                    if app.drives_page.is_some() {
+                        return;
+                    }
                     app.editing_search = true;
                     app.search_input
                         .update(cx, |state, cx| state.focus(window, cx));
-                },
-            )),
+                })),
         );
 
         div()
@@ -241,9 +257,10 @@ impl FilesApp {
     pub(crate) fn command_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let c = copy(self.locale());
         let mut facts = self.session.selection_facts();
-        // On a plugin's page nothing is the folder's: nothing to make, cut,
-        // copy, paste, rename or trash, and no sort or view to change.
-        let on_plugin_page = self.plugin_view.is_some();
+        // On a plugin's page and on "This PC" nothing is the folder's:
+        // nothing to make, cut, copy, paste, rename or trash, and no sort or
+        // view to change.
+        let on_plugin_page = self.plugin_view.is_some() || self.drives_page.is_some();
         if on_plugin_page {
             facts.writable = false;
             facts.all_local = false;
@@ -913,35 +930,115 @@ impl FilesApp {
             }
         }
 
-        // Drives: the storage layer's rows when it reports states, the mount
-        // table's otherwise, every one of them unknown.
+        // Drives (ticket 122): every drive with how full it is, "This PC"
+        // first. A drive the storage layer reports keeps its removal state,
+        // shown instead of the free space while it needs attention.
         let note = self.session.collection.note(c);
-        if self.session.collection.has_states() {
-            let devices: Vec<DeviceRow> = self.session.device_rows().to_vec();
-            if !devices.is_empty() || note.is_some() {
-                out.push((NavEntry::Header(c.sidebar_devices.into()), None));
-            }
-            for device in devices {
-                out.push((
-                    self.device_item(&device, c),
-                    Some(NavTarget::Device(device)),
-                ));
-            }
+        let devices: Vec<DeviceRow> = if self.session.collection.has_states() {
+            self.session.device_rows().to_vec()
         } else {
-            let drives: Vec<&SidebarRow> = rows
-                .iter()
-                .filter(|row| row.section == SidebarSection::Devices)
-                .collect();
-            if !drives.is_empty() {
-                out.push((NavEntry::Header(c.sidebar_devices.into()), None));
-                for row in drives {
-                    let item = NavItem::new(row.label.clone(), IconName::HardDrive)
-                        .caption(c.device_state_unknown_without_service);
-                    out.push((item.entry(), Some(NavTarget::Row(row.clone()))));
-                }
+            Vec::new()
+        };
+        let drives = self.session.drives().to_vec();
+        let mount_rows: Vec<&SidebarRow> = rows
+            .iter()
+            .filter(|row| row.section == SidebarSection::Devices)
+            .collect();
+        if !drives.is_empty() || !devices.is_empty() || !mount_rows.is_empty() || note.is_some() {
+            out.push((NavEntry::Header(c.sidebar_devices.into()), None));
+            out.push((
+                NavItem::new(c.this_pc, IconName::HardDrive)
+                    .icon_path(crate::icons::COMPUTER)
+                    .entry(),
+                Some(NavTarget::ThisPc),
+            ));
+        }
+        let mut shown_devices: Vec<String> = Vec::new();
+        for drive in &drives {
+            let device = devices.iter().find(|device| {
+                drive.object_path.as_deref() == Some(device.object_path.as_str())
+                    || (drive.mount_point.is_some() && drive.mount_point == device.mount_point)
+            });
+            if let Some(device) = device {
+                shown_devices.push(device.object_path.clone());
+            }
+            out.push((
+                self.drive_item(drive, device, c),
+                Some(match device {
+                    Some(device) => NavTarget::Device(device.clone()),
+                    None => NavTarget::Drive(drive.key.clone()),
+                }),
+            ));
+        }
+        for device in devices
+            .into_iter()
+            .filter(|device| !shown_devices.contains(&device.object_path))
+        {
+            out.push((
+                self.device_item(&device, c),
+                Some(NavTarget::Device(device)),
+            ));
+        }
+        // No list of drives yet and no states: the mount table's rows, as
+        // before, every one of them unknown.
+        if drives.is_empty() && !self.session.collection.has_states() {
+            for row in mount_rows {
+                let item = NavItem::new(row.label.clone(), IconName::HardDrive)
+                    .caption(c.device_state_unknown_without_service);
+                out.push((item.entry(), Some(NavTarget::Row(row.clone()))));
             }
         }
         out
+    }
+
+    /// One drive's row: its icon, its name, how full it is with a bar, and
+    /// Eject when it can be ejected.
+    fn drive_item(
+        &self,
+        drive: &crate::drives::Drive,
+        device: Option<&DeviceRow>,
+        c: &'static Copy,
+    ) -> NavEntry {
+        let mut item = NavItem::new(drive.name(c), IconName::HardDrive)
+            .icon_path(crate::icons::drive_icon(drive.kind));
+        let attention =
+            device.filter(|device| device.is_warning() || device.unsafe_removal.is_some());
+        // Never on the drive the system runs from (Linux on an external SSD,
+        // a live USB), whatever the storage service says.
+        let with_action =
+            drive.kind != crate::drives::DriveKind::System && (drive.ejectable || device.is_some());
+        if let Some(device) = attention {
+            item = item.caption(device.state_label(c)).caption_warning(true);
+        } else if let Some(caption) = drive.caption(c) {
+            // Too narrow for the line: the bar alone says how full it is.
+            if drive.capacity.is_none()
+                || crate::layout::drive_caption_fits(&caption, self.nav_width(), with_action)
+            {
+                item = item.caption(caption);
+            }
+        }
+        if let Some(capacity) = drive.capacity {
+            item = item.meter(capacity.used_fraction() as f32, capacity.is_nearly_full());
+        }
+        if with_action {
+            let this = self.weak.clone();
+            let key = drive.key.clone();
+            let object_path = device.map(|device| device.object_path.clone());
+            item = item.action(NavAction::new(
+                IconName::ArrowUp,
+                c.device_eject,
+                move |_window, cx| {
+                    let _ = this.update(cx, |app, cx| {
+                        match &object_path {
+                            Some(object_path) => app.session.eject_device(object_path),
+                            None => app.session.eject_drive(&key),
+                        }
+                        cx.notify();
+                    });
+                },
+            ));
+        }
+        item.entry()
     }
 
     fn device_item(&self, device: &DeviceRow, c: &'static Copy) -> NavEntry {
@@ -985,6 +1082,9 @@ impl FilesApp {
             Some(page) => lines.iter().position(|(_, target)| {
                 matches!(target, Some(NavTarget::PluginView(id)) if *id == page.plugin_id)
             }),
+            None if self.drives_page.is_some() => lines
+                .iter()
+                .position(|(_, target)| matches!(target, Some(NavTarget::ThisPc))),
             None => lines.iter().position(|(_, target)| {
                 target.as_ref().and_then(NavTarget::location) == Some(&current)
             }),
@@ -1137,6 +1237,9 @@ impl FilesApp {
         if !matches!(target, NavTarget::PluginView(_) | NavTarget::PluginItem(_)) {
             self.plugin_view = None;
         }
+        if !matches!(target, NavTarget::ThisPc | NavTarget::Drive(_)) {
+            self.drives_page = None;
+        }
         match target {
             NavTarget::Row(row) => {
                 if let Some(index) = row.bookmark_index {
@@ -1162,6 +1265,15 @@ impl FilesApp {
             NavTarget::Machine(machine) => {
                 self.session
                     .mount_server(crate::share::sftp_address(machine), None);
+            }
+            NavTarget::Drive(key) => {
+                if self.session.open_drive(key) {
+                    self.drives_page = None;
+                }
+            }
+            NavTarget::ThisPc => {
+                self.drives_page = Some(self.session.location().clone());
+                self.session.refresh_drives();
             }
         }
         self.after_location_change(window);

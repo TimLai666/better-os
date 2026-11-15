@@ -24,6 +24,19 @@ pub const DEVELOPER: &str = "better-files/developer.svg";
 /// The developer glyph's brackets alone, the mark the content view puts on a
 /// full-colour folder.
 pub const CODE_MARK: &str = "better-files/code-mark.svg";
+/// The developer folder drawn whole for small sizes (16px list and column
+/// rows), in full colour: a folder with `</>` inside it, so a small row
+/// never stacks a mark on a folder. Adwaita's folder colours, which the
+/// themes' small folders share.
+pub const CODE_FOLDER_SMALL: &str = "better-files/code-folder-16.svg";
+/// "This PC": a monitor on its stand (ticket 122).
+pub const COMPUTER: &str = "better-files/computer.svg";
+/// A removable drive: a USB stick.
+pub const USB_DRIVE: &str = "better-files/usb-drive.svg";
+/// A disc in an optical drive.
+pub const DISC: &str = "better-files/disc.svg";
+/// A phone or a camera.
+pub const PHONE: &str = "better-files/phone.svg";
 /// The kit's own, named here so every folder glyph is a path.
 pub const FOLDER: &str = "icons/folder.svg";
 pub const DEVICE: &str = "icons/hard-drive.svg";
@@ -31,7 +44,13 @@ pub const NETWORK: &str = "icons/globe.svg";
 
 const OPEN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#;
 
+/// [`CODE_FOLDER_SMALL`]: drawn on the 16px grid, full colour.
+const CODE_FOLDER_SMALL_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.3l1.5 1.5h6.2A1.5 1.5 0 0 1 15 5v.5H1z" fill="#438de6"/><rect x="1" y="4.5" width="14" height="9.5" rx="1.5" fill="#a4caee"/><path d="M6.4 7.1 4.5 9.25l1.9 2.15M9.6 7.1l1.9 2.15-1.9 2.15" fill="none" stroke="#1c71d8" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
+
 fn svg(path: &str) -> Option<String> {
+    if path == CODE_FOLDER_SMALL {
+        return Some(CODE_FOLDER_SMALL_SVG.to_string());
+    }
     let body = match path {
         TRASH => {
             r#"<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>"#
@@ -74,6 +93,16 @@ fn svg(path: &str) -> Option<String> {
         DEVELOPER => {
             r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="m10 11-2.5 2.5L10 16"/><path d="m14 11 2.5 2.5L14 16"/>"#
         }
+        COMPUTER => {
+            r#"<rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>"#
+        }
+        USB_DRIVE => {
+            r#"<rect x="7" y="9" width="10" height="13" rx="2"/><path d="M9 9V3h6v6"/><path d="M11 5.5h.01"/><path d="M13 5.5h.01"/>"#
+        }
+        DISC => {
+            r#"<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/><path d="M7.5 8.5a6 6 0 0 1 3-2.2"/>"#
+        }
+        PHONE => r#"<rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/>"#,
         CODE_MARK => r#"<path d="m8 7-5 5 5 5"/><path d="m16 7 5 5-5 5"/><path d="m14 4-4 16"/>"#,
         _ => return None,
     };
@@ -281,6 +310,18 @@ pub fn folder_glyph(
     FolderGlyph::Folder
 }
 
+/// A drive's icon by its kind (ticket 122).
+pub fn drive_icon(kind: crate::drives::DriveKind) -> &'static str {
+    use crate::drives::DriveKind as K;
+    match kind {
+        K::System | K::Internal => DEVICE,
+        K::Removable => USB_DRIVE,
+        K::Optical => DISC,
+        K::Phone => PHONE,
+        K::Network => NETWORK,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,8 +329,24 @@ mod tests {
     #[test]
     fn every_glyph_is_served_and_is_an_svg() {
         for path in [
-            TRASH, DOCUMENTS, DOWNLOADS, PICTURES, MUSIC, VIDEOS, DESKTOP, OPERATIONS, HOME,
-            TEMPLATES, PUBLIC, DEVELOPER, CODE_MARK,
+            TRASH,
+            DOCUMENTS,
+            DOWNLOADS,
+            PICTURES,
+            MUSIC,
+            VIDEOS,
+            DESKTOP,
+            OPERATIONS,
+            HOME,
+            TEMPLATES,
+            PUBLIC,
+            DEVELOPER,
+            CODE_MARK,
+            COMPUTER,
+            USB_DRIVE,
+            DISC,
+            PHONE,
+            CODE_FOLDER_SMALL,
         ] {
             let bytes = FilesAssets.load(path).unwrap().expect(path);
             let text = std::str::from_utf8(&bytes).unwrap();
