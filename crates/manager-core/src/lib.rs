@@ -2441,7 +2441,12 @@ impl Manager {
                 Vec::new()
             },
             paths: manifest.paths.clone(),
-            restart_requirement: if operation.mutates_component() {
+            // Adding companions leaves the component's own program as it
+            // was, so its restart requirement does not apply; a companion
+            // that needs a new session says so where it is used.
+            restart_requirement: if operation.mutates_component()
+                && operation != DesiredOperation::AddCompanions
+            {
                 RestartRequirement::from(manifest.restart)
             } else {
                 RestartRequirement::NotRequired

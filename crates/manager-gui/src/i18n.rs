@@ -201,6 +201,7 @@ pub(crate) struct Copy {
     /// `{component}` and `{version}`, the version exactly as dpkg reports it.
     pub(crate) unorderable_version_detail: &'static str,
     pub(crate) add_companions: &'static str,
+    pub(crate) companions_added: &'static str,
     pub(crate) check_companion_missing: &'static str,
     pub(crate) companion_missing_detail: &'static str,
     pub(crate) companion_older_detail: &'static str,
@@ -582,6 +583,7 @@ static EN: Copy = Copy {
     check_unorderable_version: "Installed at a version Better Manager cannot compare",
     unorderable_version_detail: "{component} is installed at {version}. Better Manager cannot compare that version, so it does not install, update, or remove this component. To manage it here, remove it with `sudo apt remove {component}` and install it from Better Manager.",
     add_companions: "Install missing parts",
+    companions_added: "Parts added if missing",
     check_companion_missing: "A part of this component is missing",
     companion_missing_detail: "{component} needs {package}, which is not installed.",
     companion_older_detail: "{component} needs {package} at its own version; this computer has {version}.",
@@ -944,6 +946,7 @@ static ZH_TW: Copy = Copy {
     check_unorderable_version: "安裝的版本無法比較",
     unorderable_version_detail: "{component} 目前安裝的版本是 {version}，元件管理器無法比較這個版本，所以不會安裝、更新或移除這個元件。如果要改由這裡管理，請先用 `sudo apt remove {component}` 移除，再從元件管理器安裝。",
     add_companions: "安裝缺少的部分",
+    companions_added: "會補上的部分（已安裝的略過）",
     check_companion_missing: "這個元件少了需要的部分",
     companion_missing_detail: "{component} 需要 {package}，但這台電腦沒有安裝。",
     companion_older_detail: "{component} 需要同版本的 {package}，這台電腦裝的是 {version}。",

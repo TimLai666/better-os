@@ -719,13 +719,14 @@ impl ManagerApp {
             .description(notice.body);
         if let Some(action) = notice.action {
             card = card.content(
-                Button::new("updates-service-update")
-                    .primary()
-                    .label(c.service_update_button)
-                    .disabled(self.transaction_running())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.prepare_service_update(action, cx);
-                    })),
+                better_ui::fluent::button::Button::accent(
+                    "updates-service-update",
+                    c.service_update_button,
+                )
+                .disabled(self.transaction_running())
+                .on_click(Self::act(cx, move |this, _, cx| {
+                    this.prepare_service_update(action, cx);
+                })),
             );
         }
         card.into_any_element()

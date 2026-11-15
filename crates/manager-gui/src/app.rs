@@ -998,7 +998,10 @@ impl ManagerApp {
     /// Whether a transaction would replace this application's own package.
     pub(crate) fn updates_the_manager(steps: &[PlanStep]) -> bool {
         steps.iter().any(|step| {
-            manager_core::is_self_component(&step.component) && step.operation.mutates_component()
+            manager_core::is_self_component(&step.component)
+                && step.operation.mutates_component()
+                // Its own package is handed over again unchanged.
+                && step.operation != DesiredOperation::AddCompanions
         })
     }
 

@@ -501,6 +501,26 @@ mod component_page {
         assert!(crate::app::ManagerApp::updates_the_manager(
             self_plan.steps()
         ));
+
+        // Adding the parts Better Manager is missing leaves its own program
+        // as it is: no "this updates Better Manager" and no restart.
+        let version = manager
+            .manifests()
+            .find(|manifest| manifest.id == self_id)
+            .unwrap()
+            .version
+            .to_string();
+        state.set_installed(self_id.clone(), version, true);
+        let companions = manager
+            .plan(&state, &self_id, DesiredOperation::AddCompanions)
+            .expect("the shipped manifest names companions");
+        assert!(!crate::app::ManagerApp::updates_the_manager(
+            companions.steps()
+        ));
+        assert_eq!(
+            companions.restart_requirement(),
+            manager_core::RestartRequirement::NotRequired
+        );
     }
 
     #[test]

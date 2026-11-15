@@ -192,6 +192,24 @@ impl ManagerApp {
                         cx,
                     ),
                 )
+                .when(
+                    step.operation == manager_core::DesiredOperation::AddCompanions,
+                    |view| {
+                        let packages = step
+                            .artifact
+                            .as_ref()
+                            .map(|artifact| {
+                                artifact
+                                    .companions
+                                    .iter()
+                                    .map(|companion| companion.package.clone())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .unwrap_or_default();
+                        view.child(self.key_value_row(c.companions_added, packages, cx))
+                    },
+                )
                 .child(self.key_value_row(c.dependencies, dependencies, cx))
                 .child(self.key_value_row(c.conflicts, conflicts, cx))
                 .child(self.key_value_row(
