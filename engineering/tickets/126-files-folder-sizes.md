@@ -34,3 +34,22 @@ Explorer does the same; macOS Finder offers "Calculate all sizes").
 - A benchmark entry in `engineering/performance/` for a 100 000-file tree
   (time to all sizes, CPU, and that the listing's first frame is unchanged).
 - Screens in zh-TW and English, light and dark, at 1600 and 960.
+
+## Notes
+
+Delivered on branch `ticket-126`.
+
+- The walk: `files_platform::folder_size` (`measure`, `FolderSizeLimits`,
+  `SizeBudget`), and `MountTable::reach` for network and FUSE storage from the
+  mount table alone.
+- The window: `files_gui::folder_sizes` (visit, measuring thread, cache, cell
+  text), wired into `FilesSession::pump`, the list Size column with a tooltip,
+  the grid caption, the details panel, the preview's size line, and the status
+  bar's selection total. `DirectoryModel::set_sizes` writes a total into the
+  model; `SortOrder::compare` puts an unknown size last in both directions.
+- Settings: "Show folder sizes" and "Folder sizes on network locations" in the
+  View menu, stored as `folder_sizes` and `folder_sizes_on_network`. Better Files
+  has no separate Settings window; the View menu is where its other view
+  settings live.
+- Policy and limits: `engineering/specs/files-gui-policy.md`, "Folder sizes".
+  Numbers: `engineering/performance/files-benchmarks.md`, "Folder sizes".

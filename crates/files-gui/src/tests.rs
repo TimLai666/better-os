@@ -3519,3 +3519,94 @@ fn only_folders_dropped_from_another_application_are_pinned() {
     ]);
     assert_eq!(pinned, vec![files_core::Location::local(&folder).unwrap()]);
 }
+
+// --- Ticket 126: folder sizes ---------------------------------------------
+
+fn entry_named<'a>(session: &'a FilesSession, name: &str) -> &'a Entry {
+    session
+        .pane()
+        .model()
+        .get(&files_core::EntryId::Name(name.into()))
+        .expect("the entry is listed")
+}
+
+#[test]
+fn a_folder_shows_its_total_follows_a_change_inside_and_turns_off() {
+    let (fixture, mut session) = fixture();
+    let reports = fixture.home.join("Documents/reports");
+    fs::write(reports.join("q1.txt"), vec![0u8; 4000]).unwrap();
+    settle(&mut session);
+    let known = |s: &FilesSession, bytes: u64| {
+        entry_named(s, "reports").size == files_core::EntrySize::Bytes(bytes)
+    };
+    assert!(
+        pump_until(&mut session, |s| known(s, 4000)),
+        "the size never arrived"
+    );
+    let label = session.size_label(entry_named(&session, "reports"));
+    assert_eq!(label.text, crate::format::bytes(4000));
+    // The status bar's total for a selection takes the folder in.
+    session.select_by_name("reports");
+    assert_eq!(session.selection_size(), Some(crate::format::bytes(4000)));
+
+    // A file added inside the folder is heard by its watch, and the total
+    // follows. The watch is placed off this thread, so the write is made
+    // again until one lands after it.
+    let deadline = Instant::now() + WATCH_DEADLINE;
+    while !known(&session, 4100) {
+        fs::write(reports.join("q2.txt"), vec![0u8; 100]).unwrap();
+        for _ in 0..40 {
+            session.pump();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the change inside was never seen"
+        );
+    }
+
+    // Off, the folder says "—" and is no longer sorted by a size.
+    session.toggle_folder_sizes();
+    assert!(!session.preferences.folder_sizes);
+    assert_eq!(
+        entry_named(&session, "reports").size,
+        files_core::EntrySize::Unknown
+    );
+    assert_eq!(
+        session.size_label(entry_named(&session, "reports")).text,
+        "—"
+    );
+    session.pump();
+    assert_eq!(
+        entry_named(&session, "reports").size,
+        files_core::EntrySize::Unknown
+    );
+    // Remembered between launches.
+    let stored = PreferenceStore::at_path(fixture._root.path().join("prefs.json"))
+        .load()
+        .preferences;
+    assert!(!stored.folder_sizes);
+    session.toggle_folder_sizes();
+    assert!(pump_until(&mut session, |s| known(s, 4100)));
+}
+
+#[test]
+fn leaving_a_folder_stops_its_sizes() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    assert!(pump_until(&mut session, |s| s
+        .folder_sizes
+        .visiting()
+        .is_some()));
+    session.navigate_to(Location::local(&fixture.home).unwrap());
+    settle(&mut session);
+    assert!(pump_until(&mut session, |s| s.folder_sizes.visiting()
+        == Some(&Location::local(&fixture.home).unwrap())));
+}
+
+#[test]
+fn preferences_written_before_folder_sizes_existed_load_with_them_on() {
+    let loaded: FilesPreferences = serde_json::from_str(r#"{"view_mode":"list"}"#).unwrap();
+    assert!(loaded.folder_sizes);
+    assert!(!loaded.folder_sizes_on_network);
+}

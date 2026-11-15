@@ -28,6 +28,7 @@ pub mod devices;
 pub mod drives;
 pub mod errors;
 pub mod filemanager1;
+pub mod folder_sizes;
 pub mod format;
 pub mod gvfs;
 pub mod gvfs_trust;

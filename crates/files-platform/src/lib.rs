@@ -12,6 +12,7 @@
 //! `files_core::applications`, which is the seam `engineering/architecture.md` calls "one catalog, no
 //! second scanner".
 
+pub mod folder_size;
 pub mod hidden;
 pub mod local;
 pub mod mime;
@@ -23,12 +24,13 @@ pub mod xdg;
 
 use thiserror::Error;
 
+pub use folder_size::{FolderSize, FolderSizeLimits, SizeBudget, measure as measure_folder};
 pub use hidden::read_hidden_rules;
 pub use local::{LocalDirectoryReader, ReaderConfig, list_directory_blocking, read_entry};
 pub use mime::{
     GlobMimeDetector, MimeDescriptions, MimeDetector, SharedMimeDetector, detector_from_env,
 };
-pub use mounts::{MountPoint, MountTable, external_devices, read_mount_table};
+pub use mounts::{MountPoint, MountTable, Reach, external_devices, read_mount_table};
 pub use trash::{
     DeviceProbe, HostDevices, SharedTrash, TrashDirectory, TrashError, TrashedItem, VolumeTrash,
     current_uid, ensure_trash, move_to_trash, network_or_fuse_mounts, original_path_of, purge,
