@@ -65,14 +65,29 @@ done and offered the button that does it.
   `better-manager-daemon-upgrade`), `packaging/maintainer/daemon-handoff.sh`
   and its postinst hook, the Updates notice, the window-attention Install
   button, Doctor findings in the GUI and the CLI.
+- A failed handoff with Better Manager current is retried from the window:
+  the missing adapter is installed through the old service as a step of its
+  own, and `better-shell-adapter`'s postinst starts the same handoff
+  (ADR 0028). Only when the adapter is already installed and the service is
+  still 0.2.12 or older is there no retry; the notice says so.
+- Looked at in the wayhand sandbox (sway, real mode, fake `dpkg-query` on
+  PATH, private session bus, systemctl guard): the Updates notice in English
+  dark and Traditional Chinese light, and the Doctor findings in both. Fixed
+  from that look: findings now come first, the component's own health check
+  fails with them, and the detail names the component by its display name.
 - Still owed before `done/`:
+  - The window-attention Install button and its after-install state have
+    not been seen: the sandbox is sway, so the page shows "GNOME Shell is not
+    running". It needs a nested GNOME Shell session.
+  - Clicking buttons on the right half of the content area did nothing in
+    the sandbox, for the existing Install and Check for updates buttons as
+    well as the new one, while the sidebar and the Apps cards responded. So
+    the Update system service button is wired like its neighbours but was not
+    seen to open the review; find out whether this is the sandbox pointer or
+    the window before calling it done.
   - The container end-to-end section (0.2.9 service → handoff → adapter,
-    `dpkg --audit` empty) is written but has only CI to run in: there is no
-    Docker daemon in the worktree's environment. Read the CI e2e job on the
-    first push.
-  - The screens (Updates notice, window-attention Install, Doctor finding)
-    have not been looked at in a sandbox. A demo window reads no host facts,
-    so the notice needs a real-mode window against a fake dpkg to be seen.
-  - `shellcheck` was not available locally; CI lints the new scripts.
+    `dpkg --audit` empty) is CI-only: no Docker daemon here. Read the CI e2e
+    job after merge.
+  - `shellcheck` is not installed locally; CI lints the new scripts.
   - `SELF_UPGRADING_SINCE` and `HANDOFF_SINCE` say 0.2.16; the version bump
     must keep them true.

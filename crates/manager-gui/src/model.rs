@@ -571,6 +571,19 @@ pub(crate) fn service_notice(
             c.service_update_handoff_body,
             Some(ServiceAction::UpdateManager),
         ),
+        // Better Manager is current: the missing adapter carries the handoff
+        // again (ADR 0028). With nothing missing, nothing can.
+        (ServiceGeneration::Legacy, false)
+            if manager_gaps.iter().any(|gap| {
+                gap.package == manager_core::exec::HANDOFF_CARRIER
+                    && manager_core::exec::carries_handoff(&gap.wanted_version)
+            }) =>
+        {
+            (
+                c.service_update_retry_body,
+                Some(ServiceAction::AddCompanions),
+            )
+        }
         (ServiceGeneration::Legacy, false) => (c.service_update_blocked_body, None),
         (_, true) => (c.service_update_body, Some(ServiceAction::UpdateManager)),
         (_, false) => (c.service_update_body, Some(ServiceAction::AddCompanions)),

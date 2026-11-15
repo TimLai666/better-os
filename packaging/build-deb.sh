@@ -156,6 +156,10 @@ PACKAGE_ALWAYS_ON_UNITS=""
 #                      adapter packages built beside it, and its postinst
 #                      starts the handoff
 PACKAGE_DAEMON_HANDOFF=0
+#   PACKAGE_HANDOFF_RETRY  1 for better-shell-adapter: its postinst starts the
+#                      handoff Better Manager installed, which is how a failed
+#                      handoff is retried once Better Manager is current
+PACKAGE_HANDOFF_RETRY=0
 
 reset_package_inputs() {
     PACKAGE_BINARIES=()
@@ -165,6 +169,7 @@ reset_package_inputs() {
     PACKAGE_DATA_ONLY=0
     PACKAGE_ALWAYS_ON_UNITS=""
     PACKAGE_DAEMON_HANDOFF=0
+    PACKAGE_HANDOFF_RETRY=0
 }
 
 # The GPUI toolkit dlopens fontconfig and the Wayland client libraries, so they
@@ -247,6 +252,12 @@ add_daemon_handoff() {
         cat "$sidecar" >> "$staging_dir/usr/lib/better-os/daemon-handoff/packages"
     done
     chmod 0644 "$staging_dir/usr/lib/better-os/daemon-handoff/packages"
+    add_handoff_hook "$staging_dir"
+}
+
+# The postinst line that starts the handoff, if Better Manager installed it.
+add_handoff_hook() {
+    local staging_dir="$1"
     if [[ ! -f "$staging_dir/DEBIAN/postinst" ]]; then
         printf '#!/bin/sh\nset -e\n\n' > "$staging_dir/DEBIAN/postinst"
         chmod 0755 "$staging_dir/DEBIAN/postinst"
@@ -254,7 +265,7 @@ add_daemon_handoff() {
     {
         printf '\n# ADR 0028: hand a staged privileged service to a unit of its own.\n'
         # shellcheck disable=SC2016 # expanded by the maintainer script
-        printf 'if [ "$1" = configure ]; then\n    /usr/libexec/better-os/daemon-handoff start || true\nfi\n'
+        printf 'if [ "$1" = configure ] && [ -x /usr/libexec/better-os/daemon-handoff ]; then\n    /usr/libexec/better-os/daemon-handoff start || true\nfi\n'
     } >> "$staging_dir/DEBIAN/postinst"
 }
 
@@ -394,6 +405,9 @@ make_package() {
 
     if ((PACKAGE_DAEMON_HANDOFF == 1)); then
         add_daemon_handoff "$staging_dir"
+    fi
+    if ((PACKAGE_HANDOFF_RETRY == 1)); then
+        add_handoff_hook "$staging_dir"
     fi
 
     dpkg-deb --build --root-owner-group "$staging_dir" "$deb_path" >/dev/null
@@ -617,6 +631,7 @@ PACKAGE_DATA=(
     "adapters/gnome-shell-adapter/org.betteros.ShellAdapter1.WindowAttention.xml:usr/share/gnome-shell/extensions/$SHELL_ADAPTER_UUID/org.betteros.ShellAdapter1.WindowAttention.xml"
 )
 PACKAGE_RECOMMENDS="gnome-shell"
+PACKAGE_HANDOFF_RETRY=1
 make_package better-shell-adapter \
     'Better OS GNOME Shell adapter extension' \
     'Relays a few GNOME Shell events and shell actions to Better OS services, only while they run.'

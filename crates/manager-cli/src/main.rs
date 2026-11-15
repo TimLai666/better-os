@@ -932,7 +932,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // A simulation's state is a fabrication, so dpkg is not asked.
             if cli.execution == ExecutionArg::Real {
                 checks.extend(manager.unorderable_host_checks(&state, &DpkgProbe)?);
-                checks.extend(manager.companion_checks(&state, &DpkgProbe)?);
+                let gaps = manager.companion_gaps(&state, &DpkgProbe)?;
+                manager_core::merge_companion_findings(&mut checks, &gaps);
             }
             for check in &checks {
                 for line in doctor_lines(check) {

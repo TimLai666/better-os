@@ -330,14 +330,40 @@ impl<'a> RealDriver<'a> {
                         // Its own prerm would stop the unit dpkg runs in. The
                         // new Better Manager's postinst hands the staged
                         // package to a unit of its own instead.
-                        let carries_handoff = crate::is_self_component(&step.component)
-                            && step.after_version.as_deref().is_some_and(|after| {
-                                semver::Version::parse(after).is_ok_and(|after| {
-                                    after
-                                        >= semver::Version::parse(HANDOFF_SINCE).expect("a version")
-                                })
-                            })
-                            && step.before_version != step.after_version;
+                        let handoff_version =
+                            step.after_version.as_deref().is_some_and(carries_handoff);
+                        let manager = crate::is_self_component(&step.component) && handoff_version;
+                        let carries_handoff = manager && step.before_version != step.after_version;
+                        // Better Manager is current, so installing it again is
+                        // nothing to dpkg. The adapter it is missing carries the
+                        // same postinst hook: the old service installs it as a
+                        // step of its own (it needs no companions field), and
+                        // its postinst starts the handoff again.
+                        let adapter = companions
+                            .iter()
+                            .find(|companion| companion.package == HANDOFF_CARRIER);
+                        let retry = manager
+                            && step.operation == DesiredOperation::AddCompanions
+                            && adapter.is_some();
+                        if retry && let Some(adapter) = adapter {
+                            translation.service_handoff = true;
+                            translation
+                                .deferred_companions
+                                .retain(|package| package != HANDOFF_CARRIER);
+                            steps.push(WireStep {
+                                component: HANDOFF_CARRIER.to_string(),
+                                action: WireAction::Install,
+                                before_version: None,
+                                after_version: step.after_version.clone(),
+                                artifact: Some(WireArtifact {
+                                    filename: adapter.release_asset.clone(),
+                                    sha256: adapter.sha256.clone(),
+                                    size_bytes: adapter.expected_bytes.unwrap_or(1),
+                                }),
+                                companions: Vec::new(),
+                            });
+                            continue;
+                        }
                         if !carries_handoff {
                             return Err(service.outdated(&[SERVICE_PACKAGE.to_string()]));
                         }
@@ -986,8 +1012,18 @@ pub const SERVICE_PACKAGE: &str = "better-manager-daemon";
 /// version-bump commit.
 pub const SELF_UPGRADING_SINCE: &str = "0.2.16";
 
+/// The package whose postinst, beside Better Manager's, starts the handoff:
+/// the retry when Better Manager is already current (ADR 0028).
+pub const HANDOFF_CARRIER: &str = "better-shell-adapter";
+
 /// The first Better Manager whose postinst carries the service handoff.
 pub const HANDOFF_SINCE: &str = "0.2.16";
+
+/// Whether a Better Manager of `version` ships the handoff.
+pub fn carries_handoff(version: &str) -> bool {
+    semver::Version::parse(version)
+        .is_ok_and(|version| version >= semver::Version::parse(HANDOFF_SINCE).expect("a version"))
+}
 
 /// What the installed privileged service can be sent, from dpkg's version of
 /// it (ADR 0028). Read unprivileged, before anything is sent.
@@ -1831,7 +1867,7 @@ mod tests {
     /// adapter missing, the service 0.2.9. Nothing can carry the adapter, and
     /// the plan says so instead of succeeding without it.
     #[test]
-    fn a_missing_adapter_with_a_legacy_service_needs_the_service_first() {
+    fn a_missing_adapter_is_added_and_a_failed_handoff_can_be_retried() {
         let evidence = translate_on(
             "0.2.16",
             "0.2.16",
@@ -1847,11 +1883,30 @@ mod tests {
         assert_eq!(plan.steps[0].companions.len(), 1);
         assert_eq!(plan.steps[0].companions[0].package, ADAPTER);
 
-        let refused = translate_on(
+        // A failed handoff with Better Manager current: the retry is the
+        // adapter as a step of its own, which a 0.2.9 service takes and whose
+        // postinst starts the handoff again (ADR 0028).
+        let retry = translate_on(
             "0.2.16",
             "0.2.16",
             DesiredOperation::AddCompanions,
             &[(SERVICE_PACKAGE, "0.2.9")],
+        )
+        .unwrap();
+        assert!(retry.service_handoff);
+        assert!(retry.deferred_companions.is_empty());
+        let plan = retry.plan.unwrap();
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].component, ADAPTER);
+        assert_eq!(plan.steps[0].action, WireAction::Install);
+        assert!(plan.steps[0].companions.is_empty());
+
+        // With the adapter already there, nothing can carry the handoff.
+        let refused = translate_on(
+            "0.2.16",
+            "0.2.16",
+            DesiredOperation::AddCompanions,
+            &[(SERVICE_PACKAGE, "0.2.9"), (ADAPTER, "0.2.16")],
         )
         .unwrap_err();
         assert_eq!(refused.key, "daemon.outdated");
@@ -1985,6 +2040,18 @@ mod tests {
         assert_eq!(gaps.len(), 1);
         assert_eq!(gaps[0].package, SERVICE_PACKAGE);
         assert_eq!(gaps[0].host_version.as_deref(), Some("0.2.9"));
+
+        // In a whole report the finding comes first and the component's own
+        // health check fails with it.
+        let mut report = manager.doctor(&state).unwrap();
+        let gaps = manager.companion_gaps(&state, &host).unwrap();
+        crate::merge_companion_findings(&mut report, &gaps);
+        assert_eq!(report[0].kind, crate::DoctorCheckKind::CompanionMissing);
+        assert!(report.iter().any(|check| {
+            check.kind == crate::DoctorCheckKind::ComponentHealth
+                && check.component.as_ref() == Some(&id)
+                && check.status == crate::DoctorCheckStatus::Failed
+        }));
 
         let whole = manager_platform::dpkg::FixedPackageStateProbe::new(&[
             (SERVICE_PACKAGE, "0.2.16"),

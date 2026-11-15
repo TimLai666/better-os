@@ -2597,6 +2597,43 @@ mod service_notice {
         assert_eq!(notice.action, Some(ServiceAction::AddCompanions));
     }
 
+    /// A failed handoff with Better Manager current is retried through the
+    /// missing adapter, with the same one prompt (ADR 0028).
+    #[test]
+    fn a_failed_handoff_is_retried_through_the_missing_adapter() {
+        let notice = service_notice(
+            Locale::ZhTw,
+            ServiceGeneration::Legacy,
+            &[
+                gap(SERVICE_PACKAGE, Some("0.2.9")),
+                gap("better-shell-adapter", None),
+            ],
+            false,
+            &[],
+            Some(&HandoffStatus::Failed {
+                reason: "apt-get could not install the new service".to_string(),
+            }),
+        )
+        .unwrap();
+        assert!(notice.failed);
+        assert_eq!(notice.action, Some(ServiceAction::AddCompanions));
+        assert!(notice.body.contains("從舊服務外面"));
+
+        // A Better Manager from before the handoff cannot carry it.
+        let mut older = gap("better-shell-adapter", None);
+        older.wanted_version = "0.2.15".to_string();
+        let blocked = service_notice(
+            Locale::EnUs,
+            ServiceGeneration::Legacy,
+            &[gap(SERVICE_PACKAGE, Some("0.2.9")), older],
+            false,
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(blocked.action, None);
+    }
+
     #[test]
     fn a_legacy_service_with_nothing_to_ride_says_so_and_offers_no_button() {
         let notice = service_notice(

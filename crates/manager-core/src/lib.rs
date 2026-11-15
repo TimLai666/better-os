@@ -1070,6 +1070,34 @@ pub struct DoctorCheck {
     pub package: Option<String>,
 }
 
+/// One gap as a Doctor finding.
+fn companion_finding(gap: &CompanionGap) -> DoctorCheck {
+    DoctorCheck {
+        kind: DoctorCheckKind::CompanionMissing,
+        status: DoctorCheckStatus::Failed,
+        component: Some(gap.component.clone()),
+        host_version: gap.host_version.clone(),
+        package: Some(gap.package.clone()),
+    }
+}
+
+/// Adds the companion findings to a Doctor report: first, so the reason is
+/// above what passed, and with the component's own health check failed,
+/// because a component missing a companion is not healthy whatever its
+/// record says (ticket 124).
+pub fn merge_companion_findings(checks: &mut Vec<DoctorCheck>, gaps: &[CompanionGap]) {
+    for check in checks.iter_mut() {
+        if check.kind == DoctorCheckKind::ComponentHealth
+            && gaps
+                .iter()
+                .any(|gap| Some(&gap.component) == check.component.as_ref())
+        {
+            check.status = DoctorCheckStatus::Failed;
+        }
+    }
+    checks.splice(0..0, gaps.iter().map(companion_finding));
+}
+
 /// A companion package an installed component needs and dpkg does not have
 /// at the component's version.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1936,14 +1964,8 @@ impl Manager {
     ) -> Result<Vec<DoctorCheck>, ManagerError> {
         Ok(self
             .companion_gaps(state, probe)?
-            .into_iter()
-            .map(|gap| DoctorCheck {
-                kind: DoctorCheckKind::CompanionMissing,
-                status: DoctorCheckStatus::Failed,
-                component: Some(gap.component),
-                host_version: gap.host_version,
-                package: Some(gap.package),
-            })
+            .iter()
+            .map(companion_finding)
             .collect())
     }
 

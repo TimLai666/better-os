@@ -1472,13 +1472,7 @@ impl ManagerApp {
     pub(crate) fn doctor_checks(&self) -> Vec<DoctorCheck> {
         let mut checks = self.manager.doctor(&self.state).unwrap_or_default();
         checks.extend(self.unorderable.iter().cloned());
-        checks.extend(self.service.gaps.iter().map(|gap| DoctorCheck {
-            kind: manager_core::DoctorCheckKind::CompanionMissing,
-            status: manager_core::DoctorCheckStatus::Failed,
-            component: Some(gap.component.clone()),
-            host_version: gap.host_version.clone(),
-            package: Some(gap.package.clone()),
-        }));
+        manager_core::merge_companion_findings(&mut checks, &self.service.gaps);
         checks
     }
 

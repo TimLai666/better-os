@@ -457,6 +457,16 @@ for package_name in \
                 printf 'The service handoff does not parse as sh\n' >&2
                 exit 1
             }
+            # The retry once Better Manager is current: the adapter's own
+            # postinst starts the same handoff.
+            deb_name="$(basename -- "$deb_path")"
+            adapter_control="$WORK_DIR/better-shell-adapter.control"
+            mkdir -p "$adapter_control"
+            dpkg-deb --control "$(dirname -- "$deb_path")/better-shell-adapter_${deb_name#better-manager_}" "$adapter_control"
+            grep -qF '/usr/libexec/better-os/daemon-handoff start || true' "$adapter_control/postinst" 2>/dev/null || {
+                printf 'The better-shell-adapter postinst does not start the service handoff\n' >&2
+                exit 1
+            }
             handoff_list="$extract_dir/usr/lib/better-os/daemon-handoff/packages"
             for companion in better-manager-daemon better-shell-adapter; do
                 deb_name="$(basename -- "$deb_path")"

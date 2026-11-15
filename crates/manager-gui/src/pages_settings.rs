@@ -279,8 +279,20 @@ impl ManagerApp {
             DoctorCheckKind::UnorderableHostVersion => c.check_unorderable_version,
             DoctorCheckKind::CompanionMissing => c.check_companion_missing,
         };
-        let detail = unorderable_detail(self.locale, check)
-            .or_else(|| crate::model::companion_detail(self.locale, check));
+        let detail = unorderable_detail(self.locale, check).or_else(|| {
+            // The component by the name the rest of the screen uses.
+            let name = check
+                .component
+                .as_ref()
+                .map(|id| self.plan_component_name(id))
+                .unwrap_or_default();
+            crate::model::companion_detail(self.locale, check).map(|detail| {
+                match &check.component {
+                    Some(id) => detail.replacen(id.as_str(), &name, 1),
+                    None => detail,
+                }
+            })
+        });
         let status = self.pill(Self::doctor_pill(c, check.status), cx);
         h_flex()
             .w_full()

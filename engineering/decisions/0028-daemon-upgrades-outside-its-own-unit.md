@@ -81,10 +81,15 @@ is safe but still runs dpkg under the daemon's systemd sandbox.
 - Without systemd (the container check), there is no unit to be killed by:
   the service runs apt directly and the handoff runs detached with `setsid`.
   Both say which they did in their log.
-- A machine whose 0.2.12-or-older service missed the handoff while Better
-  Manager is already current has no in-window repair: the old service cannot
-  reinstall the same Better Manager version. The window says so and names
-  the handoff's recorded failure; the next Better Manager release repairs it.
+- A handoff that failed while Better Manager is already current is retried
+  from the window through the same one prompt: `better-shell-adapter` carries
+  the same postinst hook, and the old service installs the adapter it is
+  missing as a step of its own (it needs no `companions` field for that).
+  The one case with no retry is a 0.2.12-or-older service beside an adapter
+  that is already installed: neither package changes version, so no
+  maintainer script runs, and the old service has no other way to run
+  anything as root. The window says so, and the next Better Manager release
+  carries the handoff again.
 - `SELF_UPGRADING_SINCE` in `manager_core::exec` is `0.2.16`. A release that
   is not 0.2.16 must change it in the version-bump commit.
 - A released 0.2.15 manager refreshing the catalog from `main` sends the
