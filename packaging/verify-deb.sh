@@ -902,6 +902,24 @@ grep -q 'send_interface="org.betteros.Hardware1"' \
     printf 'The bus policy does not let callers reach org.betteros.Hardware1\n' >&2
     exit 1
 }
+# Ticket 127 (ADR 0032): the drive choices have their own polkit action,
+# the bus policy lets callers reach Drives1, and removing the package removes
+# every fstab line and udev rule it wrote.
+grep -q 'org.betteros.manager.drive-mounting' \
+    "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
+    printf 'The polkit policy does not declare org.betteros.manager.drive-mounting\n' >&2
+    exit 1
+}
+grep -q 'send_interface="org.betteros.Drives1"' \
+    "$daemon_extract/usr/share/dbus-1/system.d/org.betteros.Manager1.conf" || {
+    printf 'The bus policy does not let callers reach org.betteros.Drives1\n' >&2
+    exit 1
+}
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./prerm \
+    | grep -q -- '/usr/libexec/better-manager-daemon --remove-drive-entries' || {
+    printf "The daemon's prerm does not remove the drive entries it wrote\n" >&2
+    exit 1
+}
 for unit in better-manager-daemon.service better-hardware-restore.service; do
     unit_file="$daemon_extract/usr/lib/systemd/system/$unit"
     if ! grep -qx 'BindReadOnlyPaths=/sys' "$unit_file" \

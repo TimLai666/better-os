@@ -11,7 +11,8 @@
 // It must never be shipped in a package.
 polkit.addRule(function (action, subject) {
     if (
-        action.id === "org.betteros.manager.apply-transaction" &&
+        (action.id === "org.betteros.manager.apply-transaction" ||
+            action.id === "org.betteros.manager.drive-mounting") &&
         subject.user === "root"
     ) {
         return polkit.Result.YES;

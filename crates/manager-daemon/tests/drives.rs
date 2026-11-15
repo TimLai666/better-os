@@ -178,9 +178,18 @@ async fn fake_udisks(bus: &PrivateBus) -> zbus::Connection {
     };
     let manager = FakeManager {
         blocks: vec![
-            (windows.uuid.clone(), path("/org/freedesktop/UDisks2/block_devices/nvme0n1p3")),
-            (stick.uuid.clone(), path("/org/freedesktop/UDisks2/block_devices/sdb1")),
-            (backup.uuid.clone(), path("/org/freedesktop/UDisks2/block_devices/nvme0n1p4")),
+            (
+                windows.uuid.clone(),
+                path("/org/freedesktop/UDisks2/block_devices/nvme0n1p3"),
+            ),
+            (
+                stick.uuid.clone(),
+                path("/org/freedesktop/UDisks2/block_devices/sdb1"),
+            ),
+            (
+                backup.uuid.clone(),
+                path("/org/freedesktop/UDisks2/block_devices/nvme0n1p4"),
+            ),
         ],
     };
     let address: zbus::Address = bus.address.parse().unwrap();
@@ -232,7 +241,9 @@ impl Machine {
         std::fs::write(dir.path().join("etc/fstab"), SYSTEM).unwrap();
         let paths = DrivePaths {
             fstab: dir.path().join("etc/fstab"),
-            rules: dir.path().join("etc/udev/rules.d/90-better-os-drives.rules"),
+            rules: dir
+                .path()
+                .join("etc/udev/rules.d/90-better-os-drives.rules"),
             mount_root: dir.path().to_path_buf(),
         };
         Self { _dir: dir, paths }

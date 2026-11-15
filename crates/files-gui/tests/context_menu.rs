@@ -4,8 +4,8 @@
 use files_core::{SortDirection, SortKey, SortOrder};
 use files_gui::commands::ArchiveActions;
 use files_gui::context_menu::{
-    AutoMountLine, MenuCommand as M, MenuLine, SORT_STEPS, SelectionFacts, SidebarKind, background_menu,
-    selection_menu, sidebar_menu, step_sort,
+    AutoMountLine, MenuCommand as M, MenuLine, SORT_STEPS, SelectionFacts, SidebarKind,
+    background_menu, selection_menu, sidebar_menu, step_sort,
 };
 use files_gui::i18n::{EN_US, ZH_TW};
 
@@ -144,10 +144,7 @@ fn a_pinned_folder_moves_renames_and_unpins_from_the_sidebar() {
 
 #[test]
 fn a_drive_ejects_and_a_place_pins() {
-    assert!(enabled(
-        &sidebar_menu(device(true), &EN_US),
-        M::Eject
-    ));
+    assert!(enabled(&sidebar_menu(device(true), &EN_US), M::Eject));
     assert!(
         commands(&sidebar_menu(SidebarKind::Place { pinned: false }, &EN_US)).contains(&M::Pin)
     );
@@ -255,19 +252,37 @@ fn a_drive_s_menu_turns_mounting_automatically_on_and_off() {
         failed,
     };
     let on = sidebar_menu(
-        with(AutoMountLine::Shown { on: true, changeable: true }, false),
+        with(
+            AutoMountLine::Shown {
+                on: true,
+                changeable: true,
+            },
+            false,
+        ),
         &EN_US,
     );
     assert_eq!(checked(&on, M::MountAutomatically), Some((true, true)));
     assert!(!commands(&on).contains(&M::Eject));
     assert!(!commands(&on).contains(&M::Format));
     let system = sidebar_menu(
-        with(AutoMountLine::Shown { on: true, changeable: false }, false),
+        with(
+            AutoMountLine::Shown {
+                on: true,
+                changeable: false,
+            },
+            false,
+        ),
         &ZH_TW,
     );
     assert_eq!(checked(&system, M::MountAutomatically), Some((true, false)));
     let failed = sidebar_menu(
-        with(AutoMountLine::Shown { on: true, changeable: true }, true),
+        with(
+            AutoMountLine::Shown {
+                on: true,
+                changeable: true,
+            },
+            true,
+        ),
         &EN_US,
     );
     assert!(enabled(&failed, M::RetryMount));

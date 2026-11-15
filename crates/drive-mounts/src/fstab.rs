@@ -263,7 +263,11 @@ impl Fstab {
 
     /// Adds or replaces the entry for its UUID.
     pub fn set(&mut self, entry: Entry) {
-        match self.entries.iter_mut().find(|known| known.uuid == entry.uuid) {
+        match self
+            .entries
+            .iter_mut()
+            .find(|known| known.uuid == entry.uuid)
+        {
             Some(known) => *known = entry,
             None => self.entries.push(entry),
         }
@@ -288,12 +292,17 @@ impl Fstab {
         } else {
             self.entries.len() + 2
         };
-        let numbered = self.before.iter().enumerate().map(|(i, l)| (i + 1, l)).chain(
-            self.after
-                .iter()
-                .enumerate()
-                .map(|(i, l)| (self.before.len() + block_lines + i + 1, l)),
-        );
+        let numbered = self
+            .before
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (i + 1, l))
+            .chain(
+                self.after
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| (self.before.len() + block_lines + i + 1, l)),
+            );
         for (number, line) in numbered {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -311,7 +320,7 @@ impl Fstab {
                     .as_deref()
                     .is_some_and(|known| known.eq_ignore_ascii_case(unquote(partuuid)))
             } else {
-                names.device_paths.iter().any(|path| *path == source)
+                names.device_paths.contains(&source)
                     || source == format!("/dev/disk/by-uuid/{}", names.uuid)
             };
             if matches {
@@ -397,7 +406,10 @@ UUID=7A3B-11CC /boot/efi vfat umask=0077 0 1\n\
     fn a_malformed_file_is_refused() {
         let entry = ntfs().line();
         for (text, error) in [
-            (format!("{SYSTEM}{BEGIN}\n{entry}\n"), FstabError::Unclosed(5)),
+            (
+                format!("{SYSTEM}{BEGIN}\n{entry}\n"),
+                FstabError::Unclosed(5),
+            ),
             (
                 format!("{BEGIN}\n{END}\n{BEGIN}\n{END}\n"),
                 FstabError::TwoBlocks(3),
@@ -412,7 +424,10 @@ UUID=7A3B-11CC /boot/efi vfat umask=0077 0 1\n\
                 FstabError::ForeignInBlock(2),
             ),
             (
-                format!("{BEGIN}\n{}\n{END}\n", entry.replace("/mnt/better-os/01D9F00DBEEF1234", "/etc")),
+                format!(
+                    "{BEGIN}\n{}\n{END}\n",
+                    entry.replace("/mnt/better-os/01D9F00DBEEF1234", "/etc")
+                ),
                 FstabError::ForeignInBlock(2),
             ),
             (
@@ -450,13 +465,19 @@ UUID=7A3B-11CC /boot/efi vfat umask=0077 0 1\n\
             uuid: uuid.to_string(),
             ..DriveNames::default()
         };
-        assert_eq!(fstab.foreign_line(&names("1111-2222-ROOT")).unwrap().line, 2);
+        assert_eq!(
+            fstab.foreign_line(&names("1111-2222-ROOT")).unwrap().line,
+            2
+        );
         let label = DriveNames {
             label: Some("Data Disk".into()),
             ..names("x")
         };
         let found = fstab.foreign_line(&label).unwrap();
-        assert_eq!((found.line, found.noauto, found.mount_point.as_str()), (5, true, "/data"));
+        assert_eq!(
+            (found.line, found.noauto, found.mount_point.as_str()),
+            (5, true, "/data")
+        );
         let part = DriveNames {
             partuuid: Some("AA-BB".into()),
             ..names("x")

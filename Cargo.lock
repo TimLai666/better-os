@@ -1907,6 +1907,8 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 name = "drive-mounts"
 version = "0.2.15"
 dependencies = [
+ "serde",
+ "serde_json",
  "storage-platform",
  "thiserror 2.0.19",
  "zbus",
@@ -4556,6 +4558,8 @@ dependencies = [
  "better-ui",
  "defaults-core",
  "defaults-store",
+ "drive-mounts",
+ "files-platform",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
@@ -4568,6 +4572,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smol",
+ "storage-platform",
  "tempfile",
  "tokio",
  "uuid",

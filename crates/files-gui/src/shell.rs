@@ -22,9 +22,9 @@ use gpui::*;
 use gpui_component::IconName;
 
 use crate::app::FilesApp;
-use crate::drives::DriveText as _;
 use crate::content::{SORT_KEYS, sort_key_label};
 use crate::devices::DeviceRow;
+use crate::drives::DriveText as _;
 use crate::i18n::{Copy, Locale, copy};
 use crate::keys::Focus;
 use crate::prefs::{ItemScale, ViewMode};

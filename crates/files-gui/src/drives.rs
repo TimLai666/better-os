@@ -394,6 +394,15 @@ pub enum UnlockError {
     MountFailed(String),
 }
 
+/// Unmounts one volume, leaving the drive powered.
+pub type DriveUnmount = Arc<dyn Fn(&Drive) -> Result<(), String> + Send + Sync>;
+/// Reads `/etc/fstab` and Better OS's udev rules.
+pub type SystemFilesRead = Arc<dyn Fn() -> drive_mounts::choice::SystemFiles + Send + Sync>;
+/// Why an internal drive that is on did not mount.
+pub type MountFailureRead = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+/// Asks the daemon to turn a drive's choice on or off.
+pub type SetAutoMount = Arc<dyn Fn(&str, bool) -> drive_mounts::client::SetOutcome + Send + Sync>;
+
 /// Where a scan gets what it reads. The real ones read UDisks2, the mount
 /// table and GVfs's folder; tests give their own.
 #[derive(Clone)]
@@ -419,83 +428,21 @@ pub struct DriveSources {
     pub fixture: Option<Arc<dyn Fn() -> Vec<Drive> + Send + Sync>>,
     /// Unmounts one volume through UDisks2, leaving the drive powered: a
     /// drive turned off that is mounted now (ticket 127).
-    pub unmount: Arc<dyn Fn(&Drive) -> Result<(), String> + Send + Sync>,
+    pub unmount: DriveUnmount,
     /// `/etc/fstab` and Better OS's udev rules, which say whether each drive
     /// mounts automatically.
-    pub system_files: Arc<dyn Fn() -> drive_mounts::choice::SystemFiles + Send + Sync>,
+    pub system_files: SystemFilesRead,
     /// Why an internal drive that is on did not mount, from systemd.
-    pub mount_failure: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    pub mount_failure: MountFailureRead,
     /// Asks `manager-daemon` to turn a drive's choice on or off.
-    pub set_auto_mount:
-        Arc<dyn Fn(&str, bool) -> drive_mounts::client::SetOutcome + Send + Sync>,
+    pub set_auto_mount: SetAutoMount,
 }
 
-/// Names a JSON file of drives a sandbox shows instead of the machine's
-/// own (`[{"label", "kind", "mount_point", "size", "total", "free",
-/// "ejectable", "locked"}]`), so screenshots never show a real drive.
-/// Honoured in debug builds only.
-pub const FIXTURE_VARIABLE: &str = "BETTER_FILES_TEST_DRIVES";
+pub use drive_mounts::listing::FIXTURE_VARIABLE;
 
-#[derive(serde::Deserialize)]
-struct FixtureDrive {
-    label: Option<String>,
-    kind: String,
-    mount_point: Option<PathBuf>,
-    #[serde(default)]
-    size: u64,
-    total: Option<u64>,
-    free: Option<u64>,
-    #[serde(default)]
-    ejectable: bool,
-    #[serde(default)]
-    locked: bool,
-    uuid: Option<String>,
-    /// Why it did not mount, as systemd would say (`timeout`).
-    failure: Option<String>,
-}
-
-/// The drives a fixture file names.
+/// The drives a fixture file names, in reading order.
 pub fn fixture_drives(path: &Path) -> Vec<Drive> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let Ok(listed) = serde_json::from_str::<Vec<FixtureDrive>>(&text) else {
-        return Vec::new();
-    };
-    let mut drives: Vec<Drive> = listed
-        .into_iter()
-        .enumerate()
-        .map(|(index, fixture)| Drive {
-            key: format!("fixture-{index}"),
-            label: fixture.label,
-            kind: match fixture.kind.as_str() {
-                "system" => DriveKind::System,
-                "removable" => DriveKind::Removable,
-                "optical" => DriveKind::Optical,
-                "phone" => DriveKind::Phone,
-                "network" => DriveKind::Network,
-                _ => DriveKind::Internal,
-            },
-            mount_point: fixture.mount_point,
-            object_path: None,
-            device_path: None,
-            drive_object: None,
-            backing: None,
-            locked: fixture.locked,
-            uuid: fixture.uuid,
-            size: fixture.size,
-            ejectable: fixture.ejectable,
-            capacity: fixture
-                .total
-                .zip(fixture.free)
-                .map(|(total, free)| Capacity { total, free }),
-            auto_mount: fixture.failure.map(|failure| drive_mounts::choice::AutoMount {
-                on: true,
-                locked: None,
-                failure: Some(failure),
-            }),
-        })
-        .collect();
+    let mut drives = drive_mounts::listing::fixture_drives(path);
     sort_drives(&mut drives);
     drives
 }
@@ -916,9 +863,8 @@ impl DriveSources {
             }
         };
         let bus = Arc::clone(&system_bus);
-        let mount_failure = move |uuid: &str| {
-            bus().and_then(|bus| drive_mounts::client::mount_failure(&bus, uuid))
-        };
+        let mount_failure =
+            move |uuid: &str| bus().and_then(|bus| drive_mounts::client::mount_failure(&bus, uuid));
         let bus = Arc::clone(&system_bus);
         let set_auto_mount = move |uuid: &str, on: bool| match bus() {
             Some(bus) => drive_mounts::client::set_mount_automatically(&bus, uuid, on),

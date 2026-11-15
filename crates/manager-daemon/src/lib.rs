@@ -173,10 +173,22 @@ mod tests {
             (DaemonError::AuthCancelled, SetOutcome::Cancelled),
             (DaemonError::Unauthorized, SetOutcome::NotAllowed),
             (DaemonError::DriveAbsent, SetOutcome::Absent),
-            (DaemonError::DriveRefused("system_table".into()), SetOutcome::Refused("system_table".into())),
-            (DaemonError::DriveBusy("busy".into()), SetOutcome::Busy("busy".into())),
-            (DaemonError::MountTableMalformed("line 2".into()), SetOutcome::Malformed("line 2".into())),
-            (DaemonError::MountFailed("timeout".into()), SetOutcome::MountFailed("timeout".into())),
+            (
+                DaemonError::DriveRefused("system_table".into()),
+                SetOutcome::Refused("system_table".into()),
+            ),
+            (
+                DaemonError::DriveBusy("busy".into()),
+                SetOutcome::Busy("busy".into()),
+            ),
+            (
+                DaemonError::MountTableMalformed("line 2".into()),
+                SetOutcome::Malformed("line 2".into()),
+            ),
+            (
+                DaemonError::MountFailed("timeout".into()),
+                SetOutcome::MountFailed("timeout".into()),
+            ),
         ] {
             assert_eq!(classify_error(name, &error.to_string()), outcome);
         }

@@ -952,7 +952,10 @@ fn a_drive_turned_off_leaves_the_sidebar_and_turned_on_comes_back_mounted() {
     });
     smol::block_on(async {
         let server = udisks.object_server();
-        server.at(STICK_DRIVE, FakeDrive::new(&calls)).await.unwrap();
+        server
+            .at(STICK_DRIVE, FakeDrive::new(&calls))
+            .await
+            .unwrap();
         server
             .at(
                 STICK,
@@ -1000,7 +1003,10 @@ fn a_drive_turned_off_leaves_the_sidebar_and_turned_on_comes_back_mounted() {
                 d.mount_point.is_none() && d.auto_mount.as_ref().is_some_and(|a| !a.on)
             })
     });
-    assert!(!shown(&session), "a drive switched off is not in the sidebar");
+    assert!(
+        !shown(&session),
+        "a drive switched off is not in the sidebar"
+    );
     assert_eq!(session.notice, None);
     session.preferences.show_other_drives = true;
     assert!(shown(&session), "Show other drives brings it back");
@@ -1012,12 +1018,16 @@ fn a_drive_turned_off_leaves_the_sidebar_and_turned_on_comes_back_mounted() {
     session.preferences.show_other_drives = false;
 
     session.set_auto_mount(STICK, true);
-    until(&mut session, "the stick is on and mounted again", |session| {
-        !session.any_drive_busy()
-            && stick(session).is_some_and(|d| {
-                d.mount_point.is_some() && d.auto_mount.as_ref().is_some_and(|a| a.on)
-            })
-    });
+    until(
+        &mut session,
+        "the stick is on and mounted again",
+        |session| {
+            !session.any_drive_busy()
+                && stick(session).is_some_and(|d| {
+                    d.mount_point.is_some() && d.auto_mount.as_ref().is_some_and(|a| a.on)
+                })
+        },
+    );
     assert!(shown(&session));
     assert_eq!(
         *asked.lock().unwrap(),

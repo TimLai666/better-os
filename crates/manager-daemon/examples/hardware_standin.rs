@@ -7,6 +7,11 @@
 //!     power-profiles-daemon, UPower, and this daemon's Hardware1 (writing
 //!     into a temporary copy of a battery and a fan switch) on ADDRESS.
 //!
+//!     With `BETTER_FILES_TEST_DRIVES`, `BETTER_OS_DEBUG_FSTAB` and
+//!     `BETTER_OS_DEBUG_DRIVE_RULES` set, also this daemon's Drives1 (ticket
+//!     127), answering for the fixture's drives and writing the two fixture
+//!     files the windows read.
+//!
 //! Runs until killed. Built only with the `test-support` feature.
 
 use std::sync::Arc;
@@ -96,6 +101,8 @@ async fn main() {
                     )
                     .unwrap(),
             }
+            .serve_at(OBJECT_PATH, drives_standin(auth))
+            .unwrap()
             .name("org.betteros.Manager1")
             .unwrap()
             .build()
@@ -109,4 +116,57 @@ async fn main() {
             std::process::exit(2);
         }
     }
+}
+
+/// The fixture's drives, as UDisks2 would describe them to the daemon.
+#[derive(serde::Deserialize)]
+struct FixtureDrive {
+    uuid: Option<String>,
+    kind: String,
+    label: Option<String>,
+    mount_point: Option<String>,
+    filesystem: Option<String>,
+}
+
+fn drives_standin(
+    auth: &str,
+) -> manager_daemon::drives::DrivesService<manager_daemon::authorize::FakeAuthorizer> {
+    use manager_daemon::drives::fake::{RecordingUnits, TableResolver};
+    use manager_daemon::drives::{DrivePaths, DrivesService, ResolvedDrive};
+    let var = |name: &str| std::env::var_os(name).map(std::path::PathBuf::from);
+    let fixture: Vec<FixtureDrive> = var("BETTER_FILES_TEST_DRIVES")
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let mut table = std::collections::HashMap::new();
+    for drive in fixture {
+        let Some(uuid) = drive.uuid else { continue };
+        table.insert(
+            uuid.clone(),
+            ResolvedDrive {
+                filesystem: drive.filesystem.unwrap_or_else(|| "ext4".into()),
+                usage: "filesystem".into(),
+                removable: matches!(drive.kind.as_str(), "removable" | "optical"),
+                mount_points: drive.mount_point.into_iter().map(Into::into).collect(),
+                names: drive_mounts::fstab::DriveNames {
+                    uuid,
+                    label: drive.label,
+                    ..Default::default()
+                },
+            },
+        );
+    }
+    let scratch = std::env::temp_dir();
+    let paths = DrivePaths {
+        fstab: var("BETTER_OS_DEBUG_FSTAB").unwrap_or_else(|| scratch.join("fstab")),
+        rules: var("BETTER_OS_DEBUG_DRIVE_RULES").unwrap_or_else(|| scratch.join("drive.rules")),
+        mount_root: scratch,
+    };
+    DrivesService::new(
+        manager_daemon::authorize::FakeAuthorizer(auth == "grant"),
+        Arc::new(TableResolver(table)),
+        Arc::new(RecordingUnits::default()),
+        paths,
+        Arc::new(CallGate::default()),
+    )
 }

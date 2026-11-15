@@ -1903,22 +1903,11 @@ impl FilesSession {
         self.spawn_drive_action(&busy, "files-drive-auto-mount", move || {
             use drive_mounts::client::SetOutcome;
             let outcome = (sources.set_auto_mount)(&uuid, on);
-            let removable = matches!(
-                drive.kind,
-                crate::drives::DriveKind::Removable | crate::drives::DriveKind::Optical
-            );
-            let after = match &outcome {
-                SetOutcome::Done { .. } if on && removable && drive.mount_point.is_none() && !drive.locked => {
+            let after = match (&outcome, drive_mounts::choice::follow_up(&drive, on)) {
+                (SetOutcome::Done { .. }, drive_mounts::choice::FollowUp::Mount) => {
                     (sources.mount)(&drive).err()
                 }
-                // The daemon unmounts what it mounted; a mount UDisks2 made
-                // (a stick, a partition the person opened) is unmounted here.
-                SetOutcome::Done { .. }
-                    if !on
-                        && drive.mount_point.as_deref().is_some_and(|point| {
-                            !point.starts_with(drive_mounts::ids::MOUNT_BASE)
-                        }) =>
-                {
+                (SetOutcome::Done { .. }, drive_mounts::choice::FollowUp::Unmount) => {
                     (sources.unmount)(&drive).err()
                 }
                 _ => None,
@@ -1939,7 +1928,10 @@ impl FilesSession {
             return;
         };
         if drive.kind == crate::drives::DriveKind::Internal
-            && drive.auto_mount.as_ref().is_some_and(|auto| auto.on && auto.locked.is_none())
+            && drive
+                .auto_mount
+                .as_ref()
+                .is_some_and(|auto| auto.on && auto.locked.is_none())
         {
             self.set_auto_mount(key, true);
         } else {

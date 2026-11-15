@@ -251,7 +251,9 @@ async fn every_start_answers_the_call_that_activated_it() {
             Arc::new(manager_daemon::drives::fake::RecordingUnits::default()),
             manager_daemon::drives::DrivePaths {
                 fstab: bus.directory.join("empty-root/etc/fstab"),
-                rules: bus.directory.join("empty-root/etc/udev/rules.d/90-better-os-drives.rules"),
+                rules: bus
+                    .directory
+                    .join("empty-root/etc/udev/rules.d/90-better-os-drives.rules"),
                 mount_root: bus.directory.join("empty-root"),
             },
             service.gate(),
@@ -259,7 +261,7 @@ async fn every_start_answers_the_call_that_activated_it() {
         let connection =
             manager_daemon::service::serve(bus.builder(), name, service, hardware, drives)
                 .await
-            .expect("the daemon started on the bus");
+                .expect("the daemon started on the bus");
 
         if let Err(error) = settle(call).await {
             unanswered.push(format!("start {start}: {error}"));

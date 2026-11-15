@@ -83,6 +83,11 @@ hardware-core ──> hardware-platform ──┬──> manager-gui        Syst
    rules, no I/O                       └──> better-window-attention  charger switch
    sysfs under a root, PPD / UPower / gsd-power clients, the Hardware1 client
 
+drive-mounts ──┬──> files-gui         sidebar, "Mount automatically" (ticket 127)
+   which drives  ├──> manager-gui       System page, Drives section
+   the listing,  └──> manager-daemon    org.betteros.Drives1
+   fstab block, udev rules, choices, the Drives1 and systemd clients
+
 defaults-core ──> defaults-platform ──> defaults-store ──> manager-gui / CLI
    declarations, aggregate status, plans   typed adapters   snapshots + history
 ```
@@ -425,6 +430,17 @@ collection is explicitly configured to include them.
   charger" runs in `better-window-attention`, the session service the
   `better-manager` package already ships, reading the person's choice from
   `$XDG_CONFIG_HOME/better-os/power-follow.json` at each plug event.
+- Which drives mount automatically (ticket 127, ADR 0032) is kept in the
+  system's own files, read unprivileged by both windows through
+  `drive-mounts` and written only by `manager-daemon`'s
+  `org.betteros.Drives1`, behind `org.betteros.manager.drive-mounting`. An
+  internal drive is a line in Better OS's block in `/etc/fstab`, started and
+  stopped as systemd's generated mount unit; a removable drive turned off is
+  a `UDISKS_AUTO=0` line in `/etc/udev/rules.d/90-better-os-drives.rules`.
+  The only argument is a UUID; the daemon asks UDisks2 what the drive is. A
+  removable drive is mounted and unmounted by the window through UDisks2, as
+  the person may. The daemon's prerm on removal runs
+  `--remove-drive-entries`.
 - `touchpad-platform` writes and reads what it claims. Its GVariant change-set
   encoder, which lives in `defaults-platform` and is shared with Better
   Defaults, is pinned byte-for-byte against values GLib produced, including the

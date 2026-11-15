@@ -380,3 +380,71 @@ pub fn drives_from_devices(devices: &[PlatformDevice], root_source: Option<&str>
     drives
 }
 
+/// Names a JSON file of drives a sandbox shows instead of the machine's
+/// own, in Better Files and Better Manager alike (`[{"label", "kind", "mount_point", "size", "total", "free",
+/// "ejectable", "locked"}]`), so screenshots never show a real drive.
+/// Honoured in debug builds only.
+pub const FIXTURE_VARIABLE: &str = "BETTER_FILES_TEST_DRIVES";
+
+#[derive(serde::Deserialize)]
+struct FixtureDrive {
+    label: Option<String>,
+    kind: String,
+    mount_point: Option<PathBuf>,
+    #[serde(default)]
+    size: u64,
+    total: Option<u64>,
+    free: Option<u64>,
+    #[serde(default)]
+    ejectable: bool,
+    #[serde(default)]
+    locked: bool,
+    uuid: Option<String>,
+    /// Why it did not mount, as systemd would say (`timeout`).
+    failure: Option<String>,
+}
+
+/// The drives a fixture file names, unsorted.
+pub fn fixture_drives(path: &Path) -> Vec<Drive> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(listed) = serde_json::from_str::<Vec<FixtureDrive>>(&text) else {
+        return Vec::new();
+    };
+    let drives: Vec<Drive> = listed
+        .into_iter()
+        .enumerate()
+        .map(|(index, fixture)| Drive {
+            key: format!("fixture-{index}"),
+            label: fixture.label,
+            kind: match fixture.kind.as_str() {
+                "system" => DriveKind::System,
+                "removable" => DriveKind::Removable,
+                "optical" => DriveKind::Optical,
+                "phone" => DriveKind::Phone,
+                "network" => DriveKind::Network,
+                _ => DriveKind::Internal,
+            },
+            mount_point: fixture.mount_point,
+            object_path: None,
+            device_path: None,
+            drive_object: None,
+            backing: None,
+            locked: fixture.locked,
+            uuid: fixture.uuid,
+            size: fixture.size,
+            ejectable: fixture.ejectable,
+            capacity: fixture
+                .total
+                .zip(fixture.free)
+                .map(|(total, free)| Capacity { total, free }),
+            auto_mount: fixture.failure.map(|failure| crate::choice::AutoMount {
+                on: true,
+                locked: None,
+                failure: Some(failure),
+            }),
+        })
+        .collect();
+    drives
+}

@@ -59,7 +59,9 @@ impl Rules {
     }
 
     pub fn is_off(&self, uuid: &str) -> bool {
-        self.uuids.iter().any(|known| known.eq_ignore_ascii_case(uuid))
+        self.uuids
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(uuid))
     }
 
     /// Turns a drive off (`true`: a line is added) or on; whether anything
@@ -116,8 +118,14 @@ mod tests {
     #[test]
     fn a_file_with_anything_else_is_refused() {
         for (text, error) in [
-            ("ENV{ID_FS_UUID}==\"AB\", RUN+=\"/bin/x\"\n", RulesError::Foreign(1)),
-            ("# c\nKERNEL==\"sd*\", ENV{UDISKS_AUTO}=\"0\"\n", RulesError::Foreign(2)),
+            (
+                "ENV{ID_FS_UUID}==\"AB\", RUN+=\"/bin/x\"\n",
+                RulesError::Foreign(1),
+            ),
+            (
+                "# c\nKERNEL==\"sd*\", ENV{UDISKS_AUTO}=\"0\"\n",
+                RulesError::Foreign(2),
+            ),
             ("\0", RulesError::NotText),
         ] {
             assert_eq!(Rules::parse(text), Err(error));

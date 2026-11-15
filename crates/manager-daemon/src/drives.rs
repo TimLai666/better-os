@@ -83,8 +83,7 @@ impl DrivePaths {
     }
 
     fn local(&self, path: &Path) -> PathBuf {
-        self.mount_root
-            .join(path.strip_prefix("/").unwrap_or(path))
+        self.mount_root.join(path.strip_prefix("/").unwrap_or(path))
     }
 }
 
@@ -189,8 +188,11 @@ impl DriveResolver for UdisksResolver {
                 .all(path.as_str(), "org.freedesktop.UDisks2.Partition")
                 .map(|p| string(&p, "UUID"))
                 .filter(|p| !p.is_empty());
-            let mut device_paths: Vec<String> =
-                block.get("Device").and_then(bytes_path).into_iter().collect();
+            let mut device_paths: Vec<String> = block
+                .get("Device")
+                .and_then(bytes_path)
+                .into_iter()
+                .collect();
             device_paths.extend(block.get("Symlinks").map(bytes_paths).unwrap_or_default());
             let label = Some(string(&block, "IdLabel")).filter(|l| !l.is_empty());
             return Ok(Some(ResolvedDrive {
@@ -226,12 +228,25 @@ fn run(program: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
+/// Whether systemd is the init. It always is on a desktop; a container (the
+/// end-to-end check's) has none, and there nothing was mounted by a unit, so
+/// there is nothing to reload or stop, and a start says why it cannot.
+fn systemd_runs() -> bool {
+    Path::new("/run/systemd/system").is_dir()
+}
+
 impl MountUnits for SystemctlUnits {
     fn reload(&self) -> Result<(), String> {
+        if !systemd_runs() {
+            return Ok(());
+        }
         run("systemctl", &["daemon-reload"])
     }
 
     fn start(&self, unit: &str) -> Result<(), String> {
+        if !systemd_runs() {
+            return Err("systemd is not running".to_string());
+        }
         run("systemctl", &["start", unit]).map_err(|message| {
             // "Job for … failed" says nothing; the unit's result does.
             let result = std::process::Command::new("systemctl")
@@ -248,6 +263,9 @@ impl MountUnits for SystemctlUnits {
     }
 
     fn stop(&self, unit: &str) -> Result<(), String> {
+        if !systemd_runs() {
+            return Ok(());
+        }
         run("systemctl", &["stop", unit])
     }
 
@@ -495,9 +513,9 @@ impl DriveChange<'_> {
                                     let local = paths.local(&mount_point(&entry.uuid));
                                     let _ = std::fs::remove_dir(&local);
                                 }
-                                let _ = std::fs::remove_dir(paths.local(Path::new(
-                                    drive_mounts::ids::MOUNT_BASE,
-                                )));
+                                let _ = std::fs::remove_dir(
+                                    paths.local(Path::new(drive_mounts::ids::MOUNT_BASE)),
+                                );
                             }
                             Err(e) => problems.push(e.to_string()),
                         }
@@ -706,7 +724,9 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
             std::fs::write(dir.path().join("etc/fstab"), fstab).unwrap();
             let paths = DrivePaths {
                 fstab: dir.path().join("etc/fstab"),
-                rules: dir.path().join("etc/udev/rules.d/90-better-os-drives.rules"),
+                rules: dir
+                    .path()
+                    .join("etc/udev/rules.d/90-better-os-drives.rules"),
                 mount_root: dir.path().to_path_buf(),
             };
             Self { dir, paths }
@@ -735,12 +755,18 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
         };
         let mut table = HashMap::new();
         for (uuid, d) in [
-            ("01D9F00DBEEF1234", drive("ntfs", false, &[], Some("Windows"))),
+            (
+                "01D9F00DBEEF1234",
+                drive("ntfs", false, &[], Some("Windows")),
+            ),
             ("DA7A-0001", drive("ext4", false, &["/media/me/Data"], None)),
             ("1111-2222", drive("ext4", false, &["/"], None)),
             ("BACC-0001", drive("ext4", false, &[], Some("Backup"))),
             ("5AA5-0001", drive("swap", false, &[], None)),
-            ("AB12-CD34", drive("exfat", true, &["/media/me/STICK"], None)),
+            (
+                "AB12-CD34",
+                drive("exfat", true, &["/media/me/STICK"], None),
+            ),
         ] {
             let mut d = d;
             d.names.uuid = uuid.into();
@@ -779,14 +805,10 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
         );
         assert_eq!(
             units.calls(),
-            [
-                "reload",
-                "start mnt-better\\x2dos-01D9F00DBEEF1234.mount"
-            ]
+            ["reload", "start mnt-better\\x2dos-01D9F00DBEEF1234.mount"]
         );
         // Off: unmounted, the line and the block gone, the file as it was.
-        std::fs::create_dir_all(machine.dir.path().join("mnt/better-os/01D9F00DBEEF1234"))
-            .unwrap();
+        std::fs::create_dir_all(machine.dir.path().join("mnt/better-os/01D9F00DBEEF1234")).unwrap();
         change(&resolver, &units, &machine)
             .apply("01D9F00DBEEF1234", false)
             .unwrap();
@@ -812,7 +834,11 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
         assert_eq!(at, "/media/me/Data");
         assert_eq!(units.calls(), ["reload"]);
         // ext4 has owners: no uid.
-        assert!(machine.fstab().contains("ext4 nofail,x-gvfs-show,x-systemd.device-timeout=10s 0 0\n"));
+        assert!(
+            machine
+                .fstab()
+                .contains("ext4 nofail,x-gvfs-show,x-systemd.device-timeout=10s 0 0\n")
+        );
     }
 
     #[test]
@@ -912,8 +938,7 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
         change(&resolver, &units, &machine)
             .apply("AB12-CD34", false)
             .unwrap();
-        std::fs::create_dir_all(machine.dir.path().join("mnt/better-os/01D9F00DBEEF1234"))
-            .unwrap();
+        std::fs::create_dir_all(machine.dir.path().join("mnt/better-os/01D9F00DBEEF1234")).unwrap();
         std::fs::create_dir_all(machine.dir.path().join("mnt/other")).unwrap();
         let problems = DriveChange::remove_all(&units, &machine.paths);
         assert!(problems.is_empty(), "{problems:?}");

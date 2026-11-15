@@ -51,3 +51,9 @@ tokio = { version = "1", features = ["test-util"] }
 [[example]]
 name = "hardware_standin"
 required-features = ["test-support"]
+
+# A stand-in UDisks2 on the container end-to-end check's system bus (ticket
+# 127). Not in any package.
+[[example]]
+name = "e2e_udisks"
+required-features = ["test-support"]

@@ -13,3 +13,5 @@ path = "src/lib.rs"
 storage-platform.workspace = true
 thiserror.workspace = true
 zbus.workspace = true
+serde.workspace = true
+serde_json.workspace = true

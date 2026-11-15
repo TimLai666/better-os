@@ -24,7 +24,9 @@ pub mod keys {
 pub enum SetOutcome {
     /// Changed. For an internal drive turned on, where it is mounted (empty
     /// when the daemon left a mount someone else made in place).
-    Done { mount_point: String },
+    Done {
+        mount_point: String,
+    },
     /// The person dismissed the password prompt.
     Cancelled,
     NotAllowed,
@@ -132,9 +134,18 @@ mod tests {
     fn each_daemon_key_is_its_outcome() {
         let denied = "org.freedesktop.DBus.Error.AccessDenied";
         let failed = "org.freedesktop.DBus.Error.Failed";
-        assert_eq!(classify_error(denied, keys::AUTH_CANCELLED), SetOutcome::Cancelled);
-        assert_eq!(classify_error(denied, keys::UNAUTHORIZED), SetOutcome::NotAllowed);
-        assert_eq!(classify_error(failed, keys::DRIVE_ABSENT), SetOutcome::Absent);
+        assert_eq!(
+            classify_error(denied, keys::AUTH_CANCELLED),
+            SetOutcome::Cancelled
+        );
+        assert_eq!(
+            classify_error(denied, keys::UNAUTHORIZED),
+            SetOutcome::NotAllowed
+        );
+        assert_eq!(
+            classify_error(failed, keys::DRIVE_ABSENT),
+            SetOutcome::Absent
+        );
         assert_eq!(
             classify_error(failed, "daemon.error.drive_refused:system_table"),
             SetOutcome::Refused("system_table".into())

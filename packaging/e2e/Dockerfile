@@ -47,6 +47,7 @@ COPY install.sh /opt/better-os/install.sh
 # system, and the client is an example built for this check.
 COPY packaging/e2e/50-better-os-e2e.rules packaging/e2e/50-better-os-e2e.pkla /opt/better-os/e2e/
 COPY dist/e2e-client/e2e_client /opt/better-os/e2e_client
+COPY dist/e2e-client/e2e_udisks /opt/better-os/e2e_udisks
 # The published 0.2.9 privileged service, which the handoff check (ADR 0028)
 # upgrades from. CI downloads it before building the image.
 COPY dist/e2e-legacy/ /opt/better-os/legacy/
