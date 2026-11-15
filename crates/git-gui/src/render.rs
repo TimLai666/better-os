@@ -3021,7 +3021,6 @@ impl GitApp {
             .child(body)
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// `(split, wrap, renamed, version)`: side by side, lines wrapped,
     /// whether the file is a rename (which says so when its content is
     /// unchanged), and the diff's [`crate::session::ShownDiff::version`].
