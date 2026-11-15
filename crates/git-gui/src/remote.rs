@@ -4,6 +4,8 @@
 
 use git_core::{Refusal, RepositoryStatus};
 
+use crate::i18n::{Copy, fill};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncAction {
     /// No remote at all: publish the repository to GitHub.
@@ -38,6 +40,163 @@ pub fn sync_action(status: &RepositoryStatus, has_remote: bool, detached: bool) 
         Some((ahead, 0)) if ahead > 0 => SyncAction::Push { ahead },
         _ => SyncAction::Fetch,
     }
+}
+
+/// One action the sync button's arrow menu can offer (ticket 123).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MenuAction {
+    Fetch,
+    /// `behind` and `ahead` are the counts the row names.
+    Pull {
+        behind: u32,
+        ahead: u32,
+    },
+    Push {
+        ahead: u32,
+    },
+    /// Only a branch that has diverged can be forced, and it replaces what
+    /// the person last saw on the remote.
+    ForcePush {
+        ahead: u32,
+        behind: u32,
+    },
+    PublishBranch,
+    PublishRepository,
+}
+
+/// Why a menu row cannot be chosen now.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MenuWhy {
+    NoRemote,
+    Detached,
+    NoUpstream,
+    /// Level with the upstream: nothing to pull or push.
+    UpToDate,
+    /// Behind only: pulling first is the way forward.
+    Behind,
+    /// Ahead only: nothing to pull.
+    Ahead,
+    /// Both sides have commits: a plain push would be refused.
+    Diverged,
+}
+
+/// A row of the sync button's arrow menu: what it does, and why it cannot be
+/// chosen when it cannot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MenuRow {
+    pub action: MenuAction,
+    pub why: Option<MenuWhy>,
+}
+
+impl MenuRow {
+    pub fn enabled(&self) -> bool {
+        self.why.is_none()
+    }
+}
+
+/// The menu behind the sync button's arrow: Fetch always, Pull, Push, Force
+/// push only when the branch has diverged, and Publish when the branch has no
+/// upstream. A row that does not apply is shown disabled with its reason, so
+/// the menu says why the thing a person expected is not there.
+pub fn sync_menu(status: &RepositoryStatus, has_remote: bool, detached: bool) -> Vec<MenuRow> {
+    let (ahead, behind) = status.ahead_behind.unwrap_or((0, 0));
+    let row = |action, why| MenuRow { action, why };
+    if !has_remote {
+        return vec![
+            row(MenuAction::Fetch, Some(MenuWhy::NoRemote)),
+            row(MenuAction::Pull { behind, ahead }, Some(MenuWhy::NoRemote)),
+            row(MenuAction::Push { ahead }, Some(MenuWhy::NoRemote)),
+            row(MenuAction::PublishRepository, None),
+        ];
+    }
+    if detached {
+        return vec![
+            row(MenuAction::Fetch, None),
+            row(MenuAction::Pull { behind, ahead }, Some(MenuWhy::Detached)),
+            row(MenuAction::Push { ahead }, Some(MenuWhy::Detached)),
+        ];
+    }
+    if status.upstream.is_none() {
+        return vec![
+            row(MenuAction::Fetch, None),
+            row(
+                MenuAction::Pull { behind, ahead },
+                Some(MenuWhy::NoUpstream),
+            ),
+            row(MenuAction::Push { ahead }, Some(MenuWhy::NoUpstream)),
+            row(MenuAction::PublishBranch, None),
+        ];
+    }
+    let diverged = ahead > 0 && behind > 0;
+    let mut rows = vec![
+        row(MenuAction::Fetch, None),
+        row(
+            MenuAction::Pull { behind, ahead },
+            match (behind, ahead) {
+                (0, 0) => Some(MenuWhy::UpToDate),
+                (0, _) => Some(MenuWhy::Ahead),
+                _ => None,
+            },
+        ),
+        row(
+            MenuAction::Push { ahead },
+            match (ahead, behind) {
+                (0, _) => Some(if behind > 0 {
+                    MenuWhy::Behind
+                } else {
+                    MenuWhy::UpToDate
+                }),
+                (_, b) if b > 0 => Some(MenuWhy::Diverged),
+                _ => None,
+            },
+        ),
+    ];
+    if diverged {
+        rows.push(row(MenuAction::ForcePush { ahead, behind }, None));
+    }
+    rows
+}
+
+/// What a menu row says: what it does and how many commits it moves, and,
+/// when it cannot be chosen, why. `upstream` is the branch's upstream
+/// (`origin/main`), `remote` the remote fetch reads.
+pub fn menu_label(row: &MenuRow, upstream: &str, remote: &str, c: &Copy) -> String {
+    let n = |n: u32| n.to_string();
+    let item = match row.action {
+        MenuAction::Fetch => fill(c.fetch_from, &[("remote", remote)]),
+        MenuAction::Pull { behind: 0, .. } => fill(c.pull_from, &[("upstream", upstream)]),
+        MenuAction::Pull { behind: 1, .. } => fill(c.pull_commit, &[("upstream", upstream)]),
+        MenuAction::Pull { behind, .. } => {
+            fill(c.pull_commits, &[("n", &n(behind)), ("upstream", upstream)])
+        }
+        MenuAction::Push { ahead: 0 } => fill(c.push_to, &[("upstream", upstream)]),
+        MenuAction::Push { ahead: 1 } => fill(c.push_commit, &[("upstream", upstream)]),
+        MenuAction::Push { ahead } => {
+            fill(c.push_commits, &[("n", &n(ahead)), ("upstream", upstream)])
+        }
+        MenuAction::ForcePush { ahead: 1, .. } => {
+            fill(c.force_push_commit, &[("upstream", upstream)])
+        }
+        MenuAction::ForcePush { ahead, .. } => fill(
+            c.force_push_commits,
+            &[("n", &n(ahead)), ("upstream", upstream)],
+        ),
+        MenuAction::PublishBranch => c.publish_branch.to_string(),
+        MenuAction::PublishRepository => c.publish_repository.to_string(),
+    };
+    let Some(why) = row.why else {
+        return item;
+    };
+    let why = match why {
+        MenuWhy::NoRemote => c.why_no_remote.to_string(),
+        MenuWhy::Detached => c.why_detached.to_string(),
+        MenuWhy::NoUpstream => c.why_no_upstream.to_string(),
+        MenuWhy::UpToDate => fill(c.why_up_to_date, &[("upstream", upstream)]),
+        MenuWhy::Behind => fill(c.why_behind, &[("upstream", upstream)]),
+        MenuWhy::Ahead => c.why_ahead.to_string(),
+        MenuWhy::Diverged => c.why_diverged.to_string(),
+    };
+    fill(c.menu_unavailable, &[("item", &item), ("why", &why)])
 }
 
 /// What to do next after a refusal, as the info bar's action.

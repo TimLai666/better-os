@@ -23,7 +23,7 @@ use git_core::{
 use git_platform::trust::TrustStore;
 use git_platform::{Cancel, Lease};
 use git_platform::{
-    Credentials, DiffOptions, DiffSide, FileSelection, Git, GitError, HistoryEdit, NetworkOptions,
+    Credentials, DiffOptions, FileSelection, Git, GitError, HistoryEdit, NetworkOptions,
     NewRepository, RepositoryInfo, SwitchChanges,
 };
 use github_api::{ApiError, CombinedChecks, Host, Poll, PullRequest, RepoInfo};
@@ -711,7 +711,7 @@ fn diff_content(
                     Err(error) => DiffContent::Failed(error),
                 };
             }
-            git.diff_with(root, path, DiffSide::WorkingTree, options)
+            git.working_diff(root, path, original, options)
         }
         DiffKey::Commit { sha, .. } => match &file {
             Some(file) => git.commit_diff(root, sha, file, options),
@@ -1663,6 +1663,31 @@ impl GitSession {
     pub fn set_split_diff(&mut self, split: bool) {
         self.settings.split_diff = split;
         self.save_settings();
+    }
+
+    /// Whether diff lines wrap (ticket 123). Remembered at once: it changes
+    /// only on a click or a menu item, never once per frame.
+    pub fn set_wrap_lines(&mut self, wrap: bool) {
+        self.settings.wrap_lines = wrap;
+        self.save_settings();
+    }
+
+    /// A list pane's width after a drag, in whole pixels, or nothing for its
+    /// default. Kept in memory and written when the drag ends, because a
+    /// drag sets it once per pointer move.
+    pub fn set_pane_width(&mut self, kind: crate::pane::PaneKind, width: Option<u32>) {
+        match kind {
+            crate::pane::PaneKind::List => self.settings.list_pane_width = width,
+            crate::pane::PaneKind::Graph => self.settings.graph_pane_width = width,
+        }
+    }
+
+    /// What a list pane's width was stored as.
+    pub fn pane_width(&self, kind: crate::pane::PaneKind) -> Option<u32> {
+        match kind {
+            crate::pane::PaneKind::List => self.settings.list_pane_width,
+            crate::pane::PaneKind::Graph => self.settings.graph_pane_width,
+        }
     }
 
     pub fn set_whole_file(&mut self, whole: bool) {

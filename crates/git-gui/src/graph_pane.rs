@@ -52,6 +52,9 @@ const SHA_WIDTH: Pixels = px(64.0);
 const MAX_STRIP_HEIGHT: f32 = 152.0;
 /// The least room the subject keeps when lanes and labels are wide.
 const SUBJECT_MIN: Pixels = px(120.0);
+/// The least the subject is ever drawn at, when even the labels' estimate
+/// was short: a word and its ellipsis.
+const SUBJECT_FLOOR: Pixels = px(48.0);
 /// How much of the window's width the Graph tab's list takes.
 pub(crate) const GRAPH_SHARE: f32 = 0.58;
 /// How many rows at the top of the list are remembered for a refresh.
@@ -153,8 +156,9 @@ struct RowLayout {
 }
 
 impl RowLayout {
-    fn for_window(window: &Window) -> Self {
-        let pane = f32::from(window.viewport_size().width * GRAPH_SHARE);
+    /// For a list `pane` pixels wide: what the person dragged it to, or its
+    /// share of the window (ticket 123).
+    fn for_width(pane: f32) -> Self {
         // A narrow window drops the author, then the date, before the
         // subject has no room left.
         let author = pane >= 720.0;
@@ -263,6 +267,17 @@ impl GitApp {
     /// Whether Ctrl+F opens the graph's find: the Graph tab is shown, and
     /// the keyboard is with the window itself or already in the find field,
     /// never in another text field.
+    /// The Graph's list width: what the person dragged it to, or its share
+    /// of the window (ticket 123).
+    pub(crate) fn graph_list_width(&self, window: &Window) -> f32 {
+        let kind = crate::pane::PaneKind::Graph;
+        crate::pane::width(
+            kind,
+            self.session.pane_width(kind),
+            f32::from(window.viewport_size().width),
+        )
+    }
+
     pub(crate) fn graph_find_allowed(&self, window: &Window, cx: &App) -> bool {
         let shown = self
             .session
@@ -471,7 +486,7 @@ impl GitApp {
                     })),
             )
         });
-        let room = RowLayout::for_window(window).lane_room;
+        let room = RowLayout::for_width(self.graph_list_width(window)).lane_room;
         let lanes = crate::graph::shown_lanes(graph.columns, self.graph.lanes).min(room);
         let body = if !graph.loaded {
             v_center(
@@ -646,7 +661,7 @@ impl GitApp {
             });
         }
         let now = crate::github::now();
-        let layout = RowLayout::for_window(window);
+        let layout = RowLayout::for_width(self.graph_list_width(window));
         let (show_author, show_date) = (layout.author, layout.date);
         let head = repo.status.head_oid.clone();
         let g_head = graph_copy(self.locale).detached;
@@ -688,7 +703,16 @@ impl GitApp {
             let summary: SharedString = commit.summary.clone().into();
             // Labels give way before the subject does: they are cut off at
             // their right, and the subject keeps room for a few words.
-            let mut chips = div().flex().flex_none().items_center().gap(px(4.0));
+            // Their strip gives way when the estimate was short (a font
+            // fallback, a window being resized), so the subject and the fixed
+            // columns never move.
+            let mut chips = div()
+                .flex()
+                .flex_shrink(1.0)
+                .min_w_0()
+                .overflow_hidden()
+                .items_center()
+                .gap(px(4.0));
             let labels = graph.labels(index);
             let widths: Vec<f32> = labels
                 .iter()
@@ -821,11 +845,16 @@ impl GitApp {
                     cx,
                 ))
                 .child(chips)
+                // The subject takes what is left and ends in an ellipsis;
+                // the whole of it is in the tooltip.
                 .child(
-                    label(commit.summary.clone(), BODY, p.text_primary)
+                    div()
+                        .id(("graph-subject", index))
                         .flex_1()
-                        .min_w(SUBJECT_MIN)
-                        .truncate(),
+                        .min_w(SUBJECT_FLOOR)
+                        .overflow_hidden()
+                        .child(label(commit.summary.clone(), BODY, p.text_primary).truncate())
+                        .tooltip(better_ui::fluent::dialog::tooltip_builder(summary.clone())),
                 )
                 .when(show_author, |d| {
                     d.child(
@@ -1333,4 +1362,52 @@ fn graph_tip(text: SharedString, p: &Palette) -> Div {
         .shadow_md()
         .text_color(p.text_primary)
         .child(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AUTHOR_WIDTH, DATE_WIDTH, LANES_LEFT, RowLayout, SHA_WIDTH, SUBJECT_MIN, spacing};
+
+    /// Every fixed column, the gaps between them and the subject's least
+    /// room, for a row laid out as `layout` says.
+    fn fixed(layout: &RowLayout) -> f32 {
+        let gap = f32::from(spacing::SM);
+        let mut width = LANES_LEFT
+            + f32::from(spacing::MD)
+            + 4.0
+            + f32::from(SUBJECT_MIN)
+            + f32::from(SHA_WIDTH)
+            + 3.0 * gap;
+        if layout.author {
+            width += f32::from(AUTHOR_WIDTH) + gap;
+        }
+        if layout.date {
+            width += f32::from(DATE_WIDTH) + gap;
+        }
+        width
+    }
+
+    #[test]
+    fn the_columns_keep_their_widths_and_the_labels_get_what_is_left() {
+        // A wide list shows every column; what is left goes to lanes and
+        // labels, and the fixed columns plus that is the list's width.
+        let wide = RowLayout::for_width(900.0);
+        assert!(wide.author && wide.date);
+        assert_eq!(fixed(&wide) + wide.free, 900.0);
+        // Narrower, the author goes first, then the date; the sha never.
+        let middle = RowLayout::for_width(600.0);
+        assert!(!middle.author && middle.date);
+        let narrow = RowLayout::for_width(GRAPH_MIN_FOR_TEST);
+        assert!(!narrow.author && !narrow.date);
+        // A list too narrow for every column leaves nothing for labels,
+        // rather than a negative room that pushes the columns out.
+        let tiny = RowLayout::for_width(100.0);
+        assert_eq!(tiny.free, 0.0);
+        assert_eq!(tiny.label_room(4, true), 0.0);
+        // The labels' room shrinks as lanes are added, and never below zero.
+        assert!(wide.label_room(1, false) > wide.label_room(4, true));
+        assert!(wide.label_room(200, true) == 0.0);
+    }
+
+    const GRAPH_MIN_FOR_TEST: f32 = crate::pane::GRAPH_MIN;
 }

@@ -44,6 +44,19 @@ pub struct Settings {
     pub background_fetch: bool,
     pub split_diff: bool,
     pub hide_whitespace: bool,
+    /// Diff lines wrap at the diff's width instead of running off it. On
+    /// until turned off (ticket 123), and remembered like every other View
+    /// choice.
+    #[serde(default = "yes")]
+    pub wrap_lines: bool,
+    /// The list pane's width after a drag; nothing is its default (ticket
+    /// 123).
+    #[serde(default)]
+    pub list_pane_width: Option<u32>,
+    /// The Graph tab's list width after a drag; nothing is its share of the
+    /// window.
+    #[serde(default)]
+    pub graph_pane_width: Option<u32>,
     /// Where clones go; empty is `~/Projects`.
     pub clone_folder: String,
     /// The GitHub host signed in to (`github.com` or an Enterprise host),
@@ -74,6 +87,9 @@ impl Default for Settings {
             background_fetch: true,
             split_diff: false,
             hide_whitespace: false,
+            wrap_lines: true,
+            list_pane_width: None,
+            graph_pane_width: None,
             clone_folder: String::new(),
             account_host: String::new(),
             account_client_id: String::new(),

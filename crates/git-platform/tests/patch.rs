@@ -640,3 +640,162 @@ fn an_image_that_is_a_link_to_a_device_is_refused_without_reading_it() {
     let big = git_platform::patch::read_capped(&s.repo.join("base.txt"), 1);
     assert!(big.is_err(), "a file over the cap is refused");
 }
+
+// --- renames (ticket 123): one row, and a diff of only what changed ------------
+
+/// The status rows as (path, original, staged, unstaged, untracked).
+/// A status row: path, original path, staged, unstaged, untracked.
+type RenameRow = (
+    String,
+    Option<String>,
+    Option<git_core::ChangeKind>,
+    Option<git_core::ChangeKind>,
+    bool,
+);
+
+fn rename_rows(s: &Sandbox) -> Vec<RenameRow> {
+    let mut rows: Vec<_> = SystemGit
+        .status(&s.repo)
+        .unwrap()
+        .changes
+        .into_iter()
+        .map(|c| {
+            (
+                c.path.to_string_lossy().into_owned(),
+                c.original_path.map(|o| o.to_string_lossy().into_owned()),
+                c.staged,
+                c.unstaged,
+                c.untracked,
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
+}
+
+fn working_diff(s: &Sandbox, path: &str, original: Option<&str>) -> FileDiff {
+    SystemGit
+        .working_diff(
+            &s.repo,
+            Path::new(path),
+            original.map(Path::new),
+            DiffOptions::default(),
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_staged_git_mv_is_one_rename_row_whose_diff_is_empty() {
+    let s = sandbox();
+    s.commit_file("old.txt", BASE, "base");
+    s.git(&["mv", "old.txt", "new.txt"]);
+    assert_eq!(
+        rename_rows(&s),
+        [(
+            "new.txt".to_string(),
+            Some("old.txt".to_string()),
+            Some(git_core::ChangeKind::Renamed),
+            None,
+            false
+        )]
+    );
+    // Read with the original path, the rename has no content change; read
+    // without it, it would be a whole new file.
+    assert_eq!(
+        working_diff(&s, "new.txt", Some("old.txt")),
+        FileDiff::Text { hunks: vec![] }
+    );
+    assert!(lines(&working_diff(&s, "new.txt", None)).len() >= 12);
+}
+
+#[test]
+fn a_git_mv_with_an_edit_shows_only_the_edit_and_commits_both_paths() {
+    let s = sandbox();
+    s.commit_file("old.txt", BASE, "base");
+    s.git(&["mv", "old.txt", "new.txt"]);
+    s.write("new.txt", &BASE.replace("five", "FIVE"));
+    let diff = working_diff(&s, "new.txt", Some("old.txt"));
+    let changed: Vec<_> = lines(&diff)
+        .into_iter()
+        .filter(|(k, _)| *k != DiffLineKind::Context)
+        .collect();
+    assert_eq!(
+        changed,
+        [
+            (DiffLineKind::Removed, "five".to_string()),
+            (DiffLineKind::Added, "FIVE".to_string()),
+        ]
+    );
+    // Committing the row commits the rename: the old path goes with it.
+    SystemGit
+        .commit_selection(
+            &s.repo,
+            &[FileSelection {
+                path: PathBuf::from("new.txt"),
+                original_path: Some(PathBuf::from("old.txt")),
+                lines: None,
+            }],
+            &message("rename"),
+            &CommitOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(s.porcelain(), "");
+    let files = SystemGit.commit_files(&s.repo, &s.head()).unwrap();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(files[0].kind, git_core::ChangeKind::Renamed);
+    assert_eq!(
+        files[0].original_path.as_deref(),
+        Some(Path::new("old.txt"))
+    );
+}
+
+#[test]
+fn a_committed_rename_is_one_file_in_history_with_only_its_edit() {
+    let s = sandbox();
+    s.commit_file("docs/a.md", BASE, "base");
+    s.git(&["mv", "docs/a.md", "docs/b.md"]);
+    s.git(&["commit", "-q", "-m", "pure rename"]);
+    let files = SystemGit.commit_files(&s.repo, &s.head()).unwrap();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(files[0].path, Path::new("docs/b.md"));
+    assert_eq!(
+        files[0].original_path.as_deref(),
+        Some(Path::new("docs/a.md"))
+    );
+    let diff = SystemGit
+        .commit_diff(&s.repo, &s.head(), &files[0], DiffOptions::default())
+        .unwrap();
+    assert_eq!(diff, FileDiff::Text { hunks: vec![] }, "no content change");
+}
+
+#[test]
+fn an_unstaged_move_is_shown_as_git_shows_it_until_both_sides_are_staged() {
+    let s = sandbox();
+    s.commit_file("old.txt", BASE, "base");
+    fs::rename(s.repo.join("old.txt"), s.repo.join("new.txt")).unwrap();
+    // No guessing: a deletion and an untracked file.
+    assert_eq!(
+        rename_rows(&s),
+        [
+            ("new.txt".to_string(), None, None, None, true),
+            (
+                "old.txt".to_string(),
+                None,
+                None,
+                Some(git_core::ChangeKind::Deleted),
+                false
+            ),
+        ]
+    );
+    // Staging both sides makes it the rename it is.
+    SystemGit
+        .stage(
+            &s.repo,
+            &[PathBuf::from("old.txt"), PathBuf::from("new.txt")],
+        )
+        .unwrap();
+    let rows = rename_rows(&s);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1.as_deref(), Some("old.txt"));
+    assert_eq!(rows[0].2, Some(git_core::ChangeKind::Renamed));
+}

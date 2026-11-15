@@ -20,7 +20,7 @@ use crate::dialogs::{Dialog, Invalid, validate};
 use crate::github::{Account, GhCall, SignIn, SignInProblem};
 use crate::i18n::{EN_US, ZH_TW};
 use crate::keys::{Action, SHORTCUTS, action_for};
-use crate::remote::{NextStep, SyncAction, next_step, sync_action};
+use crate::remote::{MenuAction, MenuWhy, NextStep, SyncAction, next_step, sync_action, sync_menu};
 use crate::session::{Files, GitSession, KeyringChange, Notice, Problem};
 
 fn change(path: &str, staged: Option<ChangeKind>, unstaged: Option<ChangeKind>) -> FileChange {
@@ -365,6 +365,193 @@ fn the_sync_button_and_the_next_step() {
             !EN_US.refusal(refusal, true).is_empty() && !ZH_TW.refusal(refusal, true).is_empty()
         );
     }
+}
+
+/// The rows' actions, as the menu shows them.
+fn menu_actions(s: &RepositoryStatus, remote: bool, detached: bool) -> Vec<(MenuAction, bool)> {
+    sync_menu(s, remote, detached)
+        .into_iter()
+        .map(|row| (row.action, row.enabled()))
+        .collect()
+}
+
+#[test]
+fn the_sync_menu_offers_every_action_that_applies() {
+    // No remote at all: only publishing the repository is possible.
+    let s = status(vec![]);
+    assert_eq!(
+        menu_actions(&s, false, false),
+        [
+            (MenuAction::Fetch, false),
+            (
+                MenuAction::Pull {
+                    behind: 0,
+                    ahead: 0
+                },
+                false
+            ),
+            (MenuAction::Push { ahead: 0 }, false),
+            (MenuAction::PublishRepository, true),
+        ]
+    );
+
+    // No upstream yet: fetch and publish the branch.
+    let mut s = status(vec![]);
+    s.upstream = None;
+    assert_eq!(
+        menu_actions(&s, true, false),
+        [
+            (MenuAction::Fetch, true),
+            (
+                MenuAction::Pull {
+                    behind: 0,
+                    ahead: 0
+                },
+                false
+            ),
+            (MenuAction::Push { ahead: 0 }, false),
+            (MenuAction::PublishBranch, true),
+        ]
+    );
+
+    // Level: fetch is the only action.
+    s.upstream = Some("origin/main".into());
+    s.ahead_behind = Some((0, 0));
+    let rows = sync_menu(&s, true, false);
+    assert_eq!(
+        rows.iter().map(|r| r.why).collect::<Vec<_>>(),
+        [None, Some(MenuWhy::UpToDate), Some(MenuWhy::UpToDate)]
+    );
+    assert_eq!(rows.len(), 3, "no force push and no publish");
+
+    // Ahead: push, and nothing to pull.
+    s.ahead_behind = Some((2, 0));
+    assert_eq!(
+        menu_actions(&s, true, false),
+        [
+            (MenuAction::Fetch, true),
+            (
+                MenuAction::Pull {
+                    behind: 0,
+                    ahead: 2
+                },
+                false
+            ),
+            (MenuAction::Push { ahead: 2 }, true),
+        ]
+    );
+
+    // Behind: pull, and pushing first would be refused.
+    s.ahead_behind = Some((0, 3));
+    let rows = sync_menu(&s, true, false);
+    assert_eq!(
+        rows.iter().map(|r| r.action).collect::<Vec<_>>(),
+        [
+            MenuAction::Fetch,
+            MenuAction::Pull {
+                behind: 3,
+                ahead: 0
+            },
+            MenuAction::Push { ahead: 0 },
+        ]
+    );
+    assert_eq!(rows[2].why, Some(MenuWhy::Behind));
+    assert!(rows[1].enabled());
+
+    // Diverged: pull or force, a plain push is refused, and the force row is
+    // there only because both sides moved.
+    s.ahead_behind = Some((2, 3));
+    let rows = sync_menu(&s, true, false);
+    assert_eq!(rows.len(), 4);
+    assert!(rows[1].enabled(), "pull is the way forward");
+    assert_eq!(rows[2].why, Some(MenuWhy::Diverged));
+    assert_eq!(
+        rows[3],
+        crate::remote::MenuRow {
+            action: MenuAction::ForcePush {
+                ahead: 2,
+                behind: 3
+            },
+            why: None,
+        }
+    );
+
+    // Detached HEAD: nothing to pull or push, and no branch to publish.
+    s.ahead_behind = None;
+    assert_eq!(
+        menu_actions(&s, true, true),
+        [
+            (MenuAction::Fetch, true),
+            (
+                MenuAction::Pull {
+                    behind: 0,
+                    ahead: 0
+                },
+                false
+            ),
+            (MenuAction::Push { ahead: 0 }, false),
+        ]
+    );
+}
+
+#[test]
+fn each_sync_menu_row_names_what_it_moves_and_why_it_cannot() {
+    use crate::remote::{MenuRow, menu_label};
+    let row = |action, why| MenuRow { action, why };
+    let en = |r: MenuRow| menu_label(&r, "origin/main", "origin", &EN_US);
+    assert_eq!(en(row(MenuAction::Fetch, None)), "Fetch from origin");
+    assert_eq!(
+        en(row(MenuAction::Push { ahead: 1 }, None)),
+        "Push 1 commit to origin/main"
+    );
+    assert_eq!(
+        en(row(MenuAction::Push { ahead: 2 }, Some(MenuWhy::Diverged))),
+        "Push 2 commits to origin/main (a push would be refused: both branches have moved)"
+    );
+    assert_eq!(
+        en(row(
+            MenuAction::Pull {
+                behind: 0,
+                ahead: 0
+            },
+            Some(MenuWhy::UpToDate)
+        )),
+        "Pull from origin/main (already up to date with origin/main)"
+    );
+    assert_eq!(
+        en(row(
+            MenuAction::ForcePush {
+                ahead: 2,
+                behind: 3
+            },
+            None
+        )),
+        "Force push 2 commits to origin/main…"
+    );
+    assert_eq!(
+        menu_label(
+            &row(
+                MenuAction::Pull {
+                    behind: 3,
+                    ahead: 0
+                },
+                None
+            ),
+            "origin/main",
+            "origin",
+            &ZH_TW
+        ),
+        "從 origin/main 拉取 3 個提交"
+    );
+    assert_eq!(
+        menu_label(
+            &row(MenuAction::Push { ahead: 0 }, Some(MenuWhy::NoRemote)),
+            "origin/main",
+            "origin",
+            &ZH_TW
+        ),
+        "推送到 origin/main（這個儲存庫沒有遠端）"
+    );
 }
 
 // --- dialogs, keys, strings ------------------------------------------------------

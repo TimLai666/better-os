@@ -128,6 +128,18 @@ pub struct GitApp {
     /// File, View, Repository, Branch.
     pub(crate) app_menu: [Entity<MenuOpen>; 4],
     pub(crate) context_menu: Entity<MenuOpen>,
+    /// The sync button's arrow menu (ticket 123).
+    pub(crate) sync_menu: Entity<MenuOpen>,
+    /// The list pane's edge as a keyboard stop (ticket 123).
+    pub(crate) edge_focus: FocusHandle,
+    /// The list pane's edge is being dragged, so it is drawn lit.
+    pub(crate) dragging_edge: bool,
+    /// A drag or a key moved the edge and the width is not saved yet; it is
+    /// saved once no drag is active, not once per pointer move.
+    pub(crate) edge_dirty: bool,
+    /// The diff's text area as last laid out, so wrapped lines break at its
+    /// real width; zero until it has been drawn once.
+    pub(crate) diff_width: std::rc::Rc<std::cell::Cell<f32>>,
     pub(crate) context: Option<(ContextTarget, Point<Pixels>)>,
     pub(crate) show_filter: bool,
     pub(crate) show_commit_options: bool,
@@ -543,6 +555,11 @@ impl GitApp {
             branch_tab: 0,
             app_menu: [new_state(cx), new_state(cx), new_state(cx), new_state(cx)],
             context_menu: new_state(cx),
+            sync_menu: new_state(cx),
+            edge_focus: cx.focus_handle(),
+            dragging_edge: false,
+            edge_dirty: false,
+            diff_width: std::rc::Rc::new(std::cell::Cell::new(0.0)),
             context: None,
             show_filter: false,
             show_commit_options: false,
@@ -908,6 +925,13 @@ impl GitApp {
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = crate::github::now();
         let mut changed = false;
+        if !cx.has_active_drag() && (self.dragging_edge || self.edge_dirty) {
+            self.dragging_edge = false;
+            if std::mem::take(&mut self.edge_dirty) {
+                self.session.save_settings();
+            }
+            cx.notify();
+        }
         if let crate::github::SignIn::Waiting { interval, .. } = &self.session.github.sign_in
             && now - self.last_poll >= *interval as i64
         {

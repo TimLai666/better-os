@@ -9,10 +9,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use git_core::{Commit, CommitFile, ConflictKind, DiffLine, DiffLineKind, FileDiff, Operation};
+use git_core::{Commit, CommitFile, ConflictKind, DiffLineKind, FileDiff, Operation};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{Icon, IconName, Sizable as _};
+use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _};
 
 use better_ui::fluent::button::{Button, ButtonKind};
 use better_ui::fluent::dialog::{
@@ -39,12 +39,13 @@ use crate::dialogs::{BranchPurpose, CloneTab, Dialog};
 use crate::github::SignIn;
 use crate::i18n::{Copy, Locale, fill};
 use crate::keys::{self, Action};
+use crate::pane::PaneKind;
 use crate::remote::SyncAction;
 use crate::session::{DiffContent, DiffKey, Page, Problem, Repo, Tab};
 use crate::{Appearance, publish};
+use better_ui::pane_edge::PANE_EDGE_HIT_WIDTH;
 
 const TOOLBAR_HEIGHT: Pixels = px(56.0);
-const PANE_WIDTH: Pixels = px(320.0);
 const ROW_HEIGHT: Pixels = px(36.0);
 const TALL_ROW: Pixels = px(48.0);
 const DIFF_ROW: Pixels = px(20.0);
@@ -163,29 +164,101 @@ fn image(bytes: &[u8]) -> Option<Arc<Image>> {
     Some(Arc::new(Image::from_bytes(format, bytes.to_vec())))
 }
 
+/// The value the list pane's edge drag carries, and the (empty) thing drawn
+/// under the pointer while it moves: the pane itself follows the pointer.
+pub(crate) struct EdgeDrag;
+
+impl Render for EdgeDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
 /// What a click on a diff gutter does.
 type Toggle = Box<dyn Fn(&mut Window, &mut App)>;
+
+/// One visual row of a diff line: a byte range of the line as drawn (tabs
+/// as spaces), and whether it is the line's first row, which carries the
+/// numbers and the mark (ticket 123).
+#[derive(Clone, Copy)]
+struct Part {
+    from: usize,
+    to: usize,
+    first: bool,
+}
 
 /// One row of the flattened diff.
 #[derive(Clone, Copy)]
 enum DiffRow {
     Hunk(usize),
-    Line(usize, usize),
-    Split(usize, git_core::SplitRow),
+    Line(usize, usize, Part),
+    /// A side by side row: the pair of lines, and the part of each drawn on
+    /// this row. A side whose line has no row left here is drawn blank in
+    /// its line's color, under the line's last row.
+    Split(usize, git_core::SplitRow, Option<Part>, Option<Part>),
 }
 
-fn flatten(hunks: &[git_core::Hunk], split: bool) -> Vec<DiffRow> {
+/// How many text columns a diff row has room for: `None` when lines do not
+/// wrap. `unified` and `split` are the columns of a unified row and of one
+/// half of a side by side row.
+#[derive(Clone, Copy)]
+struct WrapAt {
+    unified: usize,
+    split: usize,
+}
+
+fn parts(text: &str, columns: Option<usize>) -> Vec<Part> {
+    let ranges = match columns {
+        Some(columns) => crate::wrap::rows(text, columns),
+        None => std::iter::once(0..text.len()).collect(),
+    };
+    ranges
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| Part {
+            from: r.start,
+            to: r.end,
+            first: i == 0,
+        })
+        .collect()
+}
+
+fn flatten(
+    hunks: &[git_core::Hunk],
+    texts: &[Vec<String>],
+    split: bool,
+    wrap: Option<WrapAt>,
+) -> Vec<DiffRow> {
     let mut rows = Vec::new();
     for (h, hunk) in hunks.iter().enumerate() {
         rows.push(DiffRow::Hunk(h));
         if split {
-            rows.extend(
-                git_core::split_rows(hunk)
-                    .into_iter()
-                    .map(|r| DiffRow::Split(h, r)),
-            );
+            let columns = wrap.map(|w| w.split);
+            for pair in git_core::split_rows(hunk) {
+                let left = pair.left.map(|l| parts(&texts[h][l], columns));
+                let right = pair.right.map(|l| parts(&texts[h][l], columns));
+                let height = left
+                    .as_ref()
+                    .map_or(1, Vec::len)
+                    .max(right.as_ref().map_or(1, Vec::len));
+                for i in 0..height {
+                    rows.push(DiffRow::Split(
+                        h,
+                        pair,
+                        left.as_ref().and_then(|p| p.get(i).copied()),
+                        right.as_ref().and_then(|p| p.get(i).copied()),
+                    ));
+                }
+            }
         } else {
-            rows.extend((0..hunk.lines.len()).map(|l| DiffRow::Line(h, l)));
+            let columns = wrap.map(|w| w.unified);
+            for (l, text) in texts[h].iter().enumerate() {
+                rows.extend(
+                    parts(text, columns)
+                        .into_iter()
+                        .map(|part| DiffRow::Line(h, l, part)),
+                );
+            }
         }
     }
     rows
@@ -563,19 +636,16 @@ impl GitApp {
             _ => title,
         };
         let hover = p.subtle_fill;
-        div()
-            .id("toolbar-sync")
+        let main = div()
+            .id("toolbar-sync-main")
             .flex()
+            .flex_1()
+            .min_w_0()
             .items_center()
             .gap(spacing::MD)
             .h_full()
-            // Room for "Fetch origin" whole; narrower windows shrink it to
-            // here, the lines ending in an ellipsis.
-            .flex_shrink(1.0)
-            .min_w(px(crate::shortcuts::SYNC_MIN))
-            .px(spacing::LG)
-            .border_r_1()
-            .border_color(p.divider)
+            .pl(spacing::LG)
+            .pr(spacing::SM)
             .hover(move |s| s.bg(hover))
             .child(if busy {
                 ProgressRing::new("sync-ring", Progress::Indeterminate)
@@ -608,7 +678,116 @@ impl GitApp {
                     this.sync_button(true);
                     this.drive(window, cx);
                 }
-            }))
+            }));
+        // The arrow: every action that applies now, as GitHub Desktop's
+        // split button offers (ticket 123).
+        let state = self.sync_menu.clone();
+        let open = state.read(cx).is_open();
+        let opener = state.clone();
+        div()
+            .id("toolbar-sync")
+            .relative()
+            .flex()
+            .items_center()
+            .h_full()
+            // Room for "Fetch origin" whole; narrower windows shrink it to
+            // here, the lines ending in an ellipsis.
+            .flex_shrink(1.0)
+            .min_w(px(crate::shortcuts::SYNC_MIN))
+            .border_r_1()
+            .border_color(p.divider)
+            .child(main)
+            .child(
+                div()
+                    .flex_none()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .px(px(2.0))
+                    .border_l_1()
+                    .border_color(p.divider)
+                    .child(
+                        Button::icon_button("sync-more", IconName::ChevronDown, c.sync_more)
+                            .kind(ButtonKind::Subtle)
+                            .disabled(busy)
+                            .on_click(move |window, cx| open_menu(&opener, None, window, cx)),
+                    ),
+            )
+            .when(open, |d| {
+                d.child(
+                    MenuFlyout::new("sync-menu", self.sync_menu_entries(repo, c, cx))
+                        .align_right()
+                        .state(state),
+                )
+            })
+    }
+
+    /// The rows of the sync button's arrow menu: what each does and how many
+    /// commits it moves; one that cannot be chosen now says why.
+    fn sync_menu_entries(
+        &self,
+        repo: &Repo,
+        c: &'static Copy,
+        cx: &mut Context<Self>,
+    ) -> Vec<MenuEntry> {
+        use crate::remote::MenuAction;
+        let upstream = repo.status.upstream.clone().unwrap_or_default();
+        let remote = upstream
+            .split_once('/')
+            .map(|(remote, _)| remote.to_string())
+            .or_else(|| repo.info.remotes.first().map(|r| r.name.clone()))
+            .unwrap_or_else(|| "origin".to_string());
+        let upstream = if upstream.is_empty() {
+            match repo.branch() {
+                Some(branch) => format!("{remote}/{branch}"),
+                None => remote.clone(),
+            }
+        } else {
+            upstream
+        };
+        let busy = self.session.is_network_busy();
+        let rows = crate::remote::sync_menu(
+            &repo.status,
+            !repo.info.remotes.is_empty(),
+            repo.branch().is_none(),
+        );
+        let mut entries = Vec::new();
+        for row in rows {
+            if matches!(row.action, MenuAction::ForcePush { .. }) {
+                entries.push(MenuEntry::Separator);
+            }
+            let icon = match row.action {
+                MenuAction::Pull { .. } => Some(IconName::ArrowDown),
+                MenuAction::Push { .. }
+                | MenuAction::ForcePush { .. }
+                | MenuAction::PublishBranch
+                | MenuAction::PublishRepository => Some(IconName::ArrowUp),
+                MenuAction::Fetch => None,
+            };
+            let mut item = MenuItem::new(crate::remote::menu_label(&row, &upstream, &remote, c))
+                .disabled(!row.enabled() || busy);
+            item = match icon {
+                Some(icon) => item.icon(icon),
+                None => item.icon_path(better_ui::fluent::glyphs::REFRESH),
+            };
+            let action = row.action;
+            entries.push(
+                item.on_select(Self::act(cx, move |this, _, _| match action {
+                    MenuAction::Fetch => this.session.fetch(false, crate::github::now()),
+                    MenuAction::Pull { .. } => this.session.pull(),
+                    MenuAction::Push { .. } | MenuAction::PublishBranch => this.session.push(false),
+                    // Always asked, whatever the setting: from this menu it
+                    // is one click away from the plain push.
+                    MenuAction::ForcePush { .. } => {
+                        let expected = this.session.repo.as_ref().and_then(Repo::seen_on_remote);
+                        this.session.dialog = Some(Dialog::ForcePush { expected });
+                    }
+                    MenuAction::PublishRepository => this.sync_button(true),
+                }))
+                .entry(),
+            );
+        }
+        entries
     }
 
     /// The pull request's checks. In a narrow window (`roomy` false) the
@@ -721,6 +900,13 @@ impl GitApp {
                         cx,
                     ),
                     self.menu_item(c.toggle_filter, Action::ToggleFilter, has, cx),
+                    MenuItem::new(c.wrap_lines)
+                        .checked(self.session.settings.wrap_lines)
+                        .on_select(Self::act(cx, |this, _, _| {
+                            let wrap = this.session.settings.wrap_lines;
+                            this.session.set_wrap_lines(!wrap);
+                        }))
+                        .entry(),
                     self.menu_item(c.refresh, Action::Refresh, has, cx),
                 ],
             ),
@@ -1424,18 +1610,24 @@ impl GitApp {
         c: &'static Copy,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> Stateful<Div> {
         let repo = self.session.repo.as_ref().expect("a repository is open");
-        let narrow = window.viewport_size().width < px(1100.0);
         // The graph needs the room: its list takes most of the window, and
-        // the commit's details and diff the rest, as History's do.
+        // the commit's details and diff the rest, as History's do. Either
+        // width is the person's to drag (ticket 123).
         let graph = repo.tab == Tab::Graph;
+        let kind = if graph {
+            PaneKind::Graph
+        } else {
+            PaneKind::List
+        };
+        let viewport = f32::from(window.viewport_size().width);
+        let width = crate::pane::width(kind, self.session.pane_width(kind), viewport);
         let pane = div()
             .flex()
             .flex_col()
             .flex_none()
-            .when(graph, |d| d.w(relative(crate::graph_pane::GRAPH_SHARE)))
-            .when(!graph, |d| d.w(if narrow { px(300.0) } else { PANE_WIDTH }))
+            .w(px(width))
             .h_full()
             .border_r_1()
             .border_color(p.divider)
@@ -1477,13 +1669,108 @@ impl GitApp {
                 (Tab::History, _) => self.history_pane(repo, p, c, cx).into_any_element(),
                 (Tab::Graph, _) => self.graph_pane(repo, p, c, window, cx).into_any_element(),
             });
+        let follow = cx.listener(move |this, event: &DragMoveEvent<EdgeDrag>, window, cx| {
+            let viewport = f32::from(window.viewport_size().width);
+            let width = f32::from(event.event.position.x - event.bounds.left());
+            this.session
+                .set_pane_width(kind, crate::pane::store(kind, width, viewport));
+            this.dragging_edge = true;
+            this.edge_dirty = true;
+            cx.notify();
+        });
         h_stack()
+            .id("repository-view")
+            .relative()
             .items_start()
             .flex_1()
             .min_h_0()
             .w_full()
             .child(pane)
-            .child(self.detail_pane(repo, p, c, cx))
+            .child(self.detail_pane(repo, p, c, window, cx))
+            .on_drag_move(follow)
+            // The drag ends here: the width is saved once, not per move.
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if std::mem::take(&mut this.edge_dirty) {
+                        this.session.save_settings();
+                    }
+                    this.dragging_edge = false;
+                    cx.notify();
+                }),
+            )
+            .child(self.pane_edge(kind, width, window, cx))
+    }
+
+    /// The grab strip on the list pane's right edge, as Better Files' pane
+    /// edges are (ticket 118): wider than the divider it lights, a resize
+    /// pointer, a double-click back to the default width, and a keyboard
+    /// stop where Left and Right move it 16px and Enter puts it back.
+    fn pane_edge(
+        &self,
+        kind: PaneKind,
+        width: f32,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = fluent::palette(cx);
+        let lit =
+            (cx.has_active_drag() && self.dragging_edge) || self.edge_focus.is_focused(window);
+        let half = PANE_EDGE_HIT_WIDTH / 2.0;
+        div()
+            .id("pane-edge")
+            .group("pane-edge")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(px(width - half))
+            .w(px(PANE_EDGE_HIT_WIDTH))
+            .cursor(CursorStyle::ResizeLeftRight)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(half - 1.0))
+                    .w(px(2.0))
+                    .when(lit, |line| line.bg(p.accent))
+                    .group_hover("pane-edge", |line| line.bg(p.accent)),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    if event.click_count >= 2 {
+                        this.session
+                            .set_pane_width(kind, crate::pane::edge(kind, 0.0).reset());
+                        this.edge_dirty = true;
+                        cx.notify();
+                    }
+                    cx.stop_propagation();
+                }),
+            )
+            .on_drag(EdgeDrag, {
+                let this = cx.entity().downgrade();
+                move |_, _, _, cx| {
+                    let _ = this.update(cx, |app, _| app.dragging_edge = true);
+                    cx.new(|_| EdgeDrag)
+                }
+            })
+            .track_focus(&self.edge_focus.clone().tab_index(0).tab_stop(true))
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                let viewport = f32::from(window.viewport_size().width);
+                let now = crate::pane::width(kind, this.session.pane_width(kind), viewport);
+                let stored = match event.keystroke.key.as_str() {
+                    "right" => crate::pane::store(kind, now + 16.0, viewport),
+                    "left" => crate::pane::store(kind, now - 16.0, viewport),
+                    "enter" => crate::pane::edge(kind, viewport).reset(),
+                    _ => return,
+                };
+                cx.stop_propagation();
+                this.session.set_pane_width(kind, stored);
+                this.edge_dirty = true;
+                cx.notify();
+            }))
+            .into_any_element()
     }
 
     fn changes_pane(
@@ -1613,15 +1900,26 @@ impl GitApp {
                     .flex_1()
                     .min_w_0()
                     .gap(spacing::SM)
+                    // The name gives way before the badge does: a long
+                    // rename ("old → new") ends in an ellipsis, never under
+                    // the badge.
                     .child(
                         label(display, BODY, p.text_primary)
-                            .flex_none()
-                            .max_w(px(200.0))
+                            .min_w_0()
+                            .max_w(px(if r.original_path.is_some() {
+                                280.0
+                            } else {
+                                200.0
+                            }))
                             .truncate(),
                     )
-                    .child(caption(truncate(&r.folder, FOLDER_CHARS), p).truncate()),
+                    .child(
+                        caption(truncate(&r.folder, FOLDER_CHARS), p)
+                            .min_w_0()
+                            .truncate(),
+                    ),
             )
-            .child(badge(r.badge, p))
+            .child(div().flex_none().child(badge(r.badge, p)))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 if event.is_keyboard() {
                     return;
@@ -1995,16 +2293,25 @@ impl GitApp {
             let mut item = row(("commit", index), selected, TALL_ROW, p)
                 .child(
                     v_stack()
+                        .id(("commit-subject", index))
                         .flex_1()
                         .min_w_0()
+                        .tooltip(better_ui::fluent::dialog::tooltip_builder(summary.clone()))
                         .child(label(commit.summary.clone(), BODY, p.text_primary).truncate())
                         .child(
                             caption(format!("{} · {}{}", commit.author_name, n, unit), p)
                                 .truncate(),
                         ),
                 )
+                // Tags give way to the subject, up to a third of the row.
                 .when(!tags.is_empty(), |r| {
-                    r.child(label(tags.clone(), CAPTION, p.accent))
+                    r.child(
+                        label(tags.clone(), CAPTION, p.accent)
+                            .flex_shrink(1.0)
+                            .min_w(px(24.0))
+                            .max_w(relative(0.34))
+                            .truncate(),
+                    )
                 })
                 .when(
                     index
@@ -2211,6 +2518,7 @@ impl GitApp {
         repo: &Repo,
         p: &'static Palette,
         c: &'static Copy,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let mut pane = v_stack().flex_1().min_w_0().h_full();
@@ -2295,7 +2603,7 @@ impl GitApp {
                 caption(crate::graph::graph_copy(self.locale).select_hint, p),
             ));
         }
-        pane.child(self.diff_view(repo, p, c, cx))
+        pane.child(self.diff_view(repo, p, c, window, cx))
     }
 
     fn file_strip(
@@ -2319,11 +2627,19 @@ impl GitApp {
                 row((id, index), selected == Some(index), px(28.0), p)
                     .child(
                         label(
-                            file.path.to_string_lossy().to_string(),
+                            match &file.original_path {
+                                Some(original) => format!(
+                                    "{} → {}",
+                                    original.to_string_lossy(),
+                                    file.path.to_string_lossy()
+                                ),
+                                None => file.path.to_string_lossy().to_string(),
+                            },
                             BODY,
                             p.text_primary,
                         )
                         .flex_1()
+                        .min_w_0()
                         .truncate(),
                     )
                     .child(badge(kind, p))
@@ -2406,6 +2722,7 @@ impl GitApp {
         repo: &Repo,
         p: &'static Palette,
         c: &'static Copy,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let Some(shown) = &repo.diff else {
@@ -2423,6 +2740,42 @@ impl GitApp {
         let working = matches!(shown.key, DiffKey::Working(_));
         let selectable = self.session.lines_selectable();
         let split = self.session.settings.split_diff;
+        let wrap = self.session.settings.wrap_lines;
+        // A rename is one file: its header names both paths, as the list
+        // row does (ticket 123).
+        let original = match &shown.key {
+            DiffKey::Working(path) => repo
+                .status
+                .changes
+                .iter()
+                .find(|change| &change.path == path)
+                .and_then(|change| change.original_path.clone()),
+            DiffKey::Commit { path, .. } => {
+                let files = if repo.tab == Tab::Graph {
+                    &repo.graph.files
+                } else {
+                    &repo.history.files
+                };
+                files
+                    .iter()
+                    .find(|file| &file.path == path)
+                    .and_then(|file| file.original_path.clone())
+            }
+            DiffKey::Stash { path, .. } => repo
+                .stash
+                .as_ref()
+                .and_then(|stash| stash.files.iter().find(|file| &file.path == path))
+                .and_then(|file| file.original_path.clone()),
+        };
+        let renamed = original.is_some();
+        let shown_path = match &original {
+            Some(original) => format!(
+                "{} → {}",
+                original.to_string_lossy(),
+                path.to_string_lossy()
+            ),
+            None => path.to_string_lossy().to_string(),
+        };
         let header = h_stack()
             .flex_none()
             .h(px(44.0))
@@ -2431,13 +2784,22 @@ impl GitApp {
             .border_b_1()
             .border_color(p.divider)
             .child(
-                label(
-                    path.to_string_lossy().to_string(),
-                    BODY_STRONG,
-                    p.text_primary,
+                label(shown_path, BODY_STRONG, p.text_primary)
+                    .flex_1()
+                    .truncate(),
+            )
+            .child(
+                Button::icon_button(
+                    "wrap-lines",
+                    Icon::empty().path(better_ui::fluent::glyphs::WRAP),
+                    c.wrap_lines,
                 )
-                .flex_1()
-                .truncate(),
+                .kind(ButtonKind::Subtle)
+                .checked(wrap)
+                .on_click(Self::act(cx, |this, _, _| {
+                    let wrap = this.session.settings.wrap_lines;
+                    this.session.set_wrap_lines(!wrap);
+                })),
             )
             .child(
                 SelectorBar::new(
@@ -2479,10 +2841,28 @@ impl GitApp {
             );
         let body: AnyElement = match &shown.content {
             DiffContent::Text(diff) => self
-                .text_diff(diff, &path, working && selectable, split, p, c, cx)
+                .text_diff(
+                    diff,
+                    &path,
+                    working && selectable,
+                    (split, wrap, renamed),
+                    p,
+                    c,
+                    window,
+                    cx,
+                )
                 .into_any_element(),
             DiffContent::Large(diff) if repo.show_large => self
-                .text_diff(diff, &path, working && selectable, split, p, c, cx)
+                .text_diff(
+                    diff,
+                    &path,
+                    working && selectable,
+                    (split, wrap, renamed),
+                    p,
+                    c,
+                    window,
+                    cx,
+                )
                 .into_any_element(),
             DiffContent::Large(_) => v_stack()
                 .flex_1()
@@ -2557,25 +2937,74 @@ impl GitApp {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// `(split, wrap, renamed)`: side by side, lines wrapped, and whether
+    /// the file is a rename, which says so when its content is unchanged.
+    #[allow(clippy::too_many_arguments)]
     fn text_diff(
         &self,
         diff: &FileDiff,
         path: &Path,
         selectable: bool,
-        split: bool,
+        (split, wrap, renamed): (bool, bool, bool),
         p: &'static Palette,
         c: &'static Copy,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let FileDiff::Text { hunks } = diff else {
             return caption(c.binary_file, p).p(spacing::LG).into_any_element();
         };
         if hunks.is_empty() {
-            return caption(c.no_content_changes, p)
-                .p(spacing::LG)
-                .into_any_element();
+            return caption(
+                if renamed {
+                    c.renamed_no_content
+                } else {
+                    c.no_content_changes
+                },
+                p,
+            )
+            .p(spacing::LG)
+            .into_any_element();
         }
-        let rows = flatten(hunks, split);
+        let mono = cx.theme().mono_font_family.clone();
+        let texts: Arc<Vec<Vec<String>>> = Arc::new(
+            hunks
+                .iter()
+                .map(|hunk| {
+                    hunk.lines
+                        .iter()
+                        .map(|line| crate::wrap::expand(&line.text))
+                        .collect()
+                })
+                .collect(),
+        );
+        // Where lines break: the diff's own width as last laid out (the
+        // canvas below measures it), less the gutter, the two number
+        // columns and the mark, in columns of the code font.
+        let wrap_at = wrap.then(|| {
+            let advance = code_advance(window, &mono);
+            let measured = self.diff_width.get();
+            let width = if measured > 0.0 {
+                measured
+            } else {
+                f32::from(window.viewport_size().width) * 0.6
+            };
+            let gutter = if selectable {
+                f32::from(GUTTER_WIDTH)
+            } else {
+                0.0
+            };
+            let number = f32::from(NUMBER_WIDTH);
+            // Room for the scroll bar, so the end of a row is never under it.
+            let scroll_bar = 12.0;
+            let unified = width - gutter - 2.0 * number - 14.0 - scroll_bar;
+            let split = (width - 1.0) / 2.0 - gutter - number - 14.0 - scroll_bar / 2.0;
+            WrapAt {
+                unified: crate::wrap::columns(unified, advance),
+                split: crate::wrap::columns(split, advance),
+            }
+        });
+        let rows = flatten(hunks, &texts, split, wrap_at);
         let hunks = Arc::new(hunks.clone());
         let included: Arc<Vec<Vec<bool>>> = Arc::new(
             hunks
@@ -2594,15 +3023,17 @@ impl GitApp {
                 .collect(),
         );
         let weak = cx.entity().downgrade();
-        uniform_list("diff", rows.len(), move |range, _window, _cx| {
+        let list = uniform_list("diff", rows.len(), move |range, _window, _cx| {
             range
                 .map(|index| {
                     diff_row(
                         index,
                         rows[index],
                         &hunks,
+                        &texts,
                         &included,
                         selectable,
+                        &mono,
                         p,
                         weak.clone(),
                     )
@@ -2610,9 +3041,34 @@ impl GitApp {
                 .collect()
         })
         .track_scroll(&self.diff_scroll)
-        .flex_1()
-        .w_full()
-        .into_any_element()
+        .size_full();
+        // Measures the diff's width as it is laid out; a change (a drag of
+        // the pane edge, a resized window) lays the rows out again.
+        let measured = self.diff_width.clone();
+        let probe = canvas(
+            move |bounds, window, _| {
+                let width = f32::from(bounds.size.width);
+                if (measured.get() - width).abs() >= 1.0 {
+                    measured.set(width);
+                    if wrap {
+                        window.refresh();
+                    }
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
+        div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(list)
+            .child(probe)
+            .into_any_element()
     }
 
     // --- context menu ------------------------------------------------------------
@@ -4086,13 +4542,53 @@ fn number(n: Option<u32>, p: &Palette) -> Div {
     .child(n.map(|n| n.to_string()).unwrap_or_default())
 }
 
-fn line_text(line: &DiffLine, p: &Palette) -> Div {
+/// One row's part of a line, in the code font. A continuation row starts
+/// with nothing in the number columns and an indent marker in the mark's
+/// place, drawn by the caller.
+fn line_text(text: &str, part: Part, mono: &SharedString, p: &Palette) -> Div {
     t(
-        div().whitespace_nowrap().flex_1().overflow_hidden(),
+        div()
+            .whitespace_nowrap()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .font_family(mono.clone()),
         CODE,
         p.text_primary,
     )
-    .child(line.text.replace('\t', "    "))
+    .child(text.get(part.from..part.to).unwrap_or_default().to_string())
+}
+
+/// The mark column: `+`, `-` or nothing on a line's first row, and a
+/// continuation arrow under it on the rows it wraps onto.
+/// How far one column of the code font advances at the diff's size,
+/// measured by the window's own text system.
+fn code_advance(window: &Window, mono: &SharedString) -> f32 {
+    let mut font = window.text_style().font();
+    font.family = mono.clone();
+    const SAMPLE: &str = "0000000000";
+    let run = TextRun {
+        len: SAMPLE.len(),
+        font,
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let width = window
+        .text_system()
+        .shape_line(SAMPLE.into(), px(CODE.size), &[run], None)
+        .width;
+    (f32::from(width) / SAMPLE.len() as f32).max(1.0)
+}
+
+fn mark_cell(mark: &'static str, color: Rgba, first: bool, p: &Palette) -> Div {
+    let (text, color) = if first {
+        (mark, color)
+    } else {
+        ("↪", p.text_tertiary)
+    };
+    t(div().w(px(14.0)).flex_none(), CODE, color).child(text)
 }
 
 fn gutter(
@@ -4135,12 +4631,15 @@ fn gutter(
     g.into_any_element()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn diff_row(
     index: usize,
     kind: DiffRow,
     hunks: &Arc<Vec<git_core::Hunk>>,
+    texts: &Arc<Vec<Vec<String>>>,
     included: &Arc<Vec<Vec<bool>>>,
     selectable: bool,
+    mono: &SharedString,
     p: &'static Palette,
     weak: WeakEntity<GitApp>,
 ) -> AnyElement {
@@ -4183,7 +4682,7 @@ fn diff_row(
             r.child(t(div().pl(spacing::SM), CODE, p.text_secondary).child(header))
                 .into_any_element()
         }
-        DiffRow::Line(h, l) => {
+        DiffRow::Line(h, l, part) => {
             let line = &hunks[h].lines[l];
             let (bg, mark_color, mark) = line_colors(line.kind, p);
             let changed = line.kind != DiffLineKind::Context;
@@ -4202,16 +4701,26 @@ fn diff_row(
                     changed.then(|| toggler(vec![(h, l)], None)),
                 ));
             }
-            r.child(number(line.old_line, p))
-                .child(number(line.new_line, p))
-                .child(t(div().w(px(14.0)).flex_none(), CODE, mark_color).child(mark))
-                .child(line_text(line, p))
+            let first = part.first;
+            r.child(number(line.old_line.filter(|_| first), p))
+                .child(number(line.new_line.filter(|_| first), p))
+                .child(mark_cell(mark, mark_color, first, p))
+                .child(line_text(&texts[h][l], part, mono, p))
                 .into_any_element()
         }
-        DiffRow::Split(h, pair) => {
-            let half = |side: Option<usize>, left: bool| -> AnyElement {
+        DiffRow::Split(h, pair, left_part, right_part) => {
+            let half = |side: Option<usize>, part: Option<Part>, left: bool| -> AnyElement {
                 match side {
+                    // The line's rows ran out before the other side's: the
+                    // rest of this row is the line's color and nothing else.
+                    Some(l) if part.is_none() => div()
+                        .flex_1()
+                        .h_full()
+                        .bg(line_colors(hunks[h].lines[l].kind, p).0)
+                        .into_any_element(),
                     Some(l) => {
+                        let part = part.expect("checked above");
+                        let first = part.first;
                         let line = &hunks[h].lines[l];
                         let (bg, mark_color, mark) = line_colors(line.kind, p);
                         let changed = line.kind != DiffLineKind::Context;
@@ -4231,9 +4740,10 @@ fn diff_row(
                                 Some(toggler(vec![(h, l)], None)),
                             ));
                         }
-                        d.child(number(if left { line.old_line } else { line.new_line }, p))
-                            .child(t(div().w(px(14.0)).flex_none(), CODE, mark_color).child(mark))
-                            .child(line_text(line, p))
+                        let n = if left { line.old_line } else { line.new_line };
+                        d.child(number(n.filter(|_| first), p))
+                            .child(mark_cell(mark, mark_color, first, p))
+                            .child(line_text(&texts[h][l], part, mono, p))
                             .into_any_element()
                     }
                     None => div()
@@ -4248,9 +4758,9 @@ fn diff_row(
                 .w_full()
                 .h(DIFF_ROW)
                 .flex()
-                .child(half(pair.left, true))
+                .child(half(pair.left, left_part, true))
                 .child(div().w(px(1.0)).h_full().bg(p.divider))
-                .child(half(pair.right, false))
+                .child(half(pair.right, right_part, false))
                 .into_any_element()
         }
     }
@@ -4405,5 +4915,111 @@ pub(crate) fn confirm(
         Dialog::Fork => s.fork(),
         Dialog::DropStash { name } => s.drop_stash(name),
         Dialog::Identity => s.save_identity(&text(0), &text(1)),
+    }
+}
+
+#[cfg(test)]
+mod wrap_rows {
+    use super::{DiffLineKind, DiffRow, WrapAt, flatten};
+    use git_core::DiffLine;
+
+    fn line(kind: DiffLineKind, text: &str) -> DiffLine {
+        DiffLine {
+            kind,
+            text: text.to_string(),
+            old_line: Some(1),
+            new_line: Some(1),
+            no_newline_at_end: false,
+        }
+    }
+
+    fn hunk() -> git_core::Hunk {
+        git_core::Hunk {
+            header: "@@ -1,2 +1,1 @@".into(),
+            lines: vec![
+                line(DiffLineKind::Removed, "abcdefghij"),
+                line(DiffLineKind::Removed, "ab"),
+                line(DiffLineKind::Added, "abcd"),
+            ],
+        }
+    }
+
+    fn texts(hunks: &[git_core::Hunk]) -> Vec<Vec<String>> {
+        hunks
+            .iter()
+            .map(|h| {
+                h.lines
+                    .iter()
+                    .map(|l| crate::wrap::expand(&l.text))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// (line, from, to, first) of each line row.
+    fn unified(rows: &[DiffRow]) -> Vec<(usize, usize, usize, bool)> {
+        rows.iter()
+            .filter_map(|r| match r {
+                DiffRow::Line(_, l, p) => Some((*l, p.from, p.to, p.first)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_wrapped_line_is_several_rows_and_only_the_first_is_numbered() {
+        let hunks = [hunk()];
+        let t = texts(&hunks);
+        let at = WrapAt {
+            unified: 4,
+            split: 3,
+        };
+        let rows = flatten(&hunks, &t, false, Some(at));
+        assert_eq!(
+            unified(&rows),
+            [
+                (0, 0, 4, true),
+                (0, 4, 8, false),
+                (0, 8, 10, false),
+                (1, 0, 2, true),
+                (2, 0, 4, true),
+            ]
+        );
+        // Unwrapped, each line is one row with all of its text.
+        let rows = flatten(&hunks, &t, false, None);
+        assert_eq!(
+            unified(&rows),
+            [(0, 0, 10, true), (1, 0, 2, true), (2, 0, 4, true)]
+        );
+    }
+
+    #[test]
+    fn side_by_side_rows_take_the_taller_side_and_pad_the_other() {
+        let hunks = [hunk()];
+        let t = texts(&hunks);
+        let at = WrapAt {
+            unified: 4,
+            split: 3,
+        };
+        let rows = flatten(&hunks, &t, true, Some(at));
+        let halves: Vec<(Option<usize>, Option<usize>)> = rows
+            .iter()
+            .filter_map(|r| match r {
+                DiffRow::Split(_, _, l, r) => Some((l.map(|p| p.to), r.map(|p| p.to))),
+                _ => None,
+            })
+            .collect();
+        // "abcdefghij" against "abcd": four rows on the left, two on the
+        // right, padded; then "ab" with nothing beside it.
+        assert_eq!(
+            halves,
+            [
+                (Some(3), Some(3)),
+                (Some(6), Some(4)),
+                (Some(9), None),
+                (Some(10), None),
+                (Some(2), None),
+            ]
+        );
     }
 }

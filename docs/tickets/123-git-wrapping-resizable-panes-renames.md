@@ -56,11 +56,11 @@ The owner reported on 2026-11-15:
 
 ## Acceptance
 
-- [ ] Tests: the sync menu's items for each branch state (up to date, ahead,
+- [x] Tests: the sync menu's items for each branch state (up to date, ahead,
       behind, diverged, no upstream, detached, no remote).
-- [ ] Tests: wrapping layout math, rename rows from real git (staged mv,
+- [x] Tests: wrapping layout math, rename rows from real git (staged mv,
       mv with edits, committed rename, unstaged move), row column widths.
-- [ ] Screenshots in a headless sandbox: a wrapped long line, the split
+- [x] Screenshots in a headless sandbox: a wrapped long line, the split
       dragged both ways, a rename in changes and in history, a long subject in
       the graph with a branch label; both languages.
 - [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests and

@@ -326,6 +326,20 @@ pub trait Git: Send + Sync {
     ) -> Result<FileDiff, GitError> {
         self.diff(repository, path, side)
     }
+    /// The working tree's diff of one changed file against HEAD, with the
+    /// path it was renamed from when it is a rename, so a `git mv` shows only
+    /// what changed in the content (ticket 123). Without `original` this is
+    /// [`Git::diff_with`] on the working tree.
+    fn working_diff(
+        &self,
+        repository: &Path,
+        path: &Path,
+        original: Option<&Path>,
+        options: DiffOptions,
+    ) -> Result<FileDiff, GitError> {
+        let _ = original;
+        self.diff_with(repository, path, DiffSide::WorkingTree, options)
+    }
     /// The file's bytes at HEAD (`None` when it is not there) and in the
     /// working tree (`None` when deleted), for an image diff.
     fn file_versions(
@@ -1218,6 +1232,19 @@ impl Git for SystemGit {
         options: DiffOptions,
     ) -> Result<FileDiff, GitError> {
         let raw = patch::raw_diff(repository, path, None, side, options)?;
+        parse_diff(&raw).map_err(unreadable)
+    }
+
+    /// `git diff -M HEAD -- <original> <path>` for a rename, as line staging
+    /// reads it ([`patch::raw_diff`]), so what is shown is what is staged.
+    fn working_diff(
+        &self,
+        repository: &Path,
+        path: &Path,
+        original: Option<&Path>,
+        options: DiffOptions,
+    ) -> Result<FileDiff, GitError> {
+        let raw = patch::raw_diff(repository, path, original, DiffSide::WorkingTree, options)?;
         parse_diff(&raw).map_err(unreadable)
     }
 
