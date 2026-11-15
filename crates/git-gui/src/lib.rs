@@ -26,6 +26,7 @@ pub mod identity;
 pub mod keys;
 pub mod live;
 pub mod notifications;
+pub mod pane;
 pub mod phrases;
 pub mod publish;
 pub mod recent;
@@ -37,6 +38,7 @@ pub mod settings;
 pub mod shortcuts;
 pub mod trust;
 pub mod worktree_links;
+pub mod wrap;
 
 mod app;
 mod commit_menu;

@@ -326,6 +326,20 @@ pub trait Git: Send + Sync {
     ) -> Result<FileDiff, GitError> {
         self.diff(repository, path, side)
     }
+    /// The working tree's diff of one changed file against HEAD, with the
+    /// path it was renamed from when it is a rename, so a `git mv` shows only
+    /// what changed in the content (ticket 123). Without `original` this is
+    /// [`Git::diff_with`] on the working tree.
+    fn working_diff(
+        &self,
+        repository: &Path,
+        path: &Path,
+        original: Option<&Path>,
+        options: DiffOptions,
+    ) -> Result<FileDiff, GitError> {
+        let _ = original;
+        self.diff_with(repository, path, DiffSide::WorkingTree, options)
+    }
     /// The file's bytes at HEAD (`None` when it is not there) and in the
     /// working tree (`None` when deleted), for an image diff.
     fn file_versions(
@@ -1221,6 +1235,19 @@ impl Git for SystemGit {
         parse_diff(&raw).map_err(unreadable)
     }
 
+    /// `git diff -M HEAD -- <original> <path>` for a rename, as line staging
+    /// reads it ([`patch::raw_diff`]), so what is shown is what is staged.
+    fn working_diff(
+        &self,
+        repository: &Path,
+        path: &Path,
+        original: Option<&Path>,
+        options: DiffOptions,
+    ) -> Result<FileDiff, GitError> {
+        let raw = patch::raw_diff(repository, path, original, DiffSide::WorkingTree, options)?;
+        parse_diff(&raw).map_err(unreadable)
+    }
+
     fn file_versions(
         &self,
         repository: &Path,
@@ -1285,8 +1312,15 @@ impl Git for SystemGit {
         options: &CommitOptions,
     ) -> Result<(), GitError> {
         history::check_message(message, options)?;
+        let saved = patch::save_index(repository);
         patch::build_index(repository, files)?;
-        history::commit(repository, message, options)
+        history::commit(repository, message, options)?;
+        // The commit is made; putting back what was staged and left out is
+        // best effort, and failing it leaves the index as the commit has it.
+        if let Some(tree) = saved {
+            let _ = patch::restore_index(repository, &tree, files);
+        }
+        Ok(())
     }
 
     fn discard_files(&self, repository: &Path, files: &[FileSelection]) -> Result<(), GitError> {
