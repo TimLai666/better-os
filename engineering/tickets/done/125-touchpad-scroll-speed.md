@@ -78,6 +78,9 @@ can read the touchpad can read the keyboard.
   device-gone exit is 69 and never restarted, trackpoint pairing was checked
   in libinput 1.20.0 and 1.25.0 (no refusal needed), and the clone's udev
   properties require a matching real touchpad.
+- The final review asked for the silent twin and the on-screen-keyboard
+  residual path to be stated plainly, and for gestures on a held pad to keep
+  that pad's profile; both done.
 - Done except the owner's real-hardware run, which is the one open box. No
   test touched a real `/dev/input` node, `/dev/uinput`, or the real system
   bus; the window was looked at in a headless GNOME Shell 46 against a fake

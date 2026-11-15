@@ -5,7 +5,10 @@
 //! session, or an absolute pointer (a touchscreen, a tablet) that could click
 //! any key of an on-screen keyboard. The kernel only stops that at the
 //! descriptor's permissions, which the service already passed. So the service
-//! filters itself, in two steps:
+//! filters itself, in two steps. What the filter blocks is *new* devices: the
+//! clone that already exists is a touchpad, and code that took over this
+//! process could still drive it, moving the pointer and clicking, which
+//! includes steering onto the keys of an on-screen keyboard if one is shown.
 //!
 //! 1. [`install`], right after the privilege drop and before the clone exists,
 //!    checks the arguments of every uinput capability call against what a

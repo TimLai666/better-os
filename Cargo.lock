@@ -8144,6 +8144,7 @@ dependencies = [
  "tokio",
  "touchpad-core",
  "touchpad-gestures",
+ "touchpad-scroll",
  "touchpad-session",
  "zbus",
 ]

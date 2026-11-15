@@ -21,10 +21,13 @@ therefore applied below the compositor. For each touchpad, one instance of
    forwards every event to the clone with two-finger and wheel motion scaled.
    libinput sees the clone as the touchpad; the original delivers nothing.
 
-At factor 1 on both axes it holds nothing and reads nothing. The clone is
-created once, when the instance starts, and stays, idle and reporting
-nothing, so that every later uinput setup call can be forbidden (below).
-Better Touchpad's device list does not count it as a second touchpad.
+At factor 1 on both axes it holds nothing and reads nothing, but the clone
+exists at every factor: it is created once, when the instance starts, so that
+every later uinput setup call can be forbidden (below). At factor 1 it is a
+silent twin, a second touchpad with the original's name that reports nothing,
+and it is visible as such to libinput and in device listings (GNOME Settings,
+`libinput list-devices`, `/proc/bus/input/devices`). Better Touchpad's own
+device list leaves it out.
 
 ## The risk being reviewed
 
@@ -166,7 +169,7 @@ service, and none trusting the one above it:
 
 | Way out | What releases the touchpad | Held by |
 | --- | --- | --- |
-| factor set back to 1 | the loop waits until nothing is touching, lifts anything still down on the clone, and ungrabs; the clone stays, idle | `passthrough::tests::returning_to_neutral_releases_after_the_fingers_lift` |
+| factor set back to 1 | the loop waits until nothing is touching, lifts anything still down on the clone, and ungrabs; the clone stays, a silent twin | `passthrough::tests::returning_to_neutral_releases_after_the_fingers_lift` |
 | normal stop (`SIGTERM`, `SIGINT`, removal's `systemctl stop`) | the handler sets a flag the loop checks every 250 ms; `Passthrough`'s `Drop` lifts, ungrabs, and destroys | `passthrough::tests::dropping_the_pass_through_releases_the_grab_and_destroys_the_clone`; `TimeoutStopSec=3` |
 | an error return, any `?` | the same `Drop` | the same test |
 | a panic | `Drop` runs while unwinding | `passthrough::tests::a_panic_while_holding_releases_the_grab` |
@@ -260,6 +263,18 @@ removal deletes it. *Held by:* `maintainer-scripts.test.sh`,
 `gnome::tests::an_install_that_could_not_start_the_pass_through_says_restart_or_reconnect`,
 `verify-deb.sh` (the unit's one command).
 
+## Gestures on a held touchpad
+
+While a touchpad is held, GNOME Shell sees its gestures from the clone's node.
+The gesture service (ADR 0015's routing, `SysfsDeviceIdentities`) resolves a
+clone's node, recognised by its `phys`, to the present non-clone device with
+the same bus, vendor, product, version, and name, and uses that device's
+identity, so the pad's own gesture profile applies. Two such devices with
+different identities cannot be told apart, and the gesture uses the global
+profile. *Held by:* `touchpad-gesture-service/tests/devices.rs`,
+`a_gesture_on_a_held_pad_uses_that_pads_profile_not_the_global_one` and
+`a_clone_that_matches_two_different_pads_goes_to_the_global_profile`.
+
 ## Trackpoint pairing and the device group
 
 The clone carries the original's `ID_INPUT_TOUCHPAD_INTEGRATION` and
@@ -305,10 +320,13 @@ earlier draft of this review said it could not be narrowed below "a process
 holding `/dev/uinput` can synthesise a keyboard"; that was wrong. uinput
 cannot give the descriptor up after creating a device, but the process can
 take away its own ability to declare anything more, and it does, before it
-reads any input: what is left is the one touchpad clone, which can move the
-pointer and click but cannot type and cannot jump to an absolute position. The
-on-screen keyboard is the one path from there to typed text, and it needs the
-keyboard to be on screen and a relative pointer driven to each key. It is
+reads any input. That blocks new devices only. The one touchpad clone that
+already exists is still there, and code that took over the process can still
+drive it: move the pointer and click, though not type and not jump to an
+absolute position. That includes steering the pointer onto the keys of an
+on-screen keyboard and clicking them, which turns into typed text whenever an
+on-screen keyboard is shown; it is the residual path from this process to
+typed input, and nothing in this design removes it. It is
 further bounded by the process having nothing that parses untrusted
 variable-length input (events are 24-byte records the kernel produced), by two
 methods taking two doubles as its only other input, and by the systemd

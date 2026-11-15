@@ -29,8 +29,10 @@ permission to read a keyboard.
 - **It holds the touchpad only while a factor other than 1 is set**: an
   exclusive `EVIOCGRAB`, and every event forwarded to a uinput clone with the
   same capabilities, two-finger finger motion (and any wheel) scaled. At 1 it
-  holds nothing. The clone is created once, at start, and stays idle between
-  holds, so the service can forbid itself every later uinput setup call.
+  holds nothing. The clone is created once, at start, and exists at every
+  factor, so the service can forbid itself every later uinput setup call. At
+  factor 1 it is a silent twin that device listings show (Better Touchpad's
+  own list leaves it out).
 - **Privilege:** root only to open the two nodes, inside a unit whose device
   cgroup allows exactly `/dev/input/eventN` and `/dev/uinput`; then
   `_better-touchpad-scroll` with no groups, no capabilities, and
@@ -54,8 +56,14 @@ permission to read a keyboard.
   (`engineering/performance/touchpad-scroll-performance.md`); the kernel hop
   is owed to a run on real hardware.
 - The residual risk: a compromised pass-through holds `/dev/uinput` and could
-  drive its one touchpad clone, but cannot create another device, a keyboard,
-  or an absolute pointer (the seccomp filter and lock). The
+  drive its one touchpad clone, which includes steering the pointer onto an
+  on-screen keyboard and clicking its keys; it cannot create another device, a
+  keyboard, or an absolute pointer (the seccomp filter and lock only block new
+  devices).
+- Gestures made while a pad is held come from the clone's node. The gesture
+  service resolves a clone's node to the touchpad it stands in for (same bus,
+  vendor, product, version, name; ADR 0015's routing), so the pad's own
+  gesture profile still applies. The
   review bounds it and the owner accepted it.
 - libinput sees a clone rather than the original. Capabilities, ids, name,
   integration, and the libinput device group (trackpoint pairing) carry over.

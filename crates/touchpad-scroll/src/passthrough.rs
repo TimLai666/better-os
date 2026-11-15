@@ -3,9 +3,13 @@
 //! The pass-through holds the touchpad (an exclusive `EVIOCGRAB`) only while a
 //! factor other than one is set. At neutral it holds nothing and reads
 //! nothing. Its clone is created once, when the pass-through is built, and
-//! lives as long as it does: that is what lets the service forbid itself every
-//! further uinput setup call before it ever reads an event (see
-//! [`crate::seccomp`]). An idle clone reports nothing. Taking and releasing the hold both wait for the pad to be
+//! exists at every factor, 1 included, for as long as the service runs: that
+//! is what lets the service forbid itself every further uinput setup call
+//! before it ever reads an event (see [`crate::seccomp`]). At factor 1 it is a
+//! silent twin: libinput and anything that lists input devices see a second
+//! touchpad with the same name that reports nothing. Better Touchpad's own
+//! device list leaves it out; other tools (GNOME Settings, `libinput
+//! list-devices`) show it. Taking and releasing the hold both wait for the pad to be
 //! untouched, so the desktop never sees a finger appear mid-gesture or one that
 //! never lifts.
 //!
