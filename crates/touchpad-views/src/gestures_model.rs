@@ -149,6 +149,10 @@ pub struct TestRun {
     /// How many actions were actually performed. Zero unless live testing is
     /// on, which is the property the screen promises.
     pub performed: usize,
+    /// How many actions were handed to the desktop, performed or not. With
+    /// live testing on, `performed < attempted` is the answer to "did it
+    /// reach the desktop?" (ticket 88).
+    pub attempted: usize,
 }
 
 /// Which part of the fixed key table a picker is showing.
@@ -511,10 +515,25 @@ impl GestureScreen {
                 self.failures.consecutive()
             ));
             self.save(store);
+            if let Some(store) = store
+                && let Err(error) = store.record_turned_off(self.failures.consecutive())
+            {
+                self.problem = Some(error.to_string());
+            }
             // An integration that is off must not still be holding GNOME's
             // gestures.
             self.suppression
                 .transition(SuppressionEvent::Disabled, self.adapter.as_mut());
+        }
+    }
+
+    /// Forgets that gestures turned themselves off, once they are on again or
+    /// the person turned them off on purpose.
+    fn forget_turned_off(&mut self, store: Option<&GestureStore>) {
+        if let Some(store) = store
+            && let Err(error) = store.clear_turned_off()
+        {
+            self.problem = Some(error.to_string());
         }
     }
 
@@ -813,7 +832,7 @@ impl GestureScreen {
             .map(|conflict| ConflictRow {
                 gesture: conflict.gesture.clone(),
                 gesture_label: gesture_label(&conflict.gesture, c),
-                built_in: conflict.built_in_does.to_string(),
+                built_in: built_in_words(conflict.built_in_does, c),
                 resolution: self.resolutions.get(&conflict.gesture).copied(),
             })
             .collect();
@@ -836,15 +855,26 @@ impl GestureScreen {
                 .changes
                 .iter()
                 .map(|change| {
+                    // The gesture in words: what the hand does and what it
+                    // runs. The plan's own summary (`pinch ×4 → app.zoom`)
+                    // is a machine form and stays out of the window.
+                    let described = mac_style()
+                        .get(&change.gesture)
+                        .or_else(|| self.config().get(&change.gesture))
+                        .map(|gesture| {
+                            format!(
+                                "{} · {} {} · {}",
+                                shape_label(gesture.shape, c),
+                                gesture.contacts.get(),
+                                c.contacts_label,
+                                action_label(&gesture.action, c)
+                            )
+                        })
+                        .unwrap_or_default();
                     format!(
-                        "{} · {} · {}",
+                        "{} · {} · {described}",
                         gesture_label(&change.gesture, c),
                         change_label(change.kind, c),
-                        change
-                            .after
-                            .clone()
-                            .or_else(|| change.before.clone())
-                            .unwrap_or_default()
                     )
                 })
                 .collect(),
@@ -913,6 +943,9 @@ impl GestureScreen {
         self.resolutions.clear();
         self.import = None;
         self.record_run(state, store);
+        if self.config().enabled {
+            self.forget_turned_off(store);
+        }
         Ok(state)
     }
 
@@ -943,6 +976,7 @@ impl GestureScreen {
         let (config, report) = plan.apply_with(self.adapter.as_mut(), &mut self.suppression);
         *self.active_mut() = config;
         self.save(store);
+        self.forget_turned_off(store);
         let state = report.state();
         self.report = Some(report);
         state
@@ -951,12 +985,15 @@ impl GestureScreen {
     /// Binds and verifies what is configured now, without changing it. This is
     /// what the screen does on the way in, so a row's verification result is
     /// this session's rather than the last one's.
-    pub fn verify_all(&mut self) -> RunState {
+    ///
+    /// The store is only written when the run is the one that turns gestures
+    /// off by themselves, so the file, the service, and the window agree.
+    pub fn verify_all(&mut self, store: Option<&GestureStore>) -> RunState {
         let (config, report) = bind_all(&self.config().clone(), self.adapter.as_mut());
         *self.active_mut() = config;
         let state = report.state();
         self.report = Some(report);
-        self.record_run(state, None);
+        self.record_run(state, store);
         state
     }
 
@@ -1050,8 +1087,10 @@ impl GestureScreen {
         let events = recognizer.replay(&frames);
 
         let mut performed = 0;
+        let mut attempted = 0;
         if self.live_testing {
             for event in &events {
+                attempted += 1;
                 let action = self
                     .config()
                     .get(&event.gesture)
@@ -1073,6 +1112,7 @@ impl GestureScreen {
                 .map(|event| test_line(event, c, self))
                 .collect(),
             performed,
+            attempted,
         };
         self.last_test.clone()
     }
@@ -1140,6 +1180,15 @@ pub fn outcome_label(outcome: &BindingOutcome, c: &'static Copy) -> String {
 
 /// The name of a shipped gesture. A gesture the user built carries its own
 /// identity, which is the only honest name for it.
+/// What a built-in GNOME gesture does, in words, from its machine key.
+pub fn built_in_words(does: &str, c: &'static Copy) -> String {
+    match does {
+        "gnome.overview_and_application_grid" => c.builtin_overview.to_string(),
+        "gnome.switch_workspace" => c.builtin_workspace.to_string(),
+        other => other.to_string(),
+    }
+}
+
 pub fn gesture_label(id: &GestureId, c: &'static Copy) -> String {
     match id.as_str() {
         "launcher" => c.gesture_launcher.to_string(),

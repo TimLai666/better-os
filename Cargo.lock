@@ -4496,6 +4496,7 @@ dependencies = [
  "manager-store",
  "serde_json",
  "tempfile",
+ "touchpad-platform",
  "uuid",
 ]
 
@@ -4540,6 +4541,7 @@ dependencies = [
  "awake-core",
  "awake-ipc",
  "awake-service",
+ "better-actions",
  "better-core",
  "better-ui",
  "defaults-core",
@@ -4553,11 +4555,18 @@ dependencies = [
  "manager-core",
  "manager-platform",
  "manager-store",
+ "semver",
  "serde",
  "serde_json",
  "smol",
  "tempfile",
+ "thiserror 2.0.19",
  "tokio",
+ "touchpad-core",
+ "touchpad-gestures",
+ "touchpad-platform",
+ "touchpad-session",
+ "touchpad-views",
  "uuid",
  "window-attention-core",
  "zbus",
@@ -8206,6 +8215,7 @@ dependencies = [
  "touchpad-gestures",
  "touchpad-platform",
  "touchpad-session",
+ "touchpad-views",
 ]
 
 [[package]]
@@ -8214,6 +8224,7 @@ version = "0.2.15"
 dependencies = [
  "better-core",
  "defaults-platform",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "touchpad-core",
@@ -8243,6 +8254,19 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "zbus",
+]
+
+[[package]]
+name = "touchpad-views"
+version = "0.2.15"
+dependencies = [
+ "better-actions",
+ "launcher-platform",
+ "tempfile",
+ "touchpad-core",
+ "touchpad-gestures",
+ "touchpad-platform",
+ "touchpad-session",
 ]
 
 [[package]]
