@@ -177,6 +177,13 @@ contract.
   exec, and that late close reaches a watch started afterwards as a
   close-write. Have a child write it (`install` in
   `crates/better-core/src/self_update.rs`).
+- Every sandbox desktop a test or a screenshot starts (headless GNOME Shell,
+  sway, `dbus-run-session`) runs under
+  `systemd-run --user --scope -p MemoryMax=4G -p MemorySwapMax=0`, with a
+  no-op `ibus-daemon` (a script that execs `sleep infinity`) first on its
+  `PATH`, and is ended by PID when done. A sandbox GNOME Shell otherwise starts
+  its own `ibus-daemon`, which has grown to 12 and 21 GB, and the kernel's OOM
+  kill took the owner's Claude Desktop down with it twice (2026-11-14, -15).
 - Give every worktree of this repository its own `CARGO_TARGET_DIR`. Cargo
   hashes a path crate by its path inside the workspace, so two worktrees sharing
   one target overwrite each other's artifacts and a stale build from the other
