@@ -372,3 +372,43 @@ fn an_adapter_that_cannot_tell_reports_unknown_rather_than_not_default() {
         }
     );
 }
+
+/// A setting this desktop does not have (GNOME 46 defines no file-manager
+/// key) is left out of the component's state: Better Files is the default
+/// when every setting it can have points at it.
+#[test]
+fn a_setting_this_desktop_does_not_have_is_left_out_of_the_aggregate() {
+    let mut tool = integration(
+        "file-manager-tool-entry-point",
+        "/org/gnome/desktop/applications/file-manager",
+        FILES,
+    );
+    tool.kind = IntegrationKind::ToolEntryPoint;
+    tool.apply_adapter = AdapterId::ToolEntryPoint;
+    tool.verify_adapter = AdapterId::ToolEntryPoint;
+    let mut adapters = adapters_with(xdg_adapter(&[(
+        "better-files/default-file-manager",
+        set(FILES),
+    )]));
+    let mut unsupported = defaults_platform::InMemoryAdapter::new(AdapterId::ToolEntryPoint);
+    unsupported.preset(
+        "better-files/file-manager-tool-entry-point",
+        ObservedValue::Unsupported {
+            reason: "gsettings.no_such_key".to_string(),
+        },
+    );
+    adapters.insert(Box::new(unsupported));
+    let aggregate = aggregate_of(
+        vec![manifest(
+            "better-files",
+            vec![
+                integration("default-file-manager", "inode/directory", FILES),
+                tool.clone(),
+            ],
+        )],
+        vec![("better-files", ComponentReadiness::ready())],
+        adapters,
+        Vec::new(),
+    );
+    assert_eq!(aggregate, AggregateState::Default);
+}

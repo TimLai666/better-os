@@ -103,6 +103,9 @@ pub(crate) struct Snapshot {
     pub(crate) catalog_warning: Option<&'static str>,
     /// What Keep awake read from its service (ticket 87).
     pub(crate) keep_awake: crate::pages::keep_awake::decide::Facts,
+    /// How many settings another program changed after Better OS set them,
+    /// from Default apps' last reading (ticket 89).
+    pub(crate) default_apps_changed: usize,
     /// The system battery's health, as System last read it (ticket 86).
     pub(crate) battery_health: Option<u8>,
 }
@@ -117,6 +120,7 @@ impl Snapshot {
             packages_interrupted: false,
             catalog_warning: None,
             keep_awake: Default::default(),
+            default_apps_changed: 0,
             battery_health: None,
         }
     }
@@ -274,6 +278,7 @@ mod tests {
             packages_interrupted: true,
             catalog_warning: Some("The published catalog could not be reached."),
             keep_awake: Default::default(),
+            default_apps_changed: 0,
             battery_health: None,
         }
     }

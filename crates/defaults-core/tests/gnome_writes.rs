@@ -67,13 +67,18 @@ struct Run {
 
 impl Run {
     fn new(snapshots: &Path, adapter: DconfAdapter) -> Self {
+        Self::declaring(snapshots, Box::new(adapter), shortcut(&["<Super>f"]))
+    }
+
+    fn declaring(
+        snapshots: &Path,
+        adapter: Box<dyn defaults_platform::DefaultsAdapter>,
+        integration: DefaultIntegration,
+    ) -> Self {
         let mut adapters = AdapterSet::in_memory();
-        adapters.insert(Box::new(adapter));
+        adapters.insert(adapter);
         Self {
-            catalog: catalog(vec![manifest(
-                "better-files",
-                vec![shortcut(&["<Super>f"])],
-            )]),
+            catalog: catalog(vec![manifest("better-files", vec![integration])]),
             store: SnapshotStore::at_path(snapshots),
             adapters,
         }
@@ -432,4 +437,97 @@ fn a_key_the_user_had_set_is_put_back_to_their_value() {
         }
     );
     assert_eq!(run.state().1, keys(&["<Super>h", "<Alt>h"]));
+}
+
+const FAVORITES: &str = "/org/example/shell/favorite-apps";
+const SCHEMAS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../defaults-platform/tests/fixtures/schemas/gschemas.compiled"
+);
+
+fn launcher_entry() -> DefaultIntegration {
+    let mut integration = integration("overview-entry", FAVORITES, "io.betteros.Files.desktop");
+    integration.kind = IntegrationKind::DesktopLauncherEntry;
+    integration.apply_adapter = AdapterId::DesktopLauncherEntry;
+    integration.verify_adapter = AdapterId::DesktopLauncherEntry;
+    integration.exclusivity = better_core::defaults::IntegrationExclusivity::Shared;
+    integration.restore_policy = better_core::defaults::RestorePolicy::LeaveInPlace;
+    integration
+}
+
+/// Better Files pinned to the dock through the real dconf service: the list
+/// GNOME was showing (the schema's default, since the user never set it)
+/// with Better Files added, verified by reading it back, and left in place
+/// by a restore, as the declaration's leave-in-place policy says.
+#[test]
+fn a_launcher_entry_is_added_to_the_list_gnome_shows_and_left_on_restore() {
+    let dconf = dconf_or_skip!();
+    let snapshots = tempfile::tempdir().unwrap();
+    let adapter = defaults_platform::LauncherEntryAdapter::with_sender(
+        &dconf.database,
+        vec![PathBuf::from(SCHEMAS)],
+        Box::new(dconf.writer()),
+    );
+    let mut run = Run::declaring(snapshots.path(), Box::new(adapter), launcher_entry());
+    assert_eq!(
+        run.state(),
+        (
+            IntegrationState::NotDefault,
+            keys(&["org.gnome.Nautilus.desktop", "firefox.desktop"])
+        )
+    );
+
+    assert!(run.apply().results[0].outcome.is_success());
+    assert_eq!(
+        run.state(),
+        (IntegrationState::Default, set("io.betteros.Files.desktop"))
+    );
+    let written =
+        defaults_platform::gvdb::GvdbDatabase::parse(&std::fs::read(&dconf.database).unwrap())
+            .unwrap();
+    assert_eq!(
+        written.get(FAVORITES),
+        Some(&defaults_platform::gvdb::GVariantValue::TextList(vec![
+            "org.gnome.Nautilus.desktop".to_string(),
+            "firefox.desktop".to_string(),
+            "io.betteros.Files.desktop".to_string(),
+        ]))
+    );
+
+    run.restore();
+    assert_eq!(run.state().0, IntegrationState::Default);
+}
+
+/// A tool entry point whose key no installed schema defines is unavailable
+/// on this desktop, says why, and is never written.
+#[test]
+fn a_tool_entry_no_schema_defines_is_unavailable_and_never_written() {
+    let dconf = dconf_or_skip!();
+    let snapshots = tempfile::tempdir().unwrap();
+    let adapter = defaults_platform::ToolEntryPointAdapter::with_sender(
+        &dconf.database,
+        vec![PathBuf::from(SCHEMAS)],
+        Box::new(dconf.writer()),
+    );
+    let mut tool = integration(
+        "file-manager-tool-entry-point",
+        "/org/gnome/desktop/applications/file-manager",
+        "io.betteros.Files.desktop",
+    );
+    tool.kind = IntegrationKind::ToolEntryPoint;
+    tool.apply_adapter = AdapterId::ToolEntryPoint;
+    tool.verify_adapter = AdapterId::ToolEntryPoint;
+    let mut run = Run::declaring(snapshots.path(), Box::new(adapter), tool);
+    let reason = defaults_platform::gsettings::NO_SUCH_KEY.to_string();
+    assert_eq!(
+        run.state(),
+        (
+            IntegrationState::Unavailable {
+                reason: reason.clone()
+            },
+            ObservedValue::Unsupported { reason }
+        )
+    );
+    assert!(!run.apply().results[0].outcome.is_success());
+    assert!(!dconf.database.exists(), "something was written");
 }

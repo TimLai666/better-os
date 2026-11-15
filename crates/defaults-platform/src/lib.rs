@@ -22,6 +22,7 @@ pub mod applications;
 pub mod dconf;
 #[cfg(feature = "dconf-write")]
 pub mod dconf_writer;
+pub mod gsettings;
 pub mod gvariant;
 pub mod gvdb;
 pub mod mock;
@@ -42,6 +43,7 @@ pub use applications::{
     ApplicationCatalog, ApplicationChoice, InstalledApplications, LazyApplications,
 };
 pub use dconf::DconfAdapter;
+pub use gsettings::{LauncherEntryAdapter, ToolEntryPointAdapter};
 pub use mock::{InMemoryAdapter, MockBehavior, MockDesktop};
 pub use xdg::XdgDefaultAppAdapter;
 

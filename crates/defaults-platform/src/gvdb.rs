@@ -88,19 +88,7 @@ impl GvdbDatabase {
     }
 
     pub fn parse(bytes: &[u8]) -> Result<Self, GvdbError> {
-        if bytes.len() < HEADER_SIZE {
-            return Err(GvdbError::Truncated);
-        }
-        let signature_0 = read_u32(bytes, 0)?;
-        let signature_1 = read_u32(bytes, 4)?;
-        if signature_0 != SIGNATURE_0 || signature_1 != SIGNATURE_1 {
-            if signature_0.swap_bytes() == SIGNATURE_0 && signature_1.swap_bytes() == SIGNATURE_1 {
-                return Err(GvdbError::ByteSwapped);
-            }
-            return Err(GvdbError::NotGvdb);
-        }
-        let root_start = read_u32(bytes, 16)? as usize;
-        let root_end = read_u32(bytes, 20)? as usize;
+        let (root_start, root_end) = root(bytes)?;
         let items = hash_items(bytes, root_start, root_end)?;
 
         let mut values = BTreeMap::new();
@@ -114,6 +102,131 @@ impl GvdbDatabase {
         }
         Ok(Self { values })
     }
+}
+
+/// The default a compiled GSettings schema gives the key at `key_path`
+/// (`/org/gnome/shell/favorite-apps`), read out of one `gschemas.compiled`.
+///
+/// A compiled schema file is a GVDB table of schema ids, each a nested table
+/// of its keys plus `.path`. A key's value is a tuple whose first member is
+/// its default, overrides already applied by `glib-compile-schemas`. Only a
+/// schema whose `.path` is the key's directory counts: a relocatable schema
+/// has no path and no default that belongs to one place. `Ok(None)` is "no
+/// schema in this file has that key", which is a fact and not a failure.
+pub fn schema_default(bytes: &[u8], key_path: &str) -> Result<Option<GVariantValue>, GvdbError> {
+    let Some(split) = key_path.rfind('/') else {
+        return Ok(None);
+    };
+    let (directory, name) = (&key_path[..=split], &key_path[split + 1..]);
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let (root_start, root_end) = root(bytes)?;
+    let schemas = hash_items(bytes, root_start, root_end)?;
+    for schema in schemas.iter().filter(|item| item.item_type == b'H') {
+        let keys = hash_items(bytes, schema.value_start, schema.value_end)?;
+        let mut path = None;
+        let mut value = None;
+        for (index, key) in keys.iter().enumerate() {
+            if key.item_type != b'v' {
+                continue;
+            }
+            let full = full_key(bytes, &keys, index)?;
+            let data = slice(bytes, key.value_start, key.value_end)?;
+            if full == ".path" {
+                path = match decode_variant(data) {
+                    GVariantValue::Text(text) => Some(text),
+                    _ => None,
+                };
+            } else if full == name {
+                value = Some(first_tuple_member(data));
+            }
+        }
+        if path.as_deref() == Some(directory)
+            && let Some(value) = value
+        {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+/// A schema key is stored as a variant holding `(T...)`: its default, then
+/// any range or choice metadata. The default is the first member.
+fn first_tuple_member(data: &[u8]) -> GVariantValue {
+    let malformed = |signature: &str| GVariantValue::Malformed {
+        signature: signature.to_string(),
+    };
+    let Some(separator) = data.iter().rposition(|byte| *byte == 0) else {
+        return malformed("");
+    };
+    let Ok(signature) = std::str::from_utf8(&data[separator + 1..]) else {
+        return malformed("");
+    };
+    let child = &data[..separator];
+    let Some(inner) = signature
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+    else {
+        return malformed(signature);
+    };
+    // Only the shapes a launcher list or a setting needs: a string array,
+    // a string, or a boolean as the first member.
+    let (member, rest) = if let Some(rest) = inner.strip_prefix("as") {
+        ("as", rest)
+    } else if let Some(rest) = inner.strip_prefix('s') {
+        ("s", rest)
+    } else if let Some(rest) = inner.strip_prefix('b') {
+        ("b", rest)
+    } else {
+        return GVariantValue::Unsupported {
+            signature: signature.to_string(),
+        };
+    };
+    let member_bytes = if rest.is_empty() || member == "b" {
+        // The last member of a tuple has no offset: it runs to the end. A
+        // boolean is fixed-width, one byte, wherever it sits.
+        if member == "b" {
+            child.get(..1)
+        } else {
+            Some(child)
+        }
+    } else {
+        // A variable-width member that is not last ends where the tuple's
+        // trailing offset table says; the first such offset is stored last.
+        let width = match child.len() {
+            0..=0xff => 1,
+            0x100..=0xffff => 2,
+            _ => 4,
+        };
+        child
+            .len()
+            .checked_sub(width)
+            .and_then(|at| read_offset(child, at, width))
+            .and_then(|end| child.get(..end))
+    };
+    let Some(member_bytes) = member_bytes else {
+        return malformed(signature);
+    };
+    let mut variant = member_bytes.to_vec();
+    variant.push(0);
+    variant.extend_from_slice(member.as_bytes());
+    decode_variant(&variant)
+}
+
+fn root(bytes: &[u8]) -> Result<(usize, usize), GvdbError> {
+    if bytes.len() < HEADER_SIZE {
+        return Err(GvdbError::Truncated);
+    }
+    let signature_0 = read_u32(bytes, 0)?;
+    let signature_1 = read_u32(bytes, 4)?;
+    if signature_0 != SIGNATURE_0 || signature_1 != SIGNATURE_1 {
+        if signature_0.swap_bytes() == SIGNATURE_0 && signature_1.swap_bytes() == SIGNATURE_1 {
+            return Err(GvdbError::ByteSwapped);
+        }
+        return Err(GvdbError::NotGvdb);
+    }
+    Ok((read_u32(bytes, 16)? as usize, read_u32(bytes, 20)? as usize))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -304,6 +417,47 @@ mod tests {
     use super::*;
 
     const USER_DB: &[u8] = include_bytes!("../tests/fixtures/dconf/user");
+
+    const SCHEMAS: &[u8] = include_bytes!("../tests/fixtures/schemas/gschemas.compiled");
+
+    /// The fixture is `tests/fixtures/schemas/org.example.shell.gschema.xml`
+    /// compiled by GLib's own `glib-compile-schemas`.
+    #[test]
+    fn a_schema_default_is_read_by_the_key_s_path() {
+        assert_eq!(
+            schema_default(SCHEMAS, "/org/example/shell/favorite-apps").unwrap(),
+            Some(GVariantValue::TextList(vec![
+                "org.gnome.Nautilus.desktop".to_string(),
+                "firefox.desktop".to_string()
+            ]))
+        );
+        assert_eq!(
+            schema_default(SCHEMAS, "/org/example/shell/enabled").unwrap(),
+            Some(GVariantValue::Boolean(true))
+        );
+        // The same key name under another path is that schema's own default.
+        assert_eq!(
+            schema_default(SCHEMAS, "/org/example/other/favorite-apps").unwrap(),
+            Some(GVariantValue::TextList(vec!["wrong.desktop".to_string()]))
+        );
+    }
+
+    #[test]
+    fn a_key_no_schema_has_is_absent_and_a_relocatable_schema_belongs_nowhere() {
+        assert_eq!(
+            schema_default(SCHEMAS, "/org/example/shell/missing").unwrap(),
+            None
+        );
+        assert_eq!(
+            schema_default(SCHEMAS, "/org/gnome/desktop/applications/file-manager").unwrap(),
+            None
+        );
+        assert_eq!(schema_default(SCHEMAS, "/").unwrap(), None);
+        assert_eq!(
+            schema_default(b"not gvdb at all, long enough", "/a/b"),
+            Err(GvdbError::NotGvdb)
+        );
+    }
 
     #[test]
     fn reads_a_database_dconf_itself_wrote() {

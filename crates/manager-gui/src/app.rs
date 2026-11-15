@@ -23,11 +23,11 @@ use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, star
 use crate::{
     attention::{ComponentFacts, Snapshot},
     deep_link::{self, Request},
-    defaults_app::DefaultsState,
     home,
     i18n::{Locale, copy, shell},
     model::{ActivityFilter, CatalogLine, ComponentInfo, DetailTab, Page, UpdateCheck},
     navigation::{History, Route},
+    pages::default_apps::jobs::DefaultsState,
     search::SearchEntry,
 };
 
@@ -495,6 +495,12 @@ impl ManagerApp {
             )
             .warning,
             keep_awake: self.keep_awake_facts(),
+            default_apps_changed: self
+                .defaults
+                .report
+                .as_ref()
+                .map(crate::pages::default_apps::model::changed_elsewhere)
+                .unwrap_or_default(),
             battery_health: self.system.battery_health(),
         }
     }
@@ -965,9 +971,18 @@ impl ManagerApp {
             self.device = home::HostRoot::default().device();
             self.read_package_system_record(cx);
         }
-        // Default apps reads what every integration says the first time it is
-        // shown, as its sidebar item used to.
-        if page == Page::Defaults && self.defaults.report.is_none() && !self.defaults.busy {
+        // Default apps reads what every integration says each time it, or
+        // Home (which says when a default was changed elsewhere), is shown:
+        // another program can change a default behind the window's back. A
+        // details page's link opens it with that component expanded.
+        if let Page::DefaultsComponent(component) = &page {
+            self.defaults.open.insert(component.clone());
+        }
+        if matches!(
+            page,
+            Page::Home | Page::Defaults | Page::DefaultsComponent(_)
+        ) && !self.defaults.busy
+        {
             self.refresh_defaults(cx);
         }
         // Window attention reads the shell and the service each time it is
@@ -2125,6 +2140,7 @@ impl better_ui::restart::Restartable for ManagerApp {
             self.repair_task.is_some(),
             self.heal_task.is_some()
                 || self.keep_awake.blocks_restart()
+                || self.defaults.blocks_restart()
                 || self.system.blocks_restart(),
         )
     }
