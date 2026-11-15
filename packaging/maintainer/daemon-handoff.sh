@@ -113,7 +113,7 @@ run() {
         -o Dpkg::Options::=--force-confold \
         -- $packages > "$log" 2>&1; then
         # shellcheck disable=SC2016 # a dpkg-query format, not a shell expansion
-        write_status done "$(dpkg-query -W -f='${Version}' "$service" 2>/dev/null)"
+        write_status "done" "$(dpkg-query -W -f='${Version}' "$service" 2>/dev/null)"
     else
         write_status failed "apt-get could not install the new service; see $log"
         return 1
