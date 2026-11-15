@@ -1983,7 +1983,8 @@ fn ctrl_f6_moves_the_keyboard_to_the_sidebar_and_back() {
     assert_eq!(session.focus, Focus::Content);
 }
 
-/// A server that wants "ann" / "secret".
+/// A server that wants "ann" / "secret", asked through the window as GVfs
+/// asks, again after a wrong answer.
 struct FakeServer {
     folder: std::path::PathBuf,
 }
@@ -1992,19 +1993,45 @@ impl crate::network::Mounter for FakeServer {
     fn mount(
         &self,
         _address: &str,
-        credentials: Option<&crate::network::Credentials>,
+        asker: &crate::network::Asker,
     ) -> Result<std::path::PathBuf, crate::network::MountError> {
-        match credentials {
-            Some(given) if given.user == "ann" && given.password == "secret" => {
-                Ok(self.folder.clone())
+        use crate::network::{Answer, MountError, MountFailure, Prompt, SignInFields};
+        let mut again = false;
+        loop {
+            let answer = smol::block_on(asker.ask(Prompt::SignIn {
+                message: "Enter password for ann on nas".into(),
+                user: "ann".into(),
+                domain: String::new(),
+                fields: SignInFields::from_bits(1 | 2 | 8),
+                again,
+            }));
+            match answer {
+                Answer::SignIn { user, password, .. }
+                    if user == "ann" && password.expose() == "secret" =>
+                {
+                    return Ok(self.folder.clone());
+                }
+                Answer::SignIn { .. } => again = true,
+                _ => return Err(MountError::new(MountFailure::Cancelled, "")),
             }
-            _ => Err(crate::network::MountError::NeedsPassword),
         }
     }
 }
 
+/// Pumps until the window shows a question, or the mount ends.
+fn until_asked(session: &mut FilesSession) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while session.server_prompt.is_none() && session.is_mounting() {
+        assert!(Instant::now() < deadline, "nothing was asked");
+        session.pump();
+        std::thread::yield_now();
+    }
+}
+
 #[test]
-fn a_server_address_asks_for_a_password_then_opens_the_mounted_folder() {
+fn a_server_asks_in_the_window_again_after_a_wrong_password_then_opens_its_folder() {
+    use crate::network::{Answer, Prompt, Remember};
+    use crate::secret::Secret;
     let (fixture, mut session) = fixture();
     settle(&mut session);
     let mounted = fixture.home.join("Documents/reports");
@@ -2016,32 +2043,57 @@ fn a_server_address_asks_for_a_password_then_opens_the_mounted_folder() {
         None,
         &crate::toolbar::FilesystemValidator,
     );
+    until_asked(&mut session);
+    let shown = session.server_prompt.as_ref().expect("a sign-in");
+    assert_eq!(shown.address, "sftp://nas/home");
+    assert!(matches!(&shown.prompt, Prompt::SignIn { again: false, user, .. } if user == "ann"));
+    let answer = |password: &str| Answer::SignIn {
+        user: "ann".into(),
+        domain: String::new(),
+        password: Secret::new(password),
+        anonymous: false,
+        remember: Remember::Never,
+    };
+    session.answer_server(answer("wrong"));
+    assert!(
+        session.server_prompt.is_none(),
+        "the form leaves while GVfs checks"
+    );
+    until_asked(&mut session);
+    assert!(matches!(
+        &session.server_prompt.as_ref().expect("asked again").prompt,
+        Prompt::SignIn { again: true, .. }
+    ));
+    session.answer_server(answer("secret"));
     let deadline = Instant::now() + Duration::from_secs(5);
     while session.is_mounting() {
         assert!(Instant::now() < deadline);
         session.pump();
         std::thread::yield_now();
     }
-    assert_eq!(
-        session.dialog,
-        Some(PendingDialog::ServerLogin {
-            address: "sftp://nas/home".into()
-        })
-    );
-    session.dialog = None;
-    session.mount_server(
-        "sftp://nas/home".into(),
-        Some(crate::network::Credentials {
-            user: "ann".into(),
-            password: "secret".into(),
-        }),
-    );
+    assert_eq!(session.location(), &Location::local(&mounted).unwrap());
+    assert!(session.notice.is_none());
+}
+
+#[test]
+fn cancelling_a_sign_in_ends_the_mount_without_a_message() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    session.set_mounter(std::sync::Arc::new(FakeServer {
+        folder: fixture.home.clone(),
+    }));
+    let before = session.location().clone();
+    session.submit_path("sftp://nas/", None, &crate::toolbar::FilesystemValidator);
+    until_asked(&mut session);
+    session.cancel_server_prompt();
+    let deadline = Instant::now() + Duration::from_secs(5);
     while session.is_mounting() {
         assert!(Instant::now() < deadline);
         session.pump();
         std::thread::yield_now();
     }
-    assert_eq!(session.location(), &Location::local(&mounted).unwrap());
+    assert!(session.notice.is_none(), "{:?}", session.notice);
+    assert_eq!(session.location(), &before);
 }
 
 #[test]

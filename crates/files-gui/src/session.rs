@@ -108,7 +108,12 @@ pub enum Notice {
     /// A server is being opened.
     Mounting(String),
     /// A server could not be opened.
-    MountFailed(crate::network::MountError),
+    /// A server did not open: a plain sentence, with the server's own words
+    /// as the detail under it ([`Notice::detail`]).
+    MountFailed {
+        address: String,
+        error: crate::network::MountError,
+    },
     /// The folder a view showed was deleted or moved away (its name); the
     /// view went to the folder above it.
     FolderGone(String),
@@ -226,6 +231,17 @@ impl Notice {
         }
     }
 
+    /// What goes under the message, in smaller words: the server's own
+    /// account of a failure.
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            Notice::MountFailed { error, .. } => {
+                Some(error.detail.trim().to_string()).filter(|detail| !detail.is_empty())
+            }
+            _ => None,
+        }
+    }
+
     pub fn message(&self, c: &'static Copy) -> String {
         match self {
             Notice::Path(rejection) => rejection.message(c).to_string(),
@@ -295,14 +311,23 @@ impl Notice {
                 ),
             },
             Notice::Mounting(address) => format!("{} {address}", c.server_connecting),
-            Notice::MountFailed(error) => match error {
-                crate::network::MountError::NoGio => c.server_no_gio.to_string(),
-                crate::network::MountError::TimedOut => c.server_timed_out.to_string(),
-                crate::network::MountError::NeedsPassword => c.server_sign_in.to_string(),
-                crate::network::MountError::Failed(reason) => {
-                    format!("{}: {reason}", c.server_failed)
+            Notice::MountFailed { address, error } => {
+                use crate::network::MountFailure as F;
+                let server = crate::network::server_name(address);
+                match error.failure {
+                    F::Cancelled | F::Failed => c.server_failed,
+                    F::NoGvfs => c.server_no_gvfs,
+                    F::TimedOut => c.server_timed_out,
+                    F::HostNotFound => c.server_not_found,
+                    F::Refused => c.server_refused,
+                    F::PermissionDenied => c.server_denied,
+                    F::HostKeyChanged => c.server_key_changed,
+                    F::NotSupported => c.server_not_supported,
+                    F::NoLocalFolder => c.server_no_folder,
+                    F::UntrustedGvfs => c.server_untrusted_gvfs,
                 }
-            },
+                .replace("{server}", &server)
+            }
             Notice::AlreadyPinned => c.already_pinned.to_string(),
             Notice::NotPinnable => c.not_writable_here.to_string(),
             Notice::Rejected(error) => crate::errors::explain(&error.to_string(), c),
@@ -385,10 +410,6 @@ pub enum PendingDialog {
     /// Compress, waiting for a format. The request holds the selection it was
     /// opened for, and the chooser which format the keyboard is on.
     Compress(CompressChooser),
-    /// A server that wants a name and password before it opens.
-    ServerLogin {
-        address: String,
-    },
     /// An encrypted drive that wants its passphrase before it mounts
     /// (ticket 122): its key in the drive list, and its name.
     UnlockDrive {
@@ -432,12 +453,14 @@ pub struct FilesSession {
     undoable: Vec<(files_operations::JobId, files_operations::Operation)>,
     /// Opens servers typed in the path bar, and the mount in flight.
     mounter: Arc<dyn crate::network::Mounter>,
-    mounting: Option<
-        std::sync::mpsc::Receiver<(
-            String,
-            Result<std::path::PathBuf, crate::network::MountError>,
-        )>,
-    >,
+    mounting: Option<std::sync::mpsc::Receiver<MountResult>>,
+    /// The questions the mount in flight asks (ticket 117).
+    server_asks: Option<std::sync::mpsc::Receiver<crate::network::Ask>>,
+    /// The question shown in the content area, with where its answer goes.
+    pub server_prompt: Option<crate::network::Ask>,
+    /// Counts the questions shown, so the window readies its fields once
+    /// for each.
+    pub server_prompt_serial: u64,
     bookmark_store: BookmarkStore,
     pub bookmarks: BookmarkFile,
     pub directories: UserDirectories,
@@ -638,8 +661,11 @@ impl FilesSession {
             view_store,
             views,
             history: crate::undo::History::default(),
-            mounter: Arc::new(crate::network::GioMounter),
+            mounter: Arc::new(crate::network::SystemMounter),
             mounting: None,
+            server_asks: None,
+            server_prompt: None,
+            server_prompt_serial: 0,
             undoable: Vec::new(),
             bookmark_store,
             bookmarks,
@@ -885,7 +911,7 @@ impl FilesSession {
         validator: &dyn PathValidator,
     ) {
         if let Some(address) = crate::network::server_address(text) {
-            self.mount_server(address, None);
+            self.mount_server(address);
             return;
         }
         match resolve_path_input(text, home, validator) {
@@ -3220,23 +3246,39 @@ impl FilesSession {
         }
     }
 
-    /// Opens a server through GVfs on a worker thread; [`Self::pump`] goes
-    /// there once it is mounted, or asks for a name and password.
-    pub fn mount_server(
-        &mut self,
-        address: String,
-        credentials: Option<crate::network::Credentials>,
-    ) {
+    /// Opens a server through GVfs on a worker thread. Whatever it asks
+    /// (sign-in, a host key) is shown in the content area
+    /// ([`Self::server_prompt`]); [`Self::pump`] goes to its folder once it
+    /// is mounted.
+    pub fn mount_server(&mut self, address: String) {
+        // A mount already asking something is answered "cancel" first.
+        self.cancel_server_prompt();
         let (sender, receiver) = std::sync::mpsc::channel();
+        let (asks, questions) = std::sync::mpsc::channel();
         let mounter = Arc::clone(&self.mounter);
         self.notice = Some(Notice::Mounting(address.clone()));
         let _ = std::thread::Builder::new()
             .name("files-server-mount".to_string())
             .spawn(move || {
-                let result = mounter.mount(&address, credentials.as_ref());
+                let asker = crate::network::Asker::new(&address, asks);
+                let result = mounter.mount(&address, &asker);
                 let _ = sender.send((address, result));
             });
         self.mounting = Some(receiver);
+        self.server_asks = Some(questions);
+    }
+
+    /// Sends the person's answer to the question shown, and takes it off
+    /// the screen until GVfs asks the next one or the mount ends.
+    pub fn answer_server(&mut self, answer: crate::network::Answer) {
+        if let Some(ask) = self.server_prompt.take() {
+            let _ = ask.reply.try_send(answer);
+        }
+    }
+
+    /// Cancels the question shown, if any: the mount ends quietly.
+    pub fn cancel_server_prompt(&mut self) {
+        self.answer_server(crate::network::Answer::Cancel);
     }
 
     /// Uses another way of mounting servers. For tests.
@@ -3250,13 +3292,38 @@ impl FilesSession {
     }
 
     fn pump_mount(&mut self) -> bool {
+        let mut changed = false;
+        // GVfs withdrew the question (it sent `Aborted`, or the mount was
+        // given up on): it leaves the screen.
+        if self
+            .server_prompt
+            .as_ref()
+            .is_some_and(|ask| ask.reply.is_closed())
+        {
+            self.server_prompt = None;
+            changed = true;
+        }
+        if let Some(questions) = &self.server_asks
+            && let Ok(ask) = questions.try_recv()
+        {
+            // A question replaces the "Connecting to…" bar.
+            if matches!(self.notice, Some(Notice::Mounting(_))) {
+                self.notice = None;
+            }
+            self.cancel_server_prompt();
+            self.server_prompt = Some(ask);
+            self.server_prompt_serial += 1;
+            changed = true;
+        }
         let Some(receiver) = &self.mounting else {
-            return false;
+            return changed;
         };
         let Ok((address, result)) = receiver.try_recv() else {
-            return false;
+            return changed;
         };
         self.mounting = None;
+        self.server_asks = None;
+        self.server_prompt = None;
         match result {
             Ok(path) => match Location::local(path) {
                 Ok(location) => {
@@ -3264,16 +3331,20 @@ impl FilesSession {
                     self.navigate_to(location);
                 }
                 Err(_) => {
-                    self.notice = Some(Notice::MountFailed(crate::network::MountError::Failed(
-                        "not a path".to_string(),
-                    )))
+                    self.notice = Some(Notice::MountFailed {
+                        address,
+                        error: crate::network::MountError::new(
+                            crate::network::MountFailure::NoLocalFolder,
+                            "",
+                        ),
+                    })
                 }
             },
-            Err(crate::network::MountError::NeedsPassword) => {
+            // The person cancelled: nothing to say.
+            Err(error) if error.failure == crate::network::MountFailure::Cancelled => {
                 self.notice = None;
-                self.dialog = Some(PendingDialog::ServerLogin { address });
             }
-            Err(error) => self.notice = Some(Notice::MountFailed(error)),
+            Err(error) => self.notice = Some(Notice::MountFailed { address, error }),
         }
         true
     }
@@ -3506,6 +3577,12 @@ fn apply_rows(pane: &mut Pane, rows: Vec<files_core::RefreshEvent>) -> bool {
     }
     changed
 }
+
+/// A server mount's address and how it ended.
+type MountResult = (
+    String,
+    Result<std::path::PathBuf, crate::network::MountError>,
+);
 
 /// A drive action's outcome with the key of the drive it was for.
 type KeyedOutcome = (String, DriveOutcome);

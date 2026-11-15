@@ -68,20 +68,14 @@ impl Render for FilesApp {
         // A sign-in that has just been asked for gets its fields ready.
         if matches!(
             self.session.dialog,
-            Some(
-                crate::session::PendingDialog::ServerLogin { .. }
-                    | crate::session::PendingDialog::UnlockDrive { .. }
-            )
+            Some(crate::session::PendingDialog::UnlockDrive { .. })
         ) && !self.login_prepared
         {
             self.login_prepared = true;
             self.prepare_dialog(window, cx);
         } else if !matches!(
             self.session.dialog,
-            Some(
-                crate::session::PendingDialog::ServerLogin { .. }
-                    | crate::session::PendingDialog::UnlockDrive { .. }
-            )
+            Some(crate::session::PendingDialog::UnlockDrive { .. })
         ) {
             self.login_prepared = false;
         }
@@ -105,7 +99,7 @@ impl Render for FilesApp {
                 crate::session::NoticeTone::Information => Severity::Informational,
                 crate::session::NoticeTone::Warning => Severity::Warning,
             };
-            (severity, notice.message(c))
+            (severity, notice.message(c), notice.detail())
         });
         let address = self.address_row(cx);
         let commands = self.command_bar(cx);
@@ -138,7 +132,10 @@ impl Render for FilesApp {
         {
             self.drives_page = None;
         }
-        let content = match self.plugin_page(cx) {
+        // What GVfs asks while a server opens takes the content area.
+        self.prepare_server_prompt(window, cx);
+        let server_page = self.server_page(cx);
+        let content = match server_page.or_else(|| self.plugin_page(cx)) {
             Some(page) => page,
             None if self.drives_page.is_some() => self.drives_tiles(cx),
             None => self.content(cx),
@@ -165,10 +162,14 @@ impl Render for FilesApp {
         let menu = self.context_menu_element(cx);
         let sheet = self.show_shortcuts.then(|| self.shortcut_sheet(cx));
 
-        let notice_bar = notice.map(|(severity, message)| {
-            InfoBar::new("files-notice", severity, message)
+        let notice_bar = notice.map(|(severity, message, detail)| {
+            let bar = InfoBar::new("files-notice", severity, message)
                 .locale(kit_locale(self.locale()))
-                .on_close(act(cx, |app, _, _| app.session.notice = None))
+                .on_close(act(cx, |app, _, _| app.session.notice = None));
+            match detail {
+                Some(detail) => bar.message(detail),
+                None => bar,
+            }
         });
 
         let page = div()

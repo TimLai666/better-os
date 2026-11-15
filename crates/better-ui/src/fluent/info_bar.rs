@@ -157,13 +157,16 @@ impl RenderOnce for InfoBar {
             .gap_x(spacing::MD)
             .min_h(px(46.0))
             .py(px(6.0))
+            // A long title wraps inside the bar instead of running past its
+            // edge: the item may shrink below its longest line.
             .child(
-                text(div(), BODY_STRONG)
+                text(div().min_w_0().max_w_full(), BODY_STRONG)
                     .text_color(p.text_primary)
+                    .whitespace_normal()
                     .child(self.title),
             )
             .children(self.message.map(|message| {
-                text(div().min_w_0(), BODY)
+                text(div().min_w_0().max_w_full(), BODY)
                     .text_color(p.text_primary)
                     .whitespace_normal()
                     .child(message)

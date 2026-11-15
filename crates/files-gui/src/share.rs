@@ -104,16 +104,32 @@ pub fn parse_status(json: &str) -> Vec<Machine> {
 
 /// The tailnet's machines, when Tailscale is installed and running.
 pub fn tailnet_machines() -> Vec<Machine> {
-    if !crate::terminal::on_path("tailscale") {
+    tailnet_machines_from("tailscale")
+}
+
+/// The machines `program status --json` reports (read only, and stopped
+/// after five seconds): none when it is not installed, not running, or
+/// says Tailscale is stopped. A `program` with a `/` is run as it is; a bare
+/// name only when it is on `$PATH`.
+pub fn tailnet_machines_from(program: &str) -> Vec<Machine> {
+    if !program.contains('/') && !crate::terminal::on_path(program) {
         return Vec::new();
     }
     files_preview::viewer::run(
-        "tailscale",
+        program,
         &["status".into(), "--json".into()],
         Duration::from_secs(5),
     )
     .map(|output| parse_status(&String::from_utf8_lossy(&output)))
     .unwrap_or_default()
+}
+
+/// The machines the sidebar lists: the online ones, in their order.
+pub fn sidebar_machines(machines: Vec<Machine>) -> Vec<Machine> {
+    machines
+        .into_iter()
+        .filter(|machine| machine.online)
+        .collect()
 }
 
 /// The address a tailnet machine's files open at.
