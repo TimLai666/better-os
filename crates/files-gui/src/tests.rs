@@ -1141,6 +1141,9 @@ struct Fixture {
 }
 
 fn fixture() -> (Fixture, FilesSession) {
+    // A watch hub of this test's own: tests run side by side, and another
+    // test's ten-thousand-file burst must not be what this one waits for.
+    files_platform::WatchHub::isolate_this_thread();
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
     fs::create_dir_all(home.join("Documents")).unwrap();
@@ -2278,9 +2281,14 @@ fn an_operation_or_an_open_dialog_holds_the_restart() {
 
 // --- Ticket 119: the view follows the folder ------------------------------
 
-/// Pumps until `done` holds or five seconds pass; whether it held.
+/// How long a test waits for what the watch is expected to bring. Generous
+/// for a loaded two-core CI runner; a test that passes stops waiting at
+/// once, and one that fails still fails.
+const WATCH_DEADLINE: Duration = Duration::from_secs(15);
+
+/// Pumps until `done` holds or [`WATCH_DEADLINE`] passes; whether it held.
 fn pump_until(session: &mut FilesSession, done: impl Fn(&FilesSession) -> bool) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + WATCH_DEADLINE;
     while Instant::now() < deadline {
         session.pump();
         if done(session) {
@@ -2311,7 +2319,7 @@ fn settle_watches(session: &mut FilesSession) {
 /// a test sees next did not come from a watch.
 fn unwatch(session: &mut FilesSession, folder: &std::path::Path) {
     settle_watches(session);
-    files_platform::WatchHub::global().suspend_under(folder);
+    session.watch_hub().suspend_under(folder);
     assert!(
         pump_until(session, |s| s.watched_folders().is_empty()),
         "the watches were not let go of"

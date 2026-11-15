@@ -281,6 +281,17 @@ pub const HUB_BURST: usize = 4096;
 /// file being written is read once per batch rather than once per write.
 pub const HUB_BATCH: Duration = Duration::from_millis(30);
 
+/// At most this many events are gathered before they are handed out, so a
+/// burst in one folder is dealt with in bounded steps and every other
+/// folder's news and every new subscription's `Ready` waits for one step,
+/// not for the whole burst.
+pub const HUB_BATCH_MAX: usize = 4 * HUB_BURST;
+
+/// A burst handed out in several batches is still one burst: names changed
+/// in one folder within this long are counted together against
+/// [`HUB_BURST`].
+pub const HUB_BURST_WINDOW: Duration = Duration::from_secs(1);
+
 enum HubMessage {
     Subscribe {
         id: u64,
@@ -293,6 +304,9 @@ enum HubMessage {
     Resume(PathBuf),
     Raw(notify::Result<Event>),
     Watching(PathBuf, Sender<bool>),
+    /// The hub was let go of (a test's own hub): its thread ends and the
+    /// inotify instance is closed.
+    Shutdown,
 }
 
 /// The one inotify instance every view in the process shares (the kernel
@@ -329,11 +343,37 @@ impl Drop for Subscription {
     }
 }
 
+std::thread_local! {
+    /// A hub this thread uses instead of the process's ([`WatchHub::isolate_this_thread`]).
+    static OWN_HUB: std::cell::RefCell<Option<std::sync::Arc<WatchHub>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+static GLOBAL_HUB: std::sync::OnceLock<std::sync::Arc<WatchHub>> = std::sync::OnceLock::new();
+
 impl WatchHub {
     /// The process's hub, started on first use.
     pub fn global() -> &'static WatchHub {
-        static HUB: std::sync::OnceLock<WatchHub> = std::sync::OnceLock::new();
-        HUB.get_or_init(WatchHub::start)
+        GLOBAL_HUB.get_or_init(|| std::sync::Arc::new(WatchHub::start()))
+    }
+
+    /// The hub a window made on this thread uses: the process's, unless
+    /// this thread has one of its own.
+    pub fn current() -> std::sync::Arc<WatchHub> {
+        OWN_HUB.with(|own| own.borrow().clone()).unwrap_or_else(|| {
+            WatchHub::global();
+            std::sync::Arc::clone(GLOBAL_HUB.get().expect("started"))
+        })
+    }
+
+    /// Gives this thread a hub of its own, so what it watches neither waits
+    /// for nor is held up by anyone else's folders (tests run side by side
+    /// in one process). The hub ends when the thread and every session made
+    /// on it have let go of it.
+    pub fn isolate_this_thread() -> std::sync::Arc<WatchHub> {
+        let hub = std::sync::Arc::new(WatchHub::start());
+        OWN_HUB.with(|own| *own.borrow_mut() = Some(std::sync::Arc::clone(&hub)));
+        hub
     }
 
     fn start() -> WatchHub {
@@ -405,6 +445,12 @@ impl WatchHub {
     }
 }
 
+impl Drop for WatchHub {
+    fn drop(&mut self) {
+        let _ = self.messages.send(HubMessage::Shutdown);
+    }
+}
+
 struct HubSub {
     directory: PathBuf,
     config: ReaderConfig,
@@ -413,6 +459,9 @@ struct HubSub {
     /// Holds a kernel watch on `directory`.
     watching: bool,
     suspended: bool,
+    /// Names changed since `recent_since` ([`HUB_BURST_WINDOW`]).
+    recent_names: usize,
+    recent_since: std::time::Instant,
 }
 
 struct HubState {
@@ -432,6 +481,7 @@ impl HubState {
             loop {
                 if let Some(message) = next.take() {
                     match message {
+                        HubMessage::Shutdown => return,
                         HubMessage::Raw(Ok(event)) => {
                             batch.push(event);
                             deadline.get_or_insert_with(|| std::time::Instant::now() + HUB_BATCH);
@@ -445,7 +495,7 @@ impl HubState {
                 }
                 let Some(until) = deadline else { break };
                 let left = until.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() {
+                if left.is_zero() || batch.len() >= HUB_BATCH_MAX {
                     break;
                 }
                 match inbox.recv_timeout(left) {
@@ -475,6 +525,8 @@ impl HubState {
                     updates,
                     watching: false,
                     suspended: false,
+                    recent_names: 0,
+                    recent_since: std::time::Instant::now(),
                 };
                 self.attach(&mut sub);
                 self.subs.insert(id, sub);
@@ -522,7 +574,7 @@ impl HubState {
             HubMessage::Watching(directory, reply) => {
                 let _ = reply.send(self.watched.get(&directory).is_some_and(|count| *count > 0));
             }
-            HubMessage::Raw(_) => {}
+            HubMessage::Raw(_) | HubMessage::Shutdown => {}
         }
     }
 
@@ -586,9 +638,23 @@ impl HubState {
         if lost {
             return Some(HubUpdate::Resynchronize);
         }
-        // The last word on each path, in order of arrival.
-        let mut latest: Vec<WatchEvent> = Vec::new();
+        // The last word on each path, in order of arrival: a path's earlier
+        // word is blanked where it stood, found through `at` (linear in the
+        // batch, however many writes one burst made).
+        let mut latest: Vec<Option<WatchEvent>> = Vec::new();
+        let mut at: std::collections::HashMap<PathBuf, usize> = std::collections::HashMap::new();
+        // Past [`HUB_BURST`] names the folder is read again: names are no
+        // longer kept, but the folder going away or an overflow still counts.
+        let mut burst = false;
         for event in batch {
+            // Another folder's news costs a glance, not a classification.
+            if !event.need_rescan()
+                && !event.paths.iter().any(|path| {
+                    path == &sub.directory || path.parent() == Some(sub.directory.as_path())
+                })
+            {
+                continue;
+            }
             for change in classify(&sub.directory, Ok(event.clone())) {
                 match change {
                     WatchEvent::Overflowed => return Some(HubUpdate::Resynchronize),
@@ -601,15 +667,28 @@ impl HubState {
                     WatchEvent::Created(ref path)
                     | WatchEvent::Modified(ref path)
                     | WatchEvent::Removed(ref path) => {
-                        if path.parent() != Some(sub.directory.as_path()) {
+                        if burst || path.parent() != Some(sub.directory.as_path()) {
                             continue;
                         }
-                        latest.retain(|seen| watch_path(seen) != Some(path.as_path()));
-                        latest.push(change);
+                        if let Some(earlier) = at.insert(path.clone(), latest.len()) {
+                            latest[earlier] = None;
+                        }
+                        latest.push(Some(change));
+                        if at.len() > HUB_BURST {
+                            burst = true;
+                            latest.clear();
+                            at.clear();
+                        }
                     }
                 }
             }
         }
+        if burst {
+            // The burst may have touched `.hidden` too.
+            sub.rules = crate::hidden::read_hidden_rules(&sub.directory);
+            return Some(HubUpdate::Resynchronize);
+        }
+        let latest: Vec<WatchEvent> = latest.into_iter().flatten().collect();
         if latest.is_empty() {
             return None;
         }
@@ -620,7 +699,15 @@ impl HubState {
             sub.rules = crate::hidden::read_hidden_rules(&sub.directory);
             return Some(HubUpdate::Resynchronize);
         }
-        if latest.len() > HUB_BURST {
+        // Many names over a few batches are one burst too: the folder is
+        // read once instead of row by row.
+        let now = std::time::Instant::now();
+        if now.duration_since(sub.recent_since) > HUB_BURST_WINDOW {
+            sub.recent_since = now;
+            sub.recent_names = 0;
+        }
+        sub.recent_names += latest.len();
+        if sub.recent_names > HUB_BURST {
             return Some(HubUpdate::Resynchronize);
         }
         let directory = LocalPath::new(&sub.directory).ok()?;
@@ -890,5 +977,67 @@ mod tests {
             DirectoryWatcher::new(&file),
             Err(PlatformError::NotADirectory(_))
         ));
+    }
+
+    /// Everything `subscription` hears until it has been quiet for half a
+    /// second, or `limit` passes.
+    fn drain(subscription: &Subscription, limit: Duration) -> Vec<HubUpdate> {
+        let deadline = Instant::now() + limit;
+        let mut heard = Vec::new();
+        let mut quiet_since = Instant::now();
+        while Instant::now() < deadline && quiet_since.elapsed() < Duration::from_millis(500) {
+            let now = subscription.poll();
+            if !now.is_empty() {
+                quiet_since = Instant::now();
+                heard.extend(now);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        heard
+    }
+
+    #[test]
+    fn a_burst_in_one_folder_does_not_hold_up_another_folders_watch() {
+        // A hub of the test's own, as one window's process would have.
+        let hub = WatchHub::start();
+        let busy = tempfile::tempdir().unwrap();
+        let quiet = tempfile::tempdir().unwrap();
+        let burst = hub.subscribe(busy.path(), ReaderConfig::new());
+        assert!(
+            wait_update(&burst, |u| matches!(u, HubUpdate::Ready { .. })).is_some(),
+            "the busy folder's watch never came"
+        );
+        for index in 0..10_000 {
+            fs::write(busy.path().join(format!("burst-{index:05}.txt")), b"").unwrap();
+        }
+        // Another window opens a folder while the hub is dealing with the
+        // burst: its watch is there at once, not after the whole burst.
+        std::thread::sleep(HUB_BATCH * 4);
+        let asked = Instant::now();
+        let other = hub.subscribe(quiet.path(), ReaderConfig::new());
+        assert!(
+            wait_update(&other, |u| matches!(u, HubUpdate::Ready { .. })).is_some(),
+            "the quiet folder's watch never came"
+        );
+        let waited = asked.elapsed();
+        assert!(
+            waited < Duration::from_millis(1500),
+            "the quiet folder waited {waited:?} behind the burst"
+        );
+        // The burst is a reading of the folder, never ten thousand rows.
+        let heard = drain(&burst, Duration::from_secs(20));
+        assert!(
+            heard.iter().any(|u| matches!(u, HubUpdate::Resynchronize)),
+            "{} updates and no reading asked for",
+            heard.len()
+        );
+        let rows: usize = heard
+            .iter()
+            .map(|u| match u {
+                HubUpdate::Rows(rows) => rows.len(),
+                _ => 0,
+            })
+            .sum();
+        assert!(rows <= HUB_BURST, "{rows} rows read one by one");
     }
 }
