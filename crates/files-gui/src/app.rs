@@ -122,8 +122,17 @@ pub struct FilesApp {
     pub(crate) editing_search: bool,
     /// The type-to-filter field, and whether it has the keyboard.
     pub(crate) filter_input: Entity<InputState>,
-    /// The password field of a server sign-in.
+    /// The passphrase field of an encrypted drive's dialog.
     pub(crate) password_input: Entity<InputState>,
+    /// The sign-in page's fields (ticket 117), its remember choice and
+    /// whether the person picked anonymous access; `server_prepared` is the
+    /// question they were last readied for.
+    pub(crate) server_user_input: Entity<InputState>,
+    pub(crate) server_domain_input: Entity<InputState>,
+    pub(crate) server_password_input: Entity<InputState>,
+    pub(crate) server_remember: crate::network::Remember,
+    pub(crate) server_anonymous: bool,
+    pub(crate) server_prepared: u64,
     pub(crate) filtering: bool,
     /// The sign-in's fields were made ready for the dialog now open.
     pub(crate) login_prepared: bool,
@@ -258,6 +267,9 @@ impl FilesApp {
             InputState::new(window, cx).placeholder(crate::i18n::copy(locale).search_placeholder)
         });
         let password_input = cx.new(|cx| InputState::new(window, cx).masked(true));
+        let server_user_input = cx.new(|cx| InputState::new(window, cx));
+        let server_domain_input = cx.new(|cx| InputState::new(window, cx));
+        let server_password_input = cx.new(|cx| InputState::new(window, cx).masked(true));
         let filter_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(crate::i18n::copy(locale).filter_placeholder)
         });
@@ -276,7 +288,31 @@ impl FilesApp {
             Locale::ZhTw => "zh_TW".to_string(),
             _ => "en".to_string(),
         };
+        // Enter in any field of the sign-in page signs in.
+        let server_enter = |app: &mut FilesApp,
+                            event: &InputEvent,
+                            window: &mut Window,
+                            cx: &mut Context<FilesApp>| {
+            if let InputEvent::PressEnter { .. } = event {
+                app.submit_server_sign_in(window, cx);
+            }
+        };
         let subscriptions = vec![
+            cx.subscribe_in(
+                &server_user_input,
+                window,
+                move |app, _, event, window, cx| server_enter(app, event, window, cx),
+            ),
+            cx.subscribe_in(
+                &server_domain_input,
+                window,
+                move |app, _, event, window, cx| server_enter(app, event, window, cx),
+            ),
+            cx.subscribe_in(
+                &server_password_input,
+                window,
+                move |app, _, event, window, cx| server_enter(app, event, window, cx),
+            ),
             // GPUI tells a Linux window whether it is active, not whether it
             // is on screen; the drives' 30-second timer runs while it is
             // active. UDisks2's changes and finished file operations still
@@ -390,6 +426,12 @@ impl FilesApp {
             editing_search: false,
             filter_input,
             password_input,
+            server_user_input: server_user_input.clone(),
+            server_domain_input: server_domain_input.clone(),
+            server_password_input: server_password_input.clone(),
+            server_remember: crate::network::Remember::Never,
+            server_anonymous: false,
+            server_prepared: 0,
             filtering: false,
             login_prepared: false,
             chooser: None,
@@ -913,6 +955,19 @@ impl FilesApp {
         // would do to that folder's files happens out of sight. Going
         // somewhere, tabs and windows still work; Escape and Back close the
         // page and F5 reads the drives again.
+        // While a server's question is on screen the keys are its: Escape
+        // cancels it, tabs and windows still work, nothing touches the
+        // folder underneath.
+        if self.session.server_prompt.is_some() {
+            match crate::keys::on_this_pc(command) {
+                crate::keys::ThisPcKey::Close => {
+                    self.cancel_server_prompt(window, cx);
+                    return;
+                }
+                crate::keys::ThisPcKey::Pass => {}
+                _ => return,
+            }
+        }
         if self.drives_page.is_some() {
             match crate::keys::on_this_pc(command) {
                 crate::keys::ThisPcKey::Close => {
@@ -1069,11 +1124,6 @@ impl FilesApp {
                     .take(11)
                     .collect(),
             ),
-            Some(PendingDialog::ServerLogin { .. }) => {
-                self.password_input
-                    .update(cx, |state, cx| state.set_value("", window, cx));
-                Some(std::env::var("USER").unwrap_or_default())
-            }
             Some(PendingDialog::UnlockDrive { .. }) => {
                 self.password_input
                     .update(cx, |state, cx| state.set_value("", window, cx));
@@ -1115,18 +1165,6 @@ impl FilesApp {
                 self.session.dialog = Some(erase);
                 self.session.confirm_erase(&text);
             }
-            PendingDialog::ServerLogin { address } => {
-                // Read once, handed to the mount, and cleared from the
-                // field with its undo history.
-                let password = crate::secret::take(&self.password_input, window, cx);
-                self.session.mount_server(
-                    address,
-                    Some(crate::network::Credentials {
-                        user: text,
-                        password: password.expose().to_string(),
-                    }),
-                );
-            }
             PendingDialog::UnlockDrive { key, .. } => {
                 // Read once, handed to UDisks2, and cleared from the field
                 // with its undo history.
@@ -1139,10 +1177,7 @@ impl FilesApp {
 
     pub(crate) fn dismiss_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A password typed and then dismissed is not kept either.
-        if matches!(
-            self.session.dialog,
-            Some(PendingDialog::ServerLogin { .. } | PendingDialog::UnlockDrive { .. })
-        ) {
+        if matches!(self.session.dialog, Some(PendingDialog::UnlockDrive { .. })) {
             crate::secret::forget(&self.password_input, window, cx);
         }
         self.session.dialog = None;

@@ -56,18 +56,103 @@ printed as the error.
 
 ## Acceptance
 
-- [ ] Tests against a fake GVfs mount tracker on a private bus: password
+- [x] Tests against a fake GVfs mount tracker on a private bus: password
       asked and accepted, wrong password then right one, domain asked,
       host-key question accepted and refused, anonymous, cancel, timeout,
       already mounted.
-- [ ] An end-to-end test or sandbox run against a real local `sshd` started
+- [x] An end-to-end test or sandbox run against a real local `sshd` started
       by the test on a high port with its own host key and a throwaway
       account or key (no privileges, nothing outside the temp dir): first
       connection shows the host-key question, then the form, then the listing.
-- [ ] Tailscale listing tested with a fake `tailscale` on PATH: online and
+- [x] Tailscale listing tested with a fake `tailscale` on PATH: online and
       offline peers, not installed, not running.
-- [ ] Screenshots in a headless sandbox: sign-in form, wrong password,
+- [x] Screenshots in a headless sandbox: sign-in form, wrong password,
       host-key question, changed host key, a long error wrapping, the
       Tailscale machines in the sidebar; both languages; light and dark.
-- [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests and
+- [x] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests and
       the license check pass.
+
+## What was built
+
+- **GVfs over its bus, not `gio`'s prompts** (`crates/files-gui/src/gvfs.rs`).
+  A server address becomes the mount spec GIO's URI mappers build (`sftp`,
+  `ftp`, `nfs` by host, port and user; `smb` by server and share, with
+  `domain;user@`; `dav`/`davs` with `ssl`; `afp` by server and volume) and is
+  mounted with `org.gtk.vfs.MountTracker.MountLocation` and a mount
+  operation Better Files exports on its own connection. The signatures were
+  read off the installed GVfs 1.54 (the tracker by introspecting `gvfsd` on a
+  private bus; `org.gtk.vfs.MountOperation`, which GVfs only calls, from the
+  method signatures in `libgvfscommon.so`) and confirmed by mounting a local
+  `sshd` through a private `gvfsd`. The folder opened is the mount's folder
+  under GVfs's FUSE mount (`LookupMount`), with the address's own path in it,
+  or GVfs's default folder for the mount. "Already mounted" opens it.
+- **Every question in the window.** `AskPassword` becomes the sign-in page
+  in the content area: the server's name, the user, the domain only when
+  asked, the password, the "Remember" choices GVfs offers (forget right
+  away, until sign-out, in the keyring), anonymous access when the server
+  allows it, Connect and Cancel; Enter signs in; a second request in the same
+  mount is a wrong password: the page comes back saying so, with the user
+  kept. GVfs's own words (which password it wants, a key's passphrase or the
+  account's) are shown small under the title. `AskQuestion` for an SFTP host
+  key it does not know shows what that means and the fingerprint
+  (monospace, wrapping, selectable), with Connect anyway and Cancel; the
+  key-against-address mismatch question is worded as a warning; any other
+  question shows GVfs's words and its choices. Escape cancels; while a
+  question is shown, keys that would act on the folder underneath do
+  nothing. A cancelled mount says nothing.
+- **Errors are sentences.** GVfs's GIO errors are read by their codes (not
+  found, refused or unreachable, sign-in refused, timed out, not supported,
+  cancelled) and said in the app's language with the server's own words as
+  the detail under the sentence. A changed SSH host key (GVfs refuses it with
+  code 0) is recognised by GVfs's "Host key verification failed" in English
+  or in GVfs's own translation for the session (looked up in GVfs's catalog
+  with the session's locale on that thread only) and explained as a warning:
+  what it may mean and how to clear an expected change.
+- **Long text wraps.** The kit's `InfoBar` title could not shrink below its
+  longest line and ran off the window; it now wraps inside the bar (the
+  message too), which fixes every banner in Better Files and the other
+  apps. The sign-in page's texts wrap as well.
+- **No password is kept.** Passwords travel in the window's `Secret` type
+  (overwritten when dropped, never cloned or printed), go to GVfs over the
+  bus only, and the field is emptied with its undo history when the form is
+  sent or cancelled. Only GVfs and the keyring keep one, when the person
+  chose to remember it. No password is logged or put in a process's
+  arguments.
+- **A mount that hears nothing for 30 seconds** (no question, no answer) is
+  given up on; the time a person spends at the form never counts.
+- **`gio` only as a fallback** when GVfs is not on the session bus: run in
+  the C locale, its questions asked through the same pages, run again with
+  the answers on its standard input; its output is only ever the detail
+  under a sentence.
+- **Tailscale.** The Network section lists the tailnet's online machines
+  from `tailscale status --json` (read only, off the window's thread, every
+  minute), each with its tailnet name; opening one tries `sftp://` to that
+  name, so a peer that accepts Tailscale SSH opens without a password and any
+  other shows the sign-in page. Nothing is shown when Tailscale is not
+  installed, stopped or logged out.
+
+Tests: `gvfs.rs` (address to mount spec for every scheme, GIO error codes);
+`gvfs_bus_tests.rs` runs the real mounter against a fake GVfs mount tracker
+on a private `dbus-daemon`: a password asked and accepted (with "remember
+for the session" sent as 1), a wrong password then the right one, a share
+asking for a domain and used anonymously, a new host key accepted and
+refused, a changed host key, a cancelled sign-in, a server that never
+answers timing out while a person slow to type does not, and an address
+already mounted; `tests.rs` drives the window's session through a wrong
+then right password and a cancel; `tests/share.rs` runs a fake `tailscale`
+for online and offline peers, not installed, stopped and logged out.
+
+End to end, in a headless GNOME Shell sandbox with its own bus and `gvfsd`,
+against an unprivileged `sshd` on 127.0.0.1:22917 with a throwaway host key
+and a passphrase-protected throwaway key (all in a temp dir; an `ssh`
+wrapper first on `PATH` gives `ssh` that dir's config and known-hosts file,
+and a `HostKeyAlias`, since GVfs passes
+`-oNoHostAuthenticationForLocalhost yes`): the first connection shows the
+host-key question, then the sign-in form (the key's passphrase; sshd cannot
+check account passwords without privileges), a wrong passphrase brings the
+form back saying so, the right one lists the server's folder; with the
+recorded key changed the warning banner wraps. Screenshots in `.shots/`:
+`t117-host-key-*`, `t117-sign-in-*`, `t117-wrong-password-*`,
+`t117-listing-*`, `t117-key-changed-*` (the long warning wrapping), each
+`en`/`zh` and `light`/`dark`; every one shows the fixture tailnet's two
+online machines in the sidebar (the offline one left out).

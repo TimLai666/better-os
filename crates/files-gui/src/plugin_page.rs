@@ -88,7 +88,7 @@ impl FilesApp {
             }
             Some(crate::plugins::Open::Mount { mount }) => {
                 self.plugin_view = None;
-                self.session.mount_server(mount.clone(), None);
+                self.session.mount_server(mount.clone());
             }
             Some(crate::plugins::Open::Run { run }) => {
                 self.plugins.run(

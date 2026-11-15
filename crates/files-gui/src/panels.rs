@@ -870,7 +870,6 @@ impl FilesApp {
             PendingDialog::RenameBookmark(_) => (c.bookmark_label_placeholder, c.rename_bookmark),
             PendingDialog::ConfirmDelete { .. } => (c.confirm_delete_title, c.confirm),
             PendingDialog::Compress(_) => (c.compress_title, c.compress),
-            PendingDialog::ServerLogin { .. } => (c.server_sign_in, c.server_connect),
             PendingDialog::UnlockDrive { .. } => (c.drive_unlock_title, c.drive_unlock),
             PendingDialog::Format { .. } => (c.format_title, c.format_confirm),
             PendingDialog::WriteImage { .. } => (c.write_image_title, c.write_image_confirm),
@@ -911,13 +910,6 @@ impl FilesApp {
                 BODY,
                 p.text_primary,
             )),
-            PendingDialog::ServerLogin { address } => content
-                .child(fluent::label(address.clone(), BODY, p.text_secondary))
-                .child(TextBox::new("server-user", &self.dialog_input).header(c.server_user))
-                .child(
-                    TextBox::password("server-password", &self.password_input)
-                        .header(c.server_password),
-                ),
             PendingDialog::UnlockDrive { .. } => content.child(
                 TextBox::password("drive-passphrase", &self.password_input)
                     .header(c.drive_passphrase),
