@@ -644,6 +644,24 @@ impl Default for ManagerState {
 }
 
 impl ManagerState {
+    /// Whether `package` is installed, by Better Manager's record or by dpkg:
+    /// a package apt installed outside Better Manager is installed too.
+    /// `None` when the record says no and dpkg cannot be read, so a caller
+    /// acting on the answer can wait rather than guess.
+    pub fn installed_by_record_or_dpkg(
+        &self,
+        package: &str,
+        packages: &dyn manager_platform::dpkg::PackageStateProbe,
+    ) -> Option<bool> {
+        if self.is_installed(package) {
+            return Some(true);
+        }
+        packages
+            .installed_version(package)
+            .ok()
+            .map(|version| version.is_some())
+    }
+
     /// Whether the record has this component installed.
     pub fn is_installed(&self, component: &str) -> bool {
         self.components

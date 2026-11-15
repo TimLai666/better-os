@@ -199,7 +199,9 @@ autostart postrm deletes as the account (setpriv) and also cleans the page's
 temporary copy, which the page itself cleans on its next visit. Second
 review: a run deletes any older `removal-undo.json` first, so `--undo`
 never writes an earlier removal's values; a pending restore is dropped
-unapplied when Better Touchpad is installed again, and is finished from the
+unapplied when Better Touchpad is installed again (by Better Manager's
+record or by dpkg, so an apt reinstall counts; an unreadable dpkg leaves it
+for the next start), and is finished from the
 command line's real-mode start as well as the window's.
 
 Checks run on the earlier merge (`0c255bf`): `cargo fmt --check`; clippy

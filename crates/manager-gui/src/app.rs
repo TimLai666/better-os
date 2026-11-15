@@ -768,9 +768,14 @@ impl ManagerApp {
                     let _ = manager.heal_shell_extensions(&snapshot, &DpkgProbe, &extensions);
                     // A removal with no session left Better Touchpad's settings
                     // to put back here, in the person's session (ticket 88).
-                    crate::pages::touchpad::finish_pending_restore(
-                        snapshot.is_installed(touchpad_platform::removal::PACKAGE),
-                    );
+                    // Installed again through Better Manager or apt drops it;
+                    // a dpkg that cannot be read leaves it for next time.
+                    if let Some(installed_again) = snapshot.installed_by_record_or_dpkg(
+                        touchpad_platform::removal::PACKAGE,
+                        &DpkgProbe,
+                    ) {
+                        crate::pages::touchpad::finish_pending_restore(installed_again);
+                    }
                     manager
                         .run_user_unit_healing(&snapshot, &DpkgProbe, &units)
                         .unwrap_or_default()

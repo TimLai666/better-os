@@ -553,10 +553,17 @@ type RealContext = (HttpDownloader, DbusPrivilegedExecutor);
 /// the others: what it meets is a line on `messages`.
 fn finish_touchpad_restore(
     state: &ManagerState,
+    packages: &dyn PackageStateProbe,
     finish: &dyn Fn(bool) -> Result<bool, String>,
     messages: &mut dyn std::io::Write,
 ) {
-    let installed_again = state.is_installed(touchpad_platform::removal::PACKAGE);
+    // Installed again, through Better Manager or apt: the pending restore is
+    // dropped. Unknown (dpkg unreadable): it waits for the next start.
+    let Some(installed_again) =
+        state.installed_by_record_or_dpkg(touchpad_platform::removal::PACKAGE, packages)
+    else {
+        return;
+    };
     let _ = match finish(installed_again) {
         Ok(true) => writeln!(
             messages,
@@ -857,6 +864,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if std::env::var_os(manager_platform::user_units::SYSTEMCTL_GUARD_VARIABLE).is_none() {
             finish_touchpad_restore(
                 &state,
+                &DpkgProbe,
                 &touchpad_platform::removal::finish_pending_in_session,
                 &mut std::io::stderr(),
             );
@@ -1132,9 +1140,17 @@ mod tests {
             Ok(!installed_again)
         };
 
+        let nothing = manager_platform::dpkg::FixedPackageStateProbe::new(&[]);
         let mut said = Vec::new();
-        finish_touchpad_restore(&ManagerState::default(), &finish, &mut said);
+        finish_touchpad_restore(&ManagerState::default(), &nothing, &finish, &mut said);
         assert!(String::from_utf8(said).unwrap().contains("were put back"));
+
+        // Installed again through apt, with no record of it in Better Manager.
+        let apt =
+            manager_platform::dpkg::FixedPackageStateProbe::new(&[("better-touchpad", "0.2.16")]);
+        let mut said = Vec::new();
+        finish_touchpad_restore(&ManagerState::default(), &apt, &finish, &mut said);
+        assert!(said.is_empty());
 
         let mut state = ManagerState::default();
         state.components.insert(
@@ -1152,9 +1168,9 @@ mod tests {
             },
         );
         let mut said = Vec::new();
-        finish_touchpad_restore(&state, &finish, &mut said);
+        finish_touchpad_restore(&state, &nothing, &finish, &mut said);
         assert!(said.is_empty());
-        assert_eq!(*asked.borrow(), [false, true]);
+        assert_eq!(*asked.borrow(), [false, true, true]);
     }
 
     /// The real start runs it, behind the same guard as the other repairs.

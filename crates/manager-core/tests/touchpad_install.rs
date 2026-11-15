@@ -506,3 +506,46 @@ fn gnome_s_all_extensions_off_switch_fails_the_check_and_says_why() {
     assert_eq!(failure.evidence, "shell_extension.not_enabled");
     assert!(failure.detail.unwrap().contains("turns off all extensions"));
 }
+
+/// A dpkg that cannot be read.
+struct UnreadableDpkg;
+
+impl manager_platform::dpkg::PackageStateProbe for UnreadableDpkg {
+    fn installed_version(&self, _package: &str) -> Result<Option<String>, PlatformError> {
+        Err(PlatformError::CapabilityUnavailable("dpkg-query"))
+    }
+
+    fn installed_files(&self, _package: &str) -> Result<InstalledFiles, PlatformError> {
+        Err(PlatformError::CapabilityUnavailable("dpkg-query"))
+    }
+}
+
+/// A reinstall through apt, outside Better Manager, counts as installed
+/// again, so the pending restore cannot overwrite it; an unreadable dpkg is
+/// "unknown", never "not installed".
+#[test]
+fn installed_again_reads_the_record_and_dpkg() {
+    let empty = FixedPackageStateProbe::new(&[]);
+    let apt = packages();
+
+    assert_eq!(
+        installed(true).installed_by_record_or_dpkg("better-touchpad", &empty),
+        Some(true)
+    );
+    assert_eq!(
+        ManagerState::default().installed_by_record_or_dpkg("better-touchpad", &apt),
+        Some(true)
+    );
+    assert_eq!(
+        ManagerState::default().installed_by_record_or_dpkg("better-touchpad", &empty),
+        Some(false)
+    );
+    assert_eq!(
+        ManagerState::default().installed_by_record_or_dpkg("better-touchpad", &UnreadableDpkg),
+        None
+    );
+    assert_eq!(
+        installed(true).installed_by_record_or_dpkg("better-touchpad", &UnreadableDpkg),
+        Some(true)
+    );
+}
