@@ -7,7 +7,7 @@ Working documents for the people and agents developing Better OS. Documentation 
 | [architecture.md](architecture.md) | How the system is built: components, trust boundaries, data flow, where tests hook in | Before changing the structure, the tests, packaging or the privileged boundary |
 | [specs/](specs/) | One file per feature or policy: what it promises, what it leaves out, how to tell it is done (Better Files policies, storage safety signals, touchpad mapping, release packaging, security and rollback, and the rest) | Before working on that feature |
 | [contracts/](contracts/) | The component manifest schema that component authors write against | Before changing manifest fields or validation |
-| [performance/](performance/) | Benchmark methods and recorded numbers for Better Files and Better Launcher | Before making or changing a performance claim |
+| [performance/](performance/) | Benchmark methods and recorded numbers for Better Files, Better Launcher, and Better Storage | Before making or changing a performance claim |
 | [decisions/](decisions/) | One file per hard-to-reverse choice, with the options that were rejected | Before proposing to change such a choice |
 | [tickets/](tickets/) | One file per slice of work | Picking the next piece of work |
 | [handoff.md](handoff.md) | Unfinished work that has no ticket. Present only while there is some | Arriving to pick up work |

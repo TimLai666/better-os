@@ -74,3 +74,37 @@ fn every_supported_target_has_an_artifact() {
     let expected = manifest.targets.releases.len() * manifest.targets.architectures.len();
     assert_eq!(manifest.artifacts.len(), expected);
 }
+
+#[test]
+fn the_declared_transports_are_exactly_the_buses_classified_as_hot_pluggable() {
+    let manifest = ComponentManifest::parse_yaml(MANIFEST).unwrap();
+    let support = manifest
+        .hardware_support
+        .expect("better-storage declares where its claims hold");
+    let mut declared: Vec<&str> = support.transports.iter().map(String::as_str).collect();
+    let mut classified: Vec<&str> = storage_platform::model::HOT_PLUGGABLE_TRANSPORTS
+        .iter()
+        .map(|transport| transport.as_str())
+        .collect();
+    declared.sort_unstable();
+    classified.sort_unstable();
+    assert_eq!(declared, classified);
+}
+
+#[test]
+fn every_filesystem_format_creates_is_declared() {
+    let manifest = ComponentManifest::parse_yaml(MANIFEST).unwrap();
+    let support = manifest.hardware_support.unwrap();
+    for kind in storage_platform::traits::FilesystemKind::ALL {
+        assert!(
+            support
+                .filesystems
+                .iter()
+                .any(|fs| fs == kind.udisks_type()),
+            "Format creates {} and the manifest does not declare it",
+            kind.udisks_type()
+        );
+    }
+    // The oldest supported release's kernel, and syncfs(2) is far older.
+    assert_eq!(support.minimum_kernel_version(), Some((5, 15)));
+}

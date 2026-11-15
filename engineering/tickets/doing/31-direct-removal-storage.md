@@ -127,19 +127,23 @@ or a future Better Settings.
 - [x] Unsafe removal during a write produces an explicit warning and a diagnostic
       record, and never reports a clean completion.
       `unplugging_during_a_write_produces_a_warning_and_a_diagnostic_record`.
-- [ ] The component manifest declares services, D-Bus/UDisks2 integration,
+- [x] The component manifest declares services, D-Bus/UDisks2 integration,
       configuration paths, permissions, supported distributions, kernels,
       filesystems and transports, health checks, rollback behavior, and
-      performance tests. **Partly.** `components/manifests/better-storage.yaml`
-      declares everything the schema 2 manifest can express and passes
-      `better-core` validation. Supported kernels, filesystems, and transports
-      have no manifest fields; adding them is a schema change and is listed as a
-      follow-up rather than smuggled into unvalidated keys.
-- [ ] Uninstalling restores the original system behavior. **Partly.**
-      `restore_defaults` returns every device to Direct Removal, is idempotent,
-      and is tested; nothing here ever changed a system mount or cache setting,
-      so there is nothing else to undo. The packaging-level uninstall smoke does
-      not exist yet, because the component is not packaged yet.
+      performance tests. Kernels, filesystems, and transports are the optional
+      `hardware_support` group (contract: `engineering/contracts/component-manifest.md`),
+      validated in `better-core` and tied to the code by
+      `storage-service/tests/manifest.rs`. Released managers skip the group.
+- [x] Uninstalling restores the original system behavior. `restore_defaults`
+      returns every device to Direct Removal and is tested; nothing ever changed
+      a system mount or cache setting (ADR 0027). The container check in
+      `packaging/test-daemon-e2e.sh` installs the package, starts the service
+      against a real udisksd and session bus, stops it, removes the package,
+      and asserts no file, no process, and no state is left. **CI-only**: no
+      Docker daemon in the worktree, so it has not been run locally.
+- [ ] Real-device benchmarks recorded. The harness and record format exist
+      (`better-storage-bench`, `engineering/performance/storage-performance.md`);
+      the numbers need the owner's drives.
 
 ## Verification
 
@@ -179,45 +183,44 @@ Benchmarks that ran (synthetic, no hardware):
 
 ## Remaining
 
-- Benchmark real devices, as the first Follow-up below describes.
-- Two decision records: the readiness algorithm and confidence threshold, and
-  the privileged boundary.
-- The manifest schema field for supported kernels, filesystems and transports
-  (decide it and, if adopted, add it to the schema and to
-  `components/manifests/better-storage.yaml`).
-- The container install-and-remove test (ticket 36 ran it for better-launcher
-  only) run for better-storage: installed, started, removed, and nothing of it left
-  running or on disk.
+- **Only this:** run the real-device benchmark on the owner's hardware and
+  paste the rows into `engineering/performance/storage-performance.md`. One
+  command per device:
+  `cargo run --release -p storage-platform --bin better-storage-bench -- --mount /media/$USER/LABEL --medium usb-flash --out engineering/performance/storage-runs.jsonl`
+  across exFAT, NTFS, and ext4 on a flash drive, an external SSD, and an
+  external HDD. Disconnect cleanup latency needs a physical unplug and is
+  measured by hand from the service's state updates. Then move this ticket to
+  `done/`.
+- Confirm on the first CI run that the new better-storage container check
+  passes; it has not run anywhere yet.
 
 ## Follow-ups
 
-Packaging and the Better Files wiring were done later (tickets 36 and 35);
-ticket 36's container install/remove smoke covers `better-launcher`, not
-`better-storage`.
-
-
-- Benchmark real devices: one large sequential file, many small files, and a
-  metadata-heavy tree, across exFAT, NTFS, and ext4 on a USB flash drive, an
-  external SSD, and an external HDD. Record application-visible copy completion
-  time, time until data is actually flushed, total time to Ready to unplug,
-  throughput against default system behavior, CPU overhead, and disconnect
-  cleanup latency. This needs hardware and has not been done; it is not
-  something the synthetic benchmarks stand in for.
-- Write the ADR issue #5 asks for on the readiness algorithm and confidence
-  threshold. The two values that need it are `EvidencePolicy`'s
-  `require_complete_writer_scan` (default false) and `max_proof_age` (default
-  five minutes), both documented in `engineering/specs/storage-safety-signals.md`.
-- Write the ADR on the privileged boundary. Per-device writeback accounting, a
-  device cache flush, and a complete open-writer scan all need privilege this
-  service deliberately does not take.
-- Decide whether the manifest schema should gain supported-kernel,
-  filesystem, and transport fields, which the acceptance criteria ask a manifest
-  to declare and schema 2 cannot express.
-- Package the component and add the uninstall smoke test.
-- Wire Better Files to `org.betteros.Storage1`: the sidebar, the device row, the
-  Eject control, and the navigation cleanup after a disconnect. Ticket 35.
+Packaging and the Better Files wiring were done later (tickets 36 and 35). The
+readiness and privilege ADRs (0026, 0027), the `hardware_support` manifest
+group, and the better-storage container check were done in the second pass
+(see Notes). What stays open is the real-device benchmark under Remaining.
 
 ## Notes
+
+2026-11-15, second pass on branch `ticket-31`:
+
+- ADR 0026 (readiness rule, no numeric confidence score, the two thresholds)
+  and ADR 0027 (the service stays unprivileged; UDisks2's polkit actions are
+  the only consent path; no privileged helper) are written and linked from the
+  safety signals spec and `architecture.md`.
+- `hardware_support` added to the manifest schema without a version bump:
+  the top level does not deny unknown keys, so released managers skip it, and
+  a test fails if that ever changes. Entries are tokens, not a closed set, so a
+  later value never makes a released manager refuse the catalog.
+  `HOT_PLUGGABLE_TRANSPORTS` in `storage-platform` is now the one list both
+  `classify` and the manifest test use.
+- The container check needed `udisks2` in the e2e image (it is a Depends and
+  the container has no network at test time). Risk to watch on the first CI
+  run: udisksd started by hand with no udev database; if it refuses to start
+  there, the check fails with its log printed.
+- `better-storage-bench` is a measurement tool, not packaged. Its records
+  carry no numbers until the owner runs it.
 
 Carried over from the retired delivery status record.
 

@@ -109,6 +109,17 @@ impl DeviceClass {
     }
 }
 
+/// The buses a device must be on to be treated as external and hot-pluggable.
+/// The component manifest's `hardware_support.transports` declares exactly
+/// this set, and `storage-service/tests/manifest.rs` fails when they drift.
+pub const HOT_PLUGGABLE_TRANSPORTS: [Transport; 5] = [
+    Transport::Usb,
+    Transport::Sdio,
+    Transport::Mmc,
+    Transport::Thunderbolt,
+    Transport::Ieee1394,
+];
+
 /// One volume as the platform sees it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PlatformDevice {
@@ -140,14 +151,7 @@ impl PlatformDevice {
             };
         }
         let transport = Transport::from_connection_bus(&drive.connection_bus);
-        let hot_pluggable_bus = matches!(
-            transport,
-            Transport::Usb
-                | Transport::Sdio
-                | Transport::Mmc
-                | Transport::Thunderbolt
-                | Transport::Ieee1394
-        );
+        let hot_pluggable_bus = HOT_PLUGGABLE_TRANSPORTS.contains(&transport);
         if !hot_pluggable_bus {
             return DeviceClass::Internal {
                 reason: format!(

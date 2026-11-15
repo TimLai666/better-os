@@ -86,6 +86,18 @@ paths:
   - /usr/lib/systemd/user/better-storage.service
   - /usr/share/dbus-1/services/org.betteros.Storage1.service
   - ~/.config/better-os/storage/storage-preferences.json
+# Where "Ready to unplug" is claimed (ADR 0026). A declaration, not a gate:
+# older managers skip the group, this one validates and shows it. The
+# transports are exactly the buses storage-platform treats as hot-pluggable;
+# the filesystems are the ones Format creates plus NTFS, the set the readiness
+# rule has been reasoned about. syncfs(2) needs 2.6.39; 5.15 is the oldest
+# kernel a supported release (Ubuntu 22.04) ships. None of it has been
+# measured on a real device yet; engineering/performance/storage-performance.md
+# says what is owed.
+hardware_support:
+  minimum_kernel: "5.15"
+  filesystems: [vfat, exfat, ntfs, ext4]
+  transports: [usb, sdio, mmc, thunderbolt, ieee1394]
 release_notes:
   - Every supported hot-pluggable external volume defaults to Direct Removal.
   - Ready to unplug is only shown when no pending write, open writer, or unverified flush is known.
