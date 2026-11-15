@@ -1,6 +1,6 @@
 # Ticket 115 — Better Monitor records slowdowns by itself
 
-**Blocked by:** none · **Status:** merged, not released
+**Blocked by:** none · **Status:** released in v0.2.14
 
 ## Why
 
