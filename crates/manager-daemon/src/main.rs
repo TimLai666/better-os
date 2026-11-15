@@ -11,6 +11,7 @@ use better_core::self_update::{OnDisk, ProgramFile};
 use manager_daemon::apt::AptGetDriver;
 use manager_daemon::authorize::PolkitAuthorizer;
 use manager_daemon::executor::Executor;
+use manager_daemon::hardware::HardwareService;
 use manager_daemon::health::SystemHealthProbe;
 use manager_daemon::host::SystemHostProbe;
 use manager_daemon::service::{BUS_NAME, ManagerService, serve, wait_until_idle_or_replaced};
@@ -29,6 +30,37 @@ const DRAIN_POLL: Duration = Duration::from_millis(50);
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `better-hardware-restore.service` at boot (ticket 86): write the stored
+    // charge limit and nothing else, then leave. No bus, no polkit: it runs
+    // as root from a unit only the package installs.
+    if let Some(argument) = std::env::args().nth(1) {
+        if argument == "--restore-hardware" {
+            let root = hardware_platform::sysfs::SysRoot::system();
+            let state = std::path::Path::new(manager_daemon::HARDWARE_STATE);
+            // The threshold file belongs to a platform driver that can bind
+            // after this unit starts; wait for it a little before saying the
+            // battery has none.
+            let mut result = manager_daemon::hardware::restore(&root, state);
+            for _ in 0..30 {
+                if result != Err(manager_daemon::DaemonError::HardwareAbsent) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                result = manager_daemon::hardware::restore(&root, state);
+            }
+            return match result {
+                Ok(restored) => {
+                    eprintln!("better-manager-daemon: hardware restore: {restored:?}");
+                    Ok(())
+                }
+                Err(error) => Err(error.into()),
+            };
+        }
+        return Err(format!(
+            "better-manager-daemon takes no argument but --restore-hardware; got {argument:?}"
+        )
+        .into());
+    }
     let artifacts = Arc::new(ArtifactStore::new(ARCHIVE_DIR));
     let journal = Arc::new(Journal::new(STATE_DIR));
 
@@ -64,7 +96,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let activity = service.activity();
     let gate = service.gate();
-    let connection = serve(zbus::connection::Builder::system()?, BUS_NAME, service).await?;
+    let hardware = HardwareService::new(
+        PolkitAuthorizer::new(zbus::connection::Builder::system()?.build().await?),
+        hardware_platform::sysfs::SysRoot::system(),
+        gate.clone(),
+    )
+    .with_state_file(manager_daemon::HARDWARE_STATE);
+    let connection = serve(
+        zbus::connection::Builder::system()?,
+        BUS_NAME,
+        service,
+        hardware,
+    )
+    .await?;
 
     // Nothing to do but wait to be called, and never exit in the middle of a
     // transaction or a repair. D-Bus activation starts us again on the next

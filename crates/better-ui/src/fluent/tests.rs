@@ -1000,6 +1000,12 @@ fn shared_words_read_the_same_in_every_window() {
     assert_eq!(words::percent(0.426), "43%");
     assert_eq!(words::percent(f32::NAN), "0%");
     assert_eq!(words::percent(2.0), "100%");
+    assert_eq!(words::celsius(52.375), "52 °C");
+    assert_eq!(words::celsius(-3.6), "-4 °C");
+    assert_eq!(words::rpm(4800.0), "4,800 RPM");
+    assert_eq!(words::rpm(950.0), "950 RPM");
+    assert_eq!(words::rpm(12_345_678.0), "12,345,678 RPM");
+    assert_eq!(words::rpm(-1.0), "0 RPM");
     assert_eq!(words::duration(Locale::English, 45), "45 s");
     assert_eq!(words::duration(Locale::English, 200), "3 min 20 s");
     assert_eq!(words::duration(Locale::English, 7500), "2 h 5 min");

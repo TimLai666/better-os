@@ -159,6 +159,10 @@ It deliberately does **not** set:
   polkit policy are review artifacts in their own right.
 - The daemon is the first component in the project to ship Debian maintainer
   scripts.
+- The daemon also serves the hardware controls, `org.betteros.Hardware1`, on
+  the same name and path, with one polkit action per control; what it may
+  write and why is decided in
+  [ADR 0017](/engineering/decisions/0017-one-control-center.md).
 
 ## Accepted residual risk
 

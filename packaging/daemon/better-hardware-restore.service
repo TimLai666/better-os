@@ -1,0 +1,36 @@
+[Unit]
+Description=Better OS battery charge limit at startup
+Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/decisions/0017-one-control-center.md
+# Only a limit the person chose in Better Manager is ever written, and only
+# that: the fan mode is never restored and always starts on automatic.
+ConditionPathExists=/var/lib/better-os/hardware.json
+After=systemd-udev-settle.service systemd-modules-load.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/better-manager-daemon --restore-hardware
+
+# The daemon's hardening, with the battery directories alone opened again.
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ReadWritePaths=-/sys/class/power_supply/BAT0 -/sys/class/power_supply/BAT1
+ReadWritePaths=-/sys/class/power_supply/BAT2 -/sys/class/power_supply/BATT
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+
+[Install]
+# Enabled by the daemon package's postinst, the one Better OS system unit that
+# runs at boot.
+WantedBy=multi-user.target

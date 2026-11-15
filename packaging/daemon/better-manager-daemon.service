@@ -19,6 +19,17 @@ ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelModules=yes
 ProtectKernelTunables=yes
+# ProtectKernelTunables makes /sys read-only. The two hardware writes (ADR
+# 0017, ticket 86) are opened again here and nowhere else, each at the
+# narrowest directory that holds it: the battery's own device directory,
+# reached through its class link (systemd resolves the link to the device),
+# and the platform device of the fan switch, whose hwmonN below it changes
+# between boots. "-" skips a path this machine does not have. These names are
+# hardware_platform::sysfs::BATTERY_NAMES and FAN_PLATFORM_DEVICES; a test
+# holds the two lists together.
+ReadWritePaths=-/sys/class/power_supply/BAT0 -/sys/class/power_supply/BAT1
+ReadWritePaths=-/sys/class/power_supply/BAT2 -/sys/class/power_supply/BATT
+ReadWritePaths=-/sys/devices/platform/asus-nb-wmi
 ProtectKernelLogs=yes
 ProtectClock=yes
 ProtectControlGroups=yes

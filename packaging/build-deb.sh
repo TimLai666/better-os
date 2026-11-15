@@ -397,6 +397,9 @@ make_daemon_package() {
     install -m 0755 "$binary_path" "$staging_dir/usr/libexec/$binary_name"
     install -m 0644 "$ROOT_DIR/packaging/daemon/better-manager-daemon.service" \
         "$staging_dir/usr/lib/systemd/system/better-manager-daemon.service"
+    # Ticket 86: writes the charge limit the person chose back at boot.
+    install -m 0644 "$ROOT_DIR/packaging/daemon/better-hardware-restore.service" \
+        "$staging_dir/usr/lib/systemd/system/better-hardware-restore.service"
     install -m 0644 "$ROOT_DIR/packaging/daemon/org.betteros.Manager1.service" \
         "$staging_dir/usr/share/dbus-1/system-services/org.betteros.Manager1.service"
     install -m 0644 "$ROOT_DIR/packaging/daemon/org.betteros.Manager1.conf" \
@@ -483,6 +486,14 @@ if [ "$1" = "configure" ]; then
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload >/dev/null 2>&1 || true
     fi
+    # The boot-time charge limit (ticket 86) is enabled, never started here:
+    # it writes only a limit the person chose, and it has nothing to write
+    # until they do (its unit has ConditionPathExists on the stored choice).
+    if command -v deb-systemd-helper >/dev/null 2>&1; then
+        deb-systemd-helper enable better-hardware-restore.service >/dev/null 2>&1 || true
+    elif [ -d /run/systemd/system ]; then
+        systemctl enable better-hardware-restore.service >/dev/null 2>&1 || true
+    fi
     if command -v dbus-send >/dev/null 2>&1; then
         dbus-send --system --type=method_call --dest=org.freedesktop.DBus \
             /org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig \
@@ -528,15 +539,31 @@ case "$1" in
         ;;
 esac
 PRERM
+    cat >> "$staging_dir/DEBIAN/prerm" <<'PRERM'
+
+# Removal takes the boot-time charge limit's enablement with it (AGENTS.md:
+# nothing a component installed outlives it).
+if [ "$1" = "remove" ]; then
+    if command -v deb-systemd-helper >/dev/null 2>&1; then
+        deb-systemd-helper disable better-hardware-restore.service >/dev/null 2>&1 || true
+    elif [ -d /run/systemd/system ]; then
+        systemctl disable better-hardware-restore.service >/dev/null 2>&1 || true
+    fi
+fi
+PRERM
 
     cat > "$staging_dir/DEBIAN/postrm" <<'POSTRM'
 #!/bin/sh
 set -e
 
 if [ "$1" = "purge" ]; then
-    # Transaction history and cached packages are only meaningful to this
-    # service, so a purge takes them with it.
+    # Transaction history, cached packages, and the stored charge limit
+    # (/var/lib/better-os/hardware.json) are only meaningful to this service,
+    # so a purge takes them with it.
     rm -rf /var/lib/better-os /var/cache/better-os
+    if command -v deb-systemd-helper >/dev/null 2>&1; then
+        deb-systemd-helper purge better-hardware-restore.service >/dev/null 2>&1 || true
+    fi
 fi
 
 if [ -d /run/systemd/system ]; then

@@ -193,6 +193,8 @@ pub(crate) struct ManagerApp {
     pub(crate) window_attention: crate::window_attention_app::WindowAttentionState,
     /// Keep awake's page (ticket 87).
     pub(crate) keep_awake: crate::pages::keep_awake::state::KeepAwakeState,
+    /// System's page (ticket 86).
+    pub(crate) system: crate::pages::system::state::SystemState,
     /// Its "Add an app" search field.
     pub(crate) window_attention_add: Entity<InputState>,
 }
@@ -352,6 +354,7 @@ impl ManagerApp {
             ),
             window_attention: Default::default(),
             keep_awake: Default::default(),
+            system: Default::default(),
             window_attention_add,
         };
         if let Some(view) = handoff.and_then(|h| h.state::<crate::restart::ManagerView>()) {
@@ -368,6 +371,8 @@ impl ManagerApp {
         // Home's Keep awake items and the pane's dot need the service's
         // state from the start, and follow it from then on.
         app.refresh_keep_awake(cx);
+        // Home's battery item and its Power mode card need System's read.
+        app.refresh_system(cx);
         app
     }
 
@@ -425,6 +430,7 @@ impl ManagerApp {
             )
             .warning,
             keep_awake: self.keep_awake_facts(),
+            battery_health: self.system.battery_health(),
         }
     }
 
@@ -467,6 +473,9 @@ impl ManagerApp {
         if entry.route == Route::KeepAwake {
             self.keep_awake.draft = None;
             self.keep_awake.sub = crate::pages::keep_awake::sub_page_of(entry.card);
+        }
+        if entry.route == Route::System {
+            self.open_system_card(entry.card);
         }
         self.navigate(entry.route.landing(), cx);
         self.pending_card = Some(entry.card);
@@ -907,6 +916,12 @@ impl ManagerApp {
             if std::mem::take(&mut self.until_dialog_requested) {
                 self.open_until_dialog(cx);
             }
+        }
+        // System reads the machine each time it is shown, and its
+        // temperatures every two seconds while it stays shown.
+        if page == Page::System {
+            self.refresh_system(cx);
+            self.tick_sensors(cx);
         }
         if page != self.page {
             self.focused_card = None;
@@ -1914,7 +1929,9 @@ impl better_ui::restart::Restartable for ManagerApp {
         crate::restart::restart_blocked(
             self.transaction_running(),
             self.repair_task.is_some(),
-            self.heal_task.is_some() || self.keep_awake.blocks_restart(),
+            self.heal_task.is_some()
+                || self.keep_awake.blocks_restart()
+                || self.system.blocks_restart(),
         )
     }
 

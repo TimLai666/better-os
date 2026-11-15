@@ -85,3 +85,6 @@ paths:
   - /usr/libexec/better-window-attention
   - /usr/lib/systemd/user/better-window-attention.service
   - /usr/share/dbus-1/services/org.betteros.WindowAttention1.service
+  # The System page's "Switch power mode with the charger" choice (ticket 86),
+  # the person's own data, read by better-window-attention at each plug event.
+  - ~/.config/better-os/power-follow.json

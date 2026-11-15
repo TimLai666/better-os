@@ -398,9 +398,7 @@ const UNKNOWN: &str = "unknown";
 /// This keeps them apart. The host's own name and badge come first, the Ubuntu
 /// base it is built on second, and a plain Ubuntu machine has only one fact to
 /// show and shows it alone.
-// System › About this PC shows this line (ticket 86); until then only the
-// tests read it.
-#[cfg_attr(not(test), allow(dead_code))]
+// System › About this PC shows this line (ticket 86).
 pub(crate) fn host_line(profile: &SystemProfile, base_word: &str) -> String {
     let base_is_known = profile.release != UNKNOWN;
     match (&profile.distribution_label, base_is_known) {

@@ -742,6 +742,19 @@ more specific mount wins over `ProtectKernelTunables` is to be shown in a VM
 by ticket 86 before the unit change merges; if it does not, the ticket stops
 and asks rather than dropping the protection.
 
+Observed by ticket 86 on 2026-11-15, in a disposable Ubuntu 24.04 VM
+(systemd 255.4-1ubuntu8.18, kernel 6.8) and in a container of the same
+systemd: the daemon, under its unit, writes both attributes (stand-ins on a
+tmpfs over `/sys/devices/platform` and `/sys/class`). But on that systemd
+`ProtectKernelTunables=yes` does not make `/sys` read-only at all: a unit
+with it, and with `ReadOnlyPaths=/sys` added, still wrote a real sysfs file
+(`/sys/kernel/mm/transparent_hugepage/enabled`). systemd's debug log says why:
+the read-only `/sys` entry is dropped as a duplicate of the API file system
+bind mount the option implies. So the `ReadWritePaths=` lines are inert on
+24.04 today and only narrow anything on a systemd that honours the read-only
+`/sys`; the protection ADR 0017 counted on is not there. That is the owner's
+decision (ticket 86's Notes), and the unit is unchanged otherwise.
+
 If the charge limit does not survive a reboot, the daemon stores the chosen
 value in `/var/lib/better-os/hardware.json` and a oneshot system unit,
 `better-hardware-restore.service`, enabled at boot, runs
