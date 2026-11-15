@@ -41,6 +41,8 @@ pub(crate) enum AttentionAction {
     StartKeepAwakeService,
     /// Open Keep awake on its Diagnostics sub-page.
     OpenKeepAwakeDiagnostics,
+    /// System with the Battery expander open (ticket 86).
+    OpenSystemBattery,
 }
 
 /// One attention card.
@@ -104,6 +106,8 @@ pub(crate) struct Snapshot {
     /// How many settings another program changed after Better OS set them,
     /// from Default apps' last reading (ticket 89).
     pub(crate) default_apps_changed: usize,
+    /// The system battery's health, as System last read it (ticket 86).
+    pub(crate) battery_health: Option<u8>,
 }
 
 impl Snapshot {
@@ -117,6 +121,7 @@ impl Snapshot {
             catalog_warning: None,
             keep_awake: Default::default(),
             default_apps_changed: 0,
+            battery_health: None,
         }
     }
 
@@ -274,6 +279,7 @@ mod tests {
             catalog_warning: Some("The published catalog could not be reached."),
             keep_awake: Default::default(),
             default_apps_changed: 0,
+            battery_health: None,
         }
     }
 

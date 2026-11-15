@@ -172,6 +172,18 @@ contract.
   fork can still hold it open and the exec fails with ETXTBSY. Run a written
   script as `/bin/sh <script>`, or reach a checked-in fixture through a
   symbolic link the test makes (`crates/files-gui/tests/share.rs`).
+- A test that watches a file never writes that file from its own process:
+  another test thread's fork holds a copy of the write descriptor until its
+  exec, and that late close reaches a watch started afterwards as a
+  close-write. Have a child write it (`install` in
+  `crates/better-core/src/self_update.rs`).
+- Every sandbox desktop a test or a screenshot starts (headless GNOME Shell,
+  sway, `dbus-run-session`) runs under
+  `systemd-run --user --scope -p MemoryMax=4G -p MemorySwapMax=0`, with a
+  no-op `ibus-daemon` (a script that execs `sleep infinity`) first on its
+  `PATH`, and is ended by PID when done. A sandbox GNOME Shell otherwise starts
+  its own `ibus-daemon`, which has grown to 12 and 21 GB, and the kernel's OOM
+  kill took the owner's Claude Desktop down with it twice (2026-11-14, -15).
 - Give every worktree of this repository its own `CARGO_TARGET_DIR`. Cargo
   hashes a path crate by its path inside the workspace, so two worktrees sharing
   one target overwrite each other's artifacts and a stale build from the other
@@ -454,11 +466,18 @@ GUI or dependency compiles when the relevant command was not executed.
   on a private bus. Nobody has watched GNOME Shell or Settings pick up a change
   it made. No shipped manifest declares a GNOME integration yet, so the path is
   unreachable from the built-in catalog until one does.
-- Better Touchpad shows vertical scroll factor, horizontal scroll factor, and
-  smooth scrolling as unavailable, because GNOME 46 has no key for any of them.
-  The model and the mock backend carry all three; making them live is one table
-  row in `touchpad-platform`'s GNOME backend when a GNOME that has the key is a
-  supported target.
+- Better Touchpad's scroll factors are live on GNOME 46 through the scroll
+  pass-through (ticket 125, ADR 0030): `better-touchpad-scroll@eventN.service`,
+  one per touchpad, started by udev, grabs the touchpad's evdev node only while
+  a factor other than 1 is set and re-emits it through a uinput clone with
+  two-finger motion scaled. It is the only first-party code that opens
+  `/dev/input` or `/dev/uinput`; its security review is
+  `engineering/specs/touchpad-input-passthrough-security.md`, and a change to
+  the device rule, the unit's sandbox, or the bus interface updates that review
+  in the same commit. Nothing has run against a real touchpad yet:
+  `packaging/tests/touchpad-scroll-hardware-check.sh` is the owner's check.
+  Smooth scrolling stays unavailable, because it is each application's drawing
+  decision and not an input setting.
 - Restore checks the shared application catalog and writes nothing for an
   application that is gone; the person chooses another or clears the default.
   Two limits: an entry whose `TryExec` program is missing still counts as

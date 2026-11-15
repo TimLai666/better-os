@@ -3437,6 +3437,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "hardware-core"
+version = "0.2.15"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hardware-platform"
+version = "0.2.15"
+dependencies = [
+ "hardware-core",
+ "hardware-platform",
+ "monitor-collectors-linux",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zbus",
+]
+
+[[package]]
 name = "harfrust"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4496,11 +4517,14 @@ name = "manager-daemon"
 version = "0.2.15"
 dependencies = [
  "better-core",
+ "hardware-core",
+ "hardware-platform",
  "manager-daemon",
  "manager-ipc",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "zbus",
@@ -4524,6 +4548,8 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
+ "hardware-core",
+ "hardware-platform",
  "manager-core",
  "manager-platform",
  "manager-store",
@@ -8144,6 +8170,7 @@ dependencies = [
  "tokio",
  "touchpad-core",
  "touchpad-gestures",
+ "touchpad-scroll",
  "touchpad-session",
  "zbus",
 ]
@@ -8190,6 +8217,18 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "touchpad-core",
+ "touchpad-scroll",
+ "zbus",
+]
+
+[[package]]
+name = "touchpad-scroll"
+version = "0.2.15"
+dependencies = [
+ "libc",
+ "tempfile",
+ "touchpad-core",
+ "zbus",
 ]
 
 [[package]]
@@ -9161,6 +9200,8 @@ dependencies = [
 name = "window-attention-service"
 version = "0.2.15"
 dependencies = [
+ "hardware-core",
+ "hardware-platform",
  "libc",
  "serde",
  "tempfile",

@@ -35,4 +35,30 @@
       <allow_active>auth_admin</allow_active>
     </defaults>
   </action>
+  <!-- ADR 0017, ticket 86. Each hardware control has its own action, so an
+       administrator can allow one without the other. The daemon accepts only
+       60, 80, or 100 and only auto or full, and finds the file itself. -->
+  <action id="org.betteros.manager.set-charge-limit">
+    <description>Change the battery charge limit</description>
+    <description xml:lang="zh_TW">變更電池充電上限</description>
+    <message>Authentication is required to change the battery charge limit</message>
+    <message xml:lang="zh_TW">變更電池充電上限需要驗證身分</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.betteros.manager.set-fan-mode">
+    <description>Change the fan mode</description>
+    <description xml:lang="zh_TW">變更風扇模式</description>
+    <message>Authentication is required to change the fan mode</message>
+    <message xml:lang="zh_TW">變更風扇模式需要驗證身分</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
 </policyconfig>

@@ -211,6 +211,13 @@ impl ManagerApp {
                             AttentionAction::StartKeepAwakeService => {
                                 this.start_keep_awake_service(cx)
                             }
+                            AttentionAction::OpenSystemBattery => {
+                                let battery = crate::pages::system::card::BATTERY;
+                                this.open_system_card(battery);
+                                this.navigate(Page::System, cx);
+                                this.pending_card = Some(battery);
+                                this.focused_card = Some(battery);
+                            }
                             AttentionAction::OpenKeepAwakeDiagnostics => {
                                 this.keep_awake.sub =
                                     crate::pages::keep_awake::decide::SubPage::Diagnostics;
@@ -228,6 +235,13 @@ impl ManagerApp {
         let mut gap = FIRST_CARD_GAP;
         for quick in home::quick_settings() {
             match quick {
+                // Not drawn without power-profiles-daemon (ticket 86).
+                QuickSetting::PowerMode => {
+                    if let Some(card) = self.power_mode_quick_card(cx) {
+                        rows.push(Row::new(gap, card));
+                        gap = CARD_GAP;
+                    }
+                }
                 // Not drawn while the component or its service is missing.
                 QuickSetting::KeepAwake => {
                     if let Some(card) = self.keep_awake_quick_card(cx) {
@@ -452,6 +466,7 @@ impl ManagerApp {
         match (&self.page, pages::module(route).status) {
             (Page::Home, _) => self.home_rows(cx),
             (Page::KeepAwake, _) => self.keep_awake_rows(window, cx),
+            (Page::System, _) => self.system_rows(cx),
             (Page::Settings, _) => self.settings_rows(cx),
             (Page::WindowAttention, _) => self.window_attention_rows(cx),
             (_, _) if route == Route::Apps => self.apps_rows(cx),

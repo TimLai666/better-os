@@ -112,6 +112,7 @@ cargo build --release \
     -p git-gui \
     -p touchpad-gui \
     -p touchpad-gesture-service \
+    -p touchpad-scroll \
     -p awake-service \
     -p awake-tray \
     -p awake-gui \
@@ -151,6 +152,7 @@ PACKAGE_DATA_ONLY=0
 #                      switch: enabled globally and started at install, and
 #                      stopped and disabled by a prerm on removal
 PACKAGE_ALWAYS_ON_UNITS=""
+PACKAGE_SYSTEM_FRAGMENT=""
 #   PACKAGE_DAEMON_HANDOFF  1 for better-manager: ships the privileged service
 #                      handoff (ADR 0028) and the checksums of the service and
 #                      adapter packages built beside it, and its postinst
@@ -168,6 +170,7 @@ reset_package_inputs() {
     PACKAGE_RECOMMENDS=""
     PACKAGE_DATA_ONLY=0
     PACKAGE_ALWAYS_ON_UNITS=""
+    PACKAGE_SYSTEM_FRAGMENT=""
     PACKAGE_DAEMON_HANDOFF=0
     PACKAGE_HANDOFF_RETRY=0
 }
@@ -229,6 +232,36 @@ write_user_unit_scripts() {
             esac
         } > "$staging_dir/DEBIAN/$script"
         chmod 0755 "$staging_dir/DEBIAN/$script"
+    done
+}
+
+# Append a package's system-service half to its maintainer scripts. Only
+# better-touchpad has one today, the scroll pass-through: the fragment
+# (packaging/maintainer/touchpad-scroll.sh) defines better_os_scroll_postinst,
+# _prerm, and _postrm, and the header below is its. A script the user-unit half
+# already wrote keeps what it has, and the fragment runs after it.
+write_system_fragment() {
+    local staging_dir="$1"
+    local fragment="$2"
+    local function_name="better_os_scroll"
+    local script path
+    for script in postinst prerm postrm; do
+        path="$staging_dir/DEBIAN/$script"
+        if [[ ! -f "$path" ]]; then
+            printf '#!/bin/sh\nset -e\n' > "$path"
+            chmod 0755 "$path"
+        fi
+        {
+            printf '\n'
+            printf "better_os_scroll_libexec='/usr/libexec/better-touchpad-scrolld'\n"
+            printf "better_os_scroll_state='/var/lib/better-touchpad-scroll'\n"
+            printf "better_os_scroll_user='_better-touchpad-scroll'\n"
+            printf "better_os_scroll_reconnect='/run/better-os/touchpad-scroll-reconnect'\n\n"
+            cat "$ROOT_DIR/packaging/maintainer/$fragment.sh"
+            printf '\n'
+            # shellcheck disable=SC2016 # expanded by the maintainer script
+            printf '%s_%s "$@" || true\n' "$function_name" "$script"
+        } >> "$path"
     done
 }
 
@@ -402,6 +435,9 @@ make_package() {
         write_user_unit_scripts "$staging_dir" "$package_name" "$sorted_units" \
             "$PACKAGE_ALWAYS_ON_UNITS"
     fi
+    if [[ -n "$PACKAGE_SYSTEM_FRAGMENT" ]]; then
+        write_system_fragment "$staging_dir" "$PACKAGE_SYSTEM_FRAGMENT"
+    fi
 
     if ((PACKAGE_DAEMON_HANDOFF == 1)); then
         add_daemon_handoff "$staging_dir"
@@ -452,6 +488,9 @@ make_daemon_package() {
     install -m 0755 "$binary_path" "$staging_dir/usr/libexec/$binary_name"
     install -m 0644 "$ROOT_DIR/packaging/daemon/better-manager-daemon.service" \
         "$staging_dir/usr/lib/systemd/system/better-manager-daemon.service"
+    # Ticket 86: writes the charge limit the person chose back at boot.
+    install -m 0644 "$ROOT_DIR/packaging/daemon/better-hardware-restore.service" \
+        "$staging_dir/usr/lib/systemd/system/better-hardware-restore.service"
     install -m 0644 "$ROOT_DIR/packaging/daemon/org.betteros.Manager1.service" \
         "$staging_dir/usr/share/dbus-1/system-services/org.betteros.Manager1.service"
     install -m 0644 "$ROOT_DIR/packaging/daemon/org.betteros.Manager1.conf" \
@@ -538,6 +577,14 @@ if [ "$1" = "configure" ]; then
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload >/dev/null 2>&1 || true
     fi
+    # The boot-time charge limit (ticket 86) is enabled, never started here:
+    # it writes only a limit the person chose, and it has nothing to write
+    # until they do (its unit has ConditionPathExists on the stored choice).
+    if command -v deb-systemd-helper >/dev/null 2>&1; then
+        deb-systemd-helper enable better-hardware-restore.service >/dev/null 2>&1 || true
+    elif [ -d /run/systemd/system ]; then
+        systemctl enable better-hardware-restore.service >/dev/null 2>&1 || true
+    fi
     if command -v dbus-send >/dev/null 2>&1; then
         dbus-send --system --type=method_call --dest=org.freedesktop.DBus \
             /org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig \
@@ -583,15 +630,31 @@ case "$1" in
         ;;
 esac
 PRERM
+    cat >> "$staging_dir/DEBIAN/prerm" <<'PRERM'
+
+# Removal takes the boot-time charge limit's enablement with it (AGENTS.md:
+# nothing a component installed outlives it).
+if [ "$1" = "remove" ]; then
+    if command -v deb-systemd-helper >/dev/null 2>&1; then
+        deb-systemd-helper disable better-hardware-restore.service >/dev/null 2>&1 || true
+    elif [ -d /run/systemd/system ]; then
+        systemctl disable better-hardware-restore.service >/dev/null 2>&1 || true
+    fi
+fi
+PRERM
 
     cat > "$staging_dir/DEBIAN/postrm" <<'POSTRM'
 #!/bin/sh
 set -e
 
 if [ "$1" = "purge" ]; then
-    # Transaction history and cached packages are only meaningful to this
-    # service, so a purge takes them with it.
+    # Transaction history, cached packages, and the stored charge limit
+    # (/var/lib/better-os/hardware.json) are only meaningful to this service,
+    # so a purge takes them with it.
     rm -rf /var/lib/better-os /var/cache/better-os
+    if command -v deb-systemd-helper >/dev/null 2>&1; then
+        deb-systemd-helper purge better-hardware-restore.service >/dev/null 2>&1 || true
+    fi
 fi
 
 if [ -d /run/systemd/system ]; then
@@ -784,9 +847,21 @@ make_package better-git \
 # Better OS that is not Rust, under the bounded exception ADR 0012 records; it
 # is three files under the uuid GNOME looks for it by.
 EXTENSION_UUID="touchpad-adapter@betteros.org"
+# Ubuntu 22.04's dbus-daemon 1.12 cannot read send_destination_prefix.
+if [[ "$RELEASE_TARGET" == ubuntu-22.04 ]]; then
+    SCROLL_BUS_POLICY="org.betteros.TouchpadScroll1.dbus-1.12.conf"
+else
+    SCROLL_BUS_POLICY="org.betteros.TouchpadScroll1.conf"
+fi
+#
+# The scroll pass-through (ADR 0030) is the package's system half: one system
+# service per touchpad, started by udev, so installing the package is what
+# turns it on and removing it stops every instance. It ships under
+# /usr/libexec because udev starts it, not a person.
 PACKAGE_BINARIES=(
     "better-touchpad:usr/bin/better-touchpad"
     "better-touchpad-gestured:usr/bin/better-touchpad-gestured"
+    "better-touchpad-scrolld:usr/libexec/better-touchpad-scrolld"
 )
 PACKAGE_DATA=(
     "packaging/touchpad/better-touchpad.desktop:usr/share/applications/better-touchpad.desktop"
@@ -796,8 +871,17 @@ PACKAGE_DATA=(
     "adapters/gnome-shell-touchpad/extension.js:usr/share/gnome-shell/extensions/$EXTENSION_UUID/extension.js"
     "adapters/gnome-shell-touchpad/org.betteros.TouchpadAdapter1.xml:usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml"
     "packaging/icons/better-touchpad.svg:usr/share/icons/hicolor/scalable/apps/better-touchpad.svg"
+    "packaging/touchpad/better-touchpad-scroll@.service:usr/lib/systemd/system/better-touchpad-scroll@.service"
+    "packaging/touchpad/better-touchpad-scroll-coldplug.service:usr/lib/systemd/system/better-touchpad-scroll-coldplug.service"
+    "packaging/touchpad/90-better-touchpad-scroll.rules:usr/lib/udev/rules.d/90-better-touchpad-scroll.rules"
+    "packaging/touchpad/$SCROLL_BUS_POLICY:usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf"
+    "packaging/touchpad/better-touchpad-scroll.sysusers:usr/lib/sysusers.d/better-touchpad-scroll.conf"
+    "packaging/touchpad/better-touchpad-scroll.tmpfiles:usr/lib/tmpfiles.d/better-touchpad-scroll.conf"
 )
-PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
+# systemd for sysusers, tmpfiles, and the unit; udev for the rule that starts
+# an instance per touchpad.
+PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS" "systemd" "udev")
+PACKAGE_SYSTEM_FRAGMENT="touchpad-scroll"
 make_package better-touchpad \
     'Better OS touchpad settings and gestures' \
     'Scrolling, tapping, pointer speed, and gestures in one window, with every unavailable setting saying why.'

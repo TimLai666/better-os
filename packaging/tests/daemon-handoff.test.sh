@@ -144,7 +144,7 @@ state() {
     active="$(grep -c '^systemctl is-active' "$LOG")"
     if [[ "$active" == 3 ]] &&
         grep -q '^apt-get install .*-- .*better-manager-daemon_0.2.16.* .*better-shell-adapter_0.2.16' "$LOG" &&
-        [[ "$(state)" == done ]]; then
+        [[ "$(state)" == "done" ]]; then
         pass "the run waits for the old service, then installs both packages"
     else
         fail "the run did not wait and install: $(cat "$LOG") / $(state)"
@@ -186,10 +186,10 @@ state() {
     rmdir "$CASE_DIR/systemd"
     sh "$HANDOFF" start
     for _ in $(seq 50); do
-        [[ "$(state)" == done ]] && break
+        [[ "$(state)" == "done" ]] && break
         sleep 0.1
     done
-    if ! grep -q '^systemd-run' "$LOG" && [[ "$(state)" == done ]]; then
+    if ! grep -q '^systemd-run' "$LOG" && [[ "$(state)" == "done" ]]; then
         pass "without systemd the handoff runs detached"
     else
         fail "without systemd: $(cat "$LOG") / $(state)"

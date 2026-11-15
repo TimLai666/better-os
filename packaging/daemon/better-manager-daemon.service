@@ -18,7 +18,16 @@ Restart=no
 ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelModules=yes
+# /sys and the kernel tunables are read-only to the daemon and to everything
+# it runs (ADR 0029). ProtectKernelTunables= covers /proc/sys, but on Ubuntu
+# 24.04's systemd 255 it leaves /sys writable: its read-only /sys entry is
+# dropped as a duplicate of the API file system mount it (and
+# ProtectControlGroups=) imply, and so is ReadOnlyPaths=/sys (seen in a VM,
+# ticket 86). A read-only bind of /sys is not dropped. The two hardware writes
+# are made by a transient helper unit whose /sys holds only the one attribute
+# file it writes.
 ProtectKernelTunables=yes
+BindReadOnlyPaths=/sys
 ProtectKernelLogs=yes
 ProtectClock=yes
 ProtectControlGroups=yes

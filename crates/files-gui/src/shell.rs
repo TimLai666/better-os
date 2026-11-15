@@ -1231,6 +1231,14 @@ impl FilesApp {
                     }
                 }),
             )
+            // A folder dragged in from another application (GNOME Files, the
+            // desktop) is pinned the same way; files are not.
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
+                for location in external_folders(paths.paths()) {
+                    this.session.pin(&location);
+                }
+                cx.notify();
+            }))
             .into_any_element()
     }
 
@@ -1368,4 +1376,14 @@ fn icon_for_row(row: &SidebarRow) -> IconName {
         SidebarSection::Applications => IconName::LayoutDashboard,
         SidebarSection::Favorites => IconName::Star,
     }
+}
+
+/// The folders among paths dropped from another application, as locations
+/// to pin. A file, a path that is gone, or one that is not absolute is skipped.
+pub(crate) fn external_folders(paths: &[std::path::PathBuf]) -> Vec<files_core::Location> {
+    paths
+        .iter()
+        .filter(|path| path.is_dir())
+        .filter_map(|path| files_core::Location::local(path).ok())
+        .collect()
 }

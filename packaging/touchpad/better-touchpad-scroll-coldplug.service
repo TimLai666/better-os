@@ -1,0 +1,17 @@
+[Unit]
+Description=Better Touchpad scroll speed for the touchpads already present
+Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/specs/touchpad-input-passthrough-security.md
+# Started by better-touchpad's postinst, once, and by nothing else. Asking
+# systemd to run it is what lets an install from Better Manager work without a
+# reboot: the postinst runs inside the manager daemon's sandbox, where /sys is
+# read-only and `udevadm trigger` cannot write a uevent, but this unit runs in
+# PID 1's own context. The change event tags each touchpad for systemd, so its
+# better-touchpad-scroll@ instance (BindsTo= the device) can start.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/udevadm trigger --action=change --subsystem-match=input --property-match=ID_INPUT_TOUCHPAD=1
+# It writes uevent files under /sys and nothing else.
+PrivateNetwork=yes
+ProtectHome=yes
+NoNewPrivileges=yes
