@@ -918,14 +918,14 @@ impl FilesApp {
             }
         }
 
-        // The tailnet's machines, online ones first, when Tailscale runs.
-        let machines = self.sharing.machines();
+        // The tailnet's online machines, when Tailscale runs (ticket 117),
+        // each under its tailnet name; opening one tries SFTP there.
+        let machines = crate::share::sidebar_machines(self.sharing.machines());
         if !machines.is_empty() {
             out.push((NavEntry::Header(c.tailnet.into()), None));
             for machine in machines {
                 let item = NavItem::new(machine.name.clone(), IconName::Globe)
-                    .caption(if machine.online { c.online } else { c.offline })
-                    .disabled(!machine.online);
+                    .caption(machine.address.clone());
                 out.push((item.entry(), Some(NavTarget::Machine(machine))));
             }
         }
@@ -1264,7 +1264,7 @@ impl FilesApp {
             }
             NavTarget::Machine(machine) => {
                 self.session
-                    .mount_server(crate::share::sftp_address(machine), None);
+                    .mount_server(crate::share::sftp_address(machine));
             }
             NavTarget::Drive(key) => {
                 if self.session.open_drive(key) {

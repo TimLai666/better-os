@@ -29,6 +29,8 @@ pub mod drives;
 pub mod errors;
 pub mod filemanager1;
 pub mod format;
+pub mod gvfs;
+pub mod gvfs_trust;
 pub mod i18n;
 pub mod icons;
 pub mod interrupted;
@@ -64,10 +66,13 @@ mod panels;
 mod plugin_page;
 mod render;
 mod shell;
+mod signin;
 mod views;
 
 #[cfg(test)]
 mod drives_bus_tests;
+#[cfg(test)]
+mod gvfs_bus_tests;
 #[cfg(test)]
 mod integration_tests;
 #[cfg(test)]

@@ -1,13 +1,24 @@
 //! Servers typed in the path bar: `sftp://host/`, `smb://host/share`,
-//! `ftp://`, `dav://`, `davs://`, `afp://`, `nfs://`. folio opens them through
-//! GVfs (`src/PathBar.qml`, `src/MountPrompt.qml`); so does Better Files:
-//! `gio mount <address>` mounts it, and the folder GVfs shows it under
-//! (`/run/user/<uid>/gvfs/…`, from `gio info`) is listed like any other.
+//! `ftp://`, `dav://`, `davs://`, `afp://`, `nfs://`, mounted through GVfs
+//! and listed through the folder GVfs shows them under
+//! (`/run/user/<uid>/gvfs/…`) like any other folder.
 //!
-//! `gio` is always started with its arguments as a list, never through a
-//! shell, and the address is one argument. A server that wants a name and
-//! password gets them on `gio mount`'s standard input, which is then
-//! closed, so a prompt can never wait forever.
+//! **How (ticket 117).** [`crate::gvfs::GvfsMounter`] asks GVfs's own mount
+//! tracker on the session bus to mount the address, with a mount operation
+//! of Better Files' own: every question GVfs asks (a name and password, a
+//! host key it does not know) arrives as a [`Prompt`], is shown in the
+//! window, and the person's [`Answer`] goes back the same way. Nothing is
+//! scripted from a terminal's prompts.
+//!
+//! Only when GVfs is not on the bus does [`GioMounter`] run `gio mount`,
+//! in the C locale so its prompts can be recognised, its arguments as a
+//! list and never through a shell. Its output is never shown as the
+//! message: a failure is a [`MountError`] with a plain sentence, and what
+//! `gio` said is only the detail under it.
+//!
+//! A password is never logged and never put in a process's arguments: it
+//! goes to GVfs over the bus (or to `gio` on its standard input), and only
+//! GVfs and the keyring keep it, when the person chose to remember it.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -17,7 +28,9 @@ use std::time::{Duration, Instant};
 /// The schemes GVfs mounts that a person types.
 pub const SCHEMES: [&str; 7] = ["sftp", "smb", "ftp", "dav", "davs", "afp", "nfs"];
 
-/// How long a mount may take before it is given up on.
+/// How long a mount may go without news (no question asked, no answer
+/// given) before it is given up on. Time the person spends answering does
+/// not count.
 pub const MOUNT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The address, trimmed, when it is a server address this opens.
@@ -27,6 +40,41 @@ pub fn server_address(text: &str) -> Option<String> {
     let scheme = scheme.to_ascii_lowercase();
     (SCHEMES.contains(&scheme.as_str()) && !rest.is_empty() && !rest.starts_with('/'))
         .then(|| format!("{scheme}://{rest}"))
+}
+
+/// The server's name in an address, for the sign-in page's title
+/// (`sftp://ann@build.local:2222/srv` is `build.local`).
+pub fn server_name(address: &str) -> String {
+    let rest = address.split_once("://").map_or(address, |(_, rest)| rest);
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = match host.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or(bracketed),
+        None => host.split(':').next().unwrap_or(host),
+    };
+    percent_decode(host)
+}
+
+/// `%20` and the like in an address, decoded; anything malformed is kept.
+pub fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && let Some(hex) = text.get(index + 1..index + 3)
+            && let Ok(value) = u8::from_str_radix(hex, 16)
+        {
+            out.push(value);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The local folder in `gio info` output (`local path: /run/user/…`).
@@ -39,108 +87,476 @@ pub fn local_path_from_info(output: &str) -> Option<PathBuf> {
     })
 }
 
-/// A name and password for a server.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Credentials {
-    pub user: String,
-    pub password: String,
-}
-
-/// Why a server did not open.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MountError {
-    /// It asked for a name and password, or refused the ones given.
-    NeedsPassword,
-    /// `gio` is not installed.
-    NoGio,
-    /// It took longer than [`MOUNT_TIMEOUT`].
-    TimedOut,
-    /// Anything else, in `gio`'s own words.
-    Failed(String),
-}
-
-/// Mounts a server and says where it is. A trait so the session can be
-/// tested without a server.
-pub trait Mounter: Send + Sync {
-    fn mount(
-        &self,
-        address: &str,
-        credentials: Option<&Credentials>,
-    ) -> Result<PathBuf, MountError>;
-}
-
-/// The real one: `gio mount`, then `gio info`.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct GioMounter;
-
-/// What `gio mount` printed that means "a password is wanted".
+/// What `gio mount` printed, in the C locale, that means "a password is
+/// wanted".
 pub fn asks_for_password(output: &str) -> bool {
     let lower = output.to_lowercase();
     lower.contains("password") || lower.contains("permission denied") || lower.contains("login")
 }
 
-impl Mounter for GioMounter {
-    fn mount(
-        &self,
-        address: &str,
-        credentials: Option<&Credentials>,
-    ) -> Result<PathBuf, MountError> {
-        let mut child = Command::new("gio")
-            .args(["mount", address])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => MountError::NoGio,
-                _ => MountError::Failed(error.to_string()),
-            })?;
-        if let Some(mut stdin) = child.stdin.take() {
-            // The answers to gio's prompts (user, domain for SMB, password),
-            // or nothing; closing stdin ends any prompt left.
-            if let Some(credentials) = credentials {
-                let _ = writeln!(stdin, "{}", credentials.user);
-                if address.starts_with("smb://") {
-                    let _ = writeln!(stdin);
-                }
-                let _ = writeln!(stdin, "{}", credentials.password);
-            }
+/// Which fields a sign-in asks for (GIO's `GAskPasswordFlags`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SignInFields {
+    pub password: bool,
+    pub user: bool,
+    pub domain: bool,
+    /// The password can be remembered (for this session, or in the
+    /// keyring).
+    pub remember: bool,
+    /// The server can be used without signing in.
+    pub anonymous: bool,
+}
+
+impl SignInFields {
+    /// From GIO's `GAskPasswordFlags` bits.
+    pub fn from_bits(bits: u32) -> Self {
+        Self {
+            password: bits & 1 != 0,
+            user: bits & 2 != 0,
+            domain: bits & 4 != 0,
+            remember: bits & 8 != 0,
+            anonymous: bits & 16 != 0,
         }
-        let started = Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if started.elapsed() > MOUNT_TIMEOUT => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(MountError::TimedOut);
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-                Err(error) => return Err(MountError::Failed(error.to_string())),
-            }
+    }
+}
+
+/// How long a password is kept (GIO's `GPasswordSave`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Remember {
+    /// Forgotten as soon as the server is open.
+    #[default]
+    Never,
+    /// Until the person logs out.
+    Session,
+    /// In the keyring.
+    Forever,
+}
+
+impl Remember {
+    pub const ALL: [Remember; 3] = [Remember::Never, Remember::Session, Remember::Forever];
+
+    pub fn as_bits(self) -> u32 {
+        match self {
+            Remember::Never => 0,
+            Remember::Session => 1,
+            Remember::Forever => 2,
+        }
+    }
+}
+
+/// A question GVfs asks while it mounts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Prompt {
+    /// A name, a password, a domain: whichever `fields` says.
+    SignIn {
+        /// GVfs's own words (in the desktop's language), shown small under
+        /// the form.
+        message: String,
+        user: String,
+        domain: String,
+        fields: SignInFields,
+        /// The last answer was refused: this is the same question again.
+        again: bool,
+    },
+    /// A question with choices, such as whether to trust a host key it
+    /// has not seen before.
+    Question {
+        message: String,
+        choices: Vec<String>,
+    },
+}
+
+/// The person's answer to a [`Prompt`]. Not `Clone`: the password in it
+/// overwrites itself when the answer is dropped.
+#[derive(Debug)]
+pub enum Answer {
+    SignIn {
+        user: String,
+        domain: String,
+        password: crate::secret::Secret,
+        anonymous: bool,
+        remember: Remember,
+    },
+    /// The index of the choice taken.
+    Choice(u32),
+    /// The person gave up: the mount ends without an error shown.
+    Cancel,
+}
+
+/// A prompt on its way to the window, with where the answer goes.
+#[derive(Debug)]
+pub struct Ask {
+    pub address: String,
+    pub prompt: Prompt,
+    pub reply: smol::channel::Sender<Answer>,
+}
+
+/// How a mount asks the window its questions. A question the window can no
+/// longer answer (it closed) is answered with [`Answer::Cancel`].
+#[derive(Clone, Debug)]
+pub struct Asker {
+    address: String,
+    window: std::sync::mpsc::Sender<Ask>,
+}
+
+impl Asker {
+    pub fn new(address: &str, window: std::sync::mpsc::Sender<Ask>) -> Self {
+        Self {
+            address: address.to_string(),
+            window,
+        }
+    }
+
+    /// Asks and waits for the answer.
+    pub async fn ask(&self, prompt: Prompt) -> Answer {
+        let (reply, answer) = smol::channel::bounded(1);
+        let ask = Ask {
+            address: self.address.clone(),
+            prompt,
+            reply,
         };
-        let output = child
-            .wait_with_output()
-            .map_err(|error| MountError::Failed(error.to_string()))?;
-        let said = format!(
+        if self.window.send(ask).is_err() {
+            return Answer::Cancel;
+        }
+        answer.recv().await.unwrap_or(Answer::Cancel)
+    }
+}
+
+/// The choice that goes ahead in GVfs's host-key questions: its SFTP
+/// backend offers `{"Log In Anyway", "Cancel Login"}` and answers ssh "yes"
+/// for choice 0 and "no" for anything else (`gvfsbackendsftp.c`,
+/// `login_answer_yes_no`, GVfs 1.54).
+pub const CONNECT_ANYWAY: u32 = 0;
+
+/// What a host-key question means, read from GVfs's message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HostKeyQuestion {
+    /// A server this computer has not connected to before, and the key's
+    /// fingerprint (`SHA256:…`).
+    Unknown { fingerprint: String },
+    /// The key GVfs was sent is not the one this computer knows for the
+    /// server's address: possibly someone in between.
+    Mismatch,
+}
+
+impl HostKeyQuestion {
+    /// Reads GVfs's SFTP question. GVfs words it in the desktop's
+    /// language, so it is recognised by being an SFTP question with two
+    /// choices and by its fingerprint: a first-time question carries one,
+    /// the address-mismatch warning does not.
+    pub fn read(address: &str, message: &str, choices: &[String]) -> Option<Self> {
+        if !address.starts_with("sftp://") || choices.len() != 2 {
+            return None;
+        }
+        match fingerprint(message) {
+            Some(fingerprint) => Some(Self::Unknown { fingerprint }),
+            None => Some(Self::Mismatch),
+        }
+    }
+}
+
+/// The `SHA256:…` (or older `MD5:…`) fingerprint in a host-key message.
+pub fn fingerprint(message: &str) -> Option<String> {
+    ["SHA256:", "MD5:"].iter().find_map(|prefix| {
+        let start = message.find(prefix)?;
+        let token: String = message[start..]
+            .chars()
+            .take_while(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, ':' | '+' | '/' | '=')
+            })
+            .collect();
+        (token.len() > prefix.len()).then_some(token)
+    })
+}
+
+/// Why a server did not open.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MountFailure {
+    /// The person cancelled; nothing is shown.
+    Cancelled,
+    /// Neither GVfs nor `gio` is there.
+    NoGvfs,
+    /// No news for [`MOUNT_TIMEOUT`].
+    TimedOut,
+    /// The name does not resolve.
+    HostNotFound,
+    /// Nothing listens there, or the network is not reachable.
+    Refused,
+    /// The server refused the name and password, or this person.
+    PermissionDenied,
+    /// The server's key is not the one this computer knows for it.
+    HostKeyChanged,
+    /// GVfs cannot open this kind of address.
+    NotSupported,
+    /// It mounted, but GVfs shows no folder for it (its FUSE part is not
+    /// running).
+    NoLocalFolder,
+    /// The owner of `org.gtk.vfs.Daemon` is not the installed `gvfsd`
+    /// ([`crate::gvfs_trust`]); nothing was sent to it, and `gio` is not
+    /// tried, since it would go to the same owner.
+    UntrustedGvfs,
+    /// Anything else.
+    Failed,
+}
+
+/// A failure, with the server's or GVfs's own words for the detail line.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MountError {
+    pub failure: MountFailure,
+    pub detail: String,
+}
+
+impl MountError {
+    pub fn new(failure: MountFailure, detail: impl Into<String>) -> Self {
+        Self {
+            failure,
+            detail: detail.into(),
+        }
+    }
+}
+
+/// Mounts a server and says where its folder is, asking the window through
+/// `asker` whatever the server wants to know. A trait so the session can be
+/// tested without a server.
+pub trait Mounter: Send + Sync {
+    fn mount(&self, address: &str, asker: &Asker) -> Result<PathBuf, MountError>;
+}
+
+/// GVfs through its bus interface when it is there, `gio` otherwise.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemMounter;
+
+impl Mounter for SystemMounter {
+    fn mount(&self, address: &str, asker: &Asker) -> Result<PathBuf, MountError> {
+        match crate::gvfs::GvfsMounter::session() {
+            Some(gvfs) => gvfs.mount(address, asker),
+            None => GioMounter.mount(address, asker),
+        }
+    }
+}
+
+/// The fallback: `gio mount` in the C locale, then `gio info`. Each
+/// question it prints is asked through the window and `gio` is run again
+/// with every answer so far on its standard input.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GioMounter;
+
+/// How many times `gio mount` is run for one address, one per question.
+const GIO_ATTEMPTS: usize = 4;
+
+/// Runs `gio` with `arguments` in the C locale, writes `input` to it and
+/// closes its standard input, and returns whether it succeeded and what it
+/// printed.
+fn run_gio(arguments: &[&str], input: &[&str]) -> Result<(bool, String), MountError> {
+    let mut child = Command::new("gio")
+        .args(arguments)
+        .env("LC_ALL", "C")
+        .env("LANGUAGE", "C")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => MountError::new(MountFailure::NoGvfs, ""),
+            _ => MountError::new(MountFailure::Failed, error.to_string()),
+        })?;
+    if let Some(mut stdin) = child.stdin.take() {
+        for line in input {
+            let _ = writeln!(stdin, "{line}");
+        }
+    }
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() > MOUNT_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(MountError::new(MountFailure::TimedOut, ""));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => return Err(MountError::new(MountFailure::Failed, error.to_string())),
+        }
+    };
+    let output = child
+        .wait_with_output()
+        .map_err(|error| MountError::new(MountFailure::Failed, error.to_string()))?;
+    Ok((
+        status.success(),
+        format!(
             "{}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
-        );
-        // "Already mounted" is a success: the folder is there.
-        if !status.success() && !said.to_lowercase().contains("already mounted") {
-            return Err(if asks_for_password(&said) {
-                MountError::NeedsPassword
-            } else {
-                MountError::Failed(said.trim().to_string())
-            });
+        ),
+    ))
+}
+
+/// The last thing `gio` said, without its `gio: <address>: ` prefix: the
+/// detail line under a failure.
+pub fn gio_detail(output: &str) -> String {
+    let line = output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    let line = line.strip_prefix("gio: ").unwrap_or(line);
+    match line.split_once(": ") {
+        Some((head, rest)) if head.contains("://") => rest.to_string(),
+        _ => line.to_string(),
+    }
+}
+
+/// What a failed `gio mount` (C locale) means.
+pub fn gio_failure(output: &str) -> MountFailure {
+    let lower = output.to_lowercase();
+    if lower.contains("cancel") {
+        MountFailure::Cancelled
+    } else if lower.contains("host key verification failed") {
+        MountFailure::HostKeyChanged
+    } else if lower.contains("not known") || lower.contains("could not resolve") {
+        MountFailure::HostNotFound
+    } else if lower.contains("connection refused") || lower.contains("unreachable") {
+        MountFailure::Refused
+    } else if asks_for_password(output) {
+        MountFailure::PermissionDenied
+    } else if lower.contains("not supported") {
+        MountFailure::NotSupported
+    } else if lower.contains("timed out") {
+        MountFailure::TimedOut
+    } else {
+        MountFailure::Failed
+    }
+}
+
+/// A question `gio mount` printed (C locale): its text and the numbers it
+/// offers with their labels (`[1] Log In Anyway`, `[2] Cancel Login`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GioQuestion {
+    pub text: String,
+    pub choices: Vec<(String, String)>,
+}
+
+/// The question in `gio mount`'s output, when it asked one ("Choice:").
+pub fn gio_question(output: &str) -> Option<GioQuestion> {
+    if !output.contains("Choice:") {
+        return None;
+    }
+    let choices: Vec<(String, String)> = output
+        .lines()
+        .filter_map(|line| {
+            let (number, label) = line.trim().strip_prefix('[')?.split_once("] ")?;
+            number
+                .chars()
+                .all(|digit| digit.is_ascii_digit())
+                .then(|| (number.to_string(), label.trim().to_string()))
+        })
+        .collect();
+    let text = output
+        .lines()
+        .take_while(|line| !line.trim_start().starts_with('['))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!choices.is_empty()).then_some(GioQuestion { text, choices })
+}
+
+/// What `gio` is told on one run: the number of the host-key choice taken,
+/// then the sign-in. The password stays a [`Secret`] until it is written.
+#[derive(Default)]
+struct GioAnswers {
+    choice: Option<String>,
+    user: Option<String>,
+    domain: Option<String>,
+    password: Option<crate::secret::Secret>,
+}
+
+impl GioAnswers {
+    fn lines(&self) -> Vec<&str> {
+        let mut lines = Vec::new();
+        lines.extend(self.choice.as_deref());
+        lines.extend(self.user.as_deref());
+        lines.extend(self.domain.as_deref());
+        lines.extend(self.password.as_ref().map(crate::secret::Secret::expose));
+        lines
+    }
+}
+
+impl Mounter for GioMounter {
+    fn mount(&self, address: &str, asker: &Asker) -> Result<PathBuf, MountError> {
+        let mut answers = GioAnswers::default();
+        let mut mounted = false;
+        for _ in 0..GIO_ATTEMPTS {
+            let (success, said) = run_gio(&["mount", address], &answers.lines())?;
+            if success || said.to_lowercase().contains("already mounted") {
+                mounted = true;
+                break;
+            }
+            // A question gio could not answer from what it was given is
+            // asked through the window, and gio is run again with the
+            // number it offered for the answer. Only an SFTP host key is
+            // asked: it is shown in Better Files' own words (the window
+            // reads the fingerprint), never as gio's text; any other
+            // question ends the mount, gio's words only as the detail.
+            if answers.choice.is_none()
+                && let Some(question) = gio_question(&said)
+            {
+                let labels: Vec<String> = question
+                    .choices
+                    .iter()
+                    .map(|(_, label)| label.clone())
+                    .collect();
+                if HostKeyQuestion::read(address, &question.text, &labels).is_none() {
+                    return Err(MountError::new(MountFailure::Failed, gio_detail(&said)));
+                }
+                match smol::block_on(asker.ask(Prompt::Question {
+                    message: question.text,
+                    choices: labels,
+                })) {
+                    Answer::Choice(index) => {
+                        let Some((number, _)) = question.choices.get(index as usize) else {
+                            return Err(MountError::new(MountFailure::Cancelled, ""));
+                        };
+                        answers.choice = Some(number.clone());
+                    }
+                    _ => return Err(MountError::new(MountFailure::Cancelled, "")),
+                }
+                continue;
+            }
+            if asks_for_password(&said) {
+                let answer = smol::block_on(asker.ask(Prompt::SignIn {
+                    message: String::new(),
+                    user: std::env::var("USER").unwrap_or_default(),
+                    domain: String::new(),
+                    fields: SignInFields {
+                        password: true,
+                        user: true,
+                        domain: address.starts_with("smb://"),
+                        remember: false,
+                        anonymous: false,
+                    },
+                    again: answers.password.is_some(),
+                }));
+                let Answer::SignIn {
+                    user,
+                    domain,
+                    password,
+                    ..
+                } = answer
+                else {
+                    return Err(MountError::new(MountFailure::Cancelled, ""));
+                };
+                answers.user = Some(user);
+                answers.domain = address.starts_with("smb://").then_some(domain);
+                answers.password = Some(password);
+                continue;
+            }
+            return Err(MountError::new(gio_failure(&said), gio_detail(&said)));
         }
-        let info = Command::new("gio")
-            .args(["info", address])
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| MountError::Failed(error.to_string()))?;
-        local_path_from_info(&String::from_utf8_lossy(&info.stdout))
-            .ok_or_else(|| MountError::Failed("no local path".to_string()))
+        if !mounted {
+            return Err(MountError::new(MountFailure::PermissionDenied, ""));
+        }
+        let (_, info) = run_gio(&["info", address], &[])?;
+        local_path_from_info(&info)
+            .ok_or_else(|| MountError::new(MountFailure::NoLocalFolder, gio_detail(&info)))
     }
 }

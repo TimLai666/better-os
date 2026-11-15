@@ -954,7 +954,7 @@ fn eject_lets_go_of_the_device_s_watch_first_and_a_failed_eject_takes_it_back() 
     session.pump();
     session.open_device("/dev/obj");
     settle(&mut session);
-    let hub = files_platform::WatchHub::global();
+    let hub = files_platform::WatchHub::current();
     assert!(pump_until(&mut session, |_| hub.is_watching(&mount_point)));
 
     session.eject_device("/dev/obj");
