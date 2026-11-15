@@ -24,7 +24,7 @@ use crate::backend::{
     BackendError, Clock, InhibitWhat, InhibitorBackend, LeaseHealth, LeaseRequest,
 };
 use crate::rules::{RuleDriver, RuleEdit};
-use crate::settings::{ServiceSettings, SettingsStore};
+use crate::settings::{QuickSessionsStore, ServiceSettings, SettingsStore};
 
 /// The `who` string every inhibitor is taken out under, so a person reading
 /// `systemd-inhibit --list` can see who is holding the machine awake.
@@ -52,6 +52,10 @@ pub struct AwakeEngine<B: InhibitorBackend> {
     /// The closed-lid limit and the clock it is measured with. Its own lock,
     /// taken alone and never across a backend call.
     lid: Mutex<LidWatch>,
+    /// The quick-session offer the tray and the Keep awake page read (ticket
+    /// 87). Its own lock, taken alone.
+    quick_sessions: Mutex<awake_ipc::QuickSessionsDocument>,
+    quick_sessions_store: QuickSessionsStore,
 }
 
 /// What the service knows about the lid, for the closed-lid battery limit.
@@ -210,6 +214,8 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
         let now = clock.now_unix_seconds();
         let settings = SettingsStore::beside(store.path());
         let settings_load = settings.load();
+        let quick_sessions_store = QuickSessionsStore::beside(store.path());
+        let quick_sessions_load = quick_sessions_store.load();
         let (mut persisted, interrupted, load_detail) = match store.load(now) {
             Ok(outcome) => {
                 let interrupted = outcome.interrupted.first().map(|session| WireInterrupted {
@@ -254,7 +260,8 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
         // two: a service with rules and no backend can do nothing at all.
         let backend_detail = backend_detail
             .or_else(|| rules.load_detail().map(str::to_string))
-            .or(settings_load.detail.clone());
+            .or(settings_load.detail.clone())
+            .or(quick_sessions_load.detail.clone());
 
         let engine = Self {
             backend,
@@ -275,6 +282,8 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
                 writable: settings_load.writable,
                 ..LidWatch::default()
             }),
+            quick_sessions: Mutex::new(quick_sessions_load.document),
+            quick_sessions_store,
         };
 
         // Evaluated once before the service accepts its first request. A rule
@@ -324,6 +333,15 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
         match &request.body {
             RequestBody::SetLidBatteryLimit { limit } => {
                 return (self.set_lid_battery_limit(*limit).await, Vec::new());
+            }
+            RequestBody::QueryQuickSessions => {
+                return (
+                    AwakeResponse::quick_sessions(self.quick_sessions().await),
+                    Vec::new(),
+                );
+            }
+            RequestBody::SetQuickSessions { quick_sessions } => {
+                return (self.set_quick_sessions(quick_sessions).await, Vec::new());
             }
             RequestBody::QueryRules => {
                 return (
@@ -396,6 +414,34 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
             _ => {}
         }
         request
+    }
+
+    /// The quick-session offer as the service holds it.
+    pub async fn quick_sessions(&self) -> awake_ipc::QuickSessionsDocument {
+        self.quick_sessions.lock().await.clone()
+    }
+
+    /// Replaces the offer, once it is on disk, and answers with it. The
+    /// request was validated on the way in; it is checked again here so no
+    /// caller of the engine can store an offer the tray could not draw.
+    async fn set_quick_sessions(&self, offer: &awake_ipc::QuickSessions) -> AwakeResponse {
+        if let Err(error) = offer.validate() {
+            return AwakeResponse::rejected(
+                awake_ipc::IpcError::InvalidQuickSessions(error).to_string(),
+            );
+        }
+        let mut current = self.quick_sessions.lock().await;
+        if !current.writable {
+            return AwakeResponse::rejected("awake.quick_sessions.not_writable");
+        }
+        if let Err(error) = self
+            .quick_sessions_store
+            .save(offer, current.import_notice.as_deref())
+        {
+            return AwakeResponse::rejected(format!("awake.quick_sessions.write_failed:{error}"));
+        }
+        current.quick_sessions = offer.clone();
+        AwakeResponse::quick_sessions(current.clone())
     }
 
     /// Stores a new closed-lid battery limit and answers with the status.
@@ -632,7 +678,9 @@ impl<B: InhibitorBackend> AwakeEngine<B> {
             | RequestBody::ResumeRules
             | RequestBody::OverrideAllRules { .. }
             | RequestBody::QueryHistory { .. }
-            | RequestBody::SetLidBatteryLimit { .. } => Ok(None),
+            | RequestBody::SetLidBatteryLimit { .. }
+            | RequestBody::QueryQuickSessions
+            | RequestBody::SetQuickSessions { .. } => Ok(None),
         }
     }
 
@@ -3770,5 +3818,133 @@ mod tests {
                 .unmet_policy
                 .contains(&awake_core::PolicyGap::LidSwitch)
         );
+    }
+
+    // ---- Ticket 87: the quick-session offer and "Until a time" ------------
+
+    fn offer_of(response: &AwakeResponse) -> &awake_ipc::QuickSessionsDocument {
+        match &response.body {
+            ResponseBody::QuickSessions(document) => document,
+            other => panic!("expected the quick-session offer, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_offer_is_the_shipped_one_until_changed_and_a_change_survives_a_restart() {
+        use awake_ipc::{QuickLength, QuickSessions};
+        let fixture = fixture().await;
+        let read = fixture
+            .engine
+            .handle(AwakeRequest::new(RequestBody::QueryQuickSessions))
+            .await;
+        assert_eq!(offer_of(&read).quick_sessions, QuickSessions::default());
+
+        let mut offer = QuickSessions::default();
+        assert!(offer.add_length(QuickLength::Minutes { minutes: 45 }));
+        assert!(offer.set_default(5));
+        let changed = fixture
+            .engine
+            .handle(AwakeRequest::new(RequestBody::SetQuickSessions {
+                quick_sessions: offer.clone(),
+            }))
+            .await;
+        assert_eq!(offer_of(&changed).quick_sessions, offer);
+
+        let again = restart(
+            fixture._directory.path(),
+            &fixture.store,
+            fixture.clock.clone(),
+        )
+        .await;
+        assert_eq!(again.quick_sessions().await.quick_sessions, offer);
+        assert_eq!(
+            again.quick_sessions().await.quick_sessions.default_length(),
+            Some(QuickLength::Minutes { minutes: 45 })
+        );
+    }
+
+    #[tokio::test]
+    async fn an_offer_the_window_would_refuse_is_refused_and_nothing_changes() {
+        use awake_ipc::QuickSessions;
+        let fixture = fixture().await;
+        let bad = QuickSessions {
+            default_index: 9,
+            ..QuickSessions::default()
+        };
+        let refused = fixture
+            .engine
+            .handle(AwakeRequest::new(RequestBody::SetQuickSessions {
+                quick_sessions: bad,
+            }))
+            .await;
+        assert!(rejection_of(&refused).starts_with("awake.ipc.error.invalid_quick_sessions:"));
+        assert_eq!(
+            fixture.engine.quick_sessions().await.quick_sessions,
+            QuickSessions::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_service_imports_the_old_window_s_file_on_its_first_start_only() {
+        use awake_ipc::QuickLength;
+        let directory = tempfile::tempdir().unwrap();
+        write_machine(directory.path());
+        std::fs::write(
+            directory.path().join(crate::settings::GUI_PREFERENCES_FILE_NAME),
+            r#"{"schema_version":2,"presets":[{"kind":"minutes","minutes":20},{"kind":"indefinite"}],"default_preset":1,"defaults":{"policy":{"prevent_system_suspend":true,"prevent_idle":true,"prevent_display_sleep":false,"prevent_automatic_lock":false,"prevent_lid_suspend":true},"battery_stop_percent":15},"locale":"zh-TW","theme":"system"}"#,
+        )
+        .unwrap();
+        let store = JsonStore::at_path(directory.path().join("state.json"));
+        let clock = Arc::new(FixedClock::at(NOW));
+        let first = restart(directory.path(), &store, clock.clone()).await;
+        let offer = first.quick_sessions().await.quick_sessions;
+        assert_eq!(
+            offer.lengths,
+            vec![
+                QuickLength::Minutes { minutes: 20 },
+                QuickLength::Indefinite
+            ]
+        );
+        assert_eq!(offer.default_length(), Some(QuickLength::Indefinite));
+        assert_eq!(offer.defaults.battery_stop_percent, Some(15));
+        drop(first);
+
+        std::fs::write(
+            directory.path().join(crate::settings::GUI_PREFERENCES_FILE_NAME),
+            r#"{"schema_version":2,"presets":[{"kind":"minutes","minutes":5}],"default_preset":0,"defaults":{"policy":{"prevent_system_suspend":true,"prevent_idle":true,"prevent_display_sleep":false,"prevent_automatic_lock":false}},"locale":"system"}"#,
+        )
+        .unwrap();
+        let second = restart(directory.path(), &store, clock).await;
+        assert_eq!(second.quick_sessions().await.quick_sessions, offer);
+    }
+
+    #[tokio::test]
+    async fn a_session_started_until_a_time_ends_at_that_time() {
+        let fixture = fixture().await;
+        let until = NOW + 2 * 3_600 + 17 * 60;
+        let response = fixture
+            .engine
+            .handle(AwakeRequest::new(RequestBody::StartSession {
+                reason: "Until 18:00".to_string(),
+                policy: awake_core::SessionPolicy::manual_default(),
+                battery_stop_percent: None,
+                end: WireEnd::UntilUnixSeconds {
+                    unix_seconds: until,
+                },
+                security_confirmed: false,
+            }))
+            .await;
+        assert_eq!(status_of(&response).sessions.len(), 1);
+
+        fixture.clock.set(until - 1);
+        assert!(fixture.engine.tick().await.ended.is_empty());
+        assert_eq!(fixture.engine.status().await.sessions.len(), 1);
+
+        fixture.clock.set(until);
+        let ended = fixture.engine.tick().await.ended;
+        assert_eq!(ended.len(), 1);
+        assert_eq!(ended[0].cause, EndCause::Expired);
+        assert!(fixture.engine.status().await.sessions.is_empty());
+        assert!(fixture.engine.backend().held_requests().is_empty());
     }
 }

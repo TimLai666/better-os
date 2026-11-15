@@ -309,7 +309,7 @@ pub async fn handle_event(
             }
             None
         }
-        Ok(ServiceEvent::Other) => None,
+        Ok(ServiceEvent::QuickSessions(_) | ServiceEvent::Other) => None,
         Err(error) => {
             eprintln!("better-awake-tray: ignoring an event the service sent: {error}");
             None

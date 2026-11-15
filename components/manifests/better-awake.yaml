@@ -87,7 +87,9 @@ paths:
   - ~/.local/state/better-awake/awake-history.json
   - ~/.local/state/better-awake/awake-service-state.json
   - ~/.local/state/better-awake/awake-service-settings.json
+  - ~/.local/state/better-awake/awake-quick-sessions.json
 release_notes:
+  - Better Awake's settings now live in Better Manager, on the Keep awake page. The tray's Open, Change session, and Until a time open it there. The quick-session lengths, the default length, and the defaults for new sessions are kept by the service, so a length you add on the page appears in the tray menu at once; the tray also gains a one-click start with the default length. The lengths you set in the old window are brought over once and the old file is left in place.
   - Keeping awake now also covers closing the lid. A session you start by hand keeps the computer awake with the lid closed (the screen still turns off), and you can turn that off in Quick options, in Session defaults, or per rule; rules leave it off unless you turn it on. On battery, the battery stop threshold still ends the session, and so does the lid staying closed for longer than a limit you choose in Battery & Safety (2 hours unless you change it, or never). A notification says why the session ended.
   - The tray menu always matches the service. A panel now sees every changed menu under new item ids, so it can no longer keep showing the not-awake menu during a session, and every item with an arrow opens.
   - Choosing a length while a session runs changes that session instead of reporting an error, and an action the service refuses is said in a notification.

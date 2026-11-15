@@ -105,7 +105,9 @@ pub fn anchored_panel(panel: impl IntoElement, edge: PanelEdge) -> AnyElement {
                 .snap_to_window_with_margin(px(8.0))
                 .child(div().mt(px(4.0)).child(panel)),
         )
-        .with_priority(1),
+        // Above a content dialog's layer (priority 2), so a list or a time
+        // picker inside a dialog opens over it rather than under its smoke.
+        .with_priority(3),
     );
     let floating = match edge {
         PanelEdge::Left => floating.left_0(),

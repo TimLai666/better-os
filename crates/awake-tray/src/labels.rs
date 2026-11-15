@@ -24,6 +24,12 @@ pub struct Labels {
     pub hour_1: &'static str,
     pub hours_2: &'static str,
     pub until_a_time: &'static str,
+    /// `{n}`: a whole number of hours or minutes the service offers that has
+    /// no fixed label above.
+    pub hours_n: &'static str,
+    pub minutes_n: &'static str,
+    /// The one-click start with the service's default length, `{length}`.
+    pub keep_awake_for: &'static str,
     pub quick_options: &'static str,
     pub allow_display_off: &'static str,
     pub stop_below_battery: &'static str,
@@ -133,6 +139,9 @@ pub const ZH_TW: Labels = Labels {
     hour_1: "1 小時",
     hours_2: "2 小時",
     until_a_time: "直到指定時間",
+    hours_n: "{n} 小時",
+    minutes_n: "{n} 分鐘",
+    keep_awake_for: "保持清醒 {length}",
     quick_options: "快速選項",
     allow_display_off: "允許螢幕關閉",
     stop_below_battery: "低於 20% 電量時停止",
@@ -214,6 +223,9 @@ pub const EN_US: Labels = Labels {
     hour_1: "1 hour",
     hours_2: "2 hours",
     until_a_time: "Until…",
+    hours_n: "{n} hours",
+    minutes_n: "{n} minutes",
+    keep_awake_for: "Keep awake for {length}",
     quick_options: "Quick options",
     allow_display_off: "Allow display to turn off",
     stop_below_battery: "Stop below 20% battery",

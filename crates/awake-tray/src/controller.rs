@@ -9,7 +9,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use awake_ipc::{AwakeRequest, RequestBody, StatusDocument, WireEnd, WireIndicator, WireSession};
+use awake_ipc::{
+    AwakeRequest, QuickSessions, RequestBody, StatusDocument, WireEnd, WireIndicator, WireSession,
+};
 use tokio::sync::{Mutex, Notify};
 use zbus::zvariant::OwnedValue;
 
@@ -17,7 +19,9 @@ use crate::client::{ClientError, ServiceClient, menu_request, start_request};
 use crate::dbusmenu::all_properties;
 use crate::labels::{Labels, Locale, LocaleLabels};
 use crate::localtime::UtcOffset;
-use crate::menu::{Menu, MenuAction, MenuItem, OverrideConfirmation, QuickOptions, build};
+use crate::menu::{
+    Menu, MenuAction, MenuItem, OverrideConfirmation, QuickOptions, build, build_offered,
+};
 use crate::notify::{DesktopNotifier, claim_notifications, handle_event};
 use crate::sni::{ITEM_PATH, MENU_PATH, item_status};
 
@@ -128,12 +132,31 @@ enum MenuUpdate {
 }
 
 /// The binary the tray opens for anything that needs a window: the time picker,
-/// the Change dialog, and the first-time security confirmation.
+/// the Change dialog, and the first-time security confirmation. Better
+/// Manager's Keep awake page is that window now (ADR 0017, ticket 87).
 ///
 /// This is a direct execution of a known first-party binary with a fixed
 /// argument list. It is not a shell, and no part of it comes from a rule, a
 /// menu label, or any other input.
-pub const APPLICATION_BINARY: &str = "awake-gui";
+pub const APPLICATION_BINARY: &str = "better-manager";
+
+/// The page the tray opens, and the one with the "Until a time" dialog.
+pub const KEEP_AWAKE_PAGE: [&str; 2] = ["--page", "keep-awake"];
+pub const UNTIL_A_TIME_PAGE: [&str; 2] = ["--page", "keep-awake/until"];
+
+/// The window opened when Better Manager is missing or refuses the page,
+/// which a Better Manager older than the Keep awake page does (ticket 60).
+/// It stays installed until ticket 91 retires it.
+pub const FALLBACK_BINARY: &str = "awake-gui";
+
+/// What opening the window runs for an action: the program and its
+/// arguments, fixed at build time.
+pub fn window_command(action: MenuAction) -> (&'static str, [&'static str; 2]) {
+    match action {
+        MenuAction::StartUntilTime => (APPLICATION_BINARY, UNTIL_A_TIME_PAGE),
+        _ => (APPLICATION_BINARY, KEEP_AWAKE_PAGE),
+    }
+}
 
 /// What an activation turned into. Returned so a caller — including a test —
 /// can see the outcome without watching the bus.
@@ -158,6 +181,9 @@ pub enum Activation {
 
 struct State {
     status: StatusDocument,
+    /// The service's quick-session offer, or `None` from a service without
+    /// one (before protocol version 4).
+    offer: Option<QuickSessions>,
     options: QuickOptions,
     /// The menu as `build` returns it, numbered from 1. Compared against the
     /// next build to tell a wording change from a layout change.
@@ -332,6 +358,7 @@ impl TrayController {
             locale,
             state: Mutex::new(State {
                 status,
+                offer: None,
                 options,
                 menu: built.clone(),
                 built,
@@ -455,9 +482,53 @@ impl TrayController {
 
     /// Asks the service what is true now.
     pub async fn refresh(&self) -> Result<(), ClientError> {
+        self.refresh_offer().await;
         let status = self.client.status().await?;
         self.set_status(status).await;
         Ok(())
+    }
+
+    /// Reads the service's quick-session offer. A service without one keeps
+    /// the fixed lengths; any other failure keeps what the tray had.
+    pub async fn refresh_offer(&self) {
+        match self.client.quick_sessions().await {
+            Ok(document) => self.set_offer(Some(document.quick_sessions)).await,
+            Err(ClientError::Rejected(key)) if key == "awake.ipc.error.needs_newer_service" => {
+                self.set_offer(None).await
+            }
+            Err(error) => {
+                eprintln!("better-awake-tray: the quick-session lengths could not be read: {error}")
+            }
+        }
+    }
+
+    /// The offer the menu is built with.
+    pub async fn offer(&self) -> Option<QuickSessions> {
+        self.state.lock().await.offer.clone()
+    }
+
+    /// Replaces the offer and redraws the menu from it.
+    pub async fn set_offer(&self, offer: Option<QuickSessions>) {
+        let now = self.monotonic_seconds();
+        let _announcing = self.announcing.lock().await;
+        let update = {
+            let mut state = self.state.lock().await;
+            if state.offer == offer {
+                return;
+            }
+            state.offer = offer;
+            let armed = state.override_confirmation.is_armed(now);
+            let built = build_offered(
+                &state.status,
+                state.offer.as_ref(),
+                state.options,
+                self.locale,
+                state.offset,
+                armed,
+            );
+            state.install(built)
+        };
+        self.announce_menu(update).await;
     }
 
     /// Replaces the status and rebuilds everything that is drawn from it.
@@ -468,7 +539,14 @@ impl TrayController {
             let mut state = self.state.lock().await;
             let armed = state.override_confirmation.is_armed(now);
             state.offset = UtcOffset::for_system(status.now_unix_seconds);
-            let built = build(&status, state.options, self.locale, state.offset, armed);
+            let built = build_offered(
+                &status,
+                state.offer.as_ref(),
+                state.options,
+                self.locale,
+                state.offset,
+                armed,
+            );
             state.status = status;
             (state.install(built), state.status.indicator)
         };
@@ -493,8 +571,13 @@ impl TrayController {
 
         let statuses = self.client.status_updates().await?;
         let legacy_statuses = self.client.legacy_status_updates().await?;
+        let offers = self.client.quick_sessions_updates().await?;
         let owners = self.client.owner_changes().await?;
         let notifier = claim_notifications(&connection, notifier).await;
+        // Subscribed first, then read, so an offer changed in between is not
+        // missed.
+        self.refresh_offer().await;
+        let mut offers = std::pin::pin!(offers);
         let mut statuses = std::pin::pin!(statuses);
         let mut legacy_statuses = std::pin::pin!(legacy_statuses);
         let mut owners = std::pin::pin!(owners);
@@ -518,6 +601,19 @@ impl TrayController {
                     let Ok(args) = signal.args() else { continue };
                     if let Some(status) = handle_event(args.event_json(), notifier.as_ref()).await {
                         self.set_status(status).await;
+                    }
+                }
+                signal = std::future::poll_fn(|context| offers.as_mut().poll_next(context)) => {
+                    let Some(signal) = signal else { return Ok(()) };
+                    let Ok(args) = signal.args() else { continue };
+                    match crate::client::service_event(args.event_json()) {
+                        Ok(crate::client::ServiceEvent::QuickSessions(document)) => {
+                            self.set_offer(Some(document.quick_sessions)).await;
+                        }
+                        Ok(_) => {}
+                        Err(error) => eprintln!(
+                            "better-awake-tray: a quick-session offer could not be read: {error}"
+                        ),
                     }
                 }
                 owner = std::future::poll_fn(|context| owners.as_mut().poll_next(context)) => {
@@ -673,7 +769,7 @@ impl TrayController {
             MenuAction::StartUntilTime
             | MenuAction::ChangeSession
             | MenuAction::OpenApplication => {
-                self.open_application();
+                self.open_application(action);
                 return Activation::OpenedApplication;
             }
             MenuAction::Quit => {
@@ -744,7 +840,7 @@ impl TrayController {
             {
                 // The consequence has to be shown before it is accepted, and
                 // the tray has nowhere to show it.
-                self.open_application();
+                self.open_application(MenuAction::OpenApplication);
                 Activation::OpenedApplication
             }
             Err(error) => {
@@ -776,8 +872,9 @@ impl TrayController {
             let mut state = self.state.lock().await;
             change(&mut state.options);
             let armed = state.override_confirmation.is_armed(now);
-            let built = build(
+            let built = build_offered(
                 &state.status,
+                state.offer.as_ref(),
                 state.options,
                 self.locale,
                 state.offset,
@@ -799,8 +896,9 @@ impl TrayController {
                 None => state.override_confirmation.clear(),
             }
             let armed = armed_at.is_some();
-            let built = build(
+            let built = build_offered(
                 &state.status,
+                state.offer.as_ref(),
                 state.options,
                 self.locale,
                 state.offset,
@@ -821,20 +919,33 @@ impl TrayController {
         self.state.lock().await.override_confirmation.is_armed(now)
     }
 
-    fn open_application(&self) {
+    fn open_application(&self, action: MenuAction) {
         // Failure is not fatal to the tray: the session it is showing is
         // unaffected by whether a window opened.
-        match std::process::Command::new(APPLICATION_BINARY).spawn() {
-            // Reaped when it closes, so no zombie stays behind the tray.
+        let (program, arguments) = window_command(action);
+        match std::process::Command::new(program).args(arguments).spawn() {
+            // Reaped when it closes, so no zombie stays behind the tray. A
+            // Better Manager that refuses the page (one older than it) exits
+            // with an error at once; the old window opens instead.
             Ok(mut child) => {
                 std::thread::spawn(move || {
-                    let _ = child.wait();
+                    if let Ok(status) = child.wait()
+                        && !status.success()
+                    {
+                        eprintln!(
+                            "better-awake-tray: better-manager refused the Keep awake page \
+                             ({status}); opening the Better Awake window instead"
+                        );
+                        open_fallback();
+                    }
                 });
             }
             Err(error) => {
                 eprintln!(
-                    "better-awake-tray: the Better Awake window could not be opened: {error}"
+                    "better-awake-tray: Better Manager could not be opened ({error}); opening \
+                     the Better Awake window instead"
                 );
+                open_fallback();
             }
         }
     }
@@ -907,6 +1018,21 @@ impl TrayController {
                 &(item_status(indicator),),
             )
             .await;
+    }
+}
+
+/// Opens the old window, for a machine whose Better Manager cannot show the
+/// page.
+fn open_fallback() {
+    match std::process::Command::new(FALLBACK_BINARY).spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(error) => {
+            eprintln!("better-awake-tray: the Better Awake window could not be opened: {error}");
+        }
     }
 }
 
@@ -1040,6 +1166,7 @@ mod tests {
         let next_id = 1 + built.len() as i32;
         State {
             status,
+            offer: None,
             options: QuickOptions::default(),
             menu: built.clone(),
             built,
@@ -1410,5 +1537,24 @@ mod tests {
         ] {
             assert_eq!(failure_text(&error, labels), expected, "{error}");
         }
+    }
+
+    /// Ticket 87: the tray's window entries open Better Manager's Keep awake
+    /// page, and "Until a time…" opens it with the time dialog.
+    #[test]
+    fn the_window_entries_open_the_keep_awake_page() {
+        assert_eq!(
+            window_command(MenuAction::OpenApplication),
+            ("better-manager", ["--page", "keep-awake"])
+        );
+        assert_eq!(
+            window_command(MenuAction::ChangeSession),
+            ("better-manager", ["--page", "keep-awake"])
+        );
+        assert_eq!(
+            window_command(MenuAction::StartUntilTime),
+            ("better-manager", ["--page", "keep-awake/until"])
+        );
+        assert_eq!(FALLBACK_BINARY, "awake-gui");
     }
 }

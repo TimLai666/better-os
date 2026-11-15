@@ -37,6 +37,10 @@ pub(crate) enum AttentionAction {
     Open(Page),
     /// Refresh the component catalog where it stands.
     RefreshCatalog,
+    /// Start Better Awake's service in place, through `manager-core`.
+    StartKeepAwakeService,
+    /// Open Keep awake on its Diagnostics sub-page.
+    OpenKeepAwakeDiagnostics,
 }
 
 /// One attention card.
@@ -95,6 +99,8 @@ pub(crate) struct Snapshot {
     pub(crate) packages_interrupted: bool,
     /// The catalog's "may be outdated" sentence, when it may be.
     pub(crate) catalog_warning: Option<&'static str>,
+    /// What Keep awake read from its service (ticket 87).
+    pub(crate) keep_awake: crate::pages::keep_awake::decide::Facts,
 }
 
 impl Snapshot {
@@ -106,6 +112,7 @@ impl Snapshot {
             components: Vec::new(),
             packages_interrupted: false,
             catalog_warning: None,
+            keep_awake: Default::default(),
         }
     }
 
@@ -261,6 +268,7 @@ mod tests {
             ],
             packages_interrupted: true,
             catalog_warning: Some("The published catalog could not be reached."),
+            keep_awake: Default::default(),
         }
     }
 
