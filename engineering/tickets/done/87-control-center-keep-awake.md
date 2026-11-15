@@ -47,18 +47,24 @@ Spec section 6, and the Better Awake rows of section 12, every one of them.
 
 ## Acceptance
 
-- [ ] Each Better Awake row of spec section 12 is shown working, including the
+- [x] Each Better Awake row of spec section 12 is shown working, including the
       two ✱ rows: a session started from "Until a time" ends at that time
       (test with a clock seam), and a length added on the page appears in the
       tray menu (test against the menu value, and seen in the sandbox with
       `dbus-run-session`).
-- [ ] A preferences file from today's `awake-gui` is imported once, a second
+- [x] A preferences file from today's `awake-gui` is imported once, a second
       start does not import again, and a newer-schema file is left alone
       (tests).
-- [ ] Audit A1–A8 each closed with a screenshot.
-- [ ] Light and dark, zh-TW and English, 1600 and 960, screenshotted with the
+- [x] Audit A1–A8 each closed with a screenshot. A6 (icons without labels
+      at 960 px): Better Manager's pane is compact there behind ☰ and every
+      icon has its label as a tooltip (`a6-960-*.png`). A7 (language names
+      worded differently per app): every language picker now takes its words
+      from `better_ui::fluent::words::language_choices` /
+      `language_name` (Better Manager, Monitor, Git, Files, Touchpad, the
+      old Awake window, the gallery), with a kit test (`a7-*.png`).
+- [x] Light and dark, zh-TW and English, 1600 and 960, screenshotted with the
       service running inside the sandbox's session bus.
-- [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
+- [x] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
       and the license check pass.
 
 ## Notes
@@ -107,3 +113,63 @@ Ticket 102 closes the first two points (the tray is a user unit bound to
 `graphical-session.target` and follows `org.betteros.Awake1` across a restart,
 and a failed menu action raises a notification) and the greyed "延長工作階段"
 (left out for an indefinite session, enabled for a timed one).
+
+## What was built
+
+- **Protocol version 4** (`awake-ipc`): `QueryQuickSessions`,
+  `SetQuickSessions`, the `QuickSessions` reply and a `QuickSessionsChanged`
+  event on a signal of its own. The offer (`QuickSessions`: lengths, default
+  index, session defaults) is validated with the old window's rules: one to
+  eight lengths (`MAX_QUICK_LENGTHS`), none twice, the default one of them,
+  battery stop 1–99 or none. Every other document is version 3's shape, so a
+  version 3 client is answered by restamping and the `Event` signal stays
+  stamped 3; version 2 is answered as before. Shipped lengths are the ones the
+  tray always showed (Indefinitely, 15, 30, 60, 120 min; default 1 hour), so
+  nobody's menu changes until they change it.
+- **Service** (`awake-service`): the offer lives in
+  `awake-quick-sessions.json` (its own schema 1, so a rollback still reads
+  the closed-lid setting). With no such file the service imports
+  `awake-gui-preferences.json` once (presets, default, session defaults; not
+  language or theme), writes the offer with what the import found, and leaves
+  the old file untouched; a second start never imports again. A newer-schema
+  or unreadable old file is not imported, and the offer carries
+  `import_notice`, which the page shows on Status.
+- **Tray**: reads the offer at start, after the service comes back, and on
+  `QuickSessionsChanged`; Start lists its lengths in order, a new top item
+  "Keep awake for {default}" starts the default in one click, Change length
+  offers the same lengths. Against a version 3 service it keeps the fixed
+  lengths. Open, Change session and the security confirmation run
+  `better-manager --page keep-awake`, Until a time runs
+  `better-manager --page keep-awake/until`; if Better Manager is missing or
+  refuses the page (older than it) the tray opens `awake-gui` instead.
+- **Kit**: `better_ui::fluent::time_picker` (24-hour hour and minute columns,
+  looping selectors, WinUI's keys) with tests and a gallery page "Date and
+  time"; `SelectorItem::tooltip`; light-dismiss panels now draw above a
+  content dialog (a list or time picker inside a dialog opened under it).
+- **Page** `manager-gui/src/pages/keep_awake/`: Status (state card with its
+  one control, Until a time dialog, reasons with one `…` menu and End asked
+  once in place, what's in effect with the lid rows, conflicts expander,
+  quick-session lengths, defaults for new sessions with the lid choice of
+  ticket 109 and the battery stop, battery and safety with the closed-lid
+  limit), Rules (command bar, expander per rule with its toggle, priority,
+  test, `…` menu, delete confirmation), the rule editor as a sub-page with
+  time pickers for schedules, History (sortable table), Diagnostics; the
+  states not installed, too old, service not running (with Start service
+  through `manager-core`'s user-unit pass) and reading. `Ctrl+1`…`Ctrl+4`.
+  `model.rs` moved from `awake-gui` with its tests; `decide.rs` holds the
+  page's own rules. Search entries, the pane dot, three Home items and the
+  Home quick toggle.
+
+Verification: workspace tests, a private-bus test of the page's client
+against the real service, a private-bus tray test that a length another
+client adds appears in the menu, a version 3 service test, engine tests for
+the import and for an Until session ending at its time with a clock seam.
+In the sandbox (headless GNOME Shell, fake inhibitor backend):
+`.shots/{en,zh}-{light,dark}-{1600,960}-*.png`, `a*-*.png` for the audit
+rows, and `tray-menu-after-adding-45-minutes.txt` (the running tray's
+`GetLayout` after 45 minutes was added on the page).
+
+Not claimed: the service
+not running state was screenshotted with Better Awake in Better Manager's
+record taken from the host's dpkg (the state shown is correct for that
+record).

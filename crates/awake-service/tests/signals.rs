@@ -1021,3 +1021,82 @@ async fn a_version_2_request_over_the_bus_is_answered_in_version_2s_shape() {
     };
     assert!(status.effective_policy.prevent_lid_suspend);
 }
+
+/// Sends one request over the bus, the way a client does.
+async fn request_over_bus(bus: &PrivateBus, request: &AwakeRequest) -> String {
+    let client = bus.connect().await;
+    let reply = client
+        .call_method(
+            Some(SERVICE_NAME),
+            OBJECT_PATH,
+            Some(INTERFACE_NAME),
+            "Request",
+            &(request.to_json().unwrap(),),
+        )
+        .await
+        .unwrap();
+    reply.body().deserialize::<String>().unwrap()
+}
+
+/// Ticket 87: a length added on the Keep awake page reaches every tray at
+/// once, on the offer's own signal, and the session events keep the version 3
+/// stamp an installed version 3 tray reads.
+#[tokio::test]
+async fn a_changed_offer_is_pushed_on_its_own_signal_and_events_stay_version_3() {
+    use awake_ipc::{QuickLength, QuickSessions};
+    let bus = bus_or_skip!();
+    let _service = serve(&bus).await;
+    let (_offer_listener, mut offers) = events_on(&bus, "QuickSessionsChanged").await;
+    let (_event_listener, mut events) = events(&bus).await;
+
+    let mut offer = QuickSessions::default();
+    assert!(offer.add_length(QuickLength::Minutes { minutes: 45 }));
+    let reply = request_over_bus(
+        &bus,
+        &AwakeRequest::new(RequestBody::SetQuickSessions {
+            quick_sessions: offer.clone(),
+        }),
+    )
+    .await;
+    assert!(reply.contains("quick_sessions"), "{reply}");
+
+    let pushed = next_event(&mut offers, ARRIVES)
+        .await
+        .expect("the offer is pushed");
+    assert_eq!(pushed.protocol_version, awake_ipc::PROTOCOL_VERSION);
+    match pushed.body {
+        EventBody::QuickSessionsChanged(document) => {
+            assert_eq!(document.quick_sessions, offer)
+        }
+        other => panic!("expected the offer, got {other:?}"),
+    }
+    // Changing the offer changed no session, so no status went out.
+    assert!(next_event(&mut events, QUIET).await.is_none());
+
+    request_over_bus(&bus, &start_request()).await;
+    let status = next_event(&mut events, ARRIVES).await.expect("a status");
+    assert!(is_status(&status));
+    assert_eq!(
+        status.protocol_version,
+        awake_ipc::PREVIOUS_PROTOCOL_VERSION
+    );
+}
+
+/// Ticket 87: a service whose session bus goes away notices, so it can
+/// release what it holds and exit instead of outliving its session.
+#[tokio::test]
+async fn the_service_notices_when_its_session_bus_goes_away() {
+    let bus = bus_or_skip!();
+    let service = serve(&bus).await;
+    let watching = tokio::spawn({
+        let connection = service.connection.clone();
+        async move { awake_service::service::until_bus_closes(&connection).await }
+    });
+    tokio::time::sleep(QUIET).await;
+    assert!(!watching.is_finished(), "the bus is still there");
+    drop(bus);
+    tokio::time::timeout(ARRIVES, watching)
+        .await
+        .expect("the closed bus is noticed in time")
+        .unwrap();
+}

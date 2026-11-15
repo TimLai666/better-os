@@ -21,6 +21,7 @@ use crate::navigation::Route;
 use crate::search::SearchEntry;
 use crate::{home, settings_page, window_attention_page};
 
+pub(crate) mod keep_awake;
 pub(crate) mod touchpad;
 
 /// How far along a page is.
@@ -39,8 +40,7 @@ pub(crate) enum PageStatus {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NavBadge {
     /// "Something is going on here", as Keep awake shows while a session
-    /// holds the machine awake. Ticket 87 is the first to give it.
-    #[allow(dead_code)]
+    /// holds the machine awake (ticket 87).
     Dot,
     /// How many things are waiting; never zero.
     Count(usize),
@@ -170,16 +170,6 @@ const SYSTEM: PageModule = PageModule {
     badge: no_badge,
 };
 
-const KEEP_AWAKE: PageModule = PageModule {
-    route: Route::KeepAwake,
-    name: "keep-awake",
-    status: PageStatus::Placeholder { ticket: 87 },
-    title: |s| s.keep_awake,
-    search_entries: no_entries,
-    attention: no_attention,
-    badge: no_badge,
-};
-
 /// Default apps: today's Defaults screens until ticket 89.
 const DEFAULT_APPS: PageModule = PageModule {
     route: Route::DefaultApps,
@@ -207,7 +197,7 @@ pub(crate) static PAGES: [PageModule; 9] = [
     SYSTEM,
     window_attention_page::PAGE,
     touchpad::PAGE,
-    KEEP_AWAKE,
+    keep_awake::PAGE,
     APPS,
     DEFAULT_APPS,
     FIXES,
@@ -628,10 +618,7 @@ mod tests {
             status(Route::System),
             PageStatus::Placeholder { ticket: 86 }
         );
-        assert_eq!(
-            status(Route::KeepAwake),
-            PageStatus::Placeholder { ticket: 87 }
-        );
+        assert_eq!(status(Route::KeepAwake), PageStatus::Built);
         assert_eq!(status(Route::Touchpad), PageStatus::Built);
         assert_eq!(
             status(Route::DefaultApps),

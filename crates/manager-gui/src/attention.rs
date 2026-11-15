@@ -41,6 +41,10 @@ pub(crate) enum AttentionAction {
     TurnOffTouchpadSafeMode,
     /// Open a sub-page of Touchpad.
     OpenTouchpad(crate::pages::touchpad::SubPage),
+    /// Start Better Awake's service in place, through `manager-core`.
+    StartKeepAwakeService,
+    /// Open Keep awake on its Diagnostics sub-page.
+    OpenKeepAwakeDiagnostics,
 }
 
 /// One attention card.
@@ -101,6 +105,8 @@ pub(crate) struct Snapshot {
     pub(crate) catalog_warning: Option<&'static str>,
     /// Better Touchpad's install state and its two markers (ticket 88).
     pub(crate) touchpad: crate::pages::touchpad::TouchpadFacts,
+    /// What Keep awake read from its service (ticket 87).
+    pub(crate) keep_awake: crate::pages::keep_awake::decide::Facts,
 }
 
 impl Snapshot {
@@ -113,6 +119,7 @@ impl Snapshot {
             packages_interrupted: false,
             catalog_warning: None,
             touchpad: Default::default(),
+            keep_awake: Default::default(),
         }
     }
 
@@ -269,6 +276,7 @@ mod tests {
             packages_interrupted: true,
             catalog_warning: Some("The published catalog could not be reached."),
             touchpad: Default::default(),
+            keep_awake: Default::default(),
         }
     }
 

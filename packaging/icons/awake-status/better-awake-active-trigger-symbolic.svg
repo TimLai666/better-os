@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
-<!-- Better Awake tray state: active-trigger. Drawn for this project. -->
-<path d="M1 8c1.6-3 4.1-4.5 7-4.5S13.4 5 15 8c-1.6 3-4.1 4.5-7 4.5S2.6 11 1 8z" fill="none" stroke="#bebebe" stroke-width="1.5" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.2" fill="#bebebe"/><circle cx="13" cy="3" r="2.2" fill="#bebebe"/>
+<!-- Better Awake tray state: active-trigger (a rule holds the machine). Drawn for this project.
+     The rule's dot is cut out of the eye, so the two read apart at 16 px. -->
+<defs><mask id="m"><rect width="16" height="16" fill="#fff"/><circle cx="13" cy="3" r="3.4" fill="#000"/></mask></defs>
+<g mask="url(#m)"><path d="M1 8c1.6-3 4.1-4.5 7-4.5S13.4 5 15 8c-1.6 3-4.1 4.5-7 4.5S2.6 11 1 8z" fill="none" stroke="#bebebe" stroke-width="1.5" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.2" fill="#bebebe"/></g><circle cx="13" cy="3" r="2.2" fill="#bebebe"/>
 </svg>

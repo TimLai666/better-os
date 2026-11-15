@@ -120,6 +120,89 @@ pub struct ComponentManifest {
     /// reading of a manifest that says nothing.
     #[serde(default)]
     pub default_integrations: Vec<DefaultIntegration>,
+    /// The kernels, filesystems, and device transports the component's claims
+    /// are made for. `None` means the manifest declares none, which is the
+    /// right reading for every component that does not touch hardware.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_support: Option<HardwareSupport>,
+}
+
+/// Where a hardware-facing component's promises hold.
+///
+/// A declaration, not a gate: nothing here is executed, and the manager does
+/// not refuse an install on a kernel or a device outside it. It says which
+/// kernels, filesystems, and transports the component's own claims (for
+/// Better Storage, "Ready to unplug") are made for, so a person and a reviewer
+/// can see the boundary without reading the source.
+///
+/// Values are lower-case tokens rather than a closed enum on purpose. The
+/// remote catalog (ADR 0013) is read by every released manager, and a closed
+/// set would make a manager refuse the whole manifest the day a later one
+/// names a filesystem it has never heard of. A token names nothing that can be
+/// loaded or run, so an unrecognized one is kept and shown as declared.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HardwareSupport {
+    /// The oldest kernel release the component is built and tested for, as
+    /// `major.minor`, such as `5.15`.
+    pub minimum_kernel: String,
+    /// Filesystem type names as the kernel and UDisks2 report them (`vfat`,
+    /// `exfat`, `ntfs`, `ext4`).
+    pub filesystems: Vec<String>,
+    /// Device transports as UDisks2's `Drive.ConnectionBus` reports them
+    /// (`usb`, `sdio`, `mmc`, `thunderbolt`, `ieee1394`).
+    pub transports: Vec<String>,
+}
+
+impl HardwareSupport {
+    /// `minimum_kernel` as `(major, minor)`, once validated.
+    pub fn minimum_kernel_version(&self) -> Option<(u32, u32)> {
+        let (major, minor) = self.minimum_kernel.split_once('.')?;
+        let numeric = |part: &str| {
+            (!part.is_empty() && part.len() <= 4 && part.chars().all(|c| c.is_ascii_digit()))
+                .then(|| part.parse::<u32>().ok())
+                .flatten()
+        };
+        Some((numeric(major)?, numeric(minor)?))
+    }
+
+    fn validate(&self) -> Result<(), ManifestError> {
+        if self.minimum_kernel_version().is_none() {
+            return Err(ManifestError::InvalidHardwareSupport(format!(
+                "minimum_kernel {:?} is not major.minor",
+                self.minimum_kernel
+            )));
+        }
+        for (field, values) in [
+            ("filesystems", &self.filesystems),
+            ("transports", &self.transports),
+        ] {
+            if values.is_empty() {
+                return Err(ManifestError::InvalidHardwareSupport(format!(
+                    "{field} is empty"
+                )));
+            }
+            let mut seen = HashSet::new();
+            for value in values {
+                let token = !value.is_empty()
+                    && value.len() <= 32
+                    && value.starts_with(|c: char| c.is_ascii_lowercase())
+                    && value
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+                if !token {
+                    return Err(ManifestError::InvalidHardwareSupport(format!(
+                        "{field} entry {value:?} is not a lower-case token"
+                    )));
+                }
+                if !seen.insert(value.as_str()) {
+                    return Err(ManifestError::InvalidHardwareSupport(format!(
+                        "{field} entry {value:?} is declared more than once"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ComponentManifest {
@@ -252,6 +335,9 @@ impl ComponentManifest {
             return Err(ManifestError::EmptyReleaseNote);
         }
         crate::defaults::validate_declarations(&self.default_integrations)?;
+        if let Some(support) = &self.hardware_support {
+            support.validate()?;
+        }
         Ok(())
     }
 }
@@ -376,6 +462,8 @@ pub enum ManifestError {
     },
     #[error("dependency cycle detected: {0:?}")]
     DependencyCycle(Vec<ComponentId>),
+    #[error("hardware_support is invalid: {0}")]
+    InvalidHardwareSupport(String),
     #[error("default integration id is invalid: {0}")]
     InvalidIntegrationId(String),
     #[error("default integration {0} is declared more than once")]
@@ -757,5 +845,73 @@ mod tests {
             ComponentCatalog::from_manifests([first, second]),
             Err(ManifestError::MissingDependency { .. })
         ));
+    }
+
+    fn with_hardware(block: &str) -> Result<ComponentManifest, ManifestError> {
+        ComponentManifest::parse_yaml(&format!(
+            "{}hardware_support:\n{block}",
+            yaml("better-storage", None, None)
+        ))
+    }
+
+    #[test]
+    fn a_manifest_without_hardware_support_declares_none() {
+        let manifest = ComponentManifest::parse_yaml(&yaml("better-monitor", None, None)).unwrap();
+        assert_eq!(manifest.hardware_support, None);
+    }
+
+    #[test]
+    fn hardware_support_parses_and_keeps_an_unrecognized_token() {
+        let manifest = with_hardware(
+            "  minimum_kernel: \"5.15\"\n  filesystems: [vfat, exfat, some-future-fs]\n  transports: [usb]\n",
+        )
+        .unwrap();
+        let support = manifest.hardware_support.unwrap();
+        assert_eq!(support.minimum_kernel_version(), Some((5, 15)));
+        assert!(support.filesystems.contains(&"some-future-fs".to_string()));
+    }
+
+    #[test]
+    fn hardware_support_rejects_a_malformed_kernel_empty_lists_duplicates_and_odd_tokens() {
+        for block in [
+            "  minimum_kernel: \"5\"\n  filesystems: [ext4]\n  transports: [usb]\n",
+            "  minimum_kernel: \"5.x\"\n  filesystems: [ext4]\n  transports: [usb]\n",
+            "  minimum_kernel: \"5.15\"\n  filesystems: []\n  transports: [usb]\n",
+            "  minimum_kernel: \"5.15\"\n  filesystems: [ext4]\n  transports: []\n",
+            "  minimum_kernel: \"5.15\"\n  filesystems: [ext4, ext4]\n  transports: [usb]\n",
+            "  minimum_kernel: \"5.15\"\n  filesystems: [\"../ext4\"]\n  transports: [usb]\n",
+            "  minimum_kernel: \"5.15\"\n  filesystems: [Ext4]\n  transports: [usb]\n",
+        ] {
+            assert!(
+                matches!(
+                    with_hardware(block),
+                    Err(ManifestError::InvalidHardwareSupport(_))
+                ),
+                "accepted {block}"
+            );
+        }
+    }
+
+    /// The property every released manager relies on to read a manifest that
+    /// carries `hardware_support`: the top level does not deny unknown keys,
+    /// so a key a manager has never heard of is skipped, not refused. If this
+    /// test ever fails, adding any top-level group breaks released managers.
+    #[test]
+    fn an_unknown_top_level_group_is_ignored_rather_than_refused() {
+        let manifest = ComponentManifest::parse_yaml(&format!(
+            "{}some_future_group:\n  anything: [1, 2]\n",
+            yaml("better-monitor", None, None)
+        ));
+        assert!(manifest.is_ok());
+    }
+
+    #[test]
+    fn hardware_support_survives_a_serialize_round_trip() {
+        let manifest = with_hardware(
+            "  minimum_kernel: \"5.15\"\n  filesystems: [ext4]\n  transports: [usb]\n",
+        )
+        .unwrap();
+        let text = serde_yaml::to_string(&manifest).unwrap();
+        assert_eq!(ComponentManifest::parse_yaml(&text).unwrap(), manifest);
     }
 }

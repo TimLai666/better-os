@@ -164,9 +164,16 @@ as Issue #13 draws them.
 
 ## Remaining
 
-- Icon artwork for the six indicator states (`better-awake-inactive`,
-  `-active`, `-active-trigger`, `-paused`, `-attention`, `-unavailable`).
-- Idle CPU and memory measured for the tray and the service processes.
+Done in ticket 87:
+
+- Icon artwork for the six indicator states: original eye family in
+  `packaging/icons/awake-status/`, the rule dot and the slash now cut out of
+  the eye so they read apart at 16 px (`.shots/awake-status-icons.png` in the
+  ticket 87 worktree, dark and light panels, 64 and 16 px).
+- Idle CPU and memory, measured over 60 s with no session and no rule
+  (release builds, the service engine with the fake inhibitor backend, the
+  tray following it on a private bus): service 0.017% CPU (one clock tick),
+  7.3 MB RSS; tray 0.000% CPU, 7.6 MB RSS (`.shots/idle-measurement.txt`).
 
 ## Not done when first delivered
 

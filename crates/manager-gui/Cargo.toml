@@ -32,6 +32,8 @@ touchpad-platform.workspace = true
 touchpad-session.workspace = true
 touchpad-views.workspace = true
 semver.workspace = true
+awake-core.workspace = true
+awake-ipc.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
@@ -42,5 +44,7 @@ zbus.workspace = true
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+awake-service = { workspace = true, features = ["test-support"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde_json.workspace = true
 tempfile.workspace = true

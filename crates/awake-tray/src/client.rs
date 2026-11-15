@@ -6,7 +6,8 @@
 //! ending the session it started.
 
 use awake_ipc::{
-    AwakeRequest, AwakeResponse, EventBody, IpcError, RequestBody, ResponseBody, StatusDocument,
+    AwakeRequest, AwakeResponse, EventBody, IpcError, QuickSessionsDocument, RequestBody,
+    ResponseBody, StatusDocument,
 };
 use std::time::Duration;
 
@@ -31,6 +32,10 @@ pub trait Awake {
     /// service it talks to is one of those, and ignores it otherwise.
     #[zbus(signal)]
     fn status_changed(&self, event_json: &str) -> zbus::Result<()>;
+
+    /// The quick-session offer changed (protocol version 4).
+    #[zbus(signal)]
+    fn quick_sessions_changed(&self, event_json: &str) -> zbus::Result<()>;
 
     #[zbus(property)]
     fn protocol_version(&self) -> zbus::Result<u32>;
@@ -84,10 +89,11 @@ fn call_error(error: zbus::Error, otherwise: fn(String) -> ClientError) -> Clien
 
 pub struct ServiceClient {
     proxy: AwakeProxy<'static>,
-    /// Set once the service refused the current protocol version for its
-    /// older one: until it restarts, requests go in that version's shape and
-    /// the lid choice reads as unavailable.
-    legacy: std::sync::atomic::AtomicBool,
+    /// The older protocol version the service speaks, once it said so or
+    /// refused the current one for it; zero while it speaks the current one.
+    /// Until it restarts, requests go in that version's shape: without the
+    /// lid fields for version 2, without the quick-session offer for both.
+    speaks: std::sync::atomic::AtomicU32,
     /// Whether the service's `ProtocolVersion` property has been read since it
     /// (re)appeared.
     version_read: std::sync::atomic::AtomicBool,
@@ -120,7 +126,7 @@ impl ServiceClient {
     fn new(proxy: AwakeProxy<'static>) -> Self {
         Self {
             proxy,
-            legacy: std::sync::atomic::AtomicBool::new(false),
+            speaks: std::sync::atomic::AtomicU32::new(0),
             version_read: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -128,14 +134,26 @@ impl ServiceClient {
     /// Whether the service this tray talks to is one from before protocol
     /// version 3, which a request found out.
     pub fn speaks_legacy(&self) -> bool {
-        self.legacy.load(std::sync::atomic::Ordering::SeqCst)
+        self.speaks_older() == Some(awake_ipc::LEGACY_PROTOCOL_VERSION)
+    }
+
+    /// The older version the service speaks, when it is an older one.
+    pub fn speaks_older(&self) -> Option<u32> {
+        match self.speaks.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => None,
+            version => Some(version),
+        }
+    }
+
+    fn speak(&self, version: u32) {
+        self.speaks
+            .store(version, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Forgets what the last service spoke. Called when a service (re)appears
     /// on the bus, because an update restarts it as the newer one.
     pub fn reset_protocol(&self) {
-        self.legacy
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.speak(0);
         self.version_read
             .store(false, std::sync::atomic::Ordering::SeqCst);
     }
@@ -156,20 +174,22 @@ impl ServiceClient {
             .version_read
             .swap(true, std::sync::atomic::Ordering::SeqCst)
             && let Ok(version) = self.protocol_version().await
-            && version == awake_ipc::LEGACY_PROTOCOL_VERSION
+            && version < awake_ipc::PROTOCOL_VERSION
+            && awake_ipc::ACCEPTED_PROTOCOL_VERSIONS.contains(&version)
         {
-            self.legacy.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.speak(version);
         }
-        if !self.speaks_legacy() {
+        if self.speaks_older().is_none() {
             let reply = self.call(&request.to_json()?).await?;
             let response = AwakeResponse::from_json_any(&reply)?;
-            if !response.is_legacy_version_refusal() {
-                return Ok(response);
+            match response.older_version_refusal() {
+                None => return Ok(response),
+                Some(version) => self.speak(version),
             }
-            self.legacy.store(true, std::sync::atomic::Ordering::SeqCst);
         }
+        let version = self.speaks_older().unwrap_or(awake_ipc::PROTOCOL_VERSION);
         let document = request
-            .to_legacy_json()
+            .to_json_for(version)
             .map_err(|error| ClientError::Rejected(error.to_string()))?;
         let reply = self.call(&document).await?;
         Ok(AwakeResponse::from_json_any(&reply)?)
@@ -215,10 +235,37 @@ impl ServiceClient {
             // editor or the history view arriving here means the service
             // answered a different question, so it is an error rather than a
             // status the menu could be redrawn from.
-            ResponseBody::Rules(_) | ResponseBody::RuleTest(_) | ResponseBody::History(_) => Err(
-                ClientError::Protocol("awake.tray.error.unexpected_reply".to_string()),
-            ),
+            ResponseBody::Rules(_)
+            | ResponseBody::RuleTest(_)
+            | ResponseBody::History(_)
+            | ResponseBody::QuickSessions(_) => Err(ClientError::Protocol(
+                "awake.tray.error.unexpected_reply".to_string(),
+            )),
         }
+    }
+
+    /// The quick-session offer. A service from before protocol version 4
+    /// has none, which is `Rejected("awake.ipc.error.needs_newer_service")`.
+    pub async fn quick_sessions(&self) -> Result<QuickSessionsDocument, ClientError> {
+        match self
+            .exchange(&AwakeRequest::new(RequestBody::QueryQuickSessions))
+            .await?
+            .body
+        {
+            ResponseBody::QuickSessions(document) => Ok(*document),
+            ResponseBody::Rejected { error_key } => Err(ClientError::Rejected(error_key)),
+            _ => Err(ClientError::Protocol(
+                "awake.tray.error.unexpected_reply".to_string(),
+            )),
+        }
+    }
+
+    /// Every new offer the service pushes.
+    pub async fn quick_sessions_updates(&self) -> Result<QuickSessionsChangedStream, ClientError> {
+        self.proxy
+            .receive_quick_sessions_changed()
+            .await
+            .map_err(|error| ClientError::Transport(error.to_string()))
     }
 
     pub async fn status(&self) -> Result<StatusDocument, ClientError> {
@@ -259,9 +306,10 @@ impl ServiceClient {
 pub fn status_from_event(document: &str) -> Result<Option<StatusDocument>, ClientError> {
     Ok(match service_event(document)? {
         ServiceEvent::Status(status) => Some(*status),
-        ServiceEvent::LowBatteryStop(_) | ServiceEvent::LidClosedStop(_) | ServiceEvent::Other => {
-            None
-        }
+        ServiceEvent::LowBatteryStop(_)
+        | ServiceEvent::LidClosedStop(_)
+        | ServiceEvent::QuickSessions(_)
+        | ServiceEvent::Other => None,
     })
 }
 
@@ -290,6 +338,8 @@ pub enum ServiceEvent {
     Status(Box<StatusDocument>),
     LowBatteryStop(LowBatteryStop),
     LidClosedStop(LidClosedStop),
+    /// A new quick-session offer.
+    QuickSessions(Box<QuickSessionsDocument>),
     /// Anything the tray has nothing to do for. A session that ended for
     /// another reason is shown by the status that follows it.
     Other,
@@ -338,6 +388,7 @@ pub fn service_event(document: &str) -> Result<ServiceEvent, ClientError> {
                 ))),
             }
         }
+        EventBody::QuickSessionsChanged(document) => Ok(ServiceEvent::QuickSessions(document)),
         EventBody::SessionEnded { .. } | EventBody::BackendFailure { .. } => {
             Ok(ServiceEvent::Other)
         }

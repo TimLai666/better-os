@@ -48,6 +48,7 @@ pub mod staged_bar;
 pub mod tabs;
 pub mod text_box;
 pub mod theme;
+pub mod time_picker;
 pub mod toast;
 pub mod toggle;
 pub mod window_frame;
@@ -921,6 +922,33 @@ pub fn step_index(
 /// windows. A window's own copy stays in its own `i18n` module; these are the
 /// shared ones.
 pub mod words {
+    /// A language as every language picker in the suite names it: in its
+    /// own language, whatever the window is drawn in, so a person who cannot
+    /// read the current one still finds theirs (audit A7: one wording for
+    /// the whole suite, not "English (US)" in one window and "English" in
+    /// the next).
+    pub fn language_name(language: Locale) -> &'static str {
+        match language {
+            Locale::English => "English",
+            Locale::TraditionalChinese => "繁體中文",
+        }
+    }
+
+    /// The choice that follows the desktop's language, in the window's.
+    pub fn follow_system_language(ui: Locale) -> &'static str {
+        ui.pick("Use system setting", "跟隨系統")
+    }
+
+    /// A language picker's three choices in the suite's one order: follow
+    /// the system, English, Traditional Chinese.
+    pub fn language_choices(ui: Locale) -> [&'static str; 3] {
+        [
+            follow_system_language(ui),
+            language_name(Locale::English),
+            language_name(Locale::TraditionalChinese),
+        ]
+    }
+
     /// The two languages Better OS ships. `system` in a window's settings
     /// resolves to one of these through [`Locale::from_tag`].
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]

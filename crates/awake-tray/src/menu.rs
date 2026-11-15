@@ -7,7 +7,8 @@
 
 use awake_core::PolicyGap;
 use awake_ipc::{
-    StatusDocument, WireEnd, WireIndicator, WireRemaining, WireSession, WireSuppression,
+    QuickLength, QuickSessions, StatusDocument, WireEnd, WireIndicator, WireRemaining, WireSession,
+    WireSuppression,
 };
 
 use crate::labels::{Labels, Locale, LocaleLabels};
@@ -433,11 +434,31 @@ pub fn build(
     offset: UtcOffset,
     override_armed: bool,
 ) -> Menu {
+    build_offered(status, None, options, locale, offset, override_armed)
+}
+
+/// The lengths a service that holds no offer gets: one from before protocol
+/// version 4, which an update has not restarted yet. They are the ones the
+/// tray offered before the service owned the list.
+pub const FALLBACK_MINUTES: [u64; 4] = [15, 30, 60, 120];
+
+/// Builds the popup with the service's quick-session offer (ticket 87): the
+/// Start menu lists its lengths in its order, a one-click item above it
+/// starts its default length, and Change length offers the same lengths.
+/// `None` is a service without an offer, which keeps the fixed lengths.
+pub fn build_offered(
+    status: &StatusDocument,
+    offer: Option<&QuickSessions>,
+    options: QuickOptions,
+    locale: Locale,
+    offset: UtcOffset,
+    override_armed: bool,
+) -> Menu {
     let labels = locale.labels();
     let mut items = if status.is_active() {
-        active_items(status, labels, locale, offset)
+        active_items(status, offer, labels, locale, offset)
     } else {
-        inactive_items(status, options, labels)
+        inactive_items(status, offer, options, labels)
     };
 
     items.push(MenuItem::separator());
@@ -453,8 +474,53 @@ pub fn build(
     menu
 }
 
+/// One length as a menu item: its label and the action that starts it.
+pub fn length_item(length: QuickLength, labels: &Labels) -> (String, MenuAction, WireEnd) {
+    match length {
+        QuickLength::Indefinite => (
+            labels.indefinitely.to_string(),
+            MenuAction::StartIndefinite,
+            WireEnd::Indefinite,
+        ),
+        QuickLength::Minutes { minutes } => (
+            length_label(minutes, labels),
+            MenuAction::StartMinutes(minutes),
+            length.end(),
+        ),
+    }
+}
+
+/// A length in the menu's words: the fixed labels where they exist, whole
+/// hours or minutes otherwise, and hours with minutes for the rest.
+pub fn length_label(minutes: u64, labels: &Labels) -> String {
+    match minutes {
+        15 => labels.minutes_15.to_string(),
+        30 => labels.minutes_30.to_string(),
+        60 => labels.hour_1.to_string(),
+        120 => labels.hours_2.to_string(),
+        m if m % 60 == 0 => labels.hours_n.replace("{n}", &(m / 60).to_string()),
+        m if m < 60 => labels.minutes_n.replace("{n}", &m.to_string()),
+        m => duration_label(m * 60, labels),
+    }
+}
+
+/// The lengths the menu offers, in order.
+fn offered_lengths(offer: Option<&QuickSessions>) -> Vec<QuickLength> {
+    match offer {
+        Some(offer) => offer.lengths.clone(),
+        None => std::iter::once(QuickLength::Indefinite)
+            .chain(
+                FALLBACK_MINUTES
+                    .iter()
+                    .map(|minutes| QuickLength::Minutes { minutes: *minutes }),
+            )
+            .collect(),
+    }
+}
+
 fn inactive_items(
     status: &StatusDocument,
+    offer: Option<&QuickSessions>,
     options: QuickOptions,
     labels: &Labels,
 ) -> Vec<MenuItem> {
@@ -466,16 +532,29 @@ fn inactive_items(
     items.push(MenuItem::separator());
 
     let backend_ready = status.backend.available;
+    // One click starts the service's default length.
+    if let Some(default) = offer.and_then(QuickSessions::default_length) {
+        let (label, action, _) = length_item(default, labels);
+        let mut one_click =
+            MenuItem::standard(labels.keep_awake_for.replace("{length}", &label), action);
+        if !backend_ready {
+            one_click.enabled = false;
+        }
+        items.push(one_click);
+    }
     let mut start = MenuItem::submenu(
         labels.start_a_session,
-        vec![
-            MenuItem::standard(labels.indefinitely, MenuAction::StartIndefinite),
-            MenuItem::standard(labels.minutes_15, MenuAction::StartMinutes(15)),
-            MenuItem::standard(labels.minutes_30, MenuAction::StartMinutes(30)),
-            MenuItem::standard(labels.hour_1, MenuAction::StartMinutes(60)),
-            MenuItem::standard(labels.hours_2, MenuAction::StartMinutes(120)),
-            MenuItem::standard(labels.until_a_time, MenuAction::StartUntilTime),
-        ],
+        offered_lengths(offer)
+            .into_iter()
+            .map(|length| {
+                let (label, action, _) = length_item(length, labels);
+                MenuItem::standard(label, action)
+            })
+            .chain(std::iter::once(MenuItem::standard(
+                labels.until_a_time,
+                MenuAction::StartUntilTime,
+            )))
+            .collect(),
     );
     if !backend_ready {
         // Offering a one-click session that cannot be enforced would be the
@@ -524,6 +603,7 @@ fn lid_option(status: &StatusDocument, options: QuickOptions, labels: &Labels) -
 
 fn active_items(
     status: &StatusDocument,
+    offer: Option<&QuickSessions>,
     labels: &Labels,
     locale: Locale,
     offset: UtcOffset,
@@ -649,33 +729,10 @@ fn active_items(
         // A session changed or extended before carries an end time rather
         // than its length, so every length is offered for it.
         let current = session.end;
-        let lengths = [
-            (
-                labels.indefinitely,
-                MenuAction::StartIndefinite,
-                WireEnd::Indefinite,
-            ),
-            (
-                labels.minutes_15,
-                MenuAction::StartMinutes(15),
-                WireEnd::Duration { seconds: 15 * 60 },
-            ),
-            (
-                labels.minutes_30,
-                MenuAction::StartMinutes(30),
-                WireEnd::Duration { seconds: 30 * 60 },
-            ),
-            (
-                labels.hour_1,
-                MenuAction::StartMinutes(60),
-                WireEnd::Duration { seconds: 60 * 60 },
-            ),
-            (
-                labels.hours_2,
-                MenuAction::StartMinutes(120),
-                WireEnd::Duration { seconds: 120 * 60 },
-            ),
-        ];
+        let lengths: Vec<(String, MenuAction, WireEnd)> = offered_lengths(offer)
+            .into_iter()
+            .map(|length| length_item(length, labels))
+            .collect();
         items.push(MenuItem::submenu(
             labels.change_length,
             lengths
@@ -1787,6 +1844,170 @@ mod tests {
             menu(&status, Locale::ZhTw)
                 .labels()
                 .contains(&"電量停止門檻: 不因電量停止")
+        );
+    }
+
+    // ---- Ticket 87: the service's quick-session offer ---------------------
+
+    fn offered(status: &StatusDocument, offer: &QuickSessions, locale: Locale) -> Menu {
+        build_offered(
+            status,
+            Some(offer),
+            QuickOptions::default(),
+            locale,
+            UtcOffset::UTC,
+            false,
+        )
+    }
+
+    fn start_children(menu: &Menu) -> Vec<(String, MenuAction)> {
+        let start = menu
+            .items
+            .iter()
+            .find(|item| {
+                item.children
+                    .iter()
+                    .any(|c| c.action == Some(MenuAction::StartUntilTime))
+            })
+            .expect("a Start menu");
+        start
+            .children
+            .iter()
+            .map(|child| (child.label.clone(), child.action.unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn the_start_menu_lists_the_service_s_lengths_in_its_order() {
+        let offer = QuickSessions::default();
+        let menu = offered(&inactive(), &offer, Locale::EnUs);
+        assert_eq!(
+            start_children(&menu),
+            vec![
+                ("Indefinitely".to_string(), MenuAction::StartIndefinite),
+                ("15 minutes".to_string(), MenuAction::StartMinutes(15)),
+                ("30 minutes".to_string(), MenuAction::StartMinutes(30)),
+                ("1 hour".to_string(), MenuAction::StartMinutes(60)),
+                ("2 hours".to_string(), MenuAction::StartMinutes(120)),
+                ("Until…".to_string(), MenuAction::StartUntilTime),
+            ]
+        );
+        let reordered = QuickSessions {
+            lengths: vec![
+                QuickLength::Minutes { minutes: 180 },
+                QuickLength::Minutes { minutes: 15 },
+            ],
+            default_index: 0,
+            ..QuickSessions::default()
+        };
+        let menu_2 = offered(&inactive(), &reordered, Locale::EnUs);
+        assert_eq!(
+            start_children(&menu_2),
+            vec![
+                ("3 hours".to_string(), MenuAction::StartMinutes(180)),
+                ("15 minutes".to_string(), MenuAction::StartMinutes(15)),
+                ("Until…".to_string(), MenuAction::StartUntilTime),
+            ]
+        );
+        // One click starts the default, 1 hour, above the Start menu.
+        let one_click = menu
+            .items
+            .iter()
+            .position(|item| item.label == "Keep awake for 1 hour")
+            .expect("a one-click start");
+        assert_eq!(
+            menu.items[one_click].action,
+            Some(MenuAction::StartMinutes(60))
+        );
+        assert_eq!(menu.items[one_click + 1].label, "Start a session");
+    }
+
+    #[test]
+    fn a_length_added_and_made_default_on_the_page_is_what_the_menu_offers() {
+        let mut offer = QuickSessions::default();
+        assert!(offer.add_length(QuickLength::Minutes { minutes: 45 }));
+        assert!(offer.set_default(5));
+        assert!(offer.move_length(5, -5));
+        let menu = offered(&inactive(), &offer, Locale::ZhTw);
+        let children = start_children(&menu);
+        assert_eq!(
+            children[0],
+            ("45 分鐘".to_string(), MenuAction::StartMinutes(45))
+        );
+        assert_eq!(children.len(), 7);
+        assert!(menu.labels().contains(&"保持清醒 45 分鐘"));
+    }
+
+    #[test]
+    fn odd_lengths_are_named_in_hours_and_minutes() {
+        let labels = Locale::EnUs.labels();
+        assert_eq!(length_label(240, labels), "4 hours");
+        assert_eq!(length_label(45, labels), "45 minutes");
+        assert_eq!(length_label(90, labels), "1 hr 30 min");
+        assert_eq!(length_label(240, Locale::ZhTw.labels()), "4 小時");
+    }
+
+    #[test]
+    fn without_an_offer_the_menu_is_unchanged_and_has_no_one_click_item() {
+        let menu = build_offered(
+            &inactive(),
+            None,
+            QuickOptions::default(),
+            Locale::EnUs,
+            UtcOffset::UTC,
+            false,
+        );
+        assert_eq!(menu, menu_for_build(&inactive()));
+        assert!(
+            !menu
+                .labels()
+                .iter()
+                .any(|label| label.starts_with("Keep awake for"))
+        );
+    }
+
+    fn menu_for_build(status: &StatusDocument) -> Menu {
+        menu(status, Locale::EnUs)
+    }
+
+    #[test]
+    fn the_one_click_start_is_greyed_out_when_nothing_could_enforce_it() {
+        let mut status = inactive();
+        status.backend.available = false;
+        let menu = offered(&status, &QuickSessions::default(), Locale::EnUs);
+        let one_click = menu
+            .items
+            .iter()
+            .find(|item| item.label == "Keep awake for 1 hour")
+            .unwrap();
+        assert!(!one_click.enabled);
+    }
+
+    #[test]
+    fn change_length_offers_the_service_s_lengths_but_the_current_one() {
+        let offer = QuickSessions::default();
+        let menu = offered(
+            &active(
+                WireEnd::Duration { seconds: 900 },
+                WireRemaining::Seconds { seconds: 800 },
+            ),
+            &offer,
+            Locale::EnUs,
+        );
+        let change = menu
+            .items
+            .iter()
+            .find(|item| item.label == Locale::EnUs.labels().change_length)
+            .expect("Change length");
+        let actions: Vec<MenuAction> = change.children.iter().map(|c| c.action.unwrap()).collect();
+        assert_eq!(
+            actions,
+            vec![
+                MenuAction::StartIndefinite,
+                MenuAction::StartMinutes(30),
+                MenuAction::StartMinutes(60),
+                MenuAction::StartMinutes(120),
+            ]
         );
     }
 }

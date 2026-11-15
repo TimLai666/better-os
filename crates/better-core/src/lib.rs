@@ -17,6 +17,6 @@ pub use host::{
 };
 pub use manifest::{
     Artifact, BenchmarkDefinition, ComponentCatalog, ComponentIcon, ComponentId, ComponentManifest,
-    ComponentType, Dependency, Lifecycle, MAX_SUMMARY_LENGTH, ManifestError, Permission,
-    RestartScope, TargetMatrix,
+    ComponentType, Dependency, HardwareSupport, Lifecycle, MAX_SUMMARY_LENGTH, ManifestError,
+    Permission, RestartScope, TargetMatrix,
 };

@@ -297,7 +297,7 @@ pub struct Copy {
 pub const EN_US: Copy = Copy {
     brand: "Better OS",
     application: "Touchpad",
-    switch_language: "中文",
+    switch_language: "繁體中文",
 
     appearance: "Appearance",
     appearance_description: "Follows your desktop's light or dark mode unless you pick one.",

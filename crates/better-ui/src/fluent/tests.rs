@@ -1840,3 +1840,20 @@ fn the_staged_changes_bar_shows_only_while_something_waits() {
     // One line: 12px, a 32px button, 12px, and the 1px rule.
     assert_eq!(BAR_HEIGHT, px(57.0));
 }
+
+/// Audit A7: every language picker in the suite reads the same three words.
+#[test]
+fn every_language_picker_names_the_languages_the_same_way() {
+    use super::words::{Locale, language_choices, language_name};
+    assert_eq!(
+        language_choices(Locale::English),
+        ["Use system setting", "English", "繁體中文"]
+    );
+    assert_eq!(
+        language_choices(Locale::TraditionalChinese),
+        ["跟隨系統", "English", "繁體中文"]
+    );
+    // Each language is named in itself, whatever the window is drawn in.
+    assert_eq!(language_name(Locale::TraditionalChinese), "繁體中文");
+    assert_ne!(language_name(Locale::English), "English (US)");
+}

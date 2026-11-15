@@ -216,6 +216,115 @@ done
     exit 1
 }
 
+# better-storage, installed, started, and removed (ticket 31). It needs the
+# system bus above because the service is a UDisks2 client before it is
+# anything else: it connects to UDisks2, then owns org.betteros.Storage1 on a
+# session bus. There is no init here, so udisksd and a session bus are started
+# by hand, the same way the privileged service is below. udisksd sees no
+# drives in a container, which is the point: the service must still start,
+# report an empty inventory, and leave nothing behind.
+printf '== better-storage installs, starts, and removes cleanly ==\n'
+STORAGE_DEB="$(find_package better-storage)"
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$STORAGE_DEB"
+dpkg-query -W -f='${db:Status-Status}' better-storage | grep -q '^installed$' || {
+    printf 'better-storage did not install\n' >&2
+    exit 1
+}
+STORAGE_FILES=(
+    /usr/bin/better-storage-service
+    /usr/bin/better-storage-doctor
+    /usr/lib/systemd/user/better-storage.service
+    /usr/share/dbus-1/services/org.betteros.Storage1.service
+)
+for required_file in "${STORAGE_FILES[@]}"; do
+    [[ -s "$required_file" ]] || {
+        printf 'Missing %s after installing better-storage\n' "$required_file" >&2
+        exit 1
+    }
+done
+if ldd /usr/bin/better-storage-service | grep -q 'not found'; then
+    printf 'better-storage-service has an unresolved library after a clean apt install\n' >&2
+    exit 1
+fi
+
+UDISKSD=/usr/libexec/udisks2/udisksd
+[[ -x "$UDISKSD" ]] || {
+    printf 'udisks2 is a Depends of better-storage and %s is missing\n' "$UDISKSD" >&2
+    exit 1
+}
+"$UDISKSD" --no-debug >/tmp/udisksd.log 2>&1 &
+UDISKSD_PID=$!
+for _ in $(seq 1 50); do
+    busctl --system list 2>/dev/null | grep -q 'org.freedesktop.UDisks2' && break
+    sleep 0.1
+done
+busctl --system list 2>/dev/null | grep -q 'org.freedesktop.UDisks2' || {
+    printf 'udisksd did not claim org.freedesktop.UDisks2\n' >&2
+    cat /tmp/udisksd.log >&2 || true
+    exit 1
+}
+
+STORAGE_HOME="$(mktemp -d)"
+SESSION_BUS_ADDRESS="$(dbus-daemon --session --fork --print-address=1 --print-pid=3 3>/tmp/session-bus.pid)"
+SESSION_BUS_PID="$(cat /tmp/session-bus.pid)"
+HOME="$STORAGE_HOME" XDG_CONFIG_HOME="$STORAGE_HOME/.config" \
+    DBUS_SESSION_BUS_ADDRESS="$SESSION_BUS_ADDRESS" \
+    /usr/bin/better-storage-service >/tmp/storage-service.log 2>&1 &
+STORAGE_PID=$!
+for _ in $(seq 1 50); do
+    busctl --address="$SESSION_BUS_ADDRESS" list 2>/dev/null | grep -q 'org.betteros.Storage1' && break
+    sleep 0.1
+done
+busctl --address="$SESSION_BUS_ADDRESS" list 2>/dev/null | grep -q 'org.betteros.Storage1' || {
+    printf 'better-storage-service did not claim org.betteros.Storage1\n' >&2
+    cat /tmp/storage-service.log >&2 || true
+    exit 1
+}
+kill -0 "$STORAGE_PID" 2>/dev/null || {
+    printf 'better-storage-service exited after claiming its name\n' >&2
+    exit 1
+}
+printf 'better-storage-service is running and owns org.betteros.Storage1\n'
+
+# Better Manager stops the service before it removes the package; dpkg never
+# stops a user service. This stands in for that step.
+kill -INT "$STORAGE_PID"
+for _ in $(seq 1 50); do
+    kill -0 "$STORAGE_PID" 2>/dev/null || break
+    sleep 0.1
+done
+if kill -0 "$STORAGE_PID" 2>/dev/null; then
+    printf 'better-storage-service did not stop on SIGINT\n' >&2
+    exit 1
+fi
+DEBIAN_FRONTEND=noninteractive apt-get remove -y better-storage
+if dpkg-query -W -f='${db:Status-Status}' better-storage 2>/dev/null | grep -q '^installed$'; then
+    printf 'better-storage survived removal\n' >&2
+    exit 1
+fi
+for leftover in "${STORAGE_FILES[@]}"; do
+    [[ ! -e "$leftover" ]] || {
+        printf 'better-storage left %s behind after removal\n' "$leftover" >&2
+        exit 1
+    }
+done
+# comm is cut to 15 characters, so match the command line instead.
+if pgrep -f '^/usr/bin/better-storage-service' >/dev/null 2>&1; then
+    printf 'a better-storage-service process outlived the package\n' >&2
+    exit 1
+fi
+# Starting with no device must write no state: the preference file is only
+# written when a person changes a device's mode. Deleting the person's own
+# data on uninstall is Better Manager's step, not dpkg's.
+[[ -z "$(find "$STORAGE_HOME" -mindepth 1 -print -quit)" ]] || {
+    printf 'better-storage-service wrote state at start with no device:\n' >&2
+    find "$STORAGE_HOME" -mindepth 1 >&2
+    exit 1
+}
+kill "$SESSION_BUS_PID" "$UDISKSD_PID" 2>/dev/null || true
+rm -rf "$STORAGE_HOME"
+printf 'better-storage installed, started, and removed cleanly\n'
+
 if command -v /usr/lib/polkit-1/polkitd >/dev/null 2>&1; then
     /usr/lib/polkit-1/polkitd --no-debug &
     sleep 2
