@@ -101,9 +101,19 @@ Built and tested since the first pass (all of the first pass's list stands):
 - Devices › Details: the chevron works (screenshot `*-devices-details`); the
   earlier failure was the shared wayhand sandbox, where another worker's
   windows took the clicks.
+- Removal: the better-touchpad package gets a postrm
+  (`packaging/maintainer/autostart-overrides.sh`, written by `build-deb.sh`,
+  asserted by `verify-deb.sh`) that deletes, for every account in
+  `/etc/passwd` from uid 1000, only a regular file in
+  `~/.config/autostart/{touchegg,fusuma}.desktop` owned by that account and
+  carrying the exact marker line. Shell test
+  `packaging/tests/autostart-overrides.test.sh` (in CI); a Rust test keeps the
+  marker in `competitors.rs` and `build-deb.sh` the same. An override under a
+  custom `XDG_CONFIG_HOME` is invisible to a maintainer script and stays; the
+  page's "Turn back on" still removes it.
 - Scroll speed: tested on a private GNOME Shell 46.0; an extension cannot see
   a client's scroll at all. Evidence and the alternative's estimate are in
-  ADR 0028 (proposed, owner decision). Nothing built.
+  ADR 0029 (proposed, owner decision). Nothing built.
 
 Screenshots (private headless GNOME Shell 46, in-memory backend, demo mode):
 every sub-page, zh/en, light/dark, 1600 and 960 (48), Devices › Details and
@@ -115,9 +125,7 @@ Still open:
 - Install-time setup (enable the shell extension, apply a default gesture
   profile at install): waits for ticket 124 to merge, by the coordinator's
   instruction.
-- Scroll speed: owner decision on ADR 0028.
-- Uninstalling Better Touchpad does not yet remove an autostart override it
-  wrote for a competing tool; that belongs with the install-time work above.
+- Scroll speed: owner decision on ADR 0029.
 
 Checks run: fmt; clippy `+stable` and `+1.99.0`, workspace, all targets,
 `-D warnings` clean; `cargo +1.95 check` of the touched crates; license

@@ -1,4 +1,4 @@
-# ADR 0028: Touchpad scroll speed needs a privileged input pass-through
+# ADR 0029: Touchpad scroll speed needs a privileged input pass-through
 
 ## Status
 

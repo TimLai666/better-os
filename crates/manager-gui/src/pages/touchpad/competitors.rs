@@ -317,6 +317,28 @@ mod tests {
         .unwrap();
     }
 
+    /// The package's postrm deletes only files carrying this exact marker,
+    /// so the window and the packaging must name the same line.
+    #[test]
+    fn the_removal_script_looks_for_the_marker_this_writes() {
+        let build = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../packaging/build-deb.sh"
+        ))
+        .unwrap();
+        assert!(build.contains(&format!("AUTOSTART_OVERRIDE_MARK='{OVERRIDE_MARK}'")));
+        for tool in Tool::ALL {
+            if let Some(file) = tool.autostart_file() {
+                assert!(
+                    build.contains(&format!(
+                        "PACKAGE_AUTOSTART_OVERRIDES='touchegg.desktop fusuma.desktop'"
+                    )) && build.contains(file),
+                    "{file}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn nothing_installed_is_nothing_found() {
         let t = tree();

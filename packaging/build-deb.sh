@@ -151,6 +151,33 @@ PACKAGE_DATA_ONLY=0
 #                      switch: enabled globally and started at install, and
 #                      stopped and disabled by a prerm on removal
 PACKAGE_ALWAYS_ON_UNITS=""
+#   PACKAGE_AUTOSTART_OVERRIDES  autostart file names whose Better OS override
+#                      (a marked Hidden=true copy in a person's autostart
+#                      directory) a postrm deletes on removal (ticket 88)
+PACKAGE_AUTOSTART_OVERRIDES=""
+
+# The marker line competitors.rs writes into an override; the postrm deletes
+# only files carrying it.
+AUTOSTART_OVERRIDE_MARK='X-BetterOS-HiddenBy=better-touchpad'
+
+# A package whose window can hide another program's autostart entry gets a
+# postrm built from packaging/maintainer/autostart-overrides.sh, which removes
+# those overrides when the package is removed: nothing a component added
+# outlives it.
+write_autostart_override_postrm() {
+    local staging_dir="$1"
+    {
+        printf '#!/bin/sh\nset -e\n\n'
+        printf "better_os_passwd_file='/etc/passwd'\n"
+        printf "better_os_override_mark='%s'\n" "$AUTOSTART_OVERRIDE_MARK"
+        printf "better_os_override_files='%s'\n\n" "$PACKAGE_AUTOSTART_OVERRIDES"
+        cat "$ROOT_DIR/packaging/maintainer/autostart-overrides.sh"
+        printf '\n'
+        # shellcheck disable=SC2016 # expanded by the maintainer script
+        printf 'better_os_forget_autostart_overrides "$1" || true\n'
+    } > "$staging_dir/DEBIAN/postrm"
+    chmod 0755 "$staging_dir/DEBIAN/postrm"
+}
 
 reset_package_inputs() {
     PACKAGE_BINARIES=()
@@ -159,6 +186,7 @@ reset_package_inputs() {
     PACKAGE_RECOMMENDS=""
     PACKAGE_DATA_ONLY=0
     PACKAGE_ALWAYS_ON_UNITS=""
+    PACKAGE_AUTOSTART_OVERRIDES=""
 }
 
 # The GPUI toolkit dlopens fontconfig and the Wayland client libraries, so they
@@ -353,6 +381,9 @@ make_package() {
 ' "${user_units[@]}" | LC_ALL=C sort | paste -sd' ' -)"
         write_user_unit_scripts "$staging_dir" "$package_name" "$sorted_units" \
             "$PACKAGE_ALWAYS_ON_UNITS"
+    fi
+    if [[ -n "$PACKAGE_AUTOSTART_OVERRIDES" ]]; then
+        write_autostart_override_postrm "$staging_dir"
     fi
 
     dpkg-deb --build --root-owner-group "$staging_dir" "$deb_path" >/dev/null
@@ -735,6 +766,9 @@ PACKAGE_DATA=(
     "packaging/icons/better-touchpad.svg:usr/share/icons/hicolor/scalable/apps/better-touchpad.svg"
 )
 PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
+# Turning off Touchégg or fusuma on the Touchpad page hides their autostart
+# entries for that person; removal takes the overrides away again.
+PACKAGE_AUTOSTART_OVERRIDES='touchegg.desktop fusuma.desktop'
 make_package better-touchpad \
     'Better OS touchpad settings and gestures' \
     'Scrolling, tapping, pointer speed, and gestures in one window, with every unavailable setting saying why.'
