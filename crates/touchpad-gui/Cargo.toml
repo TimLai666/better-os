@@ -27,6 +27,7 @@ touchpad-gestures.workspace = true
 touchpad-session = { workspace = true, features = ["gnome-shell", "launcher-activation"] }
 launcher-platform = { workspace = true, features = ["session-bus"] }
 touchpad-platform.workspace = true
+touchpad-views.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true

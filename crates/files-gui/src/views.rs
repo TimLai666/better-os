@@ -588,7 +588,12 @@ impl FilesApp {
         let status = if searching {
             self.session.search.status_line(c)
         } else {
-            status_line(model, c)
+            let mut line = status_line(model, c);
+            if let Some(total) = self.session.selection_size() {
+                line.push_str(" · ");
+                line.push_str(&total);
+            }
+            line
         };
         let empty = if searching {
             self.session.search.empty_state(c).map(str::to_string)
@@ -822,13 +827,14 @@ impl FilesApp {
                                 out.push(div().into_any_element());
                                 continue;
                             };
-                            let rendered = rendered_row_named(
+                            let mut rendered = rendered_row_named(
                                 entry,
                                 model.selection().contains(&entry.id()),
                                 cursor == Some(row),
                                 c,
                                 &describe,
                             );
+                            with_size_label(&mut rendered, app.session.size_label(entry));
                             let icon = app.row_icon(entry, &icon_names);
                             let location = entry
                                 .as_local_path()
@@ -852,13 +858,14 @@ impl FilesApp {
                                 let Some(entry) = app.session.entry_at(index) else {
                                     break;
                                 };
-                                let rendered = rendered_row_named(
+                                let mut rendered = rendered_row_named(
                                     entry,
                                     model.selection().contains(&entry.id()),
                                     cursor == Some(index),
                                     c,
                                     &describe,
                                 );
+                                with_size_label(&mut rendered, app.session.size_label(entry));
                                 let thumbnail = entry.mime.as_ref().and_then(|mime| {
                                     let path = entry.as_local_path()?;
                                     app.thumbnails.for_file(path.as_path(), mime.as_str())
@@ -1162,7 +1169,13 @@ fn list_row(
                         ListColumn::Type => row.type_label.clone(),
                         _ => row.extension.clone(),
                     };
-                    cell(text, *column, secondary)
+                    match (column, &row.size_tooltip) {
+                        (ListColumn::Size, Some(reason)) => cell(text, *column, secondary)
+                            .id(SharedString::from(format!("size-{index}")))
+                            .tooltip(fluent::dialog::tooltip_builder(reason.clone().into()))
+                            .into_any_element(),
+                        _ => cell(text, *column, secondary).into_any_element(),
+                    }
                 }),
         );
 
@@ -1253,6 +1266,14 @@ fn grid_tile(
         row.selected,
     );
     element.into_any_element()
+}
+
+/// Puts what the session says about an entry's size into its row: a
+/// folder's total, or its state and the reason behind it.
+fn with_size_label(row: &mut crate::content::RenderedRow, label: crate::folder_sizes::SizeLabel) {
+    row.size = label.text;
+    row.size_tooltip = label.tooltip;
+    row.size_is_value = label.is_value;
 }
 
 fn cell(text: String, column: ListColumn, color: Rgba) -> Div {

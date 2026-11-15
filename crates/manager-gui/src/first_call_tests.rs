@@ -22,13 +22,13 @@ const STARTS: u32 = 200;
 /// will ever answer, or a claim that never happens, runs into it.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 
-struct PrivateBus {
+pub(crate) struct PrivateBus {
     child: Child,
-    address: String,
+    pub(crate) address: String,
 }
 
 impl PrivateBus {
-    fn start() -> Option<Self> {
+    pub(crate) fn start() -> Option<Self> {
         let mut child = Command::new("dbus-daemon")
             .args(["--session", "--nofork", "--print-address"])
             .stdout(Stdio::piped())

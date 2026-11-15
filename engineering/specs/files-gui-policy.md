@@ -143,3 +143,50 @@ the typed intent exists to keep.
 opening a window and exits if it is 0. There is no code path that elevates, and
 every filesystem change goes through the `files-operations` job engine as the
 session user.
+
+## Folder sizes (ticket 126)
+
+A folder's Size cell, its row in the details panel, the preview's size line,
+the grid tile's caption, and the status bar's total for a selection all show
+the folder's total: the sum of the regular files beneath it, each hard-linked
+file counted once, without following a symbolic link and without entering
+another filesystem (`files_platform::folder_size`). A symbolic link adds
+nothing; a folder's own directory blocks add nothing.
+
+- **When.** Nothing is measured until the folder's listing is in, so the
+  listing and its first frame are not slowed. The walks run on one thread of
+  their own, one folder after another in the order the view lists them
+  (`files_gui::folder_sizes`). Until a folder's answer arrives its cell says
+  "Calculating…" / "計算中…".
+- **Sorting.** A measured total is written into the model as the entry's size,
+  so sorting by size uses it; a folder without a number sorts after every
+  known size in both directions, and moves into place when its number arrives.
+  Selection is by identity, so it stays on the same entries.
+- **Bounds.** A folder with more than 1,000,000 entries, or still being walked
+  20 seconds after it started, says "More than N items" / "超過 N 個項目", with N
+  what was counted. One visit to a folder may look at 5,000,000 entries in 120
+  seconds across all its folders; a folder never reached says "—" and why.
+- **Leaving.** Leaving the folder cancels its walks between two entries and
+  drops their answers.
+- **What is not walked.** Folders on a network filesystem or a FUSE mount
+  (`MountTable::reach`, from the mount table alone), and everything in the
+  Trash, say "—" with the reason in a tooltip. "Show folder sizes" in the View
+  menu turns all of it off (folders say "—", and the sizes are taken out of the
+  model so a size sort is what it was); "Folder sizes on network locations"
+  turns walking network and FUSE folders on. Both are stored with the other
+  view settings (`folder_sizes`, `folder_sizes_on_network`). Better Files has
+  no separate Settings window, so the View menu is where they live.
+- **Unreadable.** A folder that cannot be listed says "Can't read" / "無法讀取",
+  never 0. A folder with unreadable folders inside shows "≥ total" with how
+  many could not be read in its tooltip, and sorts by the part it could read.
+- **Cache.** An answer is kept for five minutes. The folder watcher forgets
+  it sooner: a change the open folder's watch reports forgets the changed
+  folder, the open folder, and every cached folder above it; and each measured
+  folder of the visit (up to 256) has a watch of its own, so a file added
+  directly inside it is seen while its total is on screen.
+
+**Limit.** A change two or more levels inside a folder that is not open is not
+seen by any watch (one inotify watch per folder in a tree would exhaust the
+user's limit), so such a total can be up to five minutes old when the person
+comes back to it. A change made between a walk finishing and that folder's own
+watch being placed (a few milliseconds) is missed the same way.

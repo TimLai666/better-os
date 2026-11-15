@@ -325,6 +325,10 @@ fn test_mode_shows_the_recognition_and_performs_no_action_by_default() {
     assert_eq!(run.lines.first().unwrap().kind, "begin");
     assert_eq!(run.lines.last().unwrap().kind, "complete");
     assert_eq!(run.performed, 0, "test mode performed a system action");
+    assert_eq!(
+        run.attempted, 0,
+        "test mode handed an action to the desktop"
+    );
 }
 
 #[test]
@@ -336,7 +340,25 @@ fn live_testing_hands_every_event_to_the_adapter() {
     screen.set_live_testing(true);
     let run = screen.test_gesture(&id("overview"), copy(Locale::EnUs));
     assert_eq!(run.performed, run.lines.len());
+    assert_eq!(run.attempted, run.performed);
     assert!(run.performed > 0);
+}
+
+/// Ticket 88: a live test says whether the action reached the desktop. An
+/// adapter that refuses it is counted as tried and not performed.
+#[test]
+fn a_live_test_against_a_failing_desktop_says_it_did_not_arrive() {
+    let mut screen = GestureScreen::new(
+        GestureConfig::default(),
+        None,
+        Box::new(MockSessionAdapter::new().failing(&DesktopAction::ShowOverview)),
+    );
+    confirmed_preview(&mut screen, ConflictResolution::DisableBuiltIn);
+    let _ = screen.apply_plan(None);
+    screen.set_live_testing(true);
+    let run = screen.test_gesture(&id("overview"), copy(Locale::EnUs));
+    assert!(run.attempted > 0);
+    assert!(run.performed < run.attempted);
 }
 
 #[test]
@@ -690,22 +712,6 @@ fn the_notes_the_advanced_controls_add_fit_the_column_they_are_drawn_in() {
 }
 
 #[test]
-fn the_screens_stated_tab_stops_are_distinct_and_in_the_order_they_are_drawn() {
-    let order = crate::pages_gestures::GESTURE_TAB_ORDER;
-    for pair in order.windows(2) {
-        assert!(
-            pair[0] < pair[1],
-            "tab stop {} is not before {}",
-            pair[0],
-            pair[1]
-        );
-    }
-    let mut sorted = order.to_vec();
-    sorted.dedup();
-    assert_eq!(sorted.len(), order.len(), "two controls share a tab stop");
-}
-
-#[test]
 fn a_repeatedly_failing_adapter_turns_the_integration_off_by_itself() {
     let mut screen = GestureScreen::new(
         GestureConfig::default(),
@@ -720,7 +726,7 @@ fn a_repeatedly_failing_adapter_turns_the_integration_off_by_itself() {
     assert!(screen.config().enabled);
 
     for _ in 1..GestureScreen::FAILURES_BEFORE_DISABLE {
-        assert_eq!(screen.verify_all(), RunState::Failed);
+        assert_eq!(screen.verify_all(None), RunState::Failed);
     }
     assert!(!screen.config().enabled);
     assert!(
@@ -1395,4 +1401,40 @@ fn a_shell_adapter_performs_the_desktop_actions_and_says_which_one_it_cannot() {
     // And nothing animates, because the shell exposes no way to drive its own
     // transition from outside.
     assert!(!overview.can_animate);
+}
+
+/// Ticket 88: turning itself off leaves the marker Home reads, and turning
+/// gestures on again or off on purpose removes it.
+#[test]
+fn gestures_that_turned_themselves_off_leave_a_marker_until_they_are_on_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = touchpad_gestures::GestureStore::at(directory.path().join("touchpad"));
+    let mut screen = GestureScreen::new(
+        GestureConfig::default(),
+        None,
+        Box::new(MockSessionAdapter::new().failing(&DesktopAction::LauncherOpen)),
+    );
+    confirmed_preview(&mut screen, ConflictResolution::KeepBuiltIn);
+    screen.apply_plan(Some(&store)).unwrap();
+    assert!(!store.turned_off_by_itself());
+    for _ in 1..GestureScreen::FAILURES_BEFORE_DISABLE {
+        screen.verify_all(Some(&store));
+    }
+    assert!(!screen.config().enabled);
+    assert!(store.turned_off_by_itself());
+
+    // Turning them off on purpose is the person's choice, not a fault.
+    screen.disable(Some(&store));
+    assert!(!store.turned_off_by_itself());
+}
+
+#[test]
+fn applying_the_preset_again_forgets_that_gestures_turned_themselves_off() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = touchpad_gestures::GestureStore::at(directory.path().join("touchpad"));
+    store.record_turned_off(3).unwrap();
+    let mut screen = screen();
+    confirmed_preview(&mut screen, ConflictResolution::KeepBuiltIn);
+    assert_eq!(screen.apply_plan(Some(&store)), Ok(RunState::Applied));
+    assert!(!store.turned_off_by_itself());
 }

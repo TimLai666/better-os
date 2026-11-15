@@ -597,8 +597,12 @@ impl FilesApp {
                     p.text_primary,
                 ))
                 .child(row(c.details_type, type_label));
-            if let files_core::EntrySize::Bytes(bytes) = entry.size {
-                column = column.child(row(c.details_size, crate::format::bytes(bytes)));
+            let size = self.session.size_label(&entry);
+            if size.is_value || entry.kind == files_core::EntryKind::Directory {
+                column = column.child(row(c.details_size, size.text));
+                if let Some(reason) = size.tooltip {
+                    column = column.child(fluent::label(reason, CAPTION, p.text_secondary));
+                }
             }
             match &entry.body {
                 files_core::EntryBody::Trashed(facts) => {
@@ -704,11 +708,26 @@ impl FilesApp {
                         p.text_primary,
                     ))
                     .child(fluent::label(
-                        format!(
-                            "{}: {}",
-                            c.preview_folder_size,
-                            crate::format::bytes(summary.immediate_bytes)
-                        ),
+                        // With folder sizes on, the whole folder's total
+                        // (or its state); off, what the folder itself holds
+                        // directly, under its own name.
+                        match self
+                            .session
+                            .focused_entry()
+                            .filter(|entry| entry.kind == files_core::EntryKind::Directory)
+                            .filter(|_| self.session.preferences.folder_sizes)
+                        {
+                            Some(entry) => format!(
+                                "{}: {}",
+                                c.details_size,
+                                self.session.size_label(entry).text
+                            ),
+                            None => format!(
+                                "{}: {}",
+                                c.preview_folder_size,
+                                crate::format::bytes(summary.immediate_bytes)
+                            ),
+                        },
                         BODY,
                         p.text_primary,
                     ));

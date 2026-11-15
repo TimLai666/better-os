@@ -23,11 +23,11 @@ use manager_store::{JsonCatalogStore, JsonStore, StateStore, cache_refresh, star
 use crate::{
     attention::{ComponentFacts, Snapshot},
     deep_link::{self, Request},
-    defaults_app::DefaultsState,
     home,
     i18n::{Locale, copy, shell},
     model::{ActivityFilter, CatalogLine, ComponentInfo, DetailTab, Page, UpdateCheck},
     navigation::{History, Route},
+    pages::default_apps::jobs::DefaultsState,
     search::SearchEntry,
 };
 
@@ -215,6 +215,16 @@ pub(crate) struct ManagerApp {
     pub(crate) system: crate::pages::system::state::SystemState,
     /// Its "Add an app" search field.
     pub(crate) window_attention_add: Entity<InputState>,
+    /// The Touchpad page (ticket 88), made the first time it is drawn.
+    pub(crate) touchpad: Option<Entity<crate::pages::touchpad::TouchpadPage>>,
+    /// What Home knows about Better Touchpad, shared with the page.
+    pub(crate) touchpad_facts: crate::pages::touchpad::SharedFacts,
+    pub(crate) touchpad_environment: crate::pages::touchpad::Environment,
+    /// What a restart carried over for the page, used when it is made.
+    pub(crate) touchpad_restored: Option<crate::pages::touchpad::TouchpadView>,
+    /// The sub-page a search result or Home item asked for before the page
+    /// existed.
+    pub(crate) touchpad_sub_page: Option<crate::pages::touchpad::SubPage>,
 }
 
 /// What a real transaction is currently moving.
@@ -421,7 +431,15 @@ impl ManagerApp {
             keep_awake: Default::default(),
             system: Default::default(),
             window_attention_add,
+            touchpad: None,
+            touchpad_facts: Default::default(),
+            touchpad_environment: crate::pages::touchpad::Environment::for_window(
+                execution == ExecutionMode::Mock,
+            ),
+            touchpad_restored: None,
+            touchpad_sub_page: None,
         };
+        app.read_touchpad_markers();
         if let Some(view) = handoff.and_then(|h| h.state::<crate::restart::ManagerView>()) {
             app.restore_view(view, window, cx);
         }
@@ -494,9 +512,95 @@ impl ManagerApp {
                 now_unix_seconds(),
             )
             .warning,
+            touchpad: self.touchpad_facts(),
             keep_awake: self.keep_awake_facts(),
+            default_apps_changed: self
+                .defaults
+                .report
+                .as_ref()
+                .map(crate::pages::default_apps::model::changed_elsewhere)
+                .unwrap_or_default(),
             battery_health: self.system.battery_health(),
         }
+    }
+
+    /// Better Touchpad's install state from the record, and its two markers.
+    pub(crate) fn touchpad_facts(&self) -> crate::pages::touchpad::TouchpadFacts {
+        let mut facts = self.touchpad_facts.borrow().clone();
+        facts.installed = self
+            .state
+            .component(&crate::pages::touchpad::view::component_id())
+            .and_then(|record| record.installed_version.clone());
+        facts
+    }
+
+    /// Reads safe mode and "gestures turned themselves off" from the
+    /// touchpad's store, for Home.
+    pub(crate) fn read_touchpad_markers(&mut self) {
+        let directory = self.touchpad_environment.store_directory.clone();
+        self.touchpad_facts.borrow_mut().read_markers(&directory);
+    }
+
+    /// The Touchpad page, made the first time it is needed.
+    pub(crate) fn touchpad_page(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<crate::pages::touchpad::TouchpadPage> {
+        if let Some(page) = &self.touchpad {
+            return page.clone();
+        }
+        let host = cx.entity().downgrade();
+        let locale = self.locale;
+        let environment = self.touchpad_environment.clone();
+        let facts = self.touchpad_facts.clone();
+        let restored = self.touchpad_restored.take();
+        let page = cx.new(|cx| {
+            crate::pages::touchpad::TouchpadPage::new(
+                host,
+                locale,
+                &environment,
+                facts,
+                restored.as_ref(),
+                window,
+                cx,
+            )
+        });
+        // A change on the page (an apply, safe mode) is drawn by this window.
+        cx.observe(&page, |_, _, cx| cx.notify()).detach();
+        if let Some(sub_page) = self.touchpad_sub_page.take() {
+            page.update(cx, |page, cx| page.show(sub_page, cx));
+        }
+        self.touchpad = Some(page.clone());
+        page
+    }
+
+    /// Home's "Turn off safe mode": in place, through the page when it is
+    /// open so it reads the change, and through the store otherwise.
+    pub(crate) fn turn_off_touchpad_safe_mode(&mut self, cx: &mut Context<Self>) {
+        if let Some(page) = self.touchpad.clone() {
+            page.update(cx, |page, cx| page.set_safe_mode(false, cx));
+        } else {
+            let directory = self.touchpad_environment.store_directory.clone();
+            if let Err(error) = touchpad_core::TouchpadStore::new(&directory).clear_safe_mode() {
+                eprintln!("better-manager: safe mode could not be turned off: {error}");
+            }
+            self.read_touchpad_markers();
+        }
+        cx.notify();
+    }
+
+    /// Opens a Touchpad sub-page.
+    pub(crate) fn open_touchpad(
+        &mut self,
+        sub_page: crate::pages::touchpad::SubPage,
+        cx: &mut Context<Self>,
+    ) {
+        match &self.touchpad {
+            Some(page) => page.update(cx, |page, cx| page.show(sub_page, cx)),
+            None => self.touchpad_sub_page = Some(sub_page),
+        }
+        self.navigate(Page::Touchpad, cx);
     }
 
     /// Shows what a command line or a second `better-manager` asked for.
@@ -535,6 +639,11 @@ impl ManagerApp {
     ) {
         let query = String::new();
         self.reset_nav_search(&query, window, cx);
+        if entry.route == Route::Touchpad
+            && let Some(sub_page) = crate::pages::touchpad::SubPage::of_card(entry.card)
+        {
+            self.open_touchpad(sub_page, cx);
+        }
         if entry.route == Route::KeepAwake {
             self.keep_awake.draft = None;
             self.keep_awake.sub = crate::pages::keep_awake::sub_page_of(entry.card);
@@ -658,6 +767,21 @@ impl ManagerApp {
             let report = cx
                 .background_spawn(async move {
                     let units = SystemdUserUnitController::new();
+                    // The record decides for extensions too (ticket 88). What
+                    // this turns on changes no state, so it is not reported.
+                    let extensions =
+                        manager_platform::shell_extensions::GsettingsShellExtensions::from_environment();
+                    let _ = manager.heal_shell_extensions(&snapshot, &DpkgProbe, &extensions);
+                    // A removal with no session left Better Touchpad's settings
+                    // to put back here, in the person's session (ticket 88).
+                    // Installed again through Better Manager or apt drops it;
+                    // a dpkg that cannot be read leaves it for next time.
+                    if let Some(installed_again) = snapshot.installed_by_record_or_dpkg(
+                        touchpad_platform::removal::PACKAGE,
+                        &DpkgProbe,
+                    ) {
+                        crate::pages::touchpad::finish_pending_restore(installed_again);
+                    }
                     manager
                         .run_user_unit_healing(&snapshot, &DpkgProbe, &units)
                         .unwrap_or_default()
@@ -904,6 +1028,9 @@ impl ManagerApp {
         let typed = self.nav_search.read(cx).value().to_string();
         self.reset_nav_search(&typed, window, cx);
         self.window_attention_add = Self::window_attention_input(locale, window, cx);
+        if let Some(page) = self.touchpad.clone() {
+            page.update(cx, |page, cx| page.set_locale(locale, cx));
+        }
         let current_value = self.search.read(cx).value().to_string();
         let search = cx.new(|cx| {
             InputState::new(window, cx)
@@ -961,13 +1088,24 @@ impl ManagerApp {
         }
         if page == Page::Home {
             // The battery moves, and dpkg's record may have; both are read
-            // again each time Home is shown rather than polled.
+            // again each time Home is shown rather than polled. So may the
+            // touchpad's markers (the gesture service writes one).
+            self.read_touchpad_markers();
             self.device = home::HostRoot::default().device();
             self.read_package_system_record(cx);
         }
-        // Default apps reads what every integration says the first time it is
-        // shown, as its sidebar item used to.
-        if page == Page::Defaults && self.defaults.report.is_none() && !self.defaults.busy {
+        // Default apps reads what every integration says each time it, or
+        // Home (which says when a default was changed elsewhere), is shown:
+        // another program can change a default behind the window's back. A
+        // details page's link opens it with that component expanded.
+        if let Page::DefaultsComponent(component) = &page {
+            self.defaults.open.insert(component.clone());
+        }
+        if matches!(
+            page,
+            Page::Home | Page::Defaults | Page::DefaultsComponent(_)
+        ) && !self.defaults.busy
+        {
             self.refresh_defaults(cx);
         }
         // Window attention reads the shell and the service each time it is
@@ -1311,6 +1449,10 @@ impl ManagerApp {
                 }
             };
             let user_units = SystemdUserUnitController::new();
+            let extensions =
+                manager_platform::shell_extensions::GsettingsShellExtensions::from_environment();
+            let removal_hooks =
+                manager_platform::removal_hooks::ProcessHookRunner::from_environment();
             let driver = RealDriver::new(
                 &downloader,
                 &executor,
@@ -1319,7 +1461,9 @@ impl ManagerApp {
                 uuid::Uuid::new_v4().to_string(),
                 profile,
             )
-            .with_user_units(&user_units);
+            .with_user_units(&user_units)
+            .with_shell_extensions(&extensions)
+            .with_removal_hooks(&removal_hooks);
             let mut runner = TransactionRunner::new(&manager, Box::new(driver), &store)
                 .with_cancel_token(cancel);
             let _ = runner.run(&mut state, &mut |event| {
@@ -2084,6 +2228,7 @@ impl ManagerApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.touchpad_restored = view.touchpad;
         self.finished_plan = view.finished_plan;
         let knows = |id: &ComponentId| self.component_by_id(id).is_some();
         let page = view.page.page(&knows);
@@ -2119,14 +2264,20 @@ impl better_ui::restart::Restartable for ManagerApp {
         &mut self.update_restart
     }
 
-    fn restart_blocked(&self, _cx: &App) -> Option<better_ui::restart::Blocker> {
+    fn restart_blocked(&self, cx: &App) -> Option<better_ui::restart::Blocker> {
         crate::restart::restart_blocked(
             self.transaction_running(),
             self.repair_task.is_some(),
             self.heal_task.is_some()
                 || self.keep_awake.blocks_restart()
+                || self.defaults.blocks_restart()
                 || self.system.blocks_restart(),
         )
+        .or_else(|| {
+            self.touchpad
+                .as_ref()
+                .and_then(|page| page.read(cx).in_flight().blocker())
+        })
     }
 
     fn restart_state(&self, _window: &Window, cx: &App) -> crate::restart::ManagerView {
@@ -2145,6 +2296,11 @@ impl better_ui::restart::Restartable for ManagerApp {
             scroll: -f32::from(self.content_scroll.offset().y),
             pending_plan: None,
             finished_plan: self.finished_plan.clone(),
+            touchpad: self
+                .touchpad
+                .as_ref()
+                .map(|page| page.read(cx).restart_view(cx))
+                .or_else(|| self.touchpad_restored.clone()),
         }
     }
 }

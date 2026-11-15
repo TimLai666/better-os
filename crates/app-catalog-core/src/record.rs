@@ -592,15 +592,19 @@ const WRAPPER_PROGRAMS: &[&str] = &[
     "gtk-launch",
 ];
 
+/// Only keys the installer itself writes on export count as evidence.
+/// `flatpak` exports `X-Flatpak=<app-id>` and snapd writes
+/// `X-SnapInstanceName=`. Upstream entries carry other keys of the same
+/// families that distribution packages ship unchanged:
+/// `X-Flatpak-RenamedFrom=` (GNOME Text Editor and Evolution on Ubuntu 24.04)
+/// and AppImage metadata such as `X-AppImage-Version=`. AppImage integration
+/// tools rewrite `Exec` to the image instead, so only `Exec` names one.
 fn detect_source_kind(group: &Group, exec: Option<&ExecLine>) -> SourceKind {
-    if group.has_key_prefix("X-Flatpak") {
+    if group.has_key("X-Flatpak") {
         return SourceKind::Flatpak;
     }
-    if group.has_key_prefix("X-Snap") {
+    if group.has_key("X-SnapInstanceName") {
         return SourceKind::Snap;
-    }
-    if group.has_key_prefix("X-AppImage") {
-        return SourceKind::AppImage;
     }
     let Some(exec) = exec else {
         return SourceKind::Native;
@@ -907,6 +911,61 @@ mod tests {
             );
             assert_eq!(record.executable.path(), None, "path for {exec}");
         }
+    }
+
+    #[test]
+    fn only_installer_written_keys_mark_a_sandboxed_entry() {
+        let probe = FakeProbe::with(&[
+            ("gnome-text-editor", "/usr/bin/gnome-text-editor"),
+            ("env", "/usr/bin/env"),
+        ]);
+        // As /usr/share/applications/org.gnome.TextEditor.desktop ships in
+        // the gnome-text-editor package on Ubuntu 24.04.
+        let distribution = record_with(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Text Editor\n\
+             Exec=gnome-text-editor %U\n\
+             X-Flatpak-RenamedFrom=org.gnome.gedit.desktop;\n\
+             X-AppImage-Version=46.0\n\
+             X-SnapAppName=ignored\n",
+            &probe,
+        )
+        .unwrap();
+        assert_eq!(distribution.source.kind, SourceKind::Native);
+        assert_eq!(
+            distribution.executable.path(),
+            Some(Path::new("/usr/bin/gnome-text-editor"))
+        );
+
+        let flatpak = record_with(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Text Editor\n\
+             Exec=gnome-text-editor %U\n\
+             X-Flatpak=org.gnome.TextEditor\n\
+             X-Flatpak-RenamedFrom=org.gnome.gedit.desktop;\n",
+            &probe,
+        )
+        .unwrap();
+        assert_eq!(flatpak.source.kind, SourceKind::Flatpak);
+        assert_eq!(
+            flatpak.executable,
+            ExecutableStatus::NotApplicable {
+                reason: NoCanonicalExecutable::Flatpak
+            }
+        );
+
+        let snap = record_with(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Firefox\n\
+             Exec=env BAMF_DESKTOP_FILE_HINT=/var/lib/snapd/desktop/applications/firefox_firefox.desktop /snap/bin/firefox %u\n\
+             X-SnapInstanceName=firefox\n",
+            &probe,
+        )
+        .unwrap();
+        assert_eq!(snap.source.kind, SourceKind::Snap);
     }
 
     #[test]

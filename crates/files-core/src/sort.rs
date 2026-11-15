@@ -90,6 +90,20 @@ impl SortOrder {
                 return grouping;
             }
         }
+        if self.key == SortKey::Size {
+            // A size not known yet (a folder still being measured, one that
+            // could not be) goes after every known size in either direction:
+            // a descending sort asks for the largest first, not for the
+            // unanswered ones.
+            let known = right
+                .size
+                .bytes()
+                .is_some()
+                .cmp(&left.size.bytes().is_some());
+            if known != Ordering::Equal {
+                return known;
+            }
+        }
         let primary = match self.key {
             SortKey::Name => natural_compare(&left.name, &right.name),
             SortKey::Modified => compare_option(left.modified, right.modified),
@@ -288,6 +302,26 @@ mod tests {
 
     fn entry(name: &str, kind: EntryKind) -> Entry {
         Entry::file(name, LocalPath::new(format!("/data/{name}")).unwrap(), kind)
+    }
+
+    #[test]
+    fn a_size_not_known_yet_sorts_last_in_both_directions() {
+        let mut big = entry("big", EntryKind::Directory);
+        big.size = EntrySize::Bytes(900);
+        let mut small = entry("small", EntryKind::Directory);
+        small.size = EntrySize::Bytes(1);
+        let pending = entry("pending", EntryKind::Directory);
+        for direction in [SortDirection::Ascending, SortDirection::Descending] {
+            let order = SortOrder::new(SortKey::Size, direction);
+            let mut list = [pending.clone(), big.clone(), small.clone()];
+            list.sort_by(|a, b| order.compare(a, b));
+            let names: Vec<&str> = list.iter().map(|e| e.name.as_str()).collect();
+            let expected = match direction {
+                SortDirection::Ascending => ["small", "big", "pending"],
+                SortDirection::Descending => ["big", "small", "pending"],
+            };
+            assert_eq!(names, expected);
+        }
     }
 
     #[test]

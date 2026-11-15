@@ -23,9 +23,22 @@
 //! [`Manager::heal_user_units`] is both, in order.
 
 use manager_platform::dpkg::PackageStateProbe;
+use manager_platform::shell_extensions::{
+    ExtensionFailure, ShellExtensionController, shell_extensions,
+};
 use manager_platform::user_units::{UnitActivity, UnitFailure, UserUnitController, service_units};
 
 use crate::{ActivityKind, ComponentId, HealthState, Manager, ManagerError, ManagerState};
+
+/// What the startup pass did, or found, for one component's GNOME Shell
+/// extensions; only produced when something was turned on or failed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExtensionHealing {
+    pub component: ComponentId,
+    /// The extensions that were off and were turned on.
+    pub turned_on: Vec<String>,
+    pub failure: Option<ExtensionFailure>,
+}
 
 /// One thing the startup pass did, or found, for one component.
 ///
@@ -229,6 +242,73 @@ impl Manager {
             state.bump_revision();
         }
         recorded
+    }
+
+    /// Turns on the GNOME Shell extensions of every component recorded as
+    /// installed and enabled that the person's settings have off (ticket 88):
+    /// the record decides, as it does for units. A disabled component is left
+    /// alone. A session with no GNOME Shell settings, or none reachable, ends
+    /// the pass with nothing learned. Changes no state.
+    pub fn heal_shell_extensions(
+        &self,
+        state: &ManagerState,
+        packages: &dyn PackageStateProbe,
+        extensions: &dyn ShellExtensionController,
+    ) -> Result<Vec<ExtensionHealing>, ManagerError> {
+        self.validate_state(state)?;
+        let mut report = Vec::new();
+        if state.active_operation.is_some() {
+            return Ok(report);
+        }
+        for manifest in self.manifests() {
+            let Some(record) = state.components.get(&manifest.id) else {
+                continue;
+            };
+            if !(record.enabled && record.installed_version.is_some()) {
+                continue;
+            }
+            let Ok(files) = packages.installed_files(manifest.id.as_str()) else {
+                continue;
+            };
+            let uuids = shell_extensions(&files);
+            if uuids.is_empty() {
+                continue;
+            }
+            let on = match extensions.enabled(&uuids) {
+                Ok(on) => on,
+                Err(failure) if failure.is_no_shell() || failure.is_no_session() => {
+                    return Ok(report);
+                }
+                Err(failure) => {
+                    report.push(ExtensionHealing {
+                        component: manifest.id.clone(),
+                        turned_on: Vec::new(),
+                        failure: Some(failure),
+                    });
+                    continue;
+                }
+            };
+            let off: Vec<String> = uuids
+                .into_iter()
+                .filter(|uuid| !on.contains(uuid))
+                .collect();
+            if off.is_empty() {
+                continue;
+            }
+            report.push(match extensions.enable(&off) {
+                Ok(()) => ExtensionHealing {
+                    component: manifest.id.clone(),
+                    turned_on: off,
+                    failure: None,
+                },
+                Err(failure) => ExtensionHealing {
+                    component: manifest.id.clone(),
+                    turned_on: Vec::new(),
+                    failure: Some(failure),
+                },
+            });
+        }
+        Ok(report)
     }
 
     /// Both halves of the startup pass, in order, and the entries that changed

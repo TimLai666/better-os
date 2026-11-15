@@ -210,6 +210,13 @@ pub struct FilesPreferences {
     /// do not mount automatically, so one can be turned back on (ticket
     /// 127). Off: the sidebar lists what is mounted.
     pub show_other_drives: bool,
+    /// Whether folders show the size of what they hold (ticket 126). On by
+    /// default; a file written before the field existed loads with it on.
+    #[serde(default = "on")]
+    pub folder_sizes: bool,
+    /// Whether folders on network shares and FUSE mounts are measured too.
+    /// Off by default: a walk there asks a server for every entry.
+    pub folder_sizes_on_network: bool,
     sort_key: StoredSortKey,
     sort_direction: StoredSortDirection,
 }
@@ -230,10 +237,16 @@ impl Default for FilesPreferences {
             sidebar_width: None,
             preview_width: None,
             show_other_drives: false,
+            folder_sizes: true,
+            folder_sizes_on_network: false,
             sort_key: StoredSortKey::from_key(order.key),
             sort_direction: StoredSortDirection::Ascending,
         }
     }
+}
+
+fn on() -> bool {
+    true
 }
 
 /// The preferences a window writes when another window may have written

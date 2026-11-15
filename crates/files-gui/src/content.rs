@@ -37,6 +37,11 @@ pub struct RenderedRow {
     pub name: String,
     pub kind: EntryKind,
     pub size: String,
+    /// Why the size cell says what it says, for a tooltip: a folder that was
+    /// not counted, or could only be counted in part.
+    pub size_tooltip: Option<String>,
+    /// The size cell is a byte count (a file's, or a measured folder's).
+    pub size_is_value: bool,
     pub modified: String,
     pub type_label: String,
     pub extension: String,
@@ -51,12 +56,16 @@ pub struct RenderedRow {
 }
 
 /// The second line under a grid tile, as folio's tiles have: the size and
-/// the day a file was changed, or just the day for a folder. Empty when
-/// neither is known.
+/// the day an entry was changed, or just the day for a folder whose size has
+/// no number yet. Empty when neither is known.
 pub fn tile_caption(row: &RenderedRow) -> String {
     let day = row.modified.split(' ').next().unwrap_or("").trim();
     let day = if day == "—" { "" } else { day };
-    let size = if row.kind == EntryKind::File && row.size != "—" {
+    // A folder's caption also carries a state that is not a number
+    // ("Calculating…", "Can't read"); "—" says nothing and is left out.
+    let size = if (row.kind == EntryKind::File && row.size_is_value)
+        || (row.kind == EntryKind::Directory && row.size != "—")
+    {
         row.size.as_str()
     } else {
         ""
@@ -97,6 +106,8 @@ pub fn rendered_row_named(
         name: entry.name.clone(),
         kind: entry.kind,
         size: format::entry_size(entry.size),
+        size_tooltip: None,
+        size_is_value: entry.size.bytes().is_some(),
         modified: format::file_time(entry.modified),
         type_label: type_label_named(entry, c, describe),
         extension: entry.extension().to_string(),

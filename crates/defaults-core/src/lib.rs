@@ -29,6 +29,9 @@ pub use adapters::{AdapterMode, AdapterSession, AdapterSessionError};
 /// The installed application a restore offers instead of one that is gone. It
 /// is named here so a surface that shows it need not depend on the adapters.
 pub use defaults_platform::ApplicationChoice;
+/// Why a setting reads as one this desktop does not have: no installed
+/// GSettings schema defines its key.
+pub use defaults_platform::gsettings::NO_SUCH_KEY as NO_SUCH_SETTING;
 pub use engine::DefaultsEngine;
 pub use plan::{
     Confirmations, DefaultsOutcome, DefaultsPlan, EntryOutcome, EntryResult, KeyOutcome,

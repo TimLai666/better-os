@@ -22,6 +22,17 @@ defaults-store.workspace = true
 app-catalog-core.workspace = true
 app-catalog-platform.workspace = true
 window-attention-core.workspace = true
+# The Touchpad page (ticket 88) draws from the GPUI-free Better Touchpad
+# models and reaches the desktop through the same typed backends the older
+# window used; nothing here builds a backend command.
+better-actions.workspace = true
+touchpad-core.workspace = true
+touchpad-gestures.workspace = true
+touchpad-platform.workspace = true
+touchpad-session.workspace = true
+touchpad-views.workspace = true
+semver.workspace = true
+thiserror.workspace = true
 awake-core.workspace = true
 awake-ipc.workspace = true
 hardware-core.workspace = true
