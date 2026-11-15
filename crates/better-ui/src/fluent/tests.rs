@@ -1831,6 +1831,22 @@ fn a_choice_in_one_window_holds_in_every_window(cx: &mut gpui::TestAppContext) {
     });
 }
 
+/// Ticket 88: the staged-changes bar is there only while something waits,
+/// and neither of its actions can be pressed while the changes are being
+/// applied.
+#[test]
+fn the_staged_changes_bar_shows_only_while_something_waits() {
+    use super::staged_bar::{BAR_HEIGHT, actions_enabled, shows};
+    assert!(!shows(0));
+    assert!(shows(1));
+    assert!(shows(12));
+    assert_eq!(actions_enabled(0, false), (false, false));
+    assert_eq!(actions_enabled(3, false), (true, true));
+    assert_eq!(actions_enabled(3, true), (false, false));
+    // One line: 12px, a 32px button, 12px, and the 1px rule.
+    assert_eq!(BAR_HEIGHT, px(57.0));
+}
+
 /// Audit A7: every language picker in the suite reads the same three words.
 #[test]
 fn every_language_picker_names_the_languages_the_same_way() {

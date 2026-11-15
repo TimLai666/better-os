@@ -596,35 +596,31 @@ impl FilesApp {
                     p.text_primary,
                 ))
                 .child(row(c.details_type, type_label));
-            match &entry.body {
-                // An application's size, what it counts or why it has none,
-                // and its own data apart (ticket 128).
-                files_core::EntryBody::Application(facts) => {
-                    column = column.child(row(
-                        c.details_size,
-                        crate::app_sizes::size_text(&facts.size, c),
+            let size = self.session.size_label(&entry);
+            if size.is_value
+                || matches!(
+                    entry.kind,
+                    files_core::EntryKind::Directory | files_core::EntryKind::Application
+                )
+            {
+                column = column.child(row(c.details_size, size.text));
+                if let Some(reason) = size.tooltip {
+                    column = column.child(fluent::label(reason, CAPTION, p.text_secondary));
+                }
+            }
+            // An application's own data, apart from its size (ticket 128).
+            if let files_core::EntryBody::Application(facts) = &entry.body
+                && let files_core::ApplicationSize::Known {
+                    data: Some(bytes), ..
+                } = facts.size
+            {
+                column = column
+                    .child(row(c.app_size_data, crate::format::bytes(bytes)))
+                    .child(fluent::label(
+                        c.app_size_data_note,
+                        CAPTION,
+                        p.text_secondary,
                     ));
-                    if let Some(note) = crate::app_sizes::size_note(&facts.size, c) {
-                        column = column.child(fluent::label(note, CAPTION, p.text_secondary));
-                    }
-                    if let files_core::ApplicationSize::Known {
-                        data: Some(bytes), ..
-                    } = facts.size
-                    {
-                        column = column
-                            .child(row(c.app_size_data, crate::format::bytes(bytes)))
-                            .child(fluent::label(
-                                c.app_size_data_note,
-                                CAPTION,
-                                p.text_secondary,
-                            ));
-                    }
-                }
-                _ => {
-                    if let files_core::EntrySize::Bytes(bytes) = entry.size {
-                        column = column.child(row(c.details_size, crate::format::bytes(bytes)));
-                    }
-                }
             }
             match &entry.body {
                 files_core::EntryBody::Trashed(facts) => {
@@ -730,11 +726,26 @@ impl FilesApp {
                         p.text_primary,
                     ))
                     .child(fluent::label(
-                        format!(
-                            "{}: {}",
-                            c.preview_folder_size,
-                            crate::format::bytes(summary.immediate_bytes)
-                        ),
+                        // With folder sizes on, the whole folder's total
+                        // (or its state); off, what the folder itself holds
+                        // directly, under its own name.
+                        match self
+                            .session
+                            .focused_entry()
+                            .filter(|entry| entry.kind == files_core::EntryKind::Directory)
+                            .filter(|_| self.session.preferences.folder_sizes)
+                        {
+                            Some(entry) => format!(
+                                "{}: {}",
+                                c.details_size,
+                                self.session.size_label(entry).text
+                            ),
+                            None => format!(
+                                "{}: {}",
+                                c.preview_folder_size,
+                                crate::format::bytes(summary.immediate_bytes)
+                            ),
+                        },
                         BODY,
                         p.text_primary,
                     ));

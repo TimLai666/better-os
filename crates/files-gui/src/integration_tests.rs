@@ -457,6 +457,14 @@ fn application_sizes_arrive_after_the_listing_are_read_once_and_sort() {
         .map(|(n, _)| n)
         .collect();
     assert_eq!(names, ["Text Editor", "Image Viewer"]);
+    // Descending too: the one with no size stays after it.
+    session.toggle_sort_direction();
+    let names: Vec<String> = sizes_by_name(&session)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(names, ["Text Editor", "Image Viewer"]);
+    session.toggle_sort_direction();
 
     // Listing again uses what is kept rather than asking again.
     session.reload();

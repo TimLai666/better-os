@@ -65,6 +65,29 @@ Recorded 2026-08-30, 100,000 entries, 100,000 small files, 512 MB large copy.
 | Device state event | per mount event | **< 0.001 ms** |
 | Sidebar inventory rebuild | per rebuild | **< 0.001 ms** |
 
+## Folder sizes (ticket 126)
+
+Recorded 2026-11-15 on the same kind of run (Zorin OS 18, Linux 7.0.0, x86_64,
+warm cache, release build, median of 5), by the `folder_sizes` scenario of
+`files_suite`.
+
+| Scenario | Metric | Value |
+| --- | --- | --- |
+| 100,000 files (100 bytes each) in 1,000 folders under 50 | time from listing done to all 50 sizes | **106.450 ms** |
+| same | process CPU (user + system) while measuring | **110 ms** (10 ms resolution) |
+| 100,000-entry directory (10,000 folders), sizes on | time to first visible entries | **0.999 ms** (off: 1.042 ms) |
+| same | time to complete model | **206.943 ms** (off: 189.586 ms) |
+
+The first frame is unchanged, because nothing is asked for until the listing
+is in. The complete-model figure with sizes on includes the frame that queues
+all 10,000 folders for measuring as the listing finishes; the difference is
+within this table's run-to-run spread (the plain 100,000-entry row above moved
+from 155 ms to 198 ms between runs on the same machine). The CPU figure is the
+whole process, so it includes the pumping loop as well as the walk. A cold
+cache and a spinning disk will make the walk far slower; the deadline and the
+visit budget in `engineering/specs/files-gui-policy.md` are what bound it
+there, not this number.
+
 ## What the numbers say
 
 **The architecture claim holds at the top of the list.** First content in 3.7 ms

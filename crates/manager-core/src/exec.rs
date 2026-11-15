@@ -17,12 +17,17 @@ use manager_ipc::{
 };
 use manager_platform::download::HttpDownloader;
 use manager_platform::dpkg::PackageStateProbe;
+use manager_platform::removal_hooks::{HookOutcome, RemovalHookRunner, before_removal_hook};
+use manager_platform::shell_extensions::{
+    ExtensionFailure, ShellExtensionController, shell_extensions,
+};
 use manager_platform::user_units::{UnitActivity, UnitFailure, UserUnitController, service_units};
 use manager_platform::{DownloadRequest, PlatformError, PrivilegedTransactionExecutor};
 
 use crate::{
-    DesiredOperation, FailureEvidence, Manager, ManagerError, ManagerState, MockOutcome,
-    OperationProgress, OperationStage, PlanStep, StageOutcome, SystemProfile, TransactionPlan,
+    ComponentId, DesiredOperation, FailureEvidence, Manager, ManagerError, ManagerState,
+    MockOutcome, OperationProgress, OperationStage, PlanStep, StageOutcome, SystemProfile,
+    TransactionPlan,
 };
 
 /// A cooperative cancellation flag shared with whatever is running a stage.
@@ -74,6 +79,13 @@ pub trait StageDriver {
     /// back. A driver that says no makes the manager refuse to offer a cancel
     /// it cannot honor.
     fn supports_cancel_at(&self, stage: OperationStage) -> bool;
+
+    /// What the last stage wants the person told that did not stop it, as
+    /// (component, evidence). The runner records each as a warning in the
+    /// activity log. Taking them empties the list.
+    fn take_warnings(&mut self) -> Vec<(ComponentId, String)> {
+        Vec::new()
+    }
 }
 
 /// The scripted driver behind the demo and the lifecycle suite.
@@ -169,6 +181,9 @@ pub struct RealDriver<'a> {
     packages: &'a dyn PackageStateProbe,
     health: &'a dyn HealthProbe,
     user_units: Option<&'a dyn UserUnitController>,
+    shell_extensions: Option<&'a dyn ShellExtensionController>,
+    removal_hooks: Option<&'a dyn RemovalHookRunner>,
+    warnings: Vec<(ComponentId, String)>,
     transaction_id: String,
     profile: SystemProfile,
     /// Set once the transaction has been handed over, so the outcome can be
@@ -192,6 +207,9 @@ impl<'a> RealDriver<'a> {
             packages,
             health,
             user_units: None,
+            shell_extensions: None,
+            removal_hooks: None,
+            warnings: Vec::new(),
             transaction_id: transaction_id.into(),
             profile,
             outcome: None,
@@ -206,6 +224,19 @@ impl<'a> RealDriver<'a> {
     /// driver that was never given a controller manages no units.
     pub fn with_user_units(mut self, user_units: &'a dyn UserUnitController) -> Self {
         self.user_units = Some(user_units);
+        self
+    }
+
+    /// Adds the GNOME Shell extension controller (ticket 88). A driver built
+    /// without one turns no extension on or off.
+    /// Adds the runner for a package's before-removal program (ticket 88).
+    pub fn with_removal_hooks(mut self, hooks: &'a dyn RemovalHookRunner) -> Self {
+        self.removal_hooks = Some(hooks);
+        self
+    }
+
+    pub fn with_shell_extensions(mut self, extensions: &'a dyn ShellExtensionController) -> Self {
+        self.shell_extensions = Some(extensions);
         self
     }
 
@@ -590,8 +621,77 @@ impl<'a> RealDriver<'a> {
         if self.user_units.is_none() {
             return Ok(Vec::new());
         }
-        let files = self
-            .packages
+        Ok(service_units(&self.step_files(step)?))
+    }
+
+    /// The GNOME Shell extensions a step's package installed, from the same
+    /// file list.
+    fn step_extensions(&self, step: &PlanStep) -> Result<Vec<String>, FailureEvidence> {
+        if self.shell_extensions.is_none() {
+            return Ok(Vec::new());
+        }
+        Ok(shell_extensions(&self.step_files(step)?))
+    }
+
+    /// Runs each removed package's before-removal program (ticket 88), so a
+    /// setting it wrote in the person's session is put back while the
+    /// program is still on disk. A driver built without a runner runs none.
+    ///
+    /// Nothing here can stop a removal: what could not be put back, or is
+    /// put back at the next login instead, becomes a warning. Returns the
+    /// programs that ran, so a removal the daemon then refuses can undo them.
+    fn run_removal_hooks(&mut self, plan: &TransactionPlan) -> Vec<std::path::PathBuf> {
+        let Some(runner) = self.removal_hooks else {
+            return Vec::new();
+        };
+        let mut ran = Vec::new();
+        for step in plan
+            .steps()
+            .iter()
+            .filter(|step| step.operation == DesiredOperation::Remove)
+        {
+            let program = match self.step_files(step) {
+                Ok(files) => before_removal_hook(step.component.as_str(), &files),
+                Err(_) => None,
+            };
+            let Some(program) = program else {
+                continue;
+            };
+            match runner.run(&program, false) {
+                HookOutcome::Restored => {}
+                HookOutcome::Deferred => self.warnings.push((
+                    step.component.clone(),
+                    "before_removal.deferred: the settings it changed are put back the next \
+                     time Better Manager starts in your session"
+                        .to_string(),
+                )),
+                HookOutcome::NotRestored(reason) => self.warnings.push((
+                    step.component.clone(),
+                    format!(
+                        "before_removal.not_restored: settings could not be restored ({reason})"
+                    ),
+                )),
+            }
+            ran.push(program);
+        }
+        ran
+    }
+
+    /// Undoes the before-removal programs that ran for a removal that did
+    /// not happen, so the component stays exactly as it was.
+    fn undo_removal_hooks(&self, ran: &[std::path::PathBuf]) {
+        if let Some(runner) = self.removal_hooks {
+            for program in ran {
+                let _ = runner.run(program, true);
+            }
+        }
+    }
+
+    fn step_files(
+        &self,
+        step: &PlanStep,
+    ) -> Result<better_core::package_health::InstalledFiles, FailureEvidence> {
+        self.packages
             .installed_files(step.component.as_str())
             .map_err(|_| {
                 FailureEvidence::with_detail(
@@ -601,8 +701,110 @@ impl<'a> RealDriver<'a> {
                         step.component
                     ),
                 )
-            })?;
-        Ok(service_units(&files))
+            })
+    }
+
+    /// Turns the step's extensions on. A session with no GNOME Shell settings
+    /// has nothing to turn on and is not a failure.
+    fn enable_extensions(&self, step: &PlanStep) -> Result<(), FailureEvidence> {
+        let Some(controller) = self.shell_extensions else {
+            return Ok(());
+        };
+        let uuids = self.step_extensions(step)?;
+        match controller.enable(&uuids) {
+            Err(failure) if failure.is_no_shell() => Ok(()),
+            result => result.map_err(|failure| extension_failure(&uuids, failure)),
+        }
+    }
+
+    fn disable_extensions(&self, step: &PlanStep) -> Result<(), FailureEvidence> {
+        let Some(controller) = self.shell_extensions else {
+            return Ok(());
+        };
+        let uuids = self.step_extensions(step)?;
+        match controller.disable(&uuids) {
+            Err(failure) if failure.is_no_shell() => Ok(()),
+            result => result.map_err(|failure| extension_failure(&uuids, failure)),
+        }
+    }
+
+    /// Turns off the extensions of every component this plan removes, and
+    /// returns the ones that were on, so a removal the daemon refuses can put
+    /// them back.
+    fn disable_extensions_for_removal(
+        &self,
+        plan: &TransactionPlan,
+    ) -> Result<Vec<String>, FailureEvidence> {
+        let Some(controller) = self.shell_extensions else {
+            return Ok(Vec::new());
+        };
+        let mut turned_off = Vec::new();
+        for step in plan
+            .steps()
+            .iter()
+            .filter(|step| step.operation == DesiredOperation::Remove)
+        {
+            let uuids = self.step_extensions(step)?;
+            if uuids.is_empty() {
+                continue;
+            }
+            let was_on = match controller.enabled(&uuids) {
+                Ok(on) => on,
+                Err(failure) if failure.is_no_shell() => continue,
+                Err(failure) => return Err(extension_failure(&uuids, failure)),
+            };
+            if let Err(failure) = controller.disable(&uuids) {
+                let _ = controller.enable(&turned_off);
+                return Err(extension_failure(&uuids, failure));
+            }
+            turned_off.extend(was_on);
+        }
+        Ok(turned_off)
+    }
+
+    /// Fails when a step that leaves its component enabled has an extension
+    /// the person's settings do not have on.
+    fn check_extensions(&self, plan: &TransactionPlan) -> Option<StageOutcome> {
+        let controller = self.shell_extensions?;
+        for step in plan.steps().iter().filter(|step| step.leaves_enabled) {
+            let uuids = match self.step_extensions(step) {
+                Ok(uuids) => uuids,
+                Err(evidence) => return Some(StageOutcome::Failed(evidence)),
+            };
+            if uuids.is_empty() {
+                continue;
+            }
+            let on = match controller.enabled(&uuids) {
+                Ok(on) => on,
+                Err(failure) if failure.is_no_shell() => continue,
+                Err(failure) => {
+                    return Some(StageOutcome::Failed(extension_failure(&uuids, failure)));
+                }
+            };
+            match controller.all_turned_off() {
+                Ok(true) => {
+                    return Some(StageOutcome::Failed(FailureEvidence::with_detail(
+                        "shell_extension.not_enabled",
+                        format!(
+                            "GNOME's switch that turns off all extensions is on, so {} cannot run",
+                            uuids.join(", ")
+                        ),
+                    )));
+                }
+                Ok(false) => {}
+                Err(failure) if failure.is_no_shell() => continue,
+                Err(failure) => {
+                    return Some(StageOutcome::Failed(extension_failure(&uuids, failure)));
+                }
+            }
+            if let Some(off) = uuids.iter().find(|uuid| !on.contains(uuid)) {
+                return Some(StageOutcome::Failed(FailureEvidence::with_detail(
+                    "shell_extension.not_enabled",
+                    format!("the GNOME Shell extension {off} is not turned on"),
+                )));
+            }
+        }
+        None
     }
 
     fn enable_units(&self, step: &PlanStep) -> Result<(), FailureEvidence> {
@@ -818,7 +1020,9 @@ impl<'a> RealDriver<'a> {
         }
         // dpkg can be completely satisfied while nothing is running: that is
         // the state this check exists to make visible.
-        self.check_units(plan).unwrap_or(StageOutcome::Completed)
+        self.check_units(plan)
+            .or_else(|| self.check_extensions(plan))
+            .unwrap_or(StageOutcome::Completed)
     }
 
     /// What the daemon reported, once the transaction has been handed over.
@@ -846,9 +1050,26 @@ impl StageDriver for RealDriver<'_> {
                     Ok(stopped) => stopped,
                     Err(evidence) => return StageOutcome::Failed(evidence),
                 };
+                let turned_off = match self.disable_extensions_for_removal(plan) {
+                    Ok(turned_off) => turned_off,
+                    Err(evidence) => {
+                        let _ = self.restart_stopped(&stopped);
+                        return StageOutcome::Failed(evidence);
+                    }
+                };
+                // Settings the component wrote go back last before the package
+                // goes, while its own program is still there to do it, and
+                // after nothing of it runs any more to write them again. A
+                // removal the daemon then refuses undoes this too.
+                let ran = self.run_removal_hooks(plan);
                 let outcome = self.apply(plan, progress);
                 if matches!(outcome, StageOutcome::Completed) {
                     return outcome;
+                }
+                self.undo_removal_hooks(&ran);
+                self.warnings.clear();
+                if let Some(controller) = self.shell_extensions {
+                    let _ = controller.enable(&turned_off);
                 }
                 // The daemon did not remove the package, so the record still
                 // says enabled and the units it stopped have to run again.
@@ -880,16 +1101,18 @@ impl StageDriver for RealDriver<'_> {
                 }
                 for step in plan.steps() {
                     let result = match step.operation {
-                        DesiredOperation::Disable => self.disable_units(step),
+                        DesiredOperation::Disable => self
+                            .disable_units(step)
+                            .and_then(|()| self.disable_extensions(step)),
                         // The units went before the package did.
                         DesiredOperation::Remove => Ok(()),
                         // The record says this component runs. Making that
                         // true is the repair, so a check on an enabled
                         // component starts what is stopped before it looks;
                         // a check on a disabled one only looks.
-                        DesiredOperation::Verify if step.leaves_enabled => {
-                            self.start_recorded_units(step)
-                        }
+                        DesiredOperation::Verify if step.leaves_enabled => self
+                            .start_recorded_units(step)
+                            .and_then(|()| self.enable_extensions(step)),
                         DesiredOperation::Verify | DesiredOperation::AddCompanions => Ok(()),
                         // A new program is on disk, and a unit that is
                         // already running is still executing the old one.
@@ -897,16 +1120,20 @@ impl StageDriver for RealDriver<'_> {
                             if step.leaves_enabled =>
                         {
                             self.restart_units(step)
+                                .and_then(|()| self.enable_extensions(step))
                         }
                         // A restore to a snapshot that was disabled is the
                         // mirror image: the units stop.
-                        DesiredOperation::Restore => self.disable_units(step),
+                        DesiredOperation::Restore => self
+                            .disable_units(step)
+                            .and_then(|()| self.disable_extensions(step)),
                         DesiredOperation::Install
                         | DesiredOperation::Update
                         | DesiredOperation::Enable
                             if step.leaves_enabled =>
                         {
                             self.enable_units(step)
+                                .and_then(|()| self.enable_extensions(step))
                         }
                         DesiredOperation::Install
                         | DesiredOperation::Update
@@ -926,6 +1153,10 @@ impl StageDriver for RealDriver<'_> {
         // Once the plan has gone to the daemon, the host may already have
         // changed, and abandoning would claim a restoration nothing performed.
         matches!(stage, OperationStage::Downloading)
+    }
+
+    fn take_warnings(&mut self) -> Vec<(ComponentId, String)> {
+        std::mem::take(&mut self.warnings)
     }
 }
 
@@ -987,6 +1218,23 @@ pub(crate) fn split_daemon_key(error_key: &str) -> FailureEvidence {
 ///
 /// No user session is its own key: nothing was refused, there was nobody to
 /// ask, and the person has to be told that rather than that a service broke.
+fn extension_failure(uuids: &[String], failure: ExtensionFailure) -> FailureEvidence {
+    let names = uuids.join(", ");
+    if failure.is_no_session() {
+        return FailureEvidence::with_detail(
+            "shell_extension.no_session",
+            format!(
+                "{names}: no user session is available to turn it on or off ({})",
+                failure.message
+            ),
+        );
+    }
+    FailureEvidence::with_detail(
+        "shell_extension.failed",
+        format!("{names}: {}", failure.message),
+    )
+}
+
 fn unit_failure(failure: UnitFailure) -> FailureEvidence {
     if failure.is_no_session() {
         return FailureEvidence::with_detail(
@@ -1276,6 +1524,15 @@ impl<'a> TransactionRunner<'a> {
                 &self.cancel,
             );
             let progress = self.manager.advance(state, outcome)?;
+            for (component, evidence) in self.driver.take_warnings() {
+                state.record(
+                    crate::ActivityKind::Warning,
+                    Some(component),
+                    Some(plan.steps()[0].operation),
+                    Some(stage),
+                    Some(evidence),
+                );
+            }
             self.save(state, events)?;
 
             match progress {

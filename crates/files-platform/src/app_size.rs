@@ -88,8 +88,9 @@ impl SizeRoots {
     }
 }
 
-/// At most this many files are looked at for one application's data folder.
-/// A folder larger than that shows no data figure rather than part of one.
+/// At most this many entries are looked at for one application's data
+/// folder. A folder larger than that shows no data figure rather than part
+/// of one.
 pub const DATA_ITEMS: u64 = 200_000;
 
 /// Which record answers for one application.
@@ -358,35 +359,31 @@ fn file_size(path: &Path) -> ApplicationSize {
     }
 }
 
-/// The bytes in a data folder, or `None` when there is none or it holds more
-/// than [`DATA_ITEMS`] entries. Symbolic links are not followed.
+/// How long measuring one data folder may take.
+pub const DATA_TIME: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The bytes in a data folder, measured by the same walk as a folder's size
+/// ([`crate::folder_size::measure`]: links not followed, hard links once,
+/// never across a filesystem). `None` when there is no folder, or when it
+/// could not be counted in full — more than [`DATA_ITEMS`] entries, past
+/// [`DATA_TIME`], or a part it could not read — rather than part of a figure.
 fn data_size(folder: &Path) -> Option<u64> {
     if !fs::symlink_metadata(folder).ok()?.is_dir() {
         return None;
     }
-    let mut total = 0u64;
-    let mut seen = 0u64;
-    let mut stack = vec![folder.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(read) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for item in read.flatten() {
-            seen += 1;
-            if seen > DATA_ITEMS {
-                return None;
-            }
-            let Ok(metadata) = item.metadata() else {
-                continue;
-            };
-            if metadata.is_dir() {
-                stack.push(item.path());
-            } else if metadata.is_file() {
-                total = total.saturating_add(metadata.len());
-            }
-        }
+    let limits = crate::folder_size::FolderSizeLimits {
+        max_items: DATA_ITEMS,
+        deadline: DATA_TIME,
+    };
+    match crate::folder_size::measure(folder, limits, &crate::folder_size::SizeBudget::unlimited())
+    {
+        crate::folder_size::FolderSize::Total {
+            bytes,
+            unreadable: 0,
+            ..
+        } => Some(bytes),
+        _ => None,
     }
-    Some(total)
 }
 
 /// What dpkg says about the desktop entries asked about.
@@ -788,6 +785,20 @@ mod tests {
                 name: "gone".to_string()
             })
         );
+    }
+
+    #[test]
+    fn a_data_folder_counts_a_hard_link_once_and_a_partial_one_not_at_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("data");
+        fs::create_dir_all(folder.join("a")).unwrap();
+        fs::write(folder.join("a/one"), vec![0u8; 100]).unwrap();
+        fs::hard_link(folder.join("a/one"), folder.join("same")).unwrap();
+        assert_eq!(data_size(&folder), Some(100));
+        assert_eq!(data_size(&dir.path().join("missing")), None);
+        let file = dir.path().join("file");
+        fs::write(&file, b"x").unwrap();
+        assert_eq!(data_size(&file), None);
     }
 
     #[test]

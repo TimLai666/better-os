@@ -23,6 +23,7 @@ pub mod devices;
 pub mod gnome;
 pub mod keybindings;
 pub mod mock;
+pub mod removal;
 pub mod roots;
 pub mod scroll;
 pub mod session;

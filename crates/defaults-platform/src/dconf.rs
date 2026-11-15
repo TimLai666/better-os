@@ -138,24 +138,26 @@ impl DconfAdapter {
     }
 
     fn load(&self) -> Result<GvdbDatabase, ObservedValue> {
-        match std::fs::read(&self.path) {
-            Ok(bytes) => GvdbDatabase::parse(&bytes).map_err(|error| ObservedValue::Unknown {
-                reason: format!("dconf.database_unreadable:{error}"),
-            }),
-            // dconf creates the database on the first write, so a user who has
-            // never changed a setting has no file at all.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(GvdbDatabase::default())
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                Err(ObservedValue::PermissionDenied {
-                    reason: "dconf.database_not_readable".to_string(),
-                })
-            }
-            Err(error) => Err(ObservedValue::Unknown {
-                reason: format!("dconf.database_unreadable:{error}"),
-            }),
+        load_user_database(&self.path)
+    }
+}
+
+/// The user's dconf database, read directly. A missing file is an empty
+/// database: dconf creates it on the first write.
+pub(crate) fn load_user_database(path: &Path) -> Result<GvdbDatabase, ObservedValue> {
+    match std::fs::read(path) {
+        Ok(bytes) => GvdbDatabase::parse(&bytes).map_err(|error| ObservedValue::Unknown {
+            reason: format!("dconf.database_unreadable:{error}"),
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(GvdbDatabase::default()),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(ObservedValue::PermissionDenied {
+                reason: "dconf.database_not_readable".to_string(),
+            })
         }
+        Err(error) => Err(ObservedValue::Unknown {
+            reason: format!("dconf.database_unreadable:{error}"),
+        }),
     }
 }
 
@@ -182,7 +184,7 @@ fn change_value(value: &DefaultsValue) -> Option<ChangeValue> {
     }
 }
 
-fn user_database_path() -> PathBuf {
+pub(crate) fn user_database_path() -> PathBuf {
     let config = match std::env::var("XDG_CONFIG_HOME") {
         Ok(value) if !value.trim().is_empty() => PathBuf::from(value),
         _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"),

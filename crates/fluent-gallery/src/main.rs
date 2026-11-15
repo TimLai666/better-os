@@ -2186,6 +2186,39 @@ impl Gallery {
                 ),
             ],
         ));
+        sections.push(section(
+            self.t("Staged changes bar", "尚未套用的變更列"),
+            p,
+            vec![
+                line(
+                    self.t("Changes waiting", "有變更等待套用"),
+                    p,
+                    div().w(px(640.0)).child(
+                        better_ui::fluent::staged_bar::StagedChangesBar::new(
+                            "staged-bar",
+                            3,
+                            self.t("3 changes haven't been applied.", "有 3 項變更還沒套用。"),
+                        )
+                        .primary(self.t("Apply", "套用"), |_, _| {})
+                        .secondary(self.t("Discard", "捨棄變更"), |_, _| {}),
+                    ),
+                ),
+                line(
+                    self.t("Applying", "正在套用"),
+                    p,
+                    div().w(px(640.0)).child(
+                        better_ui::fluent::staged_bar::StagedChangesBar::new(
+                            "staged-bar-busy",
+                            3,
+                            self.t("3 changes haven't been applied.", "有 3 項變更還沒套用。"),
+                        )
+                        .primary(self.t("Apply", "套用"), |_, _| {})
+                        .secondary(self.t("Discard", "捨棄變更"), |_, _| {})
+                        .busy(true, Some(self.t("Applying…", "正在套用…"))),
+                    ),
+                ),
+            ],
+        ));
         sections
     }
 

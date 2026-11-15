@@ -111,7 +111,10 @@ pub struct SettingRow {
     /// `false` renders the explanation instead of the control. There is no
     /// third state, and an unavailable row is never an inert switch.
     pub available: bool,
+    /// The backend's own technical sentence, for the details.
     pub unavailable_detail: Option<String>,
+    /// Why, in the person's words and language: what the card says.
+    pub unavailable_reason: Option<String>,
     pub requested: SettingValue,
     pub requested_label: String,
     pub effective_label: String,
@@ -426,14 +429,25 @@ impl TouchpadModel {
 
     fn row(&self, state: SettingState) -> SettingRow {
         let c = self.copy();
-        let (available, unavailable_detail, needs_sign_out) = match &state.support {
-            Support::Full { effect } => (
-                true,
-                None,
-                *effect == touchpad_core::SessionEffect::SignOutRequired,
-            ),
-            Support::Unavailable { detail, .. } => (false, Some(detail.clone()), false),
-        };
+        let (available, unavailable_detail, unavailable_reason, needs_sign_out) =
+            match &state.support {
+                Support::Full { effect } => (
+                    true,
+                    None,
+                    None,
+                    *effect == touchpad_core::SessionEffect::SignOutRequired,
+                ),
+                Support::Unavailable { reason, detail } => (
+                    false,
+                    Some(detail.clone()),
+                    Some(
+                        crate::i18n::reason_sentence(reason, self.locale)
+                            .unwrap_or(c.unavailable)
+                            .to_string(),
+                    ),
+                    false,
+                ),
+            };
         let requested = state.requested();
         let result = self.last_run.as_ref().and_then(|(_, report)| {
             report
@@ -450,6 +464,7 @@ impl TouchpadModel {
             control: control_for(state.setting),
             available,
             unavailable_detail,
+            unavailable_reason,
             requested,
             requested_label: describe_value(requested, c),
             effective_label: describe_reading(&state.effective, c),
@@ -608,7 +623,7 @@ pub fn describe_value(value: SettingValue, c: &'static Copy) -> String {
         // look up somewhere, and it is not.
         SettingValue::Sensitivity { value } => format!("{:.0}%", value.get() * 100.0),
         SettingValue::Factor { value } => format!("{:.2}×", value.get()),
-        SettingValue::Toggle { value } => if value { "on" } else { "off" }.to_string(),
+        SettingValue::Toggle { value } => if value { c.value_on } else { c.value_off }.to_string(),
         SettingValue::Acceleration { value } => match value {
             touchpad_core::AccelerationProfile::Default => c.profile_default.to_string(),
             touchpad_core::AccelerationProfile::Adaptive => c.profile_adaptive.to_string(),

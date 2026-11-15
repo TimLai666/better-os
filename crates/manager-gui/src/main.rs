@@ -3,10 +3,6 @@ mod apps;
 mod attention;
 mod components;
 mod deep_link;
-mod defaults_app;
-mod defaults_model;
-#[cfg(test)]
-mod defaults_tests;
 #[cfg(test)]
 mod evidence_tests;
 #[cfg(test)]
@@ -17,7 +13,6 @@ mod layout;
 mod model;
 mod navigation;
 mod pages;
-mod pages_defaults;
 mod render;
 mod render_apps;
 mod render_window_attention;

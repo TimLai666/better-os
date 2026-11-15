@@ -1,4 +1,4 @@
-//! What the Defaults screens show, decided without drawing anything.
+//! What Default apps shows, decided without drawing anything.
 //!
 //! Every rule this file holds is testable without a window: which of the eight
 //! aggregate states a component is in, what its row says, which entries a
@@ -83,15 +83,6 @@ impl PrimaryAction {
         }
     }
 
-    pub(crate) fn label(self, locale: Locale) -> &'static str {
-        let c = copy(locale);
-        match self {
-            Self::MakeDefault => c.make_default,
-            Self::AlreadyDefault => c.state_default,
-            Self::Verify => c.verify_again,
-        }
-    }
-
     /// Whether this leads with something a person can do.
     ///
     /// `AlreadyDefault` is a state, not an operation that happens to be
@@ -100,7 +91,7 @@ impl PrimaryAction {
     /// pill beside it, which is the affordance rule broken in both directions
     /// at once — button chrome on a status, and a control that could never do
     /// anything. `better_ui::Affordance` states the rule; the Defaults screen
-    /// draws a primary button only for the `Action` arms.
+    /// offers Make default only for the `Action` arms.
     pub(crate) fn affordance(self) -> better_ui::Affordance {
         match self {
             Self::MakeDefault | Self::Verify => better_ui::Affordance::Action,
@@ -283,6 +274,9 @@ pub(crate) fn observed_label(locale: Locale, observed: &ObservedValue) -> String
         ObservedValue::Set { value } => value_label(locale, value),
         ObservedValue::Unset => c.value_none.to_string(),
         ObservedValue::Unknown { .. } => c.value_unknown.to_string(),
+        ObservedValue::Unsupported { reason } if reason == defaults_core::NO_SUCH_SETTING => {
+            c.value_no_such_setting.to_string()
+        }
         ObservedValue::Unsupported { .. } => c.value_unsupported.to_string(),
         ObservedValue::PermissionDenied { .. } => c.value_permission_denied.to_string(),
         // Types that open in different applications are listed one by one,
@@ -315,6 +309,9 @@ pub(crate) fn integration_state_label(locale: Locale, state: &IntegrationState) 
         IntegrationState::Default => c.state_default,
         IntegrationState::NotDefault => c.state_not_default,
         IntegrationState::ChangedExternally { .. } => c.state_changed_externally,
+        IntegrationState::Unavailable { reason } if reason == defaults_core::NO_SUCH_SETTING => {
+            c.state_not_used_here
+        }
         IntegrationState::Unavailable { .. } => c.state_unavailable,
         IntegrationState::Conflict { .. } => c.state_conflict,
         IntegrationState::Unknown { .. } => c.state_unknown,
@@ -356,6 +353,7 @@ pub(crate) fn skip_reason_label(locale: Locale, reason: &SkipReason) -> &'static
         SkipReason::RequiresAdministrator => c.skip_requires_administrator,
         SkipReason::NoProductionAdapter { .. } => c.skip_no_adapter,
         SkipReason::NothingCaptured => c.skip_nothing_captured,
+        SkipReason::LeftInPlace => c.skip_left_in_place,
         SkipReason::EffectiveValueUnknown { .. } => c.skip_value_unknown,
         SkipReason::ChangedExternallyWithoutConfirmation { .. } => c.skip_changed_externally,
         SkipReason::Conflict { .. } => c.skip_conflict,
@@ -378,15 +376,16 @@ pub(crate) fn warning_label(locale: Locale, warning: &PlanWarning) -> &'static s
 /// How long ago something was read back, in words, without a date library.
 pub(crate) fn relative_time(locale: Locale, moment: Option<u64>, now: u64) -> String {
     let c = copy(locale);
+    let count = |n: u64, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let Some(moment) = moment else {
         return c.never_verified.to_string();
     };
     let elapsed = now.saturating_sub(moment);
     match elapsed {
         0..=59 => c.time_just_now.to_string(),
-        60..=3599 => format!("{} {}", elapsed / 60, c.time_minutes),
-        3600..=86_399 => format!("{} {}", elapsed / 3600, c.time_hours),
-        _ => format!("{} {}", elapsed / 86_400, c.time_days),
+        60..=3599 => count(elapsed / 60, c.time_minute, c.time_minutes),
+        3600..=86_399 => count(elapsed / 3600, c.time_hour, c.time_hours),
+        _ => count(elapsed / 86_400, c.time_day, c.time_days),
     }
 }
 
@@ -398,6 +397,8 @@ pub(crate) enum RestoreClass {
     AlreadyRestored,
     ChangedExternally,
     NothingCaptured,
+    /// What Better OS added stays: the declaration says so.
+    LeftInPlace,
     ManualAction,
     NotApplicable,
     /// The application the restore would put back is no longer installed, for
@@ -423,6 +424,7 @@ impl RestoreClass {
                 SkipReason::AlreadyRestored => Self::AlreadyRestored,
                 SkipReason::ChangedExternallyWithoutConfirmation { .. } => Self::ChangedExternally,
                 SkipReason::NothingCaptured => Self::NothingCaptured,
+                SkipReason::LeftInPlace => Self::LeftInPlace,
                 SkipReason::NoProductionAdapter { .. } | SkipReason::RequiresAdministrator => {
                     Self::ManualAction
                 }
@@ -439,6 +441,7 @@ impl RestoreClass {
             Self::AlreadyRestored => c.skip_already_restored,
             Self::ChangedExternally => c.state_changed_externally,
             Self::NothingCaptured => c.skip_nothing_captured,
+            Self::LeftInPlace => c.skip_left_in_place,
             Self::ManualAction => c.manual_action_required,
             Self::NotApplicable => c.skip_not_applicable,
             Self::PreviousApplicationMissing => c.previous_application_missing,
@@ -754,10 +757,18 @@ impl ReviewModel {
                 .as_ref()
                 .map(|value| observed_label(self.locale, value)),
             session_effect: entry.session_effect,
+            // Whether what is there now can be put back later: a value saved
+            // by an earlier change, or, the first time Better OS changes this
+            // setting, the value it is about to capture (the engine captures
+            // what it read before it writes).
             restorable: entry
                 .captured_previous
                 .as_ref()
-                .is_some_and(ObservedValue::is_determinate),
+                .is_some_and(ObservedValue::is_determinate)
+                || (self.kind == PlanKind::Apply
+                    && entry.captured_previous.is_none()
+                    && entry.action.changes_something()
+                    && entry.current.is_determinate()),
             restore_class: RestoreClass::of(entry),
             changes_something: entry.action.changes_something(),
             skipped: match &entry.action {
@@ -1069,18 +1080,34 @@ fn outcome_parts(
     }
 }
 
-/// The one line above the per-entry results.
-pub(crate) fn outcome_headline(locale: Locale, outcome: &DefaultsOutcome) -> &'static str {
-    let c = copy(locale);
+/// How the line above the per-entry results is drawn: a success, a run that
+/// changed some things and not others, or one that changed nothing. Decided
+/// the same way as [`outcome_headline`]'s words.
+pub(crate) fn outcome_tone(outcome: &DefaultsOutcome) -> ResultTone {
+    if !outcome.has_failures() {
+        ResultTone::Success
+    } else if changed_something(outcome) {
+        ResultTone::Warning
+    } else {
+        ResultTone::Failure
+    }
+}
+
+fn changed_something(outcome: &DefaultsOutcome) -> bool {
     // A group restored type by type counts as having changed something when
     // any one of its types went back.
-    let changed_something = outcome.succeeded() > 0
+    outcome.succeeded() > 0
         || outcome.results.iter().any(|result| {
             matches!(&result.outcome, EntryOutcome::PerKey { keys }
                 if keys.iter().any(|key| key.outcome.is_success()))
-        });
+        })
+}
+
+/// The one line above the per-entry results.
+pub(crate) fn outcome_headline(locale: Locale, outcome: &DefaultsOutcome) -> &'static str {
+    let c = copy(locale);
     if outcome.has_failures() {
-        if changed_something {
+        if changed_something(outcome) {
             c.result_partial
         } else {
             c.result_failed
@@ -1090,4 +1117,111 @@ pub(crate) fn outcome_headline(locale: Locale, outcome: &DefaultsOutcome) -> &'s
     } else {
         c.result_applied
     }
+}
+
+/// The summary line under Default apps' title (spec section 8).
+pub(crate) fn summary_line(locale: Locale, summary: &DefaultsSummary) -> String {
+    super::copy::page_copy(locale)
+        .summary
+        .replace("{are_default}", &summary.are_default.to_string())
+        .replace("{can_change}", &summary.can_change.to_string())
+        .replace("{changed}", &summary.changed_externally.to_string())
+}
+
+/// How many settings no longer read what Better OS set: Home's count for "a
+/// default was changed by another app". Settings, not components, because
+/// that is what the card says.
+pub(crate) fn changed_elsewhere(report: &DefaultsReport) -> usize {
+    report
+        .components
+        .iter()
+        .flat_map(|component| &component.integrations)
+        .filter(|status| matches!(status.state, IntegrationState::ChangedExternally { .. }))
+        .count()
+}
+
+/// What a component's overflow menu offers: Make default, Restore, and Check
+/// again, which is always there.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ComponentMenu {
+    /// Opens the review of making it the default. Off for a component that
+    /// already is ([`PrimaryAction::affordance`] says it is a state): the
+    /// review would have nothing to show.
+    pub(crate) make_default: bool,
+    /// Opens the review of putting the saved values back. Off when nothing
+    /// was saved.
+    pub(crate) restore: bool,
+}
+
+impl ComponentMenu {
+    pub(crate) fn of(row: &DefaultsRow) -> Self {
+        Self {
+            make_default: row.primary.affordance() == better_ui::Affordance::Action,
+            restore: row
+                .secondary
+                .contains(&SecondaryAction::RestorePreviousDefault),
+        }
+    }
+}
+
+/// The components the page lists: all of them, or the one a component's
+/// details page linked to.
+pub(crate) fn visible_rows(rows: Vec<DefaultsRow>, only: Option<&ComponentId>) -> Vec<DefaultsRow> {
+    match only {
+        None => rows,
+        Some(component) => rows
+            .into_iter()
+            .filter(|row| &row.component == component)
+            .collect(),
+    }
+}
+
+/// One integration's row under its component: what it opens with now, what
+/// Better OS would use, when it was last checked, whether a previous value
+/// is saved, and when a change takes effect.
+pub(crate) fn integration_line(locale: Locale, row: &IntegrationRow, now: u64) -> String {
+    let c = copy(locale);
+    [
+        format!(
+            "{}{}{} → {}{}{}",
+            c.current_owner,
+            c.label_separator,
+            row.current_owner,
+            c.better_target,
+            c.label_separator,
+            row.target_owner
+        ),
+        format!(
+            "{}{}{}",
+            c.last_verified,
+            c.label_separator,
+            relative_time(locale, row.last_verified, now)
+        ),
+        if row.restore_available {
+            c.saved_previous_value
+        } else {
+            c.no_saved_previous_value
+        }
+        .to_string(),
+        session_effect_label(locale, row.session_effect).to_string(),
+    ]
+    .join(" · ")
+}
+
+/// "{n} settings affected" on a review screen's component row.
+pub(crate) fn changes_label(locale: Locale, changes: usize) -> String {
+    let w = super::copy::page_copy(locale);
+    if changes == 1 {
+        w.review_changes_one.to_string()
+    } else {
+        w.review_changes.replace("{n}", &changes.to_string())
+    }
+}
+
+/// Whether an update must wait before the window restarts itself: while a
+/// plan is being written, or while a review holds choices a restart would
+/// lose (which entries are ticked, which overwrites were confirmed, which
+/// application a restore puts back).
+pub(crate) fn holds_restart(running: bool, reviewing: bool) -> bool {
+    running || reviewing
 }

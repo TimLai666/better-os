@@ -123,6 +123,7 @@ cargo build --release \
     -p git-gui \
     -p touchpad-gui \
     -p touchpad-gesture-service \
+    -p touchpad-platform \
     -p touchpad-scroll \
     -p awake-service \
     -p awake-tray \
@@ -163,6 +164,34 @@ PACKAGE_DATA_ONLY=0
 #                      switch: enabled globally and started at install, and
 #                      stopped and disabled by a prerm on removal
 PACKAGE_ALWAYS_ON_UNITS=""
+#   PACKAGE_AUTOSTART_OVERRIDES  autostart file names whose Better OS override
+#                      (a marked Hidden=true copy in a person's autostart
+#                      directory) a postrm deletes on removal (ticket 88)
+PACKAGE_AUTOSTART_OVERRIDES=""
+
+# The marker line competitors.rs writes into an override; the postrm deletes
+# only files carrying it.
+AUTOSTART_OVERRIDE_MARK='X-BetterOS-HiddenBy=better-touchpad'
+
+# A package whose window can hide another program's autostart entry gets a
+# postrm built from packaging/maintainer/autostart-overrides.sh, which removes
+# those overrides when the package is removed: nothing a component added
+# outlives it.
+write_autostart_override_postrm() {
+    local staging_dir="$1"
+    {
+        printf '#!/bin/sh\nset -e\n\n'
+        printf "better_os_passwd_file='/etc/passwd'\n"
+        printf "better_os_login_defs='/etc/login.defs'\n"
+        printf "better_os_override_mark='%s'\n" "$AUTOSTART_OVERRIDE_MARK"
+        printf "better_os_override_files='%s'\n\n" "$PACKAGE_AUTOSTART_OVERRIDES"
+        cat "$ROOT_DIR/packaging/maintainer/autostart-overrides.sh"
+        printf '\n'
+        # shellcheck disable=SC2016 # expanded by the maintainer script
+        printf 'better_os_forget_autostart_overrides "$1" || true\n'
+    } > "$staging_dir/DEBIAN/postrm"
+    chmod 0755 "$staging_dir/DEBIAN/postrm"
+}
 PACKAGE_SYSTEM_FRAGMENT=""
 #   PACKAGE_DAEMON_HANDOFF  1 for better-manager: ships the privileged service
 #                      handoff (ADR 0028) and the checksums of the service and
@@ -181,6 +210,7 @@ reset_package_inputs() {
     PACKAGE_RECOMMENDS=""
     PACKAGE_DATA_ONLY=0
     PACKAGE_ALWAYS_ON_UNITS=""
+    PACKAGE_AUTOSTART_OVERRIDES=""
     PACKAGE_SYSTEM_FRAGMENT=""
     PACKAGE_DAEMON_HANDOFF=0
     PACKAGE_HANDOFF_RETRY=0
@@ -445,6 +475,9 @@ make_package() {
 ' "${user_units[@]}" | LC_ALL=C sort | paste -sd' ' -)"
         write_user_unit_scripts "$staging_dir" "$package_name" "$sorted_units" \
             "$PACKAGE_ALWAYS_ON_UNITS"
+    fi
+    if [[ -n "$PACKAGE_AUTOSTART_OVERRIDES" ]]; then
+        write_autostart_override_postrm "$staging_dir"
     fi
     if [[ -n "$PACKAGE_SYSTEM_FRAGMENT" ]]; then
         write_system_fragment "$staging_dir" "$PACKAGE_SYSTEM_FRAGMENT"
@@ -856,7 +889,10 @@ make_package better-git \
 #
 # The gesture half ships in the same package as the window that configures it:
 # the resident pipeline, and the GNOME Shell adapter extension it reads gestures
-# from. Neither is enabled by installing. The extension is the one piece of
+# from. Better Manager turns both on when it installs the component, and on
+# removal runs the before-removal program (as the person, before dpkg is asked)
+# to put back the touchpad settings Better Touchpad changed. The extension is
+# the one piece of
 # Better OS that is not Rust, under the bounded exception ADR 0012 records; it
 # is three files under the uuid GNOME looks for it by.
 EXTENSION_UUID="touchpad-adapter@betteros.org"
@@ -874,6 +910,7 @@ fi
 PACKAGE_BINARIES=(
     "better-touchpad:usr/bin/better-touchpad"
     "better-touchpad-gestured:usr/bin/better-touchpad-gestured"
+    "better-touchpad-before-removal:usr/lib/better-os/before-removal/better-touchpad"
     "better-touchpad-scrolld:usr/libexec/better-touchpad-scrolld"
 )
 PACKAGE_DATA=(
@@ -891,6 +928,9 @@ PACKAGE_DATA=(
     "packaging/touchpad/better-touchpad-scroll.sysusers:usr/lib/sysusers.d/better-touchpad-scroll.conf"
     "packaging/touchpad/better-touchpad-scroll.tmpfiles:usr/lib/tmpfiles.d/better-touchpad-scroll.conf"
 )
+# Turning off Touchégg or fusuma on the Touchpad page hides their autostart
+# entries for that person; removal takes the overrides away again.
+PACKAGE_AUTOSTART_OVERRIDES='touchegg.desktop fusuma.desktop'
 # systemd for sysusers, tmpfiles, and the unit; udev for the rule that starts
 # an instance per touchpad.
 PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS" "systemd" "udev")

@@ -388,6 +388,23 @@ impl FilesApp {
                 .entry(),
         );
         view_menu.push(MenuEntry::Separator);
+        let folder_sizes = self.session.preferences.folder_sizes;
+        view_menu.push(
+            MenuItem::new(c.show_folder_sizes)
+                .checked(folder_sizes)
+                .on_select(act(cx, |app, _, _| app.session.toggle_folder_sizes()))
+                .entry(),
+        );
+        view_menu.push(
+            MenuItem::new(c.folder_sizes_on_network)
+                .checked(self.session.preferences.folder_sizes_on_network)
+                .disabled(!folder_sizes)
+                .on_select(act(cx, |app, _, _| {
+                    app.session.toggle_folder_sizes_on_network()
+                }))
+                .entry(),
+        );
+        view_menu.push(MenuEntry::Separator);
         view_menu.push(
             MenuItem::new(c.use_view_everywhere)
                 .on_select(act(cx, |app, _, _| app.session.use_view_everywhere()))

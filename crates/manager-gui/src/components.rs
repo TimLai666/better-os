@@ -1,7 +1,6 @@
 use better_core::ComponentIcon;
-use better_ui::{BadgeStyle, StatusPill, StatusTone};
-use gpui::*;
-use gpui_component::{ActiveTheme, Icon, IconName, *};
+use better_ui::{StatusPill, StatusTone};
+use gpui_component::IconName;
 use manager_core::{ComponentStatus, DesiredOperation, RestartRequirement};
 
 use crate::{
@@ -11,164 +10,6 @@ use crate::{
 };
 
 impl ManagerApp {
-    pub(crate) fn surface(&self, child: impl IntoElement, cx: &mut Context<Self>) -> AnyElement {
-        better_ui::surface(
-            child,
-            cx.theme().border,
-            cx.theme().background,
-            cx.theme().radius,
-        )
-        .into_any_element()
-    }
-
-    pub(crate) fn metric_card(
-        &self,
-        label: &'static str,
-        value: String,
-        detail: &'static str,
-        icon: IconName,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .min_w(px(210.0))
-            .flex_1()
-            .child(
-                self.surface(
-                    v_flex()
-                        .min_w_0()
-                        .gap_3()
-                        .child(
-                            h_flex()
-                                .min_w_0()
-                                .items_center()
-                                .justify_between()
-                                .gap_3()
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .text_sm()
-                                        .font_semibold()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(label),
-                                )
-                                .child(Icon::new(icon).small().text_color(cx.theme().primary)),
-                        )
-                        .child(div().text_2xl().font_bold().child(value))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(detail),
-                        ),
-                    cx,
-                ),
-            )
-            .into_any_element()
-    }
-
-    pub(crate) fn key_value_row(
-        &self,
-        label: impl IntoElement,
-        value: impl IntoElement,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        h_flex()
-            .w_full()
-            .min_w_0()
-            .gap_4()
-            .items_start()
-            .justify_between()
-            .flex_wrap()
-            .py_2()
-            .child(
-                div()
-                    .min_w(px(180.0))
-                    .flex_1()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(label),
-            )
-            .child(div().min_w_0().text_sm().font_medium().child(value))
-            .into_any_element()
-    }
-
-    pub(crate) fn empty_state(
-        &self,
-        icon: IconName,
-        title: &'static str,
-        detail: &'static str,
-        action: impl IntoElement,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        self.surface(
-            v_flex()
-                .w_full()
-                .items_center()
-                .text_center()
-                .gap_3()
-                .py_8()
-                .child(
-                    div()
-                        .size_11()
-                        .rounded_full()
-                        .bg(cx.theme().secondary)
-                        .text_color(cx.theme().primary)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(Icon::new(icon).large()),
-                )
-                .child(div().text_lg().font_semibold().child(title))
-                .child(
-                    div()
-                        .max_w(px(560.0))
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(detail),
-                )
-                .child(action),
-            cx,
-        )
-    }
-
-    /// The colors one status tone is drawn in.
-    ///
-    /// Deliberately *not* the fill a button of the same tone would use. A
-    /// status is tinted and outlined — the border and the text carry the tone,
-    /// the background only hints at it — so a `danger` status and a `danger`
-    /// action can never be told apart by shape alone. `better_ui::Affordance`
-    /// states the rule this implements.
-    fn status_pill_style(&self, tone: StatusTone, cx: &mut Context<Self>) -> BadgeStyle {
-        let accent = match tone {
-            StatusTone::Neutral => {
-                return BadgeStyle {
-                    foreground: cx.theme().muted_foreground,
-                    background: cx.theme().secondary,
-                    border: cx.theme().border,
-                };
-            }
-            StatusTone::Info => cx.theme().info,
-            StatusTone::Success => cx.theme().success,
-            StatusTone::Warning => cx.theme().warning,
-            StatusTone::Danger => cx.theme().danger,
-        };
-        BadgeStyle {
-            foreground: accent,
-            background: accent.opacity(0.12),
-            border: accent.opacity(0.4),
-        }
-    }
-
-    /// Draw one read-only status indicator.
-    ///
-    /// Every status in this window goes through here, which is what keeps the
-    /// promise that none of them responds to a pointer.
-    pub(crate) fn pill(&self, pill: StatusPill, cx: &mut Context<Self>) -> AnyElement {
-        let style = self.status_pill_style(pill.tone, cx);
-        pill.render(style).into_any_element()
-    }
-
     /// How one component's state reads. An associated function taking a
     /// locale rather than a method, so a test can enumerate every state
     /// without opening a window.
@@ -269,26 +110,6 @@ impl ManagerApp {
         requirement: RestartRequirement,
     ) -> Option<&'static str> {
         restart_effect(self.locale, operation, requirement)
-    }
-
-    pub(crate) fn error_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.planning_error.map(|_| {
-            self.surface(
-                h_flex()
-                    .min_w_0()
-                    .gap_3()
-                    .items_start()
-                    .child(Icon::new(IconName::Info).small().text_color(cx.theme().red))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(self.error_message()),
-                    ),
-                cx,
-            )
-        })
     }
 }
 

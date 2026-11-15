@@ -542,6 +542,8 @@ pub struct FilesSession {
     pending_open: Option<String>,
     pub preview: PreviewPanel,
     pub search: SearchState,
+    /// How much each folder in view holds (ticket 126).
+    pub folder_sizes: crate::folder_sizes::FolderSizes,
     /// The application sizes the panes last listed with (ticket 128).
     application_sizes_seen: u64,
     /// The file the embedded chooser is open for, when it is open.
@@ -692,7 +694,7 @@ impl FilesSession {
             bookmark_watch,
             preferences_baseline: preferences,
             preference_watch,
-            hub,
+            hub: Arc::clone(&hub),
             ejecting: Vec::new(),
             drives: Vec::new(),
             drive_scanner: None,
@@ -711,6 +713,8 @@ impl FilesSession {
             pending_open: None,
             preview,
             search: SearchState::default(),
+            folder_sizes: crate::folder_sizes::FolderSizes::default()
+                .watching_with(Arc::clone(&hub)),
             application_sizes_seen: 0,
             chooser: None,
             details: None,
@@ -2735,13 +2739,37 @@ impl FilesSession {
                         pane.refresh(reader.as_ref());
                     }
                     files_platform::HubUpdate::Rows(rows) => {
+                        if let Some(folder) = pane.location().as_local_path() {
+                            let folder = folder.as_path();
+                            let paths: Vec<std::path::PathBuf> = rows
+                                .iter()
+                                .filter_map(|row| match row {
+                                    files_core::RefreshEvent::Added(entry)
+                                    | files_core::RefreshEvent::Modified(entry) => entry
+                                        .as_local_path()
+                                        .map(|path| path.as_path().to_path_buf()),
+                                    files_core::RefreshEvent::Removed(
+                                        files_core::EntryId::Name(name),
+                                    ) => Some(folder.join(name)),
+                                    _ => None,
+                                })
+                                .collect();
+                            if !paths.is_empty() {
+                                self.folder_sizes.invalidate(folder, &paths);
+                            }
+                        }
                         if pane.is_listing() || pane.is_refreshing() {
                             pane.refresh(reader.as_ref());
                         } else {
                             changed |= apply_rows(pane, rows);
                         }
                     }
-                    files_platform::HubUpdate::Resynchronize => pane.refresh(reader.as_ref()),
+                    files_platform::HubUpdate::Resynchronize => {
+                        if let Some(folder) = pane.location().as_local_path() {
+                            self.folder_sizes.invalidate(folder.as_path(), &[]);
+                        }
+                        pane.refresh(reader.as_ref())
+                    }
                     files_platform::HubUpdate::Gone { nearest } => gone.push((*tab, nearest)),
                     files_platform::HubUpdate::Suspended => {}
                 }
@@ -2878,6 +2906,7 @@ impl FilesSession {
             changed |= pane.pump_with(reader.as_ref());
         }
         changed |= self.pump_watches();
+        changed |= self.pump_folder_sizes(changed);
         self.pump_application_sizes();
         if changed {
             // Entries arriving move indices around. The cursor is re-derived
@@ -2901,6 +2930,78 @@ impl FilesSession {
             self.refresh_preview();
         }
         changed
+    }
+
+    /// Folder sizes for the active pane: started once its listing is in,
+    /// cancelled when it leaves the folder.
+    fn pump_folder_sizes(&mut self, scan: bool) -> bool {
+        if !self.preferences.folder_sizes {
+            self.folder_sizes.stop();
+            return false;
+        }
+        let network = self.preferences.folder_sizes_on_network;
+        let id = self.active_tab();
+        let Some((_, pane)) = self.panes.iter_mut().find(|(tab, _)| *tab == id) else {
+            return false;
+        };
+        let listed = !pane.is_listing();
+        self.folder_sizes
+            .pump(pane.model_mut(), listed, network, scan)
+    }
+
+    /// Turns folder sizes on or off. Off takes the sizes back out of every
+    /// pane's model, so sorting by size orders folders as it did before.
+    pub fn toggle_folder_sizes(&mut self) {
+        self.preferences.folder_sizes = !self.preferences.folder_sizes;
+        if !self.preferences.folder_sizes {
+            self.folder_sizes.stop();
+            for (_, pane) in &mut self.panes {
+                crate::folder_sizes::FolderSizes::clear_model(pane.model_mut());
+            }
+        }
+        self.resync_content();
+        self.persist_preferences();
+    }
+
+    /// Turns measuring network and FUSE folders on or off. The visit starts
+    /// over, so the change is seen at once.
+    pub fn toggle_folder_sizes_on_network(&mut self) {
+        self.preferences.folder_sizes_on_network = !self.preferences.folder_sizes_on_network;
+        self.folder_sizes.stop();
+        self.persist_preferences();
+    }
+
+    /// What the cell of `entry`'s size says.
+    pub fn size_label(&self, entry: &Entry) -> crate::folder_sizes::SizeLabel {
+        // An application's size is its own record, whatever the folder-size
+        // preference (ticket 128).
+        if let files_core::EntryBody::Application(facts) = &entry.body {
+            let c = crate::i18n::copy(self.locale);
+            return crate::folder_sizes::SizeLabel {
+                text: crate::app_sizes::size_text(&facts.size, c),
+                tooltip: crate::app_sizes::size_note(&facts.size, c),
+                is_value: facts.size.bytes().is_some(),
+            };
+        }
+        self.folder_sizes.label(
+            entry,
+            self.preferences.folder_sizes,
+            crate::i18n::copy(self.locale),
+        )
+    }
+
+    /// The selection's total for the status bar.
+    pub fn selection_size(&self) -> Option<String> {
+        let selected = self.selected_entries();
+        if selected.is_empty() {
+            return None;
+        }
+        crate::folder_sizes::selection_total(
+            &selected,
+            &self.folder_sizes,
+            self.preferences.folder_sizes,
+            crate::i18n::copy(self.locale),
+        )
     }
 
     pub fn is_listing(&self) -> bool {

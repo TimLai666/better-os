@@ -78,9 +78,11 @@ pub struct GestureConfig {
 
 impl Default for GestureConfig {
     /// The shipped configuration before a preset is applied: gestures are on as
-    /// a subsystem and nothing is bound. Better Touchpad therefore changes no
-    /// gesture until somebody asks it to, which is what Issue #3 requires of
-    /// installation.
+    /// a subsystem and nothing is bound. It is what a capture records as "before
+    /// Better OS". Installing no longer leaves it in force: the owner's rule of
+    /// 2026-11-13 (ticket 88) replaced Issue #3's "installation changes no
+    /// gesture", and the gesture service's first run applies the Mac-style
+    /// preset ([`crate::GestureStore::apply_first_run_default`]).
     fn default() -> Self {
         Self {
             schema_version: GESTURE_SCHEMA_VERSION,
