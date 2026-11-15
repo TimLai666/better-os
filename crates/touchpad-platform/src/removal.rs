@@ -35,6 +35,9 @@ use crate::TouchpadBackend;
 /// is refused (and `--undo` writes it back).
 pub const UNDO_FILE: &str = "removal-undo.json";
 
+/// The package this module belongs to, as Better Manager's record names it.
+pub const PACKAGE: &str = "better-touchpad";
+
 /// What one run did, which the program turns into its exit status.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PutBack {
@@ -104,6 +107,16 @@ pub fn put_back_before_removal(
     reachable: bool,
     state_home: &Path,
 ) -> PutBack {
+    // An undo file is only ever about this run. One an earlier removal left
+    // (kept with the person's data) would make a refused removal's `--undo`
+    // write that older run's values back.
+    match std::fs::remove_file(store.directory().join(UNDO_FILE)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return PutBack::Unreadable(format!("an old undo file could not be removed: {error}"));
+        }
+    }
     let backup = match store.load_backup() {
         Ok(Some(backup)) => backup,
         Ok(None) => return PutBack::NothingChanged,
@@ -153,12 +166,24 @@ pub fn undo_before_removal(
 /// Finishes a restore a session-less removal left, now that there is a
 /// session. Returns whether one was finished; a failed write leaves it for
 /// the next start.
+///
+/// When Better Touchpad is installed again before this ran, the pending
+/// restore is dropped unapplied: the component is back and its settings are
+/// its own again, and writing the old capture would undo them.
 pub fn finish_pending(
     backend: &mut dyn TouchpadBackend,
     reachable: bool,
     state_home: &Path,
+    installed_again: bool,
 ) -> Result<bool, String> {
     let path = pending_path(state_home);
+    if installed_again {
+        return match std::fs::remove_file(&path) {
+            Ok(()) => Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.to_string()),
+        };
+    }
     let Some(backup) = read_json(&path)? else {
         return Ok(false);
     };
@@ -170,6 +195,19 @@ pub fn finish_pending(
     }
     std::fs::remove_file(&path).map_err(|error| error.to_string())?;
     Ok(true)
+}
+
+/// What Better Manager's start runs, in the window and the command line: in
+/// this session's real desktop settings. The caller keeps tests away from it.
+#[cfg(feature = "dconf-write")]
+pub fn finish_pending_in_session(installed_again: bool) -> Result<bool, String> {
+    let state_home = user_state_home();
+    if !pending_path(&state_home).exists() {
+        return Ok(false);
+    }
+    let mut backend = crate::GnomeBackend::connect(None);
+    let reachable = backend.status().reachable;
+    finish_pending(&mut backend, reachable, &state_home, installed_again)
 }
 
 #[cfg(test)]
@@ -266,16 +304,16 @@ mod tests {
         std::fs::remove_dir_all(store.directory()).unwrap();
 
         // Still no session: it keeps waiting.
-        assert!(!finish_pending(&mut backend, false, &state_home).unwrap());
+        assert!(!finish_pending(&mut backend, false, &state_home, false).unwrap());
         assert!(pending_path(&state_home).exists());
         // In the person's session, it is finished and forgotten.
-        assert!(finish_pending(&mut backend, true, &state_home).unwrap());
+        assert!(finish_pending(&mut backend, true, &state_home, false).unwrap());
         assert_eq!(
             tap(&backend),
             Some(Reading::value(SettingValue::toggle(false)))
         );
         assert!(!pending_path(&state_home).exists());
-        assert!(!finish_pending(&mut backend, true, &state_home).unwrap());
+        assert!(!finish_pending(&mut backend, true, &state_home, false).unwrap());
     }
 
     #[test]
@@ -292,5 +330,61 @@ mod tests {
         undo_before_removal(&store, &mut backend, directory.path()).unwrap();
         assert!(!pending_path(directory.path()).exists());
         assert!(backend.writes.is_empty());
+    }
+
+    #[test]
+    fn a_stale_undo_file_is_never_written_back() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = TouchpadStore::new(directory.path().join("touchpad"));
+        std::fs::create_dir_all(store.directory()).unwrap();
+        captured_tap_off(&store);
+        // An earlier removal's undo file, kept with the person's data.
+        let stale = Backup::capture(
+            "gnome",
+            None,
+            vec![(
+                SettingId::TapToClick,
+                Reading::value(SettingValue::toggle(true)),
+            )],
+            0,
+        );
+        write_json(&store.directory().join(UNDO_FILE), &stale).unwrap();
+        let mut backend = MockBackend::new();
+
+        // This removal has no session, so it is deferred; the daemon then
+        // refuses the removal and `--undo` runs.
+        assert_eq!(
+            put_back_before_removal(&store, &mut backend, false, directory.path()),
+            PutBack::Deferred
+        );
+        undo_before_removal(&store, &mut backend, directory.path()).unwrap();
+        assert!(backend.writes.is_empty(), "{:?}", backend.writes);
+
+        // The same with a capture that cannot be read.
+        write_json(&store.directory().join(UNDO_FILE), &stale).unwrap();
+        std::fs::write(store.backup_path(), "{ not json").unwrap();
+        assert!(matches!(
+            put_back_before_removal(&store, &mut backend, true, directory.path()),
+            PutBack::Unreadable(_)
+        ));
+        undo_before_removal(&store, &mut backend, directory.path()).unwrap();
+        assert!(backend.writes.is_empty(), "{:?}", backend.writes);
+    }
+
+    #[test]
+    fn a_reinstall_drops_the_pending_restore_unapplied() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = TouchpadStore::new(directory.path().join("touchpad"));
+        std::fs::create_dir_all(store.directory()).unwrap();
+        captured_tap_off(&store);
+        let mut backend = MockBackend::new();
+        assert_eq!(
+            put_back_before_removal(&store, &mut backend, false, directory.path()),
+            PutBack::Deferred
+        );
+
+        assert!(!finish_pending(&mut backend, true, directory.path(), true).unwrap());
+        assert!(backend.writes.is_empty());
+        assert!(!pending_path(directory.path()).exists());
     }
 }

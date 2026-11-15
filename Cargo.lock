@@ -4496,6 +4496,7 @@ dependencies = [
  "manager-store",
  "serde_json",
  "tempfile",
+ "touchpad-platform",
  "uuid",
 ]
 

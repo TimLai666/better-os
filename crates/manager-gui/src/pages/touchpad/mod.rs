@@ -769,17 +769,11 @@ mod shell {
 }
 
 /// Finishes the touchpad restore a session-less removal left behind, if
-/// there is one. Not run under the test guard, which keeps tests away from
-/// the person's own session.
-pub(crate) fn finish_pending_restore() {
+/// there is one, or drops it when Better Touchpad is installed again. Not run
+/// under the test guard, which keeps tests away from the person's session.
+pub(crate) fn finish_pending_restore(installed_again: bool) {
     if std::env::var_os(manager_platform::user_units::SYSTEMCTL_GUARD_VARIABLE).is_some() {
         return;
     }
-    let state_home = touchpad_platform::removal::user_state_home();
-    if !touchpad_platform::removal::pending_path(&state_home).exists() {
-        return;
-    }
-    let mut backend = touchpad_platform::GnomeBackend::connect(None);
-    let reachable = backend.status().reachable;
-    let _ = touchpad_platform::removal::finish_pending(&mut backend, reachable, &state_home);
+    let _ = touchpad_platform::removal::finish_pending_in_session(installed_again);
 }

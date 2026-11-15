@@ -644,6 +644,13 @@ impl Default for ManagerState {
 }
 
 impl ManagerState {
+    /// Whether the record has this component installed.
+    pub fn is_installed(&self, component: &str) -> bool {
+        self.components
+            .iter()
+            .any(|(id, record)| id.as_str() == component && record.installed_version.is_some())
+    }
+
     pub fn validate(&self) -> Result<(), StateValidationError> {
         if self.schema_version != STATE_SCHEMA_VERSION {
             return Err(StateValidationError::UnsupportedSchemaVersion(

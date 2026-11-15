@@ -196,7 +196,11 @@ extension lists are read again before each write and retried up to three
 times when something else changed them, and only our UUID is checked after;
 a list with an escape gsettings does not print is never rewritten; the
 autostart postrm deletes as the account (setpriv) and also cleans the page's
-temporary copy, which the page itself cleans on its next visit.
+temporary copy, which the page itself cleans on its next visit. Second
+review: a run deletes any older `removal-undo.json` first, so `--undo`
+never writes an earlier removal's values; a pending restore is dropped
+unapplied when Better Touchpad is installed again, and is finished from the
+command line's real-mode start as well as the window's.
 
 Checks run on the earlier merge (`0c255bf`): `cargo fmt --check`; clippy
 `+1.99.0` and `+stable`, workspace, all targets and features, `-D warnings`;
