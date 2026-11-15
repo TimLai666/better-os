@@ -71,6 +71,9 @@ pub struct DrivePaths {
     /// `/mnt`'s stand-in for removing empty mount points; the entry itself
     /// always names `/mnt/better-os/<uuid>`.
     pub mount_root: PathBuf,
+    /// The lock every change holds from reading a file to renaming the new
+    /// one over it (ADR 0032).
+    pub lock: PathBuf,
 }
 
 impl DrivePaths {
@@ -79,6 +82,7 @@ impl DrivePaths {
             fstab: PathBuf::from("/etc/fstab"),
             rules: PathBuf::from(drive_mounts::rules::RULES_PATH),
             mount_root: PathBuf::from("/"),
+            lock: PathBuf::from("/run/better-os/fstab.lock"),
         }
     }
 
@@ -174,9 +178,15 @@ impl DriveResolver for UdisksResolver {
                 .and_then(|v| OwnedObjectPath::try_from(v.try_clone().ok()?).ok())
                 .filter(|p| p.as_str() != "/")
                 .and_then(|p| self.all(p.as_str(), "org.freedesktop.UDisks2.Drive"));
-            let removable = drive
-                .as_ref()
-                .is_some_and(|d| flag(d, "Removable") || flag(d, "MediaRemovable"));
+            // A volume with no drive is doubtful, and doubtful is removable:
+            // a udev rule, never an fstab line.
+            let removable = drive.as_ref().is_none_or(|d| {
+                drive_mounts::listing::hot_pluggable(
+                    flag(d, "Removable"),
+                    flag(d, "MediaRemovable"),
+                    &string(d, "ConnectionBus"),
+                )
+            });
             let mount_points = self
                 .all(path.as_str(), "org.freedesktop.UDisks2.Filesystem")
                 .and_then(|fs| fs.get("MountPoints").map(bytes_paths))
@@ -201,7 +211,9 @@ impl DriveResolver for UdisksResolver {
                 removable,
                 mount_points,
                 names: DriveNames {
-                    uuid: uuid.to_string(),
+                    // UDisks2's own spelling: `/dev/disk/by-uuid` is named
+                    // by it, and fstab's `UUID=` is looked up there.
+                    uuid: string(&block, "IdUUID"),
                     label,
                     partuuid,
                     device_paths,
@@ -284,6 +296,14 @@ pub fn replace_file(
     text: Option<&str>,
 ) -> Result<(), DaemonError> {
     let failed = |e: std::io::Error| DaemonError::WriteFailed(format!("{}: {e}", path.display()));
+    // A link is not written through: the rename would replace the link with
+    // a file, and the file it pointed to may be anyone's.
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(DaemonError::WriteFailed(format!(
+            "{} is a symbolic link; Better OS does not write through it",
+            path.display()
+        )));
+    }
     let parent = path
         .parent()
         .ok_or_else(|| DaemonError::WriteFailed(path.display().to_string()))?;
@@ -364,6 +384,37 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, DaemonError> {
     }
 }
 
+/// An exclusive `flock` on the lock file, held until dropped. Every Better
+/// OS writer of the two files takes it; other programs that edit fstab do
+/// not, and the check that the file still holds what was read before the
+/// rename is what guards against them.
+pub struct FileLock {
+    /// Held, not read: closing it releases the lock.
+    _file: std::fs::File,
+}
+
+impl FileLock {
+    pub fn take(path: &Path) -> Result<Self, DaemonError> {
+        use std::os::unix::io::AsRawFd as _;
+        let failed =
+            |e: std::io::Error| DaemonError::WriteFailed(format!("{}: {e}", path.display()));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(failed)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)
+            .map_err(failed)?;
+        // SAFETY: a valid descriptor owned by `file`, which outlives the lock.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(failed(std::io::Error::last_os_error()));
+        }
+        Ok(Self { _file: file })
+    }
+}
+
 /// Everything one call changes, with what it needs from outside.
 pub struct DriveChange<'a> {
     pub resolver: &'a dyn DriveResolver,
@@ -384,6 +435,13 @@ impl DriveChange<'_> {
             .resolver
             .resolve(uuid)?
             .ok_or(DaemonError::DriveAbsent)?;
+        // From here on the UUID is UDisks2's, not the caller's.
+        let uuid = drive.names.uuid.clone();
+        if !valid_uuid(&uuid) {
+            return Err(DaemonError::DriveRefused("not_a_filesystem".into()));
+        }
+        let uuid = uuid.as_str();
+        let _lock = FileLock::take(&self.paths.lock)?;
         if drive.mount_points.iter().any(|p| p == Path::new("/")) {
             return Err(DaemonError::DriveRefused("system_drive".into()));
         }
@@ -428,12 +486,42 @@ impl DriveChange<'_> {
             .ok_or_else(|| DaemonError::DriveRefused("not_a_filesystem".into()))?;
         fstab.set(entry);
         let text = fstab.render();
-        if text.as_bytes() != original.as_slice() {
-            replace_file(&self.paths.fstab, Some(&original), Some(&text))?;
+        if text.as_bytes() == original.as_slice() {
+            // Already ours and unchanged: a Retry. Nothing to roll back to.
+            self.units.reload().map_err(DaemonError::WriteFailed)?;
+            return self.mount_now(uuid, drive);
         }
-        self.units.reload().map_err(DaemonError::WriteFailed)?;
-        // Mounted already (the person opened it in Files): it stays where it
-        // is, and the entry takes over from the next start.
+        replace_file(&self.paths.fstab, Some(&original), Some(&text))?;
+        // A line that cannot be mounted now is taken out again, so "on"
+        // never stays written for a drive that did not come up (ADR 0032).
+        // A drive that fails at a later start keeps its line and shows
+        // Retry.
+        let result = self
+            .units
+            .reload()
+            .map_err(DaemonError::WriteFailed)
+            .and_then(|()| self.mount_now(uuid, drive));
+        if let Err(failure) = &result {
+            let rollback = replace_file(
+                &self.paths.fstab,
+                Some(text.as_bytes()),
+                Some(std::str::from_utf8(&original).unwrap_or_default()),
+            );
+            let _ = self.units.reload();
+            self.remove_mount_point(&mount_point(uuid));
+            if let Err(error) = rollback {
+                return Err(DaemonError::WriteFailed(format!(
+                    "{failure}; and the line could not be taken out again: {error}"
+                )));
+            }
+        }
+        result
+    }
+
+    /// Mounted already (the person opened it in Files): it stays where it
+    /// is, and the line takes over from the next start. Otherwise systemd
+    /// mounts it now.
+    fn mount_now(&self, uuid: &str, drive: &ResolvedDrive) -> Result<String, DaemonError> {
         if let Some(point) = drive.mount_points.first() {
             return Ok(point.display().to_string());
         }
@@ -446,11 +534,14 @@ impl DriveChange<'_> {
 
     fn turn_off(&self, uuid: &str) -> Result<(), DaemonError> {
         let (original, mut fstab) = self.read_fstab()?;
-        if fstab.entry(uuid).is_none() {
+        let Some(entry) = fstab.entry(uuid) else {
             // Not Better OS's: nothing of ours to take away. A mount the
             // person made is theirs to unmount, through UDisks2.
             return Ok(());
-        }
+        };
+        // The line's own spelling names its mount point and unit.
+        let written = entry.uuid.clone();
+        let uuid = written.as_str();
         let point = mount_point(uuid);
         self.units
             .stop(&mount_unit(&point))
@@ -493,6 +584,13 @@ impl DriveChange<'_> {
     /// which the prerm prints and does not fail on.
     pub fn remove_all(units: &dyn MountUnits, paths: &DrivePaths) -> Vec<String> {
         let mut problems = Vec::new();
+        let _lock = match FileLock::take(&paths.lock) {
+            Ok(lock) => Some(lock),
+            Err(error) => {
+                problems.push(error.to_string());
+                None
+            }
+        };
         match std::fs::read(&paths.fstab) {
             Ok(original) => match Fstab::parse_bytes(&original) {
                 Ok(mut fstab) => {
@@ -661,7 +759,12 @@ pub mod fake {
 
     impl DriveResolver for TableResolver {
         fn resolve(&self, uuid: &str) -> Result<Option<ResolvedDrive>, DaemonError> {
-            Ok(self.0.get(uuid).cloned())
+            // UDisks2 finds a UUID whatever its case.
+            Ok(self
+                .0
+                .iter()
+                .find(|(known, _)| known.eq_ignore_ascii_case(uuid))
+                .map(|(_, drive)| drive.clone()))
         }
     }
 
@@ -728,6 +831,7 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
                     .path()
                     .join("etc/udev/rules.d/90-better-os-drives.rules"),
                 mount_root: dir.path().to_path_buf(),
+                lock: dir.path().join("run/fstab.lock"),
             };
             Self { dir, paths }
         }
@@ -800,7 +904,7 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
         assert_eq!(
             machine.fstab(),
             format!(
-                "{SYSTEM}{BEGIN}\nUUID=01D9F00DBEEF1234 /mnt/better-os/01D9F00DBEEF1234 ntfs nofail,x-gvfs-show,x-systemd.device-timeout=10s,uid=1000,gid=1000 0 0\n{END}\n"
+                "{SYSTEM}{BEGIN}\nUUID=01D9F00DBEEF1234 /mnt/better-os/01D9F00DBEEF1234 ntfs nosuid,nodev,nofail,x-gvfs-show,x-systemd.device-timeout=10s,uid=1000,gid=1000 0 0\n{END}\n"
             )
         );
         assert_eq!(
@@ -835,9 +939,9 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
         assert_eq!(units.calls(), ["reload"]);
         // ext4 has owners: no uid.
         assert!(
-            machine
-                .fstab()
-                .contains("ext4 nofail,x-gvfs-show,x-systemd.device-timeout=10s 0 0\n")
+            machine.fstab().contains(
+                "ext4 nosuid,nodev,nofail,x-gvfs-show,x-systemd.device-timeout=10s 0 0\n"
+            )
         );
     }
 
@@ -884,23 +988,160 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
     }
 
     #[test]
-    fn a_failed_mount_keeps_the_entry_for_retry_and_a_busy_one_keeps_it_mounted() {
+    fn a_line_that_cannot_be_mounted_is_taken_out_again() {
         let machine = Machine::new(SYSTEM);
         let resolver = drives();
         let units = RecordingUnits {
             start_fails: Some("exit-code: wrong fs type".into()),
-            stop_fails: Some("target is busy".into()),
             ..RecordingUnits::default()
         };
         assert_eq!(
             change(&resolver, &units, &machine).apply("01D9F00DBEEF1234", true),
             Err(DaemonError::MountFailed("exit-code: wrong fs type".into()))
         );
-        assert!(machine.fstab().contains("UUID=01D9F00DBEEF1234"));
+        assert_eq!(machine.fstab(), SYSTEM);
         assert_eq!(
-            change(&resolver, &units, &machine).apply("01D9F00DBEEF1234", false),
+            units.calls(),
+            [
+                "reload",
+                "start mnt-better\\x2dos-01D9F00DBEEF1234.mount",
+                "reload"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_busy_drive_keeps_its_line_and_its_mount() {
+        let machine = Machine::new(SYSTEM);
+        let resolver = drives();
+        change(&resolver, &RecordingUnits::default(), &machine)
+            .apply("01D9F00DBEEF1234", true)
+            .unwrap();
+        let written = machine.fstab();
+        let busy = RecordingUnits {
+            stop_fails: Some("target is busy".into()),
+            ..RecordingUnits::default()
+        };
+        assert_eq!(
+            change(&resolver, &busy, &machine).apply("01D9F00DBEEF1234", false),
             Err(DaemonError::DriveBusy("target is busy".into()))
         );
+        assert_eq!(machine.fstab(), written);
+        // A Retry of a line already there writes nothing and mounts again.
+        let units = RecordingUnits::default();
+        change(&resolver, &units, &machine)
+            .apply("01D9F00DBEEF1234", true)
+            .unwrap();
+        assert_eq!(machine.fstab(), written);
+        assert_eq!(
+            units.calls(),
+            ["reload", "start mnt-better\\x2dos-01D9F00DBEEF1234.mount"]
+        );
+    }
+
+    #[test]
+    fn the_line_uses_udisks_spelling_whatever_case_was_asked() {
+        let machine = Machine::new(SYSTEM);
+        let resolver = drives();
+        let units = RecordingUnits::default();
+        change(&resolver, &units, &machine)
+            .apply("01d9f00dbeef1234", true)
+            .unwrap();
+        assert!(
+            machine
+                .fstab()
+                .contains("UUID=01D9F00DBEEF1234 /mnt/better-os/01D9F00DBEEF1234 ")
+        );
+        change(&resolver, &units, &machine)
+            .apply("01d9F00DBEEF1234", false)
+            .unwrap();
+        assert_eq!(machine.fstab(), SYSTEM);
+        assert_eq!(
+            units.calls()[2],
+            "stop mnt-better\\x2dos-01D9F00DBEEF1234.mount"
+        );
+        change(&resolver, &units, &machine)
+            .apply("ab12-cd34", false)
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(&machine.paths.rules)
+                .unwrap()
+                .contains("==\"AB12-CD34\"")
+        );
+    }
+
+    #[test]
+    fn a_usb_disk_that_says_it_is_not_removable_never_gets_an_fstab_line() {
+        // What the resolver concludes from Removable=false on a usb bus.
+        let machine = Machine::new(SYSTEM);
+        let mut resolver = drives();
+        let mut usb = resolver.0.get("BACC-0001").unwrap().clone();
+        usb.names.uuid = "05B0-0001".into();
+        usb.names.label = None;
+        usb.removable = drive_mounts::listing::hot_pluggable(false, false, "usb");
+        resolver.0.insert("05B0-0001".into(), usb);
+        let units = RecordingUnits::default();
+        change(&resolver, &units, &machine)
+            .apply("05B0-0001", true)
+            .unwrap();
+        change(&resolver, &units, &machine)
+            .apply("05B0-0001", false)
+            .unwrap();
+        assert_eq!(machine.fstab(), SYSTEM);
+        assert!(
+            std::fs::read_to_string(&machine.paths.rules)
+                .unwrap()
+                .contains("05B0-0001")
+        );
+    }
+
+    #[test]
+    fn a_linked_fstab_is_refused_and_left_alone() {
+        let machine = Machine::new(SYSTEM);
+        let real = machine.dir.path().join("etc/fstab.real");
+        std::fs::rename(&machine.paths.fstab, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &machine.paths.fstab).unwrap();
+        let resolver = drives();
+        let units = RecordingUnits::default();
+        let refused = change(&resolver, &units, &machine).apply("01D9F00DBEEF1234", true);
+        assert!(
+            matches!(&refused, Err(DaemonError::WriteFailed(why)) if why.contains("symbolic link")),
+            "{refused:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), SYSTEM);
+        assert!(
+            std::fs::symlink_metadata(&machine.paths.fstab)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn a_change_waits_for_the_lock() {
+        let machine = Machine::new(SYSTEM);
+        let held = FileLock::take(&machine.paths.lock).unwrap();
+        let paths = machine.paths.clone();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = done.clone();
+        let worker = std::thread::spawn(move || {
+            let resolver = drives();
+            let units = RecordingUnits::default();
+            let result = DriveChange {
+                resolver: &resolver,
+                units: &units,
+                paths: &paths,
+                owner: Some((1000, 1000)),
+            }
+            .apply("01D9F00DBEEF1234", true);
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            result
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!done.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(machine.fstab(), SYSTEM);
+        drop(held);
+        assert!(worker.join().unwrap().is_ok());
         assert!(machine.fstab().contains("UUID=01D9F00DBEEF1234"));
     }
 

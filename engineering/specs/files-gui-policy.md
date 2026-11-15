@@ -110,6 +110,9 @@ Manager's System page (Drives), which read and change the same thing.
   keeps its settings, lists every drive, those that are off included, so one
   can be turned back on from its context menu. It is remembered with the
   other preferences.
+- A drive with no filesystem UUID has no choice (the choice is kept by
+  UUID); it is listed while mounted, and otherwise under "Show other
+  drives", where it says "Not mounted" and mounts when clicked.
 - Turning a removable drive on mounts it now through UDisks2; turning a
   drive off unmounts a mount UDisks2 made. A mount under `/mnt/better-os` is
   the daemon's, and the daemon unmounts it.

@@ -65,6 +65,18 @@ pub struct Drive {
     pub form: Option<RemovableForm>,
 }
 
+/// Buses a drive is plugged into and pulled out of. A USB hard disk often
+/// reports neither `Removable` nor `MediaRemovable`, and is still a drive
+/// that comes and goes (ticket 127 review).
+pub const HOT_PLUGGABLE_BUSES: &[&str] = &["usb", "ieee1394", "thunderbolt", "sdio", "mmc"];
+
+/// Whether a drive is removable, from what UDisks2 says of it. The daemon
+/// and both windows decide it here, so a drive is never internal to one
+/// and removable to another.
+pub fn hot_pluggable(removable: bool, media_removable: bool, connection_bus: &str) -> bool {
+    removable || media_removable || HOT_PLUGGABLE_BUSES.contains(&connection_bus)
+}
+
 /// What a removable drive is, by what UDisks2 says it takes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RemovableForm {
@@ -330,7 +342,13 @@ pub fn drives_from_devices(devices: &[PlatformDevice], root_source: Option<&str>
             }
         };
         let drive_info = drive_of(device, devices);
-        let removable = drive_info.is_some_and(|drive| drive.removable || drive.media_removable);
+        let removable = drive_info.is_some_and(|drive| {
+            hot_pluggable(
+                drive.removable,
+                drive.media_removable,
+                &drive.connection_bus,
+            )
+        });
         let label = device
             .block
             .id_label
@@ -462,7 +480,8 @@ pub fn fixture_drives(path: &Path) -> Vec<Drive> {
             mount_point: fixture.mount_point,
             object_path: None,
             device_path: None,
-            drive_object: None,
+            // A fixture's internal drive is on a drive of its own, as a real one is.
+            drive_object: (fixture.kind == "internal").then(|| format!("fixture-drive-{index}")),
             backing: None,
             locked: fixture.locked,
             uuid: fixture.uuid,

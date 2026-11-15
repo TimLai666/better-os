@@ -111,7 +111,7 @@ static EN: Copy = Copy {
     reason_not_filesystem: "it has no files a person keeps",
     reason_busy: "it's in use. Close what's open on it and try again",
     reason_malformed: "the system's mount table couldn't be read safely, so nothing was written",
-    reason_mount_failed: "it was saved, but mounting failed ({detail})",
+    reason_mount_failed: "it couldn't be mounted, so it was left off ({detail})",
     reason_after: "it was saved, but {detail}",
 };
 
@@ -143,7 +143,7 @@ static ZH_TW: Copy = Copy {
     reason_not_filesystem: "這顆磁碟沒有可存放檔案的檔案系統",
     reason_busy: "磁碟正在使用中，請關閉上面開著的檔案後再試一次",
     reason_malformed: "系統的掛載表無法安全讀取，所以沒有寫入任何內容",
-    reason_mount_failed: "已儲存，但掛載失敗（{detail}）",
+    reason_mount_failed: "無法掛載，所以維持關閉（{detail}）",
     reason_after: "已儲存，但{detail}",
 };
 

@@ -44,7 +44,7 @@ Three places could hold the internal choice:
 - **Internal partitions: a block of lines in `/etc/fstab` that Better OS owns.**
   The block is between `# >>> Better OS drive mounting` and
   `# <<< Better OS drive mounting` comment lines. Each line in it is exactly
-  `UUID=<uuid> /mnt/better-os/<uuid> <type> nofail,x-gvfs-show,x-systemd.device-timeout=10s[,uid=…,gid=…] 0 0`.
+  `UUID=<uuid> /mnt/better-os/<uuid> <type> nosuid,nodev,nofail,x-gvfs-show,x-systemd.device-timeout=10s[,uid=…,gid=…] 0 0`.
   `nofail` keeps a missing or broken drive from stopping boot. `uid`/`gid` are
   added only for filesystems without owners (FAT, exFAT, NTFS), set to the
   person who asked, so they can write to it. `x-udisks-auth` is not used: it
@@ -78,13 +78,53 @@ Three places could hold the internal choice:
   Whether the drive is internal or removable is UDisks2's answer, not the
   caller's. For an internal one turned on it writes the entry,
   `systemctl daemon-reload`s, and starts the mount unit unless the drive is
-  already mounted; turned off it stops the unit (a drive in use is refused
+  already mounted (and takes the line out again if that fails, see the
+  amendments); turned off it stops the unit (a drive in use is refused
   with the reason and the entry stays), removes the entry, reloads, and
   removes the empty mount point.
 - **Removing `better-manager-daemon`** (its prerm, on `remove` only) runs
   `better-manager-daemon --remove-drive-entries`: it stops the units of its
   entries, removes the block and the rules file, reloads systemd, and removes
   the empty mount points. What the administrator wrote is untouched.
+
+## Amendments from the security review (2026-11-15, before merge)
+
+- **Options.** Every line carries `nosuid,nodev` (UDisks2's own defaults
+  for a drive a person mounts), so nothing on the drive can raise
+  privileges or open a device node. `noexec` is deliberately not set: a
+  data drive holds programs people run (an AppImage, a script, a game
+  library), and UDisks2 does not set it either. A line of Better OS's
+  without `nosuid` or `nodev` is not one Better OS wrote, and the file is
+  refused.
+- **Internal or removable** is one rule in `drive_mounts::listing::
+  hot_pluggable`, used by the daemon and both windows: `Removable`, or
+  `MediaRemovable`, or a `ConnectionBus` of `usb`, `ieee1394`,
+  `thunderbolt`, `sdio` or `mmc` (a USB hard disk often reports
+  `Removable=false`). A volume UDisks2 knows no drive for is doubtful and
+  is treated as removable. A removable drive gets a udev rule, never an
+  fstab line.
+- **UUID spelling.** The line is written with UDisks2's own `IdUUID`, never
+  the caller's spelling, because `UUID=` is looked up in
+  `/dev/disk/by-uuid`, which is named by it and is case-sensitive (a FAT
+  `ABCD-1234` lowercased would never be found). Every comparison of UUIDs
+  (finding, replacing, removing a line or a rule) ignores case.
+- **A line that cannot be mounted is taken out again.** If the reload or
+  the mount fails right after the line was written, the daemon puts the
+  file back as it was, reloads, and reports why; the switch stays off. A
+  drive whose line is already there and fails at a later start keeps its
+  line, and the windows show the reason and Retry.
+- **One writer at a time.** Every change takes an exclusive `flock` on
+  `/run/better-os/fstab.lock` from reading the file to renaming the new one
+  over it, so two daemon calls (or a call and the package's removal) never
+  interleave. Other programs that edit fstab (an editor, an installer)
+  do not take it; the check that the file
+  still holds what was read just before the rename is what guards against
+  them, and a change refused that way writes nothing.
+- **A linked `/etc/fstab`** (or rules file) is refused with a clear error:
+  the rename would replace the link with a file, and what it points to may
+  be anyone's.
+- **The block begins only at the whole marker line**; a comment of the
+  person's that starts with the same words is an ordinary line.
 
 ## Consequences
 

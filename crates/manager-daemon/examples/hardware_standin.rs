@@ -160,6 +160,7 @@ fn drives_standin(
     let paths = DrivePaths {
         fstab: var("BETTER_OS_DEBUG_FSTAB").unwrap_or_else(|| scratch.join("fstab")),
         rules: var("BETTER_OS_DEBUG_DRIVE_RULES").unwrap_or_else(|| scratch.join("drive.rules")),
+        lock: scratch.join("better-os-fstab.lock"),
         mount_root: scratch,
     };
     DrivesService::new(

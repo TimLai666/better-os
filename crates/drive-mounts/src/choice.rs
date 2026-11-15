@@ -106,9 +106,13 @@ pub fn setting(drive: &Drive, files: &SystemFiles) -> Option<AutoMount> {
         });
     }
     let names = names_of(drive)?;
+    // A volume UDisks2 knows no drive for is doubtful, and the daemon keeps
+    // it with the removable drives (a udev rule, never an fstab line).
+    let by_rule = matches!(drive.kind, DriveKind::Removable | DriveKind::Optical)
+        || (drive.kind == DriveKind::Internal && drive.drive_object.is_none());
     match drive.kind {
         DriveKind::System | DriveKind::Phone | DriveKind::Network => None,
-        DriveKind::Removable | DriveKind::Optical => Some(match &files.rules {
+        _ if by_rule => Some(match &files.rules {
             Ok(rules) => AutoMount::open(!rules.is_off(&names.uuid)),
             Err(error) => AutoMount {
                 on: true,
@@ -116,7 +120,7 @@ pub fn setting(drive: &Drive, files: &SystemFiles) -> Option<AutoMount> {
                 failure: None,
             },
         }),
-        DriveKind::Internal => Some(match &files.fstab {
+        _ => Some(match &files.fstab {
             Ok(fstab) => {
                 if fstab.entry(&names.uuid).is_some() {
                     AutoMount::open(true)
@@ -214,7 +218,7 @@ mod tests {
             mount_point: mounted.then(|| "/media/me/Data".into()),
             object_path: None,
             device_path: Some("/dev/sdb1".into()),
-            drive_object: None,
+            drive_object: Some("/org/freedesktop/UDisks2/drives/d".into()),
             backing: None,
             locked: false,
             uuid: uuid.map(str::to_string),
@@ -342,5 +346,38 @@ mod tests {
         assert_eq!(follow_up(&ours, true), FollowUp::Nothing);
         let system = drive(DriveKind::System, Some("AA"), true);
         assert_eq!(follow_up(&system, false), FollowUp::Nothing);
+    }
+
+    #[test]
+    fn a_volume_with_no_drive_is_kept_with_the_removable_ones() {
+        let mut doubtful = drive(DriveKind::Internal, Some("D0B7"), false);
+        doubtful.drive_object = None;
+        let off = files("", "ENV{ID_FS_UUID}==\"D0B7\", ENV{UDISKS_AUTO}=\"0\"\n");
+        assert!(!setting(&doubtful, &off).unwrap().on);
+        assert!(setting(&doubtful, &files("", "")).unwrap().on);
+    }
+
+    #[test]
+    fn a_usb_disk_that_says_it_is_not_removable_is_removable() {
+        use crate::listing::hot_pluggable;
+        assert!(hot_pluggable(false, false, "usb"));
+        assert!(hot_pluggable(false, false, "thunderbolt"));
+        assert!(hot_pluggable(false, false, "ieee1394"));
+        assert!(!hot_pluggable(false, false, "nvme"));
+        assert!(!hot_pluggable(false, false, "ata"));
+        assert!(hot_pluggable(true, false, "ata"));
+    }
+
+    #[test]
+    fn a_drive_with_no_uuid_is_hidden_until_other_drives_are_shown() {
+        // It has no choice (the choice is kept by UUID), so it is shown only
+        // while mounted; "Show other drives" lists it, and it mounts when
+        // clicked like any drive that is not mounted.
+        let mut bare = drive(DriveKind::Internal, None, false);
+        apply(std::slice::from_mut(&mut bare), &files("", ""));
+        assert_eq!(bare.auto_mount, None);
+        assert!(!shown(&bare) && !failed(&bare));
+        bare.mount_point = Some("/media/me/x".into());
+        assert!(shown(&bare));
     }
 }

@@ -56,6 +56,21 @@ struct Drive {
     removable: bool,
 }
 
+/// The internal partition is mounted already (somewhere UDisks2 would put
+/// it), so turning it on writes its line and starts nothing: there is no
+/// systemd in the container to start a unit with.
+struct Filesystem {
+    mounted: &'static str,
+}
+
+#[zbus::interface(name = "org.freedesktop.UDisks2.Filesystem")]
+impl Filesystem {
+    #[zbus(property, name = "MountPoints")]
+    fn mount_points(&self) -> Vec<Vec<u8>> {
+        vec![format!("{}\0", self.mounted).into_bytes()]
+    }
+}
+
 #[zbus::interface(name = "org.freedesktop.UDisks2.Drive")]
 impl Drive {
     #[zbus(property, name = "Removable")]
@@ -103,6 +118,13 @@ async fn main() {
                 filesystem: "ext4",
                 device: "/dev/vdb1",
                 drive: "/org/freedesktop/UDisks2/drives/vdb",
+            },
+        )
+        .unwrap()
+        .serve_at(
+            "/org/freedesktop/UDisks2/block_devices/vdb1",
+            Filesystem {
+                mounted: "/media/root/e2e",
             },
         )
         .unwrap()

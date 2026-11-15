@@ -16,15 +16,23 @@ use crate::ids::{mount_point, valid_uuid};
 /// The line the block starts with.
 pub const BEGIN: &str =
     "# >>> Better OS drive mounting (written by Better Manager; do not edit inside this block)";
-/// What a begin line is recognised by.
-const BEGIN_PREFIX: &str = "# >>> Better OS drive mounting";
 /// The line the block ends with.
 pub const END: &str = "# <<< Better OS drive mounting";
 
-/// The options every entry carries: `nofail` so a missing drive never stops
-/// the boot, `x-gvfs-show` so the desktop shows it under its own name, and a
-/// short wait for a device that is not there.
-pub const BASE_OPTIONS: &[&str] = &["nofail", "x-gvfs-show", "x-systemd.device-timeout=10s"];
+/// The options every entry carries: `nosuid` and `nodev` so nothing on the
+/// drive can raise privileges or open a device node (UDisks2's own defaults
+/// for a drive a person mounts), `nofail` so a missing drive never stops the
+/// boot, `x-gvfs-show` so the desktop shows it under its own name, and a
+/// short wait for a device that is not there. Not `noexec`: a data drive
+/// holds programs people run (an AppImage, a script, a game library), and
+/// UDisks2 does not set it either (ADR 0032).
+pub const BASE_OPTIONS: &[&str] = &[
+    "nosuid",
+    "nodev",
+    "nofail",
+    "x-gvfs-show",
+    "x-systemd.device-timeout=10s",
+];
 
 /// Filesystems an entry may name.
 pub const ENTRY_FILESYSTEMS: &[&str] = &[
@@ -155,6 +163,9 @@ pub struct Fstab {
     after: Vec<String>,
     /// Whether the text ended with a newline.
     final_newline: bool,
+    /// How many lines the block took in the text read (0 without one), so
+    /// lines after it keep their real numbers.
+    block_len: usize,
 }
 
 /// `\040` and the other octal escapes fstab uses for spaces.
@@ -196,14 +207,17 @@ impl Fstab {
         // 0 before the block, 1 inside, 2 after.
         let mut stage = 0;
         let mut began = 0;
+        let mut block_len = 0;
         for (index, line) in text.lines().enumerate() {
             let number = index + 1;
             let trimmed = line.trim();
-            if trimmed.starts_with(BEGIN_PREFIX) {
+            // The whole marker line, never a comment that starts the same.
+            if trimmed == BEGIN {
                 match stage {
                     0 => {
                         stage = 1;
                         began = number;
+                        block_len = 1;
                         continue;
                     }
                     _ => return Err(FstabError::TwoBlocks(number)),
@@ -214,9 +228,11 @@ impl Fstab {
                     return Err(FstabError::StrayEnd(number));
                 }
                 stage = 2;
+                block_len += 1;
                 continue;
             }
             if stage == 1 {
+                block_len += 1;
                 match Entry::parse(trimmed) {
                     Some(entry) => entries.push(entry),
                     None => return Err(FstabError::ForeignInBlock(number)),
@@ -243,6 +259,7 @@ impl Fstab {
             entries,
             after,
             final_newline: text.is_empty() || text.ends_with('\n'),
+            block_len,
         })
     }
 
@@ -258,7 +275,9 @@ impl Fstab {
     }
 
     pub fn entry(&self, uuid: &str) -> Option<&Entry> {
-        self.entries.iter().find(|entry| entry.uuid == uuid)
+        self.entries
+            .iter()
+            .find(|entry| entry.uuid.eq_ignore_ascii_case(uuid))
     }
 
     /// Adds or replaces the entry for its UUID.
@@ -266,7 +285,7 @@ impl Fstab {
         match self
             .entries
             .iter_mut()
-            .find(|known| known.uuid == entry.uuid)
+            .find(|known| known.uuid.eq_ignore_ascii_case(&entry.uuid))
         {
             Some(known) => *known = entry,
             None => self.entries.push(entry),
@@ -276,7 +295,8 @@ impl Fstab {
     /// Removes the entry for `uuid`; whether there was one.
     pub fn remove(&mut self, uuid: &str) -> bool {
         let count = self.entries.len();
-        self.entries.retain(|entry| entry.uuid != uuid);
+        self.entries
+            .retain(|entry| !entry.uuid.eq_ignore_ascii_case(uuid));
         self.entries.len() != count
     }
 
@@ -287,11 +307,7 @@ impl Fstab {
 
     /// A line outside the block that names this drive.
     pub fn foreign_line(&self, names: &DriveNames) -> Option<ForeignLine> {
-        let block_lines = if self.entries.is_empty() {
-            0
-        } else {
-            self.entries.len() + 2
-        };
+        let block_lines = self.block_len;
         let numbered = self
             .before
             .iter()
@@ -375,7 +391,7 @@ UUID=7A3B-11CC /boot/efi vfat umask=0077 0 1\n\
         let written = fstab.render();
         assert!(written.starts_with(SYSTEM));
         assert!(written.ends_with(&format!(
-            "{BEGIN}\nUUID=01D9F00DBEEF1234 /mnt/better-os/01D9F00DBEEF1234 ntfs nofail,x-gvfs-show,x-systemd.device-timeout=10s,uid=1000,gid=1000 0 0\n{END}\n"
+            "{BEGIN}\nUUID=01D9F00DBEEF1234 /mnt/better-os/01D9F00DBEEF1234 ntfs nosuid,nodev,nofail,x-gvfs-show,x-systemd.device-timeout=10s,uid=1000,gid=1000 0 0\n{END}\n"
         )));
         let mut again = Fstab::parse(&written).unwrap();
         assert_eq!(again.entries(), &[ntfs()]);
@@ -394,7 +410,7 @@ UUID=7A3B-11CC /boot/efi vfat umask=0077 0 1\n\
         fstab.set(Entry::new("ABCD-1234", "ext4", Some((1, 1))).unwrap());
         let out = fstab.render();
         assert!(out.starts_with(&format!("# mine\n{BEGIN}\n")));
-        assert!(out.contains("UUID=ABCD-1234 /mnt/better-os/ABCD-1234 ext4 nofail,x-gvfs-show,x-systemd.device-timeout=10s 0 0\n"));
+        assert!(out.contains("UUID=ABCD-1234 /mnt/better-os/ABCD-1234 ext4 nosuid,nodev,nofail,x-gvfs-show,x-systemd.device-timeout=10s 0 0\n"));
         assert!(out.ends_with(
             "{END}\n  # an indented comment\n//server/share /srv cifs\\040x credentials=/root/c 0 0\n"
                 .replace("{END}", END)
@@ -420,7 +436,7 @@ UUID=7A3B-11CC /boot/efi vfat umask=0077 0 1\n\
                 FstabError::ForeignInBlock(2),
             ),
             (
-                format!("{BEGIN}\n{} \n{END}\n", entry.replace("nofail,", "")),
+                format!("{BEGIN}\n{} \n{END}\n", entry.replace("nosuid,", "")),
                 FstabError::ForeignInBlock(2),
             ),
             (
@@ -491,5 +507,70 @@ UUID=7A3B-11CC /boot/efi vfat umask=0077 0 1\n\
         assert_eq!(fstab.foreign_line(&names("CAFE")).unwrap().line, 11);
         // Better OS's own line is not someone else's.
         assert_eq!(fstab.foreign_line(&names("01D9F00DBEEF1234")), None);
+    }
+
+    #[test]
+    fn every_written_line_carries_nosuid_and_nodev() {
+        let mut fstab = Fstab::parse(SYSTEM).unwrap();
+        fstab.set(ntfs());
+        fstab.set(Entry::new("ABCD-1234", "ext4", None).unwrap());
+        let text = fstab.render();
+        let block: Vec<&str> = text
+            .lines()
+            .filter(|line| line.starts_with("UUID=") && line.contains("/mnt/better-os/"))
+            .collect();
+        assert_eq!(block.len(), 2);
+        for line in block {
+            let options: Vec<&str> = line.split_whitespace().nth(3).unwrap().split(',').collect();
+            assert!(
+                options.contains(&"nosuid") && options.contains(&"nodev"),
+                "{line}"
+            );
+            assert!(
+                !options.contains(&"noexec") && !options.contains(&"suid"),
+                "{line}"
+            );
+        }
+        // A line of ours without them is not ours.
+        let weak = ntfs().line().replace("nosuid,nodev,", "");
+        assert_eq!(
+            Fstab::parse(&format!("{BEGIN}\n{weak}\n{END}\n")),
+            Err(FstabError::ForeignInBlock(2))
+        );
+    }
+
+    #[test]
+    fn a_uuid_is_found_and_removed_whatever_its_case() {
+        let mut fstab = Fstab::parse("").unwrap();
+        fstab.set(Entry::new("abcd-1234", "vfat", None).unwrap());
+        assert!(fstab.entry("ABCD-1234").is_some());
+        fstab.set(Entry::new("ABCD-1234", "vfat", None).unwrap());
+        assert_eq!(fstab.entries().len(), 1);
+        assert!(fstab.remove("Abcd-1234"));
+        assert!(fstab.entries().is_empty());
+    }
+
+    #[test]
+    fn only_the_whole_marker_line_begins_the_block() {
+        let text = "# >>> Better OS drive mounting notes: see the wiki\n\
+UUID=1111-2222-root / ext4 defaults 0 1\n";
+        let mut fstab = Fstab::parse(text).unwrap();
+        assert!(fstab.entries().is_empty());
+        fstab.set(ntfs());
+        let out = fstab.render();
+        assert!(out.starts_with(text));
+        assert_eq!(out.matches(BEGIN).count(), 1);
+    }
+
+    #[test]
+    fn lines_after_an_empty_block_keep_their_numbers() {
+        let text = format!("# one\n{BEGIN}\n{END}\nLABEL=Data /data ext4 defaults 0 2\n");
+        let fstab = Fstab::parse(&text).unwrap();
+        let names = DriveNames {
+            uuid: "x".into(),
+            label: Some("Data".into()),
+            ..DriveNames::default()
+        };
+        assert_eq!(fstab.foreign_line(&names).unwrap().line, 4);
     }
 }

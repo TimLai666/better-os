@@ -112,6 +112,7 @@ impl FakeFilesystem {
 
 struct FakeDrive {
     removable: bool,
+    bus: &'static str,
 }
 
 #[zbus::interface(name = "org.freedesktop.UDisks2.Drive")]
@@ -123,6 +124,10 @@ impl FakeDrive {
     #[zbus(property, name = "MediaRemovable")]
     fn media_removable(&self) -> bool {
         false
+    }
+    #[zbus(property, name = "ConnectionBus")]
+    fn connection_bus(&self) -> String {
+        self.bus.into()
     }
 }
 
@@ -176,8 +181,20 @@ async fn fake_udisks(bus: &PrivateBus) -> zbus::Connection {
         device: "/dev/nvme0n1p4".into(),
         drive: nvme.clone(),
     };
+    let usb_disk_drive = path("/org/freedesktop/UDisks2/drives/usbhdd");
+    let usb_disk = FakeBlock {
+        uuid: "05b0-0001".into(),
+        filesystem: "ext4".into(),
+        label: "Passport".into(),
+        device: "/dev/sdc1".into(),
+        drive: usb_disk_drive.clone(),
+    };
     let manager = FakeManager {
         blocks: vec![
+            (
+                usb_disk.uuid.clone(),
+                path("/org/freedesktop/UDisks2/block_devices/sdc1"),
+            ),
             (
                 windows.uuid.clone(),
                 path("/org/freedesktop/UDisks2/block_devices/nvme0n1p3"),
@@ -215,9 +232,32 @@ async fn fake_udisks(bus: &PrivateBus) -> zbus::Connection {
         .unwrap()
         .serve_at("/org/freedesktop/UDisks2/block_devices/nvme0n1p4", backup)
         .unwrap()
-        .serve_at(nvme.as_str(), FakeDrive { removable: false })
+        .serve_at("/org/freedesktop/UDisks2/block_devices/sdc1", usb_disk)
         .unwrap()
-        .serve_at(usb.as_str(), FakeDrive { removable: true })
+        .serve_at(
+            usb_disk_drive.as_str(),
+            // A USB hard disk that says it is not removable.
+            FakeDrive {
+                removable: false,
+                bus: "usb",
+            },
+        )
+        .unwrap()
+        .serve_at(
+            nvme.as_str(),
+            FakeDrive {
+                removable: false,
+                bus: "",
+            },
+        )
+        .unwrap()
+        .serve_at(
+            usb.as_str(),
+            FakeDrive {
+                removable: true,
+                bus: "usb",
+            },
+        )
         .unwrap()
         .name("org.freedesktop.UDisks2")
         .unwrap()
@@ -245,6 +285,7 @@ impl Machine {
                 .path()
                 .join("etc/udev/rules.d/90-better-os-drives.rules"),
             mount_root: dir.path().to_path_buf(),
+            lock: dir.path().join("run/fstab.lock"),
         };
         Self { _dir: dir, paths }
     }
@@ -335,7 +376,7 @@ async fn an_internal_drive_is_found_through_udisks_and_written_into_fstab() {
     assert!(written.starts_with(SYSTEM));
     assert!(
         written.contains(&format!(
-            "UUID=01D9F00DBEEF1234 /mnt/better-os/01D9F00DBEEF1234 ntfs nofail,x-gvfs-show,x-systemd.device-timeout=10s,uid={uid},"
+            "UUID=01D9F00DBEEF1234 /mnt/better-os/01D9F00DBEEF1234 ntfs nosuid,nodev,nofail,x-gvfs-show,x-systemd.device-timeout=10s,uid={uid},"
         )),
         "{written}"
     );
@@ -367,6 +408,17 @@ async fn a_removable_drive_is_a_rule_and_an_administrator_s_line_is_left_alone()
         }
     );
     assert!(machine.rules().unwrap().contains("AB12-CD34"));
+    // A USB hard disk reporting Removable=false is still removable: turning
+    // it on and off never writes an fstab line.
+    assert!(matches!(
+        call(&bus, "05b0-0001", true).await,
+        SetOutcome::Done { .. }
+    ));
+    assert!(matches!(
+        call(&bus, "05b0-0001", false).await,
+        SetOutcome::Done { .. }
+    ));
+    assert!(machine.rules().unwrap().contains("05b0-0001"));
     assert_eq!(machine.fstab(), SYSTEM);
     // /dev/nvme0n1p4 is in the administrator's own line.
     assert_eq!(

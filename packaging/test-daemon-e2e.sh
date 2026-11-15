@@ -402,9 +402,9 @@ sleep 2
 printf '== drive mounting choices: an fstab entry written and removed through the service ==\n'
 # Ticket 127, ADR 0032. The container has no block device the service may
 # touch, so a stand-in UDisks2 answers for two drives; the service, polkit,
-# /etc/fstab, the udev rules file, and findmnt are the real ones. There is no
-# systemd here, so the mount itself is reported as failed and the entry
-# stays, which is the state Retry exists for.
+# /etc/fstab, the udev rules file, and findmnt are the real ones. The
+# internal drive reads as mounted already, so the service writes its line and
+# starts no unit: there is no systemd here.
 [[ -f /etc/fstab ]] || printf '# UNCONFIGURED FSTAB\n' > /etc/fstab
 cp -p /etc/fstab /tmp/fstab.before
 INTERNAL_UUID=e2e00001-0000-4000-8000-000000000001
@@ -425,15 +425,11 @@ drive_call() {
     busctl --system call org.betteros.Manager1 /org/betteros/Manager1 \
         org.betteros.Drives1 SetMountAutomatically sb "$1" "$2"
 }
-if output="$(drive_call "$INTERNAL_UUID" true 2>&1)"; then
-    printf 'With no systemd the mount should have been reported as failed: %s\n' "$output" >&2
-    exit 1
-fi
-printf '%s' "$output" | grep -q 'daemon.error.mount_failed' || {
-    printf 'Turning the drive on failed for another reason: %s\n' "$output" >&2
+output="$(drive_call "$INTERNAL_UUID" true 2>&1)" || {
+    printf 'Turning the drive on failed: %s\n' "$output" >&2
     exit 1
 }
-entry="UUID=$INTERNAL_UUID /mnt/better-os/$INTERNAL_UUID ext4 nofail,x-gvfs-show,x-systemd.device-timeout=10s 0 0"
+entry="UUID=$INTERNAL_UUID /mnt/better-os/$INTERNAL_UUID ext4 nosuid,nodev,nofail,x-gvfs-show,x-systemd.device-timeout=10s 0 0"
 grep -qxF "$entry" /etc/fstab || {
     printf 'The entry was not written as expected:\n' >&2
     cat /etc/fstab >&2
@@ -483,8 +479,12 @@ grep -qxF "ENV{ID_FS_UUID}==\"$STICK_UUID\", ENV{UDISKS_AUTO}=\"0\"" "$DRIVE_RUL
     exit 1
 }
 # What the package's prerm runs on removal takes every entry and rule.
-drive_call "$INTERNAL_UUID" true >/dev/null 2>&1 || true
+drive_call "$INTERNAL_UUID" true >/dev/null
 grep -q "$INTERNAL_UUID" /etc/fstab
+[[ -e /run/better-os/fstab.lock ]] || {
+    printf 'The service did not take its lock\n' >&2
+    exit 1
+}
 /usr/libexec/better-manager-daemon --remove-drive-entries
 cmp -s /etc/fstab /tmp/fstab.before || {
     printf 'Removing the drive entries did not give the file back as it was\n' >&2
