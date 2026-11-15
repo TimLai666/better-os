@@ -446,7 +446,7 @@ for package_name in \
                 printf 'The Better Manager prerm does not stop and disable the window attention service\n' >&2
                 exit 1
             }
-            # ADR 0026: the handoff for a privileged service too old to
+            # ADR 0028: the handoff for a privileged service too old to
             # install its own successor. The postinst starts it, and it hands
             # over only the exact packages this build made beside it.
             grep -qF '/usr/libexec/better-os/daemon-handoff start || true' "$control/postinst" || {

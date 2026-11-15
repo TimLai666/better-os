@@ -13,7 +13,7 @@
 //!   e2e_client stage   <release> <arch> <path-to-deb>
 //!
 //! `stage` only stages: it is what Better Manager does with the companions
-//! it hands to an old service's archive for the handoff (ADR 0026).
+//! it hands to an old service's archive for the handoff (ADR 0028).
 //!
 //! Prints the outcome document on success and exits non-zero on refusal.
 

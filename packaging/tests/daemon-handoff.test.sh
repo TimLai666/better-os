@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2030,SC2031 # each case exports its own fakes' answers in a subshell
-# Drives packaging/maintainer/daemon-handoff.sh (ADR 0026, ticket 124) against
+# Drives packaging/maintainer/daemon-handoff.sh (ADR 0028, ticket 124) against
 # fake dpkg-query, dpkg-deb, systemctl, systemd-run, pidof, and apt-get, with
 # a scratch archive and status directory. Nothing here reaches a real package
 # manager or systemd: the fakes are first on PATH and only write to a log.

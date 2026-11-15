@@ -125,7 +125,7 @@ contract.
     retryable `daemon.error.shutting_down` (the client asks again), letting
     the calls inside finish, and only then giving its bus name up: releasing
     the name of a `Type=dbus` unit first makes systemd stop it at once. Better Manager updates the daemon as a
-    companion of its own package (ADR 0026, ticket 124), and never inside
+    companion of its own package (ADR 0028, ticket 124), and never inside
     the daemon's unit when the installed prerm could stop it: from 0.2.16 the
     daemon installs its own package last, with `systemd-run --wait` in a
     transient unit; 0.2.13 to 0.2.15 install it as their own last step under

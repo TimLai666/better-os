@@ -171,7 +171,7 @@ jobs:
           shellcheck --shell=sh packaging/maintainer/user-units.sh packaging/maintainer/daemon.sh
           shellcheck packaging/tests/maintainer-scripts.test.sh
           bash packaging/tests/maintainer-scripts.test.sh
-      # ADR 0026: the handoff a privileged service of 0.2.12 or older is
+      # ADR 0028: the handoff a privileged service of 0.2.12 or older is
       # updated through, against fake dpkg, systemd, and apt.
       - name: Lint and test the privileged service handoff
         run: |
@@ -279,7 +279,8 @@ jobs:
       # it is exercised against a real dpkg, system bus, and polkitd rather than
       # only against fakes. It runs in a throwaway container for the same reason
       # the local script refuses to run on a host. The same container carries
-      # the apt install/remove smoke for one of the packages ticket 36 added,
+      # the apt install/remove smoke for better-launcher and better-storage
+      # (the latter also started against a real udisksd and session bus),
       # and the bootstrap installer's real install, re-run, and uninstall.
       - name: Run the privileged service end-to-end
         run: |
@@ -294,7 +295,7 @@ jobs:
           mkdir -p dist/e2e-client
           cp target/release/examples/e2e_client dist/e2e-client/
           # The published 0.2.9 privileged service the handoff check upgrades
-          # from (ADR 0026). Downloaded here, where there is network.
+          # from (ADR 0028). Downloaded here, where there is network.
           mkdir -p dist/e2e-legacy
           gh release download v0.2.9 --repo "${{ github.repository }}" \
             --pattern "better-manager-daemon_0.2.9_${{ matrix.asset_target }}_${{ matrix.architecture }}.deb" \

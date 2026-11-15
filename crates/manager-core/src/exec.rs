@@ -213,7 +213,7 @@ impl<'a> RealDriver<'a> {
     ///
     /// `Ok(None)` when no step crosses the privileged boundary — a plan of
     /// only Verify, Enable, and Disable steps — or when the only change is the
-    /// service handoff (ADR 0026), so nothing is sent at all.
+    /// service handoff (ADR 0028), so nothing is sent at all.
     pub fn wire_plan(&self, plan: &TransactionPlan) -> Result<Option<WirePlan>, FailureEvidence> {
         Ok(self.translate(plan)?.plan)
     }
@@ -237,7 +237,7 @@ impl<'a> RealDriver<'a> {
         })
     }
 
-    /// The whole translation (ADR 0026): which companions go as companions,
+    /// The whole translation (ADR 0028): which companions go as companions,
     /// whether the privileged service goes as its own last step or through
     /// the handoff, and which companions wait for the new service.
     pub fn translate(&self, plan: &TransactionPlan) -> Result<WireTranslation, FailureEvidence> {
@@ -978,7 +978,7 @@ fn unit_failure(failure: UnitFailure) -> FailureEvidence {
 }
 
 /// The privileged service's package, which travels as a companion of Better
-/// Manager (ADR 0026) and is never sent as a companion.
+/// Manager (ADR 0028) and is never sent as a companion.
 pub const SERVICE_PACKAGE: &str = "better-manager-daemon";
 
 /// The first service that runs its own upgrade in a transient unit outside
@@ -990,7 +990,7 @@ pub const SELF_UPGRADING_SINCE: &str = "0.2.16";
 pub const HANDOFF_SINCE: &str = "0.2.16";
 
 /// What the installed privileged service can be sent, from dpkg's version of
-/// it (ADR 0026). Read unprivileged, before anything is sent.
+/// it (ADR 0028). Read unprivileged, before anything is sent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceGeneration {
     /// No package: whatever answers on the bus was not installed by dpkg (a
@@ -1051,7 +1051,7 @@ impl ServiceGeneration {
     }
 }
 
-/// Where the handoff (ADR 0026) writes its state, world-readable.
+/// Where the handoff (ADR 0028) writes its state, world-readable.
 pub const HANDOFF_STATUS_PATH: &str = "/run/better-os/daemon-handoff";
 
 /// What the handoff last wrote: two lines, the state and its detail.
@@ -1746,7 +1746,7 @@ mod tests {
         }
     }
 
-    /// ADR 0026: a current service gets its own package as the plan's last
+    /// ADR 0028: a current service gets its own package as the plan's last
     /// step, and the adapter as a companion.
     #[test]
     fn a_current_service_is_offered_its_own_update_last() {

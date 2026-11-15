@@ -100,6 +100,7 @@ pub fn manifest(id: &str, integrations: Vec<DefaultIntegration>) -> ComponentMan
         paths: Vec::new(),
         release_notes: Vec::new(),
         default_integrations: integrations,
+        hardware_support: None,
     }
 }
 

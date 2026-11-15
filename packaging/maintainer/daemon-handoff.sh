@@ -1,6 +1,6 @@
 #!/bin/sh
 # Updates a privileged service of 0.2.12 or older from outside its own unit
-# (ADR 0026, ticket 124). Installed as /usr/libexec/better-os/daemon-handoff by
+# (ADR 0028, ticket 124). Installed as /usr/libexec/better-os/daemon-handoff by
 # better-manager.
 #
 # Such a service's prerm stops the unit dpkg runs in, so it can never install

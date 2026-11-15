@@ -665,7 +665,7 @@ mod tests {
 
     const SERVICE_DEB: &str = "better-manager-daemon_0.1.0_ubuntu-24.04_amd64.deb";
 
-    /// ADR 0026: this service's own package is its own last step, and it is
+    /// ADR 0028: this service's own package is its own last step, and it is
     /// installed from outside the service's unit, after the other packages.
     #[test]
     fn the_service_package_is_installed_outside_its_own_unit_last() {

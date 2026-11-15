@@ -75,7 +75,7 @@ pub trait AptDriver: Send + Sync {
         deb_paths: &[&Path],
         allow_downgrade: bool,
     ) -> Result<AptRun, DaemonError>;
-    /// Installs this service's own package from outside its unit (ADR 0026):
+    /// Installs this service's own package from outside its unit (ADR 0028):
     /// in a transient system unit when systemd runs, so dpkg is not in this
     /// service's cgroup or sandbox, and directly when there is no systemd and
     /// so no unit to be stopped from inside.
@@ -710,7 +710,7 @@ impl AptDriver for FakeAptDriver {
 mod tests {
     use super::*;
 
-    /// ADR 0026: the service's own upgrade waits for a transient unit of its
+    /// ADR 0028: the service's own upgrade waits for a transient unit of its
     /// own, with the environment every install gets, running the same
     /// apt-get arguments.
     #[test]

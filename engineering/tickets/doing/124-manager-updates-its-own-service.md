@@ -55,7 +55,7 @@ done and offered the button that does it.
 
 ## Notes
 
-- Design: [ADR 0026](../../decisions/0026-daemon-upgrades-outside-its-own-unit.md).
+- Design: [ADR 0028](../../decisions/0028-daemon-upgrades-outside-its-own-unit.md).
   The service is a companion of `better-manager` in its manifest; the client
   picks the path from dpkg's version of the service
   (`manager_core::exec::ServiceGeneration`).

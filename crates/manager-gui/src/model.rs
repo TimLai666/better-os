@@ -499,7 +499,7 @@ pub(crate) fn repair_result_line(
 }
 
 /// What the Updates screen offers about the privileged service (ticket 124,
-/// ADR 0026).
+/// ADR 0028).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ServiceNotice {
     pub(crate) title: &'static str,

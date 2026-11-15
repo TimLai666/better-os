@@ -152,7 +152,7 @@ PACKAGE_DATA_ONLY=0
 #                      stopped and disabled by a prerm on removal
 PACKAGE_ALWAYS_ON_UNITS=""
 #   PACKAGE_DAEMON_HANDOFF  1 for better-manager: ships the privileged service
-#                      handoff (ADR 0026) and the checksums of the service and
+#                      handoff (ADR 0028) and the checksums of the service and
 #                      adapter packages built beside it, and its postinst
 #                      starts the handoff
 PACKAGE_DAEMON_HANDOFF=0
@@ -227,7 +227,7 @@ write_user_unit_scripts() {
     done
 }
 
-# ADR 0026: a privileged service of 0.2.12 or older cannot install its own
+# ADR 0028: a privileged service of 0.2.12 or older cannot install its own
 # successor, so the Better Manager it installs does. The checksums are those of
 # the packages this run built for the same release and architecture, so only
 # those exact files are ever handed over.
@@ -252,7 +252,7 @@ add_daemon_handoff() {
         chmod 0755 "$staging_dir/DEBIAN/postinst"
     fi
     {
-        printf '\n# ADR 0026: hand a staged privileged service to a unit of its own.\n'
+        printf '\n# ADR 0028: hand a staged privileged service to a unit of its own.\n'
         # shellcheck disable=SC2016 # expanded by the maintainer script
         printf 'if [ "$1" = configure ]; then\n    /usr/libexec/better-os/daemon-handoff start || true\nfi\n'
     } >> "$staging_dir/DEBIAN/postinst"
@@ -602,7 +602,7 @@ POSTRM
 SHELL_ADAPTER_UUID="shell-adapter@betteros.org"
 
 # The privileged service and the shell adapter are built before Better
-# Manager, whose handoff (ADR 0026) carries their checksums.
+# Manager, whose handoff (ADR 0028) carries their checksums.
 make_daemon_package
 
 # The shared Better OS GNOME Shell extension (ADR 0018): three files and no

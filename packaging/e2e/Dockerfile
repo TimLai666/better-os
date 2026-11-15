@@ -17,13 +17,15 @@ ARG UBUNTU_RELEASE=24.04
 # network: anything apt would need to fetch at test time has to be present
 # already. The privileged service deliberately needs none of them — it installs
 # into an image that had none until this line — but better-monitor does, and it
-# is the component the test installs and removes.
+# is the component the test installs and removes. udisks2 is better-storage's
+# Depends, installed here so its install-and-remove check needs no network.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         apt \
         dbus \
         dpkg \
         policykit-1 \
+        udisks2 \
         libfontconfig1 \
         libwayland-client0 \
         libwayland-cursor0 \
@@ -45,7 +47,7 @@ COPY install.sh /opt/better-os/install.sh
 # system, and the client is an example built for this check.
 COPY packaging/e2e/50-better-os-e2e.rules packaging/e2e/50-better-os-e2e.pkla /opt/better-os/e2e/
 COPY dist/e2e-client/e2e_client /opt/better-os/e2e_client
-# The published 0.2.9 privileged service, which the handoff check (ADR 0026)
+# The published 0.2.9 privileged service, which the handoff check (ADR 0028)
 # upgrades from. CI downloads it before building the image.
 COPY dist/e2e-legacy/ /opt/better-os/legacy/
 

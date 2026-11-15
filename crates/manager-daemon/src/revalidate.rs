@@ -37,7 +37,7 @@ pub fn check_plan(plan: &WirePlan, host: &HostFacts) -> Result<(), DaemonError> 
     for (index, step) in plan.steps.iter().enumerate() {
         // This service's own package is replaced last, alone, so every other
         // package is in place before the program that installed it changes
-        // (ADR 0026).
+        // (ADR 0028).
         if step.component == crate::SERVICE_PACKAGE && index + 1 != plan.steps.len() {
             return Err(DaemonError::PlanRejected(format!(
                 "{} has to be the last step",

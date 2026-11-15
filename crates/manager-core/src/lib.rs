@@ -206,7 +206,7 @@ pub enum DesiredOperation {
     Verify,
     Restore,
     Remove,
-    /// Installs the companion packages (ADR 0018, ADR 0026) an installed
+    /// Installs the companion packages (ADR 0018, ADR 0028) an installed
     /// component is missing, at the component's own installed version. The
     /// component's own package is handed over again and is unchanged.
     AddCompanions,
@@ -520,7 +520,7 @@ pub struct PlanStep {
     #[serde(default)]
     pub leaves_enabled: bool,
     /// The companion packages a Verify step checks beside the component's
-    /// own: an installed component missing one is not healthy (ADR 0026).
+    /// own: an installed component missing one is not healthy (ADR 0028).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verify_companions: Vec<String>,
 }
@@ -1045,7 +1045,7 @@ pub enum DoctorCheckKind {
     /// dpkg holds this component, nothing records it, and its version cannot
     /// be ordered, so the manager does not manage it (ticket 69).
     UnorderableHostVersion,
-    /// An installed component's companion package (ADR 0018, ADR 0026) that
+    /// An installed component's companion package (ADR 0018, ADR 0028) that
     /// dpkg does not have at the component's version. `package` names it and
     /// `host_version` is what dpkg has, if anything.
     CompanionMissing,

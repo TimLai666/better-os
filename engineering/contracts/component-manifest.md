@@ -153,6 +153,47 @@ and executes nothing. The adapter set that ships is recorded in
 `crates/better-core/tests/fixtures/every-integration-kind.yaml` declares one
 integration of every kind and is the schema's coverage fixture.
 
+## Hardware support
+
+A component that touches hardware may say where its claims hold. The group is
+optional; a manifest without it declares nothing, which is right for every
+component that does not touch a device.
+
+```yaml
+hardware_support:
+  minimum_kernel: "5.15"
+  filesystems: [vfat, exfat, ntfs, ext4]
+  transports: [usb, sdio, mmc, thunderbolt, ieee1394]
+```
+
+- `minimum_kernel` — the oldest kernel release the component is built and
+  tested for, as `major.minor`.
+- `filesystems` — filesystem type names as the kernel and UDisks2 report them.
+- `transports` — buses as UDisks2's `Drive.ConnectionBus` reports them.
+
+It is a declaration, not a gate: nothing in it is executed and the manager
+does not refuse an install outside it. Both lists must be non-empty, without
+repeats, and each entry a lower-case token (letters, digits, `-`, starting with
+a letter, at most 32 characters).
+
+The lists are deliberately **not** closed sets, unlike `icon` or
+`component_type`. Every released manager reads the catalog from `main`
+(ADR 0013), and a closed set means a manager refuses the whole manifest the
+first time a later one names a value it does not know. A token can name
+nothing that is loaded or run, so an unknown value is kept and shown as
+declared. Managers from before this group skip it entirely: the manifest's top
+level does not deny unknown keys, and
+`an_unknown_top_level_group_is_ignored_rather_than_refused` in
+`crates/better-core/src/manifest.rs` fails if that ever changes. So adding the
+group needed no schema version bump.
+
+`better-storage.yaml` is the one manifest that declares it. Its transports are
+exactly `storage_platform::model::HOT_PLUGGABLE_TRANSPORTS`, and its
+filesystems include every one Format creates;
+`crates/storage-service/tests/manifest.rs` fails when either drifts. Where the
+Ready to unplug claim is made, and why, is
+[ADR 0026](/engineering/decisions/0026-storage-readiness-rule.md).
+
 ## Rejections
 
 The parser rejects unknown schema versions, empty required fields, malformed
@@ -161,7 +202,9 @@ or missing artifact variants, self-conflicts, missing dependencies, and
 dependency cycles. In `default_integrations` it also rejects a malformed or
 repeated integration ID, an empty or repeated target key, an absent platform or
 session list, a value the declared kind cannot carry, an adapter that cannot
-serve the declared kind, and a read-only adapter named as the apply adapter.
+serve the declared kind, and a read-only adapter named as the apply adapter. In `hardware_support` it
+rejects a kernel that is not `major.minor`, an empty list, a repeated entry,
+and an entry that is not a lower-case token.
 Lifecycle values are data only. The current manager never executes them.
 
 Benchmark definitions must name the baseline workload, metric, minimum desired

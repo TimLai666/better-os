@@ -1,4 +1,4 @@
-# ADR 0026: The privileged service is upgraded outside its own unit
+# ADR 0028: The privileged service is upgraded outside its own unit
 
 ## Status
 
