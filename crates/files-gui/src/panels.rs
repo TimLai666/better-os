@@ -596,8 +596,35 @@ impl FilesApp {
                     p.text_primary,
                 ))
                 .child(row(c.details_type, type_label));
-            if let files_core::EntrySize::Bytes(bytes) = entry.size {
-                column = column.child(row(c.details_size, crate::format::bytes(bytes)));
+            match &entry.body {
+                // An application's size, what it counts or why it has none,
+                // and its own data apart (ticket 128).
+                files_core::EntryBody::Application(facts) => {
+                    column = column.child(row(
+                        c.details_size,
+                        crate::app_sizes::size_text(&facts.size, c),
+                    ));
+                    if let Some(note) = crate::app_sizes::size_note(&facts.size, c) {
+                        column = column.child(fluent::label(note, CAPTION, p.text_secondary));
+                    }
+                    if let files_core::ApplicationSize::Known {
+                        data: Some(bytes), ..
+                    } = facts.size
+                    {
+                        column = column
+                            .child(row(c.app_size_data, crate::format::bytes(bytes)))
+                            .child(fluent::label(
+                                c.app_size_data_note,
+                                CAPTION,
+                                p.text_secondary,
+                            ));
+                    }
+                }
+                _ => {
+                    if let files_core::EntrySize::Bytes(bytes) = entry.size {
+                        column = column.child(row(c.details_size, crate::format::bytes(bytes)));
+                    }
+                }
             }
             match &entry.body {
                 files_core::EntryBody::Trashed(facts) => {
@@ -810,6 +837,21 @@ impl FilesApp {
         }));
         if details.dbus_activatable {
             column = column.child(line(c.app_details_dbus_activatable.to_string()));
+        }
+        // How much space it takes and what that counts (ticket 128).
+        if let Some(size) = self.session.application_size(&details.desktop_id) {
+            let mut text = format!(
+                "{}: {}",
+                c.details_size,
+                crate::app_sizes::size_text(size, c)
+            );
+            if let Some(note) = crate::app_sizes::size_note(size, c) {
+                text = format!("{text} ({note})");
+            }
+            column = column.child(line(text));
+            if let Some(data) = crate::app_sizes::data_text(size, c) {
+                column = column.child(line(format!("{data} ({})", c.app_size_data_note)));
+            }
         }
         // The diagnostic, labelled as one.
         column = column.child(line(format!(

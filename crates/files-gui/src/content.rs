@@ -37,6 +37,9 @@ pub struct RenderedRow {
     pub name: String,
     pub kind: EntryKind,
     pub size: String,
+    /// What the size counts or why there is none, for a tooltip: an
+    /// application's package, runtime, or missing record (ticket 128).
+    pub size_tooltip: Option<String>,
     pub modified: String,
     pub type_label: String,
     pub extension: String,
@@ -56,11 +59,14 @@ pub struct RenderedRow {
 pub fn tile_caption(row: &RenderedRow) -> String {
     let day = row.modified.split(' ').next().unwrap_or("").trim();
     let day = if day == "—" { "" } else { day };
-    let size = if row.kind == EntryKind::File && row.size != "—" {
-        row.size.as_str()
-    } else {
-        ""
+    // An application's caption carries its size once it is read (it then
+    // has a note saying what it counts), not "Calculating…" or "—".
+    let known = match row.kind {
+        EntryKind::File => row.size != "—",
+        EntryKind::Application => row.size != "—" && row.size_tooltip.is_some(),
+        _ => false,
     };
+    let size = if known { row.size.as_str() } else { "" };
     match (size.is_empty(), day.is_empty()) {
         (false, false) => format!("{size} · {day}"),
         (false, true) => size.to_string(),
@@ -96,7 +102,18 @@ pub fn rendered_row_named(
         id: entry.id(),
         name: entry.name.clone(),
         kind: entry.kind,
-        size: format::entry_size(entry.size),
+        size: match &entry.body {
+            files_core::EntryBody::Application(facts) => {
+                crate::app_sizes::size_text(&facts.size, c)
+            }
+            _ => format::entry_size(entry.size),
+        },
+        size_tooltip: match &entry.body {
+            files_core::EntryBody::Application(facts) => {
+                crate::app_sizes::size_note(&facts.size, c)
+            }
+            _ => None,
+        },
         modified: format::file_time(entry.modified),
         type_label: type_label_named(entry, c, describe),
         extension: entry.extension().to_string(),

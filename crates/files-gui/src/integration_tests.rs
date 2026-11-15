@@ -266,6 +266,15 @@ struct Rig {
 
 /// A session with a real catalog, a recording launcher, and a fake link.
 fn rig(defaults: Vec<(String, DesktopId)>, mode: CollectionMode) -> (Rig, FilesSession) {
+    rig_sized(defaults, mode, crate::app_sizes::ApplicationSizes::none())
+}
+
+/// [`rig`], with the Applications view's sizes read by `sizes`.
+fn rig_sized(
+    defaults: Vec<(String, DesktopId)>,
+    mode: CollectionMode,
+    sizes: crate::app_sizes::ApplicationSizes,
+) -> (Rig, FilesSession) {
     let root = tempfile::tempdir().expect("temp dir");
     let home = root.path().join("home");
     fs::create_dir_all(home.join("Documents")).unwrap();
@@ -274,7 +283,9 @@ fn rig(defaults: Vec<(String, DesktopId)>, mode: CollectionMode) -> (Rig, FilesS
     fs::write(home.join("Documents/.secret"), b"hidden").unwrap();
 
     let catalog = full_catalog();
-    let reader = Arc::new(FilesReader::new(ReaderConfig::new(), None, catalog.clone()));
+    let reader = Arc::new(
+        FilesReader::new(ReaderConfig::new(), None, catalog.clone()).with_application_sizes(sizes),
+    );
     let spawner = Arc::new(RecordingSpawner::new());
     let link = FakeLink::new(mode);
     let engine = Arc::new(JobEngine::new(EngineConfig {
@@ -366,6 +377,131 @@ fn the_applications_location_lists_real_applications_by_localized_name() {
             "no row exposes a .desktop file as if it were the application"
         );
     }
+}
+
+/// Sizes from a fixture, by desktop entry file name: the Editor is a
+/// package, the Viewer has no owner. Counts how many applications it was
+/// asked about.
+fn fixture_sizes(asked: Arc<std::sync::atomic::AtomicUsize>) -> crate::app_sizes::ApplicationSizes {
+    use files_core::{ApplicationSize, ApplicationSizeSource, ApplicationSizeUnknown};
+    crate::app_sizes::ApplicationSizes::with_sizer(Arc::new(move |queries| {
+        asked.fetch_add(queries.len(), std::sync::atomic::Ordering::SeqCst);
+        queries
+            .iter()
+            .map(
+                |query| match query.entry_path.file_name().and_then(|n| n.to_str()) {
+                    Some("org.example.Editor.desktop") => ApplicationSize::Known {
+                        bytes: 5 * 1024 * 1024,
+                        source: ApplicationSizeSource::DebianPackage {
+                            package: "editor".to_string(),
+                        },
+                        data: None,
+                    },
+                    _ => ApplicationSize::Unknown(ApplicationSizeUnknown::NoOwner),
+                },
+            )
+            .collect()
+    }))
+}
+
+fn sizes_by_name(session: &FilesSession) -> Vec<(String, files_core::ApplicationSize)> {
+    session
+        .pane()
+        .model()
+        .iter_visible()
+        .map(|entry| match &entry.body {
+            files_core::EntryBody::Application(facts) => (entry.name.clone(), facts.size.clone()),
+            _ => panic!("not an application row"),
+        })
+        .collect()
+}
+
+#[test]
+fn application_sizes_arrive_after_the_listing_are_read_once_and_sort() {
+    use files_core::{ApplicationSize, ApplicationSizeUnknown};
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (_rig, mut session) = rig_sized(
+        Vec::new(),
+        CollectionMode::Service,
+        fixture_sizes(Arc::clone(&asked)),
+    );
+    session.navigate_to(Location::Applications);
+    settle(&mut session);
+    // The listing does not wait for them.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while sizes_by_name(&session)
+        .iter()
+        .any(|(_, size)| *size == ApplicationSize::Pending)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the sizes never arrived"
+        );
+        session.pump();
+        std::thread::yield_now();
+    }
+    let sizes = sizes_by_name(&session);
+    assert_eq!(sizes[0].0, "Image Viewer");
+    assert_eq!(
+        sizes[0].1,
+        ApplicationSize::Unknown(ApplicationSizeUnknown::NoOwner)
+    );
+    assert_eq!(sizes[1].1.bytes(), Some(5 * 1024 * 1024));
+    // Every catalog record, the hidden daemon included, was asked about once.
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 3);
+
+    // A size sort puts the measured one first and the unknown one after it.
+    session.set_sort_key(files_core::SortKey::Size);
+    let names: Vec<String> = sizes_by_name(&session)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(names, ["Text Editor", "Image Viewer"]);
+
+    // Listing again uses what is kept rather than asking again.
+    session.reload();
+    settle(&mut session);
+    for _ in 0..20 {
+        session.pump();
+    }
+    assert_eq!(sizes_by_name(&session)[0].1.bytes(), Some(5 * 1024 * 1024));
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+#[test]
+fn a_catalog_change_forgets_the_sizes_it_had() {
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (rig, mut session) = rig_sized(
+        Vec::new(),
+        CollectionMode::Service,
+        fixture_sizes(Arc::clone(&asked)),
+    );
+    session.navigate_to(Location::Applications);
+    settle(&mut session);
+    let wait_for = |session: &mut FilesSession, count: usize| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while asked.load(std::sync::atomic::Ordering::SeqCst) < count
+            || sizes_by_name(session)
+                .iter()
+                .any(|(_, size)| *size == files_core::ApplicationSize::Pending)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the sizes never arrived"
+            );
+            session.pump();
+            std::thread::yield_now();
+        }
+    };
+    wait_for(&mut session, 3);
+    rig.catalog.replace(catalog_with(&[
+        ("org.example.Editor.desktop", EDITOR),
+        ("org.example.Viewer.desktop", VIEWER),
+    ]));
+    session.reload();
+    settle(&mut session);
+    wait_for(&mut session, 5);
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 5);
 }
 
 #[test]

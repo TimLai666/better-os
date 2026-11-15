@@ -17,6 +17,7 @@
 //! [`session::FilesSession`]; the engine, its worker threads, and its running
 //! jobs are untouched.
 
+pub mod app_sizes;
 pub mod apps;
 pub mod bookmarks;
 pub mod columns;

@@ -1162,7 +1162,13 @@ fn list_row(
                         ListColumn::Type => row.type_label.clone(),
                         _ => row.extension.clone(),
                     };
-                    cell(text, *column, secondary)
+                    match (column, &row.size_tooltip) {
+                        (ListColumn::Size, Some(reason)) => cell(text, *column, secondary)
+                            .id(SharedString::from(format!("size-{index}")))
+                            .tooltip(fluent::dialog::tooltip_builder(reason.clone().into()))
+                            .into_any_element(),
+                        _ => cell(text, *column, secondary).into_any_element(),
+                    }
                 }),
         );
 

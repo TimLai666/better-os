@@ -17,7 +17,8 @@
 use app_catalog_core::{Catalog, DesktopEnvironments, DesktopId, Locale, MimeType, Visibility};
 
 use crate::entry::{
-    ApplicationFacts, Entry, EntryBody, EntryKind, EntrySize, HiddenState, PermissionsSummary,
+    ApplicationFacts, ApplicationSize, Entry, EntryBody, EntryKind, EntrySize, HiddenState,
+    PermissionsSummary,
 };
 use crate::listing::{Cancelled, ListingSink};
 use crate::location::{LocalPath, Location};
@@ -45,9 +46,9 @@ pub fn entry_for(
     Entry {
         name: record.display_name(locale).to_string(),
         kind: EntryKind::Application,
-        // An application has no file size. Reporting zero would sort every
-        // application to one end of a size sort as if they were empty.
-        size: EntrySize::NotApplicable,
+        // Not read yet: the size comes from package records after the listing
+        // (ticket 128). Never zero, which would sort it as if it were empty.
+        size: EntrySize::Unknown,
         modified: None,
         permissions: PermissionsSummary::UNKNOWN,
         hidden: if visible {
@@ -67,7 +68,18 @@ pub fn entry_for(
                 .comment
                 .as_ref()
                 .map(|text| text.resolve(locale).to_string()),
+            size: ApplicationSize::Pending,
         }),
+    }
+}
+
+/// Gives an application row its size: the facts the panels read, and the
+/// row's sortable [`Entry::size`]. A row that is not an application is left
+/// alone.
+pub fn set_application_size(entry: &mut Entry, size: ApplicationSize) {
+    if let EntryBody::Application(facts) = &mut entry.body {
+        entry.size = size.entry_size();
+        facts.size = size;
     }
 }
 
@@ -81,13 +93,26 @@ pub fn list_applications(
     view: &ApplicationView,
     sink: &mut ListingSink,
 ) -> Result<(), Cancelled> {
+    list_applications_sized(catalog, view, sink, &|_| ApplicationSize::Pending)
+}
+
+/// [`list_applications`], with each row's size taken from `size_of` (a
+/// cache of sizes already read, in the window).
+pub fn list_applications_sized(
+    catalog: &Catalog,
+    view: &ApplicationView,
+    sink: &mut ListingSink,
+    size_of: &dyn Fn(&app_catalog_core::ApplicationRecord) -> ApplicationSize,
+) -> Result<(), Cancelled> {
     for record in catalog.records() {
         let visibility = record.visibility_in(&view.environments);
         let visible = visibility == Visibility::Visible;
         if !visible && !view.include_hidden {
             continue;
         }
-        sink.push(entry_for(record, view.locale.as_ref(), visible))?;
+        let mut entry = entry_for(record, view.locale.as_ref(), visible);
+        set_application_size(&mut entry, size_of(record));
+        sink.push(entry)?;
     }
     Ok(())
 }
