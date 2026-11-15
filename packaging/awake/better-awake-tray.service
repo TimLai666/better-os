@@ -1,6 +1,6 @@
 [Unit]
 Description=Better Awake tray icon
-Documentation=https://github.com/TimLai666/better-os/blob/main/docs/tickets/102-awake-tray-menu.md
+Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/tickets/done/102-awake-tray-menu.md
 # A user unit rather than an XDG autostart entry, so the tray is one of the
 # component's units: Better Manager enables and starts it on install, restarts
 # it on update and restore (an autostart program kept running the replaced

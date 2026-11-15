@@ -21,7 +21,7 @@
 //! limits ([`image::Limits`]), and a [`std::panic::catch_unwind`] around every
 //! provider call so a panicking parser degrades this one preview instead of
 //! taking the file manager with it. This is a boundary, not a sandbox — see
-//! `docs/files-preview-policy.md` for what a real one would need.
+//! `engineering/specs/files-preview-policy.md` for what a real one would need.
 //!
 //! **Degrades to metadata.** Every refusal produces a [`Preview::Metadata`]
 //! carrying the reason. There is no path that returns nothing and no path that

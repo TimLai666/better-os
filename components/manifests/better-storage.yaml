@@ -71,7 +71,7 @@ benchmarks:
 permissions:
   # No privileged operation is installed. Each entry below is an unprivileged
   # session capability; the boundary that would need privilege is recorded in
-  # docs/storage-safety-signals.md.
+  # engineering/specs/storage-safety-signals.md.
   - name: session-dbus-own-name
     reason: owns org.betteros.Storage1 on the session bus for its clients
   - name: system-dbus-udisks2-client

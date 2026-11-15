@@ -1,6 +1,6 @@
 [Unit]
 Description=Better Storage external device service
-Documentation=https://github.com/TimLai666/better-os/blob/main/docs/tickets/31-direct-removal-storage.md
+Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/tickets/doing/31-direct-removal-storage.md
 PartOf=graphical-session.target
 After=graphical-session.target
 

@@ -1,6 +1,6 @@
 [Unit]
 Description=Better OS component transaction service
-Documentation=https://github.com/TimLai666/better-os/blob/main/docs/decisions/0007-privileged-daemon-ipc.md
+Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/decisions/0007-privileged-daemon-ipc.md
 
 [Service]
 Type=dbus

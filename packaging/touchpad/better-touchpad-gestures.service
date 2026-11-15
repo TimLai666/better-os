@@ -1,6 +1,6 @@
 [Unit]
 Description=Better Touchpad gesture pipeline
-Documentation=https://github.com/TimLai666/better-os/blob/main/docs/tickets/38-gnome-gesture-adapter.md
+Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/tickets/done/38-gnome-gesture-adapter.md
 PartOf=graphical-session.target
 After=graphical-session.target
 

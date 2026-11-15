@@ -322,7 +322,7 @@ impl WireArtifact {
 }
 
 /// The release asset name a component version must publish under, matching the
-/// packaging contract in `docs/release-packaging.md`.
+/// packaging contract in `engineering/specs/release-packaging.md`.
 ///
 /// A version may carry an epoch because dpkg reports one, but Debian file names
 /// never do, so the epoch is stripped the same way `dpkg-deb` names its output.

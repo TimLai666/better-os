@@ -3,7 +3,7 @@
 What the control center contains, how each page behaves in every state, the
 exact copy in both languages, where every function of today's four windows
 goes, and how hardware is detected and written. The decision behind it is
-[ADR 0017](../docs/decisions/0017-one-control-center.md); the work is cut into
+[ADR 0017](/engineering/decisions/0017-one-control-center.md); the work is cut into
 tickets 84 to 91. The look follows `DESIGN.md`, and every control named here
 is a `better_ui::fluent` control (ticket 80). The mockups in
 `design/control-center/` draw Home, System, and Keep awake in both appearances.

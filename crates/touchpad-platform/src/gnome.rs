@@ -9,7 +9,7 @@
 //! — the release Zorin 18 ships — has no scroll-factor key for the touchpad and
 //! no smooth-scroll setting, so those three controls are reported unavailable
 //! with the reason attached rather than drawn as switches that do nothing. The
-//! table below is the whole mapping; `docs/touchpad-sensitivity-mapping.md`
+//! table below is the whole mapping; `engineering/specs/touchpad-sensitivity-mapping.md`
 //! records what it can and cannot promise.
 
 use std::path::{Path, PathBuf};

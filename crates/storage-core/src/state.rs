@@ -43,7 +43,7 @@ impl DeviceStateKind {
 
 /// No known filesystem write is pending, no tracked operation is active, and a
 /// flush was verified. It does not claim physical persistence; see
-/// `docs/storage-safety-signals.md`.
+/// `engineering/specs/storage-safety-signals.md`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReadyToUnplug {
     proof: ReadinessProof,

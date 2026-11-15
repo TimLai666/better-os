@@ -20,7 +20,7 @@
 //! session. That is what makes activation, cancellation, cooldown, thumb
 //! detection, and every preset gesture testable by replaying a stream, and it
 //! is why whichever backend [ADR
-//! 0012](../../../docs/decisions/0012-touchpad-gesture-backend.md) eventually
+//! 0012](../../../engineering/decisions/0012-touchpad-gesture-backend.md) eventually
 //! chooses can be dropped in front of it without moving any of the decisions
 //! into it.
 //!

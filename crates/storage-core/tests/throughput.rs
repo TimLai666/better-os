@@ -9,7 +9,7 @@
 //! What this does not measure is real device throughput. Copy time, flush time,
 //! and time-to-ready across exFAT, NTFS, and ext4 on flash, SSD, and spinning
 //! external disks need the hardware; that work is recorded as a follow-up in
-//! `docs/tickets/31-direct-removal-storage.md` rather than faked here.
+//! `engineering/tickets/doing/31-direct-removal-storage.md` rather than faked here.
 
 use std::time::{Duration, Instant};
 use storage_core::machine::ObservedSignals;

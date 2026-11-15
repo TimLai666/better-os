@@ -9,7 +9,7 @@
 //!
 //! Nothing here needs privilege. Mounting goes through UDisks2, which holds its
 //! own; the signals are read from `/proc`; the flush is `syncfs` on a mount the
-//! session already owns. `docs/storage-safety-signals.md` records the two
+//! session already owns. `engineering/specs/storage-safety-signals.md` records the two
 //! places where privilege would buy a better answer, and issue #5 defers that
 //! boundary to an ADR rather than to this code.
 

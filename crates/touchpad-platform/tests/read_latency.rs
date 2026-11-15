@@ -5,7 +5,7 @@
 //! than the developer's own, so the number means the same thing on every
 //! machine and the test mutates nothing.
 //!
-//! The measured figures are recorded in `docs/touchpad-sensitivity-mapping.md`.
+//! The measured figures are recorded in `engineering/specs/touchpad-sensitivity-mapping.md`.
 
 use std::time::Instant;
 

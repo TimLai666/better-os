@@ -225,7 +225,7 @@ impl SafetyEvidence {
 ///
 /// Issue #5 defers the exact readiness algorithm to an ADR, so the values are
 /// here as data rather than buried in the comparison, and every one of them is
-/// documented in `docs/storage-safety-signals.md`.
+/// documented in `engineering/specs/storage-safety-signals.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EvidencePolicy {
     /// How old a verified flush may be and still support a claim. Observation

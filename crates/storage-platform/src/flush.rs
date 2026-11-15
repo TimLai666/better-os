@@ -61,7 +61,7 @@ impl FlushBackend for LinuxFlush {
     fn flush_device(&self, device_path: &Path) -> FlushReport {
         // BLKFLSBUF needs the device open for writing, which an unprivileged
         // session does not get. This is one of the two places a privileged
-        // helper would change the answer; see docs/storage-safety-signals.md.
+        // helper would change the answer; see engineering/specs/storage-safety-signals.md.
         let device = match OpenOptions::new().read(true).write(true).open(device_path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {

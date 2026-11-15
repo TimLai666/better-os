@@ -1,6 +1,6 @@
 //! The GNOME Shell route: `org.betteros.TouchpadAdapter1`.
 //!
-//! [ADR 0012](../../../docs/decisions/0012-touchpad-gesture-backend.md) chose
+//! [ADR 0012](../../../engineering/decisions/0012-touchpad-gesture-backend.md) chose
 //! the minimal GNOME Shell adapter as the production gesture backend, and the
 //! project owner granted the bounded GJS exception it depended on. The
 //! extension lives in `adapters/gnome-shell-touchpad/`; this module is the Rust

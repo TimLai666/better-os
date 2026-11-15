@@ -1,7 +1,7 @@
 //! Checking a plan against the host, from scratch.
 //!
 //! The client already validated this plan. That does not count here: the client
-//! is untrusted, and `docs/security-and-rollback.md` requires the privileged
+//! is untrusted, and `engineering/specs/security-and-rollback.md` requires the privileged
 //! executor to validate a plan again before acting on it.
 //!
 //! Everything in this module runs before any state is touched. A rejection here

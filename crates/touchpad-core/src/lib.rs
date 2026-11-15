@@ -14,7 +14,7 @@
 //! - Is any of this working? ([`health`])
 //!
 //! It has no idea that GNOME, dconf, or libinput exist. A backend maps these
-//! identities onto whatever it stores, and `docs/touchpad-sensitivity-mapping.md`
+//! identities onto whatever it stores, and `engineering/specs/touchpad-sensitivity-mapping.md`
 //! records the one mapping that ships and what it cannot promise.
 
 pub mod backup;
