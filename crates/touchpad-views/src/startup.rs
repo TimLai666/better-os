@@ -148,6 +148,17 @@ impl Startup {
 /// route — the launcher through the interface Better Launcher already serves,
 /// and the desktop through the GNOME Shell adapter. A session without it falls
 /// back to the recording adapter, which changes nothing and says so.
+/// Why the adapter is not on the bus, as far as the shell can say: GNOME's
+/// switch that turns off every extension wins over the extension list.
+fn unreachable_adapter_reason(user_extensions_enabled: Option<bool>) -> String {
+    match user_extensions_enabled {
+        Some(false) => "GNOME's switch that turns off all extensions is on, so the GNOME Shell \
+                        adapter extension cannot run"
+            .to_string(),
+        _ => "the GNOME Shell adapter extension is not enabled on this session".to_string(),
+    }
+}
+
 fn build_session_adapter(
     options: &StartupOptions,
 ) -> (Box<dyn SessionAdapter>, Option<(bool, String)>) {
@@ -156,12 +167,12 @@ fn build_session_adapter(
     }
     let shell = match SessionBusShell::connect() {
         Ok(shell) if shell.is_reachable() => shell,
-        Ok(_) => {
+        Ok(shell) => {
             return (
                 Box::new(MockSessionAdapter::new()),
                 Some((
                     false,
-                    "the GNOME Shell adapter extension is not enabled on this session".to_string(),
+                    unreachable_adapter_reason(shell.user_extensions_enabled()),
                 )),
             );
         }
@@ -247,4 +258,16 @@ pub fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod adapter_reason_tests {
+    use super::unreachable_adapter_reason;
+
+    #[test]
+    fn the_all_extensions_off_switch_is_named() {
+        assert!(unreachable_adapter_reason(Some(false)).contains("turns off all extensions"));
+        assert!(unreachable_adapter_reason(Some(true)).contains("not enabled"));
+        assert!(unreachable_adapter_reason(None).contains("not enabled"));
+    }
 }

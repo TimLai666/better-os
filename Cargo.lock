@@ -8223,6 +8223,7 @@ version = "0.2.15"
 dependencies = [
  "better-core",
  "defaults-platform",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "touchpad-core",

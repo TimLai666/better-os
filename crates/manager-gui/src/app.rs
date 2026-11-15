@@ -766,6 +766,9 @@ impl ManagerApp {
                     let extensions =
                         manager_platform::shell_extensions::GsettingsShellExtensions::from_environment();
                     let _ = manager.heal_shell_extensions(&snapshot, &DpkgProbe, &extensions);
+                    // A removal with no session left Better Touchpad's settings
+                    // to put back here, in the person's session (ticket 88).
+                    crate::pages::touchpad::finish_pending_restore();
                     manager
                         .run_user_unit_healing(&snapshot, &DpkgProbe, &units)
                         .unwrap_or_default()

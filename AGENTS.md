@@ -402,7 +402,13 @@ GUI or dependency compiles when the relevant command was not executed.
   enabled component's extension back on, and tests are kept off the person's
   settings by `BETTER_OS_TEST_SYSTEMCTL_GUARD`. A running shell loads a newly
   installed extension only at the next login, so one login after install is
-  still needed. The gesture service's first run puts the Mac-style preset in
+  still needed. A package may ship `/usr/lib/better-os/before-removal/<package>`:
+  manager-core runs it as the person (only a regular, root-owned file nobody
+  else can write) after the units stop and right before the daemon removes
+  the package, and with `--undo` if the daemon then refuses. It never blocks a
+  removal: exit 3 is a warning in Activity, exit 4 means no session and a
+  pending restore Better Manager finishes at its next start. Better Touchpad's
+  puts its captured touchpad settings back. The gesture service's first run puts the Mac-style preset in
   force when no gesture file exists yet. Without both processes the Gestures
   screen and the `touchpad.gesture_bridge` health check say which is missing.
 - Three rows of the Mac-style preset do not work on GNOME 46 and must not be

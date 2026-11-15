@@ -10,15 +10,15 @@ use std::sync::{Arc, Mutex};
 
 use better_core::package_health::{FakeHealthProbe, InstalledFiles};
 use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
-use manager_core::exec::{CancelToken, RealDriver, StageDriver};
+use manager_core::exec::{CancelToken, DiscardingSink, RealDriver, StageDriver, TransactionRunner};
 use manager_core::{
-    ComponentRecord, DesiredOperation, ExecutionMode, HealthState, InstallProvenance, Manager,
-    ManagerState, OperationProgress, OperationStage, StageOutcome, SystemProfile,
+    ActivityKind, ComponentRecord, DesiredOperation, ExecutionMode, HealthState, InstallProvenance,
+    Manager, ManagerState, OperationProgress, OperationStage, StageOutcome, SystemProfile,
 };
 use manager_ipc::{ExecutionStage, OutcomeStatus, TransactionOutcome, WirePlan};
 use manager_platform::download::{ArtifactCache, HttpDownloader};
 use manager_platform::dpkg::FixedPackageStateProbe;
-use manager_platform::removal_hooks::{FakeHookRunner, HookFailure};
+use manager_platform::removal_hooks::{FakeHookRunner, HookOutcome};
 use manager_platform::shell_extensions::{
     ExtensionFailure, ExtensionFailureKind, FakeShellExtensions, MemoryShellSettings,
     ShellExtensions,
@@ -335,53 +335,141 @@ fn the_startup_pass_turns_on_only_what_an_enabled_record_owns() {
     assert!(extensions.settings().enabled_list().is_empty());
 }
 
+/// Runs a removal through the real runner, which is what records warnings.
+fn remove_through_runner(
+    state: &mut ManagerState,
+    extensions: &FakeShellExtensions,
+    refuse: bool,
+    hooks: &FakeHookRunner,
+) -> OperationProgress {
+    let manager = manager();
+    let packages = packages();
+    let health = FakeHealthProbe::with_files(files().paths);
+    let executor = Executor {
+        log: Arc::new(Mutex::new(Vec::new())),
+        refuse,
+    };
+    let driver = RealDriver::new(
+        downloader(),
+        &executor,
+        &packages,
+        &health,
+        "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        SystemProfile::default(),
+    )
+    .with_shell_extensions(extensions)
+    .with_removal_hooks(hooks);
+    let plan = manager
+        .plan_in_mode(
+            state,
+            &touchpad(),
+            DesiredOperation::Remove,
+            ExecutionMode::Real,
+        )
+        .expect("the removal plans");
+    manager.begin(state, plan).expect("the plan begins");
+    manager
+        .advance(state, StageOutcome::Completed)
+        .expect("downloading completes");
+    TransactionRunner::new(&manager, Box::new(driver), &DiscardingSink)
+        .run(state, &mut |_| {})
+        .expect("the runner runs")
+}
+
+fn warnings(state: &ManagerState) -> Vec<String> {
+    state
+        .activity
+        .iter()
+        .filter(|entry| entry.kind == ActivityKind::Warning)
+        .filter_map(|entry| entry.evidence.clone())
+        .collect()
+}
+
 #[test]
-fn removing_runs_the_before_removal_program_before_the_package_goes() {
+fn removing_runs_the_before_removal_program_once_and_warns_about_nothing() {
     let extensions = controller(&[OURS], &[]);
     let hooks = FakeHookRunner::default();
     let mut state = installed(true);
 
-    let (progress, log) = run_with_hooks(
-        &mut state,
-        DesiredOperation::Remove,
-        &extensions,
-        false,
-        &hooks,
-    );
+    let progress = remove_through_runner(&mut state, &extensions, false, &hooks);
 
     assert!(
         matches!(progress, OperationProgress::Finished { .. }),
         "{progress:?}"
     );
-    assert_eq!(hooks.ran(), [std::path::PathBuf::from(HOOK)]);
-    assert_eq!(log, ["apply"]);
+    assert_eq!(hooks.ran(), [(std::path::PathBuf::from(HOOK), false)]);
+    assert!(warnings(&state).is_empty(), "{:?}", warnings(&state));
 }
 
 #[test]
-fn a_before_removal_program_that_fails_stops_the_removal_with_nothing_changed() {
+fn settings_that_could_not_be_restored_never_stop_the_removal() {
     let extensions = controller(&[OURS], &[]);
-    let hooks = FakeHookRunner {
-        failure: Some(HookFailure {
-            no_session: false,
-            message: "the touchpad settings could not be put back".to_string(),
-        }),
-        ..FakeHookRunner::default()
-    };
+    let hooks = FakeHookRunner::answering(HookOutcome::NotRestored(
+        "the touchpad capture could not be read".to_string(),
+    ));
     let mut state = installed(true);
 
-    let (progress, log) = run_with_hooks(
-        &mut state,
-        DesiredOperation::Remove,
-        &extensions,
-        false,
-        &hooks,
-    );
+    let progress = remove_through_runner(&mut state, &extensions, false, &hooks);
 
-    let OperationProgress::Failed { failure } = progress else {
-        panic!("{progress:?}");
-    };
-    assert_eq!(failure.evidence, "before_removal.failed");
-    assert!(log.is_empty(), "the package was not handed over: {log:?}");
+    assert!(
+        matches!(progress, OperationProgress::Finished { .. }),
+        "{progress:?}"
+    );
+    assert!(
+        state
+            .components
+            .get(&touchpad())
+            .unwrap()
+            .installed_version
+            .is_none()
+    );
+    let said = warnings(&state);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].starts_with("before_removal.not_restored"),
+        "{said:?}"
+    );
+    assert!(
+        said[0].contains("settings could not be restored"),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn with_no_session_the_restore_is_deferred_and_the_removal_finishes() {
+    let extensions = controller(&[OURS], &[]);
+    let hooks = FakeHookRunner::answering(HookOutcome::Deferred);
+    let mut state = installed(true);
+
+    let progress = remove_through_runner(&mut state, &extensions, false, &hooks);
+
+    assert!(
+        matches!(progress, OperationProgress::Finished { .. }),
+        "{progress:?}"
+    );
+    assert!(warnings(&state)[0].starts_with("before_removal.deferred"));
+}
+
+#[test]
+fn a_removal_the_service_refuses_undoes_the_before_removal_program() {
+    let extensions = controller(&[OURS], &[]);
+    let hooks = FakeHookRunner::default();
+    let mut state = installed(true);
+
+    let progress = remove_through_runner(&mut state, &extensions, true, &hooks);
+
+    assert!(
+        matches!(progress, OperationProgress::Failed { .. }),
+        "{progress:?}"
+    );
+    assert_eq!(
+        hooks.ran(),
+        [
+            (std::path::PathBuf::from(HOOK), false),
+            (std::path::PathBuf::from(HOOK), true)
+        ],
+        "the settings it put back are applied again"
+    );
     assert_eq!(extensions.settings().enabled_list(), [OURS]);
     assert!(
         state
@@ -391,6 +479,7 @@ fn a_before_removal_program_that_fails_stops_the_removal_with_nothing_changed() 
             .installed_version
             .is_some()
     );
+    assert!(warnings(&state).is_empty());
 }
 
 #[test]
@@ -402,4 +491,18 @@ fn no_other_operation_runs_the_before_removal_program() {
         let _ = run_with_hooks(&mut state, operation, &extensions, false, &hooks);
     }
     assert!(hooks.ran().is_empty());
+}
+
+#[test]
+fn gnome_s_all_extensions_off_switch_fails_the_check_and_says_why() {
+    let extensions = ShellExtensions::new(MemoryShellSettings::new(&[OURS], &[]).all_off());
+    let mut state = installed(true);
+
+    let progress = run(&mut state, DesiredOperation::Verify, &extensions, false);
+
+    let OperationProgress::Failed { failure } = progress else {
+        panic!("{progress:?}");
+    };
+    assert_eq!(failure.evidence, "shell_extension.not_enabled");
+    assert!(failure.detail.unwrap().contains("turns off all extensions"));
 }

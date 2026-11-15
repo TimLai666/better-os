@@ -249,11 +249,33 @@ pub(crate) fn hide_autostart(roots: &Roots, tool: Tool) -> Result<PathBuf, Overr
         "[Desktop Entry]\nType=Application\nName={}\nHidden=true\n{OVERRIDE_MARK}\n",
         tool.name()
     );
-    let temporary = path.with_extension("desktop.tmp-better-os");
+    let temporary = roots
+        .user_autostart
+        .join(format!("{file}{TEMPORARY_SUFFIX}"));
     std::fs::write(&temporary, body)
         .map_err(|error| OverrideError::Io(temporary.clone(), error))?;
     std::fs::rename(&temporary, &path).map_err(|error| OverrideError::Io(path.clone(), error))?;
     Ok(path)
+}
+
+/// The temporary name `hide_autostart` writes through; the package's postrm
+/// cleans the same name.
+pub(crate) const TEMPORARY_SUFFIX: &str = ".tmp-better-os";
+
+/// Removes a temporary copy a crash in the middle of `hide_autostart` left
+/// behind: a regular file (never a link) carrying the marker. Run before the
+/// page looks at the tools, so a leftover never outlives the next visit.
+pub(crate) fn forget_stale_temporaries(roots: &Roots) {
+    for file in Tool::ALL.iter().filter_map(|tool| tool.autostart_file()) {
+        let path = roots
+            .user_autostart
+            .join(format!("{file}{TEMPORARY_SUFFIX}"));
+        let regular = std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_file());
+        if regular && std::fs::read_to_string(&path).is_ok_and(|text| text.contains(OVERRIDE_MARK))
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// Removes the override `hide_autostart` wrote, and only that.
@@ -273,6 +295,33 @@ pub(crate) fn show_autostart(roots: &Roots, tool: Tool) -> Result<(), OverrideEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_crashed_write_s_temporary_copy_is_cleaned_and_nothing_else() {
+        let tree = tree();
+        let dir = &tree.roots.user_autostart;
+        std::fs::create_dir_all(dir).unwrap();
+        let ours = dir.join(format!("touchegg.desktop{TEMPORARY_SUFFIX}"));
+        std::fs::write(
+            &ours,
+            format!("[Desktop Entry]\nHidden=true\n{OVERRIDE_MARK}\n"),
+        )
+        .unwrap();
+        let theirs = dir.join(format!("fusuma.desktop{TEMPORARY_SUFFIX}"));
+        std::fs::write(&theirs, "[Desktop Entry]\nExec=fusuma\n").unwrap();
+
+        forget_stale_temporaries(&tree.roots);
+
+        assert!(!ours.exists());
+        assert!(theirs.exists(), "a file without the marker is not ours");
+    }
+
+    /// The postrm cleans the same temporary name the page writes through.
+    #[test]
+    fn the_removal_script_cleans_the_temporary_name_this_writes() {
+        let script = include_str!("../../../../../packaging/maintainer/autostart-overrides.sh");
+        assert!(script.contains(&format!("$file{TEMPORARY_SUFFIX}")));
+    }
 
     struct Tree {
         _guard: tempfile::TempDir,

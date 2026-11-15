@@ -112,6 +112,27 @@ impl SessionBusShell {
         })
     }
 
+    /// GNOME Shell's own `UserExtensionsEnabled`, or `None` when the shell
+    /// does not answer. While it is false GNOME 46 runs no extension but its
+    /// session mode's, so an adapter that is enabled in the list still never
+    /// owns its name (ticket 88).
+    pub fn user_extensions_enabled(&self) -> Option<bool> {
+        let connection = self.connection();
+        self.runtime.block_on(async {
+            let proxy = zbus::fdo::PropertiesProxy::builder(connection)
+                .destination("org.gnome.Shell")
+                .ok()?
+                .path("/org/gnome/Shell")
+                .ok()?
+                .build()
+                .await
+                .ok()?;
+            let interface = "org.gnome.Shell.Extensions".try_into().ok()?;
+            let value = proxy.get(interface, "UserExtensionsEnabled").await.ok()?;
+            bool::try_from(value).ok()
+        })
+    }
+
     /// The extension's signals, as a blocking stream.
     pub fn events(&self) -> Result<SessionBusShellEvents, ShellError> {
         let rule = zbus::MatchRule::builder()

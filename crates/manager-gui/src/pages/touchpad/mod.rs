@@ -640,8 +640,10 @@ impl TouchpadPage {
                     if in_memory {
                         return Vec::new();
                     }
+                    let roots = competitors::Roots::for_session();
+                    competitors::forget_stale_temporaries(&roots);
                     let extension = shell::x11_gestures_enabled();
-                    competitors::detect(&competitors::Roots::for_session(), extension)
+                    competitors::detect(&roots, extension)
                 })
                 .await;
             let _ = this.update(cx, |page, cx| {
@@ -764,4 +766,20 @@ mod shell {
             Err(error) => Err(error.to_string()),
         }
     }
+}
+
+/// Finishes the touchpad restore a session-less removal left behind, if
+/// there is one. Not run under the test guard, which keeps tests away from
+/// the person's own session.
+pub(crate) fn finish_pending_restore() {
+    if std::env::var_os(manager_platform::user_units::SYSTEMCTL_GUARD_VARIABLE).is_some() {
+        return;
+    }
+    let state_home = touchpad_platform::removal::user_state_home();
+    if !touchpad_platform::removal::pending_path(&state_home).exists() {
+        return;
+    }
+    let mut backend = touchpad_platform::GnomeBackend::connect(None);
+    let reachable = backend.status().reachable;
+    let _ = touchpad_platform::removal::finish_pending(&mut backend, reachable, &state_home);
 }

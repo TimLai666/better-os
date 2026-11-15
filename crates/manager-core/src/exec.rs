@@ -17,7 +17,7 @@ use manager_ipc::{
 };
 use manager_platform::download::HttpDownloader;
 use manager_platform::dpkg::PackageStateProbe;
-use manager_platform::removal_hooks::{HookFailure, RemovalHookRunner, before_removal_hook};
+use manager_platform::removal_hooks::{HookOutcome, RemovalHookRunner, before_removal_hook};
 use manager_platform::shell_extensions::{
     ExtensionFailure, ShellExtensionController, shell_extensions,
 };
@@ -25,8 +25,9 @@ use manager_platform::user_units::{UnitActivity, UnitFailure, UserUnitController
 use manager_platform::{DownloadRequest, PlatformError, PrivilegedTransactionExecutor};
 
 use crate::{
-    DesiredOperation, FailureEvidence, Manager, ManagerError, ManagerState, MockOutcome,
-    OperationProgress, OperationStage, PlanStep, StageOutcome, SystemProfile, TransactionPlan,
+    ComponentId, DesiredOperation, FailureEvidence, Manager, ManagerError, ManagerState,
+    MockOutcome, OperationProgress, OperationStage, PlanStep, StageOutcome, SystemProfile,
+    TransactionPlan,
 };
 
 /// A cooperative cancellation flag shared with whatever is running a stage.
@@ -78,6 +79,13 @@ pub trait StageDriver {
     /// back. A driver that says no makes the manager refuse to offer a cancel
     /// it cannot honor.
     fn supports_cancel_at(&self, stage: OperationStage) -> bool;
+
+    /// What the last stage wants the person told that did not stop it, as
+    /// (component, evidence). The runner records each as a warning in the
+    /// activity log. Taking them empties the list.
+    fn take_warnings(&mut self) -> Vec<(ComponentId, String)> {
+        Vec::new()
+    }
 }
 
 /// The scripted driver behind the demo and the lifecycle suite.
@@ -175,6 +183,7 @@ pub struct RealDriver<'a> {
     user_units: Option<&'a dyn UserUnitController>,
     shell_extensions: Option<&'a dyn ShellExtensionController>,
     removal_hooks: Option<&'a dyn RemovalHookRunner>,
+    warnings: Vec<(ComponentId, String)>,
     transaction_id: String,
     profile: SystemProfile,
     /// Set once the transaction has been handed over, so the outcome can be
@@ -200,6 +209,7 @@ impl<'a> RealDriver<'a> {
             user_units: None,
             shell_extensions: None,
             removal_hooks: None,
+            warnings: Vec::new(),
             transaction_id: transaction_id.into(),
             profile,
             outcome: None,
@@ -626,22 +636,55 @@ impl<'a> RealDriver<'a> {
     /// Runs each removed package's before-removal program (ticket 88), so a
     /// setting it wrote in the person's session is put back while the
     /// program is still on disk. A driver built without a runner runs none.
-    fn run_removal_hooks(&self, plan: &TransactionPlan) -> Result<(), FailureEvidence> {
+    ///
+    /// Nothing here can stop a removal: what could not be put back, or is
+    /// put back at the next login instead, becomes a warning. Returns the
+    /// programs that ran, so a removal the daemon then refuses can undo them.
+    fn run_removal_hooks(&mut self, plan: &TransactionPlan) -> Vec<std::path::PathBuf> {
         let Some(runner) = self.removal_hooks else {
-            return Ok(());
+            return Vec::new();
         };
+        let mut ran = Vec::new();
         for step in plan
             .steps()
             .iter()
             .filter(|step| step.operation == DesiredOperation::Remove)
         {
-            let files = self.step_files(step)?;
-            let Some(program) = before_removal_hook(step.component.as_str(), &files) else {
+            let program = match self.step_files(step) {
+                Ok(files) => before_removal_hook(step.component.as_str(), &files),
+                Err(_) => None,
+            };
+            let Some(program) = program else {
                 continue;
             };
-            runner.run(&program).map_err(hook_failure)?;
+            match runner.run(&program, false) {
+                HookOutcome::Restored => {}
+                HookOutcome::Deferred => self.warnings.push((
+                    step.component.clone(),
+                    "before_removal.deferred: the settings it changed are put back the next \
+                     time Better Manager starts in your session"
+                        .to_string(),
+                )),
+                HookOutcome::NotRestored(reason) => self.warnings.push((
+                    step.component.clone(),
+                    format!(
+                        "before_removal.not_restored: settings could not be restored ({reason})"
+                    ),
+                )),
+            }
+            ran.push(program);
         }
-        Ok(())
+        ran
+    }
+
+    /// Undoes the before-removal programs that ran for a removal that did
+    /// not happen, so the component stays exactly as it was.
+    fn undo_removal_hooks(&self, ran: &[std::path::PathBuf]) {
+        if let Some(runner) = self.removal_hooks {
+            for program in ran {
+                let _ = runner.run(program, true);
+            }
+        }
     }
 
     fn step_files(
@@ -738,6 +781,22 @@ impl<'a> RealDriver<'a> {
                     return Some(StageOutcome::Failed(extension_failure(&uuids, failure)));
                 }
             };
+            match controller.all_turned_off() {
+                Ok(true) => {
+                    return Some(StageOutcome::Failed(FailureEvidence::with_detail(
+                        "shell_extension.not_enabled",
+                        format!(
+                            "GNOME's switch that turns off all extensions is on, so {} cannot run",
+                            uuids.join(", ")
+                        ),
+                    )));
+                }
+                Ok(false) => {}
+                Err(failure) if failure.is_no_shell() => continue,
+                Err(failure) => {
+                    return Some(StageOutcome::Failed(extension_failure(&uuids, failure)));
+                }
+            }
             if let Some(off) = uuids.iter().find(|uuid| !on.contains(uuid)) {
                 return Some(StageOutcome::Failed(FailureEvidence::with_detail(
                     "shell_extension.not_enabled",
@@ -987,12 +1046,6 @@ impl StageDriver for RealDriver<'_> {
                 // goes: once dpkg has taken the unit files away there is
                 // nothing left to name, and a service still running from a
                 // deleted file is exactly the state that cannot be described.
-                // Settings the component wrote go back first, while its own
-                // program is still there to do it. Nothing else has changed
-                // yet, so a refusal here leaves the component as it was.
-                if let Err(evidence) = self.run_removal_hooks(plan) {
-                    return StageOutcome::Failed(evidence);
-                }
                 let stopped = match self.stop_units_for_removal(plan) {
                     Ok(stopped) => stopped,
                     Err(evidence) => return StageOutcome::Failed(evidence),
@@ -1004,10 +1057,17 @@ impl StageDriver for RealDriver<'_> {
                         return StageOutcome::Failed(evidence);
                     }
                 };
+                // Settings the component wrote go back last before the package
+                // goes, while its own program is still there to do it, and
+                // after nothing of it runs any more to write them again. A
+                // removal the daemon then refuses undoes this too.
+                let ran = self.run_removal_hooks(plan);
                 let outcome = self.apply(plan, progress);
                 if matches!(outcome, StageOutcome::Completed) {
                     return outcome;
                 }
+                self.undo_removal_hooks(&ran);
+                self.warnings.clear();
                 if let Some(controller) = self.shell_extensions {
                     let _ = controller.enable(&turned_off);
                 }
@@ -1094,6 +1154,10 @@ impl StageDriver for RealDriver<'_> {
         // changed, and abandoning would claim a restoration nothing performed.
         matches!(stage, OperationStage::Downloading)
     }
+
+    fn take_warnings(&mut self) -> Vec<(ComponentId, String)> {
+        std::mem::take(&mut self.warnings)
+    }
 }
 
 fn wire_action(operation: DesiredOperation) -> Option<WireAction> {
@@ -1154,15 +1218,6 @@ pub(crate) fn split_daemon_key(error_key: &str) -> FailureEvidence {
 ///
 /// No user session is its own key: nothing was refused, there was nobody to
 /// ask, and the person has to be told that rather than that a service broke.
-fn hook_failure(failure: HookFailure) -> FailureEvidence {
-    let evidence = if failure.no_session {
-        "before_removal.no_session"
-    } else {
-        "before_removal.failed"
-    };
-    FailureEvidence::with_detail(evidence, failure.message)
-}
-
 fn extension_failure(uuids: &[String], failure: ExtensionFailure) -> FailureEvidence {
     let names = uuids.join(", ");
     if failure.is_no_session() {
@@ -1469,6 +1524,15 @@ impl<'a> TransactionRunner<'a> {
                 &self.cancel,
             );
             let progress = self.manager.advance(state, outcome)?;
+            for (component, evidence) in self.driver.take_warnings() {
+                state.record(
+                    crate::ActivityKind::Warning,
+                    Some(component),
+                    Some(plan.steps()[0].operation),
+                    Some(stage),
+                    Some(evidence),
+                );
+            }
             self.save(state, events)?;
 
             match progress {

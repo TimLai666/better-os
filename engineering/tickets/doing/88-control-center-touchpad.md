@@ -114,8 +114,8 @@ Built and tested since the first pass (all of the first pass's list stands):
 - Scroll speed: tested on a private GNOME Shell 46.0; an extension cannot see
   a client's scroll at all. Evidence and the alternative's estimate are in
   ADR 0031, superseded by ADR 0030: the owner decided it is built, in
-  ticket 125. The Vertical and Horizontal rows stay unavailable on GNOME 46
-  here until ticket 125 lands.
+  ticket 125, which has landed: the Vertical and Horizontal rows are live
+  through its pass-through.
 
 Screenshots (private headless GNOME Shell 46, in-memory backend, demo mode):
 every sub-page, zh/en, light/dark, 1600 and 960 (48), Devices › Details and
@@ -174,14 +174,31 @@ Install-time setup (after ticket 124 merged):
   `/usr/lib/better-os/before-removal/better-touchpad`
   (`touchpad-platform`'s `better-touchpad-before-removal`), which writes the
   captured values back through the GNOME backend; manager-core finds it in
-  dpkg's file list and runs it as the person before anything else in the
-  removal, and a failure stops the removal with nothing changed
-  (`before_removal.failed`). Better Touchpad writes no keybinding, and GNOME's
-  own swipe gestures come back when the extension is turned off.
+  dpkg's file list and runs it as the person after the units stop and the
+  extension is off, right before the daemon is asked. Removal is never
+  blocked by it: an unreadable capture or a refused write is a warning in
+  Activity (`before_removal.not_restored`, and the remove confirmation says
+  so); with no session (removal over SSH) the program copies the capture to
+  `~/.local/state/better-os/pending-restore/better-touchpad.json` and Better
+  Manager's next start in the session finishes it
+  (`before_removal.deferred`). A removal the daemon refuses runs the program
+  with `--undo`, which writes back what it replaced (`removal-undo.json`) or
+  drops the pending restore. The program is run only when it is a regular,
+  root-owned file nobody else can write. Better Touchpad writes no
+  keybinding, and GNOME's own swipe gestures come back when the extension is
+  turned off.
 - Personal data: `.config/better-os/touchpad` was already on ticket 124's
   allowlist and is everything the component keeps.
 
-Checks run on the final merge (`0c255bf`): `cargo fmt --check`; clippy
+Review fixes (2026-11-15): the above, plus GNOME's "turn off all
+extensions" switch fails the health check and is named on the page; the
+extension lists are read again before each write and retried up to three
+times when something else changed them, and only our UUID is checked after;
+a list with an escape gsettings does not print is never rewritten; the
+autostart postrm deletes as the account (setpriv) and also cleans the page's
+temporary copy, which the page itself cleans on its next visit.
+
+Checks run on the earlier merge (`0c255bf`): `cargo fmt --check`; clippy
 `+1.99.0` and `+stable`, workspace, all targets and features, `-D warnings`;
 `cargo +1.95 check --workspace --all-targets`; `cargo test --workspace`;
 `maintainer-scripts`, `daemon-handoff`, and `autostart-overrides` shell

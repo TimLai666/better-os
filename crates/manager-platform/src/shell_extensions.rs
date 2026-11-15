@@ -33,6 +33,13 @@ pub const EXTENSION_DIRECTORY: &str = "/usr/share/gnome-shell/extensions";
 pub const SHELL_SCHEMA: &str = "org.gnome.shell";
 pub const ENABLED_KEY: &str = "enabled-extensions";
 pub const DISABLED_KEY: &str = "disabled-extensions";
+/// GNOME 46 loads no extension but its session mode's own while this is true
+/// (`extensionSystem.js`, `_getEnabledExtensions`), whatever the lists say.
+pub const ALL_OFF_KEY: &str = "disable-user-extensions";
+
+/// How many times a list is read, changed, and written before giving up
+/// because something else keeps changing it at the same moment.
+pub const WRITE_ATTEMPTS: usize = 3;
 
 /// How long one `gsettings` call may take.
 pub const GSETTINGS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -77,6 +84,9 @@ pub trait ShellExtensionController: Send + Sync {
     fn disable(&self, uuids: &[String]) -> Result<(), ExtensionFailure>;
     /// The UUIDs of `uuids` the settings have enabled.
     fn enabled(&self, uuids: &[String]) -> Result<Vec<String>, ExtensionFailure>;
+    /// Whether GNOME's own "turn off all extensions" switch is on, in which
+    /// case an enabled extension is still not loaded.
+    fn all_turned_off(&self) -> Result<bool, ExtensionFailure>;
 }
 
 /// The extensions a package installed, as dpkg's own file list records them:
@@ -117,6 +127,7 @@ pub fn is_plain_uuid(uuid: &str) -> bool {
 pub trait ShellSettings: Send + Sync {
     fn get(&self, key: &str) -> Result<Vec<String>, ExtensionFailure>;
     fn set(&self, key: &str, value: &[String]) -> Result<(), ExtensionFailure>;
+    fn get_bool(&self, key: &str) -> Result<bool, ExtensionFailure>;
 }
 
 /// The controller over any [`ShellSettings`].
@@ -133,18 +144,44 @@ impl<S: ShellSettings> ShellExtensions<S> {
         &self.settings
     }
 
-    /// Writes `value` and reads it back: `gsettings set` exits 0 even when
-    /// dconf refused the change, so only the read-back says it happened.
-    fn write(&self, key: &str, value: &[String]) -> Result<(), ExtensionFailure> {
-        self.settings.set(key, value)?;
-        let now = self.settings.get(key)?;
-        if now != value {
-            return Err(ExtensionFailure::new(
-                ExtensionFailureKind::Failed,
-                format!("{SHELL_SCHEMA} {key} did not take the change"),
-            ));
+    /// Adds (`present`) or takes out every UUID of `uuids` in the list at
+    /// `key`, leaving every other entry where it was.
+    ///
+    /// The list is shared with GNOME's own Extensions app and anything else
+    /// the person runs, and `gsettings` has no compare-and-set. So the list is
+    /// read again just before the write and the attempt starts over when it
+    /// moved; and after the write only our own UUIDs are checked, because
+    /// `gsettings set` exits 0 even when dconf refused the change, while an
+    /// entry someone else added a moment later is theirs to keep.
+    fn update(&self, key: &str, uuids: &[String], present: bool) -> Result<(), ExtensionFailure> {
+        let ours_right = |list: &[String]| uuids.iter().all(|uuid| list.contains(uuid) == present);
+        for _ in 0..WRITE_ATTEMPTS {
+            let before = self.settings.get(key)?;
+            if ours_right(&before) {
+                return Ok(());
+            }
+            let mut after: Vec<String> = before
+                .iter()
+                .filter(|entry| !uuids.contains(entry))
+                .cloned()
+                .collect();
+            if present {
+                // Kept in the order they were, then ours at the end.
+                after = before.clone();
+                after.extend(uuids.iter().filter(|uuid| !before.contains(uuid)).cloned());
+            }
+            if self.settings.get(key)? != before {
+                continue;
+            }
+            self.settings.set(key, &after)?;
+            if ours_right(&self.settings.get(key)?) {
+                return Ok(());
+            }
         }
-        Ok(())
+        Err(ExtensionFailure::new(
+            ExtensionFailureKind::Failed,
+            format!("{SHELL_SCHEMA} {key} did not take the change"),
+        ))
     }
 }
 
@@ -164,25 +201,8 @@ impl<S: ShellSettings> ShellExtensionController for ShellExtensions<S> {
         if uuids.is_empty() {
             return Ok(());
         }
-        let disabled = self.settings.get(DISABLED_KEY)?;
-        if uuids.iter().any(|uuid| disabled.contains(uuid)) {
-            let kept: Vec<String> = disabled
-                .into_iter()
-                .filter(|entry| !uuids.contains(entry))
-                .collect();
-            self.write(DISABLED_KEY, &kept)?;
-        }
-        let mut enabled = self.settings.get(ENABLED_KEY)?;
-        let missing: Vec<String> = uuids
-            .iter()
-            .filter(|uuid| !enabled.contains(uuid))
-            .cloned()
-            .collect();
-        if missing.is_empty() {
-            return Ok(());
-        }
-        enabled.extend(missing);
-        self.write(ENABLED_KEY, &enabled)
+        self.update(DISABLED_KEY, uuids, false)?;
+        self.update(ENABLED_KEY, uuids, true)
     }
 
     fn disable(&self, uuids: &[String]) -> Result<(), ExtensionFailure> {
@@ -190,15 +210,7 @@ impl<S: ShellSettings> ShellExtensionController for ShellExtensions<S> {
         if uuids.is_empty() {
             return Ok(());
         }
-        let enabled = self.settings.get(ENABLED_KEY)?;
-        if !uuids.iter().any(|uuid| enabled.contains(uuid)) {
-            return Ok(());
-        }
-        let kept: Vec<String> = enabled
-            .into_iter()
-            .filter(|entry| !uuids.contains(entry))
-            .collect();
-        self.write(ENABLED_KEY, &kept)
+        self.update(ENABLED_KEY, uuids, false)
     }
 
     fn enabled(&self, uuids: &[String]) -> Result<Vec<String>, ExtensionFailure> {
@@ -213,6 +225,10 @@ impl<S: ShellSettings> ShellExtensionController for ShellExtensions<S> {
             .filter(|uuid| enabled.contains(uuid) && !disabled.contains(uuid))
             .cloned()
             .collect())
+    }
+
+    fn all_turned_off(&self) -> Result<bool, ExtensionFailure> {
+        self.settings.get_bool(ALL_OFF_KEY)
     }
 }
 
@@ -338,6 +354,17 @@ impl ShellSettings for GsettingsShellSettings {
         let text = format_string_list(value);
         self.run(&["set", SHELL_SCHEMA, key, &text]).map(|_| ())
     }
+
+    fn get_bool(&self, key: &str) -> Result<bool, ExtensionFailure> {
+        match self.run(&["get", SHELL_SCHEMA, key])?.trim() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            other => Err(ExtensionFailure::new(
+                ExtensionFailureKind::Failed,
+                format!("{SHELL_SCHEMA} {key} could not be read: {other}"),
+            )),
+        }
+    }
 }
 
 /// Parses `gsettings get`'s printing of an `as` value: `@as []` or
@@ -363,7 +390,14 @@ pub fn parse_string_list(text: &str) -> Option<Vec<String>> {
         let mut item = String::new();
         loop {
             match chars.next()? {
-                '\\' => item.push(chars.next()?),
+                '\\' => match chars.next()? {
+                    // The only escapes gsettings prints in an extension list.
+                    // Anything else (`\n`, `\u…`) is a list this parser does
+                    // not fully understand, and such a list is never written
+                    // back.
+                    c @ ('\\' | '\'' | '"') => item.push(c),
+                    _ => return None,
+                },
                 c if c == quote => break,
                 c => item.push(c),
             }
@@ -408,6 +442,11 @@ struct MemoryState {
     failure: Option<ExtensionFailure>,
     ignore_writes: bool,
     writes: usize,
+    all_off: bool,
+    /// Entries "another program" adds to the enabled list, one per read,
+    /// between our read and our write.
+    interference: Vec<String>,
+    reads: usize,
 }
 
 impl MemoryShellSettings {
@@ -434,6 +473,19 @@ impl MemoryShellSettings {
         self
     }
 
+    /// GNOME's "turn off all extensions" switch is on.
+    pub fn all_off(self) -> Self {
+        self.lock().all_off = true;
+        self
+    }
+
+    /// Each of these is added to the enabled list by "someone else" right
+    /// after one of our reads of it, as a concurrent write would be.
+    pub fn interfering(self, entries: &[&str]) -> Self {
+        self.lock().interference = entries.iter().rev().map(|s| s.to_string()).collect();
+        self
+    }
+
     pub fn enabled_list(&self) -> Vec<String> {
         self.lock().enabled.clone()
     }
@@ -457,11 +509,27 @@ impl ShellSettings for MemoryShellSettings {
         if let Some(failure) = &state.failure {
             return Err(failure.clone());
         }
-        Ok(match key {
+        let mut state = state;
+        let list = match key {
             ENABLED_KEY => state.enabled.clone(),
             DISABLED_KEY => state.disabled.clone(),
             _ => Vec::new(),
-        })
+        };
+        if key == ENABLED_KEY {
+            state.reads += 1;
+            if let Some(entry) = state.interference.pop() {
+                state.enabled.push(entry);
+            }
+        }
+        Ok(list)
+    }
+
+    fn get_bool(&self, key: &str) -> Result<bool, ExtensionFailure> {
+        let state = self.lock();
+        if let Some(failure) = &state.failure {
+            return Err(failure.clone());
+        }
+        Ok(key == ALL_OFF_KEY && state.all_off)
     }
 
     fn set(&self, key: &str, value: &[String]) -> Result<(), ExtensionFailure> {
@@ -558,6 +626,43 @@ mod tests {
     }
 
     #[test]
+    fn a_list_someone_else_changed_meanwhile_is_read_again_and_their_entry_kept() {
+        let controller =
+            ShellExtensions::new(MemoryShellSettings::new(&["a@b"], &[]).interfering(&["late@x"]));
+        controller.enable(&ours()).unwrap();
+        let list = controller.settings().enabled_list();
+        assert!(list.contains(&"late@x".to_string()), "{list:?}");
+        assert!(list.contains(&OURS.to_string()), "{list:?}");
+        assert!(list.contains(&"a@b".to_string()), "{list:?}");
+    }
+
+    #[test]
+    fn a_list_that_never_stops_moving_fails_after_the_attempts() {
+        let controller = ShellExtensions::new(
+            MemoryShellSettings::new(&[], &[])
+                .interfering(&["1@x", "2@x", "3@x", "4@x", "5@x", "6@x"]),
+        );
+        assert_eq!(
+            controller.enable(&ours()).unwrap_err().kind,
+            ExtensionFailureKind::Failed
+        );
+        assert!(
+            !controller
+                .settings()
+                .enabled_list()
+                .contains(&OURS.to_string())
+        );
+    }
+
+    #[test]
+    fn the_all_off_switch_is_reported() {
+        let controller = ShellExtensions::new(MemoryShellSettings::new(&[OURS], &[]).all_off());
+        assert!(controller.all_turned_off().unwrap());
+        let controller = ShellExtensions::new(MemoryShellSettings::new(&[OURS], &[]));
+        assert!(!controller.all_turned_off().unwrap());
+    }
+
+    #[test]
     fn a_write_dconf_dropped_is_a_failure() {
         let controller = ShellExtensions::new(MemoryShellSettings::new(&[], &[]).ignoring_writes());
         let failure = controller.enable(&ours()).unwrap_err();
@@ -579,7 +684,15 @@ mod tests {
             parse_string_list("['a@b', \"it's@x\", 'q\\'z@y']\n"),
             Some(vec!["a@b".into(), "it's@x".into(), "q'z@y".into()])
         );
-        for bad in ["", "['a'", "['a' 'b']", "[a]", "['a',]x"] {
+        for bad in [
+            "",
+            "['a'",
+            "['a' 'b']",
+            "[a]",
+            "['a',]x",
+            "['a\\nb']",
+            "['\\u0041@b']",
+        ] {
             assert_eq!(parse_string_list(bad), None, "{bad:?}");
         }
         let items = vec!["a@b".to_string(), "it's\\x".to_string()];

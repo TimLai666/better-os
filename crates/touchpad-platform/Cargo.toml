@@ -27,6 +27,8 @@ touchpad-core.workspace = true
 # service feature this is the library alone.
 touchpad-scroll.workspace = true
 thiserror.workspace = true
+# The pending restore and the undo file a removal keeps (ticket 88).
+serde_json.workspace = true
 # The scroll pass-through's client, on the system bus.
 zbus = { workspace = true, optional = true }
 
