@@ -104,9 +104,9 @@ Built and tested since the first pass (all of the first pass's list stands):
 - Removal: the better-touchpad package gets a postrm
   (`packaging/maintainer/autostart-overrides.sh`, written by `build-deb.sh`,
   asserted by `verify-deb.sh`) that deletes, for every account in
-  `/etc/passwd` from uid 1000, only a regular file in
+  `/etc/passwd` in the login range (`UID_MIN..UID_MAX` from `/etc/login.defs`, default 1000..60000) with an absolute home other than `/`, only a regular file in
   `~/.config/autostart/{touchegg,fusuma}.desktop` owned by that account and
-  carrying the exact marker line. Shell test
+  carrying the exact marker line, and never through a symlinked `~/.config` or `~/.config/autostart`. Shell test
   `packaging/tests/autostart-overrides.test.sh` (in CI); a Rust test keeps the
   marker in `competitors.rs` and `build-deb.sh` the same. An override under a
   custom `XDG_CONFIG_HOME` is invisible to a maintainer script and stays; the

@@ -169,6 +169,7 @@ write_autostart_override_postrm() {
     {
         printf '#!/bin/sh\nset -e\n\n'
         printf "better_os_passwd_file='/etc/passwd'\n"
+        printf "better_os_login_defs='/etc/login.defs'\n"
         printf "better_os_override_mark='%s'\n" "$AUTOSTART_OVERRIDE_MARK"
         printf "better_os_override_files='%s'\n\n" "$PACKAGE_AUTOSTART_OVERRIDES"
         cat "$ROOT_DIR/packaging/maintainer/autostart-overrides.sh"
