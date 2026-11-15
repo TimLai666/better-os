@@ -7,7 +7,7 @@ use manager_core::{ComponentStatus, DesiredOperation, RestartRequirement};
 use crate::{
     app::ManagerApp,
     i18n::{Locale, copy},
-    model::ComponentKind,
+    model::{ComponentInfo, ComponentKind},
 };
 
 impl ManagerApp {
@@ -222,6 +222,33 @@ impl ManagerApp {
     /// Maps the icon a manifest declares onto a shipped glyph. The manifest
     /// chooses from a closed set, so this never guesses from a component ID.
     pub(crate) fn component_icon(&self, icon: ComponentIcon) -> IconName {
+        manifest_glyph(icon)
+    }
+
+    /// A component's glyph in the Apps list: the shipped one for a
+    /// first-party component this build knows (audit M13: Better Awake, Better
+    /// Git, and Better Storage all declare the generic icon, because the
+    /// manifest's icon set is closed and a released manager refuses a value
+    /// it does not know), the manifest's otherwise.
+    pub(crate) fn component_glyph(&self, component: &ComponentInfo) -> IconName {
+        first_party_glyph(component.core_id.as_str()).unwrap_or(manifest_glyph(component.icon))
+    }
+}
+
+/// The glyph this build ships for a first-party component whose manifest can
+/// only say "generic". Like the shipped names and descriptions, it is keyed by
+/// the component's id, which is this project's own.
+pub(crate) fn first_party_glyph(id: &str) -> Option<IconName> {
+    match id {
+        "better-awake" => Some(IconName::Sun),
+        "better-git" => Some(IconName::Github),
+        "better-storage" => Some(IconName::HardDrive),
+        _ => None,
+    }
+}
+
+pub(crate) fn manifest_glyph(icon: ComponentIcon) -> IconName {
+    {
         match icon {
             ComponentIcon::Manager => IconName::Settings,
             ComponentIcon::Monitor => IconName::Inspector,
@@ -231,7 +258,9 @@ impl ManagerApp {
             ComponentIcon::Generic => IconName::Inbox,
         }
     }
+}
 
+impl ManagerApp {
     /// What happens after `operation`, for the "Afterwards" row; `None`
     /// hides the row. See [`restart_effect`].
     pub(crate) fn restart_requirement_label(

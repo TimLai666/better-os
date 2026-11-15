@@ -390,6 +390,24 @@ fn cursor(edge: Edge) -> CursorStyle {
     }
 }
 
+impl FramedView {
+    /// Gives the compositor `input` as the window's input region, when it
+    /// differs from the one given last. `None` is the whole surface.
+    fn set_input(&mut self, input: Option<(f32, f32, f32, f32)>, window: &mut Window) {
+        if !system_frame::input_region_changes(self.input, input) {
+            return;
+        }
+        self.input = Some(input);
+        match input {
+            Some((x, y, rw, rh)) => window.set_input_region(Some(&[Bounds::new(
+                point(px(x), px(y)),
+                size(px(rw), px(rh)),
+            )])),
+            None => window.set_input_region(None),
+        }
+    }
+}
+
 impl Render for FramedView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // What `gpui_component::Root` painted before the frame took over: the
@@ -398,6 +416,13 @@ impl Render for FramedView {
         let background = cx.theme().tokens.background;
         let state = window_state(window);
         if !state.client_decorated {
+            // A window that started client-decorated and is now drawn by the
+            // compositor (sway agrees to server-side decorations on its first
+            // configure) keeps whatever input region its first frame set:
+            // that frame's smaller size, so every press outside it went to
+            // nothing (ticket 85: the right half of Better Manager took no
+            // click). The compositor's frame needs the whole surface.
+            self.set_input(None, window);
             return div()
                 .size_full()
                 .bg(background)
@@ -437,16 +462,7 @@ impl Render for FramedView {
         let (w, h) = (f32::from(surface.width), f32::from(surface.height));
         let input = (!(state.maximized || state.tiled.all()))
             .then(|| system_frame::input_region(w, h, insets));
-        if self.input != Some(input) {
-            self.input = Some(input);
-            match input {
-                Some((x, y, rw, rh)) => window.set_input_region(Some(&[Bounds::new(
-                    point(px(x), px(y)),
-                    size(px(rw), px(rh)),
-                )])),
-                None => window.set_input_region(None),
-            }
-        }
+        self.set_input(input, window);
         let radius = if state.maximized || state.tiled.any() {
             0.0
         } else {

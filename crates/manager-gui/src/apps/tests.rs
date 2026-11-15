@@ -538,3 +538,21 @@ fn before_the_first_byte_every_row_is_downloading_with_no_length_yet() {
     assert_eq!(row, RowProgress::Stage(OperationStage::Downloading));
     assert_eq!(row.fraction(), None);
 }
+
+/// Audit M13: no two first-party components share a glyph in the Apps list.
+#[test]
+fn every_built_in_component_has_its_own_glyph() {
+    use crate::components::{first_party_glyph, manifest_glyph};
+    let glyphs: Vec<String> = manager_core::catalog::built_in_manifests()
+        .iter()
+        .map(|manifest| {
+            let glyph =
+                first_party_glyph(manifest.id.as_str()).unwrap_or(manifest_glyph(manifest.icon));
+            gpui_component::IconNamed::path(glyph).to_string()
+        })
+        .collect();
+    let mut unique = glyphs.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), glyphs.len(), "{glyphs:?}");
+}

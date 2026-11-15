@@ -133,12 +133,42 @@ spec also states the personal-data rule and the section 12 rows that moved.
 
 ### Audit findings
 
-The audit's own text is not in the repository; the spec cites M2–M8, M10,
-M12. M2, M3, M4, M8, M9 closed here (above). M5, M6, M7, M12 were closed by
+M2, M3, M4, M8, M9 closed here (above). M5, M6, M7, M12 were closed by
 ticket 84. M10 (dark cards darker than the window) no longer applies: every
-card is the Fluent kit's `SettingsCard` on the kit's window background. M1,
-M11, M13, M14 could not be checked against the original wording; nothing in
-the Apps screens they could name remains from the old window.
+card is the kit's `SettingsCard` on the kit's window background. From the
+owner's wording:
+
+- **M1** (Settings choices did not show which is selected): Appearance and
+  Language are kit `ComboBox`es showing the current value, and the open list
+  marks the selected item with the accent bar (screenshots 26, 28); Update
+  channel is read-only text. Closed by ticket 84's Settings, checked here.
+- **M11** (button text ~18px, bolder than body): every button is the kit's
+  `Button`, Body 14px regular, the same as row text (27, 28). Closed.
+- **M13** (Awake and Git shared the inbox icon): their manifests can only say
+  `generic` (the icon set is closed and a released manager refuses a new
+  value), so the shipped first-party table now gives Awake a sun, Git the
+  GitHub mark, and Storage a drive (`components::first_party_glyph`); a test
+  asserts no two built-in components share a glyph (27). Fixed.
+- **M14** (switches white when on): the kit's `ToggleSwitch` fills accent
+  when on (26, 28). Closed.
+
+### The click bug (found in review)
+
+Buttons on the right half and bottom of Better Manager ignored the pointer;
+cards on the left worked. Cause, read from the running window: the first
+frame was client-decorated at 1280×820 and set the Wayland input region to
+that frame (`52,52 1176×716`). sway then drew the decorations itself and the
+window grew to 1600×1000, and `FramedView::render`'s early return for a
+server-decorated window never cleared the region, so the compositor dropped
+every press outside the first frame. Fixed at the source in
+`better_ui::fluent::window_frame`: losing client decorations sets the whole
+surface again (`system_frame::input_region_changes`, test
+`a_window_that_loses_client_decorations_takes_input_everywhere_again`). It
+affected every Better OS window in that situation, since they share the
+frame. Proved with real pointer events in a private headless sway: Update
+all (21), a row's Update (22, the card did not also open), Remove confirmed
+with the box ticked (23, 24: row reads 已移除), Restore confirmed (25:
+已還原上一個版本), and the Appearance list opened (28).
 
 ### Checks and screenshots
 
@@ -149,16 +179,14 @@ dpkg directory with an unfinished package) are in the session scratchpad
 `shots-85/`: 01–09 zh dark 1600 (Apps, Updates, running, later stage,
 results, Health, Activity, failed component, drift), 10–13 en light 1600,
 14–17 at 960 in both languages and themes, 18–20 the Restore and Remove
-dialogs.
+dialogs, 21–25 pointer clicks after the fix, 26–28 M1/M11/M13/M14.
 
 ### Not verified
 
-- Pointer clicks on buttons did not reach the window in the wayhand sandbox
-  (clicks on cards did; even a root-level listener saw nothing), so the
-  Update all run was driven with Tab and Enter. Not seen with a real mouse.
-- The Remove (check box ticked) and Restore dialogs were opened by keyboard
-  and screenshotted (18–20); confirming them, and the trash move itself, were
-  not done on screen. The rule, the move, and the CLI are tested.
+- The click fix was proved under sway; it was not tried on GNOME/Mutter,
+  which never negotiates server-side decorations, so it never hit the bug.
+- The trash move itself was not done on screen (demo mode changes nothing);
+  the rule, the move, and the CLI are tested.
 - No real transaction was run (demo only, by the ticket's rule).
 
 Gates: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets

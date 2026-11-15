@@ -310,7 +310,7 @@ impl ManagerApp {
         card = if matches!(trailing, Trailing::Failed { .. }) {
             card.status(Severity::Error)
         } else {
-            card.icon(self.component_icon(component.icon))
+            card.icon(self.component_glyph(component))
         };
         card
     }
@@ -548,7 +548,7 @@ impl ManagerApp {
             other => Some(self.trailing_element(&component, other, cx)),
         };
         let mut header = SettingsCard::new("component-header", component.name.clone())
-            .icon(self.component_icon(component.icon))
+            .icon(self.component_glyph(&component))
             .description(self.declared_or_not(&component.summary));
         if let Some(trailing) = header_trailing {
             header = header.content(trailing);
@@ -912,7 +912,7 @@ impl ManagerApp {
             let open = self.notes_open.contains(&id);
             let mut row =
                 SettingsExpander::new(element_id("update", &id), component.name.clone(), open)
-                    .icon(self.component_icon(component.icon))
+                    .icon(self.component_glyph(component))
                     .description(description)
                     .content(self.trailing_element(component, &trailing, cx))
                     .on_toggle(Self::act_with(cx, move |this, open: bool, _, cx| {
