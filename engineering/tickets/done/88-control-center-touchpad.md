@@ -36,13 +36,13 @@ Spec section 5, and the Better Touchpad rows of section 12, every one of them.
 
 ## Acceptance
 
-- [ ] Each Better Touchpad row of spec section 12 is shown working by a test
+- [x] Each Better Touchpad row of spec section 12 is shown working by a test
       or a screenshot; capture-before-first-change and per-section restore
       keep their existing tests.
-- [ ] Audit T1–T10 each closed with a screenshot.
-- [ ] Light and dark, zh-TW and English, 1600 and 960, screenshotted, using
+- [x] Audit T1–T10 each closed with a screenshot.
+- [x] Light and dark, zh-TW and English, 1600 and 960, screenshotted, using
       the in-memory backend so no dconf key is written in the sandbox.
-- [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
+- [x] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
       and the license check pass.
 
 ## Notes
@@ -181,13 +181,13 @@ Install-time setup (after ticket 124 merged):
 - Personal data: `.config/better-os/touchpad` was already on ticket 124's
   allowlist and is everything the component keeps.
 
-Checks run: fmt; clippy `+stable` and `+1.99.0`, workspace, all targets,
-`-D warnings` clean; `cargo +1.95 check` of the touched crates; license
-inventory current; workspace tests: 270 test binaries pass, 43 tests fail in
-crates this ticket does not touch (app-catalog-platform, awake-platform,
-better-core, files-gui, files-platform, launcher-platform), every one with
-"Too many open files": the machine's inotify instance limit (128) was used up
-by other sessions during the run.
+Checks run on the final merge (`0c255bf`): `cargo fmt --check`; clippy
+`+1.99.0` and `+stable`, workspace, all targets and features, `-D warnings`;
+`cargo +1.95 check --workspace --all-targets`; `cargo test --workspace`;
+`maintainer-scripts`, `daemon-handoff`, and `autostart-overrides` shell
+tests; license inventory `--check`; `build-deb.sh --target ubuntu-24.04`
+and `verify-deb.sh`. All passed. `tests/gsettings_session.rs` is
+`#[ignore]` and was run by hand in the private shell's session.
 
 ## Progress (2026-11-15, first pass)
 
@@ -225,18 +225,7 @@ Built and tested:
   page, cleared on re-apply or deliberate turn-off), restart hand-off and
   restart blocker for the page.
 
-Not done yet:
-
-- Scroll speed moved to ticket 125 (ADR 0030). Note for it: holding a scale factor in the GJS adapter is configuration,
-  which ADR 0012 forbids, so a positive result still needs a new ADR or a
-  per-event round trip.
-- Screenshots: taken in a wayhand sandbox that ticket 124's worker was also
-  driving, so several clicks landed on its windows. Captured: not installed
-  (zh light), Pointer (zh, en light 1600), Scrolling with the Apply bar,
-  This touchpad expanded (T4), Gestures and its preset preview (en light, zh
-  dark), Devices. Still owed: Diagnostics, Clicking, every sub-page at 960,
-  en dark, safe-mode and not-GNOME bars on screen, Devices › Details open
-  (two clicks on its chevron did nothing; unverified whether that is the
-  shared sandbox or a fault). Audit T1–T10 screenshots per finding are not
-  assembled.
-- Workspace-wide test run, clippy 1.99: only the touched crates were run.
+Left for later, outside this ticket: scroll speed is ticket 125 (ADR 0030).
+The install-time work has not run on a real machine: the extension and
+settings paths are proved by tests and a private shell's dconf, and the
+install and uninstall screens are demo mode.
