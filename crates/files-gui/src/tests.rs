@@ -3501,3 +3501,21 @@ fn home_at_the_root_and_a_user_folder_set_to_home_are_told_apart() {
     let dirs = UserDirectories::from_values(Some(&home), Some(&config));
     assert_eq!(glyph(&dirs, home.to_str().unwrap()), G::Home);
 }
+
+/// A folder dragged in from another application is pinned; a file, a
+/// missing path and a relative one are not.
+#[test]
+fn only_folders_dropped_from_another_application_are_pinned() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("Projects");
+    fs::create_dir(&folder).unwrap();
+    let file = dir.path().join("notes.txt");
+    fs::write(&file, "x").unwrap();
+    let pinned = crate::shell::external_folders(&[
+        folder.clone(),
+        file,
+        dir.path().join("gone"),
+        PathBuf::from("relative"),
+    ]);
+    assert_eq!(pinned, vec![files_core::Location::local(&folder).unwrap()]);
+}
