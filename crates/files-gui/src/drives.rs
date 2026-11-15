@@ -586,10 +586,58 @@ pub fn statvfs(path: &Path) -> Option<Capacity> {
     })
 }
 
-/// Filesystems whose last read has not come back yet. A stalled share is
-/// not asked again until it answers, so its reads do not pile up a thread
-/// per refresh.
-static WAITING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+/// A capacity read in flight, which anyone asking for the same filesystem
+/// meanwhile waits on too.
+#[derive(Default)]
+struct Pending {
+    result: Mutex<Option<Option<Capacity>>>,
+    done: std::sync::Condvar,
+}
+
+/// Filesystems whose read has not come back yet. A stalled share is not
+/// asked again until it answers, so its reads do not pile up a thread per
+/// refresh; two windows reading the same drive at once share one read.
+static WAITING: Mutex<Vec<(PathBuf, Arc<Pending>)>> = Mutex::new(Vec::new());
+
+/// Whether a read of `path` is still in flight. For tests.
+#[cfg(test)]
+fn is_waiting(path: &Path) -> bool {
+    WAITING
+        .lock()
+        .is_ok_and(|waiting| waiting.iter().any(|(known, _)| known == path))
+}
+
+/// The read in flight for `path`, or a new one started on a thread of its
+/// own.
+fn read_of(path: &Path, read: &CapacityRead) -> Option<Arc<Pending>> {
+    let mut waiting = WAITING.lock().ok()?;
+    if let Some((_, pending)) = waiting.iter().find(|(known, _)| known == path) {
+        return Some(Arc::clone(pending));
+    }
+    let pending = Arc::new(Pending::default());
+    waiting.push((path.to_path_buf(), Arc::clone(&pending)));
+    drop(waiting);
+    let (reading, read, filling) = (path.to_path_buf(), Arc::clone(read), Arc::clone(&pending));
+    let spawned = std::thread::Builder::new()
+        .name("files-drive-capacity".to_string())
+        .spawn(move || {
+            let capacity = read(&reading);
+            if let Ok(mut waiting) = WAITING.lock() {
+                waiting.retain(|(known, _)| *known != reading);
+            }
+            if let Ok(mut result) = filling.result.lock() {
+                *result = Some(capacity);
+            }
+            filling.done.notify_all();
+        });
+    if spawned.is_err() {
+        if let Ok(mut waiting) = WAITING.lock() {
+            waiting.retain(|(known, _)| known != path);
+        }
+        return None;
+    }
+    Some(pending)
+}
 
 /// Reads drives' capacities, each on a thread of its own, all at once, and
 /// waits at most `timeout` for the lot: a filesystem that does not answer is
@@ -600,41 +648,21 @@ pub fn capacities_within(
     read: CapacityRead,
 ) -> Vec<Option<Capacity>> {
     let deadline = std::time::Instant::now() + timeout;
-    let receivers: Vec<Option<Receiver<Option<Capacity>>>> = paths
-        .iter()
-        .map(|path| {
-            {
-                let mut waiting = WAITING.lock().ok()?;
-                if waiting.contains(path) {
+    let reads: Vec<Option<Arc<Pending>>> = paths.iter().map(|path| read_of(path, &read)).collect();
+    reads
+        .into_iter()
+        .map(|pending| {
+            let pending = pending?;
+            let mut result = pending.result.lock().ok()?;
+            while result.is_none() {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    // Timed out: no bar.
                     return None;
                 }
-                waiting.push(path.clone());
+                result = pending.done.wait_timeout(result, left).ok()?.0;
             }
-            let (sender, receiver) = channel();
-            let (reading, read) = (path.clone(), Arc::clone(&read));
-            let spawned = std::thread::Builder::new()
-                .name("files-drive-capacity".to_string())
-                .spawn(move || {
-                    let capacity = read(&reading);
-                    if let Ok(mut waiting) = WAITING.lock() {
-                        waiting.retain(|other| *other != reading);
-                    }
-                    let _ = sender.send(capacity);
-                });
-            if spawned.is_err()
-                && let Ok(mut waiting) = WAITING.lock()
-            {
-                waiting.retain(|other| other != path);
-            }
-            spawned.ok().map(|_| receiver)
-        })
-        .collect();
-    receivers
-        .into_iter()
-        .map(|receiver| {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            // Timed out or gone: no bar.
-            receiver?.recv_timeout(left).unwrap_or_default()
+            result.flatten()
         })
         .collect()
 }
@@ -1664,6 +1692,30 @@ mod tests {
     }
 
     #[test]
+    fn two_windows_reading_one_drive_at_once_both_get_its_bar() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let read: CapacityRead = {
+            let calls = Arc::clone(&calls);
+            Arc::new(move |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(200));
+                Some(Capacity { total: 8, free: 2 })
+            })
+        };
+        let drive = PathBuf::from("/mnt/shared-read-test");
+        let both: Vec<Option<Capacity>> = std::thread::scope(|scope| {
+            let first =
+                scope.spawn(|| capacity_within(&drive, Duration::from_secs(5), Arc::clone(&read)));
+            std::thread::sleep(Duration::from_millis(50));
+            let second =
+                scope.spawn(|| capacity_within(&drive, Duration::from_secs(5), Arc::clone(&read)));
+            vec![first.join().unwrap(), second.join().unwrap()]
+        });
+        assert_eq!(both, [Some(Capacity { total: 8, free: 2 }); 2]);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "one read for both");
+    }
+
+    #[test]
     fn a_stalled_share_is_not_asked_again_until_it_answers() {
         let calls = Arc::new(AtomicU64::new(0));
         let (release, gate) = channel::<()>();
@@ -1686,7 +1738,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1, "one read waits, not three");
         release.send(()).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while WAITING.lock().unwrap().contains(&share) && std::time::Instant::now() < deadline {
+        while is_waiting(&share) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
         release.send(()).unwrap();

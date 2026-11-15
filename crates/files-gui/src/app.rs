@@ -297,6 +297,17 @@ impl FilesApp {
                 app.submit_server_sign_in(window, cx);
             }
         };
+        // Closing the window in the middle of a sign-in or an unlock leaves
+        // no typed password behind in its fields, and tells GVfs no.
+        {
+            let this = cx.entity().downgrade();
+            window.on_window_should_close(cx, move |window, cx| {
+                let _ = this.update(cx, |app: &mut FilesApp, cx| {
+                    app.forget_secrets(window, cx);
+                });
+                true
+            });
+        }
         let subscriptions = vec![
             cx.subscribe_in(
                 &server_user_input,
@@ -1173,6 +1184,14 @@ impl FilesApp {
             }
         }
         cx.notify();
+    }
+
+    /// Empties every password field (and its undo history) and cancels a
+    /// sign-in on screen.
+    pub(crate) fn forget_secrets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::secret::forget(&self.password_input, window, cx);
+        crate::secret::forget(&self.server_password_input, window, cx);
+        self.session.cancel_server_prompt();
     }
 
     pub(crate) fn dismiss_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {

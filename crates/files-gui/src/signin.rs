@@ -337,7 +337,8 @@ impl FilesApp {
                     Button::standard("server-key-anyway", c.server_connect_anyway).on_click(
                         move |_window, cx| {
                             let _ = anyway.update(cx, |app, cx| {
-                                app.session.answer_server(Answer::Choice(0));
+                                app.session
+                                    .answer_server(Answer::Choice(crate::network::CONNECT_ANYWAY));
                                 cx.notify();
                             });
                         },

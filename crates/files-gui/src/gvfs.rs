@@ -263,26 +263,47 @@ pub fn is_host_key_failure(detail: &str) -> bool {
 
 unsafe extern "C" {
     fn dgettext(domain: *const libc::c_char, message: *const libc::c_char) -> *const libc::c_char;
+    fn bind_textdomain_codeset(
+        domain: *const libc::c_char,
+        codeset: *const libc::c_char,
+    ) -> *const libc::c_char;
 }
 
 /// `message` in GVfs's own catalog for this session's language (the one
-/// `gvfsd` runs in), when there is a translation. Only this thread's
-/// locale is set for the lookup, from the environment, then put back.
+/// `gvfsd` runs in), when there is a translation.
 pub fn gvfs_translation(message: &str) -> Option<String> {
+    gvfs_translation_in(message, c"")
+}
+
+/// `message` in GVfs's catalog for `locale` (`""`: the environment's).
+/// Only this thread's locale is switched for the lookup, then put back; the
+/// catalog is read as UTF-8 whatever the locale's own character set, so
+/// Chinese comes back as Chinese and not as question marks.
+pub fn gvfs_translation_in(message: &str, locale: &std::ffi::CStr) -> Option<String> {
+    static UTF8: std::sync::Once = std::sync::Once::new();
     let id = std::ffi::CString::new(message).ok()?;
     let domain = c"gvfs";
-    // SAFETY: `newlocale` reads the environment into a new locale object
-    // (null on failure, checked); `uselocale` switches only this thread
-    // and is switched back before the object is freed; `dgettext` gets
-    // NUL-terminated strings that outlive the call and returns a pointer
-    // to a NUL-terminated string owned by the catalog (or `id` itself),
-    // copied before anything else runs.
+    // SAFETY: `bind_textdomain_codeset` gets two NUL-terminated strings
+    // that live for the program (it copies them) and only affects the
+    // "gvfs" domain, which nothing else in this process uses. `newlocale`
+    // builds a new locale object (null on failure, checked); `uselocale`
+    // switches only this thread and is switched back before the object is
+    // freed; `dgettext` gets NUL-terminated strings that outlive the call
+    // and returns a NUL-terminated string owned by the catalog (or `id`
+    // itself), copied before anything else runs.
     unsafe {
-        let session = libc::newlocale(libc::LC_MESSAGES_MASK, c"".as_ptr(), std::ptr::null_mut());
-        if session.is_null() {
+        UTF8.call_once(|| {
+            bind_textdomain_codeset(domain.as_ptr(), c"UTF-8".as_ptr());
+        });
+        let wanted = libc::newlocale(
+            libc::LC_MESSAGES_MASK | libc::LC_CTYPE_MASK,
+            locale.as_ptr(),
+            std::ptr::null_mut(),
+        );
+        if wanted.is_null() {
             return None;
         }
-        let previous = libc::uselocale(session);
+        let previous = libc::uselocale(wanted);
         let found = dgettext(domain.as_ptr(), id.as_ptr());
         let words = (!found.is_null()).then(|| {
             std::ffi::CStr::from_ptr(found)
@@ -290,7 +311,7 @@ pub fn gvfs_translation(message: &str) -> Option<String> {
                 .into_owned()
         });
         libc::uselocale(previous);
-        libc::freelocale(session);
+        libc::freelocale(wanted);
         words.filter(|words| words != message && !words.is_empty())
     }
 }
@@ -325,18 +346,111 @@ impl Activity {
     }
 }
 
-/// The mount operation GVfs asks its questions on.
+/// The answer to a sign-in GVfs did not get to ask: aborted.
+type PasswordReply = (bool, bool, String, String, String, bool, u32);
+const PASSWORD_ABORTED: fn() -> PasswordReply = || {
+    (
+        true,
+        true,
+        String::new(),
+        String::new(),
+        String::new(),
+        false,
+        0,
+    )
+};
+
+/// Who may ask a mount's questions. GVfs's backends (`gvfsd-sftp`,
+/// `gvfsd-smb`…) call the client's mount operation themselves, on their own
+/// session-bus connection (`common/gmountsource.c`: a proxy made with
+/// `gvfs_dbus_mount_operation_proxy_new_for_bus_sync (G_BUS_TYPE_SESSION,
+/// …)` from the backend's process), and `gvfsd`, which owns
+/// `org.gtk.vfs.Daemon`, spawns every backend. So a caller is GVfs when its
+/// process is `gvfsd`'s or a descendant of it; anything else on the session
+/// bus is refused without showing the person anything.
+async fn from_gvfs(connection: &zbus::Connection, header: &zbus::message::Header<'_>) -> bool {
+    let Some(sender) = header.sender() else {
+        return false;
+    };
+    let Ok(bus) = zbus::fdo::DBusProxy::new(connection).await else {
+        return false;
+    };
+    let Ok(daemon) = zbus::names::BusName::try_from(DAEMON) else {
+        return false;
+    };
+    let Ok(owner) = bus.get_name_owner(daemon).await else {
+        return false;
+    };
+    let pid_of = |name: zbus::names::BusName<'static>| {
+        let bus = bus.clone();
+        async move { bus.get_connection_unix_process_id(name).await.ok() }
+    };
+    let (Some(caller), Some(gvfsd)) = (
+        pid_of(zbus::names::BusName::Unique(sender.to_owned())).await,
+        pid_of(zbus::names::BusName::Unique(owner.into_inner())).await,
+    ) else {
+        return false;
+    };
+    descends_from(caller, gvfsd)
+}
+
+/// Whether process `pid` is `ancestor` or below it, by the parents
+/// `/proc` names (a few generations at most).
+pub fn descends_from(pid: u32, ancestor: u32) -> bool {
+    let mut current = pid;
+    for _ in 0..16 {
+        if current == ancestor {
+            return true;
+        }
+        let Some(parent) = parent_of(current) else {
+            return false;
+        };
+        if parent <= 1 || parent == current {
+            return false;
+        }
+        current = parent;
+    }
+    false
+}
+
+fn parent_of(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `pid (comm) state ppid …`; `comm` may hold spaces and parentheses.
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+/// The mount operation GVfs asks its questions on, at a path nobody can
+/// guess, answering only GVfs ([`from_gvfs`]).
 struct Operation {
     asker: Asker,
     passwords_asked: AtomicU32,
     activity: Arc<Activity>,
-    aborted: Arc<AtomicBool>,
+    /// Set by GVfs's `Aborted`: the question on screen goes away.
+    abort: (smol::channel::Sender<()>, smol::channel::Receiver<()>),
+    /// The mount is over (given up on): anything asked now is aborted.
+    closed: Arc<AtomicBool>,
 }
 
 impl Operation {
     async fn ask(&self, prompt: Prompt) -> Answer {
+        if self.closed.load(Ordering::Acquire) {
+            return Answer::Cancel;
+        }
+        // A stale abort from an earlier question does not end this one.
+        while self.abort.1.try_recv().is_ok() {}
         self.activity.waiting.store(true, Ordering::Release);
-        let answer = self.asker.ask(prompt).await;
+        let answer = smol::future::or(self.asker.ask(prompt), async {
+            let _ = self.abort.1.recv().await;
+            // The window's end of the question is dropped with this
+            // future, and it takes the question off the screen.
+            Answer::Cancel
+        })
+        .await;
         self.activity.waiting.store(false, Ordering::Release);
         self.activity.touch();
         answer
@@ -351,7 +465,12 @@ impl Operation {
         default_user: String,
         default_domain: String,
         flags: u32,
-    ) -> (bool, bool, String, String, String, bool, u32) {
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> PasswordReply {
+        if !from_gvfs(connection, &header).await {
+            return PASSWORD_ABORTED();
+        }
         let again = self.passwords_asked.fetch_add(1, Ordering::AcqRel) > 0;
         let answer = self
             .ask(Prompt::SignIn {
@@ -372,25 +491,27 @@ impl Operation {
             } => (
                 true,
                 false,
+                // The only copy outside the `Secret`: the bus reply.
                 password.expose().to_string(),
                 user,
                 domain,
                 anonymous,
                 remember.as_bits(),
             ),
-            Answer::Choice(_) | Answer::Cancel => (
-                true,
-                true,
-                String::new(),
-                String::new(),
-                String::new(),
-                false,
-                0,
-            ),
+            Answer::Choice(_) | Answer::Cancel => PASSWORD_ABORTED(),
         }
     }
 
-    async fn ask_question(&self, message: String, choices: Vec<String>) -> (bool, bool, u32) {
+    async fn ask_question(
+        &self,
+        message: String,
+        choices: Vec<String>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> (bool, bool, u32) {
+        if !from_gvfs(connection, &header).await {
+            return (true, true, 0);
+        }
         self.choose(message, choices).await
     }
 
@@ -399,16 +520,36 @@ impl Operation {
         message: String,
         choices: Vec<String>,
         _processes: Vec<i32>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
     ) -> (bool, bool, u32) {
+        if !from_gvfs(connection, &header).await {
+            return (true, true, 0);
+        }
         self.choose(message, choices).await
     }
 
-    fn show_unmount_progress(&self, _message: String, _time_left: i64, _bytes_left: i64) {
-        self.activity.touch();
+    async fn show_unmount_progress(
+        &self,
+        _message: String,
+        _time_left: i64,
+        _bytes_left: i64,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) {
+        if from_gvfs(connection, &header).await {
+            self.activity.touch();
+        }
     }
 
-    fn aborted(&self) {
-        self.aborted.store(true, Ordering::Release);
+    async fn aborted(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) {
+        if from_gvfs(connection, &header).await {
+            let _ = self.abort.0.try_send(());
+        }
     }
 }
 
@@ -421,8 +562,44 @@ impl Operation {
     }
 }
 
-/// Each mount's operation is at its own path.
+/// Counts operations, for the never-used fallback below.
 static NEXT_OPERATION: AtomicU64 = AtomicU64::new(1);
+
+/// A path for one mount's operation that another program on the bus cannot
+/// guess: 128 random bits.
+fn operation_path() -> String {
+    use std::io::Read;
+    let mut token = [0u8; 16];
+    let random = std::fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut token))
+        .is_ok();
+    if !random {
+        // Never reached on Linux; still unique, and the caller check stands.
+        let fallback = NEXT_OPERATION.fetch_add(1, Ordering::Relaxed) as u128
+            ^ (std::process::id() as u128) << 64
+            ^ Instant::now().elapsed().as_nanos();
+        token = fallback.to_le_bytes();
+    }
+    let hex: String = token.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("/org/betteros/Files/MountOperation/op_{hex}")
+}
+
+/// Keeps a finished mount's operation answering "aborted" for this long,
+/// for a GVfs backend that is still asking after the mount was given up on.
+const CLOSED_GRACE: Duration = Duration::from_secs(120);
+
+/// Where [`Listening`] is served.
+const LISTENING_PATH: &str = "/org/betteros/Files";
+
+/// Served from the moment the connection is made, so zbus's object server
+/// is already taking calls when GVfs first asks on a mount operation added
+/// later: zbus starts a connection's object server lazily, and a call that
+/// arrives before it listens is never answered (GVfs's question would hang
+/// until the mount is given up on). It has nothing to offer.
+struct Listening;
+
+#[zbus::interface(name = "org.betteros.Files.Listening")]
+impl Listening {}
 
 /// Mounts through GVfs on the session bus (or a private bus, in tests).
 pub struct GvfsMounter {
@@ -438,6 +615,8 @@ impl GvfsMounter {
             let connection = zbus::connection::Builder::session()
                 .ok()?
                 .method_timeout(CALL_LIMIT)
+                .serve_at(LISTENING_PATH, Listening)
+                .ok()?
                 .build()
                 .await
                 .ok()?;
@@ -451,6 +630,8 @@ impl GvfsMounter {
             let connection = zbus::connection::Builder::address(address)
                 .ok()?
                 .method_timeout(CALL_LIMIT)
+                .serve_at(LISTENING_PATH, Listening)
+                .ok()?
                 .build()
                 .await
                 .ok()?;
@@ -511,16 +692,14 @@ impl GvfsMounter {
             .map_err(|error| MountError::new(MountFailure::NoGvfs, error.to_string()))?;
         let activity = Arc::new(Activity::default());
         activity.touch();
-        let aborted = Arc::new(AtomicBool::new(false));
-        let path = format!(
-            "/org/betteros/Files/MountOperation/{}",
-            NEXT_OPERATION.fetch_add(1, Ordering::Relaxed)
-        );
+        let closed = Arc::new(AtomicBool::new(false));
+        let path = operation_path();
         let operation = Operation {
             asker: asker.clone(),
             passwords_asked: AtomicU32::new(0),
             activity: Arc::clone(&activity),
-            aborted,
+            abort: smol::channel::bounded(1),
+            closed: Arc::clone(&closed),
         };
         let server = self.connection.object_server();
         server
@@ -555,9 +734,32 @@ impl GvfsMounter {
             }
         };
         let outcome = smol::future::or(call, watchdog).await;
-        let _ = server.remove::<Operation, _>(path.as_str()).await;
+        if outcome.is_none() {
+            // Given up on: GVfs may still ask, and is told "aborted" rather
+            // than that nobody is there, for a while.
+            closed.store(true, Ordering::Release);
+            let connection = self.connection.clone();
+            let path = path.clone();
+            let _ = std::thread::Builder::new()
+                .name("files-mount-closed".to_string())
+                .spawn(move || {
+                    std::thread::sleep(CLOSED_GRACE);
+                    smol::block_on(async {
+                        let _ = connection
+                            .object_server()
+                            .remove::<Operation, _>(path.as_str())
+                            .await;
+                    });
+                });
+        } else {
+            let _ = server.remove::<Operation, _>(path.as_str()).await;
+        }
         match outcome {
-            None => Err(MountError::new(MountFailure::TimedOut, "")),
+            // It may have mounted after all, just slowly.
+            None => self
+                .local_folder(&tracker, &spec)
+                .await
+                .map_err(|_| MountError::new(MountFailure::TimedOut, "")),
             Some(Ok(())) => self.local_folder(&tracker, &spec).await,
             Some(Err(error)) if already_mounted(&error) => self.local_folder(&tracker, &spec).await,
             Some(Err(error)) => {
@@ -682,5 +884,83 @@ mod tests {
             failure_of(&error(39, "Connection refused by server")).1,
             "Connection refused by server"
         );
+    }
+
+    #[test]
+    fn a_changed_host_key_is_recognised_in_gvfs_own_chinese() {
+        // GVfs's zh_TW catalog, read as UTF-8 whatever the locale's own
+        // character set. Needs the zh_TW.UTF-8 locale and GVfs's zh_TW
+        // translation (Ubuntu's language pack); without them there is
+        // nothing to compare against.
+        let Some(words) = gvfs_translation_in(HOST_KEY_FAILED, c"zh_TW.UTF-8") else {
+            eprintln!("skipping: no zh_TW.UTF-8 locale or no GVfs zh_TW catalog here");
+            return;
+        };
+        assert_eq!(words, "驗證主機金鑰失敗");
+        assert!(
+            words.contains("主機金鑰"),
+            "read as UTF-8, not mangled: {words:?}"
+        );
+    }
+
+    #[test]
+    fn a_host_key_question_in_another_language_is_still_one() {
+        // GVfs's question in Chinese: found by its fingerprint and its two
+        // choices, whatever the words.
+        let message = "身分核對失敗\n核對「nas」的身分失敗，這通常發生在首次登入該電腦時。\n\n遠端電腦送來的身分是「SHA256:7mj0NZesAHJ2Jo7UyMBrm/zFylxFPMVWG+oDHpeMz1E」。若想要確保繼續作業安全無虞，請聯絡系統管理員。";
+        let choices = vec!["仍要登入".to_string(), "取消登入".to_string()];
+        assert_eq!(
+            crate::network::HostKeyQuestion::read("sftp://nas/", message, &choices),
+            Some(crate::network::HostKeyQuestion::Unknown {
+                fingerprint: "SHA256:7mj0NZesAHJ2Jo7UyMBrm/zFylxFPMVWG+oDHpeMz1E".into()
+            })
+        );
+        // The address-mismatch question carries no fingerprint: a warning.
+        assert_eq!(
+            crate::network::HostKeyQuestion::read(
+                "sftp://nas/",
+                "「nas」的主機金鑰和 IP 位址「192.0.2.1」的金鑰不同",
+                &choices
+            ),
+            Some(crate::network::HostKeyQuestion::Mismatch)
+        );
+    }
+
+    #[test]
+    fn gvfs_s_backends_are_its_descendants_and_nothing_else_is() {
+        let me = std::process::id();
+        assert!(descends_from(me, me));
+        let parent = parent_of(me).expect("a parent");
+        assert!(descends_from(me, parent), "a child of the daemon");
+        assert!(
+            !descends_from(parent, me),
+            "the daemon's parent is not its child"
+        );
+        assert!(!descends_from(1, me));
+    }
+
+    #[test]
+    fn gio_s_question_is_read_by_its_own_numbers() {
+        // `gio mount` against an SSH server it has not seen (C locale), as
+        // printed by GVfs 1.54's gio.
+        let said = "Identity Verification Failed\nVerifying the identity of \"nas\" failed, this happens when you log in to a computer the first time.\n\nThe identity sent by the remote computer is \"SHA256:i4D6NouSBoL4kCuY1t4/EldVQabVENDr2C/UBM1bO78\". If you want to be absolutely sure it is safe to continue, contact the system administrator.\n[1] Log In Anyway\n[2] Cancel Login\nChoice: \ngio: sftp://nas/: Login dialog cancelled\n";
+        let question = crate::network::gio_question(said).expect("a question");
+        assert_eq!(
+            question.choices,
+            [
+                ("1".to_string(), "Log In Anyway".to_string()),
+                ("2".to_string(), "Cancel Login".to_string())
+            ]
+        );
+        // The window's Connect anyway is GVfs's choice 0, which gio numbers 1.
+        assert_eq!(
+            question.choices[crate::network::CONNECT_ANYWAY as usize].0,
+            "1"
+        );
+        assert!(
+            !question.text.contains("[1]"),
+            "the choices are not the text"
+        );
+        assert_eq!(crate::network::gio_question("Password: \n"), None);
     }
 }

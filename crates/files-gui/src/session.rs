@@ -499,6 +499,9 @@ pub struct FilesSession {
     preferences_baseline: FilesPreferences,
     /// The preferences file's folder, followed so widths are shared.
     preference_watch: Option<files_platform::Subscription>,
+    /// The watch hub every folder of this window is followed through: the
+    /// process's, or a test thread's own.
+    hub: Arc<files_platform::WatchHub>,
     /// Devices being ejected and the folders whose watches were let go of.
     ejecting: Vec<(String, std::path::PathBuf)>,
     /// Every drive and how full it is (ticket 122), as last read.
@@ -634,22 +637,18 @@ impl FilesSession {
         reader.set_include_hidden_applications(preferences.show_hidden);
         let view = preferences.view_preferences();
         let bookmarks = bookmark_store.load();
+        // The process's watch hub, or this thread's own (a test's).
+        let hub = files_platform::WatchHub::current();
         let preference_watch = preference_store
             .path()
             .parent()
             .filter(|folder| folder.is_dir())
-            .map(|folder| {
-                files_platform::WatchHub::global()
-                    .subscribe(folder, files_platform::ReaderConfig::new())
-            });
+            .map(|folder| hub.subscribe(folder, files_platform::ReaderConfig::new()));
         let bookmark_watch = bookmark_store
             .path()
             .parent()
             .filter(|folder| folder.is_dir())
-            .map(|folder| {
-                files_platform::WatchHub::global()
-                    .subscribe(folder, files_platform::ReaderConfig::new())
-            });
+            .map(|folder| hub.subscribe(folder, files_platform::ReaderConfig::new()));
         let tabs = TabSet::with_preferences(start.clone(), view);
         let first = tabs.active().id();
         let pane = Pane::open(start, view, reader.as_ref());
@@ -690,6 +689,7 @@ impl FilesSession {
             bookmark_watch,
             preferences_baseline: preferences,
             preference_watch,
+            hub,
             ejecting: Vec::new(),
             drives: Vec::new(),
             drive_scanner: None,
@@ -1580,7 +1580,7 @@ impl FilesSession {
         {
             // Every window's watches under the device go first; they come
             // back if the eject does not happen.
-            files_platform::WatchHub::global().suspend_under(&folder);
+            self.hub.suspend_under(&folder);
             self.ejecting.push((object_path.to_string(), folder));
         }
         self.link.request_eject(object_path);
@@ -1594,7 +1594,7 @@ impl FilesSession {
             .partition(|(path, _)| path == object_path);
         self.ejecting = rest;
         for (_, folder) in ending {
-            files_platform::WatchHub::global().resume_under(&folder);
+            self.hub.resume_under(&folder);
         }
     }
 
@@ -1786,7 +1786,7 @@ impl FilesSession {
                 result,
             } => {
                 if let Some(folder) = &folder {
-                    files_platform::WatchHub::global().resume_under(folder);
+                    self.hub.resume_under(folder);
                 }
                 self.notice = Some(match result {
                     Ok(Ejected::Safe) => Notice::DriveSafe { drive },
@@ -1952,7 +1952,7 @@ impl FilesSession {
         };
         let folder = drive.mount_point.clone();
         if let Some(folder) = &folder {
-            files_platform::WatchHub::global().suspend_under(folder);
+            self.hub.suspend_under(folder);
         }
         let name = drive.name(crate::i18n::copy(self.locale));
         let busy = drive.key.clone();
@@ -2680,6 +2680,7 @@ impl FilesSession {
     /// removal could come before the batch that carries the file.
     pub(crate) fn pump_watches(&mut self) -> bool {
         let reader = self.reader.clone();
+        let hub = Arc::clone(&self.hub);
         let active = self.active_tab();
         let panes = &self.panes;
         self.watches
@@ -2692,12 +2693,12 @@ impl FilesSession {
                 Some(index) => {
                     // The old folder's subscription goes before the new one
                     // is asked for.
-                    self.watches[index] = FolderWatch::new(*tab, pane.location(), &reader);
+                    self.watches[index] = FolderWatch::new(*tab, pane.location(), &reader, &hub);
                     index
                 }
                 None => {
                     self.watches
-                        .push(FolderWatch::new(*tab, pane.location(), &reader));
+                        .push(FolderWatch::new(*tab, pane.location(), &reader, &hub));
                     self.watches.len() - 1
                 }
             };
@@ -2793,6 +2794,12 @@ impl FilesSession {
         }
     }
 
+    /// The watch hub this window's folders are followed through, for tests.
+    #[cfg(test)]
+    pub(crate) fn watch_hub(&self) -> &files_platform::WatchHub {
+        &self.hub
+    }
+
     /// The folders the hub holds a kernel watch on for this window's panes,
     /// for tests.
     #[cfg(test)]
@@ -2802,7 +2809,7 @@ impl FilesSession {
             .filter(|watch| watch.ready)
             .filter_map(|watch| watch.subscription.as_ref())
             .map(|subscription| subscription.directory().to_path_buf())
-            .filter(|folder| files_platform::WatchHub::global().is_watching(folder))
+            .filter(|folder| self.hub.is_watching(folder))
             .collect()
     }
 
@@ -3285,6 +3292,16 @@ impl FilesSession {
 
     fn pump_mount(&mut self) -> bool {
         let mut changed = false;
+        // GVfs withdrew the question (it sent `Aborted`, or the mount was
+        // given up on): it leaves the screen.
+        if self
+            .server_prompt
+            .as_ref()
+            .is_some_and(|ask| ask.reply.is_closed())
+        {
+            self.server_prompt = None;
+            changed = true;
+        }
         if let Some(questions) = &self.server_asks
             && let Ok(ask) = questions.try_recv()
         {
@@ -3518,11 +3535,15 @@ struct FolderWatch {
 
 impl FolderWatch {
     /// Asks the hub for a watch; nothing here touches the disk.
-    fn new(tab: TabId, location: &Location, reader: &FilesReader) -> Self {
-        let subscription = location.as_local_path().map(|path| {
-            files_platform::WatchHub::global()
-                .subscribe(path.as_path(), reader.local_config().clone())
-        });
+    fn new(
+        tab: TabId,
+        location: &Location,
+        reader: &FilesReader,
+        hub: &files_platform::WatchHub,
+    ) -> Self {
+        let subscription = location
+            .as_local_path()
+            .map(|path| hub.subscribe(path.as_path(), reader.local_config().clone()));
         Self {
             tab,
             folder: location.clone(),

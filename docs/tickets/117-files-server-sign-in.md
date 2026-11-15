@@ -156,3 +156,50 @@ recorded key changed the warning banner wraps. Screenshots in `.shots/`:
 `t117-listing-*`, `t117-key-changed-*` (the long warning wrapping), each
 `en`/`zh` and `light`/`dark`; every one shows the fixture tailnet's two
 online machines in the sidebar (the offline one left out).
+
+## After review
+
+- **Only GVfs can ask.** The mount operation is exported at a path with 128
+  random bits, and every method checks its caller: GVfs's backends call the
+  client's operation themselves on their own session-bus connection
+  (`common/gmountsource.c` makes the proxy with `G_BUS_TYPE_SESSION` in the
+  backend's process; seen on the lab bus as `gvfsd-sftp`, a child of the
+  `gvfsd` that owns `org.gtk.vfs.Daemon`), so the caller's process (from
+  `GetConnectionUnixProcessID`) must be that `gvfsd` or below it. Anyone
+  else gets an aborted answer and the person sees nothing.
+- **Chinese reads as Chinese.** GVfs's catalog is read with the session's
+  messages and character type and bound to UTF-8, so its translated "Host
+  key verification failed" matches and a changed key is shown as the warning
+  in a Chinese session too (before, it came back as question marks).
+- **Choices by GVfs's own order.** Connect anyway is GVfs's choice 0, which
+  its SFTP backend answers ssh "yes" for (`gvfsbackendsftp.c`,
+  `login_answer_yes_no`); the `gio` fallback reads the numbers `gio` prints
+  (`[1] Log In Anyway`) instead of assuming one, asks only an SFTP host key
+  (in Better Files' words), and never shows `gio`'s text as the question.
+- **Passwords.** The `gio` fallback keeps the password in a `Secret` until it
+  writes it; the bus reply is the only other copy. Closing the window
+  (the compositor's close, Alt+F4) empties the password fields and cancels
+  a sign-in on screen.
+- **After 30 silent seconds** the location is looked up once more and opened
+  if it did mount after all; a question GVfs asks later is answered
+  "aborted" for two minutes rather than "no such object". When GVfs
+  withdraws a question (`Aborted`), it leaves the screen.
+
+Tests added: another program asking for the password during a mount is
+refused and nothing reaches the window (`dbus-send` in a session of its
+own); a mount that finished unannounced opens after the wait; a late
+question is answered aborted; a withdrawn question closes on the window's
+side; Connect anyway is checked against the fake's GVfs-order choices;
+GVfs's zh_TW "Host key verification failed" read as UTF-8 (needs the
+zh_TW.UTF-8 locale and Ubuntu's language pack, otherwise it says it is
+skipped); a Chinese host-key question; `gio`'s numbered choices; the
+process-ancestry check. The fake GVfs's silence limit is 3 s so a loaded CI
+runner's fake still answers in time.
+- **GVfs's first question is never lost.** zbus starts a connection's
+  object server lazily, so a question GVfs asked the moment the mount began
+  could reach a server not yet listening and hang until the mount was given
+  up on (seen once in about eight runs under load). The mount connection
+  now serves an empty object from the start, so the server listens before
+  the first call; 25 runs under the same load: no failure. Two windows
+  reading one drive's free space at once also share the one read instead of
+  the second showing no bar.

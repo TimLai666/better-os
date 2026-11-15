@@ -222,6 +222,12 @@ impl Asker {
     }
 }
 
+/// The choice that goes ahead in GVfs's host-key questions: its SFTP
+/// backend offers `{"Log In Anyway", "Cancel Login"}` and answers ssh "yes"
+/// for choice 0 and "no" for anything else (`gvfsbackendsftp.c`,
+/// `login_answer_yes_no`, GVfs 1.54).
+pub const CONNECT_ANYWAY: u32 = 0;
+
 /// What a host-key question means, read from GVfs's message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HostKeyQuestion {
@@ -337,7 +343,7 @@ const GIO_ATTEMPTS: usize = 4;
 /// Runs `gio` with `arguments` in the C locale, writes `input` to it and
 /// closes its standard input, and returns whether it succeeded and what it
 /// printed.
-fn run_gio(arguments: &[&str], input: &[String]) -> Result<(bool, String), MountError> {
+fn run_gio(arguments: &[&str], input: &[&str]) -> Result<(bool, String), MountError> {
     let mut child = Command::new("gio")
         .args(arguments)
         .env("LC_ALL", "C")
@@ -419,42 +425,95 @@ pub fn gio_failure(output: &str) -> MountFailure {
     }
 }
 
-/// gio's answers for one run: the host-key choice, then the sign-in.
-fn gio_input(trusted: bool, sign_in: &[String]) -> Vec<String> {
-    let mut input = Vec::new();
-    if trusted {
-        input.push("1".to_string());
+/// A question `gio mount` printed (C locale): its text and the numbers it
+/// offers with their labels (`[1] Log In Anyway`, `[2] Cancel Login`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GioQuestion {
+    pub text: String,
+    pub choices: Vec<(String, String)>,
+}
+
+/// The question in `gio mount`'s output, when it asked one ("Choice:").
+pub fn gio_question(output: &str) -> Option<GioQuestion> {
+    if !output.contains("Choice:") {
+        return None;
     }
-    input.extend(sign_in.iter().cloned());
-    input
+    let choices: Vec<(String, String)> = output
+        .lines()
+        .filter_map(|line| {
+            let (number, label) = line.trim().strip_prefix('[')?.split_once("] ")?;
+            number
+                .chars()
+                .all(|digit| digit.is_ascii_digit())
+                .then(|| (number.to_string(), label.trim().to_string()))
+        })
+        .collect();
+    let text = output
+        .lines()
+        .take_while(|line| !line.trim_start().starts_with('['))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!choices.is_empty()).then_some(GioQuestion { text, choices })
+}
+
+/// What `gio` is told on one run: the number of the host-key choice taken,
+/// then the sign-in. The password stays a [`Secret`] until it is written.
+#[derive(Default)]
+struct GioAnswers {
+    choice: Option<String>,
+    user: Option<String>,
+    domain: Option<String>,
+    password: Option<crate::secret::Secret>,
+}
+
+impl GioAnswers {
+    fn lines(&self) -> Vec<&str> {
+        let mut lines = Vec::new();
+        lines.extend(self.choice.as_deref());
+        lines.extend(self.user.as_deref());
+        lines.extend(self.domain.as_deref());
+        lines.extend(self.password.as_ref().map(crate::secret::Secret::expose));
+        lines
+    }
 }
 
 impl Mounter for GioMounter {
     fn mount(&self, address: &str, asker: &Asker) -> Result<PathBuf, MountError> {
-        let mut trusted = false;
-        let mut sign_in: Vec<String> = Vec::new();
+        let mut answers = GioAnswers::default();
         let mut mounted = false;
         for _ in 0..GIO_ATTEMPTS {
-            let (success, said) = run_gio(&["mount", address], &gio_input(trusted, &sign_in))?;
+            let (success, said) = run_gio(&["mount", address], &answers.lines())?;
             if success || said.to_lowercase().contains("already mounted") {
                 mounted = true;
                 break;
             }
             // A question gio could not answer from what it was given is
-            // asked through the window, and gio is run again with it.
-            if said.contains("Choice:") && !trusted {
-                let message = said
-                    .lines()
-                    .take_while(|line| !line.trim_start().starts_with('['))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let choices: Vec<String> = said
-                    .lines()
-                    .filter_map(|line| line.trim().strip_prefix('[')?.split_once("] "))
-                    .map(|(_, label)| label.to_string())
+            // asked through the window, and gio is run again with the
+            // number it offered for the answer. Only an SFTP host key is
+            // asked: it is shown in Better Files' own words (the window
+            // reads the fingerprint), never as gio's text; any other
+            // question ends the mount, gio's words only as the detail.
+            if answers.choice.is_none()
+                && let Some(question) = gio_question(&said)
+            {
+                let labels: Vec<String> = question
+                    .choices
+                    .iter()
+                    .map(|(_, label)| label.clone())
                     .collect();
-                match smol::block_on(asker.ask(Prompt::Question { message, choices })) {
-                    Answer::Choice(0) => trusted = true,
+                if HostKeyQuestion::read(address, &question.text, &labels).is_none() {
+                    return Err(MountError::new(MountFailure::Failed, gio_detail(&said)));
+                }
+                match smol::block_on(asker.ask(Prompt::Question {
+                    message: question.text,
+                    choices: labels,
+                })) {
+                    Answer::Choice(index) => {
+                        let Some((number, _)) = question.choices.get(index as usize) else {
+                            return Err(MountError::new(MountFailure::Cancelled, ""));
+                        };
+                        answers.choice = Some(number.clone());
+                    }
                     _ => return Err(MountError::new(MountFailure::Cancelled, "")),
                 }
                 continue;
@@ -471,7 +530,7 @@ impl Mounter for GioMounter {
                         remember: false,
                         anonymous: false,
                     },
-                    again: !sign_in.is_empty(),
+                    again: answers.password.is_some(),
                 }));
                 let Answer::SignIn {
                     user,
@@ -482,11 +541,9 @@ impl Mounter for GioMounter {
                 else {
                     return Err(MountError::new(MountFailure::Cancelled, ""));
                 };
-                sign_in = vec![user];
-                if address.starts_with("smb://") {
-                    sign_in.push(domain);
-                }
-                sign_in.push(password.expose().to_string());
+                answers.user = Some(user);
+                answers.domain = address.starts_with("smb://").then_some(domain);
+                answers.password = Some(password);
                 continue;
             }
             return Err(MountError::new(gio_failure(&said), gio_detail(&said)));
