@@ -151,6 +151,9 @@ Not run, and not claimed:
 - Icon artwork for the six indicator states, shared with ticket 25.
 - Idle CPU and memory measured for the service and tray processes, with no
   polling provider active.
+- The container install-and-remove test (ticket 36 ran it for better-launcher
+  only) run for better-awake: installed, started, removed, and nothing of it left
+  running or on disk.
 
 ## Not done when first delivered
 

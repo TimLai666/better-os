@@ -185,6 +185,9 @@ Benchmarks that ran (synthetic, no hardware):
 - The manifest schema field for supported kernels, filesystems and transports
   (decide it and, if adopted, add it to the schema and to
   `components/manifests/better-storage.yaml`).
+- The container install-and-remove test (ticket 36 ran it for better-launcher
+  only) run for better-storage: installed, started, removed, and nothing of it left
+  running or on disk.
 
 ## Follow-ups
 
