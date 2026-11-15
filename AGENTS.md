@@ -184,6 +184,10 @@ contract.
   `PATH`, and is ended by PID when done. A sandbox GNOME Shell otherwise starts
   its own `ibus-daemon`, which has grown to 12 and 21 GB, and the kernel's OOM
   kill took the owner's Claude Desktop down with it twice (2026-11-14, -15).
+- A test module inside a file that does `use gpui::*` imports what it needs
+  by name, never `use super::*`: the glob brings gpui's own `#[test]` macro
+  in, which shadows the standard one and fails to compile with a recursion
+  limit error (seen in tickets 123 and 127).
 - Give every worktree of this repository its own `CARGO_TARGET_DIR`. Cargo
   hashes a path crate by its path inside the workspace, so two worktrees sharing
   one target overwrite each other's artifacts and a stale build from the other
