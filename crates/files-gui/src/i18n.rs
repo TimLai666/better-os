@@ -66,8 +66,6 @@ pub struct Copy {
     pub brand_name: &'static str,
     pub files: &'static str,
     pub language: &'static str,
-    pub english: &'static str,
-    pub chinese: &'static str,
     pub light_theme: &'static str,
     pub dark_theme: &'static str,
 
@@ -615,8 +613,6 @@ pub const EN_US: Copy = Copy {
     brand_name: "Better",
     files: "Files",
     language: "Language",
-    english: "English",
-    chinese: "繁體中文",
     light_theme: "Light",
     dark_theme: "Dark",
 
@@ -1102,8 +1098,6 @@ pub const ZH_TW: Copy = Copy {
     brand_name: "Better",
     files: "檔案",
     language: "語言",
-    english: "English",
-    chinese: "繁體中文",
     light_theme: "淺色",
     dark_theme: "深色",
 

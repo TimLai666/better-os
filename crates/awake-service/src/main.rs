@@ -90,6 +90,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = terminate.recv() => {}
+        // The session bus went away: the session is over, so is this.
+        () = awake_service::service::until_bus_closes(&connection) => {
+            eprintln!("better-awake-service: the session bus closed; releasing everything");
+        }
     }
 
     ticker.abort();

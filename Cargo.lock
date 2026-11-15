@@ -4513,6 +4513,9 @@ version = "0.2.15"
 dependencies = [
  "app-catalog-core",
  "app-catalog-platform",
+ "awake-core",
+ "awake-ipc",
+ "awake-service",
  "better-core",
  "better-ui",
  "defaults-core",
@@ -4528,6 +4531,7 @@ dependencies = [
  "serde_json",
  "smol",
  "tempfile",
+ "tokio",
  "uuid",
  "window-attention-core",
  "zbus",

@@ -86,30 +86,33 @@ impl ServiceClient {
     /// version 3 has is refused with a key that says the service is too old.
     async fn send(&self, body: RequestBody) -> Result<ResponseBody, ClientError> {
         let request = AwakeRequest::new(body);
-        // Asked first: a service from before version 3 reports 2, and a
-        // request it cannot parse is then never sent to it.
-        let legacy = matches!(
-            self.protocol_version().await,
-            Ok(version) if version == awake_ipc::LEGACY_PROTOCOL_VERSION
-        );
-        let mut response = if legacy {
-            AwakeResponse::from_json_any(
-                &self
-                    .call(
-                        &request
-                            .to_legacy_json()
-                            .map_err(|error| ClientError::Rejected(error.to_string()))?,
-                    )
-                    .await?,
-            )?
-        } else {
-            AwakeResponse::from_json_any(&self.call(&request.to_json()?).await?)?
+        // Asked first: a service from before version 3 reports 2, one from
+        // before version 4 reports 3, and a request it cannot parse is then
+        // never sent to it.
+        let older = match self.protocol_version().await {
+            Ok(version)
+                if version < awake_ipc::PROTOCOL_VERSION
+                    && awake_ipc::ACCEPTED_PROTOCOL_VERSIONS.contains(&version) =>
+            {
+                Some(version)
+            }
+            _ => None,
         };
-        if !legacy && response.is_legacy_version_refusal() {
-            let document = request
-                .to_legacy_json()
-                .map_err(|error| ClientError::Rejected(error.to_string()))?;
-            response = AwakeResponse::from_json_any(&self.call(&document).await?)?;
+        let in_version = |version: u32| {
+            request
+                .to_json_for(version)
+                .map_err(|error| ClientError::Rejected(error.to_string()))
+        };
+        let mut response = match older {
+            Some(version) => {
+                AwakeResponse::from_json_any(&self.call(&in_version(version)?).await?)?
+            }
+            None => AwakeResponse::from_json_any(&self.call(&request.to_json()?).await?)?,
+        };
+        if older.is_none()
+            && let Some(version) = response.older_version_refusal()
+        {
+            response = AwakeResponse::from_json_any(&self.call(&in_version(version)?).await?)?;
         }
         match response.body {
             ResponseBody::Rejected { error_key } => Err(ClientError::Rejected(error_key)),

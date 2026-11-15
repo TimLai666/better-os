@@ -279,7 +279,6 @@ fn every_visible_string(c: &'static Copy) -> Vec<&'static str> {
         c.system_theme,
         c.language,
         c.language_description,
-        c.system_default,
         c.privacy,
         c.show_command_lines,
         c.privacy_description,

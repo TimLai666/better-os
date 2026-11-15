@@ -81,6 +81,7 @@ enum Page {
     Buttons,
     Text,
     Selection,
+    Time,
     Status,
     Dialogs,
     Collections,
@@ -89,10 +90,11 @@ enum Page {
     Window,
 }
 
-const PAGES: [Page; 9] = [
+const PAGES: [Page; 10] = [
     Page::Buttons,
     Page::Text,
     Page::Selection,
+    Page::Time,
     Page::Status,
     Page::Dialogs,
     Page::Collections,
@@ -107,6 +109,7 @@ impl Page {
             Page::Buttons => "buttons",
             Page::Text => "text",
             Page::Selection => "selection",
+            Page::Time => "time",
             Page::Status => "status",
             Page::Dialogs => "dialogs",
             Page::Collections => "collections",
@@ -124,6 +127,8 @@ impl Page {
             (Page::Text, true) => "文字輸入",
             (Page::Selection, false) => "Selection",
             (Page::Selection, true) => "選取",
+            (Page::Time, false) => "Date and time",
+            (Page::Time, true) => "日期與時間",
             (Page::Status, false) => "Status and progress",
             (Page::Status, true) => "狀態與進度",
             (Page::Dialogs, false) => "Dialogs and flyouts",
@@ -144,6 +149,7 @@ impl Page {
             Page::Buttons => IconName::CircleCheck,
             Page::Text => IconName::ALargeSmall,
             Page::Selection => IconName::ChevronsUpDown,
+            Page::Time => IconName::Calendar,
             Page::Status => IconName::Loader,
             Page::Dialogs => IconName::Inbox,
             Page::Collections => IconName::LayoutDashboard,
@@ -218,6 +224,7 @@ struct Gallery {
     switch_on: bool,
     combo: Option<usize>,
     slider: f64,
+    time: better_ui::fluent::time_picker::Time,
     number: f64,
     list: Option<usize>,
     table_sort: Option<SortState>,
@@ -281,6 +288,10 @@ impl Gallery {
             switch_on: true,
             combo: Some(1),
             slider: 40.0,
+            time: better_ui::fluent::time_picker::Time {
+                hour: 18,
+                minute: 30,
+            },
             number: 12.0,
             list: Some(1),
             table_sort: Some(SortState {
@@ -959,6 +970,61 @@ impl Gallery {
                 .into_any_element(),
         ));
         vec![section(self.t("Selection", "選取"), p, rows)]
+    }
+
+    fn time_page(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        use better_ui::fluent::time_picker::{Column, Time, TimeModel, TimePicker};
+        let live = self.t("Live", "實際操作");
+        let mut rows = vec![state_header(p, live)];
+        rows.push(matrix(
+            self.t("Time picker", "時間選擇器"),
+            p,
+            |s| {
+                TimePicker::new(sid("time", s), Time { hour: 9, minute: 5 })
+                    .width(px(140.0))
+                    .shown(s)
+                    .into_any_element()
+            },
+            TimePicker::new("time-live", self.time)
+                .header(format!(
+                    "{} {}",
+                    self.t("Keep awake until", "保持清醒到"),
+                    self.time.format()
+                ))
+                .on_change(Self::act_with(cx, |this, time, _, _| this.time = time))
+                .into_any_element(),
+        ));
+        rows.push(line(
+            self.t("Open, hours and minutes", "展開：小時與分鐘"),
+            p,
+            div()
+                .flex()
+                .items_start()
+                .gap(spacing::XL)
+                .h(px(380.0))
+                .child(
+                    TimePicker::new(
+                        "time-open",
+                        Time {
+                            hour: 18,
+                            minute: 30,
+                        },
+                    )
+                    .show_open(Column::Hour),
+                )
+                .child(
+                    TimePicker::new(
+                        "time-open-15",
+                        Time {
+                            hour: 7,
+                            minute: 45,
+                        },
+                    )
+                    .model(TimeModel::new(15))
+                    .show_open(Column::Minute),
+                ),
+        ));
+        vec![section(self.t("Date and time", "日期與時間"), p, rows)]
     }
 
     fn status_page(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -2481,6 +2547,7 @@ impl Render for Gallery {
             Page::Buttons => self.buttons_page(p, cx),
             Page::Text => self.text_page(p, cx),
             Page::Selection => self.selection_page(p, cx),
+            Page::Time => self.time_page(p, cx),
             Page::Status => self.status_page(p, cx),
             Page::Dialogs => self.dialogs_page(p, cx),
             Page::Collections => self.collections_page(p, cx),
@@ -2516,8 +2583,15 @@ impl Render for Gallery {
                 })),
             )
             .command(
-                Command::new(if self.zh { "English" } else { "中文" }, IconName::Globe)
-                    .on_click(Self::act(cx, |this, _, _| this.zh = !this.zh)),
+                Command::new(
+                    better_ui::fluent::words::language_name(if self.zh {
+                        better_ui::fluent::words::Locale::English
+                    } else {
+                        better_ui::fluent::words::Locale::TraditionalChinese
+                    }),
+                    IconName::Globe,
+                )
+                .on_click(Self::act(cx, |this, _, _| this.zh = !this.zh)),
             );
         let page_view = div().id("page").size_full().overflow_y_scroll().child(
             div()
@@ -2540,7 +2614,7 @@ impl Render for Gallery {
                 )
                 .children(content),
         );
-        let entries: Vec<NavEntry> = PAGES[..8]
+        let entries: Vec<NavEntry> = PAGES[..9]
             .iter()
             .map(|page| NavItem::new(page.title(self.zh), page.icon()).entry())
             .collect();

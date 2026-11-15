@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
-<!-- Better Awake tray state: unavailable. Drawn for this project. -->
-<path d="M1 8c1.6-3 4.1-4.5 7-4.5S13.4 5 15 8c-1.6 3-4.1 4.5-7 4.5S2.6 11 1 8z" fill="none" stroke="#bebebe" stroke-width="1.5" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.2" fill="#bebebe"/><path d="M2 14L14 2" stroke="#bebebe" stroke-width="1.5" stroke-linecap="round"/>
+<!-- Better Awake tray state: unavailable (nothing can hold the machine). Drawn for this project.
+     The slash is cut out of the eye, so it reads as a stroke-through, not a scratch. -->
+<defs><mask id="m"><rect width="16" height="16" fill="#fff"/><path d="M2 14L14 2" stroke="#000" stroke-width="3.6" stroke-linecap="round"/></mask></defs>
+<g mask="url(#m)"><path d="M1 8c1.6-3 4.1-4.5 7-4.5S13.4 5 15 8c-1.6 3-4.1 4.5-7 4.5S2.6 11 1 8z" fill="none" stroke="#bebebe" stroke-width="1.5" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.2" fill="#bebebe"/></g><path d="M2 14L14 2" stroke="#bebebe" stroke-width="1.5" stroke-linecap="round"/>
 </svg>
