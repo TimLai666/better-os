@@ -414,11 +414,16 @@ fn details_are_fetched_by_one_worker_for_the_latest_file_only() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    // Asking again while the last file runs, as the loop above does, must
+    // not run it a second time; give such a run the time to show in the log.
+    std::thread::sleep(Duration::from_millis(100));
     let runs = fs::read_to_string(&log).unwrap();
     let runs: Vec<&str> = runs.lines().collect();
     // The first (already running) and the last; nothing in between.
     assert!(runs.len() <= 2, "{runs:?}");
     assert_eq!(runs.last().copied(), Some(last.to_str().unwrap()));
+    let last_runs = runs.iter().filter(|run| **run == last.to_str().unwrap());
+    assert_eq!(last_runs.count(), 1, "{runs:?}");
 }
 
 /// A plugin's words follow the window's language when it changes, from

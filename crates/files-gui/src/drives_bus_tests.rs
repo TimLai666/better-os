@@ -8,6 +8,7 @@
 //! production path, [`DriveSources::with_udisks`] and the window's session,
 //! with only the bus, the mount table and the free-space read replaced.
 
+use crate::drives::DriveText as _;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -119,6 +120,7 @@ fn path_bytes(path: &str) -> Vec<u8> {
 }
 
 struct FakeBlock {
+    uuid: String,
     device: String,
     label: String,
     kind: String,
@@ -147,7 +149,7 @@ impl FakeBlock {
     }
     #[zbus(property, name = "IdUUID")]
     fn id_uuid(&self) -> String {
-        String::new()
+        self.uuid.clone()
     }
     #[zbus(property)]
     fn size(&self) -> u64 {
@@ -320,6 +322,7 @@ impl FakeEncrypted {
             .at(
                 CLEARTEXT,
                 FakeBlock {
+                    uuid: String::new(),
                     device: "/dev/dm-9".into(),
                     label: "Vault".into(),
                     kind: "ext4".into(),
@@ -372,6 +375,7 @@ fn plug_stick(udisks: &zbus::Connection, root: &Path, calls: &Calls) {
             .at(
                 STICK,
                 FakeBlock {
+                    uuid: String::new(),
                     device: "/dev/sdx1".into(),
                     label: "FIELD DATA".into(),
                     kind: "exfat".into(),
@@ -413,6 +417,13 @@ struct Fixture {
 }
 
 fn session_on(bus: &PrivateBus) -> (Fixture, FilesSession) {
+    session_on_with(bus, |_| {})
+}
+
+fn session_on_with(
+    bus: &PrivateBus,
+    tweak: impl FnOnce(&mut DriveSources),
+) -> (Fixture, FilesSession) {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
     fs::create_dir_all(&home).unwrap();
@@ -449,6 +460,7 @@ fn session_on(bus: &PrivateBus) -> (Fixture, FilesSession) {
     sources.gvfs = Arc::new(Vec::new);
     let read = Arc::clone(&space);
     sources.capacity = Arc::new(move |path| read.lock().unwrap().get(path).copied());
+    tweak(&mut sources);
     session.set_drive_sources(sources);
     (Fixture { root, space }, session)
 }
@@ -585,6 +597,7 @@ fn an_encrypted_stick_asks_for_its_passphrase_and_locks_again_on_eject() {
             .at(
                 VAULT,
                 FakeBlock {
+                    uuid: String::new(),
                     device: "/dev/sdy1".into(),
                     label: String::new(),
                     kind: "crypto_LUKS".into(),
@@ -723,6 +736,7 @@ fn a_disc_is_ejected_from_its_tray_rather_than_powered_off() {
             .at(
                 DISC,
                 FakeBlock {
+                    uuid: String::new(),
                     device: "/dev/sr9".into(),
                     label: "HOLIDAY".into(),
                     kind: "iso9660".into(),
@@ -793,6 +807,7 @@ fn plug_two_volume_stick(
                 .at(
                     object,
                     FakeBlock {
+                        uuid: String::new(),
                         device: device.into(),
                         label: label.into(),
                         kind: "exfat".into(),
@@ -898,4 +913,147 @@ fn every_volume_of_a_stick_is_unmounted_and_a_refused_power_off_is_said() {
         "{:?}",
         session.notice
     );
+}
+
+/// Ticket 127: a stick turned off is unmounted and leaves the sidebar, is
+/// reachable again with "Show other drives", and turned back on is mounted.
+/// The daemon is a stand-in that keeps the rules file in memory; UDisks2 is
+/// the fake one.
+#[test]
+fn a_drive_turned_off_leaves_the_sidebar_and_turned_on_comes_back_mounted() {
+    use drive_mounts::client::SetOutcome;
+    let Some(bus) = PrivateBus::start() else {
+        panic!("dbus-daemon is needed: the CI image has it (package dbus)");
+    };
+    let udisks = fake_udisks(&bus);
+    let calls: Calls = Arc::default();
+    let rules: Arc<Mutex<drive_mounts::rules::Rules>> = Arc::default();
+    let asked: Arc<Mutex<Vec<String>>> = Arc::default();
+    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (fixture, mut session) = session_on_with(&bus, |sources| {
+        let read = Arc::clone(&rules);
+        sources.system_files = Arc::new(move || drive_mounts::choice::SystemFiles {
+            fstab: Ok(drive_mounts::fstab::Fstab::default()),
+            rules: Ok(read.lock().unwrap().clone()),
+        });
+        let write = Arc::clone(&rules);
+        let log = Arc::clone(&asked);
+        let refuse = Arc::clone(&refuse);
+        sources.set_auto_mount = Arc::new(move |uuid, on| {
+            log.lock().unwrap().push(format!("{uuid} {on}"));
+            if refuse.load(std::sync::atomic::Ordering::SeqCst) {
+                return SetOutcome::NotAllowed;
+            }
+            write.lock().unwrap().set_off(uuid, !on);
+            SetOutcome::Done {
+                mount_point: String::new(),
+            }
+        });
+    });
+    smol::block_on(async {
+        let server = udisks.object_server();
+        server
+            .at(STICK_DRIVE, FakeDrive::new(&calls))
+            .await
+            .unwrap();
+        server
+            .at(
+                STICK,
+                FakeBlock {
+                    uuid: "F1E1-D0DA".into(),
+                    device: "/dev/sdx1".into(),
+                    label: "FIELD DATA".into(),
+                    kind: "exfat".into(),
+                    size: 32 * GIB,
+                    drive: STICK_DRIVE.into(),
+                    backing: "/".into(),
+                },
+            )
+            .await
+            .unwrap();
+        server
+            .at(
+                STICK,
+                FakeFilesystem {
+                    target: fixture.root.path().join("media/FIELD DATA"),
+                    mounted: None,
+                    calls: Arc::clone(&calls),
+                    busy: false,
+                },
+            )
+            .await
+            .unwrap();
+    });
+    let shown = |session: &FilesSession| session.shown_drives().iter().any(|d| d.key == STICK);
+    until(&mut session, "the stick appears, on", |session| {
+        stick(session).is_some_and(|d| d.auto_mount.as_ref().is_some_and(|a| a.on))
+    });
+    // On and not mounted yet: shown, waiting for the desktop, not failed.
+    assert!(shown(&session));
+    assert!(!drive_mounts::choice::failed(stick(&session).unwrap()));
+    session.open_drive(STICK);
+    until(&mut session, "the stick mounts", |session| {
+        stick(session).is_some_and(|d| d.mount_point.is_some())
+    });
+
+    session.set_auto_mount(STICK, false);
+    until(&mut session, "the stick is off and unmounted", |session| {
+        !session.any_drive_busy()
+            && stick(session).is_some_and(|d| {
+                d.mount_point.is_none() && d.auto_mount.as_ref().is_some_and(|a| !a.on)
+            })
+    });
+    assert!(
+        !shown(&session),
+        "a drive switched off is not in the sidebar"
+    );
+    assert_eq!(session.notice, None);
+    session.toggle_show_other_drives();
+    assert!(shown(&session), "Show other drives brings it back");
+    let stored = std::fs::read_to_string(fixture.root.path().join("prefs.json")).unwrap();
+    let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(stored["show_other_drives"], serde_json::Value::Bool(true));
+    let c = &crate::i18n::EN_US;
+    assert_eq!(
+        stick(&session).unwrap().caption(c).as_deref(),
+        Some("32.0 GB · Doesn't mount automatically")
+    );
+    session.toggle_show_other_drives();
+
+    session.set_auto_mount(STICK, true);
+    until(
+        &mut session,
+        "the stick is on and mounted again",
+        |session| {
+            !session.any_drive_busy()
+                && stick(session).is_some_and(|d| {
+                    d.mount_point.is_some() && d.auto_mount.as_ref().is_some_and(|a| a.on)
+                })
+        },
+    );
+    assert!(shown(&session));
+    assert_eq!(
+        *asked.lock().unwrap(),
+        ["F1E1-D0DA false", "F1E1-D0DA true"]
+    );
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [
+            format!("mount {STICK}"),
+            format!("unmount {STICK}"),
+            format!("mount {STICK}"),
+        ]
+    );
+
+    // Refused: nothing moves, and the window says why.
+    refuse.store(true, std::sync::atomic::Ordering::SeqCst);
+    session.set_auto_mount(STICK, false);
+    until(&mut session, "the refusal comes back", |session| {
+        !session.any_drive_busy() && session.notice.is_some()
+    });
+    assert_eq!(
+        session.notice.as_ref().map(|n| n.message(c)).as_deref(),
+        Some("FIELD DATA wasn't changed: you aren't allowed to change this")
+    );
+    assert!(stick(&session).unwrap().mount_point.is_some());
 }

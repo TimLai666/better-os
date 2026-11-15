@@ -392,19 +392,46 @@ impl FilesApp {
                 };
                 sidebar_menu(kind, c)
             }
-            (MenuTarget::Sidebar(_), Some(NavTarget::Device(device))) => sidebar_menu(
-                SidebarKind::Device {
-                    mounted: device.mount_point.is_some(),
-                },
-                c,
-            ),
+            (MenuTarget::Sidebar(_), Some(NavTarget::Device(device))) => {
+                let drive = self.session.drives().iter().find(|drive| {
+                    drive.object_path.as_deref() == Some(device.object_path.as_str())
+                });
+                sidebar_menu(
+                    SidebarKind::Device {
+                        mounted: device.mount_point.is_some(),
+                        ejectable: true,
+                        formattable: true,
+                        auto_mount: drive.map_or(
+                            crate::context_menu::AutoMountLine::None,
+                            crate::context_menu::AutoMountLine::of,
+                        ),
+                        failed: drive.is_some_and(drive_mounts::choice::failed),
+                    },
+                    c,
+                )
+            }
+            (MenuTarget::Sidebar(_), Some(NavTarget::Drive(key))) => {
+                match self.session.drives().iter().find(|drive| drive.key == *key) {
+                    Some(drive) => sidebar_menu(
+                        SidebarKind::Device {
+                            mounted: drive.mount_point.is_some(),
+                            ejectable: drive.ejectable
+                                && drive.kind != crate::drives::DriveKind::System,
+                            formattable: false,
+                            auto_mount: crate::context_menu::AutoMountLine::of(drive),
+                            failed: drive_mounts::choice::failed(drive),
+                        },
+                        c,
+                    ),
+                    None => Vec::new(),
+                }
+            }
             (
                 MenuTarget::Sidebar(_),
                 Some(
                     NavTarget::Machine(_)
                     | NavTarget::PluginItem(_)
                     | NavTarget::PluginView(_)
-                    | NavTarget::Drive(_)
                     | NavTarget::ThisPc,
                 ),
             )
@@ -673,6 +700,38 @@ impl FilesApp {
             }
             (MenuCommand::Format, Some(NavTarget::Device(device))) => {
                 self.session.request_format(&device.object_path)
+            }
+            (MenuCommand::MountAutomatically | MenuCommand::RetryMount, Some(target)) => {
+                let key = match target {
+                    NavTarget::Drive(key) => Some(key.clone()),
+                    NavTarget::Device(device) => self
+                        .session
+                        .drives()
+                        .iter()
+                        .find(|drive| {
+                            drive.object_path.as_deref() == Some(device.object_path.as_str())
+                        })
+                        .map(|drive| drive.key.clone()),
+                    _ => None,
+                };
+                if let Some(key) = key {
+                    if command == MenuCommand::RetryMount {
+                        self.session.retry_mount(&key);
+                    } else if let Some(on) = self
+                        .session
+                        .drives()
+                        .iter()
+                        .find(|drive| drive.key == key)
+                        .and_then(|drive| drive.auto_mount.as_ref())
+                        .map(|auto| auto.on)
+                    {
+                        self.session.set_auto_mount(&key, !on);
+                    }
+                }
+            }
+            (MenuCommand::Eject, Some(NavTarget::Drive(key))) => self.session.eject_drive(key),
+            (MenuCommand::Mount, Some(NavTarget::Drive(key))) => {
+                self.session.open_drive(key);
             }
             (MenuCommand::Open, Some(target)) => self.open_nav_target(target, window),
             (_, Some(NavTarget::Device(device))) if command == MenuCommand::OpenInNewTab => {

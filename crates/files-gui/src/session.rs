@@ -44,6 +44,7 @@ use crate::content::{ContentView, SelectionInput};
 use crate::devices::{
     CollectionMode, DeviceInventory, DeviceLink, DeviceNotice, DeviceRow, NoDeviceLink, is_under,
 };
+use crate::drives::DriveText as _;
 use crate::i18n::{Copy, Locale};
 use crate::keys::{ChooserKey, Command, Focus};
 use crate::launch::StartProblem;
@@ -123,6 +124,11 @@ pub enum Notice {
     DriveFailed {
         drive: String,
         detail: String,
+    },
+    /// A drive's "Mount automatically" could not be changed (ticket 127).
+    AutoMountUnchanged {
+        drive: String,
+        outcome: drive_mounts::client::SetOutcome,
     },
     /// The passphrase did not open the drive.
     WrongPassphrase {
@@ -251,6 +257,10 @@ impl Notice {
                 .drive_failed
                 .replace("{drive}", drive)
                 .replace("{detail}", &crate::errors::explain(detail, c)),
+            Notice::AutoMountUnchanged { drive, outcome } => c
+                .auto_mount_unchanged
+                .replace("{drive}", drive)
+                .replace("{reason}", &auto_mount_reason(outcome, c)),
             Notice::WrongPassphrase { drive } => c.drive_wrong_passphrase.replace("{drive}", drive),
             Notice::DriveUnlockedNotMounted { drive, detail } => c
                 .drive_unlocked_not_mounted
@@ -1801,6 +1811,21 @@ impl FilesSession {
             DriveOutcome::MountFailed { drive, detail } => {
                 self.notice = Some(Notice::DriveFailed { drive, detail });
             }
+            DriveOutcome::AutoMount {
+                drive,
+                outcome,
+                after,
+            } => {
+                use drive_mounts::client::SetOutcome;
+                self.notice = match (outcome, after) {
+                    (SetOutcome::Cancelled, _) => None,
+                    (SetOutcome::Done { .. }, None) => None,
+                    (SetOutcome::Done { .. }, Some(detail)) => {
+                        Some(Notice::DriveFailed { drive, detail })
+                    }
+                    (outcome, _) => Some(Notice::AutoMountUnchanged { drive, outcome }),
+                };
+            }
             DriveOutcome::Ejected {
                 drive,
                 folder,
@@ -1854,6 +1879,90 @@ impl FilesSession {
                     self.notice = Some(Notice::DriveUnlockedNotMounted { drive, detail });
                 }
             },
+        }
+    }
+
+    /// The drives the sidebar and "This PC" list: the mounted ones, and the
+    /// ones that should be and are not (ticket 127); every drive while
+    /// "Show other drives" is on.
+    pub fn shown_drives(&self) -> Vec<crate::drives::Drive> {
+        self.drives
+            .iter()
+            .filter(|drive| {
+                self.preferences.show_other_drives || drive_mounts::choice::shown(drive)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// "Show other drives" in the window's `…` menu, remembered with the
+    /// other preferences.
+    pub fn toggle_show_other_drives(&mut self) {
+        self.preferences.show_other_drives = !self.preferences.show_other_drives;
+        self.persist_preferences();
+    }
+
+    /// Turns a drive's "Mount automatically" on or off through
+    /// `manager-daemon` (polkit asks once), then mounts a removable one
+    /// turned on, or unmounts one turned off that is still mounted, through
+    /// UDisks2 as the person may. Off this thread.
+    pub fn set_auto_mount(&mut self, key: &str, on: bool) {
+        if self.is_drive_busy(key) {
+            return;
+        }
+        let Some(drive) = self.drives.iter().find(|drive| drive.key == key).cloned() else {
+            return;
+        };
+        let (Some(uuid), Some(auto)) = (drive.uuid.clone(), drive.auto_mount.clone()) else {
+            return;
+        };
+        if auto.locked.is_some() || drive.kind == crate::drives::DriveKind::System {
+            return;
+        }
+        let Some(sources) = self.drive_sources.clone() else {
+            return;
+        };
+        let name = drive.name(crate::i18n::copy(self.locale));
+        let busy = drive.key.clone();
+        if !on && let Some(folder) = &drive.mount_point {
+            self.hub.suspend_under(folder);
+        }
+        self.spawn_drive_action(&busy, "files-drive-auto-mount", move || {
+            use drive_mounts::client::SetOutcome;
+            let outcome = (sources.set_auto_mount)(&uuid, on);
+            let after = match (&outcome, drive_mounts::choice::follow_up(&drive, on)) {
+                (SetOutcome::Done { .. }, drive_mounts::choice::FollowUp::Mount) => {
+                    (sources.mount)(&drive).err()
+                }
+                (SetOutcome::Done { .. }, drive_mounts::choice::FollowUp::Unmount) => {
+                    (sources.unmount)(&drive).err()
+                }
+                _ => None,
+            };
+            DriveOutcome::AutoMount {
+                drive: name,
+                outcome,
+                after,
+            }
+        });
+    }
+
+    /// A drive that is on and did not mount, tried again: an internal one
+    /// through the daemon (which starts its mount unit), a removable one
+    /// through UDisks2.
+    pub fn retry_mount(&mut self, key: &str) {
+        let Some(drive) = self.drives.iter().find(|drive| drive.key == key) else {
+            return;
+        };
+        if drive.kind == crate::drives::DriveKind::Internal
+            && drive
+                .auto_mount
+                .as_ref()
+                .is_some_and(|auto| auto.on && auto.locked.is_none())
+        {
+            self.set_auto_mount(key, true);
+        } else {
+            self.open_drive(key);
         }
     }
 
@@ -3330,7 +3439,9 @@ impl FilesSession {
             | M::RemoveBookmark
             | M::Eject
             | M::Mount
-            | M::Format => {}
+            | M::Format
+            | M::MountAutomatically
+            | M::RetryMount => {}
         }
     }
 
@@ -3726,6 +3837,13 @@ type KeyedOutcome = (String, DriveOutcome);
 #[derive(Debug)]
 enum DriveOutcome {
     Mounted(std::path::PathBuf),
+    /// A drive's choice was changed, or why not.
+    AutoMount {
+        drive: String,
+        outcome: drive_mounts::client::SetOutcome,
+        /// Mounting or unmounting it now through UDisks2 afterwards failed.
+        after: Option<String>,
+    },
     MountFailed {
         drive: String,
         detail: String,
@@ -3740,4 +3858,30 @@ enum DriveOutcome {
         folder: Option<std::path::PathBuf>,
         result: Result<crate::drives::Ejected, crate::drives::EjectError>,
     },
+}
+
+/// Why a drive's choice was not changed, in the window's words.
+pub(crate) fn auto_mount_reason(
+    outcome: &drive_mounts::client::SetOutcome,
+    c: &'static Copy,
+) -> String {
+    use drive_mounts::client::SetOutcome;
+    match outcome {
+        SetOutcome::Done { .. } | SetOutcome::Cancelled => String::new(),
+        SetOutcome::NotAllowed => c.auto_reason_not_allowed.to_string(),
+        SetOutcome::Absent => c.auto_reason_absent.to_string(),
+        SetOutcome::Refused(why) => match why.as_str() {
+            "system_table" => c.auto_reason_system_table,
+            "system_drive" => c.auto_reason_system_drive,
+            _ => c.auto_reason_not_filesystem,
+        }
+        .to_string(),
+        SetOutcome::Busy(_) => c.auto_reason_busy.to_string(),
+        SetOutcome::Malformed(_) => c.auto_reason_malformed.to_string(),
+        SetOutcome::TableBusy => c.auto_reason_table_busy.to_string(),
+        SetOutcome::MountFailed(detail) => c
+            .auto_reason_mount_failed
+            .replace("{detail}", &crate::errors::explain(detail, c)),
+        SetOutcome::Failed(detail) => crate::errors::explain(detail, c),
+    }
 }

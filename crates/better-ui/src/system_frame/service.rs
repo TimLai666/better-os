@@ -549,12 +549,14 @@ mod tests {
     /// Draws placeholders, counting them; with `hold` it waits for a signal
     /// before each drawing, like a slow GTK.
     struct Fake {
+        started: Arc<AtomicUsize>,
         drawn: Arc<AtomicUsize>,
         hold: Option<std::sync::mpsc::Receiver<()>>,
     }
 
     impl FrameRenderer for Fake {
         fn render(&mut self, key: &FrameKey) -> Rendered {
+            self.started.fetch_add(1, Ordering::SeqCst);
             if let Some(hold) = &self.hold {
                 let _ = hold.recv_timeout(Duration::from_secs(5));
             }
@@ -587,18 +589,28 @@ mod tests {
     }
 
     fn fake(hold: Option<std::sync::mpsc::Receiver<()>>) -> (Arc<FrameService>, Arc<AtomicUsize>) {
+        let (service, _, drawn) = fake_counting(hold);
+        (service, drawn)
+    }
+
+    /// The service, how many drawings were begun, and how many finished.
+    fn fake_counting(
+        hold: Option<std::sync::mpsc::Receiver<()>>,
+    ) -> (Arc<FrameService>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let started = Arc::new(AtomicUsize::new(0));
         let drawn = Arc::new(AtomicUsize::new(0));
-        let counter = drawn.clone();
+        let (begun, finished) = (started.clone(), drawn.clone());
         let service = FrameService::start(
             Box::new(|| settings("Adwaita")),
             Some(Box::new(move || {
                 Ok(Box::new(Fake {
-                    drawn: counter,
+                    started: begun,
+                    drawn: finished,
                     hold,
                 }) as Box<dyn FrameRenderer>)
             })),
         );
-        (service, drawn)
+        (service, started, drawn)
     }
 
     #[test]
@@ -717,13 +729,15 @@ mod tests {
     #[test]
     fn a_drawing_for_the_theme_just_replaced_is_thrown_away() {
         let (release, hold) = std::sync::mpsc::channel();
-        let (service, drawn) = fake(Some(hold));
+        let (service, started, drawn) = fake_counting(Some(hold));
         let s = service.settings_by(soon());
         let old = key(&s, false);
         assert!(service.get(&old).is_none());
-        // Let the thread start drawing, then change the theme under it.
+        // Let the thread start drawing, then change the theme under it. An
+        // empty queue is not enough: the thread takes the request before it
+        // checks the theme, and a change in between skips the drawing.
         let deadline = soon();
-        while service.has_requests() {
+        while started.load(Ordering::SeqCst) == 0 {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(5));
         }

@@ -227,10 +227,9 @@ impl Group {
         Some(list)
     }
 
-    pub fn has_key_prefix(&self, prefix: &str) -> bool {
-        self.fields
-            .iter()
-            .any(|field| field.key.starts_with(prefix))
+    /// Whether the group holds `key` itself, untranslated or translated.
+    pub fn has_key(&self, key: &str) -> bool {
+        self.fields.iter().any(|field| field.key == key)
     }
 }
 

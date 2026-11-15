@@ -206,6 +206,10 @@ pub struct FilesPreferences {
     /// The preview pane's width, shared by the application details that
     /// take its place; `None` is [`crate::layout::PREVIEW_EDGE`]'s default.
     pub preview_width: Option<u32>,
+    /// Whether the sidebar also lists the drives that are not mounted and
+    /// do not mount automatically, so one can be turned back on (ticket
+    /// 127). Off: the sidebar lists what is mounted.
+    pub show_other_drives: bool,
     /// Whether folders show the size of what they hold (ticket 126). On by
     /// default; a file written before the field existed loads with it on.
     #[serde(default = "on")]
@@ -232,6 +236,7 @@ impl Default for FilesPreferences {
             operations_width: None,
             sidebar_width: None,
             preview_width: None,
+            show_other_drives: false,
             folder_sizes: true,
             folder_sizes_on_network: false,
             sort_key: StoredSortKey::from_key(order.key),

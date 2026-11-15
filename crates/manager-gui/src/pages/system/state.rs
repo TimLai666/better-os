@@ -66,6 +66,8 @@ pub(crate) struct SystemState {
     pub(crate) brightness_drag: Option<u8>,
     pub(crate) throttle: Throttle,
     pub(crate) following: bool,
+    /// The Drives section (ticket 127).
+    pub(crate) drives: super::drives::DrivesState,
     again: bool,
     task: Option<Task<()>>,
     sensor_task: Option<Task<()>>,
@@ -89,7 +91,7 @@ impl SystemState {
 
     /// A password prompt or a write is open: an update restart waits for it.
     pub(crate) fn blocks_restart(&self) -> bool {
-        self.writing.is_some()
+        self.writing.is_some() || self.drives.blocks_restart()
     }
 }
 
@@ -183,6 +185,7 @@ impl ManagerApp {
             self.system.following = true;
             self.follow_system(cx);
         }
+        self.refresh_drives(cx);
         let profile_line = Some(crate::model::host_line(
             self.manager.profile(),
             crate::i18n::copy(self.locale).ubuntu_base,

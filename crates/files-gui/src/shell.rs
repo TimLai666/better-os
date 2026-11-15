@@ -24,6 +24,7 @@ use gpui_component::IconName;
 use crate::app::FilesApp;
 use crate::content::{SORT_KEYS, sort_key_label};
 use crate::devices::DeviceRow;
+use crate::drives::DriveText as _;
 use crate::i18n::{Copy, Locale, copy};
 use crate::keys::Focus;
 use crate::prefs::{ItemScale, ViewMode};
@@ -606,6 +607,11 @@ impl FilesApp {
                     })),
             )
             .secondary_entry(MenuEntry::Separator)
+            .secondary(
+                BarCommand::new(c.show_other_drives, IconName::HardDrive)
+                    .checked(self.session.preferences.show_other_drives)
+                    .on_click(act(cx, |app, _, _| app.session.toggle_show_other_drives())),
+            )
             .secondary_entry(self.language_menu(c, cx))
             .secondary_entry(self.appearance_menu(c, cx))
             .secondary(
@@ -958,7 +964,7 @@ impl FilesApp {
         } else {
             Vec::new()
         };
-        let drives = self.session.drives().to_vec();
+        let drives = self.session.shown_drives();
         let mount_rows: Vec<&SidebarRow> = rows
             .iter()
             .filter(|row| row.section == SidebarSection::Devices)
@@ -1038,6 +1044,24 @@ impl FilesApp {
         }
         if let Some(capacity) = drive.capacity {
             item = item.meter(capacity.used_fraction() as f32, capacity.is_nearly_full());
+        }
+        // On and not mounted: Retry instead of Eject (ticket 127).
+        if drive_mounts::choice::failed(drive) {
+            let this = self.weak.clone();
+            let key = drive.key.clone();
+            return item
+                .action(NavAction::new(
+                    IconName::Redo,
+                    c.retry_mount,
+                    move |_window, cx| {
+                        let _ = this.update(cx, |app, cx| {
+                            app.session.retry_mount(&key);
+                            cx.notify();
+                        });
+                    },
+                ))
+                .caption_warning(true)
+                .entry();
         }
         if with_action {
             let this = self.weak.clone();

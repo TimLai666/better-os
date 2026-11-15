@@ -62,6 +62,10 @@ pub enum MenuCommand {
     Eject,
     Mount,
     Format,
+    /// Turns the drive's "Mount automatically" on or off (ticket 127).
+    MountAutomatically,
+    /// Mounts again a drive that is on and did not mount.
+    RetryMount,
 }
 
 /// One line: a command with its words and key, or a divider.
@@ -251,9 +255,40 @@ pub enum SidebarKind {
     /// A pinned folder, at this position among the pins.
     Bookmark { index: usize, count: usize },
     /// A drive.
-    Device { mounted: bool },
+    Device {
+        mounted: bool,
+        /// Whether Eject is offered.
+        ejectable: bool,
+        /// Whether Format is offered (a device the storage service reports).
+        formattable: bool,
+        auto_mount: AutoMountLine,
+        /// It is on and did not mount: Retry.
+        failed: bool,
+    },
     /// Trash, Applications: nothing to do but open.
     View,
+}
+
+/// The "Mount automatically" line a drive's menu has.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AutoMountLine {
+    /// No such choice (a phone, a share, a drive with no UUID).
+    None,
+    /// Checked or not, and whether it can be changed here (not the system
+    /// drive, not a drive the system's own mount table names).
+    Shown { on: bool, changeable: bool },
+}
+
+impl AutoMountLine {
+    pub fn of(drive: &drive_mounts::listing::Drive) -> Self {
+        match &drive.auto_mount {
+            None => AutoMountLine::None,
+            Some(auto) => AutoMountLine::Shown {
+                on: auto.on,
+                changeable: auto.locked.is_none(),
+            },
+        }
+    }
 }
 
 /// The menu for a sidebar row.
@@ -290,17 +325,38 @@ pub fn sidebar_menu(kind: SidebarKind, c: &'static Copy) -> Vec<MenuLine> {
             lines.push(MenuLine::Separator);
             lines.push(MenuLine::new(M::RemoveBookmark, c.unpin, Some("Delete")));
         }
-        SidebarKind::Device { mounted } => {
+        SidebarKind::Device {
+            mounted,
+            ejectable,
+            formattable,
+            auto_mount,
+            failed,
+        } => {
             lines.push(MenuLine::Separator);
-            // A drive that is not mounted offers Mount, as folio's does.
-            // Eject is always there: stopping use of a device is never
+            // A drive that is not mounted offers Mount, as folio's does, and
+            // one that is on and did not mount offers Retry. Eject is always
+            // there on what can be ejected: stopping use of a device is never
             // argued with.
-            if !mounted {
+            if failed {
+                lines.push(MenuLine::new(M::RetryMount, c.retry_mount, None));
+            } else if !mounted {
                 lines.push(MenuLine::new(M::Mount, c.device_mount, None));
             }
-            lines.push(MenuLine::new(M::Eject, c.device_eject, None));
-            lines.push(MenuLine::Separator);
-            lines.push(MenuLine::new(M::Format, c.format_drive, None));
+            if ejectable {
+                lines.push(MenuLine::new(M::Eject, c.device_eject, None));
+            }
+            if let AutoMountLine::Shown { on, changeable } = auto_mount {
+                lines.push(MenuLine::Separator);
+                lines.push(
+                    MenuLine::new(M::MountAutomatically, c.mount_automatically, None)
+                        .checked(on)
+                        .enabled(changeable),
+                );
+            }
+            if formattable {
+                lines.push(MenuLine::Separator);
+                lines.push(MenuLine::new(M::Format, c.format_drive, None));
+            }
         }
         SidebarKind::View => {
             lines.push(MenuLine::new(M::OpenInNewTab, c.open_in_new_tab, None));

@@ -502,6 +502,14 @@ GUI or dependency compiles when the relevant command was not executed.
   installed, and the catalog is read from the process's own `XDG_DATA_DIRS`, so
   a manager started without the Flatpak paths reports Flatpak applications as
   gone. The choice buttons in the window have not been looked at.
+- Which drives mount automatically (ticket 127, ADR 0032) lives only in the
+  system's files: Better OS's marked block in `/etc/fstab` and
+  `/etc/udev/rules.d/90-better-os-drives.rules`, written only by
+  `manager-daemon`'s `org.betteros.Drives1` and read by both windows through
+  `drive-mounts`, which also owns the drive listing. Never add a preference
+  file for it, and never write an fstab line outside the block. No real drive
+  has been mounted by it yet; the container check runs without systemd, so a
+  mount there is reported as failed by design.
 - Better Files reads device state from `org.betteros.Storage1` through
   `storage_service::StorageClient`, and runs the same `storage-core` state
   machine in its own process when that service is absent. The window says which

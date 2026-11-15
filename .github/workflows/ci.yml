@@ -298,6 +298,10 @@ jobs:
           cargo build --release -p manager-platform --features dbus-client --example e2e_client
           mkdir -p dist/e2e-client
           cp target/release/examples/e2e_client dist/e2e-client/
+          # The stand-in UDisks2 the drive-mounting check resolves against
+          # (ticket 127): the container has no block device to offer.
+          cargo build --release -p manager-daemon --features test-support --example e2e_udisks
+          cp target/release/examples/e2e_udisks dist/e2e-client/
           # The published 0.2.9 privileged service the handoff check upgrades
           # from (ADR 0028). Downloaded here, where there is network.
           mkdir -p dist/e2e-legacy

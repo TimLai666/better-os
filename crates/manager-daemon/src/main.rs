@@ -67,6 +67,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{read}");
         return Ok(());
     }
+    // The package's prerm on removal (ADR 0032): every fstab line and udev
+    // rule Better OS wrote goes, and nothing else. It never fails the
+    // removal; what it could not do is printed.
+    if arguments.first().map(String::as_str) == Some("--remove-drive-entries") {
+        for problem in manager_daemon::drives::DriveChange::remove_all(
+            &manager_daemon::drives::SystemctlUnits,
+            &manager_daemon::drives::DrivePaths::system(),
+        ) {
+            eprintln!("better-manager-daemon: drive entries: {problem}");
+        }
+        return Ok(());
+    }
     if let Some(argument) = arguments.first() {
         if argument == "--restore-hardware" {
             let root = hardware_platform::sysfs::SysRoot::system();
@@ -94,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
         }
         return Err(format!(
-            "better-manager-daemon takes no argument but --restore-hardware, --write-attribute, or --write-via-helper; got {argument:?}"
+            "better-manager-daemon takes no argument but --restore-hardware, --remove-drive-entries, --write-attribute, or --write-via-helper; got {argument:?}"
         )
         .into());
     }
@@ -142,11 +154,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gate.clone(),
     )
     .with_state_file(manager_daemon::HARDWARE_STATE);
+    let udisks = zbus::blocking::Connection::system()?;
+    let drives = manager_daemon::drives::DrivesService::new(
+        PolkitAuthorizer::new(zbus::connection::Builder::system()?.build().await?),
+        Arc::new(manager_daemon::drives::UdisksResolver { connection: udisks }),
+        Arc::new(manager_daemon::drives::SystemctlUnits),
+        manager_daemon::drives::DrivePaths::system(),
+        gate.clone(),
+    );
     let connection = serve(
         zbus::connection::Builder::system()?,
         BUS_NAME,
         service,
         hardware,
+        drives,
     )
     .await?;
 

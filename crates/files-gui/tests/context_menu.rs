@@ -4,8 +4,8 @@
 use files_core::{SortDirection, SortKey, SortOrder};
 use files_gui::commands::ArchiveActions;
 use files_gui::context_menu::{
-    MenuCommand as M, MenuLine, SORT_STEPS, SelectionFacts, SidebarKind, background_menu,
-    selection_menu, sidebar_menu, step_sort,
+    AutoMountLine, MenuCommand as M, MenuLine, SORT_STEPS, SelectionFacts, SidebarKind,
+    background_menu, selection_menu, sidebar_menu, step_sort,
 };
 use files_gui::i18n::{EN_US, ZH_TW};
 
@@ -144,10 +144,7 @@ fn a_pinned_folder_moves_renames_and_unpins_from_the_sidebar() {
 
 #[test]
 fn a_drive_ejects_and_a_place_pins() {
-    assert!(enabled(
-        &sidebar_menu(SidebarKind::Device { mounted: true }, &EN_US),
-        M::Eject
-    ));
+    assert!(enabled(&sidebar_menu(device(true), &EN_US), M::Eject));
     assert!(
         commands(&sidebar_menu(SidebarKind::Place { pinned: false }, &EN_US)).contains(&M::Pin)
     );
@@ -214,9 +211,82 @@ fn empty_space_opens_a_terminal_and_the_trash_empties_only_when_it_holds_somethi
 
 #[test]
 fn a_drive_that_is_not_mounted_offers_mount_and_still_ejects() {
-    let lines = sidebar_menu(SidebarKind::Device { mounted: false }, &EN_US);
+    let lines = sidebar_menu(device(false), &EN_US);
     assert!(enabled(&lines, M::Mount));
     assert!(enabled(&lines, M::Eject));
-    let mounted = sidebar_menu(SidebarKind::Device { mounted: true }, &EN_US);
+    let mounted = sidebar_menu(device(true), &EN_US);
     assert!(!commands(&mounted).contains(&M::Mount));
+}
+
+fn device(mounted: bool) -> SidebarKind {
+    SidebarKind::Device {
+        mounted,
+        ejectable: true,
+        formattable: true,
+        auto_mount: AutoMountLine::None,
+        failed: false,
+    }
+}
+
+fn checked(lines: &[MenuLine], wanted: M) -> Option<(bool, bool)> {
+    lines.iter().find_map(|line| match line {
+        MenuLine::Command {
+            command,
+            enabled,
+            checked,
+            ..
+        } if *command == wanted => Some(((*checked)?, *enabled)),
+        _ => None,
+    })
+}
+
+/// Ticket 127: the drive's menu carries its "Mount automatically", locked
+/// where the system decides, and Retry for one that did not mount.
+#[test]
+fn a_drive_s_menu_turns_mounting_automatically_on_and_off() {
+    let with = |auto_mount: AutoMountLine, failed: bool| SidebarKind::Device {
+        mounted: !failed,
+        ejectable: false,
+        formattable: false,
+        auto_mount,
+        failed,
+    };
+    let on = sidebar_menu(
+        with(
+            AutoMountLine::Shown {
+                on: true,
+                changeable: true,
+            },
+            false,
+        ),
+        &EN_US,
+    );
+    assert_eq!(checked(&on, M::MountAutomatically), Some((true, true)));
+    assert!(!commands(&on).contains(&M::Eject));
+    assert!(!commands(&on).contains(&M::Format));
+    let system = sidebar_menu(
+        with(
+            AutoMountLine::Shown {
+                on: true,
+                changeable: false,
+            },
+            false,
+        ),
+        &ZH_TW,
+    );
+    assert_eq!(checked(&system, M::MountAutomatically), Some((true, false)));
+    let failed = sidebar_menu(
+        with(
+            AutoMountLine::Shown {
+                on: true,
+                changeable: true,
+            },
+            true,
+        ),
+        &EN_US,
+    );
+    assert!(enabled(&failed, M::RetryMount));
+    assert!(!commands(&failed).contains(&M::Mount));
+    let none = sidebar_menu(with(AutoMountLine::None, false), &EN_US);
+    assert!(!commands(&none).contains(&M::MountAutomatically));
 }

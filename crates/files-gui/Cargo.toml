@@ -29,6 +29,7 @@ app-chooser-gui.workspace = true
 better-ui.workspace = true
 files-core.workspace = true
 files-platform.workspace = true
+drive-mounts.workspace = true
 # org.freedesktop.FileManager1, so "Show in folder" in other applications
 # opens Better Files. Already in the workspace through the storage service.
 zbus.workspace = true

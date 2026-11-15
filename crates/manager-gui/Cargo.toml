@@ -36,6 +36,9 @@ thiserror.workspace = true
 awake-core.workspace = true
 awake-ipc.workspace = true
 hardware-core.workspace = true
+drive-mounts.workspace = true
+files-platform.workspace = true
+storage-platform.workspace = true
 hardware-platform = { workspace = true, features = ["sensors"] }
 gpui.workspace = true
 gpui-component.workspace = true

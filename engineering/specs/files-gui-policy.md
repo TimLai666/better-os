@@ -89,6 +89,36 @@ what `storage_core::IdentityConfidence::Volatile` means.
 Every device in that fallback reads as `DeviceStateKind::Unknown`, which never
 reads as safe to unplug.
 
+## Drives that are not mounted are not shown
+
+Ticket 127, ADR 0032. Every drive the sidebar would list with a filesystem
+UUID has a "Mount automatically" choice, in its context menu and in Better
+Manager's System page (Drives), which read and change the same thing.
+
+- **Defaults** (owner, 2026-11-15): the system drive is always on and cannot
+  be changed; removable drives and discs are on; another internal partition
+  is on only when the system mounts it at boot today, because of a line in
+  `/etc/fstab` someone else wrote (then the choice is locked and says so) or
+  because Better OS was asked to.
+- **The sidebar and "This PC" list** a drive that is mounted, an internal
+  drive that is on and did not mount (with the reason systemd gave and
+  Retry), a removable drive that is on and not yet mounted ("Not mounted",
+  mounts when clicked: the desktop mounts it on arrival), and a locked
+  encrypted drive that is on. A drive that is off and not mounted is not
+  listed.
+- **"Show other drives"** in the window's `…` menu, the place Better Files
+  keeps its settings, lists every drive, those that are off included, so one
+  can be turned back on from its context menu. It is remembered with the
+  other preferences.
+- A drive with no filesystem UUID has no choice (the choice is kept by
+  UUID); it is listed while mounted, and otherwise under "Show other
+  drives", where it says "Not mounted" and mounts when clicked.
+- Turning a removable drive on mounts it now through UDisks2; turning a
+  drive off unmounts a mount UDisks2 made. A mount under `/mnt/better-os` is
+  the daemon's, and the daemon unmounts it.
+- A change that is refused, dismissed at the password prompt, or fails is
+  said in the window with its reason; a dismissed prompt says nothing.
+
 ## Times are shown in UTC
 
 The modified column formats timestamps as `YYYY-MM-DD HH:MM` in UTC. There is no

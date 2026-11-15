@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 978.
-- Packages with an SPDX license expression: 976.
+- Resolved Cargo packages: 979.
+- Packages with an SPDX license expression: 977.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `fbcbcec647272814c907fc6551dbf13dbbce26363eda9a7f3de013aaee837809`.
+- `Cargo.lock` SHA-256: `7d14c1034527ee29da9e3c7a24f26ef7776a7ea0989486a7f4f94f553bda5089`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 424 |
 | `MIT` | 202 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 67 |
+| `GPL-3.0-or-later` | 68 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -92,6 +92,7 @@ Better OS does not relicense or silently select a different expression.
 | `defaults-core` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `defaults-platform` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `defaults-store` | `0.2.15` | `GPL-3.0-or-later` | workspace |
+| `drive-mounts` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `dwrote` | `0.11.5` | `MPL-2.0` | [crates.io](https://crates.io/crates/dwrote/0.11.5) |
 | `files-core` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `files-gui` | `0.2.15` | `GPL-3.0-or-later` | workspace |
@@ -353,6 +354,7 @@ keeps its own license.
 | `dlib` | `0.5.3` | `MIT` | [crates.io](https://crates.io/crates/dlib/0.5.3) |
 | `document-features` | `0.2.12` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/document-features/0.2.12) |
 | `downcast-rs` | `1.2.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/downcast-rs/1.2.1) |
+| `drive-mounts` | `0.2.15` | `GPL-3.0-or-later` | workspace |
 | `dunce` | `1.0.5` | `CC0-1.0 OR MIT-0 OR Apache-2.0` | [crates.io](https://crates.io/crates/dunce/1.0.5) |
 | `dwrote` | `0.11.5` | `MPL-2.0` | [crates.io](https://crates.io/crates/dwrote/0.11.5) |
 | `dyn-clone` | `1.0.20` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/dyn-clone/1.0.20) |
