@@ -1,6 +1,6 @@
 # Ticket 119 — Better Files' view follows the folder, and the jobs button stops looking like a stuck spinner
 
-**Blocked by:** none · **Status:** merged, not released
+**Blocked by:** none · **Status:** released in v0.2.14
 
 ## Why
 
