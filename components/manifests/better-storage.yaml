@@ -2,7 +2,7 @@ schema_version: 2
 id: better-storage
 display_name: Better Storage
 component_type: enhancement
-version: 0.2.14
+version: 0.2.15
 summary: Direct removal for external drives, with an honest ready-to-unplug state.
 icon: generic
 # The session service starts with the session, so a new install is only fully
@@ -14,31 +14,31 @@ targets:
   architectures: [amd64, arm64]
 enhances:
   - udisks2
-# The checksums below belong to the published v0.2.14 release assets. Each one
+# The checksums below belong to the published v0.2.15 release assets. Each one
 # was re-hashed from the package downloaded back from the public release rather
 # than copied from its sidecar, which is what ADR 0002 requires a manifest to
 # record.
 artifacts:
   - release: "22.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.14/better-storage_0.2.14_ubuntu-22.04_amd64.deb
-    sha256: 7cd8ea13c2953db744224a6849cce36bb0f4847699a2183a2025591cc29cef04
-    release_asset: better-storage_0.2.14_ubuntu-22.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-storage_0.2.15_ubuntu-22.04_amd64.deb
+    sha256: e65e02e2cc3a8a491e581c7d62234fc27b638b39cea179a38dcbacbc693542d1
+    release_asset: better-storage_0.2.15_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.14/better-storage_0.2.14_ubuntu-22.04_arm64.deb
-    sha256: 8ef80ff52e6fff08118550ab04b2cd25a2b797bf5cffee689cb99f63dd1c9e26
-    release_asset: better-storage_0.2.14_ubuntu-22.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-storage_0.2.15_ubuntu-22.04_arm64.deb
+    sha256: b6f27202ee96047f19f6cd876d4b1142fcdcf65f351dbab2bd9ed9099fc125a2
+    release_asset: better-storage_0.2.15_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.14/better-storage_0.2.14_ubuntu-24.04_amd64.deb
-    sha256: 3720c31aa2f57d87ce1f7606d9df2ca40ea66133fe9b6ec459c0d3cfd3d24d7b
-    release_asset: better-storage_0.2.14_ubuntu-24.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-storage_0.2.15_ubuntu-24.04_amd64.deb
+    sha256: fc489df81fc602fd83e9aa3e0aa78e92363c835f77483feb665e402fca4e54a5
+    release_asset: better-storage_0.2.15_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.14/better-storage_0.2.14_ubuntu-24.04_arm64.deb
-    sha256: f140615277576f6e7fa1799fdfde339f93a2d317aef8b236dc230c0e0baef70b
-    release_asset: better-storage_0.2.14_ubuntu-24.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-storage_0.2.15_ubuntu-24.04_arm64.deb
+    sha256: 46244f32785fcbfa85864c6fd9b877e1dcdc7740f9c4f25c5047feb41c916df7
+    release_asset: better-storage_0.2.15_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable
@@ -86,6 +86,18 @@ paths:
   - /usr/lib/systemd/user/better-storage.service
   - /usr/share/dbus-1/services/org.betteros.Storage1.service
   - ~/.config/better-os/storage/storage-preferences.json
+# Where "Ready to unplug" is claimed (ADR 0026). A declaration, not a gate:
+# older managers skip the group, this one validates and shows it. The
+# transports are exactly the buses storage-platform treats as hot-pluggable;
+# the filesystems are the ones Format creates plus NTFS, the set the readiness
+# rule has been reasoned about. syncfs(2) needs 2.6.39; 5.15 is the oldest
+# kernel a supported release (Ubuntu 22.04) ships. None of it has been
+# measured on a real device yet; engineering/performance/storage-performance.md
+# says what is owed.
+hardware_support:
+  minimum_kernel: "5.15"
+  filesystems: [vfat, exfat, ntfs, ext4]
+  transports: [usb, sdio, mmc, thunderbolt, ieee1394]
 release_notes:
   - Every supported hot-pluggable external volume defaults to Direct Removal.
   - Ready to unplug is only shown when no pending write, open writer, or unverified flush is known.
