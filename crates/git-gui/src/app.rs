@@ -128,6 +128,29 @@ pub struct GitApp {
     /// File, View, Repository, Branch.
     pub(crate) app_menu: [Entity<MenuOpen>; 4],
     pub(crate) context_menu: Entity<MenuOpen>,
+    /// The sync button's arrow menu (ticket 123).
+    pub(crate) sync_menu: Entity<MenuOpen>,
+    /// The list pane's edge as a keyboard stop (ticket 123).
+    pub(crate) edge_focus: FocusHandle,
+    /// The list pane's edge is being dragged, so it is drawn lit.
+    pub(crate) dragging_edge: bool,
+    /// A drag or a key moved the edge and the width is not saved yet; it is
+    /// saved once no drag is active, not once per pointer move.
+    pub(crate) edge_dirty: bool,
+    /// The diff's text area as last laid out, so wrapped lines break at its
+    /// real width; zero until it has been drawn once.
+    pub(crate) diff_width: std::rc::Rc<std::cell::Cell<f32>>,
+    /// The repository view's own width as last laid out (the window's
+    /// content, without the frame's shadow), which the list pane's limits are
+    /// a share of; zero until drawn once.
+    pub(crate) view_width: std::rc::Rc<std::cell::Cell<f32>>,
+    /// What the list pane's width was stored as when a drag started, for
+    /// Escape to put back; `Some` while a drag is on.
+    pub(crate) edge_drag_start: Option<Option<u32>>,
+    /// Escape ended this drag: the pointer's moves no longer move the edge.
+    pub(crate) edge_cancelled: bool,
+    /// The shown diff laid out as rows, until it or its width changes.
+    pub(crate) diff_layout: std::cell::RefCell<Option<crate::render::DiffLayout>>,
     pub(crate) context: Option<(ContextTarget, Point<Pixels>)>,
     pub(crate) show_filter: bool,
     pub(crate) show_commit_options: bool,
@@ -543,6 +566,15 @@ impl GitApp {
             branch_tab: 0,
             app_menu: [new_state(cx), new_state(cx), new_state(cx), new_state(cx)],
             context_menu: new_state(cx),
+            sync_menu: new_state(cx),
+            edge_focus: cx.focus_handle(),
+            dragging_edge: false,
+            edge_dirty: false,
+            diff_width: std::rc::Rc::new(std::cell::Cell::new(0.0)),
+            view_width: std::rc::Rc::new(std::cell::Cell::new(0.0)),
+            edge_drag_start: None,
+            edge_cancelled: false,
+            diff_layout: std::cell::RefCell::new(None),
             context: None,
             show_filter: false,
             show_commit_options: false,
@@ -908,6 +940,13 @@ impl GitApp {
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = crate::github::now();
         let mut changed = false;
+        if !cx.has_active_drag() && (self.dragging_edge || self.edge_dirty) {
+            self.dragging_edge = false;
+            if std::mem::take(&mut self.edge_dirty) {
+                self.session.save_settings();
+            }
+            cx.notify();
+        }
         if let crate::github::SignIn::Waiting { interval, .. } = &self.session.github.sign_in
             && now - self.last_poll >= *interval as i64
         {

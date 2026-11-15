@@ -87,6 +87,9 @@ pub struct FilesApp {
     pub(crate) search_short: bool,
     /// A plugin's own page, when one is open in the main pane.
     pub(crate) plugin_view: Option<crate::plugin_page::PluginPage>,
+    /// "This PC" is showing (ticket 122), over the folder it was opened
+    /// from; going anywhere else closes it.
+    pub(crate) drives_page: Option<files_core::Location>,
     /// The items opened from each plugin, most recent first, for sections
     /// that list only those.
     pub(crate) plugin_opened: std::collections::BTreeMap<String, Vec<String>>,
@@ -119,12 +122,19 @@ pub struct FilesApp {
     pub(crate) editing_search: bool,
     /// The type-to-filter field, and whether it has the keyboard.
     pub(crate) filter_input: Entity<InputState>,
-    /// The password field of a server sign-in.
+    /// The passphrase field of an encrypted drive's dialog.
     pub(crate) password_input: Entity<InputState>,
+    /// The sign-in page's fields (ticket 117), its remember choice and
+    /// whether the person picked anonymous access; `server_prepared` is the
+    /// question they were last readied for.
+    pub(crate) server_user_input: Entity<InputState>,
+    pub(crate) server_domain_input: Entity<InputState>,
+    pub(crate) server_password_input: Entity<InputState>,
+    pub(crate) server_remember: crate::network::Remember,
+    pub(crate) server_anonymous: bool,
+    pub(crate) server_prepared: u64,
     pub(crate) filtering: bool,
-    /// Set after a sign-in is sent, so the next frame empties the password
-    /// field (the submit has no window to do it with).
-    pub(crate) clear_password: bool,
+    /// The sign-in's fields were made ready for the dialog now open.
     pub(crate) login_prepared: bool,
     /// The chooser entity, while Open With is showing one. Held so the window
     /// can keep it alive and hear its event; the chooser performs the launch
@@ -183,19 +193,14 @@ impl FilesApp {
         // job's own thread, and for as long as the job runs.
         let link: Arc<dyn crate::devices::DeviceLink> = Arc::new(StorageLink::start());
         crate::shared_tracker().attach(link.clone());
-        // With no folder on the command line, the window opens where it was
-        // last closed, when that folder is still there; otherwise at home.
+        // With no folder on the command line, a new window opens at home, not
+        // where the last one was closed (owner, 2026-11-15). A restart after
+        // an update still puts the window back through its handoff.
         let view_store = crate::settings_store::ViewStateStore::from_env();
-        let last = view_store
-            .load()
-            .last_folder()
-            .and_then(|path| files_core::Location::local(path).ok());
-        let default = last.unwrap_or_else(|| {
-            directories
-                .home()
-                .cloned()
-                .unwrap_or_else(|| files_core::Location::Local(files_core::LocalPath::root()))
-        });
+        let default = directories
+            .home()
+            .cloned()
+            .unwrap_or_else(|| files_core::Location::Local(files_core::LocalPath::root()));
 
         let mut session = FilesSession::new(SessionSetup {
             start: start.location(default),
@@ -215,6 +220,8 @@ impl FilesApp {
             link: Box::new(crate::devices::SharedLink(link)),
             preview: PreviewPanel::default(),
         });
+        // The drives in the sidebar and on "This PC" (ticket 122).
+        session.set_drive_sources(crate::drives::DriveSources::from_env());
         session.preview.open = session.preferences.preview_open;
         session.search.include_hidden = session.preferences.search_hidden;
         // Work an earlier Better Files did not live to finish is offered
@@ -255,6 +262,9 @@ impl FilesApp {
             InputState::new(window, cx).placeholder(crate::i18n::copy(locale).search_placeholder)
         });
         let password_input = cx.new(|cx| InputState::new(window, cx).masked(true));
+        let server_user_input = cx.new(|cx| InputState::new(window, cx));
+        let server_domain_input = cx.new(|cx| InputState::new(window, cx));
+        let server_password_input = cx.new(|cx| InputState::new(window, cx).masked(true));
         let filter_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(crate::i18n::copy(locale).filter_placeholder)
         });
@@ -273,7 +283,49 @@ impl FilesApp {
             Locale::ZhTw => "zh_TW".to_string(),
             _ => "en".to_string(),
         };
+        // Enter in any field of the sign-in page signs in.
+        let server_enter = |app: &mut FilesApp,
+                            event: &InputEvent,
+                            window: &mut Window,
+                            cx: &mut Context<FilesApp>| {
+            if let InputEvent::PressEnter { .. } = event {
+                app.submit_server_sign_in(window, cx);
+            }
+        };
+        // Closing the window in the middle of a sign-in or an unlock leaves
+        // no typed password behind in its fields, and tells GVfs no.
+        {
+            let this = cx.entity().downgrade();
+            window.on_window_should_close(cx, move |window, cx| {
+                let _ = this.update(cx, |app: &mut FilesApp, cx| {
+                    app.forget_secrets(window, cx);
+                });
+                true
+            });
+        }
         let subscriptions = vec![
+            cx.subscribe_in(
+                &server_user_input,
+                window,
+                move |app, _, event, window, cx| server_enter(app, event, window, cx),
+            ),
+            cx.subscribe_in(
+                &server_domain_input,
+                window,
+                move |app, _, event, window, cx| server_enter(app, event, window, cx),
+            ),
+            cx.subscribe_in(
+                &server_password_input,
+                window,
+                move |app, _, event, window, cx| server_enter(app, event, window, cx),
+            ),
+            // GPUI tells a Linux window whether it is active, not whether it
+            // is on screen; the drives' 30-second timer runs while it is
+            // active. UDisks2's changes and finished file operations still
+            // refresh them in a window in the background.
+            cx.observe_window_activation(window, |app, window, _cx| {
+                app.session.set_window_visible(window.is_window_active());
+            }),
             cx.subscribe_in(
                 &path_input,
                 window,
@@ -289,9 +341,9 @@ impl FilesApp {
             cx.subscribe_in(
                 &dialog_input,
                 window,
-                |app, _, event: &InputEvent, _window, cx| {
+                |app, _, event: &InputEvent, window, cx| {
                     if let InputEvent::PressEnter { .. } = event {
-                        app.submit_dialog(cx);
+                        app.submit_dialog(window, cx);
                     }
                 },
             ),
@@ -361,6 +413,7 @@ impl FilesApp {
                 _ => "en",
             }),
             plugin_view: None,
+            drives_page: None,
             search_short: false,
             plugin_opened: crate::plugins::opened_path()
                 .map(|path| crate::plugins::load_opened(&path))
@@ -379,8 +432,13 @@ impl FilesApp {
             editing_search: false,
             filter_input,
             password_input,
+            server_user_input: server_user_input.clone(),
+            server_domain_input: server_domain_input.clone(),
+            server_password_input: server_password_input.clone(),
+            server_remember: crate::network::Remember::Never,
+            server_anonymous: false,
+            server_prepared: 0,
             filtering: false,
-            clear_password: false,
             login_prepared: false,
             chooser: None,
             _chooser_subscription: None,
@@ -849,8 +907,7 @@ impl FilesApp {
                     self.session.close_search();
                     self.sync_search_field(window, cx);
                 }
-                self.session.dialog = None;
-                cx.notify();
+                self.dismiss_dialog(window, cx);
             } else if self.editing_path && event.keystroke.key == "tab" {
                 // Tab completes the folder being typed, as folio's path bar.
                 let text = self.path_input.read(cx).value().to_string();
@@ -899,6 +956,39 @@ impl FilesApp {
         if command == crate::keys::Command::FocusPathField {
             self.begin_path_edit(window, cx);
             return;
+        }
+        // "This PC" covers the folder it was opened over: nothing the keys
+        // would do to that folder's files happens out of sight. Going
+        // somewhere, tabs and windows still work; Escape and Back close the
+        // page and F5 reads the drives again.
+        // While a server's question is on screen the keys are its: Escape
+        // cancels it, tabs and windows still work, nothing touches the
+        // folder underneath.
+        if self.session.server_prompt.is_some() {
+            match crate::keys::on_this_pc(command) {
+                crate::keys::ThisPcKey::Close => {
+                    self.cancel_server_prompt(window, cx);
+                    return;
+                }
+                crate::keys::ThisPcKey::Pass => {}
+                _ => return,
+            }
+        }
+        if self.drives_page.is_some() {
+            match crate::keys::on_this_pc(command) {
+                crate::keys::ThisPcKey::Close => {
+                    self.drives_page = None;
+                    cx.notify();
+                    return;
+                }
+                crate::keys::ThisPcKey::Reload => {
+                    self.session.refresh_drives();
+                    return;
+                }
+                crate::keys::ThisPcKey::Leave => self.drives_page = None,
+                crate::keys::ThisPcKey::Pass => {}
+                crate::keys::ThisPcKey::Ignore => return,
+            }
         }
         match command {
             crate::keys::Command::FilterFolder => {
@@ -1040,10 +1130,10 @@ impl FilesApp {
                     .take(11)
                     .collect(),
             ),
-            Some(PendingDialog::ServerLogin { .. }) => {
+            Some(PendingDialog::UnlockDrive { .. }) => {
                 self.password_input
                     .update(cx, |state, cx| state.set_value("", window, cx));
-                Some(std::env::var("USER").unwrap_or_default())
+                None
             }
             _ => None,
         };
@@ -1055,7 +1145,7 @@ impl FilesApp {
     }
 
     /// Answers the open text dialog with what was typed.
-    pub(crate) fn submit_dialog(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn submit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The dialog's text is read, never written, here.
         let text = self.dialog_input.read(cx).value().to_string();
         let Some(dialog) = self.session.dialog.take() else {
@@ -1081,23 +1171,29 @@ impl FilesApp {
                 self.session.dialog = Some(erase);
                 self.session.confirm_erase(&text);
             }
-            PendingDialog::ServerLogin { address } => {
-                // Read once, handed to the mount, and cleared from the field.
-                let password = self.password_input.read(cx).value().to_string();
-                self.session.mount_server(
-                    address,
-                    Some(crate::network::Credentials {
-                        user: text,
-                        password,
-                    }),
-                );
-                self.clear_password = true;
+            PendingDialog::UnlockDrive { key, .. } => {
+                // Read once, handed to UDisks2, and cleared from the field
+                // with its undo history.
+                let passphrase = crate::secret::take(&self.password_input, window, cx);
+                self.session.unlock_drive(&key, passphrase);
             }
         }
         cx.notify();
     }
 
-    pub(crate) fn dismiss_dialog(&mut self, cx: &mut Context<Self>) {
+    /// Empties every password field (and its undo history) and cancels a
+    /// sign-in on screen.
+    pub(crate) fn forget_secrets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::secret::forget(&self.password_input, window, cx);
+        crate::secret::forget(&self.server_password_input, window, cx);
+        self.session.cancel_server_prompt();
+    }
+
+    pub(crate) fn dismiss_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A password typed and then dismissed is not kept either.
+        if matches!(self.session.dialog, Some(PendingDialog::UnlockDrive { .. })) {
+            crate::secret::forget(&self.password_input, window, cx);
+        }
         self.session.dialog = None;
         cx.notify();
     }

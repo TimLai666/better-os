@@ -1011,6 +1011,16 @@ impl FilesApp {
     }
 }
 
+/// Below this size a folder's mark does not fit on it: the folder is drawn
+/// whole instead ([`small_glyph`]).
+pub(crate) const SMALL_ICON: f32 = 32.0;
+
+/// The whole glyph a small row draws instead of `emblem` on a folder.
+pub(crate) fn small_glyph(emblem: &'static str, size: f32) -> Option<&'static str> {
+    (size < SMALL_ICON && emblem == crate::icons::CODE_MARK)
+        .then_some(crate::icons::CODE_FOLDER_SMALL)
+}
+
 fn entry_icon(icon: RowIcon, fallback: FallbackIcon, size: f32, p: &fluent::Palette) -> AnyElement {
     let color = p.text_secondary;
     let fallback_icon = move || {
@@ -1035,6 +1045,15 @@ fn entry_icon(icon: RowIcon, fallback: FallbackIcon, size: f32, p: &fluent::Pale
     let Some(emblem) = icon.emblem else {
         return picture;
     };
+    // Small rows (the 16px list and columns) draw the developer folder as
+    // one glyph made for that size, never a mark stacked on a folder.
+    if let Some(whole) = small_glyph(emblem, size) {
+        return img(whole)
+            .size(px(size))
+            .flex_none()
+            .object_fit(ObjectFit::Contain)
+            .into_any_element();
+    }
     // The mark sits on the icon's lower right on a disc of the dialog fill,
     // half the icon's size, so it reads at every scale.
     // Never smaller than 14px, so the brackets read on a 16px list icon.

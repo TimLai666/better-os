@@ -65,21 +65,17 @@ impl Render for FilesApp {
             // focus to what opened it.
             window.focus(&self.focus_handle, cx);
         }
-        if std::mem::take(&mut self.clear_password) {
-            self.password_input
-                .update(cx, |state, cx| state.set_value("", window, cx));
-        }
         // A sign-in that has just been asked for gets its fields ready.
         if matches!(
             self.session.dialog,
-            Some(crate::session::PendingDialog::ServerLogin { .. })
+            Some(crate::session::PendingDialog::UnlockDrive { .. })
         ) && !self.login_prepared
         {
             self.login_prepared = true;
             self.prepare_dialog(window, cx);
         } else if !matches!(
             self.session.dialog,
-            Some(crate::session::PendingDialog::ServerLogin { .. })
+            Some(crate::session::PendingDialog::UnlockDrive { .. })
         ) {
             self.login_prepared = false;
         }
@@ -103,7 +99,7 @@ impl Render for FilesApp {
                 crate::session::NoticeTone::Information => Severity::Informational,
                 crate::session::NoticeTone::Warning => Severity::Warning,
             };
-            (severity, notice.message(c))
+            (severity, notice.message(c), notice.detail())
         });
         let address = self.address_row(cx);
         let commands = self.command_bar(cx);
@@ -128,8 +124,20 @@ impl Render for FilesApp {
         {
             self.plugin_view = None;
         }
-        let content = match self.plugin_page(cx) {
+        // Moving anywhere closes "This PC".
+        if self
+            .drives_page
+            .as_ref()
+            .is_some_and(|at| at != self.session.location())
+        {
+            self.drives_page = None;
+        }
+        // What GVfs asks while a server opens takes the content area.
+        self.prepare_server_prompt(window, cx);
+        let server_page = self.server_page(cx);
+        let content = match server_page.or_else(|| self.plugin_page(cx)) {
             Some(page) => page,
+            None if self.drives_page.is_some() => self.drives_tiles(cx),
             None => self.content(cx),
         };
         let operations = self
@@ -147,16 +155,21 @@ impl Render for FilesApp {
         let preview = (details.is_none()
             && self.session.preview.open
             && !compact
-            && self.plugin_view.is_none())
+            && self.plugin_view.is_none()
+            && self.drives_page.is_none())
         .then(|| self.preview_pane(window, cx));
         let chooser = self.chooser_overlay(cx);
         let menu = self.context_menu_element(cx);
         let sheet = self.show_shortcuts.then(|| self.shortcut_sheet(cx));
 
-        let notice_bar = notice.map(|(severity, message)| {
-            InfoBar::new("files-notice", severity, message)
+        let notice_bar = notice.map(|(severity, message, detail)| {
+            let bar = InfoBar::new("files-notice", severity, message)
                 .locale(kit_locale(self.locale()))
-                .on_close(act(cx, |app, _, _| app.session.notice = None))
+                .on_close(act(cx, |app, _, _| app.session.notice = None));
+            match detail {
+                Some(detail) => bar.message(detail),
+                None => bar,
+            }
         });
 
         let page = div()
@@ -387,7 +400,13 @@ impl FilesApp {
             ),
             (
                 MenuTarget::Sidebar(_),
-                Some(NavTarget::Machine(_) | NavTarget::PluginItem(_) | NavTarget::PluginView(_)),
+                Some(
+                    NavTarget::Machine(_)
+                    | NavTarget::PluginItem(_)
+                    | NavTarget::PluginView(_)
+                    | NavTarget::Drive(_)
+                    | NavTarget::ThisPc,
+                ),
             )
             | (MenuTarget::Sidebar(_), None) => Vec::new(),
         }
@@ -669,6 +688,7 @@ impl FilesApp {
             }
             (_, Some(NavTarget::Device(_)))
             | (_, Some(NavTarget::Machine(_)))
+            | (_, Some(NavTarget::Drive(_) | NavTarget::ThisPc))
             | (_, Some(NavTarget::PluginItem(_) | NavTarget::PluginView(_))) => {}
             (_, None) => {
                 let columns = self.columns();
@@ -834,7 +854,10 @@ impl FilesApp {
     pub(crate) fn pane_layout(&self) -> crate::layout::PaneLayout {
         let prefs = &self.session.preferences;
         let side_drawn = self.session.details.is_some()
-            || (self.session.preview.open && !self.compact() && self.plugin_view.is_none());
+            || (self.session.preview.open
+                && !self.compact()
+                && self.plugin_view.is_none()
+                && self.drives_page.is_none());
         crate::layout::pane_layout(crate::layout::PaneInputs {
             window: self.visible_width(),
             pane: f32::from(self.viewport.width),

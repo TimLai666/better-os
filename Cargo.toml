@@ -146,6 +146,7 @@ serde_yaml = "0.9"
 semver = { version = "1.0", features = ["serde"] }
 thiserror = "2.0"
 notify = "7.0"
+unicode-width = "0.2.2"
 tempfile = "3"
 # Better Files archive and extract (ticket 56). Every one is pure Rust: `zip`
 # keeps only its flate2-backed deflate, and flate2 its default miniz_oxide

@@ -1734,3 +1734,54 @@ fn worktrees_are_locked_unlocked_and_cleared_from_the_list() {
     assert!(left.contains(&away) && left.contains(&one));
     assert!(!left.contains(&gone) && !left.contains(&also_gone));
 }
+
+#[test]
+fn a_force_push_is_always_asked_and_names_what_the_remote_loses() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    s.with_origin();
+    s.commit_file("b.txt", "b\n", "theirs one");
+    s.commit_file("c.txt", "c\n", "theirs two");
+    s.git(&["push", "-q", "origin", "main"]);
+    s.git(&["reset", "-q", "--hard", "HEAD~2"]);
+    s.commit_file("d.txt", "d\n", "mine");
+    let mut session = opened(&s);
+    // Turned off in an old settings file, it is still asked.
+    session.settings.confirm_force_push = false;
+    session.ask_force_push();
+    assert!(
+        matches!(
+            session.dialog,
+            Some(Dialog::ForcePush { expected: Some(_) })
+        ),
+        "{:?}",
+        session.dialog
+    );
+    let loss = session.force_push_loss.clone().expect("read from git");
+    assert_eq!(loss.total, 2);
+    assert!(!loss.more_than);
+    let subjects: Vec<&str> = loss.listed.iter().map(|(_, s)| s.as_str()).collect();
+    assert_eq!(subjects, ["theirs two", "theirs one"]);
+    assert!(loss.listed.iter().all(|(sha, _)| sha.len() >= 7));
+}
+
+#[test]
+fn a_remote_whose_name_holds_a_slash_is_where_pushes_and_the_sync_menu_go() {
+    let s = sandbox();
+    s.commit_file("a.txt", "a\n", "first");
+    let bare = s.tmp.path().join("fork.git");
+    git_in(
+        s.tmp.path(),
+        &["init", "-q", "--bare", "-b", "main", bare.to_str().unwrap()],
+    );
+    s.git(&["remote", "add", "team/fork", bare.to_str().unwrap()]);
+    s.git(&["push", "-q", "-u", "team/fork", "main"]);
+    let session = opened(&s);
+    let repo = session.repo.as_ref().expect("open");
+    assert_eq!(repo.status.upstream.as_deref(), Some("team/fork/main"));
+    assert_eq!(repo.push_remote().as_deref(), Some("team/fork"));
+    assert_eq!(
+        repo.push_target(),
+        Some(("team/fork".to_string(), "main".to_string(), false))
+    );
+}

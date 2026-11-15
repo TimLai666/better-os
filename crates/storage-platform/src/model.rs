@@ -35,6 +35,9 @@ pub struct DriveInfo {
     pub wwn: Option<String>,
     pub ejectable: bool,
     pub can_power_off: bool,
+    /// UDisks2's `Optical`: a disc drive.
+    #[serde(default)]
+    pub optical: bool,
 }
 
 /// `org.freedesktop.UDisks2.Block` and `.Partition` properties this crate reads.
@@ -48,6 +51,19 @@ pub struct BlockInfo {
     pub id_type: Option<String>,
     /// UDisks2's own hint that this belongs to the running system.
     pub hint_system: bool,
+    /// UDisks2's hint that a desktop should not show this volume.
+    #[serde(default)]
+    pub hint_ignore: bool,
+    /// The partition's type (a GPT GUID, or `0x27` and the like on MBR).
+    #[serde(default)]
+    pub partition_type: Option<String>,
+    /// A whole disk that holds a partition table.
+    #[serde(default)]
+    pub partition_table: bool,
+    /// Every place the volume is mounted; `PlatformDevice::mount_point` is
+    /// the first of them.
+    #[serde(default)]
+    pub mount_points: Vec<PathBuf>,
     pub read_only: bool,
     pub size: u64,
     pub partition_uuid: Option<String>,

@@ -242,6 +242,34 @@ pub fn build_index(repository: &Path, files: &[FileSelection]) -> Result<(), Git
     Ok(())
 }
 
+/// The index as a tree, so what was staged but left out of a commit can be
+/// put back after it ([`restore_index`]); `None` when the index cannot be
+/// written as a tree (an unresolved conflict), and nothing is put back.
+pub fn save_index(repository: &Path) -> Option<String> {
+    let out = Run::new(repository, ["write-tree"]).output().ok()?;
+    let tree = String::from_utf8(out).ok()?.trim().to_string();
+    (!tree.is_empty()).then_some(tree)
+}
+
+/// After a commit of `files`: the index as it was before ([`save_index`]),
+/// with the committed paths as the new HEAD has them. A staged change that
+/// was not ticked (a `git mv` left for later) stays staged, so it stays one
+/// rename row instead of a deletion and an untracked file (ticket 123).
+pub fn restore_index(
+    repository: &Path,
+    tree: &str,
+    files: &[FileSelection],
+) -> Result<(), GitError> {
+    Run::new(repository, ["read-tree"]).arg(tree).run()?;
+    for path in files.iter().flat_map(FileSelection::paths) {
+        // A path neither HEAD nor the index has is already as HEAD has it.
+        let _ = Run::new(repository, ["reset", "-q", "HEAD", "--"])
+            .paths([path])
+            .run();
+    }
+    Ok(())
+}
+
 fn partial_patch(
     repository: &Path,
     file: &FileSelection,

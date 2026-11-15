@@ -108,12 +108,51 @@ pub enum Notice {
     /// A server is being opened.
     Mounting(String),
     /// A server could not be opened.
-    MountFailed(crate::network::MountError),
+    /// A server did not open: a plain sentence, with the server's own words
+    /// as the detail under it ([`Notice::detail`]).
+    MountFailed {
+        address: String,
+        error: crate::network::MountError,
+    },
     /// The folder a view showed was deleted or moved away (its name); the
     /// view went to the folder above it.
     FolderGone(String),
     /// Retry was asked of a job the engine no longer keeps.
     RetryGone,
+    /// A drive could not be mounted or unlocked.
+    DriveFailed {
+        drive: String,
+        detail: String,
+    },
+    /// The passphrase did not open the drive.
+    WrongPassphrase {
+        drive: String,
+    },
+    /// The drive unlocked but what is inside did not mount.
+    DriveUnlockedNotMounted {
+        drive: String,
+        detail: String,
+    },
+    /// Ejected: safe to remove.
+    DriveSafe {
+        drive: String,
+    },
+    /// Unmounted, but not powered off.
+    DriveNotPoweredOff {
+        drive: String,
+        detail: String,
+    },
+    /// Another volume on the same drive is in use: nothing was powered off.
+    DriveInUse {
+        drive: String,
+        volume: String,
+        detail: String,
+    },
+    /// The eject failed.
+    DriveEjectFailed {
+        drive: String,
+        detail: String,
+    },
     /// What an undo (or redo, when `undoing` is false) did, or why it did
     /// not run.
     Undo {
@@ -171,9 +210,9 @@ pub enum NoticeTone {
 impl Notice {
     pub fn tone(&self) -> NoticeTone {
         match self {
-            Notice::Undo { outcome: Ok(_), .. } | Notice::Erased { failure: None, .. } => {
-                NoticeTone::Success
-            }
+            Notice::Undo { outcome: Ok(_), .. }
+            | Notice::Erased { failure: None, .. }
+            | Notice::DriveSafe { .. } => NoticeTone::Success,
             Notice::Device(event) => match event.as_ref() {
                 DeviceEvent::Ejected { .. } => NoticeTone::Success,
                 DeviceEvent::EjectedNotPoweredOff { .. }
@@ -192,11 +231,49 @@ impl Notice {
         }
     }
 
+    /// What goes under the message, in smaller words: the server's own
+    /// account of a failure.
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            Notice::MountFailed { error, .. } => {
+                Some(error.detail.trim().to_string()).filter(|detail| !detail.is_empty())
+            }
+            _ => None,
+        }
+    }
+
     pub fn message(&self, c: &'static Copy) -> String {
         match self {
             Notice::Path(rejection) => rejection.message(c).to_string(),
             Notice::FolderGone(name) => c.folder_gone.replace("{folder}", name),
             Notice::RetryGone => c.retry_gone.to_string(),
+            Notice::DriveFailed { drive, detail } => c
+                .drive_failed
+                .replace("{drive}", drive)
+                .replace("{detail}", &crate::errors::explain(detail, c)),
+            Notice::WrongPassphrase { drive } => c.drive_wrong_passphrase.replace("{drive}", drive),
+            Notice::DriveUnlockedNotMounted { drive, detail } => c
+                .drive_unlocked_not_mounted
+                .replace("{drive}", drive)
+                .replace("{detail}", &crate::errors::explain(detail, c)),
+            Notice::DriveSafe { drive } => c.drive_safe.replace("{drive}", drive),
+            Notice::DriveNotPoweredOff { drive, detail } => c
+                .drive_not_powered_off
+                .replace("{drive}", drive)
+                .replace("{detail}", &crate::errors::explain(detail, c)),
+            Notice::DriveInUse {
+                drive,
+                volume,
+                detail,
+            } => c
+                .drive_in_use
+                .replace("{drive}", drive)
+                .replace("{volume}", volume)
+                .replace("{detail}", &crate::errors::explain(detail, c)),
+            Notice::DriveEjectFailed { drive, detail } => c
+                .drive_eject_failed
+                .replace("{drive}", drive)
+                .replace("{detail}", &crate::errors::explain(detail, c)),
             Notice::Command(refusal) => match refusal {
                 CommandRefusal::NothingToActOn => c.nothing_selected.to_string(),
                 CommandRefusal::NotAFilesystemLocation => c.not_writable_here.to_string(),
@@ -234,14 +311,23 @@ impl Notice {
                 ),
             },
             Notice::Mounting(address) => format!("{} {address}", c.server_connecting),
-            Notice::MountFailed(error) => match error {
-                crate::network::MountError::NoGio => c.server_no_gio.to_string(),
-                crate::network::MountError::TimedOut => c.server_timed_out.to_string(),
-                crate::network::MountError::NeedsPassword => c.server_sign_in.to_string(),
-                crate::network::MountError::Failed(reason) => {
-                    format!("{}: {reason}", c.server_failed)
+            Notice::MountFailed { address, error } => {
+                use crate::network::MountFailure as F;
+                let server = crate::network::server_name(address);
+                match error.failure {
+                    F::Cancelled | F::Failed => c.server_failed,
+                    F::NoGvfs => c.server_no_gvfs,
+                    F::TimedOut => c.server_timed_out,
+                    F::HostNotFound => c.server_not_found,
+                    F::Refused => c.server_refused,
+                    F::PermissionDenied => c.server_denied,
+                    F::HostKeyChanged => c.server_key_changed,
+                    F::NotSupported => c.server_not_supported,
+                    F::NoLocalFolder => c.server_no_folder,
+                    F::UntrustedGvfs => c.server_untrusted_gvfs,
                 }
-            },
+                .replace("{server}", &server)
+            }
             Notice::AlreadyPinned => c.already_pinned.to_string(),
             Notice::NotPinnable => c.not_writable_here.to_string(),
             Notice::Rejected(error) => crate::errors::explain(&error.to_string(), c),
@@ -324,9 +410,11 @@ pub enum PendingDialog {
     /// Compress, waiting for a format. The request holds the selection it was
     /// opened for, and the chooser which format the keyboard is on.
     Compress(CompressChooser),
-    /// A server that wants a name and password before it opens.
-    ServerLogin {
-        address: String,
+    /// An encrypted drive that wants its passphrase before it mounts
+    /// (ticket 122): its key in the drive list, and its name.
+    UnlockDrive {
+        key: String,
+        name: String,
     },
     /// Format a drive: the filesystem chosen, the name typed, and the
     /// warning that everything on it goes.
@@ -365,12 +453,14 @@ pub struct FilesSession {
     undoable: Vec<(files_operations::JobId, files_operations::Operation)>,
     /// Opens servers typed in the path bar, and the mount in flight.
     mounter: Arc<dyn crate::network::Mounter>,
-    mounting: Option<
-        std::sync::mpsc::Receiver<(
-            String,
-            Result<std::path::PathBuf, crate::network::MountError>,
-        )>,
-    >,
+    mounting: Option<std::sync::mpsc::Receiver<MountResult>>,
+    /// The questions the mount in flight asks (ticket 117).
+    server_asks: Option<std::sync::mpsc::Receiver<crate::network::Ask>>,
+    /// The question shown in the content area, with where its answer goes.
+    pub server_prompt: Option<crate::network::Ask>,
+    /// Counts the questions shown, so the window readies its fields once
+    /// for each.
+    pub server_prompt_serial: u64,
     bookmark_store: BookmarkStore,
     pub bookmarks: BookmarkFile,
     pub directories: UserDirectories,
@@ -410,8 +500,27 @@ pub struct FilesSession {
     preferences_baseline: FilesPreferences,
     /// The preferences file's folder, followed so widths are shared.
     preference_watch: Option<files_platform::Subscription>,
+    /// The watch hub every folder of this window is followed through: the
+    /// process's, or a test thread's own.
+    hub: Arc<files_platform::WatchHub>,
     /// Devices being ejected and the folders whose watches were let go of.
     ejecting: Vec<(String, std::path::PathBuf)>,
+    /// Every drive and how full it is (ticket 122), as last read.
+    drives: Vec<crate::drives::Drive>,
+    /// Reads the drives off this thread; `None` until the window gives it
+    /// its sources (tests read no real drives).
+    drive_scanner: Option<crate::drives::DriveScanner>,
+    drive_sources: Option<crate::drives::DriveSources>,
+    /// Each finished drive action, by the drive's key.
+    drive_outcomes: (
+        std::sync::mpsc::Sender<KeyedOutcome>,
+        std::sync::mpsc::Receiver<KeyedOutcome>,
+    ),
+    last_drive_scan: std::time::Instant,
+    /// The drives with a mount, unlock or eject still running.
+    busy_drives: Vec<String>,
+    /// Whether the window is on screen (the drives' timer runs only then).
+    window_visible: bool,
     /// This window's claim on the shared engine's finished jobs.
     _engine_window: files_operations::WindowAttachment,
 
@@ -529,22 +638,18 @@ impl FilesSession {
         reader.set_include_hidden_applications(preferences.show_hidden);
         let view = preferences.view_preferences();
         let bookmarks = bookmark_store.load();
+        // The process's watch hub, or this thread's own (a test's).
+        let hub = files_platform::WatchHub::current();
         let preference_watch = preference_store
             .path()
             .parent()
             .filter(|folder| folder.is_dir())
-            .map(|folder| {
-                files_platform::WatchHub::global()
-                    .subscribe(folder, files_platform::ReaderConfig::new())
-            });
+            .map(|folder| hub.subscribe(folder, files_platform::ReaderConfig::new()));
         let bookmark_watch = bookmark_store
             .path()
             .parent()
             .filter(|folder| folder.is_dir())
-            .map(|folder| {
-                files_platform::WatchHub::global()
-                    .subscribe(folder, files_platform::ReaderConfig::new())
-            });
+            .map(|folder| hub.subscribe(folder, files_platform::ReaderConfig::new()));
         let tabs = TabSet::with_preferences(start.clone(), view);
         let first = tabs.active().id();
         let pane = Pane::open(start, view, reader.as_ref());
@@ -556,8 +661,11 @@ impl FilesSession {
             view_store,
             views,
             history: crate::undo::History::default(),
-            mounter: Arc::new(crate::network::GioMounter),
+            mounter: Arc::new(crate::network::SystemMounter),
             mounting: None,
+            server_asks: None,
+            server_prompt: None,
+            server_prompt_serial: 0,
             undoable: Vec::new(),
             bookmark_store,
             bookmarks,
@@ -582,7 +690,15 @@ impl FilesSession {
             bookmark_watch,
             preferences_baseline: preferences,
             preference_watch,
+            hub,
             ejecting: Vec::new(),
+            drives: Vec::new(),
+            drive_scanner: None,
+            drive_sources: None,
+            drive_outcomes: std::sync::mpsc::channel(),
+            last_drive_scan: std::time::Instant::now(),
+            busy_drives: Vec::new(),
+            window_visible: true,
             _engine_window: engine_window,
             catalog,
             defaults,
@@ -795,7 +911,7 @@ impl FilesSession {
         validator: &dyn PathValidator,
     ) {
         if let Some(address) = crate::network::server_address(text) {
-            self.mount_server(address, None);
+            self.mount_server(address);
             return;
         }
         match resolve_path_input(text, home, validator) {
@@ -1460,10 +1576,12 @@ impl FilesSession {
                     .as_local_path()
                     .map(|path| path.as_path().to_path_buf())
             })
+            // `/` is never let go of: that would stop every watch there is.
+            .filter(|folder| folder != std::path::Path::new("/"))
         {
             // Every window's watches under the device go first; they come
             // back if the eject does not happen.
-            files_platform::WatchHub::global().suspend_under(&folder);
+            self.hub.suspend_under(&folder);
             self.ejecting.push((object_path.to_string(), folder));
         }
         self.link.request_eject(object_path);
@@ -1477,7 +1595,7 @@ impl FilesSession {
             .partition(|(path, _)| path == object_path);
         self.ejecting = rest;
         for (_, folder) in ending {
-            files_platform::WatchHub::global().resume_under(&folder);
+            self.hub.resume_under(&folder);
         }
     }
 
@@ -1491,6 +1609,8 @@ impl FilesSession {
         if notices.is_empty() {
             return false;
         }
+        // A device that came, went, mounted or ejected changes the drives.
+        self.refresh_drives();
         for notice in notices {
             self.apply_device_notice(notice);
         }
@@ -1599,6 +1719,276 @@ impl FilesSession {
                 })));
             }
         }
+    }
+
+    // --- Drives (ticket 122) -----------------------------------------------
+
+    /// Starts reading the drives from `sources`, now and whenever they may
+    /// have changed.
+    pub fn set_drive_sources(&mut self, sources: crate::drives::DriveSources) {
+        self.drive_scanner = Some(crate::drives::DriveScanner::start(sources.clone()));
+        self.drive_sources = Some(sources);
+        self.last_drive_scan = std::time::Instant::now();
+    }
+
+    /// Every drive, as last read.
+    pub fn drives(&self) -> &[crate::drives::Drive] {
+        &self.drives
+    }
+
+    /// Reads the drives again, off this thread.
+    pub fn refresh_drives(&mut self) {
+        if let Some(scanner) = &self.drive_scanner {
+            scanner.refresh();
+            self.last_drive_scan = std::time::Instant::now();
+        }
+    }
+
+    /// Takes a new list of drives and the outcome of a mount or eject;
+    /// reads the drives again now and then while the window is visible.
+    /// Whether the window has to redraw.
+    fn pump_drives(&mut self) -> bool {
+        let mut changed = false;
+        if let Some(drives) = self
+            .drive_scanner
+            .as_ref()
+            .and_then(|scanner| scanner.take())
+        {
+            changed |= drives != self.drives;
+            self.drives = drives;
+        }
+        if self.window_visible && self.last_drive_scan.elapsed() >= crate::drives::DRIVES_REFRESH {
+            self.refresh_drives();
+        }
+        while let Ok((key, outcome)) = self.drive_outcomes.1.try_recv() {
+            changed = true;
+            self.busy_drives.retain(|busy| *busy != key);
+            self.refresh_drives();
+            self.apply_drive_outcome(key, outcome);
+        }
+        changed
+    }
+
+    fn apply_drive_outcome(&mut self, key: String, outcome: DriveOutcome) {
+        use crate::drives::{EjectError, Ejected, UnlockError};
+        match outcome {
+            DriveOutcome::Mounted(path) => {
+                if let Ok(location) = Location::local(path) {
+                    self.notice = None;
+                    self.navigate_to(location);
+                }
+            }
+            DriveOutcome::MountFailed { drive, detail } => {
+                self.notice = Some(Notice::DriveFailed { drive, detail });
+            }
+            DriveOutcome::Ejected {
+                drive,
+                folder,
+                result,
+            } => {
+                if let Some(folder) = &folder {
+                    self.hub.resume_under(folder);
+                }
+                self.notice = Some(match result {
+                    Ok(Ejected::Safe) => Notice::DriveSafe { drive },
+                    Ok(Ejected::NotPoweredOff(detail)) => {
+                        Notice::DriveNotPoweredOff { drive, detail }
+                    }
+                    Err(EjectError::InUse { volume, detail }) => Notice::DriveInUse {
+                        drive,
+                        volume,
+                        detail,
+                    },
+                    Err(EjectError::Failed(detail)) => Notice::DriveEjectFailed { drive, detail },
+                });
+            }
+            DriveOutcome::Unlocked { drive, result } => match result {
+                Ok(path) => self.apply_drive_outcome(key, DriveOutcome::Mounted(path)),
+                Err(UnlockError::Dismissed) => {}
+                Err(UnlockError::WrongPassphrase) => {
+                    self.notice = Some(Notice::WrongPassphrase {
+                        drive: drive.clone(),
+                    });
+                    // Asked again only while nothing else is open, and only
+                    // while the container is still there and locked.
+                    let still_locked = self
+                        .drives
+                        .iter()
+                        .any(|known| known.key == key && known.locked);
+                    if self.dialog.is_none() && still_locked {
+                        self.dialog = Some(PendingDialog::UnlockDrive { key, name: drive });
+                    }
+                }
+                Err(UnlockError::Unavailable) => {
+                    self.notice = Some(Notice::DriveFailed {
+                        drive,
+                        detail: "UDisks2 is not available".to_string(),
+                    });
+                }
+                Err(UnlockError::Failed(detail)) => {
+                    self.notice = Some(Notice::DriveFailed { drive, detail });
+                }
+                // Unlocked, and the container's key has left the list: the
+                // name kept from the start says which drive.
+                Err(UnlockError::MountFailed(detail)) => {
+                    self.notice = Some(Notice::DriveUnlockedNotMounted { drive, detail });
+                }
+            },
+        }
+    }
+
+    /// Whether a mount, unlock or eject started from this drive is still
+    /// running: its row ignores clicks until it ends.
+    pub fn is_drive_busy(&self, key: &str) -> bool {
+        self.busy_drives.iter().any(|busy| busy == key)
+    }
+
+    /// Whether any drive action is still running.
+    pub fn any_drive_busy(&self) -> bool {
+        !self.busy_drives.is_empty()
+    }
+
+    /// Opens a drive: goes there when it is mounted; asks for the
+    /// passphrase of an encrypted one; otherwise mounts it (through the
+    /// storage service when it reports the device, through UDisks2
+    /// otherwise, off this thread) and goes there once it is. Whether it
+    /// went there now.
+    pub fn open_drive(&mut self, key: &str) -> bool {
+        if self.is_drive_busy(key) {
+            return false;
+        }
+        let Some(drive) = self.drives.iter().find(|drive| drive.key == key).cloned() else {
+            return false;
+        };
+        if let Some(point) = &drive.mount_point {
+            let Ok(location) = Location::local(point) else {
+                return false;
+            };
+            self.navigate_to(location);
+            return true;
+        }
+        let c = crate::i18n::copy(self.locale);
+        if drive.locked {
+            self.dialog = Some(PendingDialog::UnlockDrive {
+                key: drive.key.clone(),
+                name: drive.name(c),
+            });
+            return false;
+        }
+        let Some(object_path) = drive.object_path.clone() else {
+            return false;
+        };
+        if self.devices.get(&object_path).is_some() {
+            self.open_device(&object_path);
+            return false;
+        }
+        let Some(sources) = self.drive_sources.clone() else {
+            return false;
+        };
+        let name = drive.name(c);
+        let busy = drive.key.clone();
+        self.spawn_drive_action(&busy, "files-drive-mount", move || {
+            match (sources.mount)(&drive) {
+                Ok(path) => DriveOutcome::Mounted(path),
+                Err(detail) => DriveOutcome::MountFailed {
+                    drive: name,
+                    detail,
+                },
+            }
+        });
+        false
+    }
+
+    /// Unlocks an encrypted drive with the passphrase typed into its dialog
+    /// and goes there once what is inside is mounted. The passphrase goes to
+    /// UDisks2 and is overwritten when the call returns.
+    pub fn unlock_drive(&mut self, key: &str, passphrase: crate::secret::Secret) {
+        if self.is_drive_busy(key) {
+            return;
+        }
+        let Some(drive) = self.drives.iter().find(|drive| drive.key == key).cloned() else {
+            return;
+        };
+        let Some(sources) = self.drive_sources.clone() else {
+            return;
+        };
+        let name = drive.name(crate::i18n::copy(self.locale));
+        let busy = drive.key.clone();
+        self.spawn_drive_action(&busy, "files-drive-unlock", move || {
+            let result = (sources.unlock)(&drive, &passphrase);
+            drop(passphrase);
+            DriveOutcome::Unlocked {
+                drive: name,
+                result,
+            }
+        });
+    }
+
+    /// Ejects a drive: through the storage service when it reports the
+    /// device (which says what happened), through UDisks2 otherwise. Every
+    /// window's watches under it go first. The system drive is never
+    /// ejected, and `/` is never let go of.
+    pub fn eject_drive(&mut self, key: &str) {
+        if self.is_drive_busy(key) {
+            return;
+        }
+        let Some(drive) = self.drives.iter().find(|drive| drive.key == key).cloned() else {
+            return;
+        };
+        if !drive.ejectable
+            || drive.kind == crate::drives::DriveKind::System
+            || drive.mount_point.as_deref() == Some(std::path::Path::new("/"))
+        {
+            return;
+        }
+        let Some(object_path) = drive.object_path.clone() else {
+            return;
+        };
+        if self.devices.get(&object_path).is_some() {
+            self.eject_device(&object_path);
+            return;
+        }
+        let Some(sources) = self.drive_sources.clone() else {
+            return;
+        };
+        let folder = drive.mount_point.clone();
+        if let Some(folder) = &folder {
+            self.hub.suspend_under(folder);
+        }
+        let name = drive.name(crate::i18n::copy(self.locale));
+        let busy = drive.key.clone();
+        self.spawn_drive_action(&busy, "files-drive-eject", move || DriveOutcome::Ejected {
+            drive: name,
+            folder,
+            result: (sources.eject)(&drive),
+        });
+    }
+
+    /// Runs a mount, unlock or eject on a thread of its own; its outcome
+    /// comes back through [`Self::pump`]. The drive is busy until then.
+    fn spawn_drive_action(
+        &mut self,
+        key: &str,
+        name: &str,
+        action: impl FnOnce() -> DriveOutcome + Send + 'static,
+    ) {
+        let outcomes = self.drive_outcomes.0.clone();
+        let key = key.to_string();
+        self.busy_drives.push(key.clone());
+        let spawned = std::thread::Builder::new()
+            .name(name.to_string())
+            .spawn(move || {
+                let _ = outcomes.send((key, action()));
+            });
+        if spawned.is_err() {
+            self.busy_drives.pop();
+        }
+    }
+
+    /// Whether the window is on screen; the drives are read on a timer only
+    /// while it is.
+    pub fn set_window_visible(&mut self, visible: bool) {
+        self.window_visible = visible;
     }
 
     // --- Removal policy (ticket 52) ----------------------------------------
@@ -2241,6 +2631,8 @@ impl FilesSession {
         self.jobs = jobs;
         if finished_now {
             self.refresh_panes();
+            // A copy or a delete changes how full a drive is.
+            self.refresh_drives();
             changed = true;
         }
         changed
@@ -2289,6 +2681,7 @@ impl FilesSession {
     /// removal could come before the batch that carries the file.
     pub(crate) fn pump_watches(&mut self) -> bool {
         let reader = self.reader.clone();
+        let hub = Arc::clone(&self.hub);
         let active = self.active_tab();
         let panes = &self.panes;
         self.watches
@@ -2301,12 +2694,12 @@ impl FilesSession {
                 Some(index) => {
                     // The old folder's subscription goes before the new one
                     // is asked for.
-                    self.watches[index] = FolderWatch::new(*tab, pane.location(), &reader);
+                    self.watches[index] = FolderWatch::new(*tab, pane.location(), &reader, &hub);
                     index
                 }
                 None => {
                     self.watches
-                        .push(FolderWatch::new(*tab, pane.location(), &reader));
+                        .push(FolderWatch::new(*tab, pane.location(), &reader, &hub));
                     self.watches.len() - 1
                 }
             };
@@ -2402,6 +2795,12 @@ impl FilesSession {
         }
     }
 
+    /// The watch hub this window's folders are followed through, for tests.
+    #[cfg(test)]
+    pub(crate) fn watch_hub(&self) -> &files_platform::WatchHub {
+        &self.hub
+    }
+
     /// The folders the hub holds a kernel watch on for this window's panes,
     /// for tests.
     #[cfg(test)]
@@ -2411,7 +2810,7 @@ impl FilesSession {
             .filter(|watch| watch.ready)
             .filter_map(|watch| watch.subscription.as_ref())
             .map(|subscription| subscription.directory().to_path_buf())
-            .filter(|folder| files_platform::WatchHub::global().is_watching(folder))
+            .filter(|folder| self.hub.is_watching(folder))
             .collect()
     }
 
@@ -2456,6 +2855,7 @@ impl FilesSession {
         changed |= self.pump_devices();
         changed |= self.pump_bookmarks();
         changed |= self.pump_preferences();
+        changed |= self.pump_drives();
         changed |= self.pump_mount();
         // Search is fed after the pane, so entries that arrived this frame are
         // considered this frame rather than next.
@@ -2846,23 +3246,39 @@ impl FilesSession {
         }
     }
 
-    /// Opens a server through GVfs on a worker thread; [`Self::pump`] goes
-    /// there once it is mounted, or asks for a name and password.
-    pub fn mount_server(
-        &mut self,
-        address: String,
-        credentials: Option<crate::network::Credentials>,
-    ) {
+    /// Opens a server through GVfs on a worker thread. Whatever it asks
+    /// (sign-in, a host key) is shown in the content area
+    /// ([`Self::server_prompt`]); [`Self::pump`] goes to its folder once it
+    /// is mounted.
+    pub fn mount_server(&mut self, address: String) {
+        // A mount already asking something is answered "cancel" first.
+        self.cancel_server_prompt();
         let (sender, receiver) = std::sync::mpsc::channel();
+        let (asks, questions) = std::sync::mpsc::channel();
         let mounter = Arc::clone(&self.mounter);
         self.notice = Some(Notice::Mounting(address.clone()));
         let _ = std::thread::Builder::new()
             .name("files-server-mount".to_string())
             .spawn(move || {
-                let result = mounter.mount(&address, credentials.as_ref());
+                let asker = crate::network::Asker::new(&address, asks);
+                let result = mounter.mount(&address, &asker);
                 let _ = sender.send((address, result));
             });
         self.mounting = Some(receiver);
+        self.server_asks = Some(questions);
+    }
+
+    /// Sends the person's answer to the question shown, and takes it off
+    /// the screen until GVfs asks the next one or the mount ends.
+    pub fn answer_server(&mut self, answer: crate::network::Answer) {
+        if let Some(ask) = self.server_prompt.take() {
+            let _ = ask.reply.try_send(answer);
+        }
+    }
+
+    /// Cancels the question shown, if any: the mount ends quietly.
+    pub fn cancel_server_prompt(&mut self) {
+        self.answer_server(crate::network::Answer::Cancel);
     }
 
     /// Uses another way of mounting servers. For tests.
@@ -2876,13 +3292,38 @@ impl FilesSession {
     }
 
     fn pump_mount(&mut self) -> bool {
+        let mut changed = false;
+        // GVfs withdrew the question (it sent `Aborted`, or the mount was
+        // given up on): it leaves the screen.
+        if self
+            .server_prompt
+            .as_ref()
+            .is_some_and(|ask| ask.reply.is_closed())
+        {
+            self.server_prompt = None;
+            changed = true;
+        }
+        if let Some(questions) = &self.server_asks
+            && let Ok(ask) = questions.try_recv()
+        {
+            // A question replaces the "Connecting to…" bar.
+            if matches!(self.notice, Some(Notice::Mounting(_))) {
+                self.notice = None;
+            }
+            self.cancel_server_prompt();
+            self.server_prompt = Some(ask);
+            self.server_prompt_serial += 1;
+            changed = true;
+        }
         let Some(receiver) = &self.mounting else {
-            return false;
+            return changed;
         };
         let Ok((address, result)) = receiver.try_recv() else {
-            return false;
+            return changed;
         };
         self.mounting = None;
+        self.server_asks = None;
+        self.server_prompt = None;
         match result {
             Ok(path) => match Location::local(path) {
                 Ok(location) => {
@@ -2890,16 +3331,20 @@ impl FilesSession {
                     self.navigate_to(location);
                 }
                 Err(_) => {
-                    self.notice = Some(Notice::MountFailed(crate::network::MountError::Failed(
-                        "not a path".to_string(),
-                    )))
+                    self.notice = Some(Notice::MountFailed {
+                        address,
+                        error: crate::network::MountError::new(
+                            crate::network::MountFailure::NoLocalFolder,
+                            "",
+                        ),
+                    })
                 }
             },
-            Err(crate::network::MountError::NeedsPassword) => {
+            // The person cancelled: nothing to say.
+            Err(error) if error.failure == crate::network::MountFailure::Cancelled => {
                 self.notice = None;
-                self.dialog = Some(PendingDialog::ServerLogin { address });
             }
-            Err(error) => self.notice = Some(Notice::MountFailed(error)),
+            Err(error) => self.notice = Some(Notice::MountFailed { address, error }),
         }
         true
     }
@@ -3091,11 +3536,15 @@ struct FolderWatch {
 
 impl FolderWatch {
     /// Asks the hub for a watch; nothing here touches the disk.
-    fn new(tab: TabId, location: &Location, reader: &FilesReader) -> Self {
-        let subscription = location.as_local_path().map(|path| {
-            files_platform::WatchHub::global()
-                .subscribe(path.as_path(), reader.local_config().clone())
-        });
+    fn new(
+        tab: TabId,
+        location: &Location,
+        reader: &FilesReader,
+        hub: &files_platform::WatchHub,
+    ) -> Self {
+        let subscription = location
+            .as_local_path()
+            .map(|path| hub.subscribe(path.as_path(), reader.local_config().clone()));
         Self {
             tab,
             folder: location.clone(),
@@ -3127,4 +3576,33 @@ fn apply_rows(pane: &mut Pane, rows: Vec<files_core::RefreshEvent>) -> bool {
         changed = true;
     }
     changed
+}
+
+/// A server mount's address and how it ended.
+type MountResult = (
+    String,
+    Result<std::path::PathBuf, crate::network::MountError>,
+);
+
+/// A drive action's outcome with the key of the drive it was for.
+type KeyedOutcome = (String, DriveOutcome);
+
+/// What a mount, unlock or eject started from a drive row came to.
+#[derive(Debug)]
+enum DriveOutcome {
+    Mounted(std::path::PathBuf),
+    MountFailed {
+        drive: String,
+        detail: String,
+    },
+    Unlocked {
+        drive: String,
+        result: Result<std::path::PathBuf, crate::drives::UnlockError>,
+    },
+    Ejected {
+        drive: String,
+        /// The folder whose watches to take back.
+        folder: Option<std::path::PathBuf>,
+        result: Result<crate::drives::Ejected, crate::drives::EjectError>,
+    },
 }
