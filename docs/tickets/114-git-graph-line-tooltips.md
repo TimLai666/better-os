@@ -1,6 +1,6 @@
 # Ticket 114 — The branch graph says what a line is when the pointer rests on it
 
-**Blocked by:** 104 (merged) · **Status:** merged, not released
+**Blocked by:** 104 (merged) · **Status:** released in v0.2.14
 
 ## Why
 

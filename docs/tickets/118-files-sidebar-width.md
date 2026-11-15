@@ -1,6 +1,6 @@
 # Ticket 118 — Better Files' sidebar can be made wider or narrower
 
-**Blocked by:** none · **Status:** merged, not released
+**Blocked by:** none · **Status:** released in v0.2.14
 
 ## Why
 

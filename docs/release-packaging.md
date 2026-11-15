@@ -291,6 +291,17 @@ unit，開啟時會把已啟用卻沒在跑的元件啟動起來。套件本身�
 仍然以停用狀態安裝，由 Better Manager 啟用。
 
 目前的 release 是
+[`v0.2.14`](https://github.com/TimLai666/better-os/releases/tag/v0.2.14)，由 commit
+`e57a7d0237a84e3e80f2410a7d459e7313ff4c5c` 的 CI run
+[`43622709852`](https://github.com/TimLai666/better-os/actions/runs/43622709852)
+產生，十個套件、40 個 `.deb` 與 40 個 `.deb.sha256`，共 82 個 assets。內容是
+ticket 106、108、110 到 116、118 到 121。打包上的變化：第一次發佈
+`better-shell-adapter`；`better-manager` 帶 window attention 服務與它的 user unit，
+manifest 的每個 artifact 都寫上 `better-shell-adapter` 這個 companion，之後
+Better Manager 的自我更新會在同一個 apt 交易裡一起安裝它；GUI 套件 Recommends
+`libgtk-4-1` 與 `libadwaita-1-0`。
+
+上一版是
 [`v0.2.13`](https://github.com/TimLai666/better-os/releases/tag/v0.2.13)，由 commit
 `aab38acd778b544a35cce1969ebfa410df3296d9` 的 CI run
 [`43578783980`](https://github.com/TimLai666/better-os/actions/runs/43578783980)
@@ -301,14 +312,6 @@ Awake 的 tray 選單）、103（下拉選單、分頁與 Better Git 對話框�
 109（闔上螢幕時保持清醒）。打包上的變化：有 systemd user unit 的套件，preinst
 與 postinst 會在升級後重啟正在執行的 unit（ticket 105，清單依位元組排序）；
 `better-monitor` 多了 tray 的 user unit；`better-manager` 依賴 `libsecret-tools`。
-
-上一版是
-[`v0.2.12`](https://github.com/TimLai666/better-os/releases/tag/v0.2.12)，由 commit
-`f5a28f4ecf604207832044864ecc2c91b4f3e51e` 的 CI run
-[`43272264034`](https://github.com/TimLai666/better-os/actions/runs/43272264034)
-產生，九個套件、36 個 `.deb` 與 36 個 `.deb.sha256`，共 74 個 assets。內容是
-ticket 92（功能對齊 GitHub Desktop 的 Better Git）與 84（Better Manager 控制台的外框、首頁與設定）。
-打包方式沒有改變。
 
 `packaging/build-deb.sh` 從 0.2.4 開始會先清掉 `dist/` 裡上一次建置留下的
 `.deb` 與 `.deb.sha256`。`verify-deb.sh` 用不含版號的 glob 挑套件，同一個元件

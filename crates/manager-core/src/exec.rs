@@ -1268,7 +1268,25 @@ mod tests {
         // so the fixture keeps matching after a version bump.
         let version = env!("CARGO_PKG_VERSION");
         let asset = format!("better-manager_{version}_ubuntu-24.04_amd64.deb");
-        let manifest = include_str!("../../../components/manifests/better-manager.yaml").replace(
+        // The shipped manifest carries companions on every artifact since the
+        // first release with the adapter; the fixture starts from one without
+        // them so it controls exactly one.
+        let shipped = include_str!("../../../components/manifests/better-manager.yaml");
+        let mut bare = String::new();
+        let mut skipping = false;
+        for line in shipped.lines() {
+            if line == "    companions:" {
+                skipping = true;
+                continue;
+            }
+            if skipping && line.starts_with("      ") {
+                continue;
+            }
+            skipping = false;
+            bare.push_str(line);
+            bare.push('\n');
+        }
+        let manifest = bare.replace(
             &format!("    release_asset: {asset}\n"),
             &format!(
                 "    release_asset: {asset}\n    companions:\n      - package: better-shell-adapter\n        url: https://example.com/better-shell-adapter_{version}_ubuntu-24.04_amd64.deb\n        sha256: {}\n        release_asset: better-shell-adapter_{version}_ubuntu-24.04_amd64.deb\n",

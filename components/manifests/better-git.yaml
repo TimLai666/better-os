@@ -17,31 +17,30 @@ targets:
   distributions: [zorin, ubuntu]
   releases: [22.04, 24.04]
   architectures: [amd64, arm64]
-# Placeholder checksums until v0.2.14 is published. ADR 0002 records the
-# checksum of a *published* release asset; the v0.2.13 values these variants
-# carried describe 0.2.13's packages, not 0.2.14's. The real values are written
-# back once the release is public and every asset has been re-downloaded and
-# verified.
+# The checksums below belong to the published v0.2.14 release assets. Each one
+# was re-hashed from the package downloaded back from the public release rather
+# than copied from its sidecar, which is what ADR 0002 requires a manifest to
+# record.
 artifacts:
   - release: "22.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.14/better-git_0.2.14_ubuntu-22.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 945cae83d04852786fc4d7bc8f401aaa969fb4a8203358ee7434ce3bdb7b6f04
     release_asset: better-git_0.2.14_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.14/better-git_0.2.14_ubuntu-22.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 4c6f997fff57762b79fb208d8e8872d59697e4ea0351c5d07bb9c6f2dc2b1334
     release_asset: better-git_0.2.14_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.14/better-git_0.2.14_ubuntu-24.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: d026bd1648fe8176d5a6d86320aad7111b797a879b2569dc65647a9ba293a84e
     release_asset: better-git_0.2.14_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.14/better-git_0.2.14_ubuntu-24.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 95b3f426724d64e19ac767b1b520cf7d3b4f3c582644b0c8cb7dcb02d7496246
     release_asset: better-git_0.2.14_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
