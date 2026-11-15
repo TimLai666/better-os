@@ -2,8 +2,9 @@
 
 ## Status
 
-Proposed on 2026-11-15 for ticket 88. This is a decision for the project owner;
-nothing described here is built.
+Superseded on 2026-11-15 by ADR 0030: the owner decided scroll speed is to
+be built, and ticket 125 builds it. Proposed for ticket 88 until then; kept for
+the experiment's evidence.
 
 ## Context
 

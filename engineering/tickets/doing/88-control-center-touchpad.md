@@ -113,7 +113,9 @@ Built and tested since the first pass (all of the first pass's list stands):
   page's "Turn back on" still removes it.
 - Scroll speed: tested on a private GNOME Shell 46.0; an extension cannot see
   a client's scroll at all. Evidence and the alternative's estimate are in
-  ADR 0029 (proposed, owner decision). Nothing built.
+  ADR 0029, superseded by ADR 0030: the owner decided it is built, in
+  ticket 125. The Vertical and Horizontal rows stay unavailable on GNOME 46
+  here until ticket 125 lands.
 
 Screenshots (private headless GNOME Shell 46, in-memory backend, demo mode):
 every sub-page, zh/en, light/dark, 1600 and 960 (48), Devices › Details and
@@ -125,7 +127,6 @@ Still open:
 - Install-time setup (enable the shell extension, apply a default gesture
   profile at install): waits for ticket 124 to merge, by the coordinator's
   instruction.
-- Scroll speed: owner decision on ADR 0029.
 
 Checks run: fmt; clippy `+stable` and `+1.99.0`, workspace, all targets,
 `-D warnings` clean; `cargo +1.95 check` of the touched crates; license
@@ -177,8 +178,7 @@ Not done yet:
   default gesture profile at install (needs the reviewed-defaults engine and
   manager-core install path, which ticket 124 is changing in parallel);
   detecting x11gestures/touchegg/fusuma with the choice to turn them off.
-- Scroll speed: the disposable GNOME 46 experiment has not been run. Note for
-  whoever runs it: holding a scale factor in the GJS adapter is configuration,
+- Scroll speed moved to ticket 125 (ADR 0030). Note for it: holding a scale factor in the GJS adapter is configuration,
   which ADR 0012 forbids, so a positive result still needs a new ADR or a
   per-event round trip.
 - Screenshots: taken in a wayhand sandbox that ticket 124's worker was also

@@ -103,6 +103,8 @@ const MAPPED: &[KeyMapping] = &[
 ];
 
 /// The controls GNOME has no key for, with the wording the screen shows.
+/// The two scroll-factor rows are built by ticket 125 (ADR 0030); until it
+/// lands they stay unavailable here.
 const UNMAPPED: &[(SettingId, &str, &str)] = &[
     (
         SettingId::VerticalScrollFactor,
