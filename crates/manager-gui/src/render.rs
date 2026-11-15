@@ -1,7 +1,7 @@
 //! Draws the window: the shell around the page, and the pages ticket 84
 //! builds (Home, Settings, and the placeholders for the pages to come).
-//! Today's Better Manager screens are drawn by `pages_main`, `pages_flow`,
-//! `pages_settings`, and `pages_defaults` inside the same content column.
+//! Apps is drawn by `render_apps` (ticket 85); today's Defaults screens by
+//! `pages_defaults`, inside the same content column, until ticket 89.
 
 use better_ui::fluent::button::Button;
 use better_ui::fluent::chrome::is_back_shortcut;
@@ -431,57 +431,17 @@ impl ManagerApp {
         rows
     }
 
-    /// Today's Better Manager screens, unchanged, as one row.
+    /// Today's Defaults screens, unchanged, as one row, until ticket 89.
     fn interim_rows(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Row> {
         let compact = crate::navigation::legacy_compact(f32::from(window.viewport_size().width));
-        let mut rows = Vec::new();
-        if self.page == Page::Components {
-            // Apps' sub-page cards, above today's component list, so the
-            // update check, the doctor, and the activity log stay reachable
-            // until ticket 85 rebuilds the page.
-            rows.push(self.title_row(shell(self.locale).apps, cx));
-            let links = pages::apps_links(self.locale, self.snapshot().update_count());
-            for (index, link) in links.into_iter().enumerate() {
-                let page = link.page.clone();
-                rows.push(Row::card(
-                    if index == 0 { 0.0 } else { CARD_GAP },
-                    link.card,
-                    SettingsCard::new(link.card, link.header)
-                        .icon(match link.page {
-                            Page::Updates => IconName::ArrowDown,
-                            Page::Health => IconName::CircleCheck,
-                            _ => IconName::Inspector,
-                        })
-                        .description(link.description)
-                        .on_click(Self::act(cx, move |this, _, cx| {
-                            this.navigate(page.clone(), cx)
-                        })),
-                ));
-            }
-        }
         let element = match &self.page {
-            Page::Components => self.components_page(compact, cx),
-            Page::ComponentDetail(_) => self.component_detail_page(compact, cx),
             Page::Defaults => self.defaults_page(compact, cx),
             Page::DefaultsComponent(_) => self.defaults_component_page(compact, cx),
             Page::DefaultsReview => self.defaults_review_page(compact, cx),
             Page::DefaultsResults => self.defaults_results_page(compact, cx),
-            Page::Updates => self.updates_page(compact, cx),
-            Page::ReviewChanges => self.review_changes_page(compact, cx),
-            Page::Installing => self.installing_page(compact, cx),
-            Page::Finished => self.finished_page(compact, cx),
-            Page::Restore => self.restore_page(compact, cx),
-            Page::Restored => self.restored_page(compact, cx),
-            Page::Health => self.health_page(compact, cx),
-            Page::DoctorResults => self.doctor_results_page(compact, cx),
-            Page::Activity => self.activity_page(compact, cx),
             _ => div().into_any_element(),
         };
-        rows.push(Row::new(
-            if rows.is_empty() { 0.0 } else { GROUP_GAP },
-            element,
-        ));
-        rows
+        vec![Row::new(0.0, element)]
     }
 
     fn page_rows(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Row> {
@@ -490,6 +450,7 @@ impl ManagerApp {
             (Page::Home, _) => self.home_rows(cx),
             (Page::Settings, _) => self.settings_rows(cx),
             (Page::WindowAttention, _) => self.window_attention_rows(cx),
+            (_, _) if route == Route::Apps => self.apps_rows(cx),
             (_, PageStatus::Placeholder { ticket }) => self.placeholder_rows(route, ticket, cx),
             _ => self.interim_rows(window, cx),
         }
@@ -579,6 +540,7 @@ impl Render for ManagerApp {
             )
             .child(title_bar)
             .child(div().flex_1().min_h_0().child(navigation))
+            .children(self.apps_dialog(cx))
             .children(self.update_restart.toast_layer(self.locale.words(), cx))
     }
 }

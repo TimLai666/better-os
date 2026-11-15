@@ -45,10 +45,6 @@ impl CatalogLine {
         }
     }
 
-    pub(crate) fn is_degraded(&self) -> bool {
-        self.warning.is_some()
-    }
-
     /// The count of refused manifests, as a line, when there were any.
     pub(crate) fn rejected_line(&self, locale: Locale) -> Option<String> {
         let c = copy(locale);
@@ -187,14 +183,11 @@ pub(crate) enum Page {
     DefaultsComponent(ComponentId),
     DefaultsReview,
     DefaultsResults,
+    /// Apps › Updates. A change starts at once from here and shows its
+    /// progress and result on its rows; there is no review, installing, or
+    /// result page (owner, 2026-11-15).
     Updates,
-    ReviewChanges,
-    Installing,
-    Finished,
-    Restore,
-    Restored,
     Health,
-    DoctorResults,
     Activity,
     Settings,
 }
@@ -203,7 +196,6 @@ pub(crate) enum Page {
 pub(crate) enum DetailTab {
     Overview,
     Versions,
-    Permissions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,6 +260,14 @@ pub(crate) struct ComponentInfo {
     pub(crate) enhances: Vec<String>,
     pub(crate) paths: Vec<String>,
     pub(crate) release_notes: Vec<String>,
+    /// The health checks its manifest declares, by name.
+    pub(crate) health_checks: Vec<String>,
+    /// Whether it declares a default it can own, which is what puts the
+    /// "Default apps" card on its page.
+    pub(crate) declares_defaults: bool,
+    /// Whether its manifest names personal data the uninstall check box
+    /// would delete (`manager_core::personal_data`).
+    pub(crate) has_personal_data: bool,
 }
 
 /// The drift card's words. Three sentences, in the order a person needs them:
@@ -323,6 +323,9 @@ impl ComponentInfo {
             enhances: manifest.enhances.clone(),
             paths: manifest.paths.clone(),
             release_notes: manifest.release_notes.clone(),
+            health_checks: manifest.health_checks.clone(),
+            declares_defaults: !manifest.default_integrations.is_empty(),
+            has_personal_data: manager_core::personal_data::has_personal_data(&manifest.paths),
         }
     }
 
@@ -379,12 +382,6 @@ impl ComponentInfo {
             Some(current) => current.to_string(),
             None => format!("{not_installed} · {}", self.available_version),
         }
-    }
-
-    /// A stable element-ID fragment. Component IDs are already restricted to
-    /// lowercase ASCII, digits, and dashes by the manifest parser.
-    pub(crate) fn element_id(&self, prefix: &str) -> String {
-        format!("{prefix}-{}", self.core_id)
     }
 }
 

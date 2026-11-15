@@ -81,7 +81,7 @@ impl ManagerApp {
                 .size(px(16.0))
                 .text_color(p.accent),
         );
-        if crate::navigation::shows_back(&self.history, &self.page, self.transaction_running()) {
+        if crate::navigation::shows_back(&self.history) {
             bar = bar.back(
                 self.locale.words(),
                 Self::act(cx, |this, _, cx| this.go_back(cx)),
@@ -158,7 +158,7 @@ impl ManagerApp {
             })
             .on_select(Self::act_with(cx, |this, index: usize, _, cx| {
                 if let Some(route) = Route::from_pane_index(index) {
-                    let page = crate::navigation::landing(route, this.transaction_running());
+                    let page = crate::navigation::landing(route);
                     this.navigate(page, cx);
                 }
             }))

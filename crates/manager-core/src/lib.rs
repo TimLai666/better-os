@@ -8,6 +8,7 @@
 
 pub mod catalog;
 pub mod exec;
+pub mod personal_data;
 pub mod reconcile;
 pub mod repair;
 

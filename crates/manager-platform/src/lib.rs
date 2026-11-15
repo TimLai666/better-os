@@ -12,6 +12,8 @@ pub mod download;
 pub mod dpkg;
 mod flavor;
 pub mod host;
+#[cfg(feature = "personal-data")]
+pub mod personal_data;
 #[cfg(feature = "dbus-client")]
 pub mod privileged;
 pub mod user_units;
