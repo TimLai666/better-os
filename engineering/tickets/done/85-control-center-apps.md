@@ -112,10 +112,13 @@ spec also states the personal-data rule and the section 12 rows that moved.
 - **Activity**: filters, list with status glyphs and age, Clear history
   behind "Clear all activity?".
 - **Remove** asks with "Also delete my settings and history", ticked by
-  default, shown only when the manifest names personal data
-  (`manager_core::personal_data`: under `~/.local/state`, `~/.config`,
-  `~/.cache`, first directory `better-*`; never `mimeapps.list` or GTK
-  bookmarks). After a successful removal the data is moved to the trash
+  default, shown only when the component owns entries on the closed list of
+  Better OS data directories (`manager_core::personal_data::DATA_DIRECTORIES`,
+  owner 2026-11-15, built from every manifest, every crate's path constants,
+  and `git log -p --all -S`). Removing a component deletes only its own
+  entries, historical ones included, never another component's, the
+  manager's state, `mimeapps.list`, or GTK bookmarks; a manifest home path
+  that is not its own entry is refused and logged (`refused_manifest_paths`). After a successful removal the data is moved to the trash
   through `files-platform`'s trash (`manager_platform::personal_data`, feature
   `personal-data`), never unlinked; the result shows as an InfoBar.
   `better-manager-cli run <id> remove --keep-data` keeps it; a mock run names

@@ -577,11 +577,15 @@ a second apart.
 **Remove** asks 要移除 {component} 嗎？ / Remove {component}? with 移除 /
 Remove and 取消 / Cancel, and a check box, ticked by default, 同時刪除我的
 設定和紀錄 / Also delete my settings and history, shown only when the
-manifest's `paths` name personal data. Personal data is a path under
-`~/.local/state`, `~/.config`, or `~/.cache` whose first directory under
-that root starts with `better-` (so `~/.config/better-os/git.json` and
-`~/.local/state/better-awake/` count, and a shared file such as
-`~/.config/mimeapps.list` never does). It is moved to the trash after the
+component owns entries on the list of Better OS data directories. That
+list is closed and kept in one place (`manager_core::personal_data`, owner
+2026-11-15): every directory or file a component has ever kept the person's
+data in, current and historical, each with its owning component. Removing a
+component deletes only its own entries, including historical ones no version
+writes any more, and never another component's, never Better Manager's own
+state, and never anything off the list: `~/.config/mimeapps.list` and GTK's
+bookmarks stay. A home path in a manifest's `paths` that is not one of its
+own entries is refused and logged, not deleted. What is deleted is moved to the trash after the
 removal succeeded, never before and never unlinked. **Restore** asks
 要把 {component} 還原成 {version} 嗎？ / Restore {component} to {version}?
 

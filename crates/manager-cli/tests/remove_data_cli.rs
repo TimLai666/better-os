@@ -73,11 +73,46 @@ fn keep_data_means_nothing_without_a_removal() {
 }
 
 #[test]
-fn a_component_with_no_personal_data_names_none() {
+fn removing_one_component_names_only_its_own_entries_and_logs_what_it_refuses() {
     let directory = tempfile::tempdir().unwrap();
-    let install = run(directory.path(), &["run", "better-launcher", "install"]);
+    let install = run(directory.path(), &["run", "better-files", "install"]);
     assert!(install.status.success(), "{install:?}");
-    let output = run(directory.path(), &["run", "better-launcher", "remove"]);
+    let output = run(directory.path(), &["run", "better-files", "remove"]);
     assert!(output.status.success(), "{output:?}");
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("trash"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines().filter(|line| line.contains("trash")) {
+        assert!(
+            line.contains("/files") || line.contains("/app-chooser"),
+            "{line}"
+        );
+    }
+    let trashed: String = stdout
+        .lines()
+        .filter(|line| line.contains("trash"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!trashed.is_empty());
+    assert!(!trashed.contains("mimeapps.list"));
+    assert!(!trashed.contains("bookmarks"));
+    assert!(!trashed.contains("git"));
+    assert!(
+        stderr.contains("not deleting ~/.config/mimeapps.list"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("not deleting ~/.config/gtk-3.0/bookmarks"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_historical_entry_is_named_even_though_no_version_writes_it_now() {
+    let directory = tempfile::tempdir().unwrap();
+    installed_git(directory.path());
+    let output = run(directory.path(), &["run", "better-git", "remove"]);
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("would move to the trash: ~/.local/state/better-os/git-repositories.json")
+    );
 }

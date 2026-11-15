@@ -1338,14 +1338,19 @@ impl ManagerApp {
         let Some(manifest) = self.manager.manifests().find(|manifest| manifest.id == id) else {
             return;
         };
-        let paths = manager_core::personal_data::personal_paths(&manifest.paths);
+        for refused in
+            manager_core::personal_data::refused_manifest_paths(id.as_str(), &manifest.paths)
+        {
+            eprintln!("{}", refused.log_line(id.as_str()));
+        }
+        let paths = manager_core::personal_data::owned_by(id.as_str());
         if paths.is_empty() {
             return;
         }
         let Some((home, trash)) = manager_platform::personal_data::home_and_trash() else {
             return;
         };
-        let relative: Vec<&str> = paths.iter().map(|path| path.relative()).collect();
+        let relative: Vec<&str> = paths.iter().map(|entry| entry.path).collect();
         let report =
             manager_platform::personal_data::move_personal_data_to_trash(&home, &relative, &trash);
         if !report.trashed.is_empty() || !report.failed.is_empty() {

@@ -325,7 +325,7 @@ impl ComponentInfo {
             release_notes: manifest.release_notes.clone(),
             health_checks: manifest.health_checks.clone(),
             declares_defaults: !manifest.default_integrations.is_empty(),
-            has_personal_data: manager_core::personal_data::has_personal_data(&manifest.paths),
+            has_personal_data: manager_core::personal_data::has_personal_data(manifest.id.as_str()),
         }
     }
 

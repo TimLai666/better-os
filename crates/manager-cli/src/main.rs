@@ -700,13 +700,17 @@ fn remove_personal_data(manager: &Manager, id: &ComponentId, mode: ExecutionMode
     let Some(manifest) = manager.manifests().find(|manifest| &manifest.id == id) else {
         return;
     };
-    let paths = manager_core::personal_data::personal_paths(&manifest.paths);
+    for refused in manager_core::personal_data::refused_manifest_paths(id.as_str(), &manifest.paths)
+    {
+        eprintln!("{}", refused.log_line(id.as_str()));
+    }
+    let paths = manager_core::personal_data::owned_by(id.as_str());
     if paths.is_empty() {
         return;
     }
     if mode == ExecutionMode::Mock {
         for path in &paths {
-            println!("would move to the trash: ~/{}", path.relative());
+            println!("would move to the trash: ~/{}", path.path);
         }
         return;
     }
@@ -714,7 +718,7 @@ fn remove_personal_data(manager: &Manager, id: &ComponentId, mode: ExecutionMode
         eprintln!("settings and history kept: no home directory");
         return;
     };
-    let relative: Vec<&str> = paths.iter().map(|path| path.relative()).collect();
+    let relative: Vec<&str> = paths.iter().map(|entry| entry.path).collect();
     let report =
         manager_platform::personal_data::move_personal_data_to_trash(&home, &relative, &trash);
     for path in &report.trashed {
