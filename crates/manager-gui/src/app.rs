@@ -65,15 +65,25 @@ pub(crate) fn platform_for(execution: ExecutionMode) -> ClientPlatform {
 /// manifest declares, so every screen keeps working and every plan fails with
 /// "this component ships nothing for this host" instead of naming packages
 /// built for a release the machine is not running.
+#[cfg(test)]
 pub(crate) fn probe_manager(
     catalog: better_core::manifest::ComponentCatalog,
     platform: &dyn SystemCapabilities,
 ) -> (Manager, Option<AppError>) {
+    let (manager, error) = probe_manager_explained(catalog, platform);
+    (manager, error.map(|(error, _)| error))
+}
+
+/// `probe_manager`, with why the host could not be identified.
+fn probe_manager_explained(
+    catalog: better_core::manifest::ComponentCatalog,
+    platform: &dyn SystemCapabilities,
+) -> (Manager, Option<(AppError, String)>) {
     match Manager::probe(catalog.clone(), platform) {
         Ok(manager) => (manager, None),
-        Err(_) => (
+        Err(error) => (
             Manager::new(catalog, SystemProfile::unidentified()),
-            Some(AppError::UnsupportedHost),
+            Some((AppError::UnsupportedHost, error_chain(&error))),
         ),
     }
 }
@@ -139,6 +149,9 @@ pub(crate) struct ManagerApp {
     /// 0.2.15") until the next change starts.
     pub(crate) finished_plan: Option<TransactionPlan>,
     pub(crate) planning_error: Option<AppError>,
+    /// What went wrong behind `planning_error`, verbatim, for the error
+    /// bar's details: the error and its causes. Empty when there is none.
+    pub(crate) error_details: String,
     /// Whether this window simulates transactions or actually performs them.
     pub(crate) execution: ExecutionMode,
     /// The Defaults section's own state, read and changed through
@@ -168,6 +181,11 @@ pub(crate) struct ManagerApp {
     /// when the window last reconciled. Shown by the doctor, managed by
     /// nothing (ticket 69).
     pub(crate) unorderable: Vec<DoctorCheck>,
+    /// Companion packages installed components are missing, the privileged
+    /// service's generation, and what its handoff last wrote (ticket 124),
+    /// read with the reconciliation and again when a page that shows them
+    /// opens. A demo window reads none of them.
+    pub(crate) service: ServiceFacts,
     /// What the privileged service last said about dpkg's own record. `None`
     /// until it has been asked, and in a demo window, which never asks.
     pub(crate) package_system: Option<PackageSystemState>,
@@ -214,6 +232,33 @@ pub(crate) enum AppError {
     /// honest screen: the alternative was a plan aimed at Ubuntu 24.04 amd64
     /// whatever the host actually was.
     UnsupportedHost,
+    /// A change was started and the privileged service could not be
+    /// reached, so nothing was changed.
+    ServiceUnavailable,
+}
+
+/// An error and its causes, one per line, as an error bar's details show
+/// them.
+pub(crate) fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut details = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        details.push_str("\nCaused by: ");
+        details.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    details
+}
+
+/// Whether the change that just ended did what it set out to: its last
+/// record is a success. A cancellation or a failure is not.
+pub(crate) fn ended_in_success(state: &ManagerState) -> bool {
+    state.activity.last().is_some_and(|record| {
+        matches!(
+            record.kind,
+            manager_core::ActivityKind::Success | manager_core::ActivityKind::RecoverySuccess
+        )
+    })
 }
 
 impl ManagerApp {
@@ -230,18 +275,36 @@ impl ManagerApp {
         // thread below, so a slow or absent network never delays the window.
         let (catalog, catalog_status) = start_catalog(&catalog_store);
         let execution = default_execution_mode();
-        let (manager, host_error) = probe_manager(catalog, &platform_for(execution));
-        let (state, planning_error) = match store.load() {
-            Ok(outcome) if manager.validate_state(&outcome.state).is_ok() => (
-                outcome.state,
-                outcome.recovered_corrupt_state.map(|_| AppError::Storage),
+        let (manager, host_error) = probe_manager_explained(catalog, &platform_for(execution));
+        let (state, planning_error, error_details) = match store.load() {
+            Ok(outcome) => match manager.validate_state(&outcome.state) {
+                Ok(()) => match outcome.recovered_corrupt_state {
+                    Some(moved) => (
+                        outcome.state,
+                        Some(AppError::Storage),
+                        format!("The unreadable state file was moved to {}", moved.display()),
+                    ),
+                    None => (outcome.state, None, String::new()),
+                },
+                Err(error) => (
+                    ManagerState::default(),
+                    Some(AppError::Storage),
+                    error_chain(&error),
+                ),
+            },
+            Err(error) => (
+                ManagerState::default(),
+                Some(AppError::Storage),
+                error_chain(&error),
             ),
-            Ok(_) | Err(_) => (ManagerState::default(), Some(AppError::Storage)),
         };
         // An unidentified host outranks a storage problem: it is why nothing
         // on this machine can be planned at all, and the state file is beside
         // the point until it is resolved.
-        let planning_error = host_error.or(planning_error);
+        let (planning_error, error_details) = match host_error {
+            Some((error, details)) => (Some(error), details),
+            None => (planning_error, error_details),
+        };
         let locale = locale_from_stored(state.settings.locale);
         appearance_of(state.settings.theme).apply_and_follow(window, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(copy(locale).search));
@@ -293,6 +356,7 @@ impl ManagerApp {
             store,
             finished_plan: None,
             planning_error,
+            error_details,
             execution,
             defaults: DefaultsState::default(),
             catalog_store,
@@ -320,6 +384,7 @@ impl ManagerApp {
             doctor_checked_at: None,
             notes_open: Default::default(),
             unorderable: Vec::new(),
+            service: ServiceFacts::default(),
             package_system: None,
             package_system_task: None,
             repair_task: None,
@@ -553,6 +618,7 @@ impl ManagerApp {
             .manager
             .unorderable_host_checks(&self.state, &DpkgProbe)
             .unwrap_or_default();
+        self.read_service_facts();
         self.heal_user_units(cx);
     }
 
@@ -646,7 +712,7 @@ impl ManagerApp {
                 self.commit_state(candidate);
             }
             Ok(_) => {}
-            Err(_) => self.planning_error = Some(AppError::Planning),
+            Err(error) => self.fail(AppError::Planning, error_chain(&error)),
         }
         cx.notify();
     }
@@ -801,8 +867,8 @@ impl ManagerApp {
                 }
                 true
             }
-            Err(_) => {
-                self.planning_error = Some(AppError::Storage);
+            Err(error) => {
+                self.fail(AppError::Storage, error_chain(&error));
                 false
             }
         }
@@ -899,6 +965,9 @@ impl ManagerApp {
         // shown: either can change behind the window's back.
         if page == Page::WindowAttention {
             self.refresh_window_attention(cx);
+        }
+        if matches!(page, Page::Updates | Page::Health | Page::WindowAttention) {
+            self.read_service_facts();
         }
         // Keep awake reads the service again whenever it is shown, and opens
         // the time dialog when `keep-awake/until` asked for it.
@@ -1014,7 +1083,7 @@ impl ManagerApp {
         match self.manager.plan_all_in_mode(&self.state, self.execution) {
             Ok(plan) if !plan.is_empty() => self.begin_plan(plan, cx),
             Ok(_) => cx.notify(),
-            Err(_) => self.show_planning_error(cx),
+            Err(error) => self.show_planning_error(&error, cx),
         }
     }
 
@@ -1084,6 +1153,17 @@ impl ManagerApp {
         }
     }
 
+    /// Whether a transaction would replace this application's own package.
+    /// Adding its missing companions hands its own package over unchanged,
+    /// so Better Manager does not reopen (ticket 124).
+    pub(crate) fn updates_the_manager(steps: &[PlanStep]) -> bool {
+        steps.iter().any(|step| {
+            manager_core::is_self_component(&step.component)
+                && step.operation.mutates_component()
+                && step.operation != DesiredOperation::AddCompanions
+        })
+    }
+
     /// Plans one operation and starts it at once.
     pub(crate) fn start_operation(
         &mut self,
@@ -1096,9 +1176,9 @@ impl ManagerApp {
         }
         match self.plan_operation(id, operation) {
             Ok(plan) => self.begin_plan(plan, cx),
-            Err(_) => {
+            Err(error) => {
                 self.remove_data_for = None;
-                self.show_planning_error(cx);
+                self.show_planning_error(&error, cx);
             }
         }
     }
@@ -1154,9 +1234,9 @@ impl ManagerApp {
                 }
                 cx.notify();
             }
-            Err(_) => {
+            Err(error) => {
                 self.remove_data_for = None;
-                self.show_planning_error(cx);
+                self.show_planning_error(&error, cx);
             }
         }
     }
@@ -1198,13 +1278,18 @@ impl ManagerApp {
             let downloader = HttpDownloader::new(ArtifactCache::from_default_path());
             let executor = match DbusPrivilegedExecutor::connect() {
                 Ok(executor) => executor,
-                Err(_) => {
+                Err(error) => {
                     // Nothing was applied, so abandoning is honest here.
                     let _ = manager.cancel(&mut state);
                     let _ = store.save(&state);
                     let _ = sender
                         .send(crate::runner_end::WorkerEvent::Runner(
                             RunnerEvent::StateSaved(Box::new(state)),
+                        ))
+                        .await;
+                    let _ = sender
+                        .send(crate::runner_end::WorkerEvent::ServiceUnavailable(
+                            error_chain(&error),
                         ))
                         .await;
                     return;
@@ -1232,6 +1317,10 @@ impl ManagerApp {
                 let applied = this.update(cx, |app, cx| match event {
                     crate::runner_end::WorkerEvent::Runner(event) => {
                         app.apply_runner_event(event, cx)
+                    }
+                    crate::runner_end::WorkerEvent::ServiceUnavailable(details) => {
+                        app.fail(AppError::ServiceUnavailable, details);
+                        cx.notify();
                     }
                     crate::runner_end::WorkerEvent::Ended => app.runner_ended(cx),
                 });
@@ -1291,9 +1380,12 @@ impl ManagerApp {
                     .as_ref()
                     .map(|active| active.plan.clone());
                 self.state = *state;
-                // The change is over: its plan is what the rows describe now.
+                // The change is over: its plan is what the rows describe now,
+                // but only when it did what it set out to. A cancelled change,
+                // or one that never reached the service, changed nothing, and
+                // a row saying "Updated" over it would be false.
                 if self.state.active_operation.is_none() && plan.is_some() {
-                    self.finished_plan = plan;
+                    self.finished_plan = plan.filter(|_| ended_in_success(&self.state));
                 }
                 cx.notify();
             }
@@ -1309,6 +1401,12 @@ impl ManagerApp {
     /// person needs to know whether dpkg is the reason, before they retry;
     /// a removal that succeeded is when the person's data may go.
     fn change_finished(&mut self, progress: &OperationProgress, cx: &mut Context<Self>) {
+        // The service and the adapter may have just arrived (ticket 124);
+        // the window-attention page then says whether to sign out.
+        self.read_service_facts();
+        if self.page == Page::WindowAttention {
+            self.refresh_window_attention(cx);
+        }
         match progress {
             OperationProgress::Finished { operation } => {
                 if *operation == DesiredOperation::Remove {
@@ -1389,9 +1487,9 @@ impl ManagerApp {
             .advance_mock(&mut candidate, MockOutcome::Succeed)
         {
             Ok(progress) => progress,
-            Err(_) => {
+            Err(error) => {
                 self.demo_task = None;
-                self.show_planning_error(cx);
+                self.show_planning_error(&error, cx);
                 return false;
             }
         };
@@ -1426,7 +1524,7 @@ impl ManagerApp {
                 self.commit_state(candidate);
                 cx.notify();
             }
-            Err(_) => self.show_planning_error(cx),
+            Err(error) => self.show_planning_error(&error, cx),
         }
     }
 
@@ -1592,7 +1690,93 @@ impl ManagerApp {
     pub(crate) fn doctor_checks(&self) -> Vec<DoctorCheck> {
         let mut checks = self.manager.doctor(&self.state).unwrap_or_default();
         checks.extend(self.unorderable.iter().cloned());
+        manager_core::merge_companion_findings(&mut checks, &self.service.gaps);
         checks
+    }
+
+    /// Reads dpkg and the handoff's state file. Read-only host queries, so
+    /// they need no privilege; a demo window reads nothing.
+    pub(crate) fn read_service_facts(&mut self) {
+        if self.execution == ExecutionMode::Mock {
+            return;
+        }
+        use manager_platform::dpkg::PackageStateProbe;
+        self.service = ServiceFacts {
+            gaps: self
+                .manager
+                .companion_gaps(&self.state, &DpkgProbe)
+                .unwrap_or_default(),
+            generation: Some(manager_core::exec::ServiceGeneration::of(
+                DpkgProbe
+                    .installed_version(manager_core::exec::SERVICE_PACKAGE)
+                    .ok()
+                    .flatten()
+                    .as_deref(),
+            )),
+            handoff: std::fs::read_to_string(manager_core::exec::HANDOFF_STATUS_PATH)
+                .ok()
+                .and_then(|text| manager_core::exec::HandoffStatus::parse(&text)),
+        };
+    }
+
+    /// What the Updates screen says about the privileged service.
+    pub(crate) fn service_notice(&self) -> Option<crate::model::ServiceNotice> {
+        let generation = self.service.generation?;
+        let manager_id = ComponentId::new(manager_core::SELF_COMPONENT_ID).ok()?;
+        let manager_update = self
+            .component_by_id(&manager_id)
+            .is_some_and(|component| component.state == ComponentStatus::UpdateAvailable);
+        let manager_gaps: Vec<_> = self
+            .service
+            .gaps
+            .iter()
+            .filter(|gap| gap.component == manager_id)
+            .cloned()
+            .collect();
+        // What the update would carry beside the service.
+        let waiting = if manager_update {
+            self.manager
+                .catalog()
+                .get(&manager_id)
+                .into_iter()
+                .flat_map(|manifest| manifest.artifacts.iter())
+                .filter(|artifact| {
+                    artifact.release == self.manager.profile().release
+                        && artifact
+                            .architecture
+                            .eq_ignore_ascii_case(&self.manager.profile().architecture)
+                })
+                .flat_map(|artifact| artifact.companions.iter())
+                .map(|companion| companion.package.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        crate::model::service_notice(
+            self.locale,
+            generation,
+            &manager_gaps,
+            manager_update,
+            &waiting,
+            self.service.handoff.as_ref(),
+        )
+    }
+
+    /// The notice's button: Better Manager's own update when it has one, or
+    /// the missing companions at its current version.
+    pub(crate) fn start_service_update(
+        &mut self,
+        action: crate::model::ServiceAction,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(id) = ComponentId::new(manager_core::SELF_COMPONENT_ID) else {
+            return;
+        };
+        let operation = match action {
+            crate::model::ServiceAction::UpdateManager => DesiredOperation::Update,
+            crate::model::ServiceAction::AddCompanions => DesiredOperation::AddCompanions,
+        };
+        self.start_operation(&id, operation, cx);
     }
 
     pub(crate) fn activity_matches(&self, entry: &ActivityRecord) -> bool {
@@ -1669,6 +1853,8 @@ impl ManagerApp {
             Some(other) if plan_rejection_is_host_mismatch(other, detail) => {
                 c.evidence_plan_rejected
             }
+            Some("companion.missing") => c.evidence_companion_missing,
+            Some("daemon.outdated") => c.evidence_daemon_outdated,
             Some(other) if other.starts_with("daemon.") => c.evidence_daemon_refused,
             _ => c.none,
         }
@@ -1684,7 +1870,14 @@ impl ManagerApp {
             DesiredOperation::Verify => c.health_check_label,
             DesiredOperation::Restore => c.restore_previous,
             DesiredOperation::Remove => c.remove,
+            DesiredOperation::AddCompanions => c.add_companions,
         }
+    }
+
+    /// Shows `error` with what went wrong behind it.
+    pub(crate) fn fail(&mut self, error: AppError, details: String) {
+        self.planning_error = Some(error);
+        self.error_details = details;
     }
 
     pub(crate) fn error_message(&self) -> &'static str {
@@ -1693,14 +1886,15 @@ impl ManagerApp {
             Some(AppError::Planning) => c.planning_failed_detail,
             Some(AppError::Storage) => c.storage_error,
             Some(AppError::UnsupportedHost) => c.unsupported_host,
+            Some(AppError::ServiceUnavailable) => c.service_unavailable_detail,
             None => c.none,
         }
     }
 
     /// A change could not be planned or started. Nothing changed; the page
     /// the person is on says so.
-    fn show_planning_error(&mut self, cx: &mut Context<Self>) {
-        self.planning_error = Some(AppError::Planning);
+    fn show_planning_error(&mut self, error: &dyn std::error::Error, cx: &mut Context<Self>) {
+        self.fail(AppError::Planning, error_chain(error));
         cx.notify();
     }
 }
@@ -1956,4 +2150,13 @@ mod requested_component_tests {
         assert_eq!(appearance_of(StoredTheme::Light), Appearance::Light);
         assert_eq!(appearance_of(StoredTheme::System), Appearance::System);
     }
+}
+
+/// What the window last read about the privileged service (ticket 124).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ServiceFacts {
+    pub(crate) gaps: Vec<manager_core::CompanionGap>,
+    /// `None` until read, and always in a demo window.
+    pub(crate) generation: Option<manager_core::exec::ServiceGeneration>,
+    pub(crate) handoff: Option<manager_core::exec::HandoffStatus>,
 }

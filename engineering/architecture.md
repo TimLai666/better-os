@@ -556,4 +556,5 @@ verification contract.
 - [ADR 0025: Better Launcher is one instance on org.betteros.Launcher1](decisions/0025-launcher-single-instance.md)
 - [ADR 0026: The Ready to unplug rule and its two thresholds](decisions/0026-storage-readiness-rule.md)
 - [ADR 0027: Better Storage stays unprivileged](decisions/0027-storage-privileged-boundary.md)
+- [ADR 0028: The privileged service is upgraded outside its own unit](decisions/0028-daemon-upgrades-outside-its-own-unit.md)
 - [ADR 0030: Touchpad scroll speed through an evdev/uinput pass-through](decisions/0030-touchpad-scroll-passthrough.md)

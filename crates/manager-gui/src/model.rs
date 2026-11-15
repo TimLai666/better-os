@@ -494,3 +494,135 @@ pub(crate) fn repair_result_line(
         RepairResult::Failed { .. } => c.repair_result_failed,
     }
 }
+
+/// What the Updates screen offers about the privileged service (ticket 124,
+/// ADR 0028).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ServiceNotice {
+    pub(crate) title: &'static str,
+    pub(crate) body: String,
+    pub(crate) action: Option<ServiceAction>,
+    /// The handoff recorded a failure.
+    pub(crate) failed: bool,
+}
+
+/// The one button the notice carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ServiceAction {
+    /// Better Manager's own update carries the service (and, for a service of
+    /// 0.2.12 or older, the handoff).
+    UpdateManager,
+    /// Better Manager is current; the service goes as a missing companion.
+    AddCompanions,
+}
+
+/// The notice, from what dpkg says about the service, what Better Manager is
+/// missing, whether Better Manager itself has an update, and what the handoff
+/// last wrote. `None` when the service needs nothing.
+pub(crate) fn service_notice(
+    locale: Locale,
+    generation: manager_core::exec::ServiceGeneration,
+    manager_gaps: &[manager_core::CompanionGap],
+    manager_update: bool,
+    waiting_companions: &[String],
+    handoff: Option<&manager_core::exec::HandoffStatus>,
+) -> Option<ServiceNotice> {
+    use manager_core::exec::{HandoffStatus, SERVICE_PACKAGE, ServiceGeneration};
+    let c = copy(locale);
+    if let Some(status) = handoff
+        && status.in_progress()
+    {
+        return Some(ServiceNotice {
+            title: c.service_update_running_title,
+            body: c.service_update_running_body.to_string(),
+            action: None,
+            failed: false,
+        });
+    }
+    let service_gap = manager_gaps
+        .iter()
+        .any(|gap| gap.package == SERVICE_PACKAGE);
+    // An update of Better Manager carries the service as its own step to any
+    // service that takes it, and only an old one needs saying.
+    let old_service = matches!(
+        generation,
+        ServiceGeneration::Legacy | ServiceGeneration::Stepwise
+    );
+    if !service_gap && !(manager_update && old_service) {
+        return None;
+    }
+    let mut packages: Vec<String> = manager_gaps
+        .iter()
+        .map(|gap| gap.package.clone())
+        .chain(waiting_companions.iter().cloned())
+        .filter(|package| package != SERVICE_PACKAGE)
+        .collect();
+    packages.dedup();
+    let packages = if packages.is_empty() {
+        SERVICE_PACKAGE.to_string()
+    } else {
+        packages.join(", ")
+    };
+    let (body, action) = match (generation, manager_update) {
+        (ServiceGeneration::Legacy, true) => (
+            c.service_update_handoff_body,
+            Some(ServiceAction::UpdateManager),
+        ),
+        // Better Manager is current: the missing adapter carries the handoff
+        // again (ADR 0028). With nothing missing, nothing can.
+        (ServiceGeneration::Legacy, false)
+            if manager_gaps.iter().any(|gap| {
+                gap.package == manager_core::exec::HANDOFF_CARRIER
+                    && manager_core::exec::carries_handoff(&gap.wanted_version)
+            }) =>
+        {
+            (
+                c.service_update_retry_body,
+                Some(ServiceAction::AddCompanions),
+            )
+        }
+        (ServiceGeneration::Legacy, false) => (c.service_update_blocked_body, None),
+        (_, true) => (c.service_update_body, Some(ServiceAction::UpdateManager)),
+        (_, false) => (c.service_update_body, Some(ServiceAction::AddCompanions)),
+    };
+    let body = body.replace("{packages}", &packages);
+    Some(match handoff {
+        Some(HandoffStatus::Failed { reason }) => ServiceNotice {
+            title: c.service_update_failed_title,
+            body: format!("{reason}\n{body}"),
+            action,
+            failed: true,
+        },
+        _ => ServiceNotice {
+            title: c.service_update_title,
+            body,
+            action,
+            failed: false,
+        },
+    })
+}
+
+/// The sentence under a missing-companion doctor finding. `None` for every
+/// other kind of check.
+pub(crate) fn companion_detail(
+    locale: Locale,
+    check: &manager_core::DoctorCheck,
+) -> Option<String> {
+    if check.kind != manager_core::DoctorCheckKind::CompanionMissing {
+        return None;
+    }
+    let c = copy(locale);
+    let component = check.component.as_ref()?;
+    let package = check.package.as_deref()?;
+    Some(match &check.host_version {
+        Some(version) => c
+            .companion_older_detail
+            .replace("{component}", component.as_str())
+            .replace("{package}", package)
+            .replace("{version}", version),
+        None => c
+            .companion_missing_detail
+            .replace("{component}", component.as_str())
+            .replace("{package}", package),
+    })
+}

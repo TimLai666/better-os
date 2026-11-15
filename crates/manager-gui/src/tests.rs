@@ -493,14 +493,31 @@ mod component_page {
         let self_plan = manager
             .plan(&state, &self_id, DesiredOperation::Update)
             .expect("the manager must be updatable");
-        assert!(
-            self_plan
-                .steps()
-                .iter()
-                .any(|step| manager_core::is_self_component(&step.component))
+        assert!(crate::app::ManagerApp::updates_the_manager(
+            self_plan.steps()
+        ));
+
+        // Adding the parts Better Manager is missing leaves its own program
+        // as it is: no "this updates Better Manager" and no restart.
+        let version = manager
+            .manifests()
+            .find(|manifest| manifest.id == self_id)
+            .unwrap()
+            .version
+            .to_string();
+        state.set_installed(self_id.clone(), version, true);
+        let companions = manager
+            .plan(&state, &self_id, DesiredOperation::AddCompanions)
+            .expect("the shipped manifest names companions");
+        assert!(!crate::app::ManagerApp::updates_the_manager(
+            companions.steps()
+        ));
+        assert_eq!(
+            companions.restart_requirement(),
+            manager_core::RestartRequirement::NotRequired
         );
         // The Updates page decides its notice the same way.
-        assert!(include_str!("render_apps.rs").contains("is_self_component(&component.core_id)"));
+        assert!(include_str!("render_apps.rs").contains("Self::updates_the_manager("));
     }
 
     #[test]
@@ -2138,6 +2155,7 @@ mod unorderable_host_versions {
             status: DoctorCheckStatus::Warning,
             component: Some(ComponentId::new("better-monitor").unwrap()),
             host_version: Some("1:0.2.8~rc1-1".to_string()),
+            package: None,
         }
     }
 
@@ -2400,6 +2418,169 @@ mod single_instance {
     }
 }
 
+/// Ticket 124: what the Updates screen says about the privileged service.
+mod service_notice {
+    use crate::i18n::Locale;
+    use crate::model::{ServiceAction, companion_detail, service_notice};
+    use better_core::ComponentId;
+    use manager_core::exec::{HandoffStatus, SERVICE_PACKAGE, ServiceGeneration};
+    use manager_core::{CompanionGap, DoctorCheck, DoctorCheckKind, DoctorCheckStatus};
+
+    fn gap(package: &str, host: Option<&str>) -> CompanionGap {
+        CompanionGap {
+            component: ComponentId::new("better-manager").unwrap(),
+            package: package.to_string(),
+            wanted_version: "0.2.16".to_string(),
+            host_version: host.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn an_old_service_behind_a_manager_update_needs_the_service_first() {
+        let notice = service_notice(
+            Locale::ZhTw,
+            ServiceGeneration::Legacy,
+            &[],
+            true,
+            &[
+                "better-shell-adapter".to_string(),
+                SERVICE_PACKAGE.to_string(),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(notice.title, "需要先更新系統服務");
+        assert_eq!(notice.action, Some(ServiceAction::UpdateManager));
+        assert!(notice.body.contains("better-shell-adapter"));
+        assert!(notice.body.contains("一次管理員密碼"));
+        assert!(!notice.body.contains("sudo"), "no terminal command");
+    }
+
+    #[test]
+    fn a_current_manager_with_a_service_behind_adds_it_as_a_companion() {
+        let notice = service_notice(
+            Locale::EnUs,
+            ServiceGeneration::Companions,
+            &[gap(SERVICE_PACKAGE, Some("0.2.15"))],
+            false,
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(notice.action, Some(ServiceAction::AddCompanions));
+    }
+
+    /// A failed handoff with Better Manager current is retried through the
+    /// missing adapter, with the same one prompt (ADR 0028).
+    #[test]
+    fn a_failed_handoff_is_retried_through_the_missing_adapter() {
+        let notice = service_notice(
+            Locale::ZhTw,
+            ServiceGeneration::Legacy,
+            &[
+                gap(SERVICE_PACKAGE, Some("0.2.9")),
+                gap("better-shell-adapter", None),
+            ],
+            false,
+            &[],
+            Some(&HandoffStatus::Failed {
+                reason: "apt-get could not install the new service".to_string(),
+            }),
+        )
+        .unwrap();
+        assert!(notice.failed);
+        assert_eq!(notice.action, Some(ServiceAction::AddCompanions));
+        assert!(notice.body.contains("從舊服務外面"));
+
+        // A Better Manager from before the handoff cannot carry it.
+        let mut older = gap("better-shell-adapter", None);
+        older.wanted_version = "0.2.15".to_string();
+        let blocked = service_notice(
+            Locale::EnUs,
+            ServiceGeneration::Legacy,
+            &[gap(SERVICE_PACKAGE, Some("0.2.9")), older],
+            false,
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(blocked.action, None);
+    }
+
+    #[test]
+    fn a_legacy_service_with_nothing_to_ride_says_so_and_offers_no_button() {
+        let notice = service_notice(
+            Locale::EnUs,
+            ServiceGeneration::Legacy,
+            &[gap(SERVICE_PACKAGE, Some("0.2.9"))],
+            false,
+            &[],
+            Some(&HandoffStatus::Failed {
+                reason: "the old service did not go idle".to_string(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(notice.action, None);
+        assert!(notice.failed);
+        assert!(notice.body.starts_with("the old service did not go idle"));
+    }
+
+    #[test]
+    fn a_running_handoff_is_shown_and_nothing_is_offered() {
+        let notice = service_notice(
+            Locale::EnUs,
+            ServiceGeneration::Legacy,
+            &[gap(SERVICE_PACKAGE, Some("0.2.9"))],
+            true,
+            &[],
+            Some(&HandoffStatus::Installing),
+        )
+        .unwrap();
+        assert_eq!(notice.action, None);
+        assert_eq!(notice.title, "Updating the system service");
+    }
+
+    #[test]
+    fn a_current_service_needs_no_notice() {
+        assert_eq!(
+            service_notice(
+                Locale::EnUs,
+                ServiceGeneration::SelfUpgrading,
+                &[gap("better-shell-adapter", None)],
+                true,
+                &[],
+                None,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_missing_companion_finding_names_the_package() {
+        let check = DoctorCheck {
+            kind: DoctorCheckKind::CompanionMissing,
+            status: DoctorCheckStatus::Failed,
+            component: Some(ComponentId::new("better-manager").unwrap()),
+            host_version: None,
+            package: Some("better-shell-adapter".to_string()),
+        };
+        assert_eq!(
+            companion_detail(Locale::EnUs, &check).as_deref(),
+            Some("better-manager needs better-shell-adapter, which is not installed.")
+        );
+        let older = DoctorCheck {
+            host_version: Some("0.2.9".to_string()),
+            package: Some(SERVICE_PACKAGE.to_string()),
+            ..check
+        };
+        assert!(
+            companion_detail(Locale::ZhTw, &older)
+                .unwrap()
+                .contains("0.2.9")
+        );
+    }
+}
+
 /// Ticket 46: a check that really goes to the network and fails says which
 /// list is on screen instead, and claims no count. The fetch is real: an
 /// HTTPS request to a loopback port nothing listens on, refused at once,
@@ -2435,5 +2616,122 @@ mod failed_real_fetch {
             copy(Locale::EnUs).update_check_failed,
             copy(Locale::ZhTw).update_check_failed
         );
+    }
+}
+
+/// Ticket 124 on ticket 85's flow: a change the service never received was
+/// shown as finished ("已補上缺少的部分") because the window took any end of
+/// a change as its result. Only a change whose last record is a success
+/// leaves a result on its rows; a cancellation and a missing service do not.
+mod finished_only_on_success {
+    use crate::app::ended_in_success;
+    use better_core::ComponentId;
+    use manager_core::{
+        ActivityKind, ActivityRecord, DesiredOperation, ManagerState, OperationStage,
+    };
+
+    fn with(kind: ActivityKind, evidence: &str) -> ManagerState {
+        let mut state = ManagerState::default();
+        state.activity.push(ActivityRecord {
+            sequence: 1,
+            kind,
+            component: Some(ComponentId::new("better-manager").unwrap()),
+            operation: Some(DesiredOperation::AddCompanions),
+            stage: Some(OperationStage::Downloading),
+            evidence: Some(evidence.to_string()),
+            recorded_at_unix_seconds: None,
+        });
+        state
+    }
+
+    #[test]
+    fn a_cancelled_or_failed_change_has_no_result() {
+        assert!(!ended_in_success(&with(
+            ActivityKind::Warning,
+            "mock_operation_cancelled"
+        )));
+        assert!(!ended_in_success(&with(
+            ActivityKind::Failure,
+            "download_failed"
+        )));
+        assert!(!ended_in_success(&ManagerState::default()));
+        assert!(ended_in_success(&with(
+            ActivityKind::Success,
+            "mock_operation_finished"
+        )));
+        assert!(ended_in_success(&with(
+            ActivityKind::RecoverySuccess,
+            "mock_restore_rechecked"
+        )));
+    }
+
+    #[test]
+    fn no_service_says_so_and_nothing_reads_as_done() {
+        let app = include_str!("app.rs");
+        assert!(
+            app.contains("self.finished_plan = plan.filter(|_| ended_in_success(&self.state));")
+        );
+        let unreachable = app
+            .split("Err(error) => {\n                    // Nothing was applied")
+            .nth(1)
+            .unwrap()
+            .split("return;")
+            .next()
+            .unwrap();
+        assert!(unreachable.contains("WorkerEvent::ServiceUnavailable"));
+        assert!(include_str!("render.rs").contains("AppError::ServiceUnavailable"));
+    }
+}
+
+/// Ticket 124: Better Manager's error banners carry what went wrong, so
+/// "Show details" never opens an empty box.
+mod error_details {
+    use crate::app::error_chain;
+
+    #[derive(Debug)]
+    struct Outer(std::io::Error);
+    impl std::fmt::Display for Outer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("could not reach the service")
+        }
+    }
+    impl std::error::Error for Outer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    #[test]
+    fn the_details_carry_the_whole_chain() {
+        let error = Outer(std::io::Error::other("connection refused"));
+        assert_eq!(
+            error_chain(&error),
+            "could not reach the service\nCaused by: connection refused"
+        );
+    }
+
+    #[test]
+    fn no_banner_passes_empty_details() {
+        for (name, source) in [
+            ("render.rs", include_str!("render.rs")),
+            ("render_apps.rs", include_str!("render_apps.rs")),
+        ] {
+            assert!(
+                !source.contains("ErrorReport::new(self.error_message(), String::new())")
+                    && !source
+                        .contains("ErrorReport::new(c.planning_failed_detail, String::new())"),
+                "{name}"
+            );
+        }
+        let app = include_str!("app.rs");
+        // Every way into an error records why.
+        assert_eq!(
+            app.matches("self.planning_error = Some(").count(),
+            1,
+            "only `fail` sets an error, with its details"
+        );
+        assert!(app.contains(
+            "WorkerEvent::ServiceUnavailable(\n                            error_chain(&error),"
+        ));
     }
 }

@@ -207,6 +207,10 @@ pub enum DesiredOperation {
     Verify,
     Restore,
     Remove,
+    /// Installs the companion packages (ADR 0018, ADR 0028) an installed
+    /// component is missing, at the component's own installed version. The
+    /// component's own package is handed over again and is unchanged.
+    AddCompanions,
 }
 
 impl DesiredOperation {
@@ -218,7 +222,10 @@ impl DesiredOperation {
     /// disabling, verifying, and removing all work from what is already
     /// installed.
     pub fn uses_artifact(self) -> bool {
-        matches!(self, Self::Install | Self::Update | Self::Restore)
+        matches!(
+            self,
+            Self::Install | Self::Update | Self::Restore | Self::AddCompanions
+        )
     }
 }
 
@@ -513,6 +520,10 @@ pub struct PlanStep {
     /// at them.
     #[serde(default)]
     pub leaves_enabled: bool,
+    /// The companion packages a Verify step checks beside the component's
+    /// own: an installed component missing one is not healthy (ADR 0028).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verify_companions: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1035,6 +1046,10 @@ pub enum DoctorCheckKind {
     /// dpkg holds this component, nothing records it, and its version cannot
     /// be ordered, so the manager does not manage it (ticket 69).
     UnorderableHostVersion,
+    /// An installed component's companion package (ADR 0018, ADR 0028) that
+    /// dpkg does not have at the component's version. `package` names it and
+    /// `host_version` is what dpkg has, if anything.
+    CompanionMissing,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1050,6 +1065,49 @@ pub struct DoctorCheck {
     pub status: DoctorCheckStatus,
     pub component: Option<ComponentId>,
     /// The version exactly as dpkg reports it, for a check about one.
+    pub host_version: Option<String>,
+    /// The package a check is about when it is not the component's own: a
+    /// companion.
+    pub package: Option<String>,
+}
+
+/// One gap as a Doctor finding.
+fn companion_finding(gap: &CompanionGap) -> DoctorCheck {
+    DoctorCheck {
+        kind: DoctorCheckKind::CompanionMissing,
+        status: DoctorCheckStatus::Failed,
+        component: Some(gap.component.clone()),
+        host_version: gap.host_version.clone(),
+        package: Some(gap.package.clone()),
+    }
+}
+
+/// Adds the companion findings to a Doctor report: first, so the reason is
+/// above what passed, and with the component's own health check failed,
+/// because a component missing a companion is not healthy whatever its
+/// record says (ticket 124).
+pub fn merge_companion_findings(checks: &mut Vec<DoctorCheck>, gaps: &[CompanionGap]) {
+    for check in checks.iter_mut() {
+        if check.kind == DoctorCheckKind::ComponentHealth
+            && gaps
+                .iter()
+                .any(|gap| Some(&gap.component) == check.component.as_ref())
+        {
+            check.status = DoctorCheckStatus::Failed;
+        }
+    }
+    checks.splice(0..0, gaps.iter().map(companion_finding));
+}
+
+/// A companion package an installed component needs and dpkg does not have
+/// at the component's version.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompanionGap {
+    pub component: ComponentId,
+    pub package: String,
+    /// The component's installed version, which the companion has to match.
+    pub wanted_version: String,
+    /// What dpkg has, `None` when the package is not installed.
     pub host_version: Option<String>,
 }
 
@@ -1090,6 +1148,10 @@ pub enum ManagerError {
     AlreadyDisabled(ComponentId),
     #[error("manager.error.no_restore_available:{0}")]
     NoRestoreAvailable(ComponentId),
+    /// The component is not installed at the catalog's version, or its
+    /// artifact carries no companion package.
+    #[error("manager.error.no_companions_to_add:{0}")]
+    NoCompanionsToAdd(ComponentId),
     /// The manager was asked to remove itself.
     #[error("manager.error.cannot_remove_self:{0}")]
     CannotRemoveSelf(ComponentId),
@@ -1841,10 +1903,71 @@ impl Manager {
                     status: DoctorCheckStatus::Warning,
                     component: Some(manifest.id.clone()),
                     host_version: Some(host),
+                    package: None,
                 });
             }
         }
         Ok(checks)
+    }
+
+    /// Every companion an installed component is missing on this host.
+    ///
+    /// A companion travels with the artifact of the catalog's version, so a
+    /// component installed at another version is an update away from its
+    /// companions and is not reported here: its update carries them. A
+    /// companion counts as present only at exactly the component's version,
+    /// the version it is built and released with.
+    pub fn companion_gaps(
+        &self,
+        state: &ManagerState,
+        probe: &dyn PackageStateProbe,
+    ) -> Result<Vec<CompanionGap>, ManagerError> {
+        self.validate_state(state)?;
+        let mut gaps = Vec::new();
+        for manifest in self.manifests() {
+            let Some(installed) = state
+                .component(&manifest.id)
+                .and_then(|record| record.installed_version.as_deref())
+            else {
+                continue;
+            };
+            if installed != manifest.version.to_string() {
+                continue;
+            }
+            let Some(artifact) = self.artifact_for_profile(manifest) else {
+                continue;
+            };
+            for companion in &artifact.companions {
+                let host = probe
+                    .installed_version(companion.package.as_str())
+                    .map_err(|_| ManagerError::HostUnreadable(manifest.id.clone()))?;
+                let present = host
+                    .as_deref()
+                    .is_some_and(|version| manager_ipc::strip_epoch(version) == installed);
+                if !present {
+                    gaps.push(CompanionGap {
+                        component: manifest.id.clone(),
+                        package: companion.package.to_string(),
+                        wanted_version: installed.to_string(),
+                        host_version: host,
+                    });
+                }
+            }
+        }
+        Ok(gaps)
+    }
+
+    /// [`companion_gaps`](Self::companion_gaps) as Doctor findings.
+    pub fn companion_checks(
+        &self,
+        state: &ManagerState,
+        probe: &dyn PackageStateProbe,
+    ) -> Result<Vec<DoctorCheck>, ManagerError> {
+        Ok(self
+            .companion_gaps(state, probe)?
+            .iter()
+            .map(companion_finding)
+            .collect())
     }
 
     pub fn doctor(&self, state: &ManagerState) -> Result<Vec<DoctorCheck>, ManagerError> {
@@ -1854,6 +1977,7 @@ impl Manager {
             status: DoctorCheckStatus::Passed,
             component: None,
             host_version: None,
+            package: None,
         }];
         for manifest in self.manifests() {
             let compatibility = if self.is_compatible(manifest) {
@@ -1869,6 +1993,7 @@ impl Manager {
                     status: DoctorCheckStatus::Failed,
                     component: Some(manifest.id.clone()),
                     host_version: None,
+                    package: None,
                 });
             }
             checks.push(DoctorCheck {
@@ -1876,6 +2001,7 @@ impl Manager {
                 status: compatibility,
                 component: Some(manifest.id.clone()),
                 host_version: None,
+                package: None,
             });
             let health = match self.status(state, &manifest.id) {
                 Ok(ComponentStatus::Failed) | Ok(ComponentStatus::RestoreAvailable) => {
@@ -1891,6 +2017,7 @@ impl Manager {
                 status: health,
                 component: Some(manifest.id.clone()),
                 host_version: None,
+                package: None,
             });
             if state
                 .component(&manifest.id)
@@ -1902,6 +2029,7 @@ impl Manager {
                     status: DoctorCheckStatus::Passed,
                     component: Some(manifest.id.clone()),
                     host_version: None,
+                    package: None,
                 });
             }
         }
@@ -2054,6 +2182,21 @@ impl Manager {
                     return Err(ManagerError::NoRestoreAvailable(id.clone()));
                 }
             }
+            DesiredOperation::AddCompanions => {
+                // Only for the version the catalog carries: an older one is an
+                // update, which brings its companions with it.
+                let Some(record) = record else {
+                    return Err(ManagerError::NotInstalled(id.clone()));
+                };
+                let current =
+                    record.installed_version.as_deref() == Some(&manifest.version.to_string());
+                let has_companions = self
+                    .artifact_for_profile(manifest)
+                    .is_some_and(|artifact| !artifact.companions.is_empty());
+                if !current || !has_companions {
+                    return Err(ManagerError::NoCompanionsToAdd(id.clone()));
+                }
+            }
         }
 
         steps.push(self.plan_step(state, manifest, operation));
@@ -2187,15 +2330,15 @@ impl Manager {
     ) -> PlanStep {
         let uses_artifact = matches!(
             operation,
-            DesiredOperation::Install | DesiredOperation::Update
+            DesiredOperation::Install | DesiredOperation::Update | DesiredOperation::AddCompanions
         );
         let before_version = state
             .component(&manifest.id)
             .and_then(|record| record.installed_version.clone());
         let after_version = match operation {
-            DesiredOperation::Install | DesiredOperation::Update => {
-                Some(manifest.version.to_string())
-            }
+            DesiredOperation::Install
+            | DesiredOperation::Update
+            | DesiredOperation::AddCompanions => Some(manifest.version.to_string()),
             DesiredOperation::Restore => state
                 .component(&manifest.id)
                 .and_then(|record| record.restore_snapshot.as_ref())
@@ -2217,7 +2360,7 @@ impl Manager {
         let leaves_enabled = match operation {
             DesiredOperation::Install | DesiredOperation::Update | DesiredOperation::Enable => true,
             DesiredOperation::Disable | DesiredOperation::Remove => false,
-            DesiredOperation::Verify => state
+            DesiredOperation::Verify | DesiredOperation::AddCompanions => state
                 .component(&manifest.id)
                 .is_some_and(|record| record.enabled),
             DesiredOperation::Restore => state
@@ -2226,25 +2369,25 @@ impl Manager {
                 .is_some_and(|snapshot| snapshot.enabled),
         };
         let plan_artifact = match operation {
-            DesiredOperation::Install | DesiredOperation::Update => {
-                artifact.map(|artifact| PlanArtifact {
-                    url: Some(artifact.url.clone()),
-                    sha256: artifact.sha256.clone(),
-                    release_asset: artifact.release_asset.clone(),
-                    expected_bytes: artifact.download_size_bytes,
-                    companions: artifact
-                        .companions
-                        .iter()
-                        .map(|companion| PlanCompanion {
-                            package: companion.package.to_string(),
-                            url: Some(companion.url.clone()),
-                            sha256: companion.sha256.clone(),
-                            release_asset: companion.release_asset.clone(),
-                            expected_bytes: companion.download_size_bytes,
-                        })
-                        .collect(),
-                })
-            }
+            DesiredOperation::Install
+            | DesiredOperation::Update
+            | DesiredOperation::AddCompanions => artifact.map(|artifact| PlanArtifact {
+                url: Some(artifact.url.clone()),
+                sha256: artifact.sha256.clone(),
+                release_asset: artifact.release_asset.clone(),
+                expected_bytes: artifact.download_size_bytes,
+                companions: artifact
+                    .companions
+                    .iter()
+                    .map(|companion| PlanCompanion {
+                        package: companion.package.to_string(),
+                        url: Some(companion.url.clone()),
+                        sha256: companion.sha256.clone(),
+                        release_asset: companion.release_asset.clone(),
+                        expected_bytes: companion.download_size_bytes,
+                    })
+                    .collect(),
+            }),
             // A restore reinstalls what was already fetched once, so it names
             // the recorded artifact rather than a URL to fetch again.
             DesiredOperation::Restore => state
@@ -2265,6 +2408,22 @@ impl Manager {
                 }),
             _ => None,
         };
+        let verify_companions = match operation {
+            DesiredOperation::Verify
+                if before_version.as_deref() == Some(&manifest.version.to_string()) =>
+            {
+                artifact
+                    .map(|artifact| {
+                        artifact
+                            .companions
+                            .iter()
+                            .map(|companion| companion.package.to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
         PlanStep {
             component: manifest.id.clone(),
             operation,
@@ -2283,7 +2442,12 @@ impl Manager {
                 Vec::new()
             },
             paths: manifest.paths.clone(),
-            restart_requirement: if operation.mutates_component() {
+            // Adding companions leaves the component's own program as it
+            // was, so its restart requirement does not apply; a companion
+            // that needs a new session says so where it is used.
+            restart_requirement: if operation.mutates_component()
+                && operation != DesiredOperation::AddCompanions
+            {
                 RestartRequirement::from(manifest.restart)
             } else {
                 RestartRequirement::NotRequired
@@ -2309,6 +2473,7 @@ impl Manager {
                     | DesiredOperation::Remove
             ),
             leaves_enabled,
+            verify_companions,
         }
     }
 
@@ -2318,7 +2483,9 @@ impl Manager {
         for step in steps {
             if !matches!(
                 step.operation,
-                DesiredOperation::Install | DesiredOperation::Update
+                DesiredOperation::Install
+                    | DesiredOperation::Update
+                    | DesiredOperation::AddCompanions
             ) {
                 continue;
             }
@@ -2373,7 +2540,7 @@ impl Manager {
                     record.enabled = false;
                     record.health = HealthState::Healthy;
                 }
-                DesiredOperation::Verify => {
+                DesiredOperation::Verify | DesiredOperation::AddCompanions => {
                     record.health = HealthState::Degraded;
                 }
                 DesiredOperation::Restore => {

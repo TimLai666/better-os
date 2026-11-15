@@ -839,28 +839,39 @@ fn a_zip_declaring_a_directory_over_the_fixed_bound_is_refused_before_it_is_read
 
 // --- Jobs -------------------------------------------------------------------
 
+/// Submits `spec` held at its start, asks for `control`, and lets it go, so
+/// the request lands at the job's first checkpoint rather than racing it.
+fn submit_held(
+    engine: &JobEngine,
+    gate: &support::StartGate,
+    spec: JobSpec,
+    control: impl FnOnce(&JobEngine, files_operations::JobId) -> bool,
+) -> files_operations::JobId {
+    gate.close();
+    let id = engine.submit(spec).unwrap().id();
+    assert_eq!(gate.held(), id);
+    assert!(control(engine, id));
+    gate.open();
+    id
+}
+
 #[test]
 fn archiving_pauses_between_chunks_resumes_and_cancels_leaving_nothing() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("big.bin");
     write_pattern(&source, BIG);
     let archive = root.path().join("big.tar.zst");
-    let engine = engine();
+    let (engine, gate) = support::gated_engine();
 
-    let handle = engine
-        .submit(
-            archive_spec(&[&source], &archive, ArchiveFormat::TarZst).with_policy(slow_policy()),
-        )
-        .unwrap();
-    let id = handle.id();
-    wait_for(&engine, id, |snapshot| snapshot.progress.bytes_done > 0);
-    assert!(engine.pause(id));
+    let spec = archive_spec(&[&source], &archive, ArchiveFormat::TarZst).with_policy(slow_policy());
+    let id = submit_held(&engine, &gate, spec, JobEngine::pause);
     let paused = wait_for(&engine, id, |snapshot| snapshot.state == JobState::Paused);
     assert!(paused.progress.bytes_done < BIG as u64);
     std::thread::sleep(Duration::from_millis(100));
+    let still = engine.snapshot(id).unwrap();
+    assert_eq!(still.state, JobState::Paused);
     assert_eq!(
-        engine.snapshot(id).unwrap().progress.bytes_done,
-        paused.progress.bytes_done,
+        still.progress.bytes_done, paused.progress.bytes_done,
         "it stays where it stopped"
     );
     assert!(!archive.exists(), "the archive is still a temporary");
@@ -869,14 +880,11 @@ fn archiving_pauses_between_chunks_resumes_and_cancels_leaving_nothing() {
     assert_eq!(finished.state, JobState::Completed);
     assert!(archive.is_file());
 
-    // And a second one, cancelled halfway, leaves no archive and no temporary.
+    // And a second one, cancelled before it finished, leaves no archive and no
+    // temporary.
     let second = root.path().join("second.zip");
-    let handle = engine
-        .submit(archive_spec(&[&source], &second, ArchiveFormat::Zip).with_policy(slow_policy()))
-        .unwrap();
-    let id = handle.id();
-    wait_for(&engine, id, |snapshot| snapshot.progress.bytes_done > 0);
-    assert!(engine.cancel(id));
+    let spec = archive_spec(&[&source], &second, ArchiveFormat::Zip).with_policy(slow_policy());
+    let id = submit_held(&engine, &gate, spec, JobEngine::cancel);
     let cancelled = engine.wait(id, support::LIMIT).unwrap();
     assert_eq!(cancelled.state, JobState::Cancelled);
     assert_eq!(entries(root.path()), vec![source, archive]);
@@ -888,7 +896,7 @@ fn extracting_pauses_resumes_and_cancels_leaving_no_folder() {
     let source = root.path().join("big.bin");
     write_pattern(&source, BIG);
     let archive = root.path().join("big.tar");
-    let engine = engine();
+    let (engine, gate) = support::gated_engine();
     run_ok(
         &engine,
         archive_spec(&[&source], &archive, ArchiveFormat::Tar),
@@ -896,12 +904,8 @@ fn extracting_pauses_resumes_and_cancels_leaving_no_folder() {
     let out = root.path().join("out");
     fs::create_dir(&out).unwrap();
 
-    let handle = engine
-        .submit(extract_spec(&archive, &out).with_policy(slow_policy()))
-        .unwrap();
-    let id = handle.id();
-    wait_for(&engine, id, |snapshot| snapshot.progress.bytes_done > 0);
-    assert!(engine.pause(id));
+    let spec = extract_spec(&archive, &out).with_policy(slow_policy());
+    let id = submit_held(&engine, &gate, spec, JobEngine::pause);
     let paused = wait_for(&engine, id, |snapshot| snapshot.state == JobState::Paused);
     assert!(paused.progress.bytes_done < paused.progress.bytes_total);
     assert!(
@@ -917,13 +921,10 @@ fn extracting_pauses_resumes_and_cancels_leaving_no_folder() {
         everything_under(&out)
     );
 
-    let handle = engine
-        .submit(extract_spec(&archive, &out).with_policy(slow_policy()))
-        .unwrap();
-    let id = handle.id();
-    wait_for(&engine, id, |snapshot| snapshot.progress.bytes_done > 0);
-    assert!(engine.pause(id));
+    let spec = extract_spec(&archive, &out).with_policy(slow_policy());
+    let id = submit_held(&engine, &gate, spec, JobEngine::pause);
     wait_for(&engine, id, |snapshot| snapshot.state == JobState::Paused);
+    assert!(!out.join("big").exists());
     assert!(engine.resume(id));
     let finished = engine.wait(id, support::LIMIT).unwrap();
     assert_eq!(finished.state, JobState::Completed);
