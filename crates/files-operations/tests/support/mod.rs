@@ -99,3 +99,79 @@ pub fn entries(path: &Path) -> Vec<PathBuf> {
     names.sort();
     names
 }
+
+/// Holds a job in the observer's `starting` call, which the engine makes
+/// before the job's first write, until the test lets it go.
+///
+/// A pause or cancel requested while a job is held is guaranteed to land at
+/// the job's first checkpoint, whatever the machine's load. Waiting for some
+/// progress and then pausing is a race the job can win by finishing first.
+#[derive(Default)]
+pub struct StartGate {
+    state: std::sync::Mutex<GateState>,
+    changed: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct GateState {
+    closed: bool,
+    held: Option<JobId>,
+}
+
+impl StartGate {
+    /// Holds the next job that starts.
+    pub fn close(&self) {
+        self.state.lock().expect("gate").closed = true;
+    }
+
+    /// Waits until a job is held, and returns which.
+    pub fn held(&self) -> JobId {
+        let state = self.state.lock().expect("gate");
+        let (state, timeout) = self
+            .changed
+            .wait_timeout_while(state, LIMIT, |state| state.held.is_none())
+            .expect("gate");
+        assert!(!timeout.timed_out(), "no job reached the gate");
+        state.held.expect("a held job")
+    }
+
+    /// Lets the held job go on.
+    pub fn open(&self) {
+        let mut state = self.state.lock().expect("gate");
+        state.closed = false;
+        state.held = None;
+        self.changed.notify_all();
+    }
+}
+
+impl files_operations::JobObserver for StartGate {
+    fn starting(&self, id: JobId, _spec: &JobSpec) {
+        let mut state = self.state.lock().expect("gate");
+        if !state.closed {
+            return;
+        }
+        state.held = Some(id);
+        self.changed.notify_all();
+        let _state = self
+            .changed
+            .wait_while(state, |state| state.closed)
+            .expect("gate");
+    }
+
+    fn finished(&self, _id: JobId, _spec: &JobSpec, _state: JobState) {}
+}
+
+/// An engine whose jobs a test can hold at their start.
+pub fn gated_engine() -> (JobEngine, std::sync::Arc<StartGate>) {
+    let gate = std::sync::Arc::new(StartGate::default());
+    let engine = JobEngine::with_observer(
+        EngineConfig {
+            workers: 2,
+            store: None,
+            conflicts: files_operations::ConflictPolicy::new(),
+            displaced_trash: Some(test_trash()),
+        },
+        gate.clone(),
+    );
+    (engine, gate)
+}

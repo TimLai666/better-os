@@ -1,0 +1,8 @@
+#!/bin/sh
+# A stand-in for `tailscale`, reached through a symbolic link a test makes in
+# its own folder. It answers `status --json` with that folder's status.json
+# and exits with the code in its exit-code file; anything else fails.
+here=$(dirname "$0")
+[ "$1 $2" = "status --json" ] || exit 2
+cat "$here/status.json"
+exit "$(cat "$here/exit-code")"
