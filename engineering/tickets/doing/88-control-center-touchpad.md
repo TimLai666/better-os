@@ -81,7 +81,53 @@ removal. If it cannot, the ticket records why with evidence and estimates the
 alternative (an evdev/uinput pass-through that re-emits the touchpad with
 scaled scroll) before anything is built.
 
-## Progress (2026-11-15)
+## Progress (2026-11-15, second pass)
+
+Built and tested since the first pass (all of the first pass's list stands):
+
+- Competing gesture tools: `pages/touchpad/competitors.rs` finds X11 Gestures
+  (shell `GetExtensionInfo`), Touchégg (the client process and its autostart
+  entry; the root daemon is ignored), and fusuma (by command line), for this
+  account only, read-only. "Turn off" disables the extension through GNOME
+  Shell, or hides the autostart entry with a marked `Hidden=true` file in
+  `~/.config/autostart`; "Turn back on" removes only that file, and a file the
+  person wrote is never rewritten. Nothing is killed: a running copy stops at
+  the next sign-in, and the page says so. Unit tests over a scratch `/proc`
+  and autostart tree; shown working against a real GNOME Shell 46 with a
+  stand-in extension and an autostart entry (screenshots `competitors-*`).
+- Health checks named in words; the technical column is labelled as such.
+- "Read again" moved onto the "This touchpad" card so the selector bar fits
+  at 960 px in English.
+- Devices › Details: the chevron works (screenshot `*-devices-details`); the
+  earlier failure was the shared wayhand sandbox, where another worker's
+  windows took the clicks.
+- Scroll speed: tested on a private GNOME Shell 46.0; an extension cannot see
+  a client's scroll at all. Evidence and the alternative's estimate are in
+  ADR 0028 (proposed, owner decision). Nothing built.
+
+Screenshots (private headless GNOME Shell 46, in-memory backend, demo mode):
+every sub-page, zh/en, light/dark, 1600 and 960 (48), Devices › Details and
+the gesture preview for each of those 8 combinations, safe mode and not-GNOME
+bars, Home with "safe mode on" and "gestures turned themselves off".
+
+Still open:
+
+- Install-time setup (enable the shell extension, apply a default gesture
+  profile at install): waits for ticket 124 to merge, by the coordinator's
+  instruction.
+- Scroll speed: owner decision on ADR 0028.
+- Uninstalling Better Touchpad does not yet remove an autostart override it
+  wrote for a competing tool; that belongs with the install-time work above.
+
+Checks run: fmt; clippy `+stable` and `+1.99.0`, workspace, all targets,
+`-D warnings` clean; `cargo +1.95 check` of the touched crates; license
+inventory current; workspace tests: 270 test binaries pass, 43 tests fail in
+crates this ticket does not touch (app-catalog-platform, awake-platform,
+better-core, files-gui, files-platform, launcher-platform), every one with
+"Too many open files": the machine's inotify instance limit (128) was used up
+by other sessions during the run.
+
+## Progress (2026-11-15, first pass)
 
 Built and tested:
 

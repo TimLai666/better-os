@@ -182,11 +182,6 @@ impl TouchpadPage {
                                 }
                             })),
                     ),
-                )
-                .child(
-                    Button::subtle("touchpad-refresh", c.refresh)
-                        .icon(IconName::Redo)
-                        .on_click(Self::act(cx, |this, cx| this.refresh(cx))),
                 ),
         ));
 
@@ -246,6 +241,14 @@ impl TouchpadPage {
         SettingsExpander::new("touchpad-this-card", pc.this_touchpad, self.this_expanded)
             .icon(IconName::Frame)
             .description(format!("{} · {health}", facts.device))
+            // The page's one command: read every value and device again. It
+            // sits on the card it refreshes, so the selector bar keeps its
+            // whole width at 960px in either language.
+            .content(
+                Button::standard("touchpad-refresh", c.refresh)
+                    .icon(IconName::Redo)
+                    .on_click(Self::act(cx, |this, cx| this.refresh(cx))),
+            )
             .on_toggle(Self::act_with(cx, |this, open: bool, cx| {
                 this.this_expanded = open;
                 cx.notify();
@@ -547,8 +550,13 @@ impl TouchpadPage {
                 DeviceState::Disconnected => c.state_disconnected,
                 DeviceState::Inhibited => c.state_inhibited,
             };
+            let colon = if view::views_locale(self.locale) == touchpad_views::Locale::ZhTw {
+                "："
+            } else {
+                ": "
+            };
             let capabilities = format!(
-                "{}: {} · {}",
+                "{}{colon}{} · {}",
                 c.contacts,
                 device.capabilities.max_contacts,
                 if device.capabilities.buttonpad {
@@ -618,7 +626,7 @@ impl TouchpadPage {
             .iter()
             .map(|check| {
                 vec![
-                    TableCell::new(check.id.clone()),
+                    TableCell::new(super::copy::check_words(&check.id, self.locale)),
                     TableCell::new(touchpad_views::i18n::health_words(check.state, locale)),
                     TableCell::new(check.detail.clone()),
                 ]

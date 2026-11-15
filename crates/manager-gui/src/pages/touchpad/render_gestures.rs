@@ -59,6 +59,7 @@ impl TouchpadPage {
             ));
         }
 
+        rows.extend(self.competitor_rows(cx));
         rows.push(Row::card(0.0, card::GESTURE_PROFILE, self.profile_card(cx)));
         rows.push(Row::card(
             CARD_GAP,
@@ -122,6 +123,87 @@ impl TouchpadPage {
                         })),
                 ),
         ));
+        rows
+    }
+
+    /// Other gesture tools that compete for the same fingers, each with the
+    /// one thing to do about it.
+    fn competitor_rows(&self, cx: &mut Context<Self>) -> Vec<Row> {
+        use super::CompetitorNote;
+        let words = self.locale.words();
+        let mut rows = Vec::new();
+        for (index, found) in self.competitors.iter().enumerate() {
+            let w = super::copy::competitor_copy(found.tool.name(), self.locale);
+            let tool = found.tool;
+            let busy = self.competitor_task.is_some();
+            let card = if found.hidden_by_us && !found.extension_enabled {
+                InfoBar::new(
+                    ElementId::named_usize("touchpad-competitor", index),
+                    Severity::Informational,
+                    w.hidden,
+                )
+                .locale(words)
+                .action(
+                    Button::standard(
+                        ElementId::named_usize("touchpad-competitor-on", index),
+                        w.turn_on,
+                    )
+                    .disabled(busy)
+                    .on_click(Self::act(cx, move |this, cx| {
+                        this.turn_on_competitor(tool, cx)
+                    })),
+                )
+            } else if found.competes() {
+                InfoBar::new(
+                    ElementId::named_usize("touchpad-competitor", index),
+                    Severity::Warning,
+                    w.header,
+                )
+                .message(w.description)
+                .locale(words)
+                .action(
+                    Button::standard(
+                        ElementId::named_usize("touchpad-competitor-off", index),
+                        w.turn_off,
+                    )
+                    .disabled(busy)
+                    .on_click(Self::act(cx, move |this, cx| {
+                        this.turn_off_competitor(tool, cx)
+                    })),
+                )
+            } else {
+                continue;
+            };
+            rows.push(Row::new(0.0, div().pb(px(12.0)).child(card)));
+        }
+        if let Some((tool, note)) = &self.competitor_note {
+            let w = super::copy::competitor_copy(tool.name(), self.locale);
+            let bar = match note {
+                CompetitorNote::Off => {
+                    InfoBar::new("touchpad-competitor-note", Severity::Success, w.off).locale(words)
+                }
+                CompetitorNote::OffAtNextSignIn => InfoBar::new(
+                    "touchpad-competitor-note",
+                    Severity::Informational,
+                    w.off_at_sign_in,
+                )
+                .locale(words),
+                CompetitorNote::Failed(details) => {
+                    rows.push(Row::new(
+                        0.0,
+                        div().pb(px(12.0)).child(
+                            ErrorBar::new(
+                                "touchpad-competitor-failed",
+                                ErrorReport::new(w.failed, details.clone()),
+                            )
+                            .locale(words),
+                        ),
+                    ));
+                    return rows;
+                }
+            };
+            rows.push(Row::new(0.0, div().pb(px(12.0)).child(bar)));
+        }
         rows
     }
 

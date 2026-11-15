@@ -527,3 +527,26 @@ fn the_in_memory_page_stages_a_toggle() {
     assert!(result.is_ok(), "{result:?}");
     assert_eq!(staged_count(&model), 1);
 }
+
+#[test]
+fn every_health_check_has_a_name_in_both_languages() {
+    use super::copy::check_words;
+    for id in [
+        "touchpad.configuration",
+        "touchpad.backend",
+        "touchpad.device",
+        "touchpad.capabilities",
+        "touchpad.capture",
+        "touchpad.safe_mode",
+        "touchpad.integration",
+        "touchpad.gesture_bridge",
+    ] {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            assert!(!check_words(id, locale).contains("touchpad."), "{id}");
+        }
+    }
+    assert_eq!(
+        check_words("touchpad.capture", Locale::ZhTw),
+        "變更前的記錄"
+    );
+}

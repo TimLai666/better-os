@@ -14,6 +14,7 @@
 //! `touchpad-platform`'s typed backend and `touchpad-gestures`' store; a test
 //! asserts it over this directory's source as the older window's did.
 
+pub(crate) mod competitors;
 mod copy;
 pub(crate) mod portal;
 mod render;
@@ -154,6 +155,9 @@ pub(crate) struct TouchpadPage {
     /// element so a pointer position can be turned into a fraction of it.
     pub(crate) surface: Rc<Cell<Bounds<Pixels>>>,
     pub(crate) busy: bool,
+    /// The demo and tests: nothing outside the page's own memory is read
+    /// or changed.
+    pub(crate) in_memory: bool,
     pub(crate) facts: SharedFacts,
     /// The two path fields. They are shown only when the file chooser portal
     /// did not answer; a path is a filename and never reaches an action, and
@@ -167,6 +171,23 @@ pub(crate) struct TouchpadPage {
     pub(crate) file_task: Option<Task<()>>,
     pub(crate) this_expanded: bool,
     pub(crate) device_details: Option<usize>,
+    /// Other gesture tools found on this session, read off the UI thread.
+    pub(crate) competitors: Vec<competitors::Found>,
+    /// What turning one off said, as (tool, outcome).
+    pub(crate) competitor_note: Option<(competitors::Tool, CompetitorNote)>,
+    pub(crate) competitor_task: Option<Task<()>>,
+}
+
+/// What happened when a competing tool was turned off.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CompetitorNote {
+    /// Off now.
+    Off,
+    /// Its autostart entry is hidden; the copy running now stops at the
+    /// next sign-in.
+    OffAtNextSignIn,
+    /// It could not be turned off; the reason is technical detail.
+    Failed(String),
 }
 
 impl TouchpadPage {
@@ -214,7 +235,7 @@ impl TouchpadPage {
             .unwrap_or(default_path);
         let export_path = cx.new(|cx| InputState::new(window, cx).default_value(export_value));
         let import_path = cx.new(|cx| InputState::new(window, cx).default_value(import_value));
-        let page = Self {
+        let mut page = Self {
             host,
             locale,
             model,
@@ -226,6 +247,7 @@ impl TouchpadPage {
             pointer: PointerTrace::idle(),
             surface: Rc::new(Cell::new(Bounds::default())),
             busy: false,
+            in_memory: environment.in_memory,
             facts,
             export_path,
             import_path,
@@ -234,8 +256,12 @@ impl TouchpadPage {
             file_task: None,
             this_expanded: false,
             device_details: None,
+            competitors: Vec::new(),
+            competitor_note: None,
+            competitor_task: None,
         };
         page.share_facts();
+        page.find_competitors(cx);
         page
     }
 
@@ -316,6 +342,7 @@ impl TouchpadPage {
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         self.model.refresh(self.backend.as_ref());
         self.share_facts();
+        self.find_competitors(cx);
         cx.notify();
     }
 
@@ -600,6 +627,80 @@ impl TouchpadPage {
         cx.notify();
     }
 
+    /// Looks for X11 Gestures, Touchégg, and fusuma, off the UI thread. A
+    /// demo window looks at nothing outside itself.
+    pub(crate) fn find_competitors(&mut self, cx: &mut Context<Self>) {
+        if self.competitor_task.is_some() {
+            return;
+        }
+        let in_memory = self.in_memory;
+        self.competitor_task = Some(cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_spawn(async move {
+                    if in_memory {
+                        return Vec::new();
+                    }
+                    let extension = shell::x11_gestures_enabled();
+                    competitors::detect(&competitors::Roots::for_session(), extension)
+                })
+                .await;
+            let _ = this.update(cx, |page, cx| {
+                page.competitor_task = None;
+                page.competitors = found;
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Turns one competing tool off through the person's own session:
+    /// GNOME Shell for the extension, a hidden autostart entry otherwise.
+    pub(crate) fn turn_off_competitor(&mut self, tool: competitors::Tool, cx: &mut Context<Self>) {
+        if tool == competitors::Tool::X11Gestures {
+            self.competitor_task = Some(cx.spawn(async move |this, cx| {
+                let result = cx
+                    .background_spawn(async move {
+                        shell::disable_extension(competitors::X11_GESTURES_UUID)
+                    })
+                    .await;
+                let _ = this.update(cx, |page, cx| {
+                    page.competitor_task = None;
+                    page.competitor_note = Some((
+                        tool,
+                        match result {
+                            Ok(()) => CompetitorNote::Off,
+                            Err(error) => CompetitorNote::Failed(error),
+                        },
+                    ));
+                    page.find_competitors(cx);
+                });
+            }));
+            return;
+        }
+        let running = self
+            .competitors
+            .iter()
+            .any(|found| found.tool == tool && found.running);
+        let note = match competitors::hide_autostart(&competitors::Roots::for_session(), tool) {
+            Ok(_) if running => CompetitorNote::OffAtNextSignIn,
+            Ok(_) => CompetitorNote::Off,
+            Err(error) => CompetitorNote::Failed(error.to_string()),
+        };
+        self.competitor_note = Some((tool, note));
+        self.find_competitors(cx);
+        cx.notify();
+    }
+
+    /// Undoes a hidden autostart entry Better OS wrote.
+    pub(crate) fn turn_on_competitor(&mut self, tool: competitors::Tool, cx: &mut Context<Self>) {
+        if let Err(error) = competitors::show_autostart(&competitors::Roots::for_session(), tool) {
+            self.competitor_note = Some((tool, CompetitorNote::Failed(error.to_string())));
+        } else {
+            self.competitor_note = None;
+        }
+        self.find_competitors(cx);
+        cx.notify();
+    }
+
     /// The Install or Update button of the "not installed" and "too old"
     /// states: the component's page in Apps, where installing is reviewed.
     pub(crate) fn open_component(&self, cx: &mut Context<Self>) {
@@ -609,5 +710,58 @@ impl TouchpadPage {
                 cx,
             )
         });
+    }
+}
+
+/// The two GNOME Shell calls the competing-tools card makes. Plain blocking
+/// calls, made off the UI thread.
+mod shell {
+    use std::collections::HashMap;
+
+    use zbus::blocking::Connection;
+    use zbus::zvariant::OwnedValue;
+
+    const SHELL_NAME: &str = "org.gnome.Shell";
+    const SHELL_PATH: &str = "/org/gnome/Shell";
+    const EXTENSIONS: &str = "org.gnome.Shell.Extensions";
+
+    /// `Some(enabled)` when X11 Gestures is installed, `None` when it is not
+    /// or there is no shell to ask.
+    pub(super) fn x11_gestures_enabled() -> Option<bool> {
+        let connection = Connection::session().ok()?;
+        let reply = connection
+            .call_method(
+                Some(SHELL_NAME),
+                SHELL_PATH,
+                Some(EXTENSIONS),
+                "GetExtensionInfo",
+                &(super::competitors::X11_GESTURES_UUID,),
+            )
+            .ok()?;
+        let info: HashMap<String, OwnedValue> = reply.body().deserialize().ok()?;
+        if info.is_empty() {
+            return None;
+        }
+        info.get("enabled")
+            .and_then(|value| bool::try_from(value).ok())
+            .or(Some(false))
+    }
+
+    pub(super) fn disable_extension(uuid: &str) -> Result<(), String> {
+        let connection = Connection::session().map_err(|error| error.to_string())?;
+        let reply = connection
+            .call_method(
+                Some(SHELL_NAME),
+                SHELL_PATH,
+                Some(EXTENSIONS),
+                "DisableExtension",
+                &(uuid,),
+            )
+            .map_err(|error| error.to_string())?;
+        match reply.body().deserialize::<bool>() {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(format!("GNOME Shell refused to disable {uuid}")),
+            Err(error) => Err(error.to_string()),
+        }
     }
 }

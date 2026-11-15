@@ -71,7 +71,7 @@ const EN: PageCopy = PageCopy {
     captured_values: "Captured before the first change",
     check_column: "Check",
     state_column: "State",
-    detail_column: "Detail",
+    detail_column: "Technical detail",
     safe_mode_card: "Safe mode",
     safe_mode_description: "Shows the settings without changing anything, and gives GNOME its own gestures back.",
     home_safe_mode_header: "Touchpad safe mode is on",
@@ -110,7 +110,7 @@ const ZH: PageCopy = PageCopy {
     captured_values: "第一次變更前記錄的值",
     check_column: "檢查項目",
     state_column: "狀態",
-    detail_column: "說明",
+    detail_column: "技術細節",
     safe_mode_card: "安全模式",
     safe_mode_description: "只顯示設定、不做任何變更，並把手勢交還給 GNOME。",
     home_safe_mode_header: "觸控板安全模式已開啟",
@@ -180,5 +180,72 @@ pub(crate) fn test_reach(locale: Locale, live: bool, attempted: usize, performed
                 format!("{} actions didn't reach the desktop.", a - p)
             }
         }
+    }
+}
+
+/// A health check's name, from its stable key (audit T2 and T4: the key is
+/// not on screen). An unknown key is shown as it is, since it names a check
+/// a newer Better Touchpad added.
+pub(crate) fn check_words(id: &str, locale: Locale) -> String {
+    let zh = locale.resolved() == Locale::ZhTw;
+    let words = match (id, zh) {
+        ("touchpad.configuration", true) => "設定檔",
+        ("touchpad.configuration", false) => "Settings file",
+        ("touchpad.backend", true) => "桌面設定",
+        ("touchpad.backend", false) => "Desktop settings",
+        ("touchpad.device", true) => "觸控板",
+        ("touchpad.device", false) => "Touchpad",
+        ("touchpad.capabilities", true) => "可變更的項目",
+        ("touchpad.capabilities", false) => "What can be changed",
+        ("touchpad.capture", true) => "變更前的記錄",
+        ("touchpad.capture", false) => "Values captured before changes",
+        ("touchpad.safe_mode", true) => "安全模式",
+        ("touchpad.safe_mode", false) => "Safe mode",
+        ("touchpad.integration", true) => "Better Touchpad 整合",
+        ("touchpad.integration", false) => "Better Touchpad integration",
+        ("touchpad.gesture_bridge", true) => "手勢連線",
+        ("touchpad.gesture_bridge", false) => "Gesture connection",
+        _ => return id.to_string(),
+    };
+    words.to_string()
+}
+
+/// The competing-tools card's words (ticket 88).
+pub(crate) struct CompetitorCopy {
+    pub(crate) header: String,
+    pub(crate) description: &'static str,
+    pub(crate) turn_off: String,
+    pub(crate) turn_on: String,
+    pub(crate) hidden: String,
+    pub(crate) off: String,
+    pub(crate) off_at_sign_in: String,
+    pub(crate) failed: String,
+}
+
+pub(crate) fn competitor_copy(tool: &str, locale: Locale) -> CompetitorCopy {
+    let zh = locale.resolved() == Locale::ZhTw;
+    let f = |en: &str, zh_tw: &str| if zh { zh_tw } else { en }.replace("{tool}", tool);
+    CompetitorCopy {
+        header: f(
+            "{tool} also handles touchpad gestures",
+            "{tool} 也在處理觸控板手勢",
+        ),
+        description: if zh {
+            "它會和 Better Touchpad 搶同樣的手指，同一個手勢可能做兩件事。"
+        } else {
+            "It competes for the same fingers, so one gesture can do two things."
+        },
+        turn_off: f("Turn off {tool}", "關閉 {tool}"),
+        turn_on: f("Turn {tool} back on", "重新開啟 {tool}"),
+        hidden: f(
+            "{tool} won't start when you sign in. Better OS turned it off.",
+            "{tool} 登入時不會再啟動，是 Better OS 關閉的。",
+        ),
+        off: f("{tool} is off.", "{tool} 已關閉。"),
+        off_at_sign_in: f(
+            "{tool} stops the next time you sign in; it's still running now.",
+            "{tool} 會在下次登入時停止，現在還在執行。",
+        ),
+        failed: f("{tool} couldn't be turned off.", "沒辦法關閉 {tool}。"),
     }
 }

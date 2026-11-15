@@ -4533,6 +4533,7 @@ dependencies = [
  "serde_json",
  "smol",
  "tempfile",
+ "thiserror 2.0.19",
  "tokio",
  "touchpad-core",
  "touchpad-gestures",
