@@ -41,6 +41,15 @@ fn main() -> ExitCode {
         }
     }
 
+    // Installing is enough for gestures to work (owner, 2026-11-13): the first
+    // run puts the shipped preset in force. A file that already exists, or
+    // will not parse, is left exactly as it is.
+    match gestures.apply_first_run_default() {
+        Ok(true) => eprintln!("first run: the Mac-style gestures are now in force"),
+        Ok(false) => {}
+        Err(error) => eprintln!("the first-run gestures could not be written: {error}"),
+    }
+
     let profiles = match gestures.load_profiles() {
         Ok(profiles) => profiles,
         // A configuration that will not parse is not a first run, and starting

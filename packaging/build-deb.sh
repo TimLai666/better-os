@@ -112,6 +112,7 @@ cargo build --release \
     -p git-gui \
     -p touchpad-gui \
     -p touchpad-gesture-service \
+    -p touchpad-platform \
     -p awake-service \
     -p awake-tray \
     -p awake-gui \
@@ -812,13 +813,17 @@ make_package better-git \
 #
 # The gesture half ships in the same package as the window that configures it:
 # the resident pipeline, and the GNOME Shell adapter extension it reads gestures
-# from. Neither is enabled by installing. The extension is the one piece of
+# from. Better Manager turns both on when it installs the component, and on
+# removal runs the before-removal program (as the person, before dpkg is asked)
+# to put back the touchpad settings Better Touchpad changed. The extension is
+# the one piece of
 # Better OS that is not Rust, under the bounded exception ADR 0012 records; it
 # is three files under the uuid GNOME looks for it by.
 EXTENSION_UUID="touchpad-adapter@betteros.org"
 PACKAGE_BINARIES=(
     "better-touchpad:usr/bin/better-touchpad"
     "better-touchpad-gestured:usr/bin/better-touchpad-gestured"
+    "better-touchpad-before-removal:usr/lib/better-os/before-removal/better-touchpad"
 )
 PACKAGE_DATA=(
     "packaging/touchpad/better-touchpad.desktop:usr/share/applications/better-touchpad.desktop"

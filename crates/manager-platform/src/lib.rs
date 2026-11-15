@@ -16,6 +16,8 @@ pub mod host;
 pub mod personal_data;
 #[cfg(feature = "dbus-client")]
 pub mod privileged;
+pub mod removal_hooks;
+pub mod shell_extensions;
 pub mod user_units;
 
 use std::path::PathBuf;

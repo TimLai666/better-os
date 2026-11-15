@@ -548,6 +548,36 @@ type RealContext = (HttpDownloader, DbusPrivilegedExecutor);
 /// It is a side errand of whatever command was asked for, so nothing it meets
 /// stops that command: a failure is a warning on `messages` (standard error in
 /// the product, so a command's own output stays clean), and the command runs.
+/// Turns on the GNOME Shell extensions of enabled components that are off
+/// (ticket 88), a side errand like [`heal_user_units`]: what it meets is a
+/// line on `messages` and never stops the command.
+fn heal_shell_extensions(
+    manager: &Manager,
+    state: &ManagerState,
+    packages: &dyn PackageStateProbe,
+    extensions: &dyn manager_platform::shell_extensions::ShellExtensionController,
+    messages: &mut dyn std::io::Write,
+) {
+    let Ok(report) = manager.heal_shell_extensions(state, packages, extensions) else {
+        return;
+    };
+    for healing in report {
+        let _ = match healing.failure {
+            Some(failure) => writeln!(
+                messages,
+                "warning: {}: its GNOME Shell extension could not be turned on: {}",
+                healing.component, failure.message
+            ),
+            None => writeln!(
+                messages,
+                "{}: turned on {} (takes effect at the next login)",
+                healing.component,
+                healing.turned_on.join(", ")
+            ),
+        };
+    }
+}
+
 fn heal_user_units(
     manager: &Manager,
     state: &mut ManagerState,
@@ -628,6 +658,9 @@ fn advance_until_done(
     // no privilege, so it never crosses the daemon. Declared outside the match
     // so the borrow outlives the boxed driver.
     let user_units = SystemdUserUnitController::new();
+    let extensions =
+        manager_platform::shell_extensions::GsettingsShellExtensions::from_environment();
+    let removal_hooks = manager_platform::removal_hooks::ProcessHookRunner::from_environment();
     let driver: Box<dyn StageDriver> = match &real {
         None => Box::new(MockDriver::new(fail_at, restore_outcome)),
         Some((downloader, executor)) => Box::new(
@@ -639,7 +672,9 @@ fn advance_until_done(
                 uuid::Uuid::new_v4().to_string(),
                 manager.profile().clone(),
             )
-            .with_user_units(&user_units),
+            .with_user_units(&user_units)
+            .with_shell_extensions(&extensions)
+            .with_removal_hooks(&removal_hooks),
         ),
     };
     let mut runner = TransactionRunner::new(manager, driver, store);
@@ -788,6 +823,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &store,
             &DpkgProbe,
             &SystemdUserUnitController::new(),
+            &mut std::io::stderr(),
+        );
+        heal_shell_extensions(
+            &manager,
+            &state,
+            &DpkgProbe,
+            &manager_platform::shell_extensions::GsettingsShellExtensions::from_environment(),
             &mut std::io::stderr(),
         );
     }

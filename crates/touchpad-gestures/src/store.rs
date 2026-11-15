@@ -132,6 +132,30 @@ impl GestureStore {
         }
     }
 
+    /// Puts the shipped Mac-style preset in force the first time the gesture
+    /// service runs for this person, so installing Better Touchpad is enough
+    /// for gestures to work (owner, 2026-11-13, ticket 88). Returns whether it
+    /// wrote anything.
+    ///
+    /// "First time" is "there is no gesture file at all". A file that exists
+    /// is the person's (or an earlier run's) decision, including one with
+    /// every gesture turned off, and is never replaced. The capture records
+    /// the empty shipped configuration before the preset is written, so
+    /// restoring Gestures goes back to what the desktop had before Better OS:
+    /// no gesture of ours.
+    pub fn apply_first_run_default(&self) -> Result<bool, GestureStoreError> {
+        if self.store.read_text(&self.config_path())?.is_some() {
+            return Ok(false);
+        }
+        self.capture_once(&GestureConfig::default())?;
+        let profiles = GestureProfiles {
+            global: crate::preset::mac_style(),
+            ..GestureProfiles::default()
+        };
+        self.save_profiles(&profiles)?;
+        Ok(true)
+    }
+
     pub fn load_capture(&self) -> Result<Option<GestureConfig>, GestureStoreError> {
         let path = self.capture_path();
         match self.store.read_text(&path)? {
@@ -250,6 +274,42 @@ mod tests {
         assert_eq!(store.load_config().unwrap(), GestureConfig::default());
         assert!(!store.config_path().exists());
         assert!(!store.has_capture());
+    }
+
+    #[test]
+    fn the_first_run_default_is_the_mac_style_preset_with_an_empty_capture() {
+        let (_guard, store) = store();
+        assert!(store.apply_first_run_default().unwrap());
+        assert_eq!(store.load_config().unwrap(), mac_style());
+        assert_eq!(
+            store.load_capture().unwrap(),
+            Some(GestureConfig::default())
+        );
+        // A second run changes nothing.
+        assert!(!store.apply_first_run_default().unwrap());
+    }
+
+    #[test]
+    fn the_first_run_default_never_replaces_a_saved_file() {
+        let (_guard, store) = store();
+        let mut off = mac_style();
+        off.enabled = false;
+        store.save_config(&off).unwrap();
+        assert!(!store.apply_first_run_default().unwrap());
+        assert_eq!(store.load_config().unwrap(), off);
+        assert!(!store.has_capture());
+    }
+
+    #[test]
+    fn the_first_run_default_refuses_a_damaged_file_rather_than_replacing_it() {
+        let (_guard, store) = store();
+        std::fs::create_dir_all(store.settings().directory()).unwrap();
+        std::fs::write(store.config_path(), "{ not json").unwrap();
+        assert!(!store.apply_first_run_default().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(store.config_path()).unwrap(),
+            "{ not json"
+        );
     }
 
     #[test]

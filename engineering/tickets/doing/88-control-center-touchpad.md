@@ -122,11 +122,64 @@ every sub-page, zh/en, light/dark, 1600 and 960 (48), Devices › Details and
 the gesture preview for each of those 8 combinations, safe mode and not-GNOME
 bars, Home with "safe mode on" and "gestures turned themselves off".
 
-Still open:
+Audit findings, each against the screenshots above (the audit's own list is
+only this ticket's one-line summary, and it groups T5–T10):
 
-- Install-time setup (enable the shell extension, apply a default gesture
-  profile at install): waits for ticket 124 to merge, by the coordinator's
-  instruction.
+- T1 mock notice: no mock or adapter name anywhere (`*-pointer`, `*-diagnostics`);
+  the only banner is demo mode's own.
+- T2 English inside Chinese: `zh-*` shots of every sub-page, including
+  gesture names, problems, and unavailable reasons.
+- T3 "requested / effective": `zh-*-pointer` reads 你選的 · 目前生效,
+  `en-*-pointer` "You chose · In effect".
+- T4 identifiers and an English health word on the overview: "This
+  touchpad" shows a name and a word (`*-pointer`); identifiers only under
+  Devices › Details (`*-devices-details`).
+- T5–T10 hard-coded dark theme and misaligned controls: every sub-page in
+  light and dark at 1600 and 960 (`{zh,en}-{light,dark}-{1600,960}-*`), with
+  controls on Fluent cards right-aligned in one column.
+
+Install and uninstall, clicked through in the same private GNOME Shell 46,
+demo mode (`install/01`–`10`): not installed, Apps › Better Touchpad,
+installing, installed and healthy, the Touchpad page working, Manage, the
+remove confirmation with "Also delete my settings and history" ticked by
+default, removing, removed, and the Touchpad page back to "needs to be
+installed". Demo mode runs the mock driver, so these screens show the flow,
+not the extension or settings work; that is shown by `tests/touchpad_install.rs`
+and by `tests/gsettings_session.rs` run against the private shell's own dconf,
+where the shell moved the extension from initialized (6) through enabled to
+disabled (2) as the controller wrote.
+
+Install-time setup (after ticket 124 merged):
+
+- The extension: `manager_platform::shell_extensions` adds
+  `touchpad-adapter@betteros.org` to the person's `org.gnome.shell
+  enabled-extensions` (and takes it out of `disabled-extensions`) on install,
+  enable, update, restore, and verify, and takes it out on disable and
+  removal, leaving every other entry alone. Found from dpkg's file list like
+  units; the health stage fails `shell_extension.not_enabled` when it is off;
+  the startup pass turns an enabled component's extension back on. `gsettings
+  set` exits 0 when dconf refuses, so every write is read back. A running
+  shell loads it at the next login. Not the reviewed-defaults engine: that
+  engine is driven only by the Defaults page and command, never by
+  manager-core, and a new integration kind would make every released manager
+  refuse the fetched better-touchpad manifest (closed set).
+- The default gesture profile: the gesture service's first run (no gesture
+  file at all) writes the Mac-style preset, capturing the empty configuration
+  first, so Restore goes back to no Better OS gesture. A file the person
+  saved, including all-off, is never replaced. This replaces Issue #3's
+  "installation changes no gesture" by the owner's rule of 2026-11-13. It is
+  in the service rather than manager-core so the manager does not write a
+  component's own data file.
+- Removal puts the touchpad settings back: the package ships
+  `/usr/lib/better-os/before-removal/better-touchpad`
+  (`touchpad-platform`'s `better-touchpad-before-removal`), which writes the
+  captured values back through the GNOME backend; manager-core finds it in
+  dpkg's file list and runs it as the person before anything else in the
+  removal, and a failure stops the removal with nothing changed
+  (`before_removal.failed`). Better Touchpad writes no keybinding, and GNOME's
+  own swipe gestures come back when the extension is turned off.
+- Personal data: `.config/better-os/touchpad` was already on ticket 124's
+  allowlist and is everything the component keeps.
 
 Checks run: fmt; clippy `+stable` and `+1.99.0`, workspace, all targets,
 `-D warnings` clean; `cargo +1.95 check` of the touched crates; license
@@ -174,10 +227,6 @@ Built and tested:
 
 Not done yet:
 
-- "Found on the owner's machine": enabling the GNOME Shell extension and a
-  default gesture profile at install (needs the reviewed-defaults engine and
-  manager-core install path, which ticket 124 is changing in parallel);
-  detecting x11gestures/touchegg/fusuma with the choice to turn them off.
 - Scroll speed moved to ticket 125 (ADR 0030). Note for it: holding a scale factor in the GJS adapter is configuration,
   which ADR 0012 forbids, so a positive result still needs a new ADR or a
   per-event round trip.

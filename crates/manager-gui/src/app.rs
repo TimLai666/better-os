@@ -752,6 +752,11 @@ impl ManagerApp {
             let report = cx
                 .background_spawn(async move {
                     let units = SystemdUserUnitController::new();
+                    // The record decides for extensions too (ticket 88). What
+                    // this turns on changes no state, so it is not reported.
+                    let extensions =
+                        manager_platform::shell_extensions::GsettingsShellExtensions::from_environment();
+                    let _ = manager.heal_shell_extensions(&snapshot, &DpkgProbe, &extensions);
                     manager
                         .run_user_unit_healing(&snapshot, &DpkgProbe, &units)
                         .unwrap_or_default()
@@ -1404,6 +1409,10 @@ impl ManagerApp {
                 }
             };
             let user_units = SystemdUserUnitController::new();
+            let extensions =
+                manager_platform::shell_extensions::GsettingsShellExtensions::from_environment();
+            let removal_hooks =
+                manager_platform::removal_hooks::ProcessHookRunner::from_environment();
             let driver = RealDriver::new(
                 &downloader,
                 &executor,
@@ -1412,7 +1421,9 @@ impl ManagerApp {
                 uuid::Uuid::new_v4().to_string(),
                 profile,
             )
-            .with_user_units(&user_units);
+            .with_user_units(&user_units)
+            .with_shell_extensions(&extensions)
+            .with_removal_hooks(&removal_hooks);
             let mut runner = TransactionRunner::new(&manager, Box::new(driver), &store)
                 .with_cancel_token(cancel);
             let _ = runner.run(&mut state, &mut |event| {
