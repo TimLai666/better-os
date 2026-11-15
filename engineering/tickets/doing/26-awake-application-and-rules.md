@@ -146,7 +146,20 @@ Not run, and not claimed:
   reasoning beside each number, and a test asserts none is sub-second — but a
   recorded interval is not a measurement, and no harness ran one.
 
-## Not done
+## Remaining
+
+- Icon artwork for the six indicator states, shared with ticket 25.
+- Idle CPU and memory measured for the service and tray processes, with no
+  polling provider active.
+
+## Not done when first delivered
+
+Packaging came later (ticket 36, whose container install/remove smoke covers
+`better-launcher` and `verify-deb.sh` every package) and the low-battery
+notification is ticket 59. Bluetooth and network audio sinks and
+per-provider re-sampling are recorded limits, not planned work. The rest is
+under Remaining.
+
 
 - **The uninstall smoke.** `packaging/build-deb.sh` builds no `better-awake`
   package, so the manifest's artifact checksums are placeholders and the

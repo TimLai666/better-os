@@ -32,8 +32,8 @@ polkit rule 讓授權通過，換到的是第一次真正執行到 apt、真正�
 - [x] 回傳的 `StepReport` 健康狀態為 healthy，`applied_version` 與 dpkg 一致。
 - [x] 交易 journal 為 completed，且可用 `GetStatus` 讀回。
 - [x] 移除交易執行後 dpkg 確實不再有該套件。
-- [ ] 安裝後失敗的情境會真的回滾，且回報的復原狀態與 dpkg 實際狀態相符。
-      （尚未做：需要一個能讓真實健康檢查失敗的元件，目前 catalog 裡沒有這種東西。）
+- [x] 安裝後失敗的情境會真的回滾，且回報的復原狀態與 dpkg 實際狀態相符。
+      （本票當時沒做到；ticket 17 用一個故意讓健康檢查失敗的套件在容器裡證明了，見 Notes。）
 - [x] 未授權仍然被拒絕（票 15 的斷言不得因為這張票而失效）。
 
 ## Verification

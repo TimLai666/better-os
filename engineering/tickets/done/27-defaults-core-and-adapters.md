@@ -126,7 +126,9 @@ uninstalled, and whether a new baseline can be promoted automatically.
   simulated desktop in a file the caller names and says so when it is not given
   one.
 
-Known limits, none of them silent at runtime:
+Known limits, none of them silent at runtime (each was closed later: the
+unowned restore by ticket 71, the mixed group by ticket 58, dconf writes by
+ticket 57, real distribution detection by ticket 45):
 
 - Restoring an XDG default that previously had no owner reports Manual action
   required. `app-chooser-core` has no typed operation for removing an

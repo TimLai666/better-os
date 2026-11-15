@@ -162,7 +162,17 @@ as Issue #13 draws them.
       clipping. Asserted as a character-count bound on every menu label, not
       measured against a real panel font.
 
-## What is not done yet
+## Remaining
+
+- Icon artwork for the six indicator states (`better-awake-inactive`,
+  `-active`, `-active-trigger`, `-paused`, `-attention`, `-unavailable`).
+- Idle CPU and memory measured for the tray and the service processes.
+
+## Not done when first delivered
+
+The battery provider, automatic rules and packaging below were delivered by
+ticket 26; the last two items are the ones under Remaining.
+
 
 - The battery provider. `AwakeEngine::report_battery` is the seam and the
   threshold is carried end to end, but nothing reads the battery in Phase 1;

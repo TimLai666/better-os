@@ -177,7 +177,21 @@ Benchmarks that ran (synthetic, no hardware):
 - event-to-state-update latency through the service: p50 17 µs, p99 23 µs
 - idle service: no timer, no published update, no state change
 
+## Remaining
+
+- Benchmark real devices, as the first Follow-up below describes.
+- Two decision records: the readiness algorithm and confidence threshold, and
+  the privileged boundary.
+- The manifest schema field for supported kernels, filesystems and transports
+  (decide it and, if adopted, add it to the schema and to
+  `components/manifests/better-storage.yaml`).
+
 ## Follow-ups
+
+Packaging and the Better Files wiring were done later (tickets 36 and 35);
+ticket 36's container install/remove smoke covers `better-launcher`, not
+`better-storage`.
+
 
 - Benchmark real devices: one large sequential file, many small files, and a
   metadata-heavy tree, across exFAT, NTFS, and ext4 on a USB flash drive, an

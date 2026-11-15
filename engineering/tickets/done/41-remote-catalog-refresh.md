@@ -123,6 +123,10 @@ thread, and `BETTER_MANAGER_OFFLINE=1` skips that.
 
 ## What this ticket does not settle
 
+The placeholder state was observed later from the v0.2.2 merge build (see
+AGENTS.md), and the missing scheduled refresh is under ticket 46's Remaining.
+Signing stays a recorded limit of ADR 0013.
+
 The proof above is weaker than the ticket's wording, and the difference matters.
 The ticket asked for a manager with the *0.2.1-placeholder* built-in catalog. On
 `main` today the shipped manifests carry the real published 0.2.1 checksums,

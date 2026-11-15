@@ -118,7 +118,16 @@ above the built-in catalog's "尚未下載過" warning. Pressing 檢查更新 fe
 published manifests, and both rows changed together: 已是最新 · 剛剛更新, over
 剛剛下載的清單 · 剛剛更新, with the outdated-list warning gone.
 
-## Not done
+## Remaining
+
+- A periodic background update check, so a window left open does not keep
+  showing an old catalog until someone presses the button.
+- A clickable repository link, with the decision on what this window may
+  launch.
+- A test that makes a real fetch fail and checks the `Failed` state's copy.
+
+## Not done when first delivered
+
 
 - There is still no scheduled or background check. A refresh happens at launch,
   on either button, and on `better-manager catalog refresh` — a window left
