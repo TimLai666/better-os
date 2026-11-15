@@ -65,15 +65,25 @@ pub(crate) fn platform_for(execution: ExecutionMode) -> ClientPlatform {
 /// manifest declares, so every screen keeps working and every plan fails with
 /// "this component ships nothing for this host" instead of naming packages
 /// built for a release the machine is not running.
+#[cfg(test)]
 pub(crate) fn probe_manager(
     catalog: better_core::manifest::ComponentCatalog,
     platform: &dyn SystemCapabilities,
 ) -> (Manager, Option<AppError>) {
+    let (manager, error) = probe_manager_explained(catalog, platform);
+    (manager, error.map(|(error, _)| error))
+}
+
+/// `probe_manager`, with why the host could not be identified.
+fn probe_manager_explained(
+    catalog: better_core::manifest::ComponentCatalog,
+    platform: &dyn SystemCapabilities,
+) -> (Manager, Option<(AppError, String)>) {
     match Manager::probe(catalog.clone(), platform) {
         Ok(manager) => (manager, None),
-        Err(_) => (
+        Err(error) => (
             Manager::new(catalog, SystemProfile::unidentified()),
-            Some(AppError::UnsupportedHost),
+            Some((AppError::UnsupportedHost, error_chain(&error))),
         ),
     }
 }
@@ -139,6 +149,9 @@ pub(crate) struct ManagerApp {
     /// 0.2.15") until the next change starts.
     pub(crate) finished_plan: Option<TransactionPlan>,
     pub(crate) planning_error: Option<AppError>,
+    /// What went wrong behind `planning_error`, verbatim, for the error
+    /// bar's details: the error and its causes. Empty when there is none.
+    pub(crate) error_details: String,
     /// Whether this window simulates transactions or actually performs them.
     pub(crate) execution: ExecutionMode,
     /// The Defaults section's own state, read and changed through
@@ -224,6 +237,19 @@ pub(crate) enum AppError {
     ServiceUnavailable,
 }
 
+/// An error and its causes, one per line, as an error bar's details show
+/// them.
+pub(crate) fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut details = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        details.push_str("\nCaused by: ");
+        details.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    details
+}
+
 /// Whether the change that just ended did what it set out to: its last
 /// record is a success. A cancellation or a failure is not.
 pub(crate) fn ended_in_success(state: &ManagerState) -> bool {
@@ -249,18 +275,36 @@ impl ManagerApp {
         // thread below, so a slow or absent network never delays the window.
         let (catalog, catalog_status) = start_catalog(&catalog_store);
         let execution = default_execution_mode();
-        let (manager, host_error) = probe_manager(catalog, &platform_for(execution));
-        let (state, planning_error) = match store.load() {
-            Ok(outcome) if manager.validate_state(&outcome.state).is_ok() => (
-                outcome.state,
-                outcome.recovered_corrupt_state.map(|_| AppError::Storage),
+        let (manager, host_error) = probe_manager_explained(catalog, &platform_for(execution));
+        let (state, planning_error, error_details) = match store.load() {
+            Ok(outcome) => match manager.validate_state(&outcome.state) {
+                Ok(()) => match outcome.recovered_corrupt_state {
+                    Some(moved) => (
+                        outcome.state,
+                        Some(AppError::Storage),
+                        format!("The unreadable state file was moved to {}", moved.display()),
+                    ),
+                    None => (outcome.state, None, String::new()),
+                },
+                Err(error) => (
+                    ManagerState::default(),
+                    Some(AppError::Storage),
+                    error_chain(&error),
+                ),
+            },
+            Err(error) => (
+                ManagerState::default(),
+                Some(AppError::Storage),
+                error_chain(&error),
             ),
-            Ok(_) | Err(_) => (ManagerState::default(), Some(AppError::Storage)),
         };
         // An unidentified host outranks a storage problem: it is why nothing
         // on this machine can be planned at all, and the state file is beside
         // the point until it is resolved.
-        let planning_error = host_error.or(planning_error);
+        let (planning_error, error_details) = match host_error {
+            Some((error, details)) => (Some(error), details),
+            None => (planning_error, error_details),
+        };
         let locale = locale_from_stored(state.settings.locale);
         appearance_of(state.settings.theme).apply_and_follow(window, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(copy(locale).search));
@@ -312,6 +356,7 @@ impl ManagerApp {
             store,
             finished_plan: None,
             planning_error,
+            error_details,
             execution,
             defaults: DefaultsState::default(),
             catalog_store,
@@ -667,7 +712,7 @@ impl ManagerApp {
                 self.commit_state(candidate);
             }
             Ok(_) => {}
-            Err(_) => self.planning_error = Some(AppError::Planning),
+            Err(error) => self.fail(AppError::Planning, error_chain(&error)),
         }
         cx.notify();
     }
@@ -822,8 +867,8 @@ impl ManagerApp {
                 }
                 true
             }
-            Err(_) => {
-                self.planning_error = Some(AppError::Storage);
+            Err(error) => {
+                self.fail(AppError::Storage, error_chain(&error));
                 false
             }
         }
@@ -1038,7 +1083,7 @@ impl ManagerApp {
         match self.manager.plan_all_in_mode(&self.state, self.execution) {
             Ok(plan) if !plan.is_empty() => self.begin_plan(plan, cx),
             Ok(_) => cx.notify(),
-            Err(_) => self.show_planning_error(cx),
+            Err(error) => self.show_planning_error(&error, cx),
         }
     }
 
@@ -1131,9 +1176,9 @@ impl ManagerApp {
         }
         match self.plan_operation(id, operation) {
             Ok(plan) => self.begin_plan(plan, cx),
-            Err(_) => {
+            Err(error) => {
                 self.remove_data_for = None;
-                self.show_planning_error(cx);
+                self.show_planning_error(&error, cx);
             }
         }
     }
@@ -1189,9 +1234,9 @@ impl ManagerApp {
                 }
                 cx.notify();
             }
-            Err(_) => {
+            Err(error) => {
                 self.remove_data_for = None;
-                self.show_planning_error(cx);
+                self.show_planning_error(&error, cx);
             }
         }
     }
@@ -1233,7 +1278,7 @@ impl ManagerApp {
             let downloader = HttpDownloader::new(ArtifactCache::from_default_path());
             let executor = match DbusPrivilegedExecutor::connect() {
                 Ok(executor) => executor,
-                Err(_) => {
+                Err(error) => {
                     // Nothing was applied, so abandoning is honest here.
                     let _ = manager.cancel(&mut state);
                     let _ = store.save(&state);
@@ -1243,7 +1288,9 @@ impl ManagerApp {
                         ))
                         .await;
                     let _ = sender
-                        .send(crate::runner_end::WorkerEvent::ServiceUnavailable)
+                        .send(crate::runner_end::WorkerEvent::ServiceUnavailable(
+                            error_chain(&error),
+                        ))
                         .await;
                     return;
                 }
@@ -1271,8 +1318,8 @@ impl ManagerApp {
                     crate::runner_end::WorkerEvent::Runner(event) => {
                         app.apply_runner_event(event, cx)
                     }
-                    crate::runner_end::WorkerEvent::ServiceUnavailable => {
-                        app.planning_error = Some(AppError::ServiceUnavailable);
+                    crate::runner_end::WorkerEvent::ServiceUnavailable(details) => {
+                        app.fail(AppError::ServiceUnavailable, details);
                         cx.notify();
                     }
                     crate::runner_end::WorkerEvent::Ended => app.runner_ended(cx),
@@ -1440,9 +1487,9 @@ impl ManagerApp {
             .advance_mock(&mut candidate, MockOutcome::Succeed)
         {
             Ok(progress) => progress,
-            Err(_) => {
+            Err(error) => {
                 self.demo_task = None;
-                self.show_planning_error(cx);
+                self.show_planning_error(&error, cx);
                 return false;
             }
         };
@@ -1477,7 +1524,7 @@ impl ManagerApp {
                 self.commit_state(candidate);
                 cx.notify();
             }
-            Err(_) => self.show_planning_error(cx),
+            Err(error) => self.show_planning_error(&error, cx),
         }
     }
 
@@ -1827,6 +1874,12 @@ impl ManagerApp {
         }
     }
 
+    /// Shows `error` with what went wrong behind it.
+    pub(crate) fn fail(&mut self, error: AppError, details: String) {
+        self.planning_error = Some(error);
+        self.error_details = details;
+    }
+
     pub(crate) fn error_message(&self) -> &'static str {
         let c = copy(self.locale);
         match self.planning_error {
@@ -1840,8 +1893,8 @@ impl ManagerApp {
 
     /// A change could not be planned or started. Nothing changed; the page
     /// the person is on says so.
-    fn show_planning_error(&mut self, cx: &mut Context<Self>) {
-        self.planning_error = Some(AppError::Planning);
+    fn show_planning_error(&mut self, error: &dyn std::error::Error, cx: &mut Context<Self>) {
+        self.fail(AppError::Planning, error_chain(error));
         cx.notify();
     }
 }

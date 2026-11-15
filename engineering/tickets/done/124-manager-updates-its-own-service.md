@@ -89,12 +89,21 @@ done and offered the button that does it.
   guard), in Traditional Chinese and English, light and dark: the Updates
   notice, the same page after pressing it, the window-attention Install and
   the page after pressing it, the Health card, and the after-install states.
-- Buttons were pressed from the keyboard. Pointer clicks still reach no
-  application window in a headless GNOME Shell, a GTK one (GNOME
-  Calculator) included, with relative and with absolute (screencast-stream)
-  pointer motion, while the shell's own panel takes them; so the session's
-  synthetic pointer is the cause, not the window. Ticket 85's click fix was
-  proved under sway; a mouse click on these buttons has not been seen.
+- Buttons were pressed from the keyboard in the four sets, and then with
+  the mouse: a Clutter virtual pointer created inside the shell through
+  `org.gnome.Shell.Eval` (unsafe mode from a disposable test extension),
+  press and release sent apart, at screen coordinates. Clicked: 「更新系統服務」
+  (the change started at once and the no-service banner appeared), the
+  banner's 「顯示詳細資料」 (it opened the service's own error), the sidebar,
+  and the window-attention 「安裝」 (a new Add companions change was recorded).
+  RemoteDesktop's pointer, relative or absolute, reaches no client window
+  in a headless shell; the shell's own virtual pointer does.
+- 「顯示詳細資料」 opened an empty box on every Better Manager error banner:
+  the banners passed no details, and `ErrorBar` offered the toggle anyway.
+  `ErrorBar` now offers it only when there are details
+  (`ErrorReport::has_details`), and every way into an error records why
+  (`ManagerApp::fail`, `error_chain`): the storage error, the planning
+  error, the unidentified host, and the unreachable service.
 - The installation itself ran against no daemon: the after-install state was
   produced by putting the adapter's files and dpkg record in place.
 - The container end-to-end section (0.2.9 service, handoff, adapter,
@@ -110,3 +119,7 @@ done and offered the button that does it.
   failed once under load (a pause that came after the extraction finished);
   it passed 10 of 10 alone, and the full `cargo test --workspace --locked`
   rerun passed: 279 suites, 4705 passed, 0 failed.
+- After the details fix: fmt, clippy on 1.99 (workspace, all targets), and
+  the tests of every crate that draws an error bar (better-ui, manager-gui,
+  app-chooser-gui, fluent-gallery, git-gui, launcher-gui, monitor-gui):
+  20 suites, 815 passed, 0 failed.

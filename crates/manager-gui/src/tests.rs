@@ -2672,7 +2672,7 @@ mod finished_only_on_success {
             app.contains("self.finished_plan = plan.filter(|_| ended_in_success(&self.state));")
         );
         let unreachable = app
-            .split("Err(_) => {\n                    // Nothing was applied")
+            .split("Err(error) => {\n                    // Nothing was applied")
             .nth(1)
             .unwrap()
             .split("return;")
@@ -2680,5 +2680,58 @@ mod finished_only_on_success {
             .unwrap();
         assert!(unreachable.contains("WorkerEvent::ServiceUnavailable"));
         assert!(include_str!("render.rs").contains("AppError::ServiceUnavailable"));
+    }
+}
+
+/// Ticket 124: Better Manager's error banners carry what went wrong, so
+/// "Show details" never opens an empty box.
+mod error_details {
+    use crate::app::error_chain;
+
+    #[derive(Debug)]
+    struct Outer(std::io::Error);
+    impl std::fmt::Display for Outer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("could not reach the service")
+        }
+    }
+    impl std::error::Error for Outer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    #[test]
+    fn the_details_carry_the_whole_chain() {
+        let error = Outer(std::io::Error::other("connection refused"));
+        assert_eq!(
+            error_chain(&error),
+            "could not reach the service\nCaused by: connection refused"
+        );
+    }
+
+    #[test]
+    fn no_banner_passes_empty_details() {
+        for (name, source) in [
+            ("render.rs", include_str!("render.rs")),
+            ("render_apps.rs", include_str!("render_apps.rs")),
+        ] {
+            assert!(
+                !source.contains("ErrorReport::new(self.error_message(), String::new())")
+                    && !source
+                        .contains("ErrorReport::new(c.planning_failed_detail, String::new())"),
+                "{name}"
+            );
+        }
+        let app = include_str!("app.rs");
+        // Every way into an error records why.
+        assert_eq!(
+            app.matches("self.planning_error = Some(").count(),
+            1,
+            "only `fail` sets an error, with its details"
+        );
+        assert!(app.contains(
+            "WorkerEvent::ServiceUnavailable(\n                            error_chain(&error),"
+        ));
     }
 }

@@ -91,7 +91,7 @@ impl ManagerApp {
                 div().pb(px(12.0)).child(
                     ErrorBar::new(
                         "planning-error",
-                        ErrorReport::new(c.planning_failed_detail, String::new()),
+                        ErrorReport::new(c.planning_failed_detail, self.error_details.clone()),
                     )
                     .locale(self.locale.words())
                     .on_close(Self::act(cx, |this, _, cx| {

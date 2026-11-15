@@ -114,7 +114,7 @@ impl ManagerApp {
                 div().pb(px(12.0)).child(
                     ErrorBar::new(
                         "window-error",
-                        ErrorReport::new(self.error_message(), String::new()),
+                        ErrorReport::new(self.error_message(), self.error_details.clone()),
                     )
                     .locale(self.locale.words()),
                 ),
