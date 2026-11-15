@@ -16,31 +16,30 @@ enhances:
 # ticket 36 put the session service, the command line, and the systemd user
 # unit into the same package, so the wider payload took its own version number
 # rather than reusing 0.1.0.
-# Placeholder checksums until v0.2.15 is published. ADR 0002 records the
-# checksum of a *published* release asset; the v0.2.14 values these variants
-# carried describe 0.2.14's packages, not 0.2.15's. The real values are written
-# back once the release is public and every asset has been re-downloaded and
-# verified.
+# The checksums below belong to the published v0.2.15 release assets. Each one
+# was re-hashed from the package downloaded back from the public release rather
+# than copied from its sidecar, which is what ADR 0002 requires a manifest to
+# record.
 artifacts:
   - release: "22.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-monitor_0.2.15_ubuntu-22.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 0b60fba28392c98cf56efa1999715194bc4dd3cdd00b3c86a22f11eece1026b8
     release_asset: better-monitor_0.2.15_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-monitor_0.2.15_ubuntu-22.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 658183b7a3544e2b995c0b1a6b10bf3192e2d1ef33e055c80352a4efdffbf01e
     release_asset: better-monitor_0.2.15_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-monitor_0.2.15_ubuntu-24.04_amd64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: e8c20f487c14708bafc1fd167b9efaa14184760433300aa3e0f81c05ed00b69e
     release_asset: better-monitor_0.2.15_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
     url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-monitor_0.2.15_ubuntu-24.04_arm64.deb
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sha256: 3c3990a46144f006c8a361250cc84931bbef00b21cf61f112078c274cbca06ad
     release_asset: better-monitor_0.2.15_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
