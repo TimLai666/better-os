@@ -78,6 +78,11 @@ window-attention-core ──> window-attention-service ──> better-window-att
         └──> manager-gui                               Window attention page
 adapters/gnome-shell-adapter/    shared relay-only GJS extension (ADR 0018)
 
+hardware-core ──> hardware-platform ──┬──> manager-gui        System page (ticket 86)
+   what a machine has, each card's     ├──> manager-daemon     org.betteros.Hardware1
+   rules, no I/O                       └──> better-window-attention  charger switch
+   sysfs under a root, PPD / UPower / gsd-power clients, the Hardware1 client
+
 defaults-core ──> defaults-platform ──> defaults-store ──> manager-gui / CLI
    declarations, aggregate status, plans   typed adapters   snapshots + history
 ```
@@ -402,6 +407,24 @@ collection is explicitly configured to include them.
   crate: its read helpers return `monitor_core::Observation`, so reusing them
   would put the whole Better Monitor metric-contract stack in every Better Awake
   binary to answer whether the charger is plugged in.
+- `hardware-platform` reads hwmon through `monitor-collectors-linux`'s
+  `scan_hwmon`, behind its `sensors` feature, so the suite has one reader of
+  `class/hwmon`. That puts `monitor-core` in Better Manager's window, which
+  `awake-platform` avoided for Better Awake; the window already carries far
+  more, and two hwmon readers would disagree about a chip sooner or later. The
+  daemon asks for no features: it only finds two attributes, and their
+  discovery (`sysfs::charge_limit_attribute`, `sysfs::fan_mode_attribute`) is
+  the same code the window reads with.
+- The two root writes of the System page go through `manager-daemon`'s
+  `org.betteros.Hardware1` (ADR 0017), one polkit action per method, the
+  argument checked against its closed set before polkit is asked. The daemon
+  cannot write `/sys` itself (`BindReadOnlyPaths=/sys`); each write is a
+  transient helper unit that sees only the one attribute file (ADR 0029). Everything
+  else on the page needs no root and goes to the desktop's own services:
+  power-profiles-daemon, gsd-power, UPower. "Switch power mode with the
+  charger" runs in `better-window-attention`, the session service the
+  `better-manager` package already ships, reading the person's choice from
+  `$XDG_CONFIG_HOME/better-os/power-follow.json` at each plug event.
 - `touchpad-platform` writes and reads what it claims. Its GVariant change-set
   encoder, which lives in `defaults-platform` and is shared with Better
   Defaults, is pinned byte-for-byte against values GLib produced, including the

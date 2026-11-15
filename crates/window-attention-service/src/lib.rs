@@ -13,11 +13,16 @@
 //! extension puts GNOME's handler back by itself, so a crash, a stop, and an
 //! uninstall all leave GNOME's stock banner in place.
 //!
+//! It also carries one small duty of its own that is not about attention:
+//! [`charger`], which switches the power mode when the charger is plugged in
+//! or out, for the System page's switch (ticket 86).
+//!
 //! [`Relay`] is the decision loop with the bus taken out, so the whole of it
 //! is tested against a fake shell and a temporary store; [`bus`] is the
 //! transport and holds no rule of its own.
 
 pub mod bus;
+pub mod charger;
 
 use std::collections::BTreeMap;
 

@@ -23,6 +23,7 @@ pub mod apt;
 pub mod authorize;
 pub mod dpkg_state;
 pub mod executor;
+pub mod hardware;
 pub mod health;
 pub mod host;
 pub mod revalidate;
@@ -42,6 +43,9 @@ pub const SERVICE_PACKAGE: &str = "better-manager-daemon";
 
 /// Where transaction journals and rollback records live.
 pub const STATE_DIR: &str = "/var/lib/better-os";
+
+/// The charge limit the person chose, for `--restore-hardware` at boot.
+pub const HARDWARE_STATE: &str = "/var/lib/better-os/hardware.json";
 
 /// The only component names this daemon will ever act on, regardless of what
 /// any catalog says.
@@ -96,6 +100,18 @@ pub enum DaemonError {
     /// `dpkg --configure -a` exited with an error.
     #[error("daemon.error.repair_failed")]
     RepairFailed,
+    /// The person cancelled the polkit prompt (ticket 86).
+    #[error("daemon.error.auth_cancelled")]
+    AuthCancelled,
+    /// A hardware argument outside its closed set; nothing was touched.
+    #[error("daemon.error.invalid_argument:{0}")]
+    InvalidArgument(String),
+    /// The daemon found no such hardware on this machine.
+    #[error("daemon.error.hardware_absent")]
+    HardwareAbsent,
+    /// The write or the read back failed.
+    #[error("daemon.error.write_failed:{0}")]
+    WriteFailed(String),
 }
 
 impl From<manager_ipc::IpcError> for DaemonError {
@@ -107,6 +123,29 @@ impl From<manager_ipc::IpcError> for DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The window reads these keys from `hardware-core`; a key renamed on one
+    /// side only would turn a cancelled prompt into "That didn't change".
+    #[test]
+    fn the_hardware_error_keys_are_the_ones_the_window_reads() {
+        use hardware_core::write::keys;
+        assert_eq!(DaemonError::AuthCancelled.to_string(), keys::AUTH_CANCELLED);
+        assert_eq!(DaemonError::Unauthorized.to_string(), keys::UNAUTHORIZED);
+        assert_eq!(
+            DaemonError::HardwareAbsent.to_string(),
+            keys::HARDWARE_ABSENT
+        );
+        assert!(
+            DaemonError::InvalidArgument("x".into())
+                .to_string()
+                .starts_with(keys::INVALID_ARGUMENT)
+        );
+        assert!(
+            DaemonError::WriteFailed("x".into())
+                .to_string()
+                .starts_with(keys::WRITE_FAILED)
+        );
+    }
 
     #[test]
     fn only_first_party_component_names_are_accepted() {
