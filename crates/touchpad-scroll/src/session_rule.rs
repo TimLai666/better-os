@@ -11,9 +11,24 @@
 //! user's service manager, outside every login session, and logind answers
 //! "no session" for it. Only for such a process, the user's display session
 //! stands in, which is what polkit does for the same case: it must still be
-//! local and active. polkit itself is not used because the service has
-//! dropped to an unprivileged account by the time a call arrives, and polkit
-//! 0.105 (Ubuntu 22.04) only answers such a mechanism about its own processes.
+//! local and active, and the user must have no remote session open at the
+//! time of the call.
+//!
+//! **What this is not:** a boundary between processes of the same uid. A
+//! process in no session can be the window, but it can as well be the same
+//! person's cron job, a `systemd-run --user` unit, or something an ssh login
+//! started under the user's service manager; logind cannot tell them apart.
+//! The remote-session refusal closes the ssh case while that login is open,
+//! and nothing closes the rest. That is accepted because a process running as
+//! the person can already change everything the person's desktop can (their
+//! settings, their files, their session's input), of which a scroll factor
+//! between 0.2 and 5 is the least; the rule exists to keep *other* accounts
+//! and remote logins out, not to tell one of the person's programs from
+//! another.
+//!
+//! polkit itself is not used because the service has dropped to an
+//! unprivileged account by the time a call arrives, and polkit 0.105 (Ubuntu
+//! 22.04) only answers such a mechanism about its own processes.
 
 /// What logind said about the caller.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,6 +39,8 @@ pub struct SessionFacts {
     /// The user's display session, consulted only when the caller is in no
     /// session at all.
     pub display_session: Option<SessionState>,
+    /// Whether the user has any remote session open (not closing) right now.
+    pub remote_session_open: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,6 +62,11 @@ pub fn decide(facts: &SessionFacts) -> Decision {
     }
     let session = match (&facts.caller_session, &facts.display_session) {
         (Some(session), _) => session,
+        (None, _) if facts.remote_session_open => {
+            return Decision::Refused(
+                "the caller is in no session and the user has a remote session open",
+            );
+        }
         (None, Some(session)) => session,
         (None, None) => return Decision::Refused("the caller is in no session"),
     };
@@ -79,6 +101,7 @@ mod tests {
             uid: 1000,
             caller_session: caller,
             display_session: display,
+            remote_session_open: false,
         }
     }
 
@@ -105,6 +128,17 @@ mod tests {
             Decision::Refused(_)
         ));
         assert!(matches!(decide(&facts(None, None)), Decision::Refused(_)));
+    }
+
+    #[test]
+    fn a_sessionless_caller_is_refused_while_the_user_has_a_remote_login() {
+        let mut ssh_started = facts(None, ACTIVE_LOCAL);
+        ssh_started.remote_session_open = true;
+        assert!(matches!(decide(&ssh_started), Decision::Refused(_)));
+        // A caller in the active local session is still itself, ssh or not.
+        let mut window_in_session = facts(ACTIVE_LOCAL, ACTIVE_LOCAL);
+        window_in_session.remote_session_open = true;
+        assert_eq!(decide(&window_in_session), Decision::Allowed);
     }
 
     #[test]

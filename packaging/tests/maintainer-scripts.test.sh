@@ -475,6 +475,7 @@ scroll() {
         better_os_scroll_libexec="$SCROLL_BIN/scrolld"
         better_os_scroll_state="$SCROLL_DIR/state"
         better_os_scroll_user='_better-touchpad-scroll'
+        better_os_scroll_reconnect="$SCROLL_DIR/run/better-os/touchpad-scroll-reconnect"
         better_os_scroll_systemd_dir="$SCROLL_DIR/systemd"
         . "$SCROLL_LIBRARY"
         "$@"
@@ -491,7 +492,9 @@ if grep -qx 'systemd-sysusers better-touchpad-scroll.conf' "$SCROLL_DIR/log" \
     && grep -qx 'systemctl start --no-block better-touchpad-scroll@event12.service' "$SCROLL_DIR/log" \
     && ! grep -q 'sda' "$SCROLL_DIR/log" \
     && ! grep -q 'try-restart' "$SCROLL_DIR/log" \
-    && grep -qx 'udevadm trigger --action=change --subsystem-match=input --property-match=ID_INPUT_TOUCHPAD=1' "$SCROLL_DIR/log"; then
+    && grep -qx 'systemctl start better-touchpad-scroll-coldplug.service' "$SCROLL_DIR/log" \
+    && ! grep -q '^udevadm trigger' "$SCROLL_DIR/log" \
+    && [[ ! -e "$SCROLL_DIR/run/better-os/touchpad-scroll-reconnect" ]]; then
     pass "a fresh install creates the account and starts one pass-through per touchpad"
 else
     fail "a fresh install did not turn the pass-through on: $(cat "$SCROLL_DIR/log")"
@@ -556,14 +559,26 @@ else
 fi
 
 : > "$SCROLL_DIR/log"
-touch "$SCROLL_DIR/fail-udevadm"
-message="$(scroll better_os_scroll_postinst configure "" 2>&1 >/dev/null)"
-rm -f "$SCROLL_DIR/fail-udevadm"
-if [[ "$message" == *"takes effect after the next restart"* ]] \
-    && grep -q 'systemctl start --no-block better-touchpad-scroll@event7.service' "$SCROLL_DIR/log"; then
-    pass "where udev cannot be asked (Better Manager's sandbox) the install says when it takes effect"
+touch "$SCROLL_DIR/fail-systemctl"
+scroll better_os_scroll_postinst configure "" >/dev/null 2>&1
+rm -f "$SCROLL_DIR/fail-systemctl"
+if [[ -e "$SCROLL_DIR/run/better-os/touchpad-scroll-reconnect" ]]; then
+    pass "when the touchpads cannot be started now, the install records it for the window"
 else
-    fail "a failed trigger was silent: $message"
+    fail "a failed coldplug left no record for the Scrolling page"
+fi
+scroll better_os_scroll_postinst configure "" >/dev/null 2>&1
+if [[ ! -e "$SCROLL_DIR/run/better-os/touchpad-scroll-reconnect" ]]; then
+    pass "a later install that starts them clears the record"
+else
+    fail "the reconnect record outlived a successful coldplug"
+fi
+touch "$SCROLL_DIR/run/better-os/touchpad-scroll-reconnect"
+scroll better_os_scroll_postrm remove >/dev/null 2>&1
+if [[ ! -e "$SCROLL_DIR/run/better-os/touchpad-scroll-reconnect" ]]; then
+    pass "removal deletes the reconnect record"
+else
+    fail "the reconnect record outlived the package"
 fi
 
 : > "$SCROLL_DIR/log"
@@ -573,6 +588,12 @@ if ! grep -q '^systemctl' "$SCROLL_DIR/log" && grep -q '^systemd-sysusers' "$SCR
     pass "without a running systemd (a container, a chroot) nothing is started"
 else
     fail "systemctl was called with no systemd running: $(cat "$SCROLL_DIR/log")"
+fi
+
+if bash "$ROOT_DIR/packaging/touchpad/generate-bus-policy-1.12.sh" --check; then
+    pass "the 22.04 bus policy is the one its generator writes"
+else
+    fail "the 22.04 bus policy is out of date with its generator"
 fi
 
 # --- the file is POSIX sh, as dpkg runs it ------------------------------------

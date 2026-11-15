@@ -177,6 +177,7 @@ paths:
   # them, the account, and the state directory in postrm.
   - /usr/libexec/better-touchpad-scrolld
   - /usr/lib/systemd/system/better-touchpad-scroll@.service
+  - /usr/lib/systemd/system/better-touchpad-scroll-coldplug.service
   - /usr/lib/udev/rules.d/90-better-touchpad-scroll.rules
   - /usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf
   - /usr/lib/sysusers.d/better-touchpad-scroll.conf

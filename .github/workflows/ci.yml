@@ -169,7 +169,7 @@ jobs:
           sh -n packaging/maintainer/user-units.sh packaging/maintainer/daemon.sh packaging/maintainer/touchpad-scroll.sh
           bash -n packaging/tests/maintainer-scripts.test.sh
           shellcheck --shell=sh packaging/maintainer/user-units.sh packaging/maintainer/daemon.sh packaging/maintainer/touchpad-scroll.sh
-          shellcheck packaging/tests/maintainer-scripts.test.sh
+          shellcheck packaging/tests/maintainer-scripts.test.sh packaging/touchpad/generate-bus-policy-1.12.sh
           bash packaging/tests/maintainer-scripts.test.sh
       # ADR 0028: the handoff a privileged service of 0.2.12 or older is
       # updated through, against fake dpkg, systemd, and apt.

@@ -1,8 +1,11 @@
 //! When the touchpad is held, and the guarantee that it is let go.
 //!
 //! The pass-through holds the touchpad (an exclusive `EVIOCGRAB`) only while a
-//! factor other than one is set. At neutral it holds nothing, creates no clone,
-//! and reads nothing. Taking and releasing the hold both wait for the pad to be
+//! factor other than one is set. At neutral it holds nothing and reads
+//! nothing. Its clone is created once, when the pass-through is built, and
+//! lives as long as it does: that is what lets the service forbid itself every
+//! further uinput setup call before it ever reads an event (see
+//! [`crate::seccomp`]). An idle clone reports nothing. Taking and releasing the hold both wait for the pad to be
 //! untouched, so the desktop never sees a finger appear mid-gesture or one that
 //! never lifts.
 //!
@@ -86,8 +89,8 @@ pub struct Passthrough<S: Source, F: SinkFactory> {
     cost: Cost,
     aborted_holds: u64,
     source: S,
-    factory: F,
-    sink: Option<F::Sink>,
+    sink: F::Sink,
+    holding: bool,
     scaler: Scaler,
     resyncing: bool,
     pending: Vec<InputEvent>,
@@ -99,28 +102,30 @@ pub struct Passthrough<S: Source, F: SinkFactory> {
 pub const IDLE_POLL: Duration = Duration::from_millis(250);
 
 impl<S: Source, F: SinkFactory> Passthrough<S, F> {
-    pub fn new(source: S, factory: F) -> Self {
+    /// Build the pass-through and its clone. Nothing is grabbed yet.
+    pub fn new(source: S, mut factory: F) -> io::Result<Self> {
         let scaler = Scaler::new(source.descriptor());
-        Self {
+        let sink = factory.create(source.descriptor())?;
+        Ok(Self {
             cost: Cost::default(),
             aborted_holds: 0,
             source,
-            factory,
-            sink: None,
+            sink,
+            holding: false,
             scaler,
             resyncing: false,
             pending: Vec::new(),
             read: Vec::new(),
             out: Vec::new(),
-        }
+        })
     }
 
     pub fn mode(&self, factors: Factors) -> Mode {
-        match (&self.sink, self.resyncing, factors.is_neutral()) {
-            (Some(_), true, _) => Mode::Resyncing,
-            (Some(_), false, _) => Mode::Holding,
-            (None, _, true) => Mode::Idle,
-            (None, _, false) => Mode::WaitingToHold,
+        match (self.holding, self.resyncing, factors.is_neutral()) {
+            (true, true, _) => Mode::Resyncing,
+            (true, false, _) => Mode::Holding,
+            (false, _, true) => Mode::Idle,
+            (false, _, false) => Mode::WaitingToHold,
         }
     }
 
@@ -140,8 +145,7 @@ impl<S: Source, F: SinkFactory> Passthrough<S, F> {
 
     /// One turn of the loop. Returns within about `timeout`.
     pub fn step(&mut self, factors: Factors, timeout: Duration) -> io::Result<()> {
-        let holding = self.sink.is_some();
-        if !holding {
+        if !self.holding {
             // Asked every turn, neutral or not: it is also how an idle
             // instance learns its touchpad was unplugged (ENODEV), so it exits
             // instead of holding a dead node a re-plugged pad may be renumbered
@@ -215,18 +219,15 @@ impl<S: Source, F: SinkFactory> Passthrough<S, F> {
     }
 
     fn emit(&mut self) -> io::Result<()> {
-        if let Some(sink) = self.sink.as_mut()
-            && !self.out.is_empty()
-        {
-            sink.emit(&self.out)?;
+        if self.holding && !self.out.is_empty() {
+            self.sink.emit(&self.out)?;
         }
         Ok(())
     }
 
-    /// Create the clone, then take the grab. The order means there is never a
-    /// moment where the pad is held and nothing receives it.
+    /// Take the grab. The clone already exists, so there is never a moment
+    /// where the pad is held and nothing receives it.
     fn hold(&mut self) -> io::Result<()> {
-        let mut sink = self.factory.create(self.source.descriptor())?;
         self.source.set_grab(true)?;
         // A touch or a press between the check and the grab went to libinput
         // from the original, and its release would now go to the clone: the
@@ -236,7 +237,6 @@ impl<S: Source, F: SinkFactory> Passthrough<S, F> {
         let late = self.source.drain()?;
         if late > 0 || self.source.touching()? {
             let released = self.source.set_grab(false);
-            drop(sink);
             self.aborted_holds += 1;
             return released;
         }
@@ -247,35 +247,34 @@ impl<S: Source, F: SinkFactory> Passthrough<S, F> {
         let slot = self.source.current_slot()?;
         self.scaler.start(slot, &mut self.out);
         if !self.out.is_empty()
-            && let Err(error) = sink.emit(&self.out)
+            && let Err(error) = self.sink.emit(&self.out)
         {
             let _ = self.source.set_grab(false);
             return Err(error);
         }
-        self.sink = Some(sink);
+        self.holding = true;
         Ok(())
     }
 
-    /// Release the grab, then destroy the clone: the pad goes back to libinput
-    /// before its stand-in disappears. Anything the clone still has down is
-    /// lifted first.
+    /// Release the grab: the pad goes back to libinput. Anything the clone
+    /// still has down is lifted first, so the idle clone holds nothing down.
     pub fn release(&mut self) -> io::Result<()> {
-        let Some(mut sink) = self.sink.take() else {
+        if !self.holding {
             return Ok(());
-        };
+        }
         if self.scaler.touching() {
             self.out.clear();
             self.scaler.lift_all(&mut self.out);
-            let _ = sink.emit(&self.out);
+            let _ = self.sink.emit(&self.out);
         }
         self.pending.clear();
         self.resyncing = false;
-        let result = self.source.set_grab(false);
-        drop(sink);
-        result
+        self.holding = false;
+        self.source.set_grab(false)
     }
 }
 
+/// Ungrab first; the clone is destroyed after, when its field is dropped.
 impl<S: Source, F: SinkFactory> Drop for Passthrough<S, F> {
     fn drop(&mut self) {
         let _ = self.release();
@@ -429,7 +428,7 @@ mod tests {
         let factory = FakeFactory {
             journal: journal.clone(),
         };
-        (Passthrough::new(source, factory), journal)
+        (Passthrough::new(source, factory).unwrap(), journal)
     }
 
     fn faster() -> Factors {
@@ -454,7 +453,11 @@ mod tests {
         }
         let journal = journal.lock().unwrap();
         assert_eq!(journal.grabs, 0);
-        assert_eq!(journal.clones_created, 0);
+        assert_eq!(
+            journal.clones_created, 1,
+            "the clone is made once, at the start"
+        );
+        assert!(journal.emitted.is_empty(), "an idle clone reports nothing");
         assert_eq!(passthrough.mode(Factors::NEUTRAL), Mode::Idle);
     }
 
@@ -495,7 +498,7 @@ mod tests {
         let journal = journal.lock().unwrap();
         assert!(!journal.grabbed);
         assert_eq!(journal.releases, 1);
-        assert_eq!(journal.clones_alive, 0);
+        assert_eq!(journal.clones_alive, 1, "the clone stays, idle");
     }
 
     #[test]
@@ -527,7 +530,7 @@ mod tests {
         let inner = journal.clone();
         let result = std::panic::catch_unwind(move || {
             let source = FakeSource::new(multitouch_touchpad(), inner.clone());
-            let mut passthrough = Passthrough::new(source, FakeFactory { journal: inner });
+            let mut passthrough = Passthrough::new(source, FakeFactory { journal: inner }).unwrap();
             passthrough.step(faster(), TICK).unwrap();
             assert!(passthrough.mode(faster()) == Mode::Holding);
             panic!("a bug in the loop");
@@ -592,7 +595,7 @@ mod tests {
                 !journal.grabbed,
                 "the pad stayed grabbed with a finger down"
             );
-            assert_eq!(journal.clones_alive, 0);
+            assert_eq!(journal.clones_alive, 1, "the clone stays, idle");
         }
         assert_eq!(passthrough.aborted_holds(), 1);
         assert_eq!(passthrough.mode(faster()), Mode::WaitingToHold);
@@ -613,7 +616,7 @@ mod tests {
         let journal = journal.lock().unwrap();
         assert!(!journal.grabbed);
         assert_eq!(journal.releases, 1);
-        assert_eq!(journal.clones_alive, 0);
+        assert_eq!(journal.clones_alive, 1, "the clone stays, idle");
         assert_eq!(passthrough.aborted_holds(), 1);
     }
 

@@ -10,16 +10,18 @@
 # Every command is looked up on PATH, so the test drives it against fakes.
 #
 # Installing is what turns it on: postinst creates the account and the state
-# directory, asks udev to look at the touchpads already there (which tags them
-# for systemd and starts their instances), and starts an instance for every
-# touchpad sysfs describes, for a device systemd already knows. udev starts one
-# for every touchpad plugged in later. `udevadm trigger` writes to /sys and
-# fails inside Better Manager's daemon sandbox (ProtectKernelTunables); then the
-# instances bound to an untagged device start at the next boot or replug, and
-# the postinst says so. Removing stops every instance and
-# deletes the account and the state; dpkg removes the unit, the rule, and the
-# bus policy. A grab or a clone never outlives its process, so stopping the
-# instances is all it takes to give every touchpad back.
+# directory, reloads the bus, and asks systemd to run
+# better-touchpad-scroll-coldplug.service, which triggers udev for the
+# touchpads already there. That unit runs in PID 1's context, so it works even
+# when this script runs inside Better Manager's daemon sandbox, where /sys is
+# read-only. If it still fails, the script writes
+# $better_os_scroll_reconnect, which Better Touchpad's Scrolling page reads to
+# say "restart or reconnect the touchpad"; the person never depends on this
+# script's output. udev starts an instance for every touchpad plugged in later.
+# Removing stops every instance and deletes the account and the state; dpkg
+# removes the units, the rule, and the bus policy. A grab or a clone never
+# outlives its process, so stopping the instances is all it takes to give
+# every touchpad back.
 
 better_os_scroll_unit_glob='better-touchpad-scroll@*.service'
 
@@ -40,9 +42,11 @@ better_os_scroll_postinst() {
     better_os_scroll_systemd_running || return 0
     systemctl daemon-reload >/dev/null 2>&1 || true
     udevadm control --reload-rules >/dev/null 2>&1 || true
-    if ! udevadm trigger --action=change --subsystem-match=input \
-        --property-match=ID_INPUT_TOUCHPAD=1 >/dev/null 2>&1; then
-        echo "better-touchpad: scroll speed takes effect after the next restart or when the touchpad is reconnected" >&2
+    if systemctl start better-touchpad-scroll-coldplug.service >/dev/null 2>&1; then
+        rm -f -- "$better_os_scroll_reconnect"
+    else
+        mkdir -p -- "${better_os_scroll_reconnect%/*}" 2>/dev/null || true
+        : > "$better_os_scroll_reconnect" 2>/dev/null || true
     fi
     if [ -n "${2:-}" ]; then
         # An upgrade: the running instances restart on the new program.
@@ -76,6 +80,7 @@ better_os_scroll_postrm() {
                 systemctl reset-failed "$better_os_scroll_unit_glob" >/dev/null 2>&1 || true
             fi
             rm -rf -- "$better_os_scroll_state"
+            rm -f -- "$better_os_scroll_reconnect"
             # An instance udev started between prerm and now would keep the
             # account in use and make userdel fail: stop them all again.
             if better_os_scroll_systemd_running; then

@@ -91,9 +91,10 @@ belong on the record:
 - Fingers moving toward or away from each other (a pinch, a rotation) are not
   scaled on that axis, so a pinch keeps its scale and angle whatever the two
   factors are.
-- When two-finger mode ends, the distance a scroll added is taken back within
-  a few frames, so a finger left resting to click lands in the clickpad
-  button zone it is really in.
+- The distance a scroll added is dropped in the very frame where a finger
+  lifts out of two-finger mode or a button goes down, for every contact, so a
+  finger left resting to click lands in the clickpad button zone it is really
+  in.
 - A scaled finger stops at the pad's edge, so at factor 5 the scroll can end
   when the fingers are halfway across.
 - The factors belong to the machine's touchpads, not to one person's session

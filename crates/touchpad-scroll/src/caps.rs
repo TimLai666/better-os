@@ -243,6 +243,33 @@ pub fn classify_capabilities(device: &DeviceDescriptor) -> Result<(), Refusal> {
     if device.keys.has(BTN_TOOL_PEN) || device.keys.has(BTN_STYLUS) {
         return Err(Refusal::NotATouchpad("it reports a pen (a tablet)"));
     }
+    // The same three lists the seccomp filter enforces on the clone, so a
+    // device this accepts is one the filtered service can still build.
+    if device
+        .keys
+        .iter()
+        .any(|code| !TOUCHPAD_KEYS.contains(&code))
+    {
+        return Err(Refusal::NotATouchpad(
+            "it reports a button a touchpad does not have",
+        ));
+    }
+    if device
+        .relative
+        .iter()
+        .any(|code| !WHEEL_RELS.contains(&code))
+    {
+        return Err(Refusal::NotATouchpad("it reports relative pointer motion"));
+    }
+    if device
+        .properties
+        .iter()
+        .any(|code| !TOUCHPAD_PROPS.contains(&code))
+    {
+        return Err(Refusal::NotATouchpad(
+            "it has a property a touchpad does not (a pointing stick or an accelerometer)",
+        ));
+    }
     if !device.absolute.has(ABS_X) || !device.absolute.has(ABS_Y) {
         return Err(Refusal::NotATouchpad("it reports no x and y position"));
     }
@@ -433,6 +460,23 @@ mod tests {
         let mut mouse = multitouch_touchpad();
         mouse.keys = Bits::with(&[BTN_LEFT, BTN_RIGHT, BTN_MIDDLE]);
         assert!(matches!(classify(&mouse), Err(Refusal::NotATouchpad(_))));
+    }
+
+    #[test]
+    fn a_relative_mouse_or_a_pointing_stick_beside_a_finger_tool_is_refused() {
+        let mut mouse = multitouch_touchpad();
+        mouse.events.set(EV_REL);
+        mouse.relative = Bits::with(&[REL_X, REL_Y]);
+        assert!(matches!(classify(&mouse), Err(Refusal::NotATouchpad(_))));
+        let mut stick = multitouch_touchpad();
+        stick.properties.set(0x05);
+        assert!(matches!(classify(&stick), Err(Refusal::NotATouchpad(_))));
+        let mut joystick_button = multitouch_touchpad();
+        joystick_button.keys.set(0x120); // BTN_TRIGGER
+        assert!(matches!(
+            classify(&joystick_button),
+            Err(Refusal::NotATouchpad(_))
+        ));
     }
 
     #[test]

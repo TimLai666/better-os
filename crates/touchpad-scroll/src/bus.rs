@@ -127,6 +127,7 @@ async fn session_facts(
         uid,
         caller_session: None,
         display_session: None,
+        remote_session_open: false,
     };
     // "No session for this process" is an answer, not an error.
     if let Ok(path) = manager
@@ -145,6 +146,18 @@ async fn session_facts(
     let user = zbus::Proxy::new(connection, LOGIND, user_path, "org.freedesktop.login1.User")
         .await
         .map_err(text)?;
+    let sessions: Vec<(String, OwnedObjectPath)> =
+        user.get_property("Sessions").await.map_err(text)?;
+    for (_, path) in sessions {
+        let session = zbus::Proxy::new(connection, LOGIND, path, "org.freedesktop.login1.Session")
+            .await
+            .map_err(text)?;
+        let remote: bool = session.get_property("Remote").await.map_err(text)?;
+        let state: String = session.get_property("State").await.map_err(text)?;
+        if remote && state != "closing" {
+            facts.remote_session_open = true;
+        }
+    }
     let (_, display): (String, OwnedObjectPath) =
         user.get_property("Display").await.map_err(text)?;
     if display.as_str() != "/" {

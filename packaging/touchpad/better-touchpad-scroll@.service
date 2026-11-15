@@ -17,6 +17,10 @@ StartLimitBurst=5
 Type=notify
 ExecStart=/usr/libexec/better-touchpad-scrolld %I
 Restart=on-failure
+# 69 is the touchpad going away (ENODEV): udev and BindsTo= bring the instance
+# back when the device does, so it is not restarted here, and a pad that drops
+# off and returns never runs the unit into its start limit.
+RestartPreventExitStatus=69
 RestartSec=1
 # The event loop beats this from the thread that forwards events. A loop that
 # stops turning is killed, which releases the touchpad.

@@ -16,6 +16,18 @@ pub const SERVICE_USER: &str = "_better-touchpad-scroll";
 /// Where the service keeps the factors across restarts and reboots.
 pub const STATE_FILE: &str = "/var/lib/better-touchpad-scroll/factors";
 
+/// Written by better-touchpad's postinst when it could not start the
+/// pass-throughs for the touchpads already present; read by the Scrolling page
+/// to say "restart or reconnect the touchpad". Under /run, so a restart, which
+/// is one of the two fixes, also clears it.
+pub const RECONNECT_MARKER: &str = "/run/better-os/touchpad-scroll-reconnect";
+
+/// The exit status of an instance whose touchpad went away (`ENODEV`). The unit
+/// names it in `RestartPreventExitStatus=`, so a pad that drops off and comes
+/// back is restarted by udev and `BindsTo=`, never by `Restart=`, and a flaky
+/// pad never runs the unit into its start limit. `EX_UNAVAILABLE`.
+pub const EXIT_DEVICE_GONE: u8 = 69;
+
 pub fn bus_name(event: &str) -> String {
     format!("{BUS_NAME_PREFIX}{event}")
 }

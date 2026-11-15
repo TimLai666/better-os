@@ -67,6 +67,17 @@ can read the touchpad can read the keyboard.
   skipping and a narrower bus policy, a postrm that stops again before
   `userdel` and reports its failure, and the factors stated as one pair for
   every touchpad.
+- A second review asked for eight more, all fixed with tests: the 22.04 bus
+  policy names each instance's destination, a sessionless caller is refused
+  while the user has a remote login (and the same-uid limit is written down),
+  the clone is created once and then every uinput setup call is forbidden
+  (with wheel-only relative bits and no direct-input property before that),
+  install from Better Manager starts the instances through a coldplug unit and
+  records "restart or reconnect" for the window when it cannot, a resting
+  finger is put back in the frame a finger lifts or a button goes down, the
+  device-gone exit is 69 and never restarted, trackpoint pairing was checked
+  in libinput 1.20.0 and 1.25.0 (no refusal needed), and the clone's udev
+  properties require a matching real touchpad.
 - Done except the owner's real-hardware run, which is the one open box. No
   test touched a real `/dev/input` node, `/dev/uinput`, or the real system
   bus; the window was looked at in a headless GNOME Shell 46 against a fake

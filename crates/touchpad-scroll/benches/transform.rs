@@ -90,7 +90,8 @@ fn main() {
         FakeFactory {
             journal: journal.clone(),
         },
-    );
+    )
+    .unwrap();
     passthrough.step(factors, Duration::ZERO).unwrap();
     passthrough.source_mut().batches.push_back(start());
     passthrough.step(factors, Duration::ZERO).unwrap();

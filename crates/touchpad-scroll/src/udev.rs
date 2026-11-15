@@ -96,19 +96,62 @@ pub fn parse_clone_phys(phys: &str) -> Option<UdevFacts> {
 }
 
 /// `--clone-properties <syspath>`, run by udev for a clone: the properties as
-/// `KEY=VALUE` lines for `IMPORT{program}`. The path must be under `/sys` and
-/// must not climb out of it.
+/// `KEY=VALUE` lines for `IMPORT{program}`.
+///
+/// The `phys` alone is not trusted: anything that can write `/dev/uinput` can
+/// give a device that `phys`. The properties are printed only when a real
+/// touchpad is present right now (not a clone, accepted by
+/// [`crate::caps::classify_capabilities`]) with the clone's bus type, vendor,
+/// product, and name, and with exactly the integration and device group the
+/// `phys` claims (its udev entry's own, or the bus type's integration when the
+/// entry has none). Otherwise nothing is printed, and the clone gets what udev
+/// and libinput would give any virtual device.
 pub fn clone_properties(syspath: &str) -> Option<String> {
-    if !syspath.starts_with("/sys/") || syspath.split('/').any(|part| part == "..") {
+    if !syspath.starts_with("/sys/") {
         return None;
     }
-    let phys = std::fs::read_to_string(Path::new(syspath).join("device/phys")).ok()?;
-    let facts = parse_clone_phys(phys.trim_end_matches('\n'))?;
+    clone_properties_at(
+        syspath,
+        &crate::sysfs::class_root(),
+        Path::new("/run/udev/data"),
+    )
+}
+
+pub fn clone_properties_at(syspath: &str, class_root: &Path, udev_data: &Path) -> Option<String> {
+    if syspath.split('/').any(|part| part == "..") {
+        return None;
+    }
+    let clone = crate::sysfs::describe(Path::new(syspath))?;
+    let claimed = parse_clone_phys(&clone.phys)?;
+    let matches_an_original = std::fs::read_dir(class_root)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| crate::sysfs::is_event_name(name))
+        .filter_map(|name| {
+            let mut original = crate::sysfs::describe(&class_root.join(&name))?;
+            let dev = std::fs::read_to_string(class_root.join(&name).join("dev")).ok()?;
+            let (major, minor) = dev.trim().split_once(':')?;
+            original.udev = std::fs::read_to_string(udev_data.join(format!("c{major}:{minor}")))
+                .map(|text| parse_db(&text))
+                .unwrap_or_default();
+            Some(original)
+        })
+        .filter(|original| crate::caps::classify_capabilities(original).is_ok())
+        .any(|original| {
+            original.id == clone.id
+                && original.name == clone.name
+                && Some(original.integration()) == claimed.integration.as_deref()
+                && original.udev.device_group == claimed.device_group
+        });
+    if !matches_an_original {
+        return None;
+    }
     let mut out = String::new();
-    if let Some(integration) = facts.integration {
+    if let Some(integration) = claimed.integration {
         out.push_str(&format!("ID_INPUT_TOUCHPAD_INTEGRATION={integration}\n"));
     }
-    if let Some(group) = facts.device_group {
+    if let Some(group) = claimed.device_group {
         out.push_str(&format!("LIBINPUT_DEVICE_GROUP={group}\n"));
     }
     Some(out)
@@ -177,5 +220,86 @@ mod tests {
     fn clone_properties_reads_only_under_sys() {
         assert_eq!(clone_properties("/etc/passwd"), None);
         assert_eq!(clone_properties("/sys/../etc"), None);
+    }
+
+    /// One input device in a scratch sysfs: the touchpad's capabilities.
+    fn write_device(dir: &Path, name: &str, phys: &str, product: &str, dev: Option<&str>) {
+        let device = dir.join("device");
+        std::fs::create_dir_all(device.join("capabilities")).unwrap();
+        std::fs::create_dir_all(device.join("id")).unwrap();
+        std::fs::write(device.join("name"), format!("{name}\n")).unwrap();
+        std::fs::write(device.join("phys"), format!("{phys}\n")).unwrap();
+        for (file, value) in [
+            ("bustype", "0018"),
+            ("vendor", "06cb"),
+            ("product", product),
+            ("version", "0100"),
+        ] {
+            std::fs::write(device.join("id").join(file), format!("{value}\n")).unwrap();
+        }
+        std::fs::write(device.join("properties"), "5\n").unwrap();
+        let caps = device.join("capabilities");
+        for (file, value) in [
+            ("ev", "1b"),
+            ("key", "e520 10000 0 0 0 0"),
+            ("abs", "6e18000 3"),
+            ("rel", "0"),
+            ("msc", "20"),
+        ] {
+            std::fs::write(caps.join(file), format!("{value}\n")).unwrap();
+        }
+        if let Some(dev) = dev {
+            std::fs::write(dir.join("dev"), format!("{dev}\n")).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_clone_gets_its_properties_only_when_a_matching_touchpad_is_there() {
+        let root = tempfile::tempdir().unwrap();
+        let class = root.path().join("class");
+        let udev = root.path().join("udev");
+        std::fs::create_dir_all(&udev).unwrap();
+        write_device(
+            &class.join("event7"),
+            "SYNA Touchpad",
+            "i2c-SYNA:00",
+            "ceb0",
+            Some("13:71"),
+        );
+        std::fs::write(udev.join("c13:71"), DB).unwrap();
+        let group = "18/6cb/ceb0:i2c-SYNA2BA6:00";
+        let clone_dir = root.path().join("virtual/event40");
+        let phys = clone_phys("internal", Some(group));
+
+        write_device(&clone_dir, "SYNA Touchpad", &phys, "ceb0", None);
+        let printed = clone_properties_at(clone_dir.to_str().unwrap(), &class, &udev).unwrap();
+        assert_eq!(
+            printed,
+            format!("ID_INPUT_TOUCHPAD_INTEGRATION=internal\nLIBINPUT_DEVICE_GROUP={group}\n")
+        );
+
+        // A device that only claims the phys, with other ids: nothing.
+        write_device(&clone_dir, "SYNA Touchpad", &phys, "beef", None);
+        assert_eq!(
+            clone_properties_at(clone_dir.to_str().unwrap(), &class, &udev),
+            None
+        );
+
+        // The right ids but a group the original does not have: nothing.
+        let forged = clone_phys("internal", Some("3/1/2:usb-evil"));
+        write_device(&clone_dir, "SYNA Touchpad", &forged, "ceb0", None);
+        assert_eq!(
+            clone_properties_at(clone_dir.to_str().unwrap(), &class, &udev),
+            None
+        );
+
+        // No original at all: nothing.
+        std::fs::remove_dir_all(&class).unwrap();
+        std::fs::create_dir_all(&class).unwrap();
+        write_device(&clone_dir, "SYNA Touchpad", &phys, "ceb0", None);
+        assert_eq!(
+            clone_properties_at(clone_dir.to_str().unwrap(), &class, &udev),
+            None
+        );
     }
 }

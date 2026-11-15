@@ -113,6 +113,7 @@ required_data_files() {
                 "usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml" \
                 usr/share/icons/hicolor/scalable/apps/better-touchpad.svg \
                 usr/lib/systemd/system/better-touchpad-scroll@.service \
+                usr/lib/systemd/system/better-touchpad-scroll-coldplug.service \
                 usr/lib/udev/rules.d/90-better-touchpad-scroll.rules \
                 usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf \
                 usr/lib/sysusers.d/better-touchpad-scroll.conf \
@@ -570,6 +571,7 @@ for package_name in \
                 '^WatchdogSec=' \
                 '^PrivateNetwork=yes$' \
                 '^BindsTo=dev-input-%i.device$' \
+                '^RestartPreventExitStatus=69$' \
                 '^After=dev-input-%i.device$'; do
                 grep -q "$line" "$scroll_unit" || {
                     printf 'The scroll unit is missing %s\n' "$line" >&2
@@ -580,6 +582,11 @@ for package_name in \
                 printf 'The scroll unit allows a device beyond its touchpad and uinput\n' >&2
                 exit 1
             fi
+            grep -q '^ExecStart=/usr/bin/udevadm trigger --action=change --subsystem-match=input --property-match=ID_INPUT_TOUCHPAD=1$' \
+                "$extract_dir/usr/lib/systemd/system/better-touchpad-scroll-coldplug.service" || {
+                printf 'The coldplug unit does not trigger the touchpads alone\n' >&2
+                exit 1
+            }
             grep -q 'ENV{SYSTEMD_WANTS}+="better-touchpad-scroll@%k.service"' \
                 "$extract_dir/usr/lib/udev/rules.d/90-better-touchpad-scroll.rules" || {
                 printf 'The udev rule does not start a pass-through per touchpad\n' >&2
@@ -587,8 +594,17 @@ for package_name in \
             }
             scroll_policy="$extract_dir/usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf"
             if [[ "$RELEASE_TARGET" == ubuntu-22.04 ]]; then
-                if grep -q 'send_destination_prefix' "$scroll_policy"; then
+                if grep -q 'send_destination_prefix=' "$scroll_policy"; then
                     printf 'The 22.04 bus policy uses an attribute its dbus-daemon cannot read\n' >&2
+                    exit 1
+                fi
+                # Every send rule names one instance's own bus name.
+                if grep -E '<allow send_' "$scroll_policy" | grep -Evq 'send_destination="org\.betteros\.TouchpadScroll1\.event[0-9]+"'; then
+                    printf 'The 22.04 bus policy allows a send without a pass-through destination\n' >&2
+                    exit 1
+                fi
+                if [[ "$(grep -c 'send_destination="org.betteros.TouchpadScroll1.event' "$scroll_policy")" != 512 ]]; then
+                    printf 'The 22.04 bus policy does not name event0 to event511\n' >&2
                     exit 1
                 fi
             else

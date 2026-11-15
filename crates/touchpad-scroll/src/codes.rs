@@ -69,3 +69,39 @@ pub const FINGER_TOOLS: [u16; 5] = [
     BTN_TOOL_QUADTAP,
     BTN_TOOL_QUINTTAP,
 ];
+
+/// Every key code a touchpad the pass-through holds may report: the mouse
+/// buttons and the finger tools. No keyboard key, no pen, no stylus. Both
+/// `caps::classify` and the seccomp filter use this one list.
+pub const TOUCHPAD_KEYS: [u16; 14] = [
+    0x110,
+    0x111,
+    0x112,
+    0x113,
+    0x114,
+    0x115,
+    0x116,
+    0x117, // BTN_LEFT..BTN_TASK
+    BTN_TOOL_FINGER,
+    BTN_TOOL_QUINTTAP,
+    BTN_TOUCH,
+    BTN_TOOL_DOUBLETAP,
+    BTN_TOOL_TRIPLETAP,
+    BTN_TOOL_QUADTAP,
+];
+
+/// The relative axes a held device may report: wheels only, never `REL_X` or
+/// `REL_Y`.
+pub const WHEEL_RELS: [u16; 4] = [REL_HWHEEL, REL_WHEEL, REL_WHEEL_HI_RES, REL_HWHEEL_HI_RES];
+
+/// `INPUT_PROP_TOPBUTTONPAD`.
+pub const INPUT_PROP_TOPBUTTONPAD: u16 = 0x04;
+
+/// The device properties a held touchpad may have. Never
+/// `INPUT_PROP_DIRECT` (a touchscreen), a pointing stick, or an accelerometer.
+pub const TOUCHPAD_PROPS: [u16; 4] = [
+    INPUT_PROP_POINTER,
+    INPUT_PROP_BUTTONPAD,
+    INPUT_PROP_SEMI_MT,
+    INPUT_PROP_TOPBUTTONPAD,
+];

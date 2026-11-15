@@ -31,10 +31,6 @@ use crate::codes::*;
 use crate::event::InputEvent;
 use crate::factors::Factors;
 
-/// How much of a carried offset is kept each frame once two-finger mode ends:
-/// a 1000-unit offset is gone in five frames (about 40 ms at a pad's rate).
-const CONVERGE: f64 = 0.25;
-
 /// What one axis of one contact does this frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Motion {
@@ -43,8 +39,9 @@ enum Motion {
     /// Two fingers down but not scrolling on this axis (a pinch or a
     /// rotation): movement passes as it is, and the offset is kept.
     Keep,
-    /// Not two-finger mode: the offset shrinks back to nothing.
-    Converge,
+    /// The scroll is over (a finger lifted) or a button went down: the offset
+    /// goes, at once, so the position libinput sees is the finger's own.
+    Snap,
 }
 
 /// One axis of one contact: the raw position, and the offset scaling added.
@@ -62,17 +59,10 @@ impl Track {
                 self.offset += f64::from(raw - last) * (factor - 1.0);
             }
             (Some(_), Motion::Keep) => {}
-            (Some(_), Motion::Converge) => self.converge(),
+            (Some(_), Motion::Snap) => self.offset = 0.0,
         }
         self.raw = Some(raw);
         self.position(range)
-    }
-
-    fn converge(&mut self) {
-        self.offset *= CONVERGE;
-        if self.offset.abs() < 0.5 {
-            self.offset = 0.0;
-        }
     }
 
     /// The position the clone shows, kept on the pad: an offset that would
@@ -242,6 +232,12 @@ impl Scaler {
             Some((last, body)) if last.is_report() => (body, Some(*last)),
             _ => (frame, None),
         };
+        let was_two = self.keys_down.contains(&BTN_TOOL_DOUBLETAP);
+        let button_down = body.iter().any(|event| {
+            event.kind == EV_KEY
+                && event.value == 1
+                && matches!(event.code, BTN_LEFT | BTN_RIGHT | BTN_MIDDLE)
+        });
         // The frame's finger count is the one after its key events.
         let two_fingers = {
             let mut doubletap = self.keys_down.contains(&BTN_TOOL_DOUBLETAP);
@@ -252,10 +248,15 @@ impl Scaler {
             }
             doubletap
         };
-        let (horizontal, vertical) = if two_fingers {
+        // A finger lifting out of two-finger mode, or a click, ends what the
+        // scroll added: in this same frame, for every contact.
+        let snap = (was_two && !two_fingers) || button_down;
+        let (horizontal, vertical) = if snap {
+            (Motion::Snap, Motion::Snap)
+        } else if two_fingers {
             self.two_finger_motion(body, factors)
         } else {
-            (Motion::Converge, Motion::Converge)
+            (Motion::Keep, Motion::Keep)
         };
 
         let mut moved = vec![(false, false); self.contacts.len()];
@@ -353,19 +354,18 @@ impl Scaler {
                 _ => out.push(*event),
             }
         }
-        if !two_fingers {
-            self.converge_resting(&moved, legacy_moved, out);
+        if snap {
+            self.snap_resting(&moved, legacy_moved, out);
         }
         if let Some(report) = report {
             out.push(report);
         }
     }
 
-    /// Once two-finger mode ends, a finger that rests (sends no position)
-    /// still has to be brought back to where it really is: a click on a
-    /// clickpad is placed in a software-button zone by the finger's position.
-    /// Each frame moves every resting contact's shown position a step closer.
-    fn converge_resting(
+    /// A finger that rests (sends no position in this frame) still has to be
+    /// put back where it really is: a click on a clickpad is placed in a
+    /// software-button zone by the finger's position, in the same frame.
+    fn snap_resting(
         &mut self,
         moved: &[(bool, bool)],
         legacy_moved: (bool, bool),
@@ -389,12 +389,12 @@ impl Scaler {
                 switched = true;
             }
             if x {
-                contact.x.converge();
+                contact.x.offset = 0.0;
                 let value = contact.x.position(self.mt_x_range);
                 out.push(InputEvent::new(EV_ABS, ABS_MT_POSITION_X, value));
             }
             if y {
-                contact.y.converge();
+                contact.y.offset = 0.0;
                 let value = contact.y.position(self.mt_y_range);
                 out.push(InputEvent::new(EV_ABS, ABS_MT_POSITION_Y, value));
             }
@@ -403,12 +403,12 @@ impl Scaler {
             out.push(InputEvent::new(EV_ABS, ABS_MT_SLOT, slot as i32));
         }
         if !legacy_moved.0 && self.legacy.x.carries_offset() {
-            self.legacy.x.converge();
+            self.legacy.x.offset = 0.0;
             let value = self.legacy.x.position(self.x_range);
             out.push(InputEvent::new(EV_ABS, ABS_X, value));
         }
         if !legacy_moved.1 && self.legacy.y.carries_offset() {
-            self.legacy.y.converge();
+            self.legacy.y.offset = 0.0;
             let value = self.legacy.y.position(self.y_range);
             out.push(InputEvent::new(EV_ABS, ABS_Y, value));
         }
@@ -651,12 +651,12 @@ mod tests {
     }
 
     #[test]
-    fn a_click_after_a_scroll_lands_where_the_finger_really_is() {
+    fn lifting_one_finger_and_clicking_without_moving_clicks_where_the_finger_is() {
         let mut scaler = Scaler::new(&multitouch_touchpad());
         let factors = Factors::new(5.0, 1.0).unwrap();
         two_finger_scroll(&mut scaler, factors);
         // Slot 0 is at raw 1100 and shown at 1500. The second finger lifts;
-        // the first rests in the bottom area to click, sending no position.
+        // the first rests in the bottom area, sending no position.
         let lift = run(
             &mut scaler,
             vec![
@@ -667,26 +667,30 @@ mod tests {
             ],
             factors,
         );
-        let mut shown = values(&lift, ABS_MT_POSITION_Y);
-        // Frames with only a timestamp bring the resting finger back.
-        for stamp in 0..6 {
-            let out = run(
-                &mut scaler,
-                vec![InputEvent::new(EV_MSC, 5, stamp)],
-                factors,
-            );
-            shown.extend(values(&out, ABS_MT_POSITION_Y));
-        }
-        assert!(shown.windows(2).all(|pair| pair[1] <= pair[0]), "{shown:?}");
-        assert_eq!(*shown.last().unwrap(), 1100, "{shown:?}");
-        // The click is reported at the real position: nothing more moves.
-        let click = run(&mut scaler, vec![key(BTN_LEFT, 1)], factors);
-        assert!(values(&click, ABS_MT_POSITION_Y).is_empty());
-        // The converging events name slot 0 and then return to slot 1, the
-        // slot the source is on.
+        // In that same frame, slot 0 is put back at its real position.
+        assert_eq!(values(&lift, ABS_MT_POSITION_Y), vec![1100]);
         assert!(lift.contains(&abs(ABS_MT_SLOT, 0)));
         let slots: Vec<_> = lift.iter().filter(|e| e.code == ABS_MT_SLOT).collect();
-        assert_eq!(slots.last(), Some(&&abs(ABS_MT_SLOT, 1)));
+        assert_eq!(
+            slots.last(),
+            Some(&&abs(ABS_MT_SLOT, 1)),
+            "back on the source's slot"
+        );
+        // The click, without moving, changes no position.
+        let click = run(&mut scaler, vec![key(BTN_LEFT, 1)], factors);
+        assert!(values(&click, ABS_MT_POSITION_Y).is_empty());
+        assert!(click.contains(&key(BTN_LEFT, 1)));
+    }
+
+    #[test]
+    fn a_click_with_two_fingers_still_down_lands_where_they_are() {
+        let mut scaler = Scaler::new(&multitouch_touchpad());
+        let factors = Factors::new(5.0, 1.0).unwrap();
+        two_finger_scroll(&mut scaler, factors);
+        // Both resting, shown at 1500, really at 1100: a click puts both back
+        // in the click's own frame.
+        let click = run(&mut scaler, vec![key(BTN_LEFT, 1)], factors);
+        assert_eq!(values(&click, ABS_MT_POSITION_Y), vec![1100, 1100]);
     }
 
     #[test]

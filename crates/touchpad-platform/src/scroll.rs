@@ -21,6 +21,12 @@ pub trait ScrollChannel: Send {
     fn factors(&self) -> Result<Option<Factors>, String>;
     /// Set both factors on every touchpad's pass-through.
     fn set(&self, factors: Factors) -> Result<(), String>;
+    /// Whether the install recorded that the pass-throughs for the touchpads
+    /// already present could not be started, so the person has to restart or
+    /// reconnect the touchpad.
+    fn reconnect_pending(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(feature = "dconf-write")]
@@ -109,6 +115,10 @@ mod bus {
                 self.set_factors(&service, factors)?;
             }
             Ok(())
+        }
+
+        fn reconnect_pending(&self) -> bool {
+            std::path::Path::new(ipc::RECONNECT_MARKER).exists()
         }
     }
 }

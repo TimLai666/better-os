@@ -103,10 +103,23 @@ fn run(event: &str) -> ExitCode {
         eprintln!("could not drop privileges, so nothing is held: {error}");
         return ExitCode::FAILURE;
     }
-    // From here the uinput descriptor can declare no key outside the button
-    // block, whatever the code running in this process does.
+    // From here the uinput descriptor can declare only a touchpad's kind of
+    // capability, whatever the code running in this process does.
     if let Err(error) = touchpad_scroll::seccomp::install() {
         eprintln!("could not install the uinput filter, so nothing is held: {error}");
+        return ExitCode::FAILURE;
+    }
+    // The clone is made now, once, and then every further uinput setup call
+    // is forbidden: no later code in this process can build another device.
+    let mut passthrough = match Passthrough::new(source, factory) {
+        Ok(passthrough) => passthrough,
+        Err(error) => {
+            eprintln!("could not create the clone, so nothing is held: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = touchpad_scroll::seccomp::lock() {
+        eprintln!("could not lock uinput, so nothing is held: {error}");
         return ExitCode::FAILURE;
     }
 
@@ -116,7 +129,7 @@ fn run(event: &str) -> ExitCode {
         eprintln!("stored factors ignored, holding nothing until set again: {problem}");
     }
     let factors = SharedFactors::new(stored);
-    let device_name = source.descriptor().name.clone();
+    let device_name = passthrough.source().descriptor().name.clone();
 
     // SAFETY: the handler only stores to an atomic.
     unsafe {
@@ -153,7 +166,6 @@ fn run(event: &str) -> ExitCode {
     );
     let _ = notify::notify("READY=1");
 
-    let mut passthrough = Passthrough::new(source, factory);
     let mut beat = Instant::now();
     let mut report = Instant::now();
     let mut mode = None;
@@ -165,7 +177,7 @@ fn run(event: &str) -> ExitCode {
                 // and a node that came back under the same name after a
                 // replug or a resume must get a fresh instance.
                 eprintln!("{} is gone", node.display());
-                return ExitCode::FAILURE;
+                return ExitCode::from(ipc::EXIT_DEVICE_GONE);
             }
             eprintln!("{}: {error}", node.display());
             return ExitCode::FAILURE;

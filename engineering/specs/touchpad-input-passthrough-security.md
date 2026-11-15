@@ -21,7 +21,10 @@ therefore applied below the compositor. For each touchpad, one instance of
    forwards every event to the clone with two-finger and wheel motion scaled.
    libinput sees the clone as the touchpad; the original delivers nothing.
 
-At factor 1 on both axes it holds nothing: no grab, no clone, no reads.
+At factor 1 on both axes it holds nothing and reads nothing. The clone is
+created once, when the instance starts, and stays, idle and reporting
+nothing, so that every later uinput setup call can be forbidden (below).
+Better Touchpad's device list does not count it as a second touchpad.
 
 ## The risk being reviewed
 
@@ -124,18 +127,34 @@ service, and none trusting the one above it:
   drops any event whose code it did not declare, so even a bug that wrote a
   keyboard key to the clone would reach nobody.
   *Held by:* `caps::tests::a_clone_declares_no_key_and_cannot_be_made_from_a_keyboard`.
-- After the privilege drop the service installs its own seccomp filter
-  (`seccomp.rs`) that checks every `ioctl`'s arguments: `UI_SET_KEYBIT` only
-  for codes `0x100..0x160`, `UI_SET_EVBIT` only for `SYN`, `KEY`, `REL`,
-  `ABS`, `MSC`, and never `UI_SET_SWBIT`, `UI_SET_LEDBIT`, `UI_SET_FFBIT`, or
-  `UI_SET_SNDBIT` (`EPERM`). A system call from another architecture or the
-  x32 ABI kills the process. So not even code running inside the process can
-  declare a keyboard key on any uinput device it creates.
-  *Held by:* `seccomp::tests::the_filter_refuses_every_keyboard_capability_in_a_child_process`
-  (a forked child installs the filter, then `KEY_A`, `0xff`, `KEY_OK`, a key
-  with the high word set, `EV_LED`, `EV_REP`, and the four forbidden requests
-  fail with `EPERM` while `BTN_LEFT`, `BTN_TOOL_DOUBLETAP`, and `EV_ABS` reach
-  the kernel), `seccomp::tests::every_jump_lands_inside_the_program`.
+- The service filters its own system calls in two steps (`seccomp.rs`).
+  Right after the privilege drop, every uinput capability call is checked
+  against what a touchpad is: `UI_SET_KEYBIT` only for the mouse buttons and
+  finger tools (`codes::TOUCHPAD_KEYS`: no key, no pen, no stylus),
+  `UI_SET_RELBIT` only for the four wheel codes (no `REL_X`/`REL_Y`, so no
+  relative mouse), `UI_SET_PROPBIT` only for pointer, buttonpad, semi-mt, and
+  top-buttonpad (never `INPUT_PROP_DIRECT`, a touchscreen), `UI_SET_EVBIT`
+  only for `SYN`, `KEY`, `REL`, `ABS`, `MSC`, and never `UI_SET_SWBIT`,
+  `UI_SET_LEDBIT`, `UI_SET_FFBIT`, or `UI_SET_SNDBIT`. `caps::classify`
+  accepts exactly the same three lists, so the service can build the clone
+  of any device it holds. Then the clone is created, and a second filter
+  forbids every uinput request (`'U'`) except `UI_DEV_DESTROY`: no
+  `UI_DEV_SETUP`, `UI_ABS_SETUP`, `UI_SET_*`, or `UI_DEV_CREATE`, ever again.
+  This happens before a single input event has been read.
+  `UI_SET_ABSBIT` has no list of its own in the first step: whether a set of
+  absolute axes is a touchpad or an absolute pointer (a touchscreen, a tablet,
+  a virtual-machine tablet with `BTN_LEFT` and no finger tool) depends on the
+  other capabilities beside it, which a filter on one call cannot see. The
+  second step is what closes that: the only device the process can ever have
+  declared is the clone `classify` judged, which has a finger tool and no
+  `INPUT_PROP_DIRECT`, so libinput treats it as a touchpad, a relative pointer.
+  A system call from another architecture or the x32 ABI kills the process.
+  *Held by:* `seccomp::tests::step_one_allows_a_touchpad_and_nothing_that_types_or_points_absolutely`
+  and `seccomp::tests::after_the_lock_no_uinput_device_can_be_declared_at_all`
+  (both run the filter in a forked child and check which calls fail with
+  `EPERM` and which reach the kernel), `seccomp::tests::the_filter_and_classify_accept_the_same_touchpad`,
+  `seccomp::tests::every_jump_lands_inside_the_program`,
+  `caps::tests::a_relative_mouse_or_a_pointing_stick_beside_a_finger_tool_is_refused`.
 - Nothing is logged per event. The journal gets one line per mode change and
   one cost summary a minute; no coordinate, button, or timing is written
   anywhere.
@@ -147,7 +166,7 @@ service, and none trusting the one above it:
 
 | Way out | What releases the touchpad | Held by |
 | --- | --- | --- |
-| factor set back to 1 | the loop waits until nothing is touching, lifts anything still down on the clone, ungrabs, then destroys the clone | `passthrough::tests::returning_to_neutral_releases_after_the_fingers_lift` |
+| factor set back to 1 | the loop waits until nothing is touching, lifts anything still down on the clone, and ungrabs; the clone stays, idle | `passthrough::tests::returning_to_neutral_releases_after_the_fingers_lift` |
 | normal stop (`SIGTERM`, `SIGINT`, removal's `systemctl stop`) | the handler sets a flag the loop checks every 250 ms; `Passthrough`'s `Drop` lifts, ungrabs, and destroys | `passthrough::tests::dropping_the_pass_through_releases_the_grab_and_destroys_the_clone`; `TimeoutStopSec=3` |
 | an error return, any `?` | the same `Drop` | the same test |
 | a panic | `Drop` runs while unwinding | `passthrough::tests::a_panic_while_holding_releases_the_grab` |
@@ -155,9 +174,9 @@ service, and none trusting the one above it:
 | a hang (a deadlock, a stuck loop, `SIGSTOP`) | `WatchdogSec=5`: the loop sends `WATCHDOG=1` from the thread that forwards events; no heartbeat for 5 s and systemd kills the process, and the row above applies | `notify::tests::a_notification_reaches_the_socket_systemd_names`; `verify-deb.sh` requires `WatchdogSec=` |
 | a crash loop | `StartLimitBurst=5` in 60 s, then systemd stops trying; a dead instance holds nothing | unit file |
 | lost events (`SYN_DROPPED`) | everything is lifted on the clone, and nothing is forwarded until the pad is untouched, then forwarding resumes from a clean state | `passthrough::tests::lost_events_lift_everything_and_wait_for_an_untouched_pad` |
-| the touchpad unplugged | the unit is `BindsTo=` its device and stops; if the node answers `ENODEV` first the instance exits with a failure. Either way a node that returns under the same name (a replug, a resume) gets a fresh instance | `verify-deb.sh` requires `BindsTo=` and `After=`; `main.rs` |
-| a hold taken mid-gesture | never: the queue is drained, the kernel must report nothing down, and the grab is taken; then the queue is read again and the kernel asked again, and any event that arrived between the check and the grab, or anything down, gives the pad back at once (ungrab, clone destroyed) and tries again on a later turn. Without that, a press libinput saw from the original would be released only on the clone, and the original would keep a button down | `passthrough::tests::a_touch_between_the_check_and_the_grab_gives_the_pad_back`, `passthrough::tests::an_event_that_arrived_before_the_grab_gives_the_pad_back`, `passthrough::tests::a_factor_takes_the_hold_only_while_the_pad_is_untouched` |
-| a resting finger after a scroll | the offset a scroll added is brought back to the finger's real position within a few frames once two-finger mode ends, even if the finger sends no motion, so a click lands in the clickpad software-button zone under the finger | `transform::tests::a_click_after_a_scroll_lands_where_the_finger_really_is` |
+| the touchpad unplugged | the unit is `BindsTo=` its device and stops; if the node answers `ENODEV` first the instance exits with status 69, which `RestartPreventExitStatus=69` keeps systemd from restarting, so a pad that drops off and returns never runs the unit into its start limit. Either way udev and `BindsTo=` give a node that returns under the same name (a replug, a resume) a fresh instance | `verify-deb.sh` requires `BindsTo=`, `After=`, and `RestartPreventExitStatus=69`; `ipc::EXIT_DEVICE_GONE` |
+| a hold taken mid-gesture | never: the queue is drained, the kernel must report nothing down, and the grab is taken; then the queue is read again and the kernel asked again, and any event that arrived between the check and the grab, or anything down, gives the pad back at once (ungrab) and tries again on a later turn. Without that, a press libinput saw from the original would be released only on the clone, and the original would keep a button down | `passthrough::tests::a_touch_between_the_check_and_the_grab_gives_the_pad_back`, `passthrough::tests::an_event_that_arrived_before_the_grab_gives_the_pad_back`, `passthrough::tests::a_factor_takes_the_hold_only_while_the_pad_is_untouched` |
+| a resting finger after a scroll | the offset a scroll added is dropped in the very frame where the finger count leaves two or a button goes down, for every contact, with a position event for each that sent none, so a click lands in the clickpad software-button zone under the finger | `transform::tests::lifting_one_finger_and_clicking_without_moving_clicks_where_the_finger_is`, `transform::tests::a_click_with_two_fingers_still_down_lands_where_they_are` |
 | a bad stored factor | `Factors::load` returns neutral, which holds nothing | `factors::tests::a_missing_or_bad_file_holds_nothing` |
 | uninstall | prerm stops every instance; postrm stops them again (one udev started in between), deletes the state, and deletes the account, saying so with the command to finish when `userdel` fails | `maintainer-scripts.test.sh` |
 
@@ -177,9 +196,19 @@ service decides, per calling **session**, not per user (`session_rule`):
   is refused even though the uid matches;
 - a process in no session at all (a program started from the application
   grid runs under the user's service manager) is judged by the user's display
-  session instead, which must be local and active: what polkit does for the
-  same case;
+  session instead, which must be local and active, and is refused while that
+  user has any remote session open;
 - root is allowed.
+
+**This is not a boundary between processes of the same uid**, and it is
+recorded as such. A process in no session can be the window, but it can as
+well be the same person's cron job, a `systemd-run --user` unit, or something
+an ssh login left running under the user's service manager; logind cannot
+tell them apart. The remote-session refusal closes the ssh case while that
+login is open, and nothing closes the rest. That is accepted: a process
+running as the person can already change everything the person's desktop
+can, and a scroll factor between 0.2 and 5 is the least of it. The rule keeps
+other accounts and remote logins out.
 
 Values are refused unless both are valid `ScrollFactor`s (0.2 to 5.0,
 finite), the same bound the window and the configuration file use. Setting
@@ -197,13 +226,70 @@ its own processes. *Held by:* `session_rule::tests::the_calling_session_decides_
 
 The bus policy lets only `_better-touchpad-scroll` own a name under
 `org.betteros.TouchpadScroll1`, so nothing else can pose as a pass-through to
-the window. On Ubuntu 24.04 sends are narrowed with
-`send_destination_prefix`; Ubuntu 22.04's dbus-daemon 1.12 cannot read that
-attribute (it arrived in the 1.13 series, per dbus's NEWS), so the 22.04
-package ships a policy narrowed by interface only. The postinst reloads the bus
-configuration after creating the account, because dpkg installs the policy
-before the account exists and the bus drops a rule naming an unknown user.
-*Held by:* `verify-deb.sh` (per release), `maintainer-scripts.test.sh`.
+the window, and no rule allows a send without a destination. On Ubuntu 24.04
+sends are allowed to names under that prefix with `send_destination_prefix`.
+Ubuntu 22.04's dbus-daemon 1.12 cannot read that attribute (it arrived in the
+1.13 series, per dbus's NEWS), so the 22.04 package's policy names every
+instance's own name, `event0` to `event511`, one `send_destination` rule each,
+written by `packaging/touchpad/generate-bus-policy-1.12.sh`; a touchpad
+numbered past `event511` on 22.04 is unreachable from the window, which shows
+the pass-through as absent. The postinst reloads the bus configuration after
+creating the account, because dpkg installs the policy before the account
+exists and the bus drops a rule naming an unknown user.
+*Held by:* `verify-deb.sh` (per release: the prefix on 24.04; on 22.04 512
+named destinations and no send rule without one), the generator's `--check`
+in `maintainer-scripts.test.sh`, `session_rule::tests`.
+
+## Starting at install, with no reboot
+
+The instances are `BindsTo=` their device, and systemd only has a device unit
+for a node udev tagged `systemd`, which happens when udev processes the node
+with this package's rule. For touchpads already present at install, the
+postinst asks systemd to run `better-touchpad-scroll-coldplug.service`, a
+one-shot unit whose only command is `udevadm trigger --action=change
+--subsystem-match=input --property-match=ID_INPUT_TOUCHPAD=1`. It runs in
+PID 1's context, not the maintainer script's, so it works when Better Manager
+installs the package and the script runs inside the manager daemon's sandbox
+(where `/sys` is read-only and a trigger from the script itself fails). The
+postinst does not depend on its own output reaching anyone: when the unit
+cannot run, it writes `/run/better-os/touchpad-scroll-reconnect`, and Better
+Touchpad's Scrolling page shows "restart the computer or disconnect and
+reconnect the touchpad" instead of the plain absent reason. The record is
+under `/run`, so a restart clears it, and a later successful install or the
+removal deletes it. *Held by:* `maintainer-scripts.test.sh`,
+`gnome::tests::an_install_that_could_not_start_the_pass_through_says_restart_or_reconnect`,
+`verify-deb.sh` (the unit's one command).
+
+## Trackpoint pairing and the device group
+
+The clone carries the original's `ID_INPUT_TOUCHPAD_INTEGRATION` and
+`LIBINPUT_DEVICE_GROUP`. Whether the grabbed original could take the
+trackpoint's pairing away from the clone was decided from libinput's source,
+for the versions the two releases ship (22.04: 1.20.0, 24.04: 1.25.0, the
+latter read from this host's `libinput10 1.25.0-1ubuntu3.7`):
+
+- `tp_pair_trackpoint` (`src/evdev-mt-touchpad.c`, lines 2405–2429 in 1.20.0
+  and 2409–2433 in 1.25.0) runs for every touchpad when any device is added,
+  and pairs the trackpoint with that touchpad when the touchpad is tagged
+  internal and the trackpoint is not USB or Bluetooth. It reads no device
+  group. Each touchpad keeps its own `tp->buttons.trackpoint`, so the original
+  and the clone are each paired, independently: the clone's top software
+  buttons go to the trackpoint through the clone's own pairing, and the
+  original, which is grabbed and silent, routes nothing.
+- The device group is read in the same file only by `tp_pair_tablet` (declared at line 2573 in 1.20.0 and 2577 in 1.25.0; the group comparison
+  is at 2584 and 2588), for left-handed tablet pairing.
+
+So `INPUT_PROP_TOPBUTTONPAD` pads are held, not refused; what the clone needs
+is the internal tag, which the carried integration gives it. Source:
+https://gitlab.freedesktop.org/libinput/libinput/-/blob/1.20.0/src/evdev-mt-touchpad.c
+and the same path at 1.25.0.
+
+The rule hands the two properties to a clone only through
+`--clone-properties`, and only when a real touchpad is present right now (not
+a clone, accepted by `caps::classify_capabilities`) with the clone's bus type,
+vendor, product, and name, and exactly the integration and group the clone's
+`phys` claims. A uinput device that merely copies the `phys` gets nothing.
+*Held by:* `udev::tests::a_clone_gets_its_properties_only_when_a_matching_touchpad_is_there`.
 
 ## What an attacker gains
 
@@ -211,19 +297,22 @@ before the account exists and the bus drops a rule naming an unknown user.
 | --- | --- | --- |
 | Calls the bus methods as another local user | nothing: refused | — |
 | Calls them as the person at the machine | scroll faster or slower, within 0.2–5 | anything else; the interface has no other method and takes no string |
-| Takes over the process (a parser bug in the event loop) | the touchpad's events (finger positions, clicks) for as long as it runs, and a uinput descriptor that can create a new device with a touchpad's kind of capabilities: buttons, axes, wheels. It can move the pointer and click | a keyboard key on any device (the seccomp filter), any other input node (device cgroup), root (dropped, `no_new_privs`, bounding set), the network, the person's files (`ProtectHome`, `ProtectSystem=strict`, another uid), other processes (different uid) |
+| Takes over the process (a parser bug in the event loop) | the touchpad's events (finger positions, clicks) for as long as it runs, and the one clone it already created, a touchpad: it can move the pointer and click. That includes clicking an on-screen keyboard if one is on screen (GNOME shows one for touchscreen input or when it is turned on in accessibility), at a touchpad's pace, relative motion only | a new uinput device of any kind, a keyboard key, an absolute pointer (the seccomp lock), any other input node (device cgroup), root (dropped, `no_new_privs`, bounding set), the network, the person's files (`ProtectHome`, `ProtectSystem=strict`, another uid), other processes (different uid) |
 | Presents a hostile USB device | a pass-through for it only if it looks exactly like a touchpad and reports no key; its stream is parsed as fixed-size `input_event` records by a loop with no allocation driven by the stream | — |
 
 The third row is the residual risk the owner accepted on 2026-11-15. An
 earlier draft of this review said it could not be narrowed below "a process
 holding `/dev/uinput` can synthesise a keyboard"; that was wrong. uinput
 cannot give the descriptor up after creating a device, but the process can
-take away its own ability to declare keys, and since ticket 125's review fixes
-it does: what is left is a pointing device, which can move the pointer and
-click but cannot type. It is further bounded by the process having nothing
-that parses untrusted variable-length input (events are 24-byte records the
-kernel produced), by two methods taking two doubles as its only other input,
-and by the systemd sandbox.
+take away its own ability to declare anything more, and it does, before it
+reads any input: what is left is the one touchpad clone, which can move the
+pointer and click but cannot type and cannot jump to an absolute position. The
+on-screen keyboard is the one path from there to typed text, and it needs the
+keyboard to be on screen and a relative pointer driven to each key. It is
+further bounded by the process having nothing that parses untrusted
+variable-length input (events are 24-byte records the kernel produced), by two
+methods taking two doubles as its only other input, and by the systemd
+sandbox.
 
 ## Not proven
 
@@ -237,19 +326,13 @@ and by the systemd sandbox.
   (`systemctl show -p DeviceAllow`); if it were not expanded, the unit would
   fail to open the touchpad (the path would be wrong), which fails closed.
 - libinput's handling of the clone (palm detection, disable-while-typing,
-  tap, trackpoint pairing) is reasoned from libinput's documented use of the
-  device's capabilities, bus type, vendor, product, name,
-  `ID_INPUT_TOUCHPAD_INTEGRATION`, and `LIBINPUT_DEVICE_GROUP`, all of which
-  the clone carries over: the last two are read from the original's udev
-  database entry before the drop, written into the clone's `phys`, and given
-  back to the clone by the rule (numbered 90, after systemd's and libinput's
-  own rules) through `--clone-properties`, which reads only that one sysfs
-  file and accepts only the exact shape the service writes
-  (`udev::tests`). Not observed on a desktop.
+  tap) is reasoned from libinput's source and its use of the device's
+  capabilities, ids, name, and the carried udev properties. Not observed on a
+  desktop.
 - That `GetSessionByPID` answers "no session" for a program started from the
   application grid, which is why the display-session fallback exists, is
   read from logind's design, not observed here.
-- That a `udevadm trigger --action=change` makes systemd start the instance
-  for a touchpad present at install is read from systemd's handling of
-  `SYSTEMD_WANTS` on a device that newly gains the `systemd` tag; the owner
-  run checks that an instance runs after install.
+- That the coldplug unit's change event makes systemd start each instance is
+  read from systemd's handling of `SYSTEMD_WANTS` on a device that newly gains
+  the `systemd` tag; the owner run checks that an instance runs right after an
+  install from Better Manager, with no reboot.

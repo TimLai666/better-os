@@ -224,6 +224,9 @@ impl Record {
             && self.absolutes.has(bits::ABS_Y)
             && self.keys.has(bits::BTN_TOOL_FINGER)
             && (self.keys.has(bits::BTN_TOUCH) || self.keys.has(bits::BTN_LEFT))
+            // The scroll pass-through's clone of a touchpad (ADR 0030) is the
+            // same touchpad, not a second one to configure.
+            && !self.physical_path.starts_with(touchpad_scroll::caps::PHYS_PREFIX)
     }
 
     /// The identity a per-device configuration is filed under.
@@ -408,6 +411,27 @@ mod tests {
             "{}/tests/fixtures/{name}",
             env!("CARGO_MANIFEST_DIR")
         ))
+    }
+
+    #[test]
+    fn the_scroll_pass_throughs_clone_is_not_a_second_touchpad() {
+        let record = "I: Bus=0018 Vendor=2808 Product=0233 Version=0000\n\
+            N: Name=\"ASCF1200:00 2808:0233 Touchpad\"\n\
+            P: Phys=PHYS\n\
+            S: Sysfs=/devices/virtual/input/input40\n\
+            U: Uniq=\n\
+            H: Handlers=mouse3 event40 \n\
+            B: PROP=5\n\
+            B: EV=1b\n\
+            B: KEY=e520 10000 0 0 0 0\n\
+            B: ABS=2e0800000000003\n\
+            B: MSC=20\n";
+        let original = record.replace("PHYS", "i2c-ASCF1200:00");
+        let clone = record.replace("PHYS", "better-touchpad-scroll/internal/-");
+        let records = parse_records(&format!("{original}\n{clone}\n"));
+        assert_eq!(records.len(), 2);
+        assert!(records[0].is_touchpad());
+        assert!(!records[1].is_touchpad());
     }
 
     #[test]

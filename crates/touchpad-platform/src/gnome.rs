@@ -136,6 +136,13 @@ pub const SCROLL_ABSENT: (&str, &str) = (
     "no touchpad has Better Touchpad's scroll service running, so scroll distance follows the pointer speed; the service starts for every touchpad once Better Touchpad is installed",
 );
 
+/// Why the scroll factors are unavailable when the install could not start the
+/// pass-throughs for the touchpads that were already there.
+pub const SCROLL_RECONNECT: (&str, &str) = (
+    "gnome.scroll_passthrough_reconnect",
+    "scroll speed is installed but could not start for this touchpad yet; restart the computer or disconnect and reconnect the touchpad to turn it on",
+);
+
 /// Whether the pass-through can carry the factors, and if not why.
 fn scroll_support(scroll: Option<&dyn ScrollChannel>) -> Result<(), (String, String)> {
     let Some(scroll) = scroll else {
@@ -143,6 +150,10 @@ fn scroll_support(scroll: Option<&dyn ScrollChannel>) -> Result<(), (String, Str
     };
     match scroll.factors() {
         Ok(Some(_)) => Ok(()),
+        Ok(None) if scroll.reconnect_pending() => Err((
+            SCROLL_RECONNECT.0.to_string(),
+            SCROLL_RECONNECT.1.to_string(),
+        )),
         Ok(None) => Err((SCROLL_ABSENT.0.to_string(), SCROLL_ABSENT.1.to_string())),
         Err(error) => Err(("gnome.scroll_passthrough_unreachable".to_string(), error)),
     }
@@ -824,6 +835,7 @@ mod tests {
     struct FakeScroll {
         factors: std::sync::Arc<std::sync::Mutex<Option<Factors>>>,
         fail: bool,
+        reconnect: bool,
     }
 
     impl ScrollChannel for FakeScroll {
@@ -838,6 +850,10 @@ mod tests {
             *self.factors.lock().unwrap() = Some(factors);
             Ok(())
         }
+
+        fn reconnect_pending(&self) -> bool {
+            self.reconnect
+        }
     }
 
     fn with_fake_scroll(
@@ -851,6 +867,7 @@ mod tests {
             Box::new(FakeScroll {
                 factors: shared.clone(),
                 fail: false,
+                reconnect: false,
             }),
             None,
         );
@@ -936,11 +953,32 @@ mod tests {
     }
 
     #[test]
+    fn an_install_that_could_not_start_the_pass_through_says_restart_or_reconnect() {
+        let backend = backend().with_scroll(
+            Box::new(FakeScroll {
+                factors: Default::default(),
+                fail: false,
+                reconnect: true,
+            }),
+            None,
+        );
+        let Support::Unavailable { reason, detail } = backend
+            .capabilities()
+            .support(SettingId::VerticalScrollFactor)
+        else {
+            panic!("no pass-through answers yet");
+        };
+        assert_eq!(reason, SCROLL_RECONNECT.0);
+        assert!(detail.contains("restart the computer or disconnect and reconnect"));
+    }
+
+    #[test]
     fn an_unreachable_pass_through_is_unknown_not_a_default() {
         let backend = backend().with_scroll(
             Box::new(FakeScroll {
                 factors: Default::default(),
                 fail: true,
+                reconnect: false,
             }),
             None,
         );

@@ -255,7 +255,8 @@ write_system_fragment() {
             printf '\n'
             printf "better_os_scroll_libexec='/usr/libexec/better-touchpad-scrolld'\n"
             printf "better_os_scroll_state='/var/lib/better-touchpad-scroll'\n"
-            printf "better_os_scroll_user='_better-touchpad-scroll'\n\n"
+            printf "better_os_scroll_user='_better-touchpad-scroll'\n"
+            printf "better_os_scroll_reconnect='/run/better-os/touchpad-scroll-reconnect'\n\n"
             cat "$ROOT_DIR/packaging/maintainer/$fragment.sh"
             printf '\n'
             # shellcheck disable=SC2016 # expanded by the maintainer script
@@ -844,6 +845,7 @@ PACKAGE_DATA=(
     "adapters/gnome-shell-touchpad/org.betteros.TouchpadAdapter1.xml:usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml"
     "packaging/icons/better-touchpad.svg:usr/share/icons/hicolor/scalable/apps/better-touchpad.svg"
     "packaging/touchpad/better-touchpad-scroll@.service:usr/lib/systemd/system/better-touchpad-scroll@.service"
+    "packaging/touchpad/better-touchpad-scroll-coldplug.service:usr/lib/systemd/system/better-touchpad-scroll-coldplug.service"
     "packaging/touchpad/90-better-touchpad-scroll.rules:usr/lib/udev/rules.d/90-better-touchpad-scroll.rules"
     "packaging/touchpad/$SCROLL_BUS_POLICY:usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf"
     "packaging/touchpad/better-touchpad-scroll.sysusers:usr/lib/sysusers.d/better-touchpad-scroll.conf"
