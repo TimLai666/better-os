@@ -1,6 +1,6 @@
 # Ticket 123 — Better Git: wrapped diffs, resizable panes, renames shown as renames, no text running out
 
-**Blocked by:** none · **Status:** open
+**Blocked by:** none · **Status:** merged, not released
 
 ## Why
 
