@@ -477,6 +477,7 @@ scroll() {
         better_os_scroll_user='_better-touchpad-scroll'
         better_os_scroll_reconnect="$SCROLL_DIR/run/better-os/touchpad-scroll-reconnect"
         better_os_scroll_systemd_dir="$SCROLL_DIR/systemd"
+        # shellcheck source=packaging/maintainer/touchpad-scroll.sh
         . "$SCROLL_LIBRARY"
         "$@"
     )

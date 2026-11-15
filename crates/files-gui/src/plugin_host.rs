@@ -30,6 +30,9 @@ struct Shared {
     wanted_details: Option<(PathBuf, Option<String>)>,
     /// Whether the one details worker is running.
     details_worker: bool,
+    /// The file the worker is fetching now. Asking again for it while it
+    /// runs, as a window repainting does, must not queue a second run.
+    fetching_details: Option<PathBuf>,
     changed: bool,
 }
 
@@ -256,6 +259,12 @@ impl PluginHost {
         {
             return Vec::new();
         }
+        if shared.fetching_details.as_deref() == Some(path) {
+            // Already being fetched; a request for another file passed over
+            // on the way there is dropped too.
+            shared.wanted_details = None;
+            return Vec::new();
+        }
         shared.wanted_details = Some((path.to_path_buf(), mime.map(str::to_string)));
         if shared.details_worker {
             return Vec::new();
@@ -267,6 +276,7 @@ impl PluginHost {
             loop {
                 let next = host.shared.lock().ok().and_then(|mut shared| {
                     let next = shared.wanted_details.take();
+                    shared.fetching_details = next.as_ref().map(|(path, _)| path.clone());
                     if next.is_none() {
                         shared.details_worker = false;
                     }
@@ -285,6 +295,7 @@ impl PluginHost {
                     ));
                 }
                 if let Ok(mut shared) = host.shared.lock() {
+                    shared.fetching_details = None;
                     shared.details.insert(path, rows);
                     shared.changed = true;
                 }
