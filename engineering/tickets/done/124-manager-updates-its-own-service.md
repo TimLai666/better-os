@@ -70,18 +70,31 @@ done and offered the button that does it.
   own, and `better-shell-adapter`'s postinst starts the same handoff
   (ADR 0028). Only when the adapter is already installed and the service is
   still 0.2.12 or older is there no retry; the notice says so.
-- Looked at in an own headless GNOME Shell 46 (private bus, fake `dpkg-query`
-  and `systemctl`, no system bus, systemctl guard), in Traditional Chinese
-  and English, light and dark: the Updates notice and its review, the
-  window-attention Install button and its review, the after-install state
-  ("Sign out to finish setting this up"), and the Doctor findings. Fixed
-  from that look: findings first, the component's own health check fails
-  with them, display names in the detail, and the review of an Add
-  companions plan no longer claims to update Better Manager or need a
-  restart, and lists the parts it adds.
-- Buttons were pressed from the keyboard. Pointer clicks reach the shell but
-  no Better Manager window in that session, the existing buttons included;
-  ticket 85 owns that defect.
+- On ticket 85's update flow (merged from main at `aff7c13`): there is no
+  review page. 「更新系統服務」 and the window-attention Install start the
+  change at once; the card shows Better Manager's progress in place of its
+  button, and after a failure the reason with a Retry that starts the same
+  change again (`service_change_card`). The row of an Add companions change
+  names the parts it adds, says "Missing parts added" when done, and never
+  shows the "This updates Better Manager itself" notice. The companion
+  finding is on the Health card with display names.
+- Fixed while porting, in ticket 85's code: a change that never reached the
+  service (or was cancelled) left its plan as the rows' result, so the row
+  read "Missing parts added" / "Updated" over a change that did nothing.
+  A row now shows a result only when the change's last record is a success
+  (`ended_in_success`), and a missing service says so in a banner
+  (`AppError::ServiceUnavailable`).
+- Looked at again in an own headless GNOME Shell 46 (private session bus,
+  PipeWire, fake `dpkg-query` and `systemctl`, no system bus, systemctl
+  guard), in Traditional Chinese and English, light and dark: the Updates
+  notice, the same page after pressing it, the window-attention Install and
+  the page after pressing it, the Health card, and the after-install states.
+- Buttons were pressed from the keyboard. Pointer clicks still reach no
+  application window in a headless GNOME Shell, a GTK one (GNOME
+  Calculator) included, with relative and with absolute (screencast-stream)
+  pointer motion, while the shell's own panel takes them; so the session's
+  synthetic pointer is the cause, not the window. Ticket 85's click fix was
+  proved under sway; a mouse click on these buttons has not been seen.
 - The installation itself ran against no daemon: the after-install state was
   produced by putting the adapter's files and dpkg record in place.
 - The container end-to-end section (0.2.9 service, handoff, adapter,
@@ -89,9 +102,11 @@ done and offered the button that does it.
   daemon here.
 - `SELF_UPGRADING_SINCE` and `HANDOFF_SINCE` say 0.2.16; the version bump
   must keep them true.
-- Checks run on the merge commit `a355d3d`: fmt, clippy (1.99 and newest
-  stable), check on 1.95, `cargo test --workspace --locked` (276 suites,
-  4668 passed, 0 failed), the maintainer-script and daemon-handoff tests, the
-  license inventory check, and `build-deb.sh` plus `verify-deb.sh` for
-  ubuntu-24.04 amd64. A first gate run failed on a full disk (linker and
-  `mkdir` errors, no test failure); the second run was green.
+- Checks run on `b6b541a` (main `aff7c13` merged): fmt, clippy (newest
+  stable and 1.99), check on 1.95, the maintainer-script and daemon-handoff
+  tests, the license inventory check, and `build-deb.sh` plus
+  `verify-deb.sh` for ubuntu-24.04 amd64 all passed. In the gate's test run
+  `files-operations`' `extracting_pauses_resumes_and_cancels_leaving_no_folder`
+  failed once under load (a pause that came after the extraction finished);
+  it passed 10 of 10 alone, and the full `cargo test --workspace --locked`
+  rerun passed: 279 suites, 4705 passed, 0 failed.
