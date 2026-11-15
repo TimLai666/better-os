@@ -168,6 +168,15 @@ contract.
   local one and reject code it accepts (a duplicated `#[allow]` attribute, new
   lints). Run clippy with the newest stable available, read the main CI run
   after every push to main, and fix a red main before the next merge.
+- A test never executes a file it has just written: another test thread's
+  fork can still hold it open and the exec fails with ETXTBSY. Run a written
+  script as `/bin/sh <script>`, or reach a checked-in fixture through a
+  symbolic link the test makes (`crates/files-gui/tests/share.rs`).
+- A test that watches a file never writes that file from its own process:
+  another test thread's fork holds a copy of the write descriptor until its
+  exec, and that late close reaches a watch started afterwards as a
+  close-write. Have a child write it (`install` in
+  `crates/better-core/src/self_update.rs`).
 - Give every worktree of this repository its own `CARGO_TARGET_DIR`. Cargo
   hashes a path crate by its path inside the workspace, so two worktrees sharing
   one target overwrite each other's artifacts and a stale build from the other

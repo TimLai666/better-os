@@ -22,6 +22,7 @@ use crate::search::SearchEntry;
 use crate::{home, settings_page, window_attention_page};
 
 pub(crate) mod keep_awake;
+pub(crate) mod system;
 pub(crate) mod touchpad;
 
 /// How far along a page is.
@@ -173,27 +174,6 @@ const APPS: PageModule = PageModule {
     },
 };
 
-const SYSTEM: PageModule = PageModule {
-    route: Route::System,
-    name: "system",
-    status: PageStatus::Placeholder { ticket: 86 },
-    title: |s| s.system,
-    search_entries: no_entries,
-    attention: no_attention,
-    badge: no_badge,
-};
-
-/// Default apps: today's Defaults screens until ticket 89.
-const DEFAULT_APPS: PageModule = PageModule {
-    route: Route::DefaultApps,
-    name: "default-apps",
-    status: PageStatus::Interim { ticket: 89 },
-    title: |s| s.default_apps,
-    search_entries: no_entries,
-    attention: no_attention,
-    badge: no_badge,
-};
-
 const FIXES: PageModule = PageModule {
     route: Route::Fixes,
     name: "fixes",
@@ -207,7 +187,7 @@ const FIXES: PageModule = PageModule {
 /// The registration list, in the pane's order. One line per page.
 pub(crate) static PAGES: [PageModule; 9] = [
     home::PAGE,
-    SYSTEM,
+    system::PAGE,
     window_attention_page::PAGE,
     touchpad::PAGE,
     keep_awake::PAGE,
@@ -627,10 +607,7 @@ mod tests {
         assert_eq!(status(Route::Settings), PageStatus::Built);
         assert_eq!(status(Route::WindowAttention), PageStatus::Built);
         assert_eq!(status(Route::Apps), PageStatus::Built);
-        assert_eq!(
-            status(Route::System),
-            PageStatus::Placeholder { ticket: 86 }
-        );
+        assert_eq!(status(Route::System), PageStatus::Built);
         assert_eq!(status(Route::KeepAwake), PageStatus::Built);
         assert_eq!(status(Route::Touchpad), PageStatus::Built);
         assert_eq!(

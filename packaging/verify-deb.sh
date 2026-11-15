@@ -862,6 +862,7 @@ dpkg-deb --extract "$daemon_path" "$daemon_extract"
 for required_file in \
     usr/libexec/better-manager-daemon \
     usr/lib/systemd/system/better-manager-daemon.service \
+    usr/lib/systemd/system/better-hardware-restore.service \
     usr/share/dbus-1/system-services/org.betteros.Manager1.service \
     usr/share/dbus-1/system.d/org.betteros.Manager1.conf \
     usr/share/polkit-1/actions/org.betteros.manager.policy \
@@ -898,6 +899,40 @@ grep -q 'org.betteros.manager.apply-transaction' \
 grep -q 'org.betteros.manager.repair-package-system' \
     "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
     printf 'The polkit policy does not declare the repair action\n' >&2
+    exit 1
+}
+
+# Ticket 86: each hardware control has its own polkit action, the bus policy
+# lets callers reach the interface, /sys stays read-only to the daemon (the
+# writes go through a transient helper unit, ADR 0029), and the boot-time
+# restore is enabled by the postinst.
+for action in org.betteros.manager.set-charge-limit org.betteros.manager.set-fan-mode; do
+    grep -q "$action" "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
+        printf 'The polkit policy does not declare %s\n' "$action" >&2
+        exit 1
+    }
+done
+grep -q 'send_interface="org.betteros.Hardware1"' \
+    "$daemon_extract/usr/share/dbus-1/system.d/org.betteros.Manager1.conf" || {
+    printf 'The bus policy does not let callers reach org.betteros.Hardware1\n' >&2
+    exit 1
+}
+for unit in better-manager-daemon.service better-hardware-restore.service; do
+    unit_file="$daemon_extract/usr/lib/systemd/system/$unit"
+    if ! grep -qx 'BindReadOnlyPaths=/sys' "$unit_file" \
+        || ! grep -qx 'ProtectKernelTunables=yes' "$unit_file" \
+        || grep -Eq '^(ReadWritePaths|BindPaths)=.*/sys' "$unit_file"; then
+        printf '%s must keep /sys read-only and open nothing under it (ADR 0029)\n' "$unit" >&2
+        exit 1
+    fi
+done
+grep -q '^ExecStart=/usr/libexec/better-manager-daemon --restore-hardware$' \
+    "$daemon_extract/usr/lib/systemd/system/better-hardware-restore.service" || {
+    printf 'The restore unit does not run the daemon with --restore-hardware\n' >&2
+    exit 1
+}
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./postinst | grep -q 'enable better-hardware-restore.service' || {
+    printf 'The daemon postinst does not enable better-hardware-restore.service\n' >&2
     exit 1
 }
 

@@ -79,20 +79,18 @@ fn machines_with_the_same_name_are_told_apart_by_their_dns_names() {
 
 /// A fake `tailscale` that prints `output` and exits with `status` for
 /// `status --json`, and fails for anything else.
+///
+/// The program is a checked-in script reached through a symbolic link in
+/// `folder`, not a script written here: executing a file this process has
+/// just written fails with ETXTBSY whenever another test thread forks while
+/// the file is still open, and these tests run in parallel.
 fn fake_tailscale(folder: &std::path::Path, output: &str, status: i32) -> String {
-    use std::os::unix::fs::PermissionsExt;
-    let json = folder.join("status.json");
-    std::fs::write(&json, output).unwrap();
+    std::fs::write(folder.join("status.json"), output).unwrap();
+    std::fs::write(folder.join("exit-code"), status.to_string()).unwrap();
     let program = folder.join("tailscale");
-    std::fs::write(
-        &program,
-        format!(
-            "#!/bin/sh\n[ \"$1 $2\" = \"status --json\" ] || exit 2\ncat '{}'\nexit {status}\n",
-            json.display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-tailscale");
+    std::os::unix::fs::symlink(script, &program).unwrap();
     program.display().to_string()
 }
 

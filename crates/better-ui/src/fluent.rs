@@ -1094,6 +1094,27 @@ pub mod words {
         }
     }
 
+    /// A temperature in whole degrees Celsius, the same in both languages:
+    /// `52 °C`.
+    pub fn celsius(degrees: f64) -> String {
+        format!("{} °C", degrees.round() as i64)
+    }
+
+    /// A fan speed with thousands separated, the same in both languages:
+    /// `4,800 RPM`.
+    pub fn rpm(speed: f64) -> String {
+        let whole = speed.max(0.0).round() as u64;
+        let digits = whole.to_string();
+        let mut grouped = String::new();
+        for (index, digit) in digits.chars().enumerate() {
+            if index > 0 && (digits.len() - index).is_multiple_of(3) {
+                grouped.push(',');
+            }
+            grouped.push(digit);
+        }
+        format!("{grouped} RPM")
+    }
+
     /// A percentage from a fraction between 0 and 1, clamped, no decimals.
     pub fn percent(fraction: f32) -> String {
         let value = if fraction.is_nan() {

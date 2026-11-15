@@ -24,9 +24,12 @@ use crate::store::{ArtifactStore, Journal};
 pub const BUS_NAME: &str = "org.betteros.Manager1";
 pub const OBJECT_PATH: &str = "/org/betteros/Manager1";
 
-fn refuse(error: DaemonError) -> fdo::Error {
+pub(crate) fn refuse(error: DaemonError) -> fdo::Error {
     match error {
-        DaemonError::Unauthorized => fdo::Error::AccessDenied(error.to_string()),
+        DaemonError::Unauthorized | DaemonError::AuthCancelled => {
+            fdo::Error::AccessDenied(error.to_string())
+        }
+        DaemonError::InvalidArgument(_) => fdo::Error::InvalidArgs(error.to_string()),
         DaemonError::Busy => fdo::Error::LimitsExceeded(error.to_string()),
         DaemonError::UnknownTransaction(_) => fdo::Error::UnknownObject(error.to_string()),
         other => fdo::Error::Failed(other.to_string()),
@@ -95,13 +98,18 @@ impl CallGate {
 /// dropped with no reply (ticket 107); for this daemon that call is the
 /// D-Bus activation that started it, and the caller would wait out its
 /// timeout.
-pub async fn serve<A: Authorizer + 'static>(
+///
+/// The hardware controls (`org.betteros.Hardware1`, ticket 86) go in on the
+/// same object path before the name is owned, for the same reason.
+pub async fn serve<A: Authorizer + 'static, H: Authorizer + 'static>(
     builder: zbus::connection::Builder<'_>,
     bus_name: &str,
     service: ManagerService<A>,
+    hardware: crate::hardware::HardwareService<H>,
 ) -> zbus::Result<zbus::Connection> {
     builder
         .serve_at(OBJECT_PATH, service)?
+        .serve_at(OBJECT_PATH, hardware)?
         .name(bus_name)?
         .build()
         .await

@@ -45,6 +45,8 @@ pub(crate) enum AttentionAction {
     StartKeepAwakeService,
     /// Open Keep awake on its Diagnostics sub-page.
     OpenKeepAwakeDiagnostics,
+    /// System with the Battery expander open (ticket 86).
+    OpenSystemBattery,
 }
 
 /// One attention card.
@@ -107,6 +109,8 @@ pub(crate) struct Snapshot {
     pub(crate) touchpad: crate::pages::touchpad::TouchpadFacts,
     /// What Keep awake read from its service (ticket 87).
     pub(crate) keep_awake: crate::pages::keep_awake::decide::Facts,
+    /// The system battery's health, as System last read it (ticket 86).
+    pub(crate) battery_health: Option<u8>,
 }
 
 impl Snapshot {
@@ -120,6 +124,7 @@ impl Snapshot {
             catalog_warning: None,
             touchpad: Default::default(),
             keep_awake: Default::default(),
+            battery_health: None,
         }
     }
 
@@ -277,6 +282,7 @@ mod tests {
             catalog_warning: Some("The published catalog could not be reached."),
             touchpad: Default::default(),
             keep_awake: Default::default(),
+            battery_health: None,
         }
     }
 

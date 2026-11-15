@@ -35,6 +35,8 @@ semver.workspace = true
 thiserror.workspace = true
 awake-core.workspace = true
 awake-ipc.workspace = true
+hardware-core.workspace = true
+hardware-platform = { workspace = true, features = ["sensors"] }
 gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
