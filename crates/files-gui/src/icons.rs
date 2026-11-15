@@ -31,6 +31,9 @@ pub const CODE_MARK: &str = "better-files/code-mark.svg";
 pub const CODE_FOLDER_SMALL: &str = "better-files/code-folder-16.svg";
 /// "This PC": a monitor on its stand (ticket 122).
 pub const COMPUTER: &str = "better-files/computer.svg";
+/// The drive the running system lives on: a drive with a power mark, so it
+/// reads apart from every other internal drive at a glance.
+pub const SYSTEM_DRIVE: &str = "better-files/system-drive.svg";
 /// A removable drive: a USB stick.
 pub const USB_DRIVE: &str = "better-files/usb-drive.svg";
 /// A disc in an optical drive.
@@ -95,6 +98,9 @@ fn svg(path: &str) -> Option<String> {
         }
         COMPUTER => {
             r#"<rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>"#
+        }
+        SYSTEM_DRIVE => {
+            r#"<rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 17.5h.01"/><path d="M10 17.5h.01"/><path d="M12 2v5"/><path d="M8.5 4.2a5 5 0 1 0 7 0"/>"#
         }
         USB_DRIVE => {
             r#"<rect x="7" y="9" width="10" height="13" rx="2"/><path d="M9 9V3h6v6"/><path d="M11 5.5h.01"/><path d="M13 5.5h.01"/>"#
@@ -314,7 +320,8 @@ pub fn folder_glyph(
 pub fn drive_icon(kind: crate::drives::DriveKind) -> &'static str {
     use crate::drives::DriveKind as K;
     match kind {
-        K::System | K::Internal => DEVICE,
+        K::System => SYSTEM_DRIVE,
+        K::Internal => DEVICE,
         K::Removable => USB_DRIVE,
         K::Optical => DISC,
         K::Phone => PHONE,
@@ -325,6 +332,17 @@ pub fn drive_icon(kind: crate::drives::DriveKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The system drive, other internal drives and removable drives each
+    /// look different in the sidebar.
+    #[test]
+    fn the_system_drive_and_a_usb_stick_have_their_own_icons() {
+        use crate::drives::DriveKind as K;
+        assert_eq!(drive_icon(K::System), SYSTEM_DRIVE);
+        assert_eq!(drive_icon(K::Internal), DEVICE);
+        assert_eq!(drive_icon(K::Removable), USB_DRIVE);
+        assert_ne!(drive_icon(K::System), drive_icon(K::Internal));
+    }
 
     #[test]
     fn every_glyph_is_served_and_is_an_svg() {
@@ -344,6 +362,7 @@ mod tests {
             CODE_MARK,
             COMPUTER,
             USB_DRIVE,
+            SYSTEM_DRIVE,
             DISC,
             PHONE,
             CODE_FOLDER_SMALL,
