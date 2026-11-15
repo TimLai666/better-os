@@ -245,7 +245,19 @@ pub fn build_rows(inputs: &SidebarInputs<'_>, c: &'static Copy) -> Vec<SidebarRo
         identity_volatile: false,
     });
 
+    // A bookmark of a folder the Places section already lists (the ones
+    // xdg-user-dirs writes at login: Documents, Music, …) is not shown again
+    // under Favorites, as GNOME Files' own sidebar skips it. The line stays in
+    // the shared file and keeps its index, so reordering is unaffected.
+    let places: Vec<Location> = rows
+        .iter()
+        .filter(|row| row.section == SidebarSection::Places)
+        .map(|row| row.location.clone())
+        .collect();
     for (index, bookmark) in inputs.bookmarks.bookmarks().iter().enumerate() {
+        if places.contains(bookmark.location()) {
+            continue;
+        }
         let available = bookmark
             .path()
             .is_some_and(|path| inputs.probe.is_available(path));

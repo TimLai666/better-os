@@ -678,6 +678,36 @@ fn a_bookmark_whose_folder_is_gone_stays_visible_as_unavailable() {
 
 // --- Sidebar -------------------------------------------------------------
 
+/// xdg-user-dirs writes Documents, Music, … into the shared bookmarks file at
+/// login. Places already lists them, so Favorites shows only the person's own
+/// pins, as GNOME Files does; the lines stay and keep their indexes.
+#[test]
+fn a_bookmark_of_a_place_is_not_listed_again_under_favorites() {
+    let home = tempfile::tempdir().unwrap();
+    let directories = UserDirectories::from_values(Some(home.path()), None);
+    let mut bookmarks = BookmarkFile::default();
+    bookmarks.pin(&at(home.path().join("Documents").to_str().unwrap()));
+    bookmarks.pin(&at(home.path().join("Developer").to_str().unwrap()));
+    bookmarks.pin(&at(home.path().join("Music").to_str().unwrap()));
+    let mounts = MountTable::new(Vec::new());
+    let inputs = SidebarInputs {
+        directories: &directories,
+        mounts: &mounts,
+        bookmarks: &bookmarks,
+        states: &NoDeviceStates,
+        probe: &FixedProbe::default(),
+    };
+    let rows = build_rows(&inputs, &EN_US);
+    let favorites: Vec<_> = rows
+        .iter()
+        .filter(|row| row.section == SidebarSection::Favorites)
+        .collect();
+    assert_eq!(favorites.len(), 1, "{favorites:?}");
+    assert_eq!(favorites[0].label, "Developer");
+    assert_eq!(favorites[0].bookmark_index, Some(1));
+    assert_eq!(bookmarks.len(), 3, "nothing was deleted");
+}
+
 #[test]
 fn the_sidebar_keeps_its_four_sections_distinct() {
     let home = tempfile::tempdir().unwrap();
