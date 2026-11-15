@@ -34,6 +34,10 @@ pub const COMPUTER: &str = "better-files/computer.svg";
 /// The drive the running system lives on: a drive with a power mark, so it
 /// reads apart from every other internal drive at a glance.
 pub const SYSTEM_DRIVE: &str = "better-files/system-drive.svg";
+/// An external hard disk or SSD: a drive box with its cable.
+pub const EXTERNAL_DRIVE: &str = "better-files/external-drive.svg";
+/// A memory card.
+pub const MEMORY_CARD: &str = "better-files/memory-card.svg";
 /// A removable drive: a USB stick.
 pub const USB_DRIVE: &str = "better-files/usb-drive.svg";
 /// A disc in an optical drive.
@@ -101,6 +105,12 @@ fn svg(path: &str) -> Option<String> {
         }
         SYSTEM_DRIVE => {
             r#"<rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 17.5h.01"/><path d="M10 17.5h.01"/><path d="M12 2v5"/><path d="M8.5 4.2a5 5 0 1 0 7 0"/>"#
+        }
+        EXTERNAL_DRIVE => {
+            r#"<rect x="2" y="6" width="15" height="11" rx="2"/><path d="M6 13.5h.01"/><path d="M9.5 13.5h.01"/><path d="M17 11.5h2a2 2 0 0 1 2 2V21"/><rect x="19.5" y="20" width="3" height="2"/>"#
+        }
+        MEMORY_CARD => {
+            r#"<path d="M7 2h8l4 4v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/><path d="M9 6v3"/><path d="M12 6v3"/><path d="M15 6v3"/>"#
         }
         USB_DRIVE => {
             r#"<rect x="7" y="9" width="10" height="13" rx="2"/><path d="M9 9V3h6v6"/><path d="M11 5.5h.01"/><path d="M13 5.5h.01"/>"#
@@ -316,6 +326,17 @@ pub fn folder_glyph(
     FolderGlyph::Folder
 }
 
+/// A drive's icon: its kind, and for a removable drive what it is.
+pub fn drive_row_icon(drive: &crate::drives::Drive) -> &'static str {
+    use crate::drives::RemovableForm as F;
+    match drive.form {
+        Some(F::Stick) => USB_DRIVE,
+        Some(F::Card) => MEMORY_CARD,
+        Some(F::Disk) => EXTERNAL_DRIVE,
+        None => drive_icon(drive.kind),
+    }
+}
+
 /// A drive's icon by its kind (ticket 122).
 pub fn drive_icon(kind: crate::drives::DriveKind) -> &'static str {
     use crate::drives::DriveKind as K;
@@ -344,6 +365,29 @@ mod tests {
         assert_ne!(drive_icon(K::System), drive_icon(K::Internal));
     }
 
+    /// A USB stick, a memory card and an external disk each have their own
+    /// icon, and a drive UDisks2 says nothing about is drawn as a disk.
+    #[test]
+    fn removable_drives_are_drawn_by_what_they_are() {
+        use crate::drives::{RemovableForm as F, removable_form};
+        use storage_platform::model::DriveInfo;
+        let with = |media: &[&str], bus: &str| DriveInfo {
+            media: media.iter().map(|m| m.to_string()).collect(),
+            connection_bus: bus.to_string(),
+            ..DriveInfo::default()
+        };
+        assert_eq!(removable_form(&with(&["thumb"], "usb")), F::Stick);
+        assert_eq!(removable_form(&with(&["flash_sd"], "usb")), F::Card);
+        assert_eq!(removable_form(&with(&[], "sdio")), F::Card);
+        assert_eq!(removable_form(&with(&[], "usb")), F::Disk);
+        let icons = [USB_DRIVE, MEMORY_CARD, EXTERNAL_DRIVE, DEVICE, SYSTEM_DRIVE];
+        for (i, a) in icons.iter().enumerate() {
+            for b in &icons[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
     #[test]
     fn every_glyph_is_served_and_is_an_svg() {
         for path in [
@@ -363,6 +407,8 @@ mod tests {
             COMPUTER,
             USB_DRIVE,
             SYSTEM_DRIVE,
+            EXTERNAL_DRIVE,
+            MEMORY_CARD,
             DISC,
             PHONE,
             CODE_FOLDER_SMALL,

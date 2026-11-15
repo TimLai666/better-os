@@ -38,6 +38,11 @@ pub struct DriveInfo {
     /// UDisks2's `Optical`: a disc drive.
     #[serde(default)]
     pub optical: bool,
+    /// UDisks2's `Media` and `MediaCompatibility`: what kind of medium the
+    /// drive takes or holds (`thumb` for a USB stick, `flash_sd` for an SD
+    /// card, and so on). Empty when UDisks2 does not know.
+    #[serde(default)]
+    pub media: Vec<String>,
 }
 
 /// `org.freedesktop.UDisks2.Block` and `.Partition` properties this crate reads.
