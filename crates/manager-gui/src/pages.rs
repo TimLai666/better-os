@@ -174,6 +174,17 @@ const APPS: PageModule = PageModule {
     },
 };
 
+/// Default apps: today's Defaults screens until ticket 89.
+const DEFAULT_APPS: PageModule = PageModule {
+    route: Route::DefaultApps,
+    name: "default-apps",
+    status: PageStatus::Interim { ticket: 89 },
+    title: |s| s.default_apps,
+    search_entries: no_entries,
+    attention: no_attention,
+    badge: no_badge,
+};
+
 const FIXES: PageModule = PageModule {
     route: Route::Fixes,
     name: "fixes",
