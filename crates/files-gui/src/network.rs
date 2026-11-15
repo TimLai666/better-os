@@ -291,6 +291,10 @@ pub enum MountFailure {
     /// It mounted, but GVfs shows no folder for it (its FUSE part is not
     /// running).
     NoLocalFolder,
+    /// The owner of `org.gtk.vfs.Daemon` is not the installed `gvfsd`
+    /// ([`crate::gvfs_trust`]); nothing was sent to it, and `gio` is not
+    /// tried, since it would go to the same owner.
+    UntrustedGvfs,
     /// Anything else.
     Failed,
 }

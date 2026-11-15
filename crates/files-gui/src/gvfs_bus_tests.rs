@@ -135,9 +135,21 @@ enum Server {
     AsksLate,
     /// Asks for a password, then withdraws the question (`Aborted`).
     Withdraws,
-    /// Another program on the bus (not GVfs) asks the window for a
-    /// password during the mount.
-    Impersonated,
+    /// Another process asks the window for a password during the mount,
+    /// started as [`Launch`] says.
+    AsksFrom(Launch),
+}
+
+/// How the process that asks is started, relative to this test (which
+/// plays `gvfsd`).
+#[derive(Clone, Copy, Debug)]
+enum Launch {
+    /// In a session of its own: no child of the daemon at all.
+    Detached,
+    /// A direct child running the named backend program.
+    Child(&'static str),
+    /// The named backend program, under a shell that is the daemon's child.
+    Grandchild(&'static str),
 }
 
 /// What the fake tracker heard: the spec's keys and every answer.
@@ -154,6 +166,8 @@ struct FakeTracker {
     /// Whether the location is mounted (`LookupMount` finds it).
     mounted: Arc<std::sync::atomic::AtomicBool>,
     bus: String,
+    /// Where the fake backends' programs are.
+    libexec: PathBuf,
 }
 
 fn text(value: &OwnedValue) -> String {
@@ -252,9 +266,21 @@ impl FakeTracker {
                 note(format!("withdrawn: aborted={aborted}"));
                 Err(GioError::Code30("Password dialog cancelled".into()))
             }
-            Server::Impersonated => {
-                note(impersonate(&self.bus, &source.0, source.1.as_str()));
-                Err(GioError::Code30("Password dialog cancelled".into()))
+            Server::AsksFrom(launch) => {
+                let reply = ask_from(
+                    launch,
+                    &self.libexec,
+                    &self.bus,
+                    &source.0,
+                    source.1.as_str(),
+                );
+                let signed_in = reply.contains("string \"secret\"");
+                note(reply);
+                if signed_in {
+                    Ok(())
+                } else {
+                    Err(GioError::Code30("Password dialog cancelled".into()))
+                }
             }
         }
     }
@@ -335,19 +361,85 @@ impl FakeTracker {
     }
 }
 
-/// Another program on the bus (`dbus-send`, in a session of its own so it
-/// is no child of this test, which plays GVfs) asks the window's mount
-/// operation for a password. What it got back.
-fn impersonate(bus: &str, client: &str, path: &str) -> String {
+/// The `AskPassword` call `dbus-send` makes, after its own program name.
+fn ask_password_arguments(bus: &str, client: &str, path: &str) -> Vec<String> {
+    [
+        format!("--bus={bus}"),
+        "--print-reply".into(),
+        format!("--dest={client}"),
+        path.into(),
+        "org.gtk.vfs.MountOperation.AskPassword".into(),
+        "string:Enter your password".into(),
+        "string:ann".into(),
+        "string:".into(),
+        "uint32:1".into(),
+    ]
+    .into()
+}
+
+/// Another process (`dbus-send`, or a copy of it under a backend's name)
+/// asks the window's mount operation for a password. What it got back.
+fn ask_from(
+    launch: Launch,
+    libexec: &std::path::Path,
+    bus: &str,
+    client: &str,
+    path: &str,
+) -> String {
+    let arguments = ask_password_arguments(bus, client, path);
+    let mut command = match launch {
+        Launch::Detached => return ask_detached(bus, client, path),
+        Launch::Child(program) => {
+            let mut command = Command::new(libexec.join(program));
+            command.args(&arguments);
+            command
+        }
+        Launch::Grandchild(program) => {
+            // `sh` runs the program and waits for it, so the shell, not
+            // the program, is the daemon's child.
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg(r#""$0" "$@"; status=$?; exit "$status""#)
+                .arg(libexec.join(program))
+                .args(&arguments);
+            command
+        }
+    };
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // A program copied a moment ago may still be open for writing in a
+    // process another test is forking ("text file busy"): try again.
+    let mut tries = 0;
+    let child = loop {
+        match command.spawn() {
+            Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other => break other.expect("dbus-send is needed (dbus)"),
+        }
+    };
+    let output = child.wait_with_output().expect("the asker ends");
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+/// [`Launch::Detached`]: `dbus-send` in a session of its own (`setsid
+/// -f`), so it is no child of this test.
+fn ask_detached(bus: &str, client: &str, path: &str) -> String {
     let directory = tempfile::tempdir().unwrap();
     let out = directory.path().join("reply");
     let status = Command::new("setsid")
         .arg("-f")
         .arg("sh")
         .arg("-c")
-        .arg(r#"exec dbus-send --bus="$1" --print-reply --dest="$2" "$3" org.gtk.vfs.MountOperation.AskPassword string:"Enter your password" string:ann string: uint32:1 > "$4" 2>&1"#)
+        .arg(r#"out="$1"; shift; exec dbus-send "$@" > "$out" 2>&1"#)
         .arg("impersonator")
-        .args([bus, client, path, &out.display().to_string()])
+        .arg(out.display().to_string())
+        .args(ask_password_arguments(bus, client, path))
         .status()
         .expect("setsid and dbus-send are needed (util-linux, dbus)");
     assert!(status.success());
@@ -361,6 +453,35 @@ fn impersonate(bus: &str, client: &str, path: &str) -> String {
         std::thread::sleep(Duration::from_millis(20));
     }
     "no reply".into()
+}
+
+/// The fake backends' programs: copies of `dbus-send` under GVfs's
+/// backend names, in `libexec`.
+const FAKE_BACKENDS: [&str; 2] = ["gvfsd-sftp", "gvfsd-smb"];
+
+fn fake_backends(libexec: &std::path::Path) {
+    let dbus_send = ["/usr/bin/dbus-send", "/bin/dbus-send"]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+        .expect("dbus-send is needed (dbus)");
+    std::fs::create_dir_all(libexec).unwrap();
+    for program in FAKE_BACKENDS {
+        std::fs::copy(dbus_send, libexec.join(program)).unwrap();
+    }
+}
+
+/// What the tests trust as GVfs: this test program as `gvfsd` (it plays
+/// the daemon), and the fake backends for `sftp` and `smb-share`.
+fn test_trust(libexec: &std::path::Path) -> crate::gvfs_trust::Trust {
+    let resolved = |program: &str| std::fs::canonicalize(libexec.join(program)).unwrap();
+    crate::gvfs_trust::Trust {
+        daemon: std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap(),
+        unit: None,
+        backends: HashMap::from([
+            ("sftp".to_string(), vec![resolved("gvfsd-sftp")]),
+            ("smb-share".to_string(), vec![resolved("gvfsd-smb")]),
+        ]),
+    }
 }
 
 /// A fake GVfs on its own bus, and a mounter on that bus.
@@ -379,8 +500,20 @@ fn fixture(server: Server) -> Fixture {
 
 /// The fake GVfs, with the mounter giving up after `quiet` without news.
 fn fixture_with(server: Server, quiet: Duration) -> Fixture {
+    fixture_trusting(server, quiet, |libexec| Ok(test_trust(libexec)))
+}
+
+/// The fake GVfs, the mounter trusting what `trust` says of the fake
+/// backends' folder.
+fn fixture_trusting(
+    server: Server,
+    quiet: Duration,
+    trust: impl FnOnce(&std::path::Path) -> Result<crate::gvfs_trust::Trust, String>,
+) -> Fixture {
     let bus = PrivateBus::start();
     let root = tempfile::tempdir().unwrap();
+    let libexec = root.path().join("libexec");
+    fake_backends(&libexec);
     let folder = root.path().join("gvfs/sftp:host=nas");
     let heard: Arc<Mutex<Heard>> = Arc::default();
     let tracker = smol::block_on(async {
@@ -397,6 +530,7 @@ fn fixture_with(server: Server, quiet: Duration) -> Fixture {
                         Server::Mounted
                     ))),
                     bus: bus.address.clone(),
+                    libexec: libexec.clone(),
                 },
             )
             .unwrap()
@@ -406,7 +540,8 @@ fn fixture_with(server: Server, quiet: Duration) -> Fixture {
             .await
             .unwrap()
     });
-    let mut mounter = GvfsMounter::at(&bus.address).expect("the fake GVfs is on the bus");
+    let mut mounter = GvfsMounter::at_trusting(&bus.address, trust(&libexec))
+        .expect("the fake GVfs is on the bus");
     mounter.quiet_limit = quiet;
     Fixture {
         _bus: bus,
@@ -670,7 +805,7 @@ fn a_question_gvfs_withdraws_leaves_the_window() {
 
 #[test]
 fn another_program_cannot_ask_for_the_password() {
-    let fixture = fixture(Server::Impersonated);
+    let fixture = fixture(Server::AsksFrom(Launch::Detached));
     let (asked, result) = mount(&fixture, "sftp://nas/", |_| {
         sign_in("ann", "", "secret", Remember::Never)
     });
@@ -686,4 +821,104 @@ fn another_program_cannot_ask_for_the_password() {
         Some(&["boolean true", "boolean true", "string \"\""][..]),
         "handled, aborted, and no password: {reply}"
     );
+}
+
+/// The window's answer to the asker, and what the asker got back.
+fn asked_from(
+    launch: Launch,
+) -> (
+    Vec<Prompt>,
+    Result<PathBuf, crate::network::MountError>,
+    String,
+) {
+    let fixture = fixture(Server::AsksFrom(launch));
+    let (asked, result) = mount(&fixture, "sftp://nas/", |_| {
+        sign_in("ann", "", "secret", Remember::Never)
+    });
+    let reply = fixture.heard.lock().unwrap().answers.join("\n");
+    (asked, result, reply)
+}
+
+fn assert_refused(launch: Launch, what: &str) {
+    let (asked, result, reply) = asked_from(launch);
+    assert!(
+        asked.is_empty(),
+        "{what}'s question reached the window: {asked:?}"
+    );
+    assert_eq!(result.unwrap_err().failure, MountFailure::Cancelled);
+    let values: Vec<&str> = reply.lines().skip(1).map(str::trim).collect();
+    assert_eq!(
+        values.get(..3),
+        Some(&["boolean true", "boolean true", "string \"\""][..]),
+        "{what}: handled, aborted, and no password: {reply}"
+    );
+}
+
+#[test]
+fn the_mount_s_own_backend_asks_and_gets_the_password() {
+    let (asked, result, reply) = asked_from(Launch::Child("gvfsd-sftp"));
+    assert_eq!(asked.len(), 1, "{reply}");
+    assert!(result.is_ok(), "{result:?}");
+    let values: Vec<&str> = reply.lines().skip(1).map(str::trim).collect();
+    assert_eq!(
+        values.get(..4),
+        Some(
+            &[
+                "boolean true",
+                "boolean false",
+                "string \"secret\"",
+                "string \"ann\""
+            ][..]
+        ),
+        "{reply}"
+    );
+}
+
+#[test]
+fn a_descendant_that_is_not_a_direct_backend_child_is_refused() {
+    assert_refused(Launch::Grandchild("gvfsd-sftp"), "a backend's own child");
+}
+
+#[test]
+fn a_backend_for_another_scheme_is_refused() {
+    assert_refused(
+        Launch::Child("gvfsd-smb"),
+        "the SMB backend, in an SFTP mount",
+    );
+}
+
+#[test]
+fn a_fake_owner_of_the_gvfs_name_is_refused() {
+    // The fake tracker owns org.gtk.vfs.Daemon, but GVfs here is said to be
+    // another program: nothing is sent to it, and nobody is asked.
+    let fixture = fixture_trusting(Server::Password, crate::network::MOUNT_TIMEOUT, |libexec| {
+        let mut trust = test_trust(libexec);
+        trust.daemon = std::fs::canonicalize("/bin/sh").unwrap();
+        Ok(trust)
+    });
+    let (asked, result) = mount(&fixture, "sftp://nas/", |_| {
+        sign_in("ann", "", "secret", Remember::Never)
+    });
+    assert!(asked.is_empty(), "{asked:?}");
+    let error = result.unwrap_err();
+    assert_eq!(error.failure, MountFailure::UntrustedGvfs, "{error:?}");
+    assert!(error.detail.contains("not by"), "{error:?}");
+    let heard = fixture.heard.lock().unwrap();
+    assert!(
+        heard.spec.is_empty(),
+        "MountLocation reached the fake owner"
+    );
+}
+
+#[test]
+fn without_an_installed_gvfs_to_compare_with_nothing_is_mounted() {
+    let fixture = fixture_trusting(Server::Password, crate::network::MOUNT_TIMEOUT, |_| {
+        Err("GVfs's service file (org.gtk.vfs.Daemon.service) is not installed".into())
+    });
+    let (asked, result) = mount(&fixture, "sftp://nas/", |_| {
+        sign_in("ann", "", "secret", Remember::Never)
+    });
+    assert!(asked.is_empty());
+    assert_eq!(result.unwrap_err().failure, MountFailure::UntrustedGvfs);
+    assert!(fixture.heard.lock().unwrap().spec.is_empty());
 }

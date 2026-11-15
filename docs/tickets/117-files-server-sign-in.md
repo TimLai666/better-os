@@ -203,3 +203,51 @@ runner's fake still answers in time.
   the first call; 25 runs under the same load: no failure. Two windows
   reading one drive's free space at once also share the one read instead of
   the second showing no bar.
+
+## After the security review
+
+- **GVfs is the installed GVfs, not whoever owns its name.** Any program of
+  the person's can claim `org.gtk.vfs.Daemon` on the session bus. Before a
+  mount, the owner must run the `gvfsd` that GVfs's D-Bus service file names
+  (`/usr/libexec/gvfsd` here, read from
+  `/usr/share/dbus-1/services/org.gtk.vfs.Daemon.service`; only the system's
+  data folders are read), run as this person, and, under `systemd --user`,
+  run in that file's `gvfs-daemon.service`. The mount then goes to that
+  owner's unique name. An owner that fails gets nothing; the window says
+  GVfs could not be trusted, and `gio` is not tried, since it would reach the
+  same owner (`gvfs_trust.rs`).
+- **Only the mount's own backend may ask.** A caller must be a direct child of
+  that `gvfsd` running the backend GVfs's mount file names for the mount's
+  type (`/usr/share/gvfs/mounts/*.mount`: `sftp` → `gvfsd-sftp`,
+  `smb-share` → `gvfsd-smb`, `smb-server` → `gvfsd-smb-browse`, `dav` →
+  `gvfsd-dav`, `ftp` → `gvfsd-ftp`, `nfs` → `gvfsd-nfs`, `afp-volume` →
+  `gvfsd-afp`, `afp-server` → `gvfsd-afp-browse`), or the verified `gvfsd`
+  itself. `ssh`'s own children and other backends are refused.
+- **Processes are pinned.** The bus's `ProcessFD` is used when it gives one;
+  this session bus (dbus-daemon 1.14.10) does not, so a pidfd is opened on
+  its `ProcessID` and the PID confirmed with the bus again. `/proc` is read
+  and the pidfd checked still running afterwards, so a reused PID is not
+  trusted.
+- **What is not guaranteed.** A program running as the same person can start
+  the real `gvfsd` under its own control (`LD_PRELOAD`, tracing) or move its
+  processes between its own `systemd --user` cgroups. These checks stop a
+  different program posing as GVfs by name, not code already running as the
+  person. The operation's random path is not a defence either: anyone can
+  list it by introspecting its parent.
+- **One fewer password copy.** The `AskPassword` reply is written into zbus's
+  message straight from the `Secret`; no `String` of it is made. Copies that
+  remain and cannot be cleared from here: zbus's message buffer, the
+  password field's text buffer (gpui-component frees it without overwriting;
+  `set_value("")` does clear its undo history, `crates/ui/src/input/state.rs`
+  at rev 88f102d), the socket buffers, the bus daemon and the GVfs backend.
+- **The Chinese host-key test runs on CI.** CI installs `locales` and
+  `language-pack-gnome-zh-hant-base` (which ships GVfs's zh_TW catalog) and
+  generates `zh_TW.UTF-8`; with `CI` set the test fails instead of skipping.
+
+Tests added: a fake owner of `org.gtk.vfs.Daemon` that is not the trusted
+`gvfsd` gets no `MountLocation`; no installed GVfs to compare with mounts
+nothing; the mount's own backend (a direct child running the trusted
+`gvfsd-sftp`) is asked and gets the password; the same program under a shell
+(not a direct child) and the SMB backend in an SFTP mount are refused; the
+detached impersonator is still refused; GVfs's service and mount files are
+read into the trusted programs; a pidfd names its process until it ends.

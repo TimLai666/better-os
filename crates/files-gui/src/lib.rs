@@ -30,6 +30,7 @@ pub mod errors;
 pub mod filemanager1;
 pub mod format;
 pub mod gvfs;
+pub mod gvfs_trust;
 pub mod i18n;
 pub mod icons;
 pub mod interrupted;

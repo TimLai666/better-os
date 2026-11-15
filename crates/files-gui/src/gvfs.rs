@@ -346,87 +346,74 @@ impl Activity {
     }
 }
 
-/// The answer to a sign-in GVfs did not get to ask: aborted.
-type PasswordReply = (bool, bool, String, String, String, bool, u32);
-const PASSWORD_ABORTED: fn() -> PasswordReply = || {
-    (
-        true,
-        true,
-        String::new(),
-        String::new(),
-        String::new(),
-        false,
-        0,
-    )
-};
-
-/// Who may ask a mount's questions. GVfs's backends (`gvfsd-sftp`,
-/// `gvfsd-smb`…) call the client's mount operation themselves, on their own
-/// session-bus connection (`common/gmountsource.c`: a proxy made with
-/// `gvfs_dbus_mount_operation_proxy_new_for_bus_sync (G_BUS_TYPE_SESSION,
-/// …)` from the backend's process), and `gvfsd`, which owns
-/// `org.gtk.vfs.Daemon`, spawns every backend. So a caller is GVfs when its
-/// process is `gvfsd`'s or a descendant of it; anything else on the session
-/// bus is refused without showing the person anything.
-async fn from_gvfs(connection: &zbus::Connection, header: &zbus::message::Header<'_>) -> bool {
-    let Some(sender) = header.sender() else {
-        return false;
-    };
-    let Ok(bus) = zbus::fdo::DBusProxy::new(connection).await else {
-        return false;
-    };
-    let Ok(daemon) = zbus::names::BusName::try_from(DAEMON) else {
-        return false;
-    };
-    let Ok(owner) = bus.get_name_owner(daemon).await else {
-        return false;
-    };
-    let pid_of = |name: zbus::names::BusName<'static>| {
-        let bus = bus.clone();
-        async move { bus.get_connection_unix_process_id(name).await.ok() }
-    };
-    let (Some(caller), Some(gvfsd)) = (
-        pid_of(zbus::names::BusName::Unique(sender.to_owned())).await,
-        pid_of(zbus::names::BusName::Unique(owner.into_inner())).await,
-    ) else {
-        return false;
-    };
-    descends_from(caller, gvfsd)
+/// `AskPassword`'s answer, `(bbsssbu)` on the bus. The password is
+/// written into zbus's message straight from the [`Secret`]'s bytes and
+/// the `Secret` is overwritten when the reply is dropped, so no `String` of
+/// it is made here. Copies this program cannot clear remain: the reply
+/// message's own buffer (zbus frees it without overwriting), the field's
+/// text buffer in gpui-component (its rope is freed, not overwritten, when
+/// [`crate::secret::forget`] empties it), and outside this process the
+/// socket buffers, the bus daemon and the GVfs backend that receives it.
+///
+/// [`Secret`]: crate::secret::Secret
+struct PasswordReply {
+    handled: bool,
+    aborted: bool,
+    password: Option<crate::secret::Secret>,
+    user: String,
+    domain: String,
+    anonymous: bool,
+    save: u32,
 }
 
-/// Whether process `pid` is `ancestor` or below it, by the parents
-/// `/proc` names (a few generations at most).
-pub fn descends_from(pid: u32, ancestor: u32) -> bool {
-    let mut current = pid;
-    for _ in 0..16 {
-        if current == ancestor {
-            return true;
+impl PasswordReply {
+    /// The answer to a sign-in GVfs did not get to ask: aborted.
+    fn aborted() -> Self {
+        Self {
+            handled: true,
+            aborted: true,
+            password: None,
+            user: String::new(),
+            domain: String::new(),
+            anonymous: false,
+            save: 0,
         }
-        let Some(parent) = parent_of(current) else {
-            return false;
-        };
-        if parent <= 1 || parent == current {
-            return false;
-        }
-        current = parent;
     }
-    false
 }
 
-fn parent_of(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // `pid (comm) state ppid …`; `comm` may hold spaces and parentheses.
-    stat.rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .nth(1)?
-        .parse()
-        .ok()
+impl zbus::zvariant::Type for PasswordReply {
+    const SIGNATURE: &'static zbus::zvariant::Signature =
+        <(bool, bool, &str, &str, &str, bool, u32) as zbus::zvariant::Type>::SIGNATURE;
 }
 
-/// The mount operation GVfs asks its questions on, at a path nobody can
-/// guess, answering only GVfs ([`from_gvfs`]).
+impl serde::Serialize for PasswordReply {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        (
+            self.handled,
+            self.aborted,
+            self.password
+                .as_ref()
+                .map_or("", crate::secret::Secret::expose),
+            self.user.as_str(),
+            self.domain.as_str(),
+            self.anonymous,
+            self.save,
+        )
+            .serialize(serializer)
+    }
+}
+
+/// The mount operation GVfs asks its questions on. It answers only the
+/// verified `gvfsd` and its backend for this mount's type
+/// ([`Operation::is_gvfs`]); its path is random but is no defence, since
+/// anyone on the bus can list it by introspecting its parent.
 struct Operation {
+    /// What GVfs is on this computer.
+    trust: Arc<crate::gvfs_trust::Trust>,
+    /// The `gvfsd` this mount went to, verified and pinned.
+    daemon: Arc<crate::gvfs_trust::Peer>,
+    /// The mount spec's `type`: whose backend may ask.
+    kind: String,
     asker: Asker,
     passwords_asked: AtomicU32,
     activity: Arc<Activity>,
@@ -437,6 +424,26 @@ struct Operation {
 }
 
 impl Operation {
+    /// Whether the caller is the verified `gvfsd` or its backend for this
+    /// mount's type ([`crate::gvfs_trust`]); anything else on the session
+    /// bus is refused without showing the person anything.
+    async fn is_gvfs(
+        &self,
+        connection: &zbus::Connection,
+        header: &zbus::message::Header<'_>,
+    ) -> bool {
+        let Some(sender) = header.sender() else {
+            return false;
+        };
+        let Ok(bus) = zbus::fdo::DBusProxy::new(connection).await else {
+            return false;
+        };
+        let Some(caller) = crate::gvfs_trust::Peer::of(&bus, sender).await else {
+            return false;
+        };
+        self.trust.is_backend(&caller, &self.daemon, &self.kind)
+    }
+
     async fn ask(&self, prompt: Prompt) -> Answer {
         if self.closed.load(Ordering::Acquire) {
             return Answer::Cancel;
@@ -468,8 +475,8 @@ impl Operation {
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> PasswordReply {
-        if !from_gvfs(connection, &header).await {
-            return PASSWORD_ABORTED();
+        if !self.is_gvfs(connection, &header).await {
+            return PasswordReply::aborted();
         }
         let again = self.passwords_asked.fetch_add(1, Ordering::AcqRel) > 0;
         let answer = self
@@ -488,17 +495,16 @@ impl Operation {
                 password,
                 anonymous,
                 remember,
-            } => (
-                true,
-                false,
-                // The only copy outside the `Secret`: the bus reply.
-                password.expose().to_string(),
+            } => PasswordReply {
+                handled: true,
+                aborted: false,
+                password: Some(password),
                 user,
                 domain,
                 anonymous,
-                remember.as_bits(),
-            ),
-            Answer::Choice(_) | Answer::Cancel => PASSWORD_ABORTED(),
+                save: remember.as_bits(),
+            },
+            Answer::Choice(_) | Answer::Cancel => PasswordReply::aborted(),
         }
     }
 
@@ -509,7 +515,7 @@ impl Operation {
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> (bool, bool, u32) {
-        if !from_gvfs(connection, &header).await {
+        if !self.is_gvfs(connection, &header).await {
             return (true, true, 0);
         }
         self.choose(message, choices).await
@@ -523,7 +529,7 @@ impl Operation {
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> (bool, bool, u32) {
-        if !from_gvfs(connection, &header).await {
+        if !self.is_gvfs(connection, &header).await {
             return (true, true, 0);
         }
         self.choose(message, choices).await
@@ -537,7 +543,7 @@ impl Operation {
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
     ) {
-        if from_gvfs(connection, &header).await {
+        if self.is_gvfs(connection, &header).await {
             self.activity.touch();
         }
     }
@@ -547,7 +553,7 @@ impl Operation {
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
     ) {
-        if from_gvfs(connection, &header).await {
+        if self.is_gvfs(connection, &header).await {
             let _ = self.abort.0.try_send(());
         }
     }
@@ -562,11 +568,13 @@ impl Operation {
     }
 }
 
-/// Counts operations, for the never-used fallback below.
+/// Counts operations, for the fallback below.
 static NEXT_OPERATION: AtomicU64 = AtomicU64::new(1);
 
-/// A path for one mount's operation that another program on the bus cannot
-/// guess: 128 random bits.
+/// A path for one mount's operation: 128 random bits, so two mounts never
+/// share one. Not a secret: the object server lists it to anyone who
+/// introspects `/org/betteros/Files/MountOperation`, so the caller check
+/// ([`Operation::is_gvfs`]) is the only thing keeping others out.
 fn operation_path() -> String {
     use std::io::Read;
     let mut token = [0u8; 16];
@@ -574,7 +582,7 @@ fn operation_path() -> String {
         .and_then(|mut source| source.read_exact(&mut token))
         .is_ok();
     if !random {
-        // Never reached on Linux; still unique, and the caller check stands.
+        // Never reached on Linux; still unique.
         let fallback = NEXT_OPERATION.fetch_add(1, Ordering::Relaxed) as u128
             ^ (std::process::id() as u128) << 64
             ^ Instant::now().elapsed().as_nanos();
@@ -604,6 +612,8 @@ impl Listening {}
 /// Mounts through GVfs on the session bus (or a private bus, in tests).
 pub struct GvfsMounter {
     connection: zbus::Connection,
+    /// What GVfs is on this computer, or why it cannot be told.
+    trust: Result<Arc<crate::gvfs_trust::Trust>, String>,
     /// How long a mount may go without news before it is given up on.
     pub quiet_limit: Duration,
 }
@@ -620,12 +630,20 @@ impl GvfsMounter {
                 .build()
                 .await
                 .ok()?;
-            Self::reachable(connection).await
+            Self::reachable(connection, system_trust()).await
         })
     }
 
-    /// GVfs on the bus at `address`.
+    /// GVfs on the bus at `address`, trusted when it is the installed one.
     pub fn at(address: &str) -> Option<Self> {
+        Self::at_trusting(address, system_trust())
+    }
+
+    /// GVfs on the bus at `address`, trusted when it is `trust`'s.
+    pub fn at_trusting(
+        address: &str,
+        trust: Result<crate::gvfs_trust::Trust, String>,
+    ) -> Option<Self> {
         smol::block_on(async {
             let connection = zbus::connection::Builder::address(address)
                 .ok()?
@@ -635,11 +653,14 @@ impl GvfsMounter {
                 .build()
                 .await
                 .ok()?;
-            Self::reachable(connection).await
+            Self::reachable(connection, trust).await
         })
     }
 
-    async fn reachable(connection: zbus::Connection) -> Option<Self> {
+    async fn reachable(
+        connection: zbus::Connection,
+        trust: Result<crate::gvfs_trust::Trust, String>,
+    ) -> Option<Self> {
         let bus = zbus::fdo::DBusProxy::new(&connection).await.ok()?;
         let name = zbus::names::BusName::try_from(DAEMON).ok()?;
         let owned = bus.name_has_owner(name.clone()).await.unwrap_or(false);
@@ -652,6 +673,7 @@ impl GvfsMounter {
         };
         (owned || activatable().await).then_some(Self {
             connection,
+            trust: trust.map(Arc::new),
             quiet_limit: MOUNT_TIMEOUT,
         })
     }
@@ -685,16 +707,79 @@ impl GvfsMounter {
         Ok(folder)
     }
 
+    /// The owner of `org.gtk.vfs.Daemon`, started if need be, once it is
+    /// verified to be the installed `gvfsd` ([`crate::gvfs_trust`]): its
+    /// unique name, and the process pinned. Nothing is sent to an owner
+    /// that fails, and `gio` is not tried instead, since it would go to the
+    /// same owner.
+    async fn verified_daemon(
+        &self,
+        trust: &crate::gvfs_trust::Trust,
+    ) -> Result<(zbus::names::OwnedUniqueName, Arc<crate::gvfs_trust::Peer>), MountError> {
+        let untrusted = |why: String| MountError::new(MountFailure::UntrustedGvfs, why);
+        let no_gvfs = |error: zbus::Error| {
+            let (failure, detail) = failure_of(&error);
+            let failure = if failure == MountFailure::NoGvfs {
+                failure
+            } else {
+                MountFailure::Failed
+            };
+            MountError::new(failure, detail)
+        };
+        let bus = zbus::fdo::DBusProxy::new(&self.connection)
+            .await
+            .map_err(no_gvfs)?;
+        let name =
+            zbus::names::WellKnownName::try_from(DAEMON).map_err(|error| no_gvfs(error.into()))?;
+        // Started first when nobody owns it yet (a bus refuses to start a name
+        // that has no service file even when it is owned already).
+        let owned = bus
+            .name_has_owner(zbus::names::BusName::WellKnown(name.clone()))
+            .await
+            .unwrap_or(false);
+        if !owned {
+            bus.start_service_by_name(name.clone(), 0)
+                .await
+                .map_err(|error| no_gvfs(error.into()))?;
+        }
+        let owner = bus
+            .get_name_owner(zbus::names::BusName::WellKnown(name))
+            .await
+            .map_err(|error| no_gvfs(error.into()))?;
+        let daemon = crate::gvfs_trust::Peer::of(&bus, &owner)
+            .await
+            .ok_or_else(|| {
+                untrusted("the owner of org.gtk.vfs.Daemon cannot be identified".into())
+            })?;
+        trust.verify_daemon(&daemon).map_err(untrusted)?;
+        Ok((owner, Arc::new(daemon)))
+    }
+
     async fn mount_async(&self, address: &str, asker: &Asker) -> Result<PathBuf, MountError> {
         let spec = mount_spec(address)?;
-        let tracker = MountTrackerProxy::new(&self.connection)
-            .await
-            .map_err(|error| MountError::new(MountFailure::NoGvfs, error.to_string()))?;
+        let trust = self
+            .trust
+            .as_ref()
+            .map_err(|why| MountError::new(MountFailure::UntrustedGvfs, why.clone()))?;
+        let (owner, daemon) = self.verified_daemon(trust).await?;
+        // To the verified owner's unique name: a well-known name taken over
+        // after the check does not receive the mount.
+        let tracker = async {
+            MountTrackerProxy::builder(&self.connection)
+                .destination(owner)?
+                .build()
+                .await
+        }
+        .await
+        .map_err(|error: zbus::Error| MountError::new(MountFailure::NoGvfs, error.to_string()))?;
         let activity = Arc::new(Activity::default());
         activity.touch();
         let closed = Arc::new(AtomicBool::new(false));
         let path = operation_path();
         let operation = Operation {
+            trust: Arc::clone(trust),
+            daemon,
+            kind: spec.get("type").unwrap_or_default().to_string(),
             asker: asker.clone(),
             passwords_asked: AtomicU32::new(0),
             activity: Arc::clone(&activity),
@@ -768,6 +853,11 @@ impl GvfsMounter {
             }
         }
     }
+}
+
+/// The GVfs installed on this computer.
+fn system_trust() -> Result<crate::gvfs_trust::Trust, String> {
+    crate::gvfs_trust::Trust::system()
 }
 
 impl crate::network::Mounter for GvfsMounter {
@@ -893,6 +983,12 @@ mod tests {
         // translation (Ubuntu's language pack); without them there is
         // nothing to compare against.
         let Some(words) = gvfs_translation_in(HOST_KEY_FAILED, c"zh_TW.UTF-8") else {
+            // CI installs both (`locales`, `language-pack-gnome-zh-hant-base`),
+            // so there a missing one is a broken image, not a skip.
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "no zh_TW.UTF-8 locale or no GVfs zh_TW catalog on CI"
+            );
             eprintln!("skipping: no zh_TW.UTF-8 locale or no GVfs zh_TW catalog here");
             return;
         };
@@ -924,19 +1020,6 @@ mod tests {
             ),
             Some(crate::network::HostKeyQuestion::Mismatch)
         );
-    }
-
-    #[test]
-    fn gvfs_s_backends_are_its_descendants_and_nothing_else_is() {
-        let me = std::process::id();
-        assert!(descends_from(me, me));
-        let parent = parent_of(me).expect("a parent");
-        assert!(descends_from(me, parent), "a child of the daemon");
-        assert!(
-            !descends_from(parent, me),
-            "the daemon's parent is not its child"
-        );
-        assert!(!descends_from(1, me));
     }
 
     #[test]

@@ -478,6 +478,7 @@ pub struct Copy {
     pub server_key_changed: &'static str,
     pub server_not_supported: &'static str,
     pub server_no_folder: &'static str,
+    pub server_untrusted_gvfs: &'static str,
     /// The sign-in page (ticket 117): `{server}` is its name.
     pub server_sign_in_to: &'static str,
     pub server_domain: &'static str,
@@ -977,6 +978,7 @@ pub const EN_US: Copy = Copy {
     server_key_changed: "{server} isn't the computer it was last time: its identity has changed. Someone may be intercepting the connection, or the server was reinstalled. Ask its administrator before you connect. If the change is expected, remove its old key from ~/.ssh/known_hosts and try again.",
     server_not_supported: "Better Files can't open this kind of address.",
     server_no_folder: "{server} is connected, but its files aren't available as a folder. GVfs's FUSE part isn't running.",
+    server_untrusted_gvfs: "Didn't open {server}: the program answering as GVfs isn't the GVfs installed on this computer, so your sign-in wasn't sent to it. Sign out and back in, then try again.",
     server_sign_in_to: "Sign in to {server}",
     server_domain: "Domain",
     server_wrong_password: "That didn't work. Check the user name and password and try again.",
@@ -1463,6 +1465,7 @@ pub const ZH_TW: Copy = Copy {
     server_key_changed: "「{server}」和上次連線時不是同一台電腦：它的身分變了。可能有人在攔截連線，也可能是伺服器重灌過。連線前請先問過管理員；如果這個變更是預期中的，請從 ~/.ssh/known_hosts 移除它的舊金鑰再試一次。",
     server_not_supported: "Better 檔案無法開啟這種網址。",
     server_no_folder: "已連上「{server}」，但它的檔案無法以資料夾開啟：GVfs 的 FUSE 部分沒有在執行。",
+    server_untrusted_gvfs: "沒有開啟「{server}」：以 GVfs 身分回應的程式不是這台電腦安裝的 GVfs，所以沒有把登入資料交給它。請登出再登入後重試。",
     server_sign_in_to: "登入「{server}」",
     server_domain: "網域",
     server_wrong_password: "登入失敗，請檢查使用者名稱和密碼後再試一次。",

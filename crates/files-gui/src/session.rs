@@ -324,6 +324,7 @@ impl Notice {
                     F::HostKeyChanged => c.server_key_changed,
                     F::NotSupported => c.server_not_supported,
                     F::NoLocalFolder => c.server_no_folder,
+                    F::UntrustedGvfs => c.server_untrusted_gvfs,
                 }
                 .replace("{server}", &server)
             }
