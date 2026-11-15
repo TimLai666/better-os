@@ -89,13 +89,7 @@ impl Route {
             Page::Components
             | Page::ComponentDetail(_)
             | Page::Updates
-            | Page::ReviewChanges
-            | Page::Installing
-            | Page::Finished
-            | Page::Restore
-            | Page::Restored
             | Page::Health
-            | Page::DoctorResults
             | Page::Activity => Route::Apps,
         }
     }
@@ -121,16 +115,7 @@ impl Route {
 /// already approved, or to an installation that has finished, would show a
 /// screen about something that is over.
 pub(crate) fn is_transient(page: &Page) -> bool {
-    matches!(
-        page,
-        Page::ReviewChanges
-            | Page::Installing
-            | Page::Finished
-            | Page::Restore
-            | Page::Restored
-            | Page::DefaultsReview
-            | Page::DefaultsResults
-    )
+    matches!(page, Page::DefaultsReview | Page::DefaultsResults)
 }
 
 /// The pages the back button returns to, most recent last.
@@ -191,35 +176,21 @@ impl History {
     }
 }
 
-/// Whether a transaction is running, which changes where Back and Apps go.
-///
-/// While one runs its progress screen is the one place it can be followed
-/// and cancelled, so Back from anywhere else returns to it, Back on it is not
-/// offered, and the Apps item lands on it rather than on the component list.
-pub(crate) fn back_target(history: &mut History, current: &Page, running: bool) -> Option<Page> {
-    if running {
-        (current != &Page::Installing).then_some(Page::Installing)
-    } else {
-        history.back(current)
-    }
+/// Where Back goes from `current`. A running change is followed on the rows
+/// it touches, wherever they are, so it no longer changes where Back or the
+/// Apps item lead.
+pub(crate) fn back_target(history: &mut History, current: &Page) -> Option<Page> {
+    history.back(current)
 }
 
-/// Whether the titlebar shows Back, by the same rule as [`back_target`].
-pub(crate) fn shows_back(history: &History, current: &Page, running: bool) -> bool {
-    if running {
-        current != &Page::Installing
-    } else {
-        history.can_go_back()
-    }
+/// Whether the titlebar shows Back.
+pub(crate) fn shows_back(history: &History) -> bool {
+    history.can_go_back()
 }
 
-/// The page a pane item opens, with a transaction running or not.
-pub(crate) fn landing(route: Route, running: bool) -> Page {
-    if running && route == Route::Apps {
-        Page::Installing
-    } else {
-        route.landing()
-    }
+/// The page a pane item opens.
+pub(crate) fn landing(route: Route) -> Page {
+    route.landing()
 }
 
 /// Whether today's Better Manager screens draw their narrow layout: only in
@@ -284,7 +255,7 @@ mod tests {
     #[test]
     fn every_page_belongs_to_one_pane_item() {
         assert_eq!(Route::of(&component("better-files")), Route::Apps);
-        assert_eq!(Route::of(&Page::Installing), Route::Apps);
+        assert_eq!(Route::of(&Page::Health), Route::Apps);
         assert_eq!(Route::of(&Page::Activity), Route::Apps);
         assert_eq!(Route::of(&Page::DefaultsReview), Route::DefaultApps);
         assert_eq!(Route::of(&Page::Settings), Route::Settings);
@@ -319,12 +290,11 @@ mod tests {
     #[test]
     fn a_running_flow_is_left_out_of_the_history() {
         let mut history = History::default();
-        history.visit(&Page::Components, &Page::ReviewChanges);
-        history.visit(&Page::ReviewChanges, &Page::Installing);
-        history.visit(&Page::Installing, &Page::Finished);
-        history.visit(&Page::Finished, &Page::Home);
-        assert_eq!(history.back(&Page::Home), Some(Page::Components));
-        assert_eq!(history.back(&Page::Components), None);
+        history.visit(&Page::Defaults, &Page::DefaultsReview);
+        history.visit(&Page::DefaultsReview, &Page::DefaultsResults);
+        history.visit(&Page::DefaultsResults, &Page::Home);
+        assert_eq!(history.back(&Page::Home), Some(Page::Defaults));
+        assert_eq!(history.back(&Page::Defaults), None);
     }
 
     #[test]
@@ -337,26 +307,15 @@ mod tests {
     }
 
     #[test]
-    fn a_running_transaction_is_where_back_and_apps_lead() {
+    fn a_running_change_leaves_back_and_apps_where_they_were() {
         let mut history = History::default();
-        history.visit(&Page::Components, &Page::ReviewChanges);
-        history.visit(&Page::ReviewChanges, &Page::Installing);
-        history.visit(&Page::Installing, &Page::Home);
-        // On the progress screen there is no Back while it runs.
-        assert!(!shows_back(&history, &Page::Installing, true));
-        assert_eq!(back_target(&mut history, &Page::Installing, true), None);
-        // Anywhere else, Back returns to it.
-        assert!(shows_back(&history, &Page::Home, true));
+        history.visit(&Page::Components, &Page::Updates);
+        history.visit(&Page::Updates, &Page::Home);
+        assert!(shows_back(&history));
+        assert_eq!(landing(Route::Apps), Page::Components);
+        assert_eq!(back_target(&mut history, &Page::Home), Some(Page::Updates));
         assert_eq!(
-            back_target(&mut history, &Page::Home, true),
-            Some(Page::Installing)
-        );
-        assert_eq!(landing(Route::Apps, true), Page::Installing);
-        assert_eq!(landing(Route::Home, true), Page::Home);
-        // Once it is over, the history is what it was.
-        assert_eq!(landing(Route::Apps, false), Page::Components);
-        assert_eq!(
-            back_target(&mut history, &Page::Home, false),
+            back_target(&mut history, &Page::Updates),
             Some(Page::Components)
         );
     }

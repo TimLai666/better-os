@@ -127,7 +127,7 @@ impl ManagerApp {
                             cx,
                             |this, _, cx| {
                                 if let Ok(id) = better_core::ComponentId::new(COMPONENT) {
-                                    this.prepare_component_change(&id, cx);
+                                    this.start_component_action(&id, cx);
                                 }
                             },
                         )),

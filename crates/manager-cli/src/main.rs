@@ -85,6 +85,11 @@ enum Command {
         /// Deterministically fail the mock operation at this stage.
         #[arg(long, value_enum)]
         fail_at: Option<StageArg>,
+        /// With `remove`: leave the component's settings and history in
+        /// place for a reinstall. Without it they are moved to the trash once
+        /// the removal succeeded.
+        #[arg(long)]
+        keep_data: bool,
     },
     Continue {
         #[arg(long, value_enum)]
@@ -680,6 +685,50 @@ fn run_plan(
     advance_until_done(manager, state, store, fail_at, restore_outcome, mode, real)
 }
 
+/// Whether a removal left nothing installed and nothing failed.
+fn removed(state: &ManagerState, id: &ComponentId) -> bool {
+    state.active_operation.is_none()
+        && state
+            .component(id)
+            .is_none_or(|record| record.installed_version.is_none() && record.failure.is_none())
+}
+
+/// Moves the removed component's personal data to the trash, by the rule
+/// `manager_core::personal_data` decides. A simulation only says what it
+/// would move: it changes nothing on this machine.
+fn remove_personal_data(manager: &Manager, id: &ComponentId, mode: ExecutionMode) {
+    let Some(manifest) = manager.manifests().find(|manifest| &manifest.id == id) else {
+        return;
+    };
+    for refused in manager_core::personal_data::refused_manifest_paths(id.as_str(), &manifest.paths)
+    {
+        eprintln!("{}", refused.log_line(id.as_str()));
+    }
+    let paths = manager_core::personal_data::owned_by(id.as_str());
+    if paths.is_empty() {
+        return;
+    }
+    if mode == ExecutionMode::Mock {
+        for path in &paths {
+            println!("would move to the trash: ~/{}", path.path);
+        }
+        return;
+    }
+    let Some((home, trash)) = manager_platform::personal_data::home_and_trash() else {
+        eprintln!("settings and history kept: no home directory");
+        return;
+    };
+    let relative: Vec<&str> = paths.iter().map(|entry| entry.path).collect();
+    let report =
+        manager_platform::personal_data::move_personal_data_to_trash(&home, &relative, &trash);
+    for path in &report.trashed {
+        println!("moved to the trash: {}", path.display());
+    }
+    for (path, reason) in &report.failed {
+        eprintln!("could not move to the trash: {} ({reason})", path.display());
+    }
+}
+
 /// Resolves the requested execution mode, refusing combinations that would
 /// misrepresent what is about to happen.
 fn execution_mode(
@@ -771,16 +820,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             id,
             operation,
             fail_at,
+            keep_data,
         } => {
             let mode = execution_mode(cli.execution, fail_at.is_some(), false)?;
-            let plan = plan_for(
-                &manager,
-                &state,
-                &ComponentId::new(id)?,
-                operation.into(),
-                mode,
-                &DpkgProbe,
-            )?;
+            let id = ComponentId::new(id)?;
+            let operation: DesiredOperation = operation.into();
+            if keep_data && operation != DesiredOperation::Remove {
+                return Err(Box::new(std::io::Error::other(
+                    "manager.error.keep_data_without_remove",
+                )));
+            }
+            let plan = plan_for(&manager, &state, &id, operation, mode, &DpkgProbe)?;
             run_plan(
                 &manager,
                 &mut state,
@@ -790,6 +840,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None,
                 mode,
             )?;
+            if operation == DesiredOperation::Remove && !keep_data && removed(&state, &id) {
+                remove_personal_data(&manager, &id, mode);
+            }
         }
         Command::Continue {
             fail_at,

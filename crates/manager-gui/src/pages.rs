@@ -86,6 +86,9 @@ pub(crate) mod apps_card {
     pub(crate) const UPDATES: &str = "apps-updates";
     pub(crate) const HEALTH: &str = "apps-health";
     pub(crate) const ACTIVITY: &str = "apps-activity";
+    pub(crate) const COMPONENTS: &str = "apps-components";
+    pub(crate) const CATALOG: &str = "apps-catalog";
+    pub(crate) const PACKAGE_SYSTEM: &str = "apps-package-system";
 }
 
 /// Apps' sub-page cards (spec section 7): Updates with its count, Health,
@@ -140,16 +143,26 @@ fn apps_entries(locale: Locale) -> Vec<SearchEntry> {
             s.apps_activity_description,
             apps_card::ACTIVITY,
         ),
+        entry(
+            crate::apps::copy(locale).group_components,
+            crate::apps::copy(locale).search_placeholder,
+            apps_card::COMPONENTS,
+        ),
+        entry(
+            crate::apps::copy(locale).refresh_list,
+            "",
+            apps_card::CATALOG,
+        ),
     ]
 }
 
-/// Apps: today's screens until ticket 85, under its three sub-page cards.
-/// Its Home items and its update badge exist now, from `manager-core`'s
+/// Apps (spec section 7, ticket 85): the components, Updates, Health, and
+/// Activity. Its Home items and its update badge come from `manager-core`'s
 /// state.
 const APPS: PageModule = PageModule {
     route: Route::Apps,
     name: "apps",
-    status: PageStatus::Interim { ticket: 85 },
+    status: PageStatus::Built,
     title: |s| s.apps,
     search_entries: apps_entries,
     attention: attention::apps_attention,
@@ -622,7 +635,7 @@ mod tests {
         assert_eq!(status(Route::Home), PageStatus::Built);
         assert_eq!(status(Route::Settings), PageStatus::Built);
         assert_eq!(status(Route::WindowAttention), PageStatus::Built);
-        assert_eq!(status(Route::Apps), PageStatus::Interim { ticket: 85 });
+        assert_eq!(status(Route::Apps), PageStatus::Built);
         assert_eq!(
             status(Route::System),
             PageStatus::Placeholder { ticket: 86 }
