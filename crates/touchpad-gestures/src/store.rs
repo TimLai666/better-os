@@ -168,6 +168,47 @@ impl GestureStore {
         self.capture_path().exists()
     }
 
+    /// The marker the gesture pipeline leaves when it turned gestures off by
+    /// itself after the adapter failed several times in a row. It is what
+    /// lets Better Manager's Home say so after the fact (ticket 88): the
+    /// profiles only record that gestures are off, not why.
+    pub fn turned_off_path(&self) -> std::path::PathBuf {
+        self.store.directory().join("gestures-turned-off")
+    }
+
+    /// Records that gestures turned themselves off after `failures` failed
+    /// runs in a row.
+    pub fn record_turned_off(&self, failures: u32) -> Result<(), GestureStoreError> {
+        self.store
+            .write_text(
+                &self.turned_off_path(),
+                &format!(
+                    "Gestures were turned off after {failures} failed attempts in a row.\n\
+                     Turning them on again in Better Manager removes this file.\n"
+                ),
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn turned_off_by_itself(&self) -> bool {
+        self.turned_off_path().exists()
+    }
+
+    /// Forgets the marker: gestures are on again, or the person turned them
+    /// off themselves, which is their own choice and not a fault.
+    pub fn clear_turned_off(&self) -> Result<(), GestureStoreError> {
+        let path = self.turned_off_path();
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(StoreError::Io {
+                path,
+                source: error,
+            }
+            .into()),
+        }
+    }
+
     /// The settings store this one sits beside, for a caller that needs both.
     pub fn settings(&self) -> &TouchpadStore {
         &self.store
@@ -177,6 +218,19 @@ impl GestureStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_turned_off_marker_is_written_read_and_cleared() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = GestureStore::at(directory.path().join("touchpad"));
+        assert!(!store.turned_off_by_itself());
+        // Clearing what is not there is not an error.
+        store.clear_turned_off().unwrap();
+        store.record_turned_off(3).unwrap();
+        assert!(store.turned_off_by_itself());
+        store.clear_turned_off().unwrap();
+        assert!(!store.turned_off_by_itself());
+    }
     use crate::conflict::{ConflictResolution, GNOME_46_GESTURES};
     use crate::plan::PresetPlan;
     use crate::preset::mac_style;

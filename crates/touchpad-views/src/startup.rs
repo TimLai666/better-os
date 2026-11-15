@@ -119,7 +119,7 @@ impl Startup {
         let mut gestures =
             GestureScreen::with_profiles(gesture_profiles, device, captured, adapter);
         gestures.set_known_shortcuts(known_shortcuts(&options));
-        gestures.verify_all();
+        gestures.verify_all(Some(&gesture_store));
         gestures.set_problem(gesture_problem);
         // Safe mode gives the desktop its own gestures back before the window
         // has drawn anything. It is the path a user reaches when the machine

@@ -37,6 +37,10 @@ pub(crate) enum AttentionAction {
     Open(Page),
     /// Refresh the component catalog where it stands.
     RefreshCatalog,
+    /// Turn Better Touchpad's safe mode off where it stands.
+    TurnOffTouchpadSafeMode,
+    /// Open a sub-page of Touchpad.
+    OpenTouchpad(crate::pages::touchpad::SubPage),
 }
 
 /// One attention card.
@@ -95,6 +99,8 @@ pub(crate) struct Snapshot {
     pub(crate) packages_interrupted: bool,
     /// The catalog's "may be outdated" sentence, when it may be.
     pub(crate) catalog_warning: Option<&'static str>,
+    /// Better Touchpad's install state and its two markers (ticket 88).
+    pub(crate) touchpad: crate::pages::touchpad::TouchpadFacts,
 }
 
 impl Snapshot {
@@ -106,6 +112,7 @@ impl Snapshot {
             components: Vec::new(),
             packages_interrupted: false,
             catalog_warning: None,
+            touchpad: Default::default(),
         }
     }
 
@@ -261,6 +268,7 @@ mod tests {
             ],
             packages_interrupted: true,
             catalog_warning: Some("The published catalog could not be reached."),
+            touchpad: Default::default(),
         }
     }
 

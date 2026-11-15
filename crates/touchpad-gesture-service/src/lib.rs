@@ -474,6 +474,11 @@ impl GesturePipeline {
             self.failures.consecutive()
         ));
         self.save();
+        // The profiles only say gestures are off. The marker says why, so
+        // Better Manager's Home can tell the person after the fact.
+        if let Err(error) = self.store.record_turned_off(self.failures.consecutive()) {
+            self.problem = Some(error.to_string());
+        }
         self.suppression
             .transition(SuppressionEvent::Disabled, self.adapter.as_mut());
     }

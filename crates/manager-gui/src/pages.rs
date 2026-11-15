@@ -8,18 +8,20 @@
 //! and replaces one line of [`PAGES`] and touches nothing else in the shell.
 //!
 //! The pages tickets 85 to 90 build are registered now so the pane, deep
-//! links, and search already know them: System, Touchpad, Keep awake, and
-//! Fixes as placeholders, which a debug build draws as "not built yet", and
-//! Apps and Default apps as today's Better Manager screens, shown inside the
-//! new window until their tickets replace them. Neither kind may ship in a
+//! links, and search already know them: System, Keep awake, and Fixes as
+//! placeholders, which a debug build draws as "not built yet", and Apps and
+//! Default apps as today's Better Manager screens, shown inside the new
+//! window until their tickets replace them. Neither kind may ship in a
 //! release; ticket 91's release gate fails on any entry that is not
-//! [`PageStatus::Built`].
+//! [`PageStatus::Built`]. Touchpad is built (ticket 88).
 
 use crate::attention::{self, AttentionItem, Snapshot};
 use crate::i18n::{Locale, Shell, shell};
 use crate::navigation::Route;
 use crate::search::SearchEntry;
 use crate::{home, settings_page, window_attention_page};
+
+pub(crate) mod touchpad;
 
 /// How far along a page is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,16 +170,6 @@ const SYSTEM: PageModule = PageModule {
     badge: no_badge,
 };
 
-const TOUCHPAD: PageModule = PageModule {
-    route: Route::Touchpad,
-    name: "touchpad",
-    status: PageStatus::Placeholder { ticket: 88 },
-    title: |s| s.touchpad,
-    search_entries: no_entries,
-    attention: no_attention,
-    badge: no_badge,
-};
-
 const KEEP_AWAKE: PageModule = PageModule {
     route: Route::KeepAwake,
     name: "keep-awake",
@@ -214,7 +206,7 @@ pub(crate) static PAGES: [PageModule; 9] = [
     home::PAGE,
     SYSTEM,
     window_attention_page::PAGE,
-    TOUCHPAD,
+    touchpad::PAGE,
     KEEP_AWAKE,
     APPS,
     DEFAULT_APPS,
@@ -640,10 +632,7 @@ mod tests {
             status(Route::KeepAwake),
             PageStatus::Placeholder { ticket: 87 }
         );
-        assert_eq!(
-            status(Route::Touchpad),
-            PageStatus::Placeholder { ticket: 88 }
-        );
+        assert_eq!(status(Route::Touchpad), PageStatus::Built);
         assert_eq!(
             status(Route::DefaultApps),
             PageStatus::Interim { ticket: 89 }

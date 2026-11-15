@@ -201,6 +201,9 @@ pub(crate) struct ManagerView {
     pub(crate) scroll: f32,
     pub(crate) pending_plan: Option<TransactionPlan>,
     pub(crate) finished_plan: Option<TransactionPlan>,
+    /// The Touchpad page's sub-page, gesture profile, and paths (ticket 88),
+    /// when the page had been opened.
+    pub(crate) touchpad: Option<crate::pages::touchpad::TouchpadView>,
 }
 
 impl Default for ManagerView {
@@ -219,6 +222,7 @@ impl Default for ManagerView {
             scroll: 0.0,
             pending_plan: None,
             finished_plan: None,
+            touchpad: None,
         }
     }
 }

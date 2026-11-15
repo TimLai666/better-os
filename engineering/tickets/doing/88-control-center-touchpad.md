@@ -80,3 +80,60 @@ horizontal scroll-speed sliders that apply at once and are restored on
 removal. If it cannot, the ticket records why with evidence and estimates the
 alternative (an evdev/uinput pass-through that re-emits the touchpad with
 scaled scroll) before anything is built.
+
+## Progress (2026-11-15)
+
+Built and tested:
+
+- `crates/touchpad-views`: the GPUI-free models (`model.rs`, `gestures_model.rs`,
+  `i18n.rs`, `startup.rs`) moved out of `touchpad-gui` with their tests; the
+  no-backend-command assertion runs over it, over `touchpad-gui`, and over the
+  new page module. `touchpad-gui` re-exports them and still builds and
+  tests until ticket 91 drops it.
+- Page `manager-gui/src/pages/touchpad/` (registered `Built`): selector bar
+  (Pointer … Diagnostics), "This touchpad" expander replacing Overview,
+  every control on Fluent cards (disabled with its reason when unavailable),
+  pointer and scroll test areas, per-section restore, Restore all, safe mode
+  switch, effective/captured value tables, the whole Gestures screen (profile
+  selector, detach/forget, preset preview with per-conflict choice, confirm,
+  apply, per-gesture enable/test/edit with shortcut picker and thresholds,
+  live test that says whether it reached the desktop, export/import with
+  preview, restore, turn off), Devices with identifiers only under Details.
+- States: not installed / too old (shared states table, opens Apps ›
+  Better Touchpad), no touchpad, not GNOME, safe mode on.
+- Copy: spec section 5 changes (你選的/目前生效, 輕點即按一下, 尚未套用,
+  health words, no language switch, no mock/adapter name); gesture problems,
+  unavailable reasons, built-in gesture names and event kinds translated.
+- Kit: `better_ui::fluent::staged_bar::StagedChangesBar` (tests, gallery
+  section "Staged changes bar" on the Settings cards page); the Apply bar is
+  pinned below the content column.
+- File chooser: `pages/touchpad/portal.rs` calls
+  `org.freedesktop.portal.FileChooser` over zbus; tested against a fake
+  portal on a private bus; the path fields come back when the portal does not
+  answer.
+- Search entries for every card (Enter opens the right sub-page), Home items
+  "safe mode on" (turned off in place) and "gestures turned themselves off"
+  (new `gestures-turned-off` marker written by the gesture service and the
+  page, cleared on re-apply or deliberate turn-off), restart hand-off and
+  restart blocker for the page.
+
+Not done yet:
+
+- "Found on the owner's machine": enabling the GNOME Shell extension and a
+  default gesture profile at install (needs the reviewed-defaults engine and
+  manager-core install path, which ticket 124 is changing in parallel);
+  detecting x11gestures/touchegg/fusuma with the choice to turn them off.
+- Scroll speed: the disposable GNOME 46 experiment has not been run. Note for
+  whoever runs it: holding a scale factor in the GJS adapter is configuration,
+  which ADR 0012 forbids, so a positive result still needs a new ADR or a
+  per-event round trip.
+- Screenshots: taken in a wayhand sandbox that ticket 124's worker was also
+  driving, so several clicks landed on its windows. Captured: not installed
+  (zh light), Pointer (zh, en light 1600), Scrolling with the Apply bar,
+  This touchpad expanded (T4), Gestures and its preset preview (en light, zh
+  dark), Devices. Still owed: Diagnostics, Clicking, every sub-page at 960,
+  en dark, safe-mode and not-GNOME bars on screen, Devices › Details open
+  (two clicks on its chevron did nothing; unverified whether that is the
+  shared sandbox or a fault). Audit T1–T10 screenshots per finding are not
+  assembled.
+- Workspace-wide test run, clippy 1.99: only the touched crates were run.

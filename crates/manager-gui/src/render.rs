@@ -53,6 +53,10 @@ impl Row {
             ..Self::new(gap, element)
         }
     }
+
+    pub(crate) fn set_gap(&mut self, gap: f32) {
+        self.gap = px(gap);
+    }
 }
 
 /// Space above a group header.
@@ -208,6 +212,12 @@ impl ManagerApp {
                         move |this, _, cx| match &action {
                             AttentionAction::Open(page) => this.navigate(page.clone(), cx),
                             AttentionAction::RefreshCatalog => this.refresh_catalog(cx),
+                            AttentionAction::TurnOffTouchpadSafeMode => {
+                                this.turn_off_touchpad_safe_mode(cx)
+                            }
+                            AttentionAction::OpenTouchpad(sub_page) => {
+                                this.open_touchpad(*sub_page, cx)
+                            }
                         },
                     )),
                 ),
@@ -484,12 +494,17 @@ impl ManagerApp {
         rows
     }
 
-    fn page_rows(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Row> {
+    fn page_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Row> {
         let route = Route::of(&self.page);
         match (&self.page, pages::module(route).status) {
             (Page::Home, _) => self.home_rows(cx),
             (Page::Settings, _) => self.settings_rows(cx),
             (Page::WindowAttention, _) => self.window_attention_rows(cx),
+            (Page::Touchpad, _) => {
+                let installed = self.touchpad_facts().installed;
+                let page = self.touchpad_page(window, cx);
+                page.update(cx, |page, cx| page.rows(installed.as_deref(), cx))
+            }
             (_, PageStatus::Placeholder { ticket }) => self.placeholder_rows(route, ticket, cx),
             _ => self.interim_rows(window, cx),
         }
@@ -544,7 +559,22 @@ impl ManagerApp {
             }
             column = column.child(wrapper);
         }
-        column.into_any_element()
+        // A page's staged-changes bar sits below the scrolling column, so it
+        // stays at the bottom of the content area while the cards scroll.
+        let footer = match (&self.page, &self.touchpad) {
+            (Page::Touchpad, Some(page)) => page.update(cx, |page, cx| page.apply_bar(cx)),
+            _ => None,
+        };
+        match footer {
+            None => column.into_any_element(),
+            Some(footer) => div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(div().flex_1().min_h_0().child(column))
+                .child(footer)
+                .into_any_element(),
+        }
     }
 }
 

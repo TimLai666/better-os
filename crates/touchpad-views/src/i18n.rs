@@ -161,6 +161,10 @@ pub struct Copy {
     pub unavailable: &'static str,
     pub value_session_default: &'static str,
     pub value_unknown: &'static str,
+    pub value_on: &'static str,
+    pub builtin_overview: &'static str,
+    pub builtin_workspace: &'static str,
+    pub value_off: &'static str,
     pub value_not_read: &'static str,
     pub value_permission_denied: &'static str,
     pub pending_badge: &'static str,
@@ -369,13 +373,13 @@ pub const EN_US: Copy = Copy {
     contacts: "Contacts reported",
     buttonpad: "Whole surface clicks",
     separate_buttons: "Separate hardware buttons",
-    no_devices: "No touchpad was found on this system.",
+    no_devices: "No touchpad was found on this PC.",
 
     diagnostics_title: "Diagnostics",
     diagnostics_subtitle: "What was read, what was written, and how to undo it.",
     effective_values: "Effective values",
-    requested_value: "Requested",
-    effective_value: "Effective",
+    requested_value: "You chose",
+    effective_value: "In effect",
     previous_value: "Captured before the first change",
     setting_key: "Setting",
     restore_actions: "Restore",
@@ -383,7 +387,7 @@ pub const EN_US: Copy = Copy {
     nothing_captured: "Nothing has been changed, so there is nothing to restore.",
 
     apply: "Apply",
-    discard: "Discard changes",
+    discard: "Discard",
     refresh: "Read again",
     restore_all: "Restore everything",
     restore_section: "Restore this section",
@@ -401,9 +405,13 @@ pub const EN_US: Copy = Copy {
     unavailable: "Not available here",
     value_session_default: "Session default",
     value_unknown: "Cannot be read",
+    value_on: "On",
+    builtin_overview: "GNOME's overview and app grid",
+    builtin_workspace: "GNOME's workspace switching",
+    value_off: "Off",
     value_not_read: "Not read yet",
     value_permission_denied: "Not allowed to read",
-    pending_badge: "Staged",
+    pending_badge: "Not applied yet",
     drifted_badge: "Changed elsewhere",
     sign_out_badge: "Needs sign-out",
     busy: "Working…",
@@ -582,7 +590,7 @@ pub const ZH_TW: Copy = Copy {
 
     clicking_title: "點按",
     clicking_subtitle: "輕點和按壓要怎麼變成滑鼠按鍵。",
-    tap_to_click: "點按來按一下",
+    tap_to_click: "輕點即按一下",
     tap_and_drag: "點按後拖曳",
     drag_lock: "拖曳鎖定",
     click_method: "按鍵判定方式",
@@ -610,8 +618,8 @@ pub const ZH_TW: Copy = Copy {
     diagnostics_title: "診斷",
     diagnostics_subtitle: "讀到什麼、寫了什麼，以及怎麼還原。",
     effective_values: "實際生效的值",
-    requested_value: "要求的值",
-    effective_value: "實際的值",
+    requested_value: "你選的",
+    effective_value: "目前生效",
     previous_value: "第一次變更前記錄的值",
     setting_key: "設定項目",
     restore_actions: "還原",
@@ -637,9 +645,13 @@ pub const ZH_TW: Copy = Copy {
     unavailable: "這裡無法使用",
     value_session_default: "系統預設值",
     value_unknown: "讀不到",
+    value_on: "開啟",
+    builtin_overview: "GNOME 的工作區總覽和應用程式格",
+    builtin_workspace: "GNOME 的切換工作區",
+    value_off: "關閉",
     value_not_read: "尚未讀取",
     value_permission_denied: "沒有讀取權限",
-    pending_badge: "待套用",
+    pending_badge: "尚未套用",
     drifted_badge: "被別的地方改過",
     sign_out_badge: "需要登出",
     busy: "處理中…",
@@ -762,6 +774,132 @@ pub const ZH_TW: Copy = Copy {
     changes_none: "沒有任何項目需要變更。",
 };
 
+/// A health state in words (audit T4: the overview printed the enum name,
+/// in English, inside the Chinese window).
+pub fn health_words(state: touchpad_core::HealthState, locale: Locale) -> &'static str {
+    use touchpad_core::HealthState::*;
+    match (state, locale.resolved()) {
+        (Ok, Locale::ZhTw) => "運作正常",
+        (Degraded, Locale::ZhTw) => "部分功能無法使用",
+        (Failed, Locale::ZhTw) => "無法運作",
+        (Ok, _) => "Working",
+        (Degraded, _) => "Partly unavailable",
+        (Failed, _) => "Not working",
+    }
+}
+
+/// Why a control is unavailable, in the person's words, from the stable
+/// reason key the backend or the hardware gave. The backend's own sentence
+/// is English and technical; it stays in the details, not on the card. A key
+/// this table does not know returns `None` and the caller falls back to the
+/// generic "not available here", never to the English sentence.
+pub fn reason_sentence(reason: &str, locale: Locale) -> Option<&'static str> {
+    let zh = locale.resolved() == Locale::ZhTw;
+    let pick = |en: &'static str, zh_tw: &'static str| Some(if zh { zh_tw } else { en });
+    match reason {
+        "gnome.no_scroll_factor_key" => pick(
+            "GNOME has no setting for this, so scrolling follows the pointer speed.",
+            "GNOME 沒有這個設定，捲動距離會跟著游標速度。",
+        ),
+        "gnome.no_smooth_scroll_key" => pick(
+            "GNOME has no setting for this; the desktop and each app decide it.",
+            "GNOME 沒有這個設定，由桌面和各個 App 自己決定。",
+        ),
+        "gnome.no_key" | "gnome.key_absent" => pick(
+            "This version of GNOME has no setting for this.",
+            "這個版本的 GNOME 沒有這項設定。",
+        ),
+        "gnome.read_only_backend" => pick(
+            "Settings are only being read right now, not changed.",
+            "目前只讀取設定，不會變更。",
+        ),
+        "gnome.dconf_service_unreachable" | "gnome.no_bus" => pick(
+            "The desktop's settings service isn't answering, so this can't be changed right now.",
+            "桌面的設定服務沒有回應，暫時無法變更。",
+        ),
+        "gnome.database_not_readable" | "gnome.database_unreadable" => pick(
+            "The desktop's settings can't be read right now.",
+            "目前讀不到桌面的設定。",
+        ),
+        "gnome.value_kind_does_not_fit_the_key" => pick(
+            "This GNOME stores this setting in a form Better OS doesn't change.",
+            "這個 GNOME 用 Better OS 不會變更的格式儲存這項設定。",
+        ),
+        "touchpad.pad_reports_one_contact" => pick(
+            "This touchpad only senses one finger at a time.",
+            "這個觸控板一次只能感應一根手指。",
+        ),
+        "touchpad.pad_has_a_middle_button" => pick(
+            "This touchpad has a real middle button.",
+            "這個觸控板有實體中鍵。",
+        ),
+        "touchpad.pad_has_separate_buttons" => pick(
+            "This touchpad has separate buttons, so there's only one way to click.",
+            "這個觸控板有獨立按鍵，只有一種按鍵判定方式。",
+        ),
+        "touchpad.backend_owns_nothing" | "touchpad.backend_declares_no_support" => pick(
+            "Nothing can be read or changed in this session.",
+            "這個工作階段無法讀取或變更任何設定。",
+        ),
+        "touchpad.safe_mode" => pick(
+            "Safe mode is on, so nothing is changed.",
+            "安全模式已開啟，不會做任何變更。",
+        ),
+        "touchpad.integration_disabled" => {
+            pick("Better Touchpad is turned off.", "Better Touchpad 已關閉。")
+        }
+        _ => None,
+    }
+}
+
+/// A gesture problem in the person's words. The gesture half reports its
+/// problems as stable keys, sometimes followed by `:` and a technical
+/// detail (`gestures.import.no_such_file: /tmp/x.json`); the key decides the
+/// sentence and the whole string is kept for the details. An unknown key
+/// gets the generic sentence, never the key itself (audit T2).
+pub fn problem_sentence(problem: &str, locale: Locale) -> &'static str {
+    let zh = locale.resolved() == Locale::ZhTw;
+    let pick = |en: &'static str, zh_tw: &'static str| if zh { zh_tw } else { en };
+    let key = problem.split([':', ' ']).next().unwrap_or_default().trim();
+    match key {
+        "gestures.adapter_disabled_after_failures" => pick(
+            "Three gestures in a row didn't work, so they were turned off.",
+            "連續三次手勢沒有成功，所以先關閉了。",
+        ),
+        "gestures.export.no_path" => pick(
+            "Choose where to save the file first.",
+            "請先選擇要存到哪裡。",
+        ),
+        "gestures.import.no_such_file" => pick("That file isn't there.", "找不到這個檔案。"),
+        "gestures.config.not_json"
+        | "gestures.config.no_schema_version"
+        | "gestures.config.unknown_schema"
+        | "gestures.config.malformed_device_identity"
+        | "gestures.config.unknown_active_device" => pick(
+            "That file isn't a gesture settings file Better OS can read.",
+            "這不是 Better OS 讀得懂的手勢設定檔。",
+        ),
+        "gestures.config.newer_schema" => pick(
+            "That file was made by a newer Better OS.",
+            "這個檔案是較新版本的 Better OS 做的。",
+        ),
+        "gestures.config.too_many_devices" | "gestures.config.too_many_gestures" => pick(
+            "That file holds more than Better OS accepts.",
+            "這個檔案的內容超過 Better OS 能接受的數量。",
+        ),
+        "gestures.plan.not_confirmed" => {
+            pick("Confirm the changes above first.", "請先確認上面的變更。")
+        }
+        "gestures.plan.unresolved_conflict" => {
+            pick("Decide every conflict first.", "每一個衝突都要先決定。")
+        }
+        "gestures.plan.nothing_to_do" => {
+            pick("There's nothing to change.", "沒有任何項目需要變更。")
+        }
+        _ => pick("That didn't work.", "沒有成功。"),
+    }
+}
+
 pub fn copy(locale: Locale) -> &'static Copy {
     match locale.resolved() {
         Locale::ZhTw => &ZH_TW,
@@ -771,6 +909,29 @@ pub fn copy(locale: Locale) -> &'static Copy {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_problem_key_is_never_the_sentence() {
+        use super::{Locale, problem_sentence, reason_sentence};
+        assert_eq!(
+            problem_sentence("gestures.adapter_disabled_after_failures:3", Locale::ZhTw),
+            "連續三次手勢沒有成功，所以先關閉了。"
+        );
+        assert_eq!(
+            problem_sentence("gestures.import.no_such_file: /tmp/x", Locale::EnUs),
+            "That file isn't there."
+        );
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let unknown = problem_sentence("something.new", locale);
+            assert!(!unknown.contains('.') || unknown.ends_with('.') || unknown.ends_with('。'));
+            assert!(!unknown.contains("something"));
+        }
+        assert_eq!(
+            reason_sentence("gnome.no_scroll_factor_key", Locale::ZhTw),
+            Some("GNOME 沒有這個設定，捲動距離會跟著游標速度。")
+        );
+        assert_eq!(reason_sentence("mock.no_key", Locale::EnUs), None);
+    }
+
     use super::*;
 
     #[test]
@@ -780,7 +941,7 @@ mod tests {
         assert_eq!(ZH_TW.pointer_sensitivity, "游標靈敏度");
         assert_eq!(ZH_TW.scroll_sensitivity, "捲動靈敏度");
         assert_eq!(ZH_TW.natural_scrolling, "自然捲動");
-        assert_eq!(ZH_TW.tap_to_click, "點按來按一下");
+        assert_eq!(ZH_TW.tap_to_click, "輕點即按一下");
         assert_eq!(ZH_TW.pointer_summary, "游標靈敏度");
         assert_eq!(ZH_TW.scroll_summary, "捲動靈敏度");
     }
