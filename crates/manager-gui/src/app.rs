@@ -219,6 +219,20 @@ pub(crate) enum AppError {
     /// honest screen: the alternative was a plan aimed at Ubuntu 24.04 amd64
     /// whatever the host actually was.
     UnsupportedHost,
+    /// A change was started and the privileged service could not be
+    /// reached, so nothing was changed.
+    ServiceUnavailable,
+}
+
+/// Whether the change that just ended did what it set out to: its last
+/// record is a success. A cancellation or a failure is not.
+pub(crate) fn ended_in_success(state: &ManagerState) -> bool {
+    state.activity.last().is_some_and(|record| {
+        matches!(
+            record.kind,
+            manager_core::ActivityKind::Success | manager_core::ActivityKind::RecoverySuccess
+        )
+    })
 }
 
 impl ManagerApp {
@@ -1228,6 +1242,9 @@ impl ManagerApp {
                             RunnerEvent::StateSaved(Box::new(state)),
                         ))
                         .await;
+                    let _ = sender
+                        .send(crate::runner_end::WorkerEvent::ServiceUnavailable)
+                        .await;
                     return;
                 }
             };
@@ -1253,6 +1270,10 @@ impl ManagerApp {
                 let applied = this.update(cx, |app, cx| match event {
                     crate::runner_end::WorkerEvent::Runner(event) => {
                         app.apply_runner_event(event, cx)
+                    }
+                    crate::runner_end::WorkerEvent::ServiceUnavailable => {
+                        app.planning_error = Some(AppError::ServiceUnavailable);
+                        cx.notify();
                     }
                     crate::runner_end::WorkerEvent::Ended => app.runner_ended(cx),
                 });
@@ -1312,9 +1333,12 @@ impl ManagerApp {
                     .as_ref()
                     .map(|active| active.plan.clone());
                 self.state = *state;
-                // The change is over: its plan is what the rows describe now.
+                // The change is over: its plan is what the rows describe now,
+                // but only when it did what it set out to. A cancelled change,
+                // or one that never reached the service, changed nothing, and
+                // a row saying "Updated" over it would be false.
                 if self.state.active_operation.is_none() && plan.is_some() {
-                    self.finished_plan = plan;
+                    self.finished_plan = plan.filter(|_| ended_in_success(&self.state));
                 }
                 cx.notify();
             }
@@ -1809,6 +1833,7 @@ impl ManagerApp {
             Some(AppError::Planning) => c.planning_failed_detail,
             Some(AppError::Storage) => c.storage_error,
             Some(AppError::UnsupportedHost) => c.unsupported_host,
+            Some(AppError::ServiceUnavailable) => c.service_unavailable_detail,
             None => c.none,
         }
     }

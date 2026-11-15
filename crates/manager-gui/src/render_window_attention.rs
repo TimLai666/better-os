@@ -80,13 +80,20 @@ impl ManagerApp {
                 );
             }
             if notice.action == Some(NoticeAction::Install) {
-                notice_card = notice_card.content(
-                    Button::accent("attention-install", w.install)
-                        .disabled(self.transaction_running())
-                        .on_click(Self::act(cx, |this, _, cx| this.install_shell_adapter(cx))),
-                );
+                // Starts at once; its progress and any failure stay here.
+                rows.push(Row::new(
+                    0.0,
+                    self.service_change_card(
+                        notice_card,
+                        "attention-install",
+                        w.install,
+                        cx,
+                        |this, cx| this.install_shell_adapter(cx),
+                    ),
+                ));
+            } else {
+                rows.push(Row::new(0.0, notice_card));
             }
-            rows.push(Row::new(0.0, notice_card));
             if !notice.settings_shown {
                 return rows;
             }

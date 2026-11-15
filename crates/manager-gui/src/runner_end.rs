@@ -13,6 +13,8 @@
 pub(crate) enum WorkerEvent<E> {
     /// Something the runner reported.
     Runner(E),
+    /// The privileged service could not be reached; nothing was changed.
+    ServiceUnavailable,
     /// The work is over, whatever happened.
     Ended,
 }

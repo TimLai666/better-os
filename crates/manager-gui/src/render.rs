@@ -106,7 +106,7 @@ impl ManagerApp {
         if built
             && matches!(
                 self.planning_error,
-                Some(AppError::Storage | AppError::UnsupportedHost)
+                Some(AppError::Storage | AppError::UnsupportedHost | AppError::ServiceUnavailable)
             )
         {
             rows.push(Row::new(

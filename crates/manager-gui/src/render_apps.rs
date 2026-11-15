@@ -949,48 +949,89 @@ impl ManagerApp {
     }
 
     /// 「需要先更新系統服務」 (ticket 124). Its button starts the change at
-    /// once; while it runs, and after, the card shows Better Manager's own
-    /// row state in place of the button.
+    /// once, with no review page (ticket 85).
     fn service_notice_card(
         &self,
         notice: crate::model::ServiceNotice,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let c = copy(self.locale);
-        let mut card = SettingsCard::new("updates-service", notice.title)
+        let card = SettingsCard::new("updates-service", notice.title)
             .status(if notice.failed {
                 Severity::Error
             } else {
                 Severity::Warning
             })
             .description(notice.body);
+        let Some(action) = notice.action else {
+            return card.into_any_element();
+        };
+        self.service_change_card(
+            card,
+            "updates-service-update",
+            c.service_update_button,
+            cx,
+            move |this, cx| this.start_service_update(action, cx),
+        )
+    }
+
+    /// A card whose one button changes Better Manager's own package (the
+    /// service notice, the window-attention Install), shown in place as
+    /// that change goes: its progress while it runs, and, when it failed,
+    /// why with a Retry that starts the same change again. The row's own
+    /// Retry would run a health check, which adds nothing that is missing.
+    pub(crate) fn service_change_card(
+        &self,
+        card: SettingsCard,
+        button_id: &'static str,
+        button_label: &'static str,
+        cx: &mut Context<Self>,
+        start: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+    ) -> AnyElement {
         let manager = ComponentId::new(manager_core::SELF_COMPONENT_ID)
             .ok()
             .and_then(|id| self.component_by_id(&id));
-        let trailing = manager.map(|component| {
-            let trailing = self.row_trailing(&component);
-            (component, trailing)
-        });
-        match trailing {
-            Some((
-                component,
-                trailing @ (Trailing::Progress(_) | Trailing::Failed { .. } | Trailing::Result(_)),
-            )) => {
-                card = card.content(self.trailing_element(&component, &trailing, cx));
+        let trailing = manager
+            .as_ref()
+            .map(|component| self.row_trailing(component));
+        let start = std::rc::Rc::new(start);
+        match (manager, trailing) {
+            (Some(component), Some(trailing @ Trailing::Progress(_))) => card
+                .content(self.trailing_element(&component, &trailing, cx))
+                .into_any_element(),
+            (Some(component), Some(Trailing::Failed { .. })) if component.failure.is_some() => {
+                let reason = self.failure_sentence(&component);
+                let a = apps::copy(self.locale);
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(CARD_GAP))
+                    .child(
+                        card.content(
+                            Button::accent(button_id, a.action_retry)
+                                .disabled(self.transaction_running())
+                                .on_click(Self::act(cx, move |this, _, cx| start(this, cx))),
+                        ),
+                    )
+                    .child(
+                        InfoBar::new(
+                            ElementId::Name(format!("{button_id}-failed").into()),
+                            Severity::Error,
+                            a.change_failed_title,
+                        )
+                        .message(reason)
+                        .locale(self.locale.words()),
+                    )
+                    .into_any_element()
             }
-            _ => {
-                if let Some(action) = notice.action {
-                    card = card.content(
-                        Button::accent("updates-service-update", c.service_update_button)
-                            .disabled(self.transaction_running())
-                            .on_click(Self::act(cx, move |this, _, cx| {
-                                this.start_service_update(action, cx);
-                            })),
-                    );
-                }
-            }
+            _ => card
+                .content(
+                    Button::accent(button_id, button_label)
+                        .disabled(self.transaction_running())
+                        .on_click(Self::act(cx, move |this, _, cx| start(this, cx))),
+                )
+                .into_any_element(),
         }
-        card.into_any_element()
     }
 
     /// Apps › Health: the interrupted-package card with Repair, the full

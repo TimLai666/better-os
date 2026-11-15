@@ -620,8 +620,20 @@ fn the_service_and_adapter_buttons_start_at_once() {
         .split("\n    }\n")
         .next()
         .unwrap();
-    assert!(card.contains("Trailing::Progress(_)"));
     assert!(card.contains("this.start_service_update(action, cx)"));
+    let in_place = include_str!("../render_apps.rs")
+        .split("pub(crate) fn service_change_card(")
+        .nth(1)
+        .unwrap()
+        .split("\n    }\n")
+        .next()
+        .unwrap();
+    // Progress in place, and a Retry that starts the same change again.
+    assert!(in_place.contains("Trailing::Progress(_)"));
+    assert!(in_place.contains("a.action_retry"));
+    assert_eq!(in_place.matches("start(this, cx)").count(), 2);
+    let attention = include_str!("../render_window_attention.rs");
+    assert!(attention.contains("|this, cx| this.install_shell_adapter(cx)"));
     // A finished change reads the service again, so the notice goes away.
     assert!(
         app.contains("self.read_service_facts();\n        if self.page == Page::WindowAttention")

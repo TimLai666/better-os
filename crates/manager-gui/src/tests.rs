@@ -2618,3 +2618,67 @@ mod failed_real_fetch {
         );
     }
 }
+
+/// Ticket 124 on ticket 85's flow: a change the service never received was
+/// shown as finished ("已補上缺少的部分") because the window took any end of
+/// a change as its result. Only a change whose last record is a success
+/// leaves a result on its rows; a cancellation and a missing service do not.
+mod finished_only_on_success {
+    use crate::app::ended_in_success;
+    use better_core::ComponentId;
+    use manager_core::{
+        ActivityKind, ActivityRecord, DesiredOperation, ManagerState, OperationStage,
+    };
+
+    fn with(kind: ActivityKind, evidence: &str) -> ManagerState {
+        let mut state = ManagerState::default();
+        state.activity.push(ActivityRecord {
+            sequence: 1,
+            kind,
+            component: Some(ComponentId::new("better-manager").unwrap()),
+            operation: Some(DesiredOperation::AddCompanions),
+            stage: Some(OperationStage::Downloading),
+            evidence: Some(evidence.to_string()),
+            recorded_at_unix_seconds: None,
+        });
+        state
+    }
+
+    #[test]
+    fn a_cancelled_or_failed_change_has_no_result() {
+        assert!(!ended_in_success(&with(
+            ActivityKind::Warning,
+            "mock_operation_cancelled"
+        )));
+        assert!(!ended_in_success(&with(
+            ActivityKind::Failure,
+            "download_failed"
+        )));
+        assert!(!ended_in_success(&ManagerState::default()));
+        assert!(ended_in_success(&with(
+            ActivityKind::Success,
+            "mock_operation_finished"
+        )));
+        assert!(ended_in_success(&with(
+            ActivityKind::RecoverySuccess,
+            "mock_restore_rechecked"
+        )));
+    }
+
+    #[test]
+    fn no_service_says_so_and_nothing_reads_as_done() {
+        let app = include_str!("app.rs");
+        assert!(
+            app.contains("self.finished_plan = plan.filter(|_| ended_in_success(&self.state));")
+        );
+        let unreachable = app
+            .split("Err(_) => {\n                    // Nothing was applied")
+            .nth(1)
+            .unwrap()
+            .split("return;")
+            .next()
+            .unwrap();
+        assert!(unreachable.contains("WorkerEvent::ServiceUnavailable"));
+        assert!(include_str!("render.rs").contains("AppError::ServiceUnavailable"));
+    }
+}
