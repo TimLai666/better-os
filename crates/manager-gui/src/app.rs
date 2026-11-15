@@ -155,6 +155,11 @@ pub(crate) struct ManagerApp {
     /// when the window last reconciled. Shown by the doctor, managed by
     /// nothing (ticket 69).
     pub(crate) unorderable: Vec<DoctorCheck>,
+    /// Companion packages installed components are missing, the privileged
+    /// service's generation, and what its handoff last wrote (ticket 124),
+    /// read with the reconciliation and again when a page that shows them
+    /// opens. A demo window reads none of them.
+    pub(crate) service: ServiceFacts,
     /// What the privileged service last said about dpkg's own record. `None`
     /// until it has been asked, and in a demo window, which never asks.
     pub(crate) package_system: Option<PackageSystemState>,
@@ -299,6 +304,7 @@ impl ManagerApp {
             cancel: None,
             adopt_confirm: None,
             unorderable: Vec::new(),
+            service: ServiceFacts::default(),
             package_system: None,
             package_system_task: None,
             repair_task: None,
@@ -519,6 +525,7 @@ impl ManagerApp {
             .manager
             .unorderable_host_checks(&self.state, &DpkgProbe)
             .unwrap_or_default();
+        self.read_service_facts();
         self.heal_user_units(cx);
     }
 
@@ -839,6 +846,12 @@ impl ManagerApp {
         // shown: either can change behind the window's back.
         if page == Page::WindowAttention {
             self.refresh_window_attention(cx);
+        }
+        if matches!(
+            page,
+            Page::Updates | Page::Health | Page::DoctorResults | Page::WindowAttention
+        ) {
+            self.read_service_facts();
         }
         if page != self.page {
             self.focused_card = None;
@@ -1459,7 +1472,99 @@ impl ManagerApp {
     pub(crate) fn doctor_checks(&self) -> Vec<DoctorCheck> {
         let mut checks = self.manager.doctor(&self.state).unwrap_or_default();
         checks.extend(self.unorderable.iter().cloned());
+        checks.extend(self.service.gaps.iter().map(|gap| DoctorCheck {
+            kind: manager_core::DoctorCheckKind::CompanionMissing,
+            status: manager_core::DoctorCheckStatus::Failed,
+            component: Some(gap.component.clone()),
+            host_version: gap.host_version.clone(),
+            package: Some(gap.package.clone()),
+        }));
         checks
+    }
+
+    /// Reads dpkg and the handoff's state file. Read-only host queries, so
+    /// they need no privilege; a demo window reads nothing.
+    pub(crate) fn read_service_facts(&mut self) {
+        if self.execution == ExecutionMode::Mock {
+            return;
+        }
+        use manager_platform::dpkg::PackageStateProbe;
+        self.service = ServiceFacts {
+            gaps: self
+                .manager
+                .companion_gaps(&self.state, &DpkgProbe)
+                .unwrap_or_default(),
+            generation: Some(manager_core::exec::ServiceGeneration::of(
+                DpkgProbe
+                    .installed_version(manager_core::exec::SERVICE_PACKAGE)
+                    .ok()
+                    .flatten()
+                    .as_deref(),
+            )),
+            handoff: std::fs::read_to_string(manager_core::exec::HANDOFF_STATUS_PATH)
+                .ok()
+                .and_then(|text| manager_core::exec::HandoffStatus::parse(&text)),
+        };
+    }
+
+    /// What the Updates screen says about the privileged service.
+    pub(crate) fn service_notice(&self) -> Option<crate::model::ServiceNotice> {
+        let generation = self.service.generation?;
+        let manager_id = ComponentId::new(manager_core::SELF_COMPONENT_ID).ok()?;
+        let manager_update = self
+            .component_by_id(&manager_id)
+            .is_some_and(|component| component.state == ComponentStatus::UpdateAvailable);
+        let manager_gaps: Vec<_> = self
+            .service
+            .gaps
+            .iter()
+            .filter(|gap| gap.component == manager_id)
+            .cloned()
+            .collect();
+        // What the update would carry beside the service.
+        let waiting = if manager_update {
+            self.manager
+                .catalog()
+                .get(&manager_id)
+                .into_iter()
+                .flat_map(|manifest| manifest.artifacts.iter())
+                .filter(|artifact| {
+                    artifact.release == self.manager.profile().release
+                        && artifact
+                            .architecture
+                            .eq_ignore_ascii_case(&self.manager.profile().architecture)
+                })
+                .flat_map(|artifact| artifact.companions.iter())
+                .map(|companion| companion.package.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        crate::model::service_notice(
+            self.locale,
+            generation,
+            &manager_gaps,
+            manager_update,
+            &waiting,
+            self.service.handoff.as_ref(),
+        )
+    }
+
+    /// The notice's button: Better Manager's own update when it has one, or
+    /// the missing companions at its current version.
+    pub(crate) fn prepare_service_update(
+        &mut self,
+        action: crate::model::ServiceAction,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(id) = ComponentId::new(manager_core::SELF_COMPONENT_ID) else {
+            return;
+        };
+        let operation = match action {
+            crate::model::ServiceAction::UpdateManager => DesiredOperation::Update,
+            crate::model::ServiceAction::AddCompanions => DesiredOperation::AddCompanions,
+        };
+        self.prepare_component_operation(&id, operation, cx);
     }
 
     pub(crate) fn activity_matches(&self, entry: &ActivityRecord) -> bool {
@@ -1549,6 +1654,8 @@ impl ManagerApp {
             Some(other) if plan_rejection_is_host_mismatch(other, detail) => {
                 c.evidence_plan_rejected
             }
+            Some("companion.missing") => c.evidence_companion_missing,
+            Some("daemon.outdated") => c.evidence_daemon_outdated,
             Some(other) if other.starts_with("daemon.") => c.evidence_daemon_refused,
             _ => c.none,
         }
@@ -1564,6 +1671,7 @@ impl ManagerApp {
             DesiredOperation::Verify => c.health_check_label,
             DesiredOperation::Restore => c.restore_previous,
             DesiredOperation::Remove => c.remove,
+            DesiredOperation::AddCompanions => c.add_companions,
         }
     }
 
@@ -1859,4 +1967,13 @@ mod requested_component_tests {
         assert_eq!(appearance_of(StoredTheme::Light), Appearance::Light);
         assert_eq!(appearance_of(StoredTheme::System), Appearance::System);
     }
+}
+
+/// What the window last read about the privileged service (ticket 124).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ServiceFacts {
+    pub(crate) gaps: Vec<manager_core::CompanionGap>,
+    /// `None` until read, and always in a demo window.
+    pub(crate) generation: Option<manager_core::exec::ServiceGeneration>,
+    pub(crate) handoff: Option<manager_core::exec::HandoffStatus>,
 }

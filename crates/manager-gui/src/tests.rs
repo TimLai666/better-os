@@ -2283,6 +2283,7 @@ mod unorderable_host_versions {
             status: DoctorCheckStatus::Warning,
             component: Some(ComponentId::new("better-monitor").unwrap()),
             host_version: Some("1:0.2.8~rc1-1".to_string()),
+            package: None,
         }
     }
 
@@ -2541,5 +2542,131 @@ mod single_instance {
         let waited = started.elapsed();
         assert!(waited >= Duration::from_millis(400), "{waited:?}");
         assert!(waited < Duration::from_secs(5), "{waited:?}");
+    }
+}
+
+/// Ticket 124: what the Updates screen says about the privileged service.
+mod service_notice {
+    use crate::i18n::Locale;
+    use crate::model::{ServiceAction, companion_detail, service_notice};
+    use better_core::ComponentId;
+    use manager_core::exec::{HandoffStatus, SERVICE_PACKAGE, ServiceGeneration};
+    use manager_core::{CompanionGap, DoctorCheck, DoctorCheckKind, DoctorCheckStatus};
+
+    fn gap(package: &str, host: Option<&str>) -> CompanionGap {
+        CompanionGap {
+            component: ComponentId::new("better-manager").unwrap(),
+            package: package.to_string(),
+            wanted_version: "0.2.16".to_string(),
+            host_version: host.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn an_old_service_behind_a_manager_update_needs_the_service_first() {
+        let notice = service_notice(
+            Locale::ZhTw,
+            ServiceGeneration::Legacy,
+            &[],
+            true,
+            &[
+                "better-shell-adapter".to_string(),
+                SERVICE_PACKAGE.to_string(),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(notice.title, "需要先更新系統服務");
+        assert_eq!(notice.action, Some(ServiceAction::UpdateManager));
+        assert!(notice.body.contains("better-shell-adapter"));
+        assert!(notice.body.contains("一次管理員密碼"));
+        assert!(!notice.body.contains("sudo"), "no terminal command");
+    }
+
+    #[test]
+    fn a_current_manager_with_a_service_behind_adds_it_as_a_companion() {
+        let notice = service_notice(
+            Locale::EnUs,
+            ServiceGeneration::Companions,
+            &[gap(SERVICE_PACKAGE, Some("0.2.15"))],
+            false,
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(notice.action, Some(ServiceAction::AddCompanions));
+    }
+
+    #[test]
+    fn a_legacy_service_with_nothing_to_ride_says_so_and_offers_no_button() {
+        let notice = service_notice(
+            Locale::EnUs,
+            ServiceGeneration::Legacy,
+            &[gap(SERVICE_PACKAGE, Some("0.2.9"))],
+            false,
+            &[],
+            Some(&HandoffStatus::Failed {
+                reason: "the old service did not go idle".to_string(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(notice.action, None);
+        assert!(notice.failed);
+        assert!(notice.body.starts_with("the old service did not go idle"));
+    }
+
+    #[test]
+    fn a_running_handoff_is_shown_and_nothing_is_offered() {
+        let notice = service_notice(
+            Locale::EnUs,
+            ServiceGeneration::Legacy,
+            &[gap(SERVICE_PACKAGE, Some("0.2.9"))],
+            true,
+            &[],
+            Some(&HandoffStatus::Installing),
+        )
+        .unwrap();
+        assert_eq!(notice.action, None);
+        assert_eq!(notice.title, "Updating the system service");
+    }
+
+    #[test]
+    fn a_current_service_needs_no_notice() {
+        assert_eq!(
+            service_notice(
+                Locale::EnUs,
+                ServiceGeneration::SelfUpgrading,
+                &[gap("better-shell-adapter", None)],
+                true,
+                &[],
+                None,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_missing_companion_finding_names_the_package() {
+        let check = DoctorCheck {
+            kind: DoctorCheckKind::CompanionMissing,
+            status: DoctorCheckStatus::Failed,
+            component: Some(ComponentId::new("better-manager").unwrap()),
+            host_version: None,
+            package: Some("better-shell-adapter".to_string()),
+        };
+        assert_eq!(
+            companion_detail(Locale::EnUs, &check).as_deref(),
+            Some("better-manager needs better-shell-adapter, which is not installed.")
+        );
+        let older = DoctorCheck {
+            host_version: Some("0.2.9".to_string()),
+            package: Some(SERVICE_PACKAGE.to_string()),
+            ..check
+        };
+        assert!(
+            companion_detail(Locale::ZhTw, &older)
+                .unwrap()
+                .contains("0.2.9")
+        );
     }
 }

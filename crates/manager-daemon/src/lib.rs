@@ -36,6 +36,10 @@ pub const ARCHIVE_DIR: &str = "/var/cache/better-os/archives";
 /// Exists exactly while a transaction or a repair runs (ticket 105).
 pub const BUSY_MARKER: &str = "/run/better-os/daemon-busy";
 
+/// This service's own package. Upgrading it is the one install that runs
+/// outside this service's unit (ADR 0026).
+pub const SERVICE_PACKAGE: &str = "better-manager-daemon";
+
 /// Where transaction journals and rollback records live.
 pub const STATE_DIR: &str = "/var/lib/better-os";
 

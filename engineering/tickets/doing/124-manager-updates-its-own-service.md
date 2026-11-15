@@ -52,3 +52,27 @@ done and offered the button that does it.
   through Better Manager and finishes with the adapter installed and dpkg
   consistent (`dpkg --audit` empty).
 - The screens were looked at in a sandbox.
+
+## Notes
+
+- Design: [ADR 0026](../../decisions/0026-daemon-upgrades-outside-its-own-unit.md).
+  The service is a companion of `better-manager` in its manifest; the client
+  picks the path from dpkg's version of the service
+  (`manager_core::exec::ServiceGeneration`).
+- Built: requirements 1, 2, 3, 4 and 5 in `manager-core` (translation,
+  `AddCompanions`, `companion_gaps`/`companion_checks`, Verify checks
+  companions), `manager-daemon` (own package last, `systemd-run --wait` in
+  `better-manager-daemon-upgrade`), `packaging/maintainer/daemon-handoff.sh`
+  and its postinst hook, the Updates notice, the window-attention Install
+  button, Doctor findings in the GUI and the CLI.
+- Still owed before `done/`:
+  - The container end-to-end section (0.2.9 service → handoff → adapter,
+    `dpkg --audit` empty) is written but has only CI to run in: there is no
+    Docker daemon in the worktree's environment. Read the CI e2e job on the
+    first push.
+  - The screens (Updates notice, window-attention Install, Doctor finding)
+    have not been looked at in a sandbox. A demo window reads no host facts,
+    so the notice needs a real-mode window against a fake dpkg to be seen.
+  - `shellcheck` was not available locally; CI lints the new scripts.
+  - `SELF_UPGRADING_SINCE` and `HANDOFF_SINCE` say 0.2.16; the version bump
+    must keep them true.

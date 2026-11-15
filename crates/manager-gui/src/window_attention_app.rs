@@ -93,6 +93,23 @@ impl ManagerApp {
     }
 
     /// Turns the shell extension on, then reads everything again.
+    /// Installs the missing adapter the way every package is installed:
+    /// a reviewed plan through the privileged service. Better Manager is
+    /// current, so it is its missing companion; one that has an update
+    /// carries it in that update.
+    pub(crate) fn install_shell_adapter(&mut self, cx: &mut Context<Self>) {
+        let Ok(id) = better_core::ComponentId::new(manager_core::SELF_COMPONENT_ID) else {
+            return;
+        };
+        let operation = match self.component_by_id(&id).map(|component| component.state) {
+            Some(manager_core::ComponentStatus::UpdateAvailable) => {
+                manager_core::DesiredOperation::Update
+            }
+            _ => manager_core::DesiredOperation::AddCompanions,
+        };
+        self.prepare_component_operation(&id, operation, cx);
+    }
+
     pub(crate) fn turn_on_shell_adapter(&mut self, cx: &mut Context<Self>) {
         if self.window_attention.turning_on {
             return;

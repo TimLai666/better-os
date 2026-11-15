@@ -10,6 +10,10 @@
 //!   e2e_client install <release> <arch> <path-to-deb>
 //!   e2e_client update  <release> <arch> <before-version> <path-to-deb>
 //!   e2e_client remove  <release> <arch> <component> <installed-version>
+//!   e2e_client stage   <release> <arch> <path-to-deb>
+//!
+//! `stage` only stages: it is what Better Manager does with the companions
+//! it hands to an old service's archive for the handoff (ADR 0026).
 //!
 //! Prints the outcome document on success and exits non-zero on refusal.
 
@@ -76,7 +80,7 @@ fn transaction_id(seed: &str) -> String {
 
 fn main() -> Result<(), String> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: e2e_client install <release> <arch> <deb>\n       e2e_client update  <release> <arch> <before-version> <deb>\n       e2e_client remove  <release> <arch> <component> <version>";
+    let usage = "usage: e2e_client install <release> <arch> <deb>\n       e2e_client update  <release> <arch> <before-version> <deb>\n       e2e_client remove  <release> <arch> <component> <version>\n       e2e_client stage   <release> <arch> <deb>";
 
     let (action, release, architecture) = match arguments.as_slice() {
         [action, release, architecture, ..] => {
@@ -86,6 +90,18 @@ fn main() -> Result<(), String> {
     };
 
     let executor = DbusPrivilegedExecutor::connect().map_err(|error| error.to_string())?;
+
+    if action == "stage" {
+        let path = Path::new(arguments.get(3).ok_or(usage)?);
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("the artifact has no file name")?;
+        let (sha256, _) = sha256_of(path)?;
+        return executor
+            .stage_artifact(&transaction_id(filename), filename, &sha256, path)
+            .map_err(|error| format!("staging refused: {error}"));
+    }
 
     let (step, artifact_path) = match action.as_str() {
         action @ ("install" | "update") => {

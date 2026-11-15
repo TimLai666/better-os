@@ -75,6 +75,15 @@ pub trait AptDriver: Send + Sync {
         deb_paths: &[&Path],
         allow_downgrade: bool,
     ) -> Result<AptRun, DaemonError>;
+    /// Installs this service's own package from outside its unit (ADR 0026):
+    /// in a transient system unit when systemd runs, so dpkg is not in this
+    /// service's cgroup or sandbox, and directly when there is no systemd and
+    /// so no unit to be stopped from inside.
+    fn install_service_package(
+        &self,
+        deb_path: &Path,
+        allow_downgrade: bool,
+    ) -> Result<AptRun, DaemonError>;
     fn remove(&self, package: &str) -> Result<AptRun, DaemonError>;
     fn installed_version(&self, package: &str) -> Result<Option<String>, DaemonError>;
     fn deb_control_fields(&self, deb_path: &Path) -> Result<DebFields, DaemonError>;
@@ -183,7 +192,81 @@ impl AptGetDriver {
     }
 }
 
+/// The arguments `apt-get` gets for local packages, shared by every install.
+fn install_arguments(paths: &[String], allow_downgrade: bool) -> Vec<String> {
+    let mut arguments: Vec<String> = [
+        "install",
+        "--yes",
+        "--no-install-recommends",
+        "-o",
+        "DPkg::Lock::Timeout=120",
+        "-o",
+        "Dpkg::Options::=--force-confdef",
+        "-o",
+        "Dpkg::Options::=--force-confold",
+    ]
+    .iter()
+    .map(|argument| argument.to_string())
+    .collect();
+    if allow_downgrade {
+        arguments.push("--allow-downgrades".to_string());
+    }
+    arguments.push("--".to_string());
+    arguments.extend(paths.iter().cloned());
+    arguments
+}
+
+/// The transient unit the service's own upgrade runs in.
+pub const SERVICE_UPGRADE_UNIT: &str = "better-manager-daemon-upgrade";
+
+/// The `systemd-run` invocation that runs `apt-get` with `apt_arguments` in a
+/// transient unit of its own, waiting for it and passing its output back.
+/// The environment is the one every install gets; `systemd-run` does not
+/// pass this process's own on.
+pub fn outside_unit_command(apt_arguments: &[String]) -> Vec<String> {
+    let mut command: Vec<String> = [
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--quiet",
+        "--service-type=exec",
+        "--unit",
+        SERVICE_UPGRADE_UNIT,
+        "--description",
+        "Better OS privileged service upgrade",
+        "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+        "--setenv=DEBIAN_FRONTEND=noninteractive",
+        "--setenv=APT_LISTCHANGES_FRONTEND=none",
+        "--setenv=LC_ALL=C",
+        "--",
+        "/usr/bin/apt-get",
+    ]
+    .iter()
+    .map(|argument| argument.to_string())
+    .collect();
+    command.extend(apt_arguments.iter().cloned());
+    command
+}
+
 impl AptDriver for AptGetDriver {
+    fn install_service_package(
+        &self,
+        deb_path: &Path,
+        allow_downgrade: bool,
+    ) -> Result<AptRun, DaemonError> {
+        let paths = vec![deb_path.to_string_lossy().into_owned()];
+        let apt = install_arguments(&paths, allow_downgrade);
+        if Path::new("/run/systemd/system").is_dir() {
+            let command = outside_unit_command(&apt);
+            let arguments: Vec<&str> = command.iter().map(String::as_str).collect();
+            self.run("systemd-run", &arguments)
+        } else {
+            // No systemd, no unit: the argv in the log says which path ran.
+            let arguments: Vec<&str> = apt.iter().map(String::as_str).collect();
+            self.run("apt-get", &arguments)
+        }
+    }
+
     fn install_local_debs(
         &self,
         deb_paths: &[&Path],
@@ -196,22 +279,8 @@ impl AptDriver for AptGetDriver {
         // `apt-get install ./file.deb` resolves dependencies in one
         // transaction. `dpkg -i` followed by `apt-get -f install` would leave a
         // half-configured system in between.
-        let mut arguments = vec![
-            "install",
-            "--yes",
-            "--no-install-recommends",
-            "-o",
-            "DPkg::Lock::Timeout=120",
-            "-o",
-            "Dpkg::Options::=--force-confdef",
-            "-o",
-            "Dpkg::Options::=--force-confold",
-        ];
-        if allow_downgrade {
-            arguments.push("--allow-downgrades");
-        }
-        arguments.push("--");
-        arguments.extend(paths.iter().map(String::as_str));
+        let arguments = install_arguments(&paths, allow_downgrade);
+        let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
         self.run("apt-get", &arguments)
     }
 
@@ -502,6 +571,16 @@ impl FakeAptDriver {
 }
 
 impl AptDriver for FakeAptDriver {
+    /// Recorded as `outside-unit`, then installed like any package.
+    fn install_service_package(
+        &self,
+        deb_path: &Path,
+        allow_downgrade: bool,
+    ) -> Result<AptRun, DaemonError> {
+        self.calls.lock().unwrap().push("outside-unit".to_string());
+        self.install_local_debs(&[deb_path], allow_downgrade)
+    }
+
     fn install_local_debs(
         &self,
         deb_paths: &[&Path],
@@ -630,6 +709,31 @@ impl AptDriver for FakeAptDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR 0026: the service's own upgrade waits for a transient unit of its
+    /// own, with the environment every install gets, running the same
+    /// apt-get arguments.
+    #[test]
+    fn the_service_upgrade_runs_apt_in_a_transient_unit() {
+        let apt = install_arguments(&["/var/cache/better-os/archives/x.deb".to_string()], false);
+        let command = outside_unit_command(&apt);
+        for flag in ["--wait", "--pipe", "--collect", "--service-type=exec"] {
+            assert!(command.iter().any(|argument| argument == flag), "{flag}");
+        }
+        let unit = command
+            .iter()
+            .position(|argument| argument == "--unit")
+            .unwrap();
+        assert_eq!(command[unit + 1], SERVICE_UPGRADE_UNIT);
+        assert!(command.contains(&"--setenv=DEBIAN_FRONTEND=noninteractive".to_string()));
+        let separator = command
+            .iter()
+            .position(|argument| argument == "--")
+            .unwrap();
+        assert_eq!(command[separator + 1], "/usr/bin/apt-get");
+        assert_eq!(&command[separator + 2..], apt.as_slice());
+        assert_eq!(apt.last().unwrap(), "/var/cache/better-os/archives/x.deb");
+    }
 
     #[test]
     fn control_fields_are_parsed_from_dpkg_deb_output() {

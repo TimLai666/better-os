@@ -34,7 +34,16 @@ pub fn check_plan(plan: &WirePlan, host: &HostFacts) -> Result<(), DaemonError> 
         )));
     }
 
-    for step in &plan.steps {
+    for (index, step) in plan.steps.iter().enumerate() {
+        // This service's own package is replaced last, alone, so every other
+        // package is in place before the program that installed it changes
+        // (ADR 0026).
+        if step.component == crate::SERVICE_PACKAGE && index + 1 != plan.steps.len() {
+            return Err(DaemonError::PlanRejected(format!(
+                "{} has to be the last step",
+                crate::SERVICE_PACKAGE
+            )));
+        }
         if !is_first_party_component(&step.component) {
             return Err(DaemonError::PlanRejected(format!(
                 "{} is not a Better OS component",
@@ -44,6 +53,12 @@ pub fn check_plan(plan: &WirePlan, host: &HostFacts) -> Result<(), DaemonError> 
         // A companion is installed with root's authority like the step's own
         // package, so it has to be a Better OS package too.
         for companion in &step.companions {
+            if companion.package == crate::SERVICE_PACKAGE {
+                return Err(DaemonError::PlanRejected(format!(
+                    "{} is a step of its own, never a companion",
+                    crate::SERVICE_PACKAGE
+                )));
+            }
             if !is_first_party_component(&companion.package) {
                 return Err(DaemonError::PlanRejected(format!(
                     "{} is not a Better OS package",

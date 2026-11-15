@@ -543,3 +543,4 @@ verification contract.
 - [ADR 0023: Better Monitor reads /proc and /sys itself and keeps five value states](decisions/0023-monitor-reads-proc-and-sys.md)
 - [ADR 0024: The installed-artifact record selects the rollback target](decisions/0024-installed-artifact-selects-rollback.md)
 - [ADR 0025: Better Launcher is one instance on org.betteros.Launcher1](decisions/0025-launcher-single-instance.md)
+- [ADR 0026: The privileged service is upgraded outside its own unit](decisions/0026-daemon-upgrades-outside-its-own-unit.md)

@@ -689,6 +689,9 @@ impl ManagerApp {
             .when_some(self.error_banner(cx), |view, error| view.child(error))
             .child(self.page_heading(c.updates_title, c.updates_subtitle, false, compact))
             .child(self.update_summary(cx))
+            .when_some(self.service_notice(), |view, notice| {
+                view.child(self.service_notice_card(notice, cx))
+            })
             .children(updates.iter().map(|component| {
                 v_flex()
                     .gap_2()
@@ -696,6 +699,37 @@ impl ManagerApp {
                     .child(self.release_notes_surface(component, cx))
             }))
             .into_any_element()
+    }
+
+    /// 「需要先更新系統服務」 and its one button (ticket 124).
+    fn service_notice_card(
+        &self,
+        notice: crate::model::ServiceNotice,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use better_ui::fluent::info_bar::Severity;
+        use better_ui::fluent::settings_card::SettingsCard;
+        let c = copy(self.locale);
+        let mut card = SettingsCard::new("updates-service", notice.title)
+            .status(if notice.failed {
+                Severity::Error
+            } else {
+                Severity::Warning
+            })
+            .description(notice.body);
+        if let Some(action) = notice.action {
+            card = card.content(
+                better_ui::fluent::button::Button::accent(
+                    "updates-service-update",
+                    c.service_update_button,
+                )
+                .disabled(self.transaction_running())
+                .on_click(Self::act(cx, move |this, _, cx| {
+                    this.prepare_service_update(action, cx);
+                })),
+            );
+        }
+        card.into_any_element()
     }
 
     pub(crate) fn activity_page(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {

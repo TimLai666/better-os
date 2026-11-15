@@ -30,7 +30,8 @@ required_executables() {
         better-manager)
             printf '%s\n' \
                 usr/bin/better-manager \
-                usr/libexec/better-window-attention
+                usr/libexec/better-window-attention \
+                usr/libexec/better-os/daemon-handoff
             ;;
         better-monitor)
             printf '%s\n' \
@@ -445,6 +446,26 @@ for package_name in \
                 printf 'The Better Manager prerm does not stop and disable the window attention service\n' >&2
                 exit 1
             }
+            # ADR 0026: the handoff for a privileged service too old to
+            # install its own successor. The postinst starts it, and it hands
+            # over only the exact packages this build made beside it.
+            grep -qF '/usr/libexec/better-os/daemon-handoff start || true' "$control/postinst" || {
+                printf 'The Better Manager postinst does not start the service handoff\n' >&2
+                exit 1
+            }
+            sh -n "$extract_dir/usr/libexec/better-os/daemon-handoff" || {
+                printf 'The service handoff does not parse as sh\n' >&2
+                exit 1
+            }
+            handoff_list="$extract_dir/usr/lib/better-os/daemon-handoff/packages"
+            for companion in better-manager-daemon better-shell-adapter; do
+                deb_name="$(basename -- "$deb_path")"
+                sidecar="$(dirname -- "$deb_path")/${companion}_${deb_name#better-manager_}.sha256"
+                if [[ ! -f "$sidecar" ]] || ! grep -qxF "$(cat "$sidecar")" "$handoff_list"; then
+                    printf 'The service handoff does not carry the checksum of the %s built beside it\n' "$companion" >&2
+                    exit 1
+                fi
+            done
             ;;
         better-launcher)
             # Clicking a launcher icon opens the launcher. It must never be the

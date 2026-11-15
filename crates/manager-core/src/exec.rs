@@ -174,6 +174,7 @@ pub struct RealDriver<'a> {
     /// Set once the transaction has been handed over, so the outcome can be
     /// reported at the stages that follow.
     outcome: Option<TransactionOutcome>,
+    translation: Option<WireTranslation>,
 }
 
 impl<'a> RealDriver<'a> {
@@ -194,6 +195,7 @@ impl<'a> RealDriver<'a> {
             transaction_id: transaction_id.into(),
             profile,
             outcome: None,
+            translation: None,
         }
     }
 
@@ -210,21 +212,75 @@ impl<'a> RealDriver<'a> {
     /// Translates a plan into the wire contract the daemon revalidates.
     ///
     /// `Ok(None)` when no step crosses the privileged boundary — a plan of
-    /// only Verify, Enable, and Disable steps — so nothing is sent at all.
+    /// only Verify, Enable, and Disable steps — or when the only change is the
+    /// service handoff (ADR 0026), so nothing is sent at all.
     pub fn wire_plan(&self, plan: &TransactionPlan) -> Result<Option<WirePlan>, FailureEvidence> {
-        self.wire_plan_with(plan, true)
+        Ok(self.translate(plan)?.plan)
     }
 
-    /// The same plan, with or without the companion packages (ADR 0018). A
-    /// privileged service from before companions refuses the field, and the
-    /// plan without it is exactly what that service always installed.
-    fn wire_plan_with(
+    /// Whether a companion package differs from what the step leaves: absent,
+    /// or at another version. Only those are fetched and sent.
+    fn companion_needed(
         &self,
-        plan: &TransactionPlan,
-        with_companions: bool,
-    ) -> Result<Option<WirePlan>, FailureEvidence> {
-        let mut steps = Vec::new();
+        package: &str,
+        after_version: Option<&str>,
+    ) -> Result<bool, FailureEvidence> {
+        let host = self.packages.installed_version(package).map_err(|_| {
+            FailureEvidence::with_detail(
+                "health.undetermined",
+                format!("the dpkg version of {package} could not be read"),
+            )
+        })?;
+        Ok(match (host.as_deref(), after_version) {
+            (Some(host), Some(after)) => manager_ipc::strip_epoch(host) != after,
+            _ => true,
+        })
+    }
+
+    /// The whole translation (ADR 0026): which companions go as companions,
+    /// whether the privileged service goes as its own last step or through
+    /// the handoff, and which companions wait for the new service.
+    pub fn translate(&self, plan: &TransactionPlan) -> Result<WireTranslation, FailureEvidence> {
+        let service_version = self
+            .packages
+            .installed_version(SERVICE_PACKAGE)
+            .map_err(|_| {
+                FailureEvidence::with_detail(
+                    "health.undetermined",
+                    format!("the dpkg version of {SERVICE_PACKAGE} could not be read"),
+                )
+            })?;
+        let service = ServiceGeneration::of(service_version.as_deref());
+
+        // First pass: what each step needs, so a companion that cannot go is
+        // judged knowing whether this plan updates the service.
+        let mut needs = Vec::new();
+        let mut updates_service = false;
         for step in plan.steps() {
+            let mut companions = Vec::new();
+            let mut service_companion = None;
+            if wire_action(step.operation).is_some()
+                && let Some(artifact) = &step.artifact
+            {
+                for companion in &artifact.companions {
+                    if !self.companion_needed(&companion.package, step.after_version.as_deref())? {
+                        continue;
+                    }
+                    if companion.package == SERVICE_PACKAGE {
+                        service_companion = Some(companion);
+                        updates_service = true;
+                    } else {
+                        companions.push(companion);
+                    }
+                }
+            }
+            needs.push((step, companions, service_companion));
+        }
+
+        let mut translation = WireTranslation::default();
+        let mut steps = Vec::new();
+        let mut service_step = None;
+        for (step, companions, service_companion) in needs {
             let Some(action) = wire_action(step.operation) else {
                 // Enabling, disabling, and verifying do not cross the
                 // privileged boundary in protocol version 1.
@@ -235,37 +291,93 @@ impl<'a> RealDriver<'a> {
                 sha256: artifact.sha256.clone(),
                 size_bytes: artifact.expected_bytes.unwrap_or(1),
             });
-            let companions = step
-                .artifact
-                .as_ref()
-                .filter(|_| with_companions)
-                .map(|artifact| {
-                    artifact
-                        .companions
-                        .iter()
-                        .map(|companion| WireCompanion {
-                            package: companion.package.clone(),
-                            artifact: WireArtifact {
+            let names = || {
+                companions
+                    .iter()
+                    .map(|c| c.package.clone())
+                    .collect::<Vec<_>>()
+            };
+            let wire_companions = if companions.is_empty() || service.takes_companions() {
+                companions
+                    .iter()
+                    .map(|companion| WireCompanion {
+                        package: companion.package.clone(),
+                        artifact: WireArtifact {
+                            filename: companion.release_asset.clone(),
+                            sha256: companion.sha256.clone(),
+                            size_bytes: companion.expected_bytes.unwrap_or(1),
+                        },
+                    })
+                    .collect()
+            } else if updates_service {
+                // The service this plan replaces cannot take them; the new
+                // one will. Recorded, never dropped without a word.
+                translation.deferred_companions.extend(names());
+                Vec::new()
+            } else {
+                return Err(service.outdated(&names()));
+            };
+
+            if let Some(companion) = service_companion {
+                match service {
+                    ServiceGeneration::Unorderable => {
+                        return Err(FailureEvidence::with_detail(
+                            "daemon.version_unreadable",
+                            service_version.clone().unwrap_or_default(),
+                        ));
+                    }
+                    ServiceGeneration::Legacy => {
+                        // Its own prerm would stop the unit dpkg runs in. The
+                        // new Better Manager's postinst hands the staged
+                        // package to a unit of its own instead.
+                        let carries_handoff = crate::is_self_component(&step.component)
+                            && step.after_version.as_deref().is_some_and(|after| {
+                                semver::Version::parse(after).is_ok_and(|after| {
+                                    after
+                                        >= semver::Version::parse(HANDOFF_SINCE).expect("a version")
+                                })
+                            })
+                            && step.before_version != step.after_version;
+                        if !carries_handoff {
+                            return Err(service.outdated(&[SERVICE_PACKAGE.to_string()]));
+                        }
+                        translation.service_handoff = true;
+                    }
+                    _ => {
+                        service_step = Some(WireStep {
+                            component: SERVICE_PACKAGE.to_string(),
+                            action: match (service_version.is_some(), step.operation) {
+                                (_, DesiredOperation::Restore) => WireAction::Restore,
+                                (true, _) => WireAction::Update,
+                                (false, _) => WireAction::Install,
+                            },
+                            before_version: service_version.clone(),
+                            after_version: step.after_version.clone(),
+                            artifact: Some(WireArtifact {
                                 filename: companion.release_asset.clone(),
                                 sha256: companion.sha256.clone(),
                                 size_bytes: companion.expected_bytes.unwrap_or(1),
-                            },
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+                            }),
+                            companions: Vec::new(),
+                        });
+                    }
+                }
+            }
             steps.push(WireStep {
                 component: step.component.to_string(),
                 action,
                 before_version: step.before_version.clone(),
                 after_version: step.after_version.clone(),
                 artifact,
-                companions,
+                companions: wire_companions,
             });
         }
+        // Last, so every other package is in place before the service that
+        // installed them is replaced.
+        steps.extend(service_step);
 
         if steps.is_empty() {
-            return Ok(None);
+            return Ok(translation);
         }
 
         let wire = WirePlan {
@@ -278,7 +390,14 @@ impl<'a> RealDriver<'a> {
         wire.validate().map_err(|error| {
             FailureEvidence::with_detail("daemon.plan_rejected", error.to_string())
         })?;
-        Ok(Some(wire))
+        translation.plan = Some(wire);
+        Ok(translation)
+    }
+
+    /// What the last translation deferred and handed off, for the
+    /// presentation layer to say.
+    pub fn translation(&self) -> Option<&WireTranslation> {
+        self.translation.as_ref()
     }
 
     fn download_all(
@@ -302,14 +421,26 @@ impl<'a> RealDriver<'a> {
                 &artifact.release_asset,
                 artifact.expected_bytes,
             ))
-            .chain(artifact.companions.iter().map(|companion| {
-                (
-                    companion.url.as_ref(),
-                    &companion.sha256,
-                    &companion.release_asset,
-                    companion.expected_bytes,
-                )
-            }));
+            .chain(
+                artifact
+                    .companions
+                    .iter()
+                    .filter(|companion| {
+                        // A companion already at the step's version is not sent, so it
+                        // is not fetched either. One that cannot be read is fetched,
+                        // and the translation reports the unreadable version.
+                        self.companion_needed(&companion.package, step.after_version.as_deref())
+                            .unwrap_or(true)
+                    })
+                    .map(|companion| {
+                        (
+                            companion.url.as_ref(),
+                            &companion.sha256,
+                            &companion.release_asset,
+                            companion.expected_bytes,
+                        )
+                    }),
+            );
             for (url, sha256, release_asset, expected_bytes) in files {
                 let outcome = self.fetch_and_stage(
                     step,
@@ -385,11 +516,15 @@ impl<'a> RealDriver<'a> {
         plan: &TransactionPlan,
         progress: &mut dyn FnMut(StageProgress),
     ) -> StageOutcome {
-        let wire = match self.wire_plan(plan) {
-            Ok(Some(wire)) => wire,
-            // Nothing here needs the privileged boundary.
-            Ok(None) => return StageOutcome::Completed,
+        let translation = match self.translate(plan) {
+            Ok(translation) => translation,
             Err(evidence) => return StageOutcome::Failed(evidence),
+        };
+        let wire = translation.plan.clone();
+        self.translation = Some(translation);
+        let Some(wire) = wire else {
+            // Nothing here needs the privileged boundary.
+            return StageOutcome::Completed;
         };
 
         let component = wire.steps[0].component.clone();
@@ -397,26 +532,24 @@ impl<'a> RealDriver<'a> {
             component: component.clone(),
         });
 
-        let mut answer = self.executor.execute_plan(&wire, &mut |_, _| {});
-        if let Err(error) = &answer
-            && refuses_companions(error)
-            && wire.steps.iter().any(|step| !step.companions.is_empty())
-        {
-            // A privileged service from before ADR 0018. It never read the
-            // plan, so nothing ran: send what it can install, the step's own
-            // package alone, which recommends rather than depends on its
-            // companion.
-            match self.wire_plan_with(plan, false) {
-                Ok(Some(plain)) => answer = self.executor.execute_plan(&plain, &mut |_, _| {}),
-                Ok(None) => return StageOutcome::Completed,
-                Err(evidence) => return StageOutcome::Failed(evidence),
-            }
-        }
-        match answer {
+        match self.executor.execute_plan(&wire, &mut |_, _| {}) {
             Ok(outcome) => {
                 let result = outcome_to_stage(&outcome);
                 self.outcome = Some(outcome);
                 result
+            }
+            // A service older than the version it reported refused a field
+            // it does not know. Nothing ran; the plan is not resent without
+            // what it needed (ticket 124).
+            Err(error) if refuses_companions(&error) => {
+                StageOutcome::Failed(FailureEvidence::with_detail(
+                    "daemon.outdated",
+                    wire.steps
+                        .iter()
+                        .flat_map(|step| step.companions.iter().map(|c| c.package.clone()))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ))
             }
             Err(error) => StageOutcome::Failed(evidence_for(&error)),
         }
@@ -627,7 +760,22 @@ impl<'a> RealDriver<'a> {
             }
             let package = step.component.to_string();
             match manager_platform::dpkg::verify_package(self.packages, self.health, &package) {
-                HealthVerdict::Healthy => {}
+                HealthVerdict::Healthy => {
+                    // A component whose companion is missing is not healthy,
+                    // whatever its own files say (ticket 124).
+                    for companion in &step.verify_companions {
+                        match self.companion_needed(companion, step.before_version.as_deref()) {
+                            Ok(false) => {}
+                            Ok(true) => {
+                                return StageOutcome::Failed(FailureEvidence::with_detail(
+                                    "companion.missing",
+                                    companion.clone(),
+                                ));
+                            }
+                            Err(evidence) => return StageOutcome::Failed(evidence),
+                        }
+                    }
+                }
                 HealthVerdict::Failed(detail) => {
                     return StageOutcome::Failed(FailureEvidence::with_detail(
                         "health.failed",
@@ -716,7 +864,7 @@ impl StageDriver for RealDriver<'_> {
                         DesiredOperation::Verify if step.leaves_enabled => {
                             self.start_recorded_units(step)
                         }
-                        DesiredOperation::Verify => Ok(()),
+                        DesiredOperation::Verify | DesiredOperation::AddCompanions => Ok(()),
                         // A new program is on disk, and a unit that is
                         // already running is still executing the old one.
                         DesiredOperation::Update | DesiredOperation::Restore
@@ -761,6 +909,9 @@ fn wire_action(operation: DesiredOperation) -> Option<WireAction> {
         DesiredOperation::Update => Some(WireAction::Update),
         DesiredOperation::Remove => Some(WireAction::Remove),
         DesiredOperation::Restore => Some(WireAction::Restore),
+        // The component's own package goes again at its own version, so the
+        // service checks and installs it with the companions it lacks.
+        DesiredOperation::AddCompanions => Some(WireAction::Update),
         DesiredOperation::Enable | DesiredOperation::Disable | DesiredOperation::Verify => None,
     }
 }
@@ -824,6 +975,124 @@ fn unit_failure(failure: UnitFailure) -> FailureEvidence {
         "user_units.failed",
         format!("{}: {}", failure.unit, failure.message),
     )
+}
+
+/// The privileged service's package, which travels as a companion of Better
+/// Manager (ADR 0026) and is never sent as a companion.
+pub const SERVICE_PACKAGE: &str = "better-manager-daemon";
+
+/// The first service that runs its own upgrade in a transient unit outside
+/// its cgroup. A release that is not this version changes it in the
+/// version-bump commit.
+pub const SELF_UPGRADING_SINCE: &str = "0.2.16";
+
+/// The first Better Manager whose postinst carries the service handoff.
+pub const HANDOFF_SINCE: &str = "0.2.16";
+
+/// What the installed privileged service can be sent, from dpkg's version of
+/// it (ADR 0026). Read unprivileged, before anything is sent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceGeneration {
+    /// No package: whatever answers on the bus was not installed by dpkg (a
+    /// development build). It is sent what the current service takes.
+    NotInstalled,
+    /// 0.2.12 and older: its prerm stops the unit dpkg runs in, and it does
+    /// not know companions. Updated only through the handoff.
+    Legacy,
+    /// 0.2.13: safe maintainer scripts, no companions.
+    Stepwise,
+    /// 0.2.14 and 0.2.15: companions, and upgraded in its own unit by the
+    /// ticket 105 scripts.
+    Companions,
+    /// 0.2.16 and later: upgrades itself in a transient unit.
+    SelfUpgrading,
+    /// dpkg holds a version nothing can order.
+    Unorderable,
+}
+
+impl ServiceGeneration {
+    pub fn of(installed: Option<&str>) -> Self {
+        let Some(installed) = installed else {
+            return Self::NotInstalled;
+        };
+        let Ok(version) = semver::Version::parse(manager_ipc::strip_epoch(installed)) else {
+            return Self::Unorderable;
+        };
+        let at_least = |text: &str| version >= semver::Version::parse(text).expect("a version");
+        if at_least(SELF_UPGRADING_SINCE) {
+            Self::SelfUpgrading
+        } else if at_least("0.2.14") {
+            Self::Companions
+        } else if at_least("0.2.13") {
+            Self::Stepwise
+        } else {
+            Self::Legacy
+        }
+    }
+
+    /// Whether a plan may carry `companions` to it.
+    pub fn takes_companions(self) -> bool {
+        matches!(
+            self,
+            Self::NotInstalled | Self::Companions | Self::SelfUpgrading
+        )
+    }
+
+    /// Whether the service can be sent its own package as a step.
+    pub fn takes_its_own_update(self) -> bool {
+        matches!(
+            self,
+            Self::NotInstalled | Self::Stepwise | Self::Companions | Self::SelfUpgrading
+        )
+    }
+
+    fn outdated(self, packages: &[String]) -> FailureEvidence {
+        FailureEvidence::with_detail("daemon.outdated", packages.join(", "))
+    }
+}
+
+/// Where the handoff (ADR 0026) writes its state, world-readable.
+pub const HANDOFF_STATUS_PATH: &str = "/run/better-os/daemon-handoff";
+
+/// What the handoff last wrote: two lines, the state and its detail.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HandoffStatus {
+    Waiting,
+    Installing,
+    Done { version: String },
+    Failed { reason: String },
+}
+
+impl HandoffStatus {
+    /// `None` for a file that is not one the handoff writes, which is shown
+    /// as nothing rather than as a guess.
+    pub fn parse(text: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        let state = lines.next()?.trim();
+        let detail = lines.next().unwrap_or("").trim().to_string();
+        match state {
+            "waiting" => Some(Self::Waiting),
+            "installing" => Some(Self::Installing),
+            "done" => Some(Self::Done { version: detail }),
+            "failed" => Some(Self::Failed { reason: detail }),
+            _ => None,
+        }
+    }
+
+    pub fn in_progress(&self) -> bool {
+        matches!(self, Self::Waiting | Self::Installing)
+    }
+}
+
+/// A plan as it goes to the service, and what it could not carry.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WireTranslation {
+    pub plan: Option<WirePlan>,
+    /// Companions the current service cannot take, left for the service
+    /// this plan installs. Doctor reports them until they are installed.
+    pub deferred_companions: Vec<String>,
+    /// The service goes through Better Manager's postinst handoff.
+    pub service_handoff: bool,
 }
 
 /// Whether the privileged service refused a plan because it does not know
@@ -1364,21 +1633,393 @@ mod tests {
         plans[0].validate().unwrap();
     }
 
-    /// A privileged service from before companions refuses the field without
-    /// running anything; the manager then installs its own package alone,
-    /// which only recommends the adapter, instead of failing its own update.
+    /// A privileged service that claims to know companions and refuses them
+    /// anyway: the plan is not resent without them (ticket 124).
     #[test]
-    fn an_older_privileged_service_gets_the_plan_without_companions() {
+    fn a_service_that_refuses_companions_is_never_worked_around() {
         let daemon = OldDaemon {
             plans: Default::default(),
             knows_companions: false,
         };
-        assert_eq!(run_install(&daemon), StageOutcome::Completed);
-        let plans = daemon.plans.lock().unwrap();
-        assert_eq!(plans.len(), 2);
-        assert_eq!(plans[0].steps[0].companions.len(), 1);
-        assert!(plans[1].steps[0].companions.is_empty());
-        assert_eq!(plans[1].transaction_id, plans[0].transaction_id);
+        match run_install(&daemon) {
+            StageOutcome::Failed(evidence) => {
+                assert_eq!(evidence.key, "daemon.outdated");
+                assert_eq!(evidence.detail.as_deref(), Some("better-shell-adapter"));
+            }
+            other => panic!("expected the refusal to stand, got {other:?}"),
+        }
+        assert_eq!(daemon.plans.lock().unwrap().len(), 1, "no second plan");
+    }
+
+    /// Better Manager at `version` for 24.04 amd64, with exactly the named
+    /// companions on that one artifact.
+    fn manager_at(version: &str, companions: &[&str]) -> Manager {
+        let shipped = include_str!("../../../components/manifests/better-manager.yaml");
+        let mut bare = String::new();
+        let mut skipping = false;
+        for line in shipped.lines() {
+            if line == "    companions:" {
+                skipping = true;
+                continue;
+            }
+            if skipping && line.starts_with("      ") {
+                continue;
+            }
+            skipping = false;
+            bare.push_str(line);
+            bare.push('\n');
+        }
+        let bare = bare.replace(env!("CARGO_PKG_VERSION"), version);
+        let asset = format!("better-manager_{version}_ubuntu-24.04_amd64.deb");
+        let mut block = String::from("    companions:\n");
+        for (index, package) in companions.iter().enumerate() {
+            let file = format!("{package}_{version}_ubuntu-24.04_amd64.deb");
+            block.push_str(&format!(
+                "      - package: {package}\n        url: https://example.com/{file}\n        sha256: {}\n        release_asset: {file}\n",
+                char::from(b'a' + index as u8).to_string().repeat(64)
+            ));
+        }
+        let manifest = bare.replace(
+            &format!("    release_asset: {asset}\n"),
+            &format!("    release_asset: {asset}\n{block}"),
+        );
+        let manifest = ComponentManifest::parse_yaml(&manifest).unwrap();
+        Manager::new(
+            ComponentCatalog::from_manifests(vec![manifest]).unwrap(),
+            crate::SystemProfile::default(),
+        )
+    }
+
+    const ADAPTER: &str = "better-shell-adapter";
+
+    /// Plans `operation` on Better Manager, installed at `installed`, and
+    /// translates it against a host whose dpkg holds `host`.
+    fn translate_on(
+        version: &str,
+        installed: &str,
+        operation: DesiredOperation,
+        host: &[(&str, &str)],
+    ) -> Result<WireTranslation, FailureEvidence> {
+        let manager = manager_at(version, &[ADAPTER, SERVICE_PACKAGE]);
+        let mut state = ManagerState::default();
+        state.set_installed(ComponentId::new("better-manager").unwrap(), installed, true);
+        let plan = manager
+            .plan_in_mode(
+                &state,
+                &ComponentId::new("better-manager").unwrap(),
+                operation,
+                ExecutionMode::Real,
+            )
+            .unwrap();
+        let downloader = HttpDownloader::new(manager_platform::download::ArtifactCache::new(
+            std::env::temp_dir().join("better-os-service-test"),
+        ));
+        let executor = manager_platform::UnapprovedPrivilegedExecutor;
+        let packages = manager_platform::dpkg::FixedPackageStateProbe::new(host);
+        let health = better_core::package_health::FakeHealthProbe::with_files(Vec::new());
+        RealDriver::new(
+            &downloader,
+            &executor,
+            &packages,
+            &health,
+            "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            crate::SystemProfile::default(),
+        )
+        .translate(&plan)
+    }
+
+    #[test]
+    fn the_service_generation_follows_its_dpkg_version() {
+        use ServiceGeneration::*;
+        for (version, expected) in [
+            (None, NotInstalled),
+            (Some("0.2.9"), Legacy),
+            (Some("0.2.12"), Legacy),
+            (Some("0.2.13"), Stepwise),
+            (Some("0.2.14"), Companions),
+            (Some("0.2.15"), Companions),
+            (Some("0.2.16"), SelfUpgrading),
+            (Some("1:0.3.0"), SelfUpgrading),
+            (Some("0.2.8~rc1"), Unorderable),
+        ] {
+            assert_eq!(ServiceGeneration::of(version), expected, "{version:?}");
+        }
+    }
+
+    /// ADR 0026: a current service gets its own package as the plan's last
+    /// step, and the adapter as a companion.
+    #[test]
+    fn a_current_service_is_offered_its_own_update_last() {
+        let translation = translate_on(
+            "0.2.17",
+            "0.2.16",
+            DesiredOperation::Update,
+            &[("better-manager", "0.2.16"), (SERVICE_PACKAGE, "0.2.16")],
+        )
+        .unwrap();
+        let plan = translation.plan.unwrap();
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps[0].component, "better-manager");
+        assert_eq!(plan.steps[0].companions.len(), 1);
+        assert_eq!(plan.steps[0].companions[0].package, ADAPTER);
+        let service = &plan.steps[1];
+        assert_eq!(service.component, SERVICE_PACKAGE);
+        assert_eq!(service.action, WireAction::Update);
+        assert_eq!(service.before_version.as_deref(), Some("0.2.16"));
+        assert_eq!(service.after_version.as_deref(), Some("0.2.17"));
+        assert!(!translation.service_handoff);
+        assert!(translation.deferred_companions.is_empty());
+    }
+
+    /// A service already at the version, and an adapter already there, are
+    /// not sent again.
+    #[test]
+    fn companions_already_in_place_are_not_sent() {
+        let translation = translate_on(
+            "0.2.17",
+            "0.2.16",
+            DesiredOperation::Update,
+            &[(SERVICE_PACKAGE, "0.2.17"), (ADAPTER, "0.2.17")],
+        )
+        .unwrap();
+        let plan = translation.plan.unwrap();
+        assert_eq!(plan.steps.len(), 1);
+        assert!(plan.steps[0].companions.is_empty());
+    }
+
+    /// 0.2.12 and older: the service is never a step. The Better Manager
+    /// update goes alone and its postinst hands the staged service and
+    /// adapter to a unit of their own.
+    #[test]
+    fn a_legacy_service_is_updated_through_the_handoff() {
+        let translation = translate_on(
+            "0.2.16",
+            "0.2.15",
+            DesiredOperation::Update,
+            &[("better-manager", "0.2.15"), (SERVICE_PACKAGE, "0.2.9")],
+        )
+        .unwrap();
+        assert!(translation.service_handoff);
+        assert_eq!(translation.deferred_companions, vec![ADAPTER.to_string()]);
+        let plan = translation.plan.unwrap();
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].component, "better-manager");
+        assert!(plan.steps[0].companions.is_empty());
+        assert!(
+            plan.steps
+                .iter()
+                .all(|step| step.component != SERVICE_PACKAGE)
+        );
+    }
+
+    /// A Better Manager release from before the handoff cannot carry it, so
+    /// a legacy service refuses the plan rather than losing the service.
+    #[test]
+    fn a_legacy_service_with_no_handoff_to_ride_is_refused() {
+        let evidence = translate_on(
+            "0.2.15",
+            "0.2.14",
+            DesiredOperation::Update,
+            &[(SERVICE_PACKAGE, "0.2.9")],
+        )
+        .unwrap_err();
+        assert_eq!(evidence.key, "daemon.outdated");
+        assert_eq!(evidence.detail.as_deref(), Some(SERVICE_PACKAGE));
+    }
+
+    /// The owner's machine before the fix: Better Manager current, the
+    /// adapter missing, the service 0.2.9. Nothing can carry the adapter, and
+    /// the plan says so instead of succeeding without it.
+    #[test]
+    fn a_missing_adapter_with_a_legacy_service_needs_the_service_first() {
+        let evidence = translate_on(
+            "0.2.16",
+            "0.2.16",
+            DesiredOperation::AddCompanions,
+            &[(SERVICE_PACKAGE, "0.2.16"), ("better-manager", "0.2.16")],
+        );
+        // The service is current here, so the adapter is simply added.
+        let plan = evidence.unwrap().plan.unwrap();
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].action, WireAction::Update);
+        assert_eq!(plan.steps[0].before_version.as_deref(), Some("0.2.16"));
+        assert_eq!(plan.steps[0].after_version.as_deref(), Some("0.2.16"));
+        assert_eq!(plan.steps[0].companions.len(), 1);
+        assert_eq!(plan.steps[0].companions[0].package, ADAPTER);
+
+        let refused = translate_on(
+            "0.2.16",
+            "0.2.16",
+            DesiredOperation::AddCompanions,
+            &[(SERVICE_PACKAGE, "0.2.9")],
+        )
+        .unwrap_err();
+        assert_eq!(refused.key, "daemon.outdated");
+    }
+
+    /// 0.2.13 takes its own update and not companions: the adapter waits for
+    /// the new service, and the translation says so.
+    #[test]
+    fn a_stepwise_service_defers_the_adapter_to_its_successor() {
+        let translation = translate_on(
+            "0.2.16",
+            "0.2.15",
+            DesiredOperation::Update,
+            &[(SERVICE_PACKAGE, "0.2.13")],
+        )
+        .unwrap();
+        assert_eq!(translation.deferred_companions, vec![ADAPTER.to_string()]);
+        let plan = translation.plan.unwrap();
+        assert_eq!(plan.steps.len(), 2);
+        assert!(plan.steps[0].companions.is_empty());
+        assert_eq!(plan.steps[1].component, SERVICE_PACKAGE);
+    }
+
+    #[test]
+    fn an_unorderable_service_version_is_reported_not_guessed() {
+        let evidence = translate_on(
+            "0.2.16",
+            "0.2.15",
+            DesiredOperation::Update,
+            &[(SERVICE_PACKAGE, "0.2.8~rc1")],
+        )
+        .unwrap_err();
+        assert_eq!(evidence.key, "daemon.version_unreadable");
+    }
+
+    /// Verify checks the companions too: a component missing one fails its
+    /// check (ticket 124).
+    #[test]
+    fn verify_fails_a_component_missing_its_companion() {
+        let manager = manager_at("0.2.16", &[ADAPTER]);
+        let id = ComponentId::new("better-manager").unwrap();
+        let mut state = ManagerState::default();
+        state.set_installed(id.clone(), "0.2.16", true);
+        let plan = manager
+            .plan_in_mode(&state, &id, DesiredOperation::Verify, ExecutionMode::Real)
+            .unwrap();
+        assert_eq!(plan.steps()[0].verify_companions, vec![ADAPTER.to_string()]);
+        let downloader = HttpDownloader::new(manager_platform::download::ArtifactCache::new(
+            std::env::temp_dir().join("better-os-verify-companion-test"),
+        ));
+        let executor = manager_platform::UnapprovedPrivilegedExecutor;
+        let files = better_core::package_health::InstalledFiles::default();
+        let check = |host: &[(&str, &str)]| {
+            let packages = manager_platform::dpkg::FixedPackageStateProbe::new(host)
+                .with_files("better-manager", files.clone());
+            let health = better_core::package_health::FakeHealthProbe::with_files(Vec::new());
+            let mut driver = RealDriver::new(
+                &downloader,
+                &executor,
+                &packages,
+                &health,
+                "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+                crate::SystemProfile::default(),
+            );
+            driver.run_stage(
+                OperationStage::CheckingHealth,
+                &plan,
+                &mut |_| {},
+                &CancelToken::new(),
+            )
+        };
+        match check(&[("better-manager", "0.2.16")]) {
+            StageOutcome::Failed(evidence) => {
+                assert_eq!(evidence.key, "companion.missing");
+                assert_eq!(evidence.detail.as_deref(), Some(ADAPTER));
+            }
+            other => panic!("expected a finding, got {other:?}"),
+        }
+        assert_eq!(
+            check(&[("better-manager", "0.2.16"), (ADAPTER, "0.2.16")]),
+            StageOutcome::Completed
+        );
+    }
+
+    #[test]
+    fn the_handoff_status_is_read_as_written_and_nothing_else() {
+        assert_eq!(
+            HandoffStatus::parse("waiting\nthe old service\n"),
+            Some(HandoffStatus::Waiting)
+        );
+        assert_eq!(
+            HandoffStatus::parse("done\n0.2.16\n"),
+            Some(HandoffStatus::Done {
+                version: "0.2.16".to_string()
+            })
+        );
+        assert_eq!(
+            HandoffStatus::parse("failed\nthe old service did not go idle\n"),
+            Some(HandoffStatus::Failed {
+                reason: "the old service did not go idle".to_string()
+            })
+        );
+        assert!(HandoffStatus::parse("installing\n").unwrap().in_progress());
+        assert_eq!(HandoffStatus::parse(""), None);
+        assert_eq!(HandoffStatus::parse("finished\n"), None);
+    }
+
+    /// Doctor reports a missing companion of an installed component, and
+    /// the repair is planned only for the catalog's own version.
+    #[test]
+    fn doctor_reports_a_missing_companion_and_plans_its_repair() {
+        let manager = manager_at("0.2.16", &[ADAPTER, SERVICE_PACKAGE]);
+        let id = ComponentId::new("better-manager").unwrap();
+        let mut state = ManagerState::default();
+        state.set_installed(id.clone(), "0.2.16", true);
+
+        let host =
+            manager_platform::dpkg::FixedPackageStateProbe::new(&[(SERVICE_PACKAGE, "0.2.16")]);
+        let checks = manager.companion_checks(&state, &host).unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].kind, crate::DoctorCheckKind::CompanionMissing);
+        assert_eq!(checks[0].status, crate::DoctorCheckStatus::Failed);
+        assert_eq!(checks[0].package.as_deref(), Some(ADAPTER));
+        assert_eq!(checks[0].host_version, None);
+
+        let old_service = manager_platform::dpkg::FixedPackageStateProbe::new(&[
+            (SERVICE_PACKAGE, "0.2.9"),
+            (ADAPTER, "0.2.16"),
+        ]);
+        let gaps = manager.companion_gaps(&state, &old_service).unwrap();
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].package, SERVICE_PACKAGE);
+        assert_eq!(gaps[0].host_version.as_deref(), Some("0.2.9"));
+
+        let whole = manager_platform::dpkg::FixedPackageStateProbe::new(&[
+            (SERVICE_PACKAGE, "0.2.16"),
+            (ADAPTER, "0.2.16"),
+        ]);
+        assert!(manager.companion_checks(&state, &whole).unwrap().is_empty());
+
+        let plan = manager
+            .plan_in_mode(
+                &state,
+                &id,
+                DesiredOperation::AddCompanions,
+                ExecutionMode::Real,
+            )
+            .unwrap();
+        assert_eq!(plan.steps().len(), 1);
+        assert_eq!(plan.steps()[0].before_version.as_deref(), Some("0.2.16"));
+        assert_eq!(plan.steps()[0].after_version.as_deref(), Some("0.2.16"));
+        let mut begun = state.clone();
+        manager
+            .begin(&mut begun, plan)
+            .expect("the reviewed plan begins");
+
+        // An older install is an update away from its companions.
+        state.set_installed(id.clone(), "0.2.15", true);
+        assert!(manager.companion_gaps(&state, &host).unwrap().is_empty());
+        assert!(matches!(
+            manager.plan_in_mode(
+                &state,
+                &id,
+                DesiredOperation::AddCompanions,
+                ExecutionMode::Real
+            ),
+            Err(ManagerError::NoCompanionsToAdd(_))
+        ));
     }
 
     #[test]

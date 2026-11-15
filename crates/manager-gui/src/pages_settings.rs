@@ -277,8 +277,10 @@ impl ManagerApp {
             DoctorCheckKind::RestoreData => c.restore_available,
             DoctorCheckKind::HostReconciliation => c.check_host_reconciliation,
             DoctorCheckKind::UnorderableHostVersion => c.check_unorderable_version,
+            DoctorCheckKind::CompanionMissing => c.check_companion_missing,
         };
-        let detail = unorderable_detail(self.locale, check);
+        let detail = unorderable_detail(self.locale, check)
+            .or_else(|| crate::model::companion_detail(self.locale, check));
         let status = self.pill(Self::doctor_pill(c, check.status), cx);
         h_flex()
             .w_full()

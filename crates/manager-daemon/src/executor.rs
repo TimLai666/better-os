@@ -261,6 +261,12 @@ impl Executor {
                 for companion in &step.companions {
                     paths.push(self.artifacts.path_for(&companion.artifact.filename)?);
                 }
+                if step.component == crate::SERVICE_PACKAGE {
+                    // Revalidation refused a companion on this step.
+                    return self
+                        .apt
+                        .install_service_package(&paths[0], revalidate::allows_downgrade(action));
+                }
                 let paths: Vec<&std::path::Path> =
                     paths.iter().map(|path| path.as_path()).collect();
                 self.apt
@@ -479,11 +485,12 @@ impl Executor {
         {
             return false;
         }
-        let installed = self
-            .apt
-            .install_local_debs(&[path.as_path()], true)
-            .map(|run| run.succeeded())
-            .unwrap_or(false)
+        let reinstall = if record.component == crate::SERVICE_PACKAGE {
+            self.apt.install_service_package(&path, true)
+        } else {
+            self.apt.install_local_debs(&[path.as_path()], true)
+        };
+        let installed = reinstall.map(|run| run.succeeded()).unwrap_or(false)
             && self
                 .apt
                 .installed_version(&record.component)
@@ -654,6 +661,71 @@ mod tests {
                 .with_files("better-shell-adapter", &["/usr/bin/adapter-file"], &[]),
             vec!["better-manager", "adapter-file"],
         )
+    }
+
+    const SERVICE_DEB: &str = "better-manager-daemon_0.1.0_ubuntu-24.04_amd64.deb";
+
+    /// ADR 0026: this service's own package is its own last step, and it is
+    /// installed from outside the service's unit, after the other packages.
+    #[test]
+    fn the_service_package_is_installed_outside_its_own_unit_last() {
+        let harness = Harness::new(
+            "service-upgrade",
+            FakeAptDriver::new()
+                .with_deb(MANAGER_DEB, fields("better-manager"))
+                .with_deb(SERVICE_DEB, fields(crate::SERVICE_PACKAGE))
+                .with_files(crate::SERVICE_PACKAGE, &["/usr/bin/service-file"], &[]),
+            vec!["better-manager", "service-file"],
+        );
+        let manager = harness.stage(MANAGER_DEB);
+        let service = harness.stage(SERVICE_DEB);
+        let plan = plan(vec![
+            install_step("better-manager", MANAGER_DEB, manager),
+            install_step(crate::SERVICE_PACKAGE, SERVICE_DEB, service),
+        ]);
+
+        let outcome = harness.executor().execute(&plan, &mut |_, _| {}).unwrap();
+
+        assert_eq!(outcome.status, OutcomeStatus::Succeeded);
+        let calls: Vec<String> = harness
+            .apt
+            .calls()
+            .into_iter()
+            .filter(|call| call.starts_with("install:") || call == "outside-unit")
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                "install:better-manager:downgrade=false",
+                "outside-unit",
+                "install:better-manager-daemon:downgrade=false",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_service_package_is_never_a_companion_or_a_middle_step() {
+        let host = crate::host::HostFacts {
+            release: "24.04".to_string(),
+            architecture: "amd64".to_string(),
+        };
+        let service = install_step(crate::SERVICE_PACKAGE, SERVICE_DEB, "a".repeat(64));
+        let manager = install_step("better-manager", MANAGER_DEB, "b".repeat(64));
+        let first = plan(vec![service.clone(), manager.clone()]);
+        assert!(matches!(
+            revalidate::check_plan(&first, &host),
+            Err(DaemonError::PlanRejected(reason)) if reason.contains("last step")
+        ));
+
+        let mut riding = manager;
+        riding.companions.push(manager_ipc::WireCompanion {
+            package: crate::SERVICE_PACKAGE.to_string(),
+            artifact: service.artifact.unwrap(),
+        });
+        assert!(matches!(
+            revalidate::check_plan(&plan(vec![riding]), &host),
+            Err(DaemonError::PlanRejected(reason)) if reason.contains("never a companion")
+        ));
     }
 
     /// ADR 0018: Better Manager's own update carries the shell adapter, and

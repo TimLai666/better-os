@@ -79,6 +79,13 @@ impl ManagerApp {
                     .on_click(Self::act(cx, |this, _, cx| this.turn_on_shell_adapter(cx))),
                 );
             }
+            if notice.action == Some(NoticeAction::Install) {
+                notice_card = notice_card.content(
+                    Button::accent("attention-install", w.install)
+                        .disabled(self.transaction_running())
+                        .on_click(Self::act(cx, |this, _, cx| this.install_shell_adapter(cx))),
+                );
+            }
             rows.push(Row::new(0.0, notice_card));
             if !notice.settings_shown {
                 return rows;

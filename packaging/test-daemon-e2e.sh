@@ -705,6 +705,58 @@ done
 }
 printf 'The installer removed what it installed\n'
 
+printf '== a 0.2.9 service is updated through Better Manager (ADR 0026) ==\n'
+# The published 0.2.9 service, whose prerm stops its own unit and which
+# refuses companions. CI downloads it into the image; nothing here reaches
+# the network. Better Manager's path is the one Better Manager takes for such
+# a service: stage the new service and the adapter in its archive, send the
+# Better Manager install alone, and let the new package's postinst hand the
+# staged packages over.
+LEGACY_DAEMON_DEB="$(ls /opt/better-os/legacy/better-manager-daemon_0.2.9_"${RELEASE_TARGET}"_"${ARCH}".deb)"
+MANAGER_DEB="$(find_package better-manager)"
+ADAPTER_DEB="$(find_package better-shell-adapter)"
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$LEGACY_DAEMON_DEB"
+[[ "$(dpkg-query -W -f='${Version}' better-manager-daemon)" == 0.2.9 ]] || {
+    printf 'The 0.2.9 service did not install\n' >&2
+    exit 1
+}
+rm -f /run/better-os/daemon-handoff
+"$CLIENT" stage "$RELEASE_ID" "$ARCH" "$DAEMON_DEB"
+"$CLIENT" stage "$RELEASE_ID" "$ARCH" "$ADAPTER_DEB"
+"$CLIENT" install "$RELEASE_ID" "$ARCH" "$MANAGER_DEB" >/dev/null || {
+    printf 'The 0.2.9 service did not install Better Manager\n' >&2
+    exit 1
+}
+# The old service leaves once it has been idle for two minutes; the handoff
+# waits for that before it installs.
+handoff_state=""
+for _ in $(seq 300); do
+    handoff_state="$(sed -n 1p /run/better-os/daemon-handoff 2>/dev/null || true)"
+    [[ "$handoff_state" == done || "$handoff_state" == failed ]] && break
+    sleep 2
+done
+if [[ "$handoff_state" != done ]]; then
+    printf 'The handoff ended as %s\n' "${handoff_state:-nothing}" >&2
+    cat /run/better-os/daemon-handoff /run/better-os/daemon-handoff.log >&2 2>/dev/null || true
+    exit 1
+fi
+new_version="$(dpkg-deb -f "$DAEMON_DEB" Version)"
+[[ "$(dpkg-query -W -f='${Version}' better-manager-daemon)" == "$new_version" ]] || {
+    printf 'The service is not at %s after the handoff\n' "$new_version" >&2
+    exit 1
+}
+[[ "$(dpkg-query -W -f='${db:Status-Abbrev}' better-shell-adapter)" == "ii " ]] || {
+    printf 'The shell adapter is not installed after the handoff\n' >&2
+    exit 1
+}
+audit="$(dpkg --audit)"
+[[ -z "$audit" ]] || {
+    printf 'dpkg is not consistent after the handoff:\n%s\n' "$audit" >&2
+    exit 1
+}
+printf 'The 0.2.9 service was replaced from outside it, with the adapter\n'
+DEBIAN_FRONTEND=noninteractive apt-get remove -y better-manager better-shell-adapter
+
 printf '== purge leaves nothing behind ==\n'
 DEBIAN_FRONTEND=noninteractive apt-get purge -y better-manager-daemon
 for leftover in /var/lib/better-os /var/cache/better-os; do
