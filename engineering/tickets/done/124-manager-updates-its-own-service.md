@@ -70,24 +70,28 @@ done and offered the button that does it.
   own, and `better-shell-adapter`'s postinst starts the same handoff
   (ADR 0028). Only when the adapter is already installed and the service is
   still 0.2.12 or older is there no retry; the notice says so.
-- Looked at in the wayhand sandbox (sway, real mode, fake `dpkg-query` on
-  PATH, private session bus, systemctl guard): the Updates notice in English
-  dark and Traditional Chinese light, and the Doctor findings in both. Fixed
-  from that look: findings now come first, the component's own health check
-  fails with them, and the detail names the component by its display name.
-- Still owed before `done/`:
-  - The window-attention Install button and its after-install state have
-    not been seen: the sandbox is sway, so the page shows "GNOME Shell is not
-    running". It needs a nested GNOME Shell session.
-  - Clicking buttons on the right half of the content area did nothing in
-    the sandbox, for the existing Install and Check for updates buttons as
-    well as the new one, while the sidebar and the Apps cards responded. So
-    the Update system service button is wired like its neighbours but was not
-    seen to open the review; find out whether this is the sandbox pointer or
-    the window before calling it done.
-  - The container end-to-end section (0.2.9 service → handoff → adapter,
-    `dpkg --audit` empty) is CI-only: no Docker daemon here. Read the CI e2e
-    job after merge.
-  - `shellcheck` is not installed locally; CI lints the new scripts.
-  - `SELF_UPGRADING_SINCE` and `HANDOFF_SINCE` say 0.2.16; the version bump
-    must keep them true.
+- Looked at in an own headless GNOME Shell 46 (private bus, fake `dpkg-query`
+  and `systemctl`, no system bus, systemctl guard), in Traditional Chinese
+  and English, light and dark: the Updates notice and its review, the
+  window-attention Install button and its review, the after-install state
+  ("Sign out to finish setting this up"), and the Doctor findings. Fixed
+  from that look: findings first, the component's own health check fails
+  with them, display names in the detail, and the review of an Add
+  companions plan no longer claims to update Better Manager or need a
+  restart, and lists the parts it adds.
+- Buttons were pressed from the keyboard. Pointer clicks reach the shell but
+  no Better Manager window in that session, the existing buttons included;
+  ticket 85 owns that defect.
+- The installation itself ran against no daemon: the after-install state was
+  produced by putting the adapter's files and dpkg record in place.
+- The container end-to-end section (0.2.9 service, handoff, adapter,
+  `dpkg --audit` empty) is CI-verified after merge: there is no Docker
+  daemon here.
+- `SELF_UPGRADING_SINCE` and `HANDOFF_SINCE` say 0.2.16; the version bump
+  must keep them true.
+- Checks run on the merge commit `a355d3d`: fmt, clippy (1.99 and newest
+  stable), check on 1.95, `cargo test --workspace --locked` (276 suites,
+  4668 passed, 0 failed), the maintainer-script and daemon-handoff tests, the
+  license inventory check, and `build-deb.sh` plus `verify-deb.sh` for
+  ubuntu-24.04 amd64. A first gate run failed on a full disk (linker and
+  `mkdir` errors, no test failure); the second run was green.
