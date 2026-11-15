@@ -1157,7 +1157,7 @@ impl FilesApp {
                 .cursor_pointer()
                 .child(
                     Icon::empty()
-                        .path(crate::icons::drive_icon(drive.kind))
+                        .path(crate::icons::drive_row_icon(&drive))
                         .size(px(32.0))
                         .text_color(p.text_secondary),
                 )

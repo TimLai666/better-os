@@ -1,7 +1,7 @@
 //! Draws the window: the shell around the page, and the pages ticket 84
 //! builds (Home, Settings, and the placeholders for the pages to come).
-//! Apps is drawn by `render_apps` (ticket 85); today's Defaults screens by
-//! `pages_defaults`, inside the same content column, until ticket 89.
+//! Apps is drawn by `render_apps` (ticket 85), Keep awake and Default apps
+//! by their own page modules.
 
 use better_ui::fluent::button::Button;
 use better_ui::fluent::chrome::is_back_shortcut;
@@ -471,19 +471,6 @@ impl ManagerApp {
         rows
     }
 
-    /// Today's Defaults screens, unchanged, as one row, until ticket 89.
-    fn interim_rows(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Row> {
-        let compact = crate::navigation::legacy_compact(f32::from(window.viewport_size().width));
-        let element = match &self.page {
-            Page::Defaults => self.defaults_page(compact, cx),
-            Page::DefaultsComponent(_) => self.defaults_component_page(compact, cx),
-            Page::DefaultsReview => self.defaults_review_page(compact, cx),
-            Page::DefaultsResults => self.defaults_results_page(compact, cx),
-            _ => div().into_any_element(),
-        };
-        vec![Row::new(0.0, element)]
-    }
-
     fn page_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Row> {
         let route = Route::of(&self.page);
         match (&self.page, pages::module(route).status) {
@@ -498,8 +485,9 @@ impl ManagerApp {
                 page.update(cx, |page, cx| page.rows(installed.as_deref(), cx))
             }
             (_, _) if route == Route::Apps => self.apps_rows(cx),
+            (_, _) if route == Route::DefaultApps => self.default_apps_rows(cx),
             (_, PageStatus::Placeholder { ticket }) => self.placeholder_rows(route, ticket, cx),
-            _ => self.interim_rows(window, cx),
+            _ => Vec::new(),
         }
     }
 

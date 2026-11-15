@@ -8,9 +8,7 @@ use better_ui::fluent::auto_suggest::{AutoSuggestBox, Suggestion};
 use better_ui::fluent::badge::InfoBadge;
 use better_ui::fluent::chrome::TitleBar;
 use better_ui::fluent::navigation::{NavItem, NavigationView};
-use better_ui::fluent::text_box::TextBox;
-use better_ui::fluent::{BODY, TITLE, label, palette, palette_for, spacing};
-use gpui::prelude::FluentBuilder as _;
+use better_ui::fluent::palette;
 use gpui::*;
 use gpui_component::{Icon, IconName};
 
@@ -166,37 +164,6 @@ impl ManagerApp {
                 this.set_pane_compact(compact, narrow, cx);
             }))
             .content(content)
-            .into_any_element()
-    }
-
-    /// The heading today's Better Manager screens draw at their top, in the
-    /// kit's Title and secondary Body. A screen with a component list gets
-    /// the component search under it, at every width (audit M5).
-    pub(crate) fn page_heading(
-        &self,
-        title: &'static str,
-        subtitle: &'static str,
-        show_search: bool,
-        _compact: bool,
-    ) -> AnyElement {
-        let p = palette_for(self.dark);
-        div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(spacing::XS)
-            .child(label(title, TITLE, p.text_primary))
-            .child(label(subtitle, BODY, p.text_secondary).whitespace_normal())
-            .when(show_search, |view| {
-                view.child(
-                    div()
-                        .w_full()
-                        .max_w(px(360.0))
-                        .pt(spacing::MD)
-                        .child(TextBox::search("component-search", &self.search)),
-                )
-            })
             .into_any_element()
     }
 }

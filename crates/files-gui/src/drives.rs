@@ -70,6 +70,34 @@ pub struct Drive {
     /// How full it is: `None` until read, and for a drive that is not
     /// mounted or did not answer.
     pub capacity: Option<Capacity>,
+    /// For a removable drive: a USB stick, a memory card, or an external
+    /// disk, which the sidebar draws differently. `None` for other kinds.
+    pub form: Option<RemovableForm>,
+}
+
+/// What a removable drive is, by what UDisks2 says it takes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemovableForm {
+    /// UDisks2 reports `thumb` media: a USB flash drive.
+    Stick,
+    /// A memory card (`flash_*` media, or a card reader on `sdio`/`mmc`).
+    Card,
+    /// Anything else: an external hard disk or SSD. UDisks2 marks sticks it
+    /// recognizes, so an unmarked drive is drawn as a disk rather than
+    /// guessed to be a stick.
+    Disk,
+}
+
+/// A removable drive's form from its UDisks2 drive record.
+pub fn removable_form(drive: &storage_platform::model::DriveInfo) -> RemovableForm {
+    let media = |prefix: &str| drive.media.iter().any(|entry| entry.starts_with(prefix));
+    if media("thumb") {
+        RemovableForm::Stick
+    } else if media("flash") || matches!(drive.connection_bus.as_str(), "sdio" | "mmc") {
+        RemovableForm::Card
+    } else {
+        RemovableForm::Disk
+    }
 }
 
 /// A mounted filesystem's size and free space, in bytes.
@@ -431,6 +459,8 @@ pub fn drives_from_devices(devices: &[PlatformDevice], root_source: Option<&str>
             ejectable: !on_system_drive
                 && (removable || optical || drive_info.is_some_and(|drive| drive.ejectable)),
             capacity: None,
+            form: (kind == DriveKind::Removable)
+                .then(|| drive_info.map_or(RemovableForm::Disk, removable_form)),
         });
     }
     drives
@@ -482,6 +512,7 @@ pub fn drives_from_mounts(mounts: &MountTable, devices_known: bool) -> Vec<Drive
             size: 0,
             ejectable: false,
             capacity: None,
+            form: None,
         });
     }
     drives
@@ -524,6 +555,7 @@ pub fn drives_from_gvfs(children: &[PathBuf]) -> Vec<Drive> {
                 size: 0,
                 ejectable: false,
                 capacity: None,
+                form: None,
             })
         })
         .collect()
@@ -773,6 +805,9 @@ struct FixtureDrive {
     ejectable: bool,
     #[serde(default)]
     locked: bool,
+    /// For a removable fixture: `stick`, `card` or `disk`.
+    #[serde(default)]
+    form: Option<String>,
 }
 
 /// The drives a fixture file names.
@@ -810,6 +845,12 @@ pub fn fixture_drives(path: &Path) -> Vec<Drive> {
                 .total
                 .zip(fixture.free)
                 .map(|(total, free)| Capacity { total, free }),
+            form: match fixture.form.as_deref() {
+                Some("stick") => Some(RemovableForm::Stick),
+                Some("card") => Some(RemovableForm::Card),
+                Some("disk") => Some(RemovableForm::Disk),
+                _ => None,
+            },
         })
         .collect();
     sort_drives(&mut drives);
@@ -1279,6 +1320,7 @@ fn system_drive_from_mounts() -> Drive {
         size: 0,
         ejectable: false,
         capacity: None,
+        form: None,
     }
 }
 

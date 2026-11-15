@@ -1,4 +1,4 @@
-//! The Defaults section's state and the work it runs off the UI thread.
+//! Default apps' state and the work it runs off the UI thread.
 //!
 //! Every read and every change goes through `defaults-core`. This file builds
 //! the engine's inputs, hands them to a background task, and adopts what comes
@@ -10,9 +10,9 @@
 //! [`ReviewModel::approve`]. A button that applied defaults without a review
 //! screen would have nothing to call.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use better_core::defaults::IntegrationId;
 use better_core::{ComponentCatalog, ComponentId, ComponentManifest};
@@ -25,13 +25,24 @@ use defaults_store::{SnapshotHistory, SnapshotStore};
 use gpui::{AppContext as _, Context, Task};
 use manager_core::HealthState;
 
+use super::model::{ApprovedPlan, ReviewModel, holds_restart, last_verified_times};
 use crate::app::ManagerApp;
-use crate::defaults_model::{ApprovedPlan, ReviewModel, last_verified_times};
 use crate::model::Page;
 
-/// Everything the Defaults screens hold between interactions.
+/// Everything Default apps holds between interactions.
 #[derive(Default)]
 pub(crate) struct DefaultsState {
+    /// The components whose expander is open.
+    pub(crate) open: BTreeSet<ComponentId>,
+    /// Where Cancel on the review and Back on the results go: the whole
+    /// page, or the one component a details page linked to.
+    pub(crate) origin: Option<Page>,
+    /// The review's bottom summary was closed.
+    pub(crate) summary_closed: bool,
+    /// A confirmed plan is being written.
+    pub(crate) running: bool,
+    /// When the job now running started, for the 300 ms before a ring.
+    pub(crate) busy_since: Option<Instant>,
     pub(crate) report: Option<DefaultsReport>,
     pub(crate) verified: BTreeMap<(ComponentId, IntegrationId), u64>,
     pub(crate) review: Option<ReviewModel>,
@@ -42,6 +53,25 @@ pub(crate) struct DefaultsState {
     pub(crate) busy: bool,
     pub(crate) failed: bool,
     pub(crate) job: Option<Task<()>>,
+    /// Draws the page again when the ring is due.
+    pub(crate) ring: Option<Task<()>>,
+}
+
+impl DefaultsState {
+    /// Whether the page draws its progress ring: a job has run for longer
+    /// than the spec's 300 ms (section 2, "Loading").
+    pub(crate) fn shows_ring(&self) -> bool {
+        self.busy
+            && self.busy_since.is_some_and(|since| {
+                since.elapsed()
+                    >= Duration::from_millis(crate::pages::states::LOADING_RING_AFTER_MS)
+            })
+    }
+
+    /// Whether an update restart has to wait for this page.
+    pub(crate) fn blocks_restart(&self) -> bool {
+        holds_restart(self.running, self.review.is_some())
+    }
 }
 
 /// What the background task is being asked to do.
@@ -101,6 +131,10 @@ impl ManagerApp {
         self.defaults.review = None;
         self.defaults.outcome = None;
         self.defaults.scope = Some((kind, selection.clone()));
+        self.defaults.origin = Some(match &self.page {
+            Page::DefaultsComponent(component) => Page::DefaultsComponent(component.clone()),
+            _ => Page::Defaults,
+        });
         self.start_defaults_job(
             DefaultsJob::Plan {
                 kind,
@@ -186,21 +220,46 @@ impl ManagerApp {
     pub(crate) fn cancel_defaults_review(&mut self, cx: &mut Context<Self>) {
         self.defaults.review = None;
         self.defaults.scope = None;
-        self.navigate(Page::Defaults, cx);
+        let origin = self.defaults_origin();
+        self.navigate(origin, cx);
     }
 
-    pub(crate) fn open_defaults_component(
+    /// The page a review was opened from.
+    pub(crate) fn defaults_origin(&self) -> Page {
+        self.defaults.origin.clone().unwrap_or(Page::Defaults)
+    }
+
+    /// Opens or closes one component's expander.
+    pub(crate) fn set_defaults_open(
         &mut self,
         component: &ComponentId,
+        open: bool,
         cx: &mut Context<Self>,
     ) {
-        self.navigate(Page::DefaultsComponent(component.clone()), cx);
+        if open {
+            self.defaults.open.insert(component.clone());
+        } else {
+            self.defaults.open.remove(component);
+        }
+        cx.notify();
     }
 
     fn start_defaults_job(&mut self, job: DefaultsJob, cx: &mut Context<Self>) {
         let inputs = self.defaults_inputs();
         self.defaults.busy = true;
         self.defaults.failed = false;
+        self.defaults.running = matches!(job, DefaultsJob::Run(_));
+        self.defaults.busy_since = Some(Instant::now());
+        // The ring appears only once the job has run for 300 ms, so the
+        // window is asked to draw again then.
+        self.defaults.ring = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(
+                    crate::pages::states::LOADING_RING_AFTER_MS,
+                ))
+                .await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        }));
         let task = cx.spawn(async move |this, cx| {
             let event = cx
                 .background_spawn(async move { run_job(&inputs, job) })
@@ -213,6 +272,9 @@ impl ManagerApp {
 
     fn apply_defaults_event(&mut self, event: DefaultsEvent, cx: &mut Context<Self>) {
         self.defaults.busy = false;
+        self.defaults.running = false;
+        self.defaults.busy_since = None;
+        self.defaults.ring = None;
         match event {
             DefaultsEvent::Report(reading) => {
                 self.defaults.report = Some(reading.report);
