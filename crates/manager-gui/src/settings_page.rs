@@ -83,8 +83,8 @@ pub(crate) fn appearance_index(theme: StoredTheme) -> usize {
 pub(crate) const LANGUAGES: [Locale; 3] = [Locale::System, Locale::EnUs, Locale::ZhTw];
 
 pub(crate) fn language_labels(locale: Locale) -> [&'static str; 3] {
-    let s = shell(locale);
-    [s.language_system, s.language_english, s.language_chinese]
+    // The suite's one wording (audit A7), from the kit.
+    better_ui::fluent::words::language_choices(locale.words())
 }
 
 pub(crate) fn language_index(locale: Locale) -> usize {

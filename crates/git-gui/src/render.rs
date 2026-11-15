@@ -4516,11 +4516,10 @@ impl GitApp {
                         card("language", c.language).icon(IconName::Globe).content(
                             RadioButtons::new(
                                 "language-choice",
-                                vec![
-                                    RadioOption::new(c.language_system),
-                                    RadioOption::new("English"),
-                                    RadioOption::new("繁體中文"),
-                                ],
+                                better_ui::fluent::words::language_choices(self.words())
+                                    .into_iter()
+                                    .map(RadioOption::new)
+                                    .collect(),
                                 Some(language),
                             )
                             .on_select(Self::act_with(

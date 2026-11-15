@@ -55,9 +55,13 @@ Spec section 6, and the Better Awake rows of section 12, every one of them.
 - [x] A preferences file from today's `awake-gui` is imported once, a second
       start does not import again, and a newer-schema file is left alone
       (tests).
-- [ ] Audit A1–A8 each closed with a screenshot. A1–A5 and A8 are; A6 and A7
-      are named in the spec without their wording (the audit itself is not in
-      the repository), so they are not claimed (see What was built).
+- [x] Audit A1–A8 each closed with a screenshot. A6 (icons without labels
+      at 960 px): Better Manager's pane is compact there behind ☰ and every
+      icon has its label as a tooltip (`a6-960-*.png`). A7 (language names
+      worded differently per app): every language picker now takes its words
+      from `better_ui::fluent::words::language_choices` /
+      `language_name` (Better Manager, Monitor, Git, Files, Touchpad, the
+      old Awake window, the gallery), with a kit test (`a7-*.png`).
 - [x] Light and dark, zh-TW and English, 1600 and 960, screenshotted with the
       service running inside the sandbox's session bus.
 - [x] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
@@ -165,7 +169,7 @@ In the sandbox (headless GNOME Shell, fake inhibitor backend):
 rows, and `tray-menu-after-adding-45-minutes.txt` (the running tray's
 `GetLayout` after 45 minutes was added on the page).
 
-Not claimed: audit A6 and A7 (wording not in the repository); the service
+Not claimed: the service
 not running state was screenshotted with Better Awake in Better Manager's
 record taken from the host's dpkg (the state shown is correct for that
 record).

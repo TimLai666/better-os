@@ -2583,8 +2583,15 @@ impl Render for Gallery {
                 })),
             )
             .command(
-                Command::new(if self.zh { "English" } else { "中文" }, IconName::Globe)
-                    .on_click(Self::act(cx, |this, _, _| this.zh = !this.zh)),
+                Command::new(
+                    better_ui::fluent::words::language_name(if self.zh {
+                        better_ui::fluent::words::Locale::English
+                    } else {
+                        better_ui::fluent::words::Locale::TraditionalChinese
+                    }),
+                    IconName::Globe,
+                )
+                .on_click(Self::act(cx, |this, _, _| this.zh = !this.zh)),
             );
         let page_view = div().id("page").size_full().overflow_y_scroll().child(
             div()
