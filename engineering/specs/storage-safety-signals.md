@@ -55,7 +55,8 @@ signal is **Unknown** — never a softer version of ready.
 ### The two thresholds that are policy, not fact
 
 Both are `EvidencePolicy` fields, both are here rather than buried in a
-comparison, and both are candidates for the ADR issue #5 asks for:
+comparison, and [ADR 0026](/engineering/decisions/0026-storage-readiness-rule.md)
+records why each has the value it has:
 
 - **`require_complete_writer_scan`, default false.** A session process cannot
   read another user's `/proc` entries, so on a normal desktop the scan is almost
@@ -82,8 +83,9 @@ deliberately does not do:
   system mount or cache setting, which is also why uninstalling restores the
   original behavior with nothing to undo.
 
-Adding any of these means a privileged service and a polkit action, which is the
-boundary issue #5 explicitly defers to an ADR.
+Adding any of these means a privileged service and a polkit action.
+[ADR 0027](/engineering/decisions/0027-storage-privileged-boundary.md) decided
+not to build one, and says what shape it would have to take if that changes.
 
 ## What is out of scope entirely
 
