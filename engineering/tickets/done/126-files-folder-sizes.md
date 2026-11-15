@@ -53,3 +53,10 @@ Delivered on branch `ticket-126`.
   settings live.
 - Policy and limits: `engineering/specs/files-gui-policy.md`, "Folder sizes".
   Numbers: `engineering/performance/files-benchmarks.md`, "Folder sizes".
+
+Checks run before delivery: `cargo fmt --check`; clippy `-D warnings` on
+1.99.0 and stable (1.97); `cargo +1.95 check --workspace --all-targets`;
+`cargo test --workspace` (all passed); `packaging/tests/maintainer-scripts.test.sh`;
+`generate-third-party-notices.sh --check`; `build-deb.sh` (24.04 host) and
+`verify-deb.sh`. Screens (zh-TW and English, light and dark, at 1600 and 960)
+were taken in a headless GNOME Shell 46 with real pointer clicks.
