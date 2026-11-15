@@ -13,9 +13,16 @@ path = "src/lib.rs"
 name = "better-storage-doctor"
 path = "src/bin/doctor.rs"
 
+[[bin]]
+# A measurement tool run by hand against a real device. Not packaged:
+# packaging/build-deb.sh names the binaries it ships.
+name = "better-storage-bench"
+path = "src/bin/bench.rs"
+
 [dependencies]
 storage-core.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 libc.workspace = true
 futures-util.workspace = true
@@ -29,3 +36,4 @@ test-support = []
 
 [dev-dependencies]
 storage-platform = { path = ".", features = ["test-support"] }
+tempfile.workspace = true

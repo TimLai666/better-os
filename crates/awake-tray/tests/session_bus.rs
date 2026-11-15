@@ -2525,3 +2525,169 @@ async fn opening_the_menu_again_sends_a_layout_held_for_a_row_that_never_said_it
     assert!(host.shows("Start a session"), "{:#?}", host.drawn());
     assert_eq!(as_drawn_labels(&host), intended(&bus, &tray).await);
 }
+
+/// Ticket 87's ✱ row: a length added on the Keep awake page appears in the
+/// tray's menu, read from the menu the panel is served, on a private bus.
+#[tokio::test]
+async fn a_length_added_by_another_client_appears_in_the_tray_menu() {
+    use awake_ipc::{QuickLength, QuickSessions};
+    let bus = bus_or_skip!();
+    let _service = serve_service(&bus).await.unwrap();
+    let (tray, controller) = serve_following_tray(&bus).await;
+    let destination = tray.unique_name().unwrap().to_string();
+
+    // The service's offer, not the fixed lengths.
+    let (_, layout) = get_layout(&bus.connect().await.unwrap(), &destination).await;
+    let labels = menu_labels(&layout);
+    assert!(
+        labels.contains(&"Keep awake for 1 hour".to_string()),
+        "{labels:?}"
+    );
+    assert!(!labels.contains(&"45 minutes".to_string()), "{labels:?}");
+
+    // The page adds 45 minutes and makes it the default.
+    let page = client(&bus).await;
+    let mut offer = page.quick_sessions().await.unwrap().quick_sessions;
+    assert!(offer.add_length(QuickLength::Minutes { minutes: 45 }));
+    assert!(offer.set_default(5));
+    page.request_quick_sessions(offer.clone()).await;
+
+    let mut seen = Vec::new();
+    for _ in 0..50 {
+        let (_, layout) = get_layout(&bus.connect().await.unwrap(), &destination).await;
+        seen = menu_labels(&layout);
+        if seen.contains(&"45 minutes".to_string()) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(seen.contains(&"45 minutes".to_string()), "{seen:?}");
+    assert!(
+        seen.contains(&"Keep awake for 45 minutes".to_string()),
+        "{seen:?}"
+    );
+    assert_eq!(controller.offer().await, Some(offer));
+    let _ = QuickSessions::default();
+}
+
+/// What the Keep awake page sends to replace the offer.
+trait SetOffer {
+    async fn request_quick_sessions(&self, offer: awake_ipc::QuickSessions);
+}
+
+impl SetOffer for ServiceClient {
+    async fn request_quick_sessions(&self, offer: awake_ipc::QuickSessions) {
+        let _ = self
+            .send(AwakeRequest::new(RequestBody::SetQuickSessions {
+                quick_sessions: offer,
+            }))
+            .await;
+    }
+}
+
+// ---- A service from before protocol version 4 ---------------------------------
+
+/// A service as 0.2.14 answers: version 3, no quick-session offer. It checks
+/// the version of any document it can parse, and an unknown request is
+/// malformed.
+struct Version3Service {
+    engine: Arc<AwakeEngine<FakeInhibitorBackend>>,
+}
+
+#[zbus::interface(name = "org.betteros.Awake1")]
+impl Version3Service {
+    async fn request(&self, request_json: &str) -> String {
+        let reject = |key: String| {
+            awake_ipc::AwakeResponse::rejected(key)
+                .to_json_for(awake_ipc::PREVIOUS_PROTOCOL_VERSION)
+                .unwrap()
+        };
+        if request_json.contains("quick_sessions") {
+            return reject(
+                "awake.ipc.error.malformed:unknown variant `query_quick_sessions`".to_string(),
+            );
+        }
+        let value: serde_json::Value = serde_json::from_str(request_json).unwrap();
+        let version = value["protocol_version"].as_u64().unwrap() as u32;
+        if version != awake_ipc::PREVIOUS_PROTOCOL_VERSION {
+            return reject(format!("awake.ipc.error.protocol_version:{version}:3"));
+        }
+        self.engine
+            .handle(AwakeRequest::from_json(request_json).unwrap())
+            .await
+            .to_json_for(awake_ipc::PREVIOUS_PROTOCOL_VERSION)
+            .unwrap()
+    }
+
+    #[zbus(property)]
+    async fn protocol_version(&self) -> u32 {
+        awake_ipc::PREVIOUS_PROTOCOL_VERSION
+    }
+}
+
+const VERSION_3_SERVICE_NAME: &str = "org.betteros.Awake1Version3Test";
+
+#[tokio::test]
+async fn against_a_version_3_service_the_tray_keeps_working_with_the_fixed_lengths() {
+    let bus = bus_or_skip!();
+    let (_directory, engine) = legacy_engine().await;
+    let address: zbus::Address = bus.address.parse().unwrap();
+    let _service = zbus::connection::Builder::address(address)
+        .unwrap()
+        .serve_at(
+            OBJECT_PATH,
+            Version3Service {
+                engine: engine.clone(),
+            },
+        )
+        .unwrap()
+        .name(VERSION_3_SERVICE_NAME)
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let client = ServiceClient::with_destination(
+        bus.connect().await.unwrap(),
+        VERSION_3_SERVICE_NAME.to_string(),
+    )
+    .await
+    .unwrap();
+
+    let status = client.status().await.unwrap();
+    assert_eq!(
+        client.speaks_older(),
+        Some(awake_ipc::PREVIOUS_PROTOCOL_VERSION)
+    );
+    assert!(!client.speaks_legacy());
+    // The lid choice still works against version 3.
+    assert!(status.backend.capabilities.lid_switch);
+    assert_eq!(
+        client.quick_sessions().await,
+        Err(awake_tray::ClientError::Rejected(
+            "awake.ipc.error.needs_newer_service".to_string()
+        ))
+    );
+
+    let controller = TrayController::new(client, Locale::EnUs, status);
+    controller.refresh().await.unwrap();
+    assert_eq!(controller.offer().await, None);
+    let labels: Vec<String> = controller
+        .menu()
+        .await
+        .labels()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    assert!(labels.contains(&"2 hours".to_string()), "{labels:?}");
+    assert!(
+        !labels
+            .iter()
+            .any(|label| label.starts_with("Keep awake for"))
+    );
+
+    // And a session started from the menu reaches the service.
+    controller
+        .perform(awake_tray::MenuAction::StartMinutes(30))
+        .await;
+    assert!(engine.holds_inhibitor().await);
+}

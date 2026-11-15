@@ -51,8 +51,36 @@ use thiserror::Error;
 /// accepts [`LEGACY_PROTOCOL_VERSION`] and answers such a request in that
 /// version's shape ([`AwakeResponse::to_json_for`]), and it pushes every event
 /// twice: as version 2 on the `StatusChanged` signal an older client listens
-/// to, and as this version on `Event`.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// to, and as version 3 on `Event`.
+///
+/// Version 4 added the quick-session offer (ticket 87): the lengths the tray
+/// and Better Manager's Keep awake page offer, the default length, and the
+/// defaults a new session is given, which the service now owns instead of the
+/// old window's preferences file. That is two requests
+/// ([`RequestBody::QueryQuickSessions`], [`RequestBody::SetQuickSessions`]),
+/// one reply ([`ResponseBody::QuickSessions`]), and one event
+/// ([`EventBody::QuickSessionsChanged`]) on a signal of its own. Every other
+/// document is the same as in version 3, so a version 3 client is answered by
+/// restamping ([`PREVIOUS_PROTOCOL_VERSION`]) and the `Event` signal stays in
+/// version 3's shape, which a version 4 client reads as its own.
+pub const PROTOCOL_VERSION: u32 = 4;
+
+/// The version before [`PROTOCOL_VERSION`]. Its documents have the same shape
+/// as this version's; it only lacks the quick-session offer.
+pub const PREVIOUS_PROTOCOL_VERSION: u32 = 3;
+
+/// Every version a service answers, oldest first.
+pub const ACCEPTED_PROTOCOL_VERSIONS: [u32; 3] = [
+    LEGACY_PROTOCOL_VERSION,
+    PREVIOUS_PROTOCOL_VERSION,
+    PROTOCOL_VERSION,
+];
+
+/// Whether a document stamped `version` has this version's shape: this
+/// version, or the one before it, which differs only by what it lacks.
+pub fn is_current_shape(version: u32) -> bool {
+    version == PROTOCOL_VERSION || version == PREVIOUS_PROTOCOL_VERSION
+}
 
 /// The one older version a service still answers. A request stamped with it
 /// is read with the fields it did not have at their defaults, and is answered
@@ -103,6 +131,244 @@ impl From<EndCondition> for WireEnd {
             }
         }
     }
+}
+
+/// The most quick-session lengths the tray menu shows without becoming a
+/// scrolling list, which is not what a quick menu is for. The old window's
+/// `MAX_PRESETS`.
+pub const MAX_QUICK_LENGTHS: usize = 8;
+
+/// One length the tray and the Keep awake page offer. The same JSON shape as
+/// the old window's `PresetLength`, so its preferences file is read as is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
+pub enum QuickLength {
+    /// Runs until someone ends it.
+    Indefinite,
+    Minutes {
+        minutes: u64,
+    },
+}
+
+impl QuickLength {
+    /// The end a session started with this length is given.
+    pub fn end(self) -> WireEnd {
+        match self {
+            QuickLength::Indefinite => WireEnd::Indefinite,
+            QuickLength::Minutes { minutes } => WireEnd::Duration {
+                seconds: minutes.saturating_mul(60),
+            },
+        }
+    }
+
+    fn validate(self) -> Result<(), QuickSessionsError> {
+        match self {
+            QuickLength::Indefinite => Ok(()),
+            QuickLength::Minutes { minutes }
+                if minutes >= 1
+                    && minutes.saturating_mul(60) <= awake_core::MAX_SESSION_SECONDS =>
+            {
+                Ok(())
+            }
+            QuickLength::Minutes { minutes } => {
+                Err(QuickSessionsError::LengthOutOfRange { minutes })
+            }
+        }
+    }
+}
+
+/// What a new session is given when nothing else says otherwise.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionDefaults {
+    pub policy: SessionPolicy,
+    /// `None` means a new session never stops itself for battery level.
+    #[serde(default)]
+    pub battery_stop_percent: Option<u8>,
+}
+
+impl Default for SessionDefaults {
+    fn default() -> Self {
+        Self {
+            policy: SessionPolicy::manual_default(),
+            battery_stop_percent: Some(awake_core::DEFAULT_BATTERY_STOP_PERCENT),
+        }
+    }
+}
+
+/// The quick-session offer: the lengths in menu order, which of them a single
+/// click starts, and the defaults a new session is given.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuickSessions {
+    pub lengths: Vec<QuickLength>,
+    /// Names the default by position, so reordering the menu does not
+    /// silently change what a click does.
+    pub default_index: u32,
+    pub defaults: SessionDefaults,
+}
+
+impl Default for QuickSessions {
+    fn default() -> Self {
+        Self {
+            lengths: Self::shipped_lengths(),
+            // One hour.
+            default_index: 3,
+            defaults: SessionDefaults::default(),
+        }
+    }
+}
+
+/// Why an offer was refused. The old window's rules: one to eight lengths,
+/// no length twice, the default one of them, a battery stop of 1–99 % or
+/// none.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
+pub enum QuickSessionsError {
+    #[error("no_lengths")]
+    NoLengths,
+    #[error("too_many_lengths:{count}")]
+    TooManyLengths { count: usize },
+    #[error("duplicate_length")]
+    DuplicateLength,
+    #[error("length_out_of_range:{minutes}")]
+    LengthOutOfRange { minutes: u64 },
+    #[error("default_out_of_range:{index}")]
+    DefaultOutOfRange { index: u32 },
+    #[error("battery_out_of_range:{percent}")]
+    BatteryOutOfRange { percent: u8 },
+}
+
+impl QuickSessions {
+    /// The lengths offered out of the box: the ones the tray has always
+    /// shown, so nobody's menu changes until they change it. (The old window
+    /// listed others, which the tray never read.)
+    pub fn shipped_lengths() -> Vec<QuickLength> {
+        vec![
+            QuickLength::Indefinite,
+            QuickLength::Minutes { minutes: 15 },
+            QuickLength::Minutes { minutes: 30 },
+            QuickLength::Minutes { minutes: 60 },
+            QuickLength::Minutes { minutes: 120 },
+        ]
+    }
+
+    /// The length a single click starts.
+    pub fn default_length(&self) -> Option<QuickLength> {
+        self.lengths.get(self.default_index as usize).copied()
+    }
+
+    pub fn validate(&self) -> Result<(), QuickSessionsError> {
+        if self.lengths.is_empty() {
+            return Err(QuickSessionsError::NoLengths);
+        }
+        if self.lengths.len() > MAX_QUICK_LENGTHS {
+            return Err(QuickSessionsError::TooManyLengths {
+                count: self.lengths.len(),
+            });
+        }
+        for (index, length) in self.lengths.iter().enumerate() {
+            length.validate()?;
+            if self.lengths[..index].contains(length) {
+                return Err(QuickSessionsError::DuplicateLength);
+            }
+        }
+        if self.default_index as usize >= self.lengths.len() {
+            return Err(QuickSessionsError::DefaultOutOfRange {
+                index: self.default_index,
+            });
+        }
+        match self.defaults.battery_stop_percent {
+            Some(percent)
+                if !(MIN_BATTERY_STOP_PERCENT..=MAX_BATTERY_STOP_PERCENT).contains(&percent) =>
+            {
+                Err(QuickSessionsError::BatteryOutOfRange { percent })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Moves a length one place up or down, keeping the default on the same
+    /// length rather than the same position. `false` when it cannot move.
+    pub fn move_length(&mut self, index: usize, delta: isize) -> bool {
+        let target = index as isize + delta;
+        if index >= self.lengths.len() || target < 0 || target as usize >= self.lengths.len() {
+            return false;
+        }
+        let target = target as usize;
+        let default = self.default_index as usize;
+        self.lengths.swap(index, target);
+        self.default_index = if default == index {
+            target as u32
+        } else if default == target {
+            index as u32
+        } else {
+            default as u32
+        };
+        true
+    }
+
+    /// Removes a length. The last one stays, or the tray would offer a
+    /// submenu that starts nothing.
+    pub fn remove_length(&mut self, index: usize) -> bool {
+        if self.lengths.len() <= 1 || index >= self.lengths.len() {
+            return false;
+        }
+        self.lengths.remove(index);
+        let default = self.default_index as usize;
+        if default > index || default >= self.lengths.len() {
+            self.default_index = default.saturating_sub(1) as u32;
+        }
+        true
+    }
+
+    /// Adds a length at the end, unless the menu is full or has it already.
+    pub fn add_length(&mut self, length: QuickLength) -> bool {
+        if self.lengths.len() >= MAX_QUICK_LENGTHS
+            || self.lengths.contains(&length)
+            || length.validate().is_err()
+        {
+            return false;
+        }
+        self.lengths.push(length);
+        true
+    }
+
+    pub fn set_default(&mut self, index: usize) -> bool {
+        if index >= self.lengths.len() || index == self.default_index as usize {
+            return false;
+        }
+        self.default_index = index as u32;
+        true
+    }
+
+    /// The shipped lengths and default, keeping the session defaults.
+    pub fn restore_lengths(&mut self) {
+        let shipped = Self::default();
+        self.lengths = shipped.lengths;
+        self.default_index = shipped.default_index;
+    }
+}
+
+/// The offer as the service holds it, with what its one-time import of the
+/// old window's preferences found.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuickSessionsDocument {
+    pub quick_sessions: QuickSessions,
+    /// A stable key, present when the import did not take the old window's
+    /// file: `awake.quick_sessions.import_newer_schema:{n}` for a file a newer
+    /// Better Awake wrote, `awake.quick_sessions.import_unreadable` for one
+    /// that could not be read. The file is left in place either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_notice: Option<String>,
+    /// False when the offer could not be written, so a change would not
+    /// survive a restart.
+    #[serde(default = "always")]
+    pub writable: bool,
+}
+
+fn always() -> bool {
+    true
 }
 
 /// What a client asks the service to do.
@@ -214,14 +480,42 @@ pub enum RequestBody {
     SetLidBatteryLimit {
         limit: LidBatteryLimit,
     },
+
+    // ---- Version 4 -------------------------------------------------------
+    /// The quick-session offer.
+    QueryQuickSessions,
+    /// Replaces the whole offer. Answered with the offer the service now
+    /// holds, and announced on `QuickSessionsChanged`.
+    SetQuickSessions {
+        quick_sessions: QuickSessions,
+    },
 }
 
 impl RequestBody {
-    /// Whether this request exists only in [`PROTOCOL_VERSION`]. A request
+    /// Whether this request is newer than the legacy version. A request
     /// stamped with the legacy version that carries one is refused, because no
     /// client of that version could have meant it.
     pub fn is_version_3_only(&self) -> bool {
-        matches!(self, RequestBody::SetLidBatteryLimit { .. })
+        matches!(self, RequestBody::SetLidBatteryLimit { .. }) || self.is_version_4_only()
+    }
+
+    /// Whether this request exists only in [`PROTOCOL_VERSION`].
+    pub fn is_version_4_only(&self) -> bool {
+        matches!(
+            self,
+            RequestBody::QueryQuickSessions | RequestBody::SetQuickSessions { .. }
+        )
+    }
+
+    /// The oldest protocol version that has this request.
+    pub fn introduced_in(&self) -> u32 {
+        if self.is_version_4_only() {
+            PROTOCOL_VERSION
+        } else if self.is_version_3_only() {
+            PREVIOUS_PROTOCOL_VERSION
+        } else {
+            LEGACY_PROTOCOL_VERSION
+        }
     }
 }
 
@@ -274,17 +568,26 @@ impl AwakeRequest {
     /// it keeps working until the service restarts. A request that exists only
     /// in version 3 cannot be sent this way.
     pub fn to_legacy_json(&self) -> Result<String, IpcError> {
-        if self.body.is_version_3_only() {
+        self.to_json_for(LEGACY_PROTOCOL_VERSION)
+    }
+
+    /// The request as a service speaking `version` reads it. A request newer
+    /// than that version cannot be sent this way: the service is too old.
+    pub fn to_json_for(&self, version: u32) -> Result<String, IpcError> {
+        if self.body.introduced_in() > version {
             return Err(IpcError::NeedsNewerService);
         }
-        legacy_json(self)
+        match version {
+            LEGACY_PROTOCOL_VERSION => legacy_json(self),
+            PREVIOUS_PROTOCOL_VERSION => restamped_json(self, PREVIOUS_PROTOCOL_VERSION),
+            _ => self.to_json(),
+        }
     }
 
     /// Everything checkable without a clock or a running session.
     pub fn validate(&self) -> Result<(), IpcError> {
-        let legacy = self.protocol_version == LEGACY_PROTOCOL_VERSION;
-        if (self.protocol_version != PROTOCOL_VERSION && !legacy)
-            || (legacy && self.body.is_version_3_only())
+        if !ACCEPTED_PROTOCOL_VERSIONS.contains(&self.protocol_version)
+            || self.body.introduced_in() > self.protocol_version
         {
             return Err(IpcError::ProtocolVersion {
                 found: self.protocol_version,
@@ -363,7 +666,13 @@ impl AwakeRequest {
             RequestBody::SetLidBatteryLimit { limit } => {
                 limit.validate()?;
             }
+            RequestBody::SetQuickSessions { quick_sessions } => {
+                quick_sessions
+                    .validate()
+                    .map_err(IpcError::InvalidQuickSessions)?;
+            }
             RequestBody::EndManualSession
+            | RequestBody::QueryQuickSessions
             | RequestBody::QueryStatus
             | RequestBody::QueryRules
             | RequestBody::ResumeRules
@@ -880,6 +1189,8 @@ pub enum ResponseBody {
     Rules(Box<RulesDocument>),
     RuleTest(Box<RuleTestDocument>),
     History(Box<HistoryDocument>),
+    /// The quick-session offer. Version 4.
+    QuickSessions(Box<QuickSessionsDocument>),
     /// A stable machine key. Presentation layers own the wording.
     Rejected {
         error_key: String,
@@ -922,6 +1233,13 @@ impl AwakeResponse {
         }
     }
 
+    pub fn quick_sessions(document: QuickSessionsDocument) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            body: ResponseBody::QuickSessions(Box::new(document)),
+        }
+    }
+
     pub fn rejected(error_key: impl Into<String>) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
@@ -942,7 +1260,7 @@ impl AwakeResponse {
             serde_json::from_str(document).map_err(|error| IpcError::Malformed {
                 detail: error.to_string(),
             })?;
-        if response.protocol_version != PROTOCOL_VERSION {
+        if !is_current_shape(response.protocol_version) {
             return Err(IpcError::ProtocolVersion {
                 found: response.protocol_version,
                 expected: PROTOCOL_VERSION,
@@ -951,7 +1269,7 @@ impl AwakeResponse {
         Ok(response)
     }
 
-    /// Parses a reply in this version or the legacy one. A legacy reply reads
+    /// Parses a reply in any version a service answers in. A legacy reply reads
     /// into these types with every version 3 field at its default, which says
     /// "not available" (no lid lock, no lid limit) rather than inventing one.
     /// `protocol_version` keeps the version the reply was stamped with.
@@ -966,9 +1284,7 @@ impl AwakeResponse {
             serde_json::from_str(document).map_err(|error| IpcError::Malformed {
                 detail: error.to_string(),
             })?;
-        if response.protocol_version != PROTOCOL_VERSION
-            && response.protocol_version != LEGACY_PROTOCOL_VERSION
-        {
+        if !ACCEPTED_PROTOCOL_VERSIONS.contains(&response.protocol_version) {
             return Err(IpcError::ProtocolVersion {
                 found: response.protocol_version,
                 expected: PROTOCOL_VERSION,
@@ -983,7 +1299,16 @@ impl AwakeResponse {
     /// malformed (an unknown field or variant), and one without as a version
     /// refusal; both are stamped with its own version.
     pub fn is_legacy_version_refusal(&self) -> bool {
-        self.protocol_version == LEGACY_PROTOCOL_VERSION
+        self.older_version_refusal() == Some(LEGACY_PROTOCOL_VERSION)
+    }
+
+    /// The version of an older service refusing a newer request, when this
+    /// is one: stamped with that service's own version (2 or 3), refusing
+    /// the version itself, or (a service that parses first) a field or a
+    /// variant it has never heard of.
+    pub fn older_version_refusal(&self) -> Option<u32> {
+        (self.protocol_version < PROTOCOL_VERSION
+            && ACCEPTED_PROTOCOL_VERSIONS.contains(&self.protocol_version)
             && matches!(
                 &self.body,
                 ResponseBody::Rejected { error_key }
@@ -991,7 +1316,8 @@ impl AwakeResponse {
                         || (error_key.starts_with("awake.ipc.error.malformed:")
                             && (error_key.contains("unknown field")
                                 || error_key.contains("unknown variant")))
-            )
+            ))
+        .then_some(self.protocol_version)
     }
 
     pub fn to_json(&self) -> Result<String, IpcError> {
@@ -1003,10 +1329,10 @@ impl AwakeResponse {
     /// The reply in the shape a client of `version` reads: this version as it
     /// is, the legacy version without the fields it does not know.
     pub fn to_json_for(&self, version: u32) -> Result<String, IpcError> {
-        if version == LEGACY_PROTOCOL_VERSION {
-            legacy_json(self)
-        } else {
-            self.to_json()
+        match version {
+            LEGACY_PROTOCOL_VERSION => legacy_json(self),
+            PREVIOUS_PROTOCOL_VERSION => restamped_json(self, PREVIOUS_PROTOCOL_VERSION),
+            _ => self.to_json(),
         }
     }
 }
@@ -1039,6 +1365,9 @@ pub enum EventBody {
     BackendFailure {
         error_key: String,
     },
+    /// The quick-session offer changed. Version 4, and pushed only on the
+    /// `QuickSessionsChanged` signal, which no older client listens to.
+    QuickSessionsChanged(Box<QuickSessionsDocument>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1067,7 +1396,7 @@ impl AwakeEvent {
             serde_json::from_str(document).map_err(|error| IpcError::Malformed {
                 detail: error.to_string(),
             })?;
-        if event.protocol_version != PROTOCOL_VERSION {
+        if !is_current_shape(event.protocol_version) {
             return Err(IpcError::ProtocolVersion {
                 found: event.protocol_version,
                 expected: PROTOCOL_VERSION,
@@ -1090,9 +1419,7 @@ impl AwakeEvent {
             serde_json::from_str(document).map_err(|error| IpcError::Malformed {
                 detail: error.to_string(),
             })?;
-        if event.protocol_version != PROTOCOL_VERSION
-            && event.protocol_version != LEGACY_PROTOCOL_VERSION
-        {
+        if !ACCEPTED_PROTOCOL_VERSIONS.contains(&event.protocol_version) {
             return Err(IpcError::ProtocolVersion {
                 found: event.protocol_version,
                 expected: PROTOCOL_VERSION,
@@ -1112,6 +1439,27 @@ impl AwakeEvent {
     pub fn to_legacy_json(&self) -> Result<String, IpcError> {
         legacy_json(self)
     }
+
+    /// The event in version 3's shape, for the `Event` signal a version 3
+    /// client listens to. A version 4 client reads it as its own.
+    pub fn to_previous_json(&self) -> Result<String, IpcError> {
+        restamped_json(self, PREVIOUS_PROTOCOL_VERSION)
+    }
+}
+
+/// A document stamped with another version whose shape is this one's.
+fn restamped_json(document: &impl Serialize, version: u32) -> Result<String, IpcError> {
+    let malformed = |error: serde_json::Error| IpcError::Malformed {
+        detail: error.to_string(),
+    };
+    let mut value = serde_json::to_value(document).map_err(malformed)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "protocol_version".to_string(),
+            serde_json::Value::from(version),
+        );
+    }
+    serde_json::to_string(&value).map_err(malformed)
 }
 
 /// Keys that exist only in [`PROTOCOL_VERSION`]. Each names a version 3 field
@@ -1207,9 +1555,12 @@ pub enum IpcError {
     InvalidHistoryLimit { limit: u32 },
     #[error("awake.ipc.error.invalid_lid_limit:{0}")]
     InvalidLidLimit(LidBatteryLimitError),
-    /// The request exists only in protocol version 3 and the service is older.
+    /// The request exists only in a newer protocol version than the
+    /// service speaks.
     #[error("awake.ipc.error.needs_newer_service")]
     NeedsNewerService,
+    #[error("awake.ipc.error.invalid_quick_sessions:{0}")]
+    InvalidQuickSessions(QuickSessionsError),
 }
 
 impl From<LidBatteryLimitError> for IpcError {
@@ -2105,5 +2456,242 @@ mod tests {
             security_confirmed: false,
         });
         assert!(AwakeRequest::from_json(&request.to_json().unwrap()).is_ok());
+    }
+
+    // ---- Version 4: the quick-session offer ------------------------------
+
+    fn minutes(minutes: u64) -> QuickLength {
+        QuickLength::Minutes { minutes }
+    }
+
+    #[test]
+    fn the_shipped_offer_is_the_old_window_s_and_is_valid() {
+        let offer = QuickSessions::default();
+        assert_eq!(
+            offer.lengths,
+            vec![
+                QuickLength::Indefinite,
+                minutes(15),
+                minutes(30),
+                minutes(60),
+                minutes(120)
+            ]
+        );
+        assert_eq!(offer.default_length(), Some(minutes(60)));
+        assert_eq!(
+            offer.defaults.battery_stop_percent,
+            Some(awake_core::DEFAULT_BATTERY_STOP_PERCENT)
+        );
+        assert!(offer.defaults.policy.prevent_lid_suspend);
+        assert_eq!(offer.validate(), Ok(()));
+    }
+
+    #[test]
+    fn an_offer_is_held_to_the_old_window_s_rules() {
+        let with = |change: fn(&mut QuickSessions)| {
+            let mut offer = QuickSessions::default();
+            change(&mut offer);
+            offer.validate()
+        };
+        assert_eq!(
+            with(|o| o.lengths.clear()),
+            Err(QuickSessionsError::NoLengths)
+        );
+        assert_eq!(
+            with(|o| o.lengths = (1..=9).map(minutes).collect()),
+            Err(QuickSessionsError::TooManyLengths { count: 9 })
+        );
+        assert_eq!(with(|o| o.lengths = (1..=8).map(minutes).collect()), Ok(()));
+        assert_eq!(
+            with(|o| o.lengths = vec![minutes(15), minutes(15)]),
+            Err(QuickSessionsError::DuplicateLength)
+        );
+        assert_eq!(
+            with(|o| o.lengths[0] = minutes(0)),
+            Err(QuickSessionsError::LengthOutOfRange { minutes: 0 })
+        );
+        assert_eq!(
+            with(|o| o.default_index = 5),
+            Err(QuickSessionsError::DefaultOutOfRange { index: 5 })
+        );
+        for (percent, ok) in [(0, false), (1, true), (99, true), (100, false)] {
+            let mut offer = QuickSessions::default();
+            offer.defaults.battery_stop_percent = Some(percent);
+            assert_eq!(offer.validate().is_ok(), ok, "{percent}");
+        }
+        let mut never = QuickSessions::default();
+        never.defaults.battery_stop_percent = None;
+        assert_eq!(never.validate(), Ok(()));
+        // The refusal reaches the wire as a key.
+        let request = AwakeRequest::new(RequestBody::SetQuickSessions {
+            quick_sessions: QuickSessions {
+                lengths: Vec::new(),
+                ..QuickSessions::default()
+            },
+        });
+        assert_eq!(
+            AwakeRequest::from_json(&request.to_json().unwrap())
+                .unwrap_err()
+                .to_string(),
+            "awake.ipc.error.invalid_quick_sessions:no_lengths"
+        );
+    }
+
+    #[test]
+    fn editing_the_offer_keeps_the_default_on_the_same_length() {
+        let mut offer = QuickSessions::default();
+        assert!(offer.move_length(3, -1));
+        assert_eq!(offer.default_length(), Some(minutes(60)));
+        assert_eq!(offer.default_index, 2);
+        assert!(!offer.move_length(0, -1));
+        assert!(offer.remove_length(0));
+        assert_eq!(offer.default_index, 1);
+        assert!(offer.remove_length(3));
+        assert!(offer.add_length(minutes(45)));
+        assert!(!offer.add_length(minutes(45)), "no length twice");
+        assert!(offer.set_default(3));
+        assert_eq!(offer.default_length(), Some(minutes(45)));
+        assert!(offer.remove_length(1));
+        assert_eq!(offer.default_length(), Some(minutes(45)));
+        while offer.lengths.len() > 1 {
+            assert!(offer.remove_length(0));
+        }
+        assert!(!offer.remove_length(0), "the last length stays");
+        offer.restore_lengths();
+        assert_eq!(offer.lengths, QuickSessions::shipped_lengths());
+        let mut full = QuickSessions {
+            lengths: (1..=8).map(minutes).collect(),
+            ..QuickSessions::default()
+        };
+        assert!(!full.add_length(minutes(99)), "eight is the most");
+        assert_eq!(full.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_old_window_s_preset_shape_reads_as_a_quick_length() {
+        let lengths: Vec<QuickLength> =
+            serde_json::from_str(r#"[{"kind":"minutes","minutes":15},{"kind":"indefinite"}]"#)
+                .unwrap();
+        assert_eq!(lengths, vec![minutes(15), QuickLength::Indefinite]);
+        assert_eq!(minutes(15).end(), WireEnd::Duration { seconds: 900 });
+        assert_eq!(QuickLength::Indefinite.end(), WireEnd::Indefinite);
+    }
+
+    #[test]
+    fn the_quick_session_requests_exist_only_in_version_4() {
+        for body in [
+            RequestBody::QueryQuickSessions,
+            RequestBody::SetQuickSessions {
+                quick_sessions: QuickSessions::default(),
+            },
+        ] {
+            let mut request = AwakeRequest::new(body);
+            assert!(request.validate().is_ok());
+            for older in [LEGACY_PROTOCOL_VERSION, PREVIOUS_PROTOCOL_VERSION] {
+                assert_eq!(request.to_json_for(older), Err(IpcError::NeedsNewerService));
+                request.protocol_version = older;
+                assert!(matches!(
+                    request.validate(),
+                    Err(IpcError::ProtocolVersion { .. })
+                ));
+            }
+        }
+        // Version 3's own request still goes to a version 3 service, and not
+        // to a version 2 one.
+        let lid = AwakeRequest::new(RequestBody::SetLidBatteryLimit {
+            limit: LidBatteryLimit::Never,
+        });
+        let document = lid.to_json_for(PREVIOUS_PROTOCOL_VERSION).unwrap();
+        assert_eq!(
+            AwakeRequest::from_json(&document).unwrap().protocol_version,
+            PREVIOUS_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            lid.to_json_for(LEGACY_PROTOCOL_VERSION),
+            Err(IpcError::NeedsNewerService)
+        );
+    }
+
+    #[test]
+    fn a_version_3_client_is_answered_in_its_own_stamp_with_the_same_shape() {
+        let request = AwakeRequest::new(RequestBody::QueryStatus);
+        let document = request.to_json_for(PREVIOUS_PROTOCOL_VERSION).unwrap();
+        let read = AwakeRequest::from_json(&document).unwrap();
+        assert_eq!(read.protocol_version, PREVIOUS_PROTOCOL_VERSION);
+        assert_eq!(read.body, RequestBody::QueryStatus);
+
+        let reply = AwakeResponse::status(lid_status())
+            .to_json_for(PREVIOUS_PROTOCOL_VERSION)
+            .unwrap();
+        let read = AwakeResponse::from_json(&reply).unwrap();
+        assert_eq!(read.protocol_version, PREVIOUS_PROTOCOL_VERSION);
+        assert_eq!(read.body, ResponseBody::Status(Box::new(lid_status())));
+
+        // The Event signal carries version 3, which both read.
+        let event = AwakeEvent::new(EventBody::StatusChanged(Box::new(lid_status())));
+        let previous = event.to_previous_json().unwrap();
+        assert_eq!(AwakeEvent::from_json(&previous).unwrap().body, event.body);
+        assert_eq!(
+            AwakeEvent::from_json_any(&previous).unwrap().body,
+            event.body
+        );
+    }
+
+    #[test]
+    fn a_version_3_service_refusing_version_4_is_recognized_with_its_version() {
+        for key in [
+            "awake.ipc.error.protocol_version:4:3",
+            "awake.ipc.error.malformed:unknown variant `query_quick_sessions`",
+        ] {
+            let refusal = AwakeResponse {
+                protocol_version: PREVIOUS_PROTOCOL_VERSION,
+                body: ResponseBody::Rejected {
+                    error_key: key.to_string(),
+                },
+            };
+            assert_eq!(
+                refusal.older_version_refusal(),
+                Some(PREVIOUS_PROTOCOL_VERSION)
+            );
+            assert!(!refusal.is_legacy_version_refusal());
+        }
+        let current = AwakeResponse::rejected("awake.ipc.error.protocol_version:9:4");
+        assert_eq!(current.older_version_refusal(), None);
+        let other = AwakeResponse {
+            protocol_version: PREVIOUS_PROTOCOL_VERSION,
+            body: ResponseBody::Rejected {
+                error_key: "awake.error.unknown_session".to_string(),
+            },
+        };
+        assert_eq!(other.older_version_refusal(), None);
+    }
+
+    #[test]
+    fn the_offer_round_trips_as_a_reply_and_as_an_event() {
+        let document = QuickSessionsDocument {
+            quick_sessions: QuickSessions::default(),
+            import_notice: Some("awake.quick_sessions.import_newer_schema:3".to_string()),
+            writable: true,
+        };
+        let reply = AwakeResponse::quick_sessions(document.clone())
+            .to_json()
+            .unwrap();
+        assert_eq!(
+            AwakeResponse::from_json(&reply).unwrap().body,
+            ResponseBody::QuickSessions(Box::new(document.clone()))
+        );
+        let event = AwakeEvent::new(EventBody::QuickSessionsChanged(Box::new(document.clone())))
+            .to_json()
+            .unwrap();
+        assert_eq!(
+            AwakeEvent::from_json(&event).unwrap().body,
+            EventBody::QuickSessionsChanged(Box::new(document))
+        );
+        // A document without the notice says nothing about an import.
+        let plain = r#"{"quick_sessions":{"lengths":[{"kind":"indefinite"}],"default_index":0,"defaults":{"policy":{"prevent_system_suspend":true,"prevent_idle":true,"prevent_display_sleep":false,"prevent_automatic_lock":false}}}}"#;
+        let read: QuickSessionsDocument = serde_json::from_str(plain).unwrap();
+        assert_eq!(read.import_notice, None);
+        assert!(read.writable);
+        assert_eq!(read.quick_sessions.defaults.battery_stop_percent, None);
     }
 }

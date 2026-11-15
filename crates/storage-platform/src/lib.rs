@@ -11,6 +11,7 @@
 //! interface definitions, and `better-storage-doctor` runs it against the live
 //! system when someone wants to know what this machine actually exposes.
 
+pub mod bench;
 #[cfg(feature = "test-support")]
 pub mod fake;
 pub mod flush;

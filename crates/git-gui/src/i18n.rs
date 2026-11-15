@@ -443,7 +443,6 @@ strings! {
     theme_light: "Light", "淺色";
     theme_system: "Use system setting", "跟隨系統";
     language: "Language", "語言";
-    language_system: "Use system setting", "跟隨系統";
     confirm_discard: "Before discarding changes", "捨棄變更前";
     confirm_remove: "Before removing a repository", "移除儲存庫前";
     confirm_undo: "Before undoing a commit", "復原提交前";

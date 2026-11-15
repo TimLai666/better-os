@@ -650,18 +650,20 @@ impl FilesApp {
         MenuEntry::submenu(
             c.language,
             vec![
-                MenuItem::new(c.english)
+                MenuItem::new(better_ui::fluent::words::language_name(KitLocale::English))
                     .checked(!system && resolved == Locale::EnUs)
                     .on_select(act(cx, |app, window, cx| {
                         app.set_locale(Locale::EnUs, window, cx)
                     }))
                     .entry(),
-                MenuItem::new(c.chinese)
-                    .checked(!system && resolved == Locale::ZhTw)
-                    .on_select(act(cx, |app, window, cx| {
-                        app.set_locale(Locale::ZhTw, window, cx)
-                    }))
-                    .entry(),
+                MenuItem::new(better_ui::fluent::words::language_name(
+                    KitLocale::TraditionalChinese,
+                ))
+                .checked(!system && resolved == Locale::ZhTw)
+                .on_select(act(cx, |app, window, cx| {
+                    app.set_locale(Locale::ZhTw, window, cx)
+                }))
+                .entry(),
                 MenuItem::new(c.theme_system)
                     .checked(system)
                     .on_select(act(cx, |app, window, cx| {

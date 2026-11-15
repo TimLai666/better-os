@@ -27,7 +27,7 @@ use crate::{
     home,
     i18n::{Locale, copy, shell},
     model::{ActivityFilter, CatalogLine, ComponentInfo, DetailTab, Page, UpdateCheck},
-    navigation::History,
+    navigation::{History, Route},
     search::SearchEntry,
 };
 
@@ -191,6 +191,8 @@ pub(crate) struct ManagerApp {
     pub(crate) update_restart: better_ui::restart::UpdateRestart,
     /// The Window attention page (ticket 106).
     pub(crate) window_attention: crate::window_attention_app::WindowAttentionState,
+    /// Keep awake's page (ticket 87).
+    pub(crate) keep_awake: crate::pages::keep_awake::state::KeepAwakeState,
     /// Its "Add an app" search field.
     pub(crate) window_attention_add: Entity<InputState>,
 }
@@ -349,6 +351,7 @@ impl ManagerApp {
                 cx,
             ),
             window_attention: Default::default(),
+            keep_awake: Default::default(),
             window_attention_add,
         };
         if let Some(view) = handoff.and_then(|h| h.state::<crate::restart::ManagerView>()) {
@@ -362,6 +365,9 @@ impl ManagerApp {
         if app.is_demo() && app.state.active_operation.is_some() {
             app.start_demo_steps(cx);
         }
+        // Home's Keep awake items and the pane's dot need the service's
+        // state from the start, and follow it from then on.
+        app.refresh_keep_awake(cx);
         app
     }
 
@@ -418,6 +424,7 @@ impl ManagerApp {
                 now_unix_seconds(),
             )
             .warning,
+            keep_awake: self.keep_awake_facts(),
         }
     }
 
@@ -457,6 +464,10 @@ impl ManagerApp {
     ) {
         let query = String::new();
         self.reset_nav_search(&query, window, cx);
+        if entry.route == Route::KeepAwake {
+            self.keep_awake.draft = None;
+            self.keep_awake.sub = crate::pages::keep_awake::sub_page_of(entry.card);
+        }
         self.navigate(entry.route.landing(), cx);
         self.pending_card = Some(entry.card);
         self.focused_card = Some(entry.card);
@@ -558,7 +569,7 @@ impl ManagerApp {
     /// repair; what it did is written into the state the window has when it
     /// lands. A running transaction owns its units, so nothing starts while
     /// one is in progress.
-    fn heal_user_units(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn heal_user_units(&mut self, cx: &mut Context<Self>) {
         if self.is_demo()
             || self.heal_task.is_some()
             || self.running.is_some()
@@ -587,6 +598,8 @@ impl ManagerApp {
         cx: &mut Context<Self>,
     ) {
         self.heal_task = None;
+        // A service the pass started answers now.
+        self.refresh_keep_awake(cx);
         let mut candidate = self.state.clone();
         if !self
             .manager
@@ -887,6 +900,14 @@ impl ManagerApp {
         if page == Page::WindowAttention {
             self.refresh_window_attention(cx);
         }
+        // Keep awake reads the service again whenever it is shown, and opens
+        // the time dialog when `keep-awake/until` asked for it.
+        if page == Page::KeepAwake {
+            self.refresh_keep_awake(cx);
+            if std::mem::take(&mut self.until_dialog_requested) {
+                self.open_until_dialog(cx);
+            }
+        }
         if page != self.page {
             self.focused_card = None;
             self.pending_card = None;
@@ -1014,6 +1035,19 @@ impl ManagerApp {
             self.set_dialog(Some(crate::apps::Dialog::remove(id.clone())), cx);
         } else {
             self.set_dialog(Some(crate::apps::Dialog::Restore { id: id.clone() }), cx);
+        }
+    }
+
+    /// The one action a component's row offers (Install, Update, Turn on),
+    /// started at once, for a page outside Apps that says a component is
+    /// missing or too old. Anything else opens the component's page.
+    pub(crate) fn start_component_action(&mut self, id: &ComponentId, cx: &mut Context<Self>) {
+        let Some(component) = self.component_by_id(id) else {
+            return;
+        };
+        match self.row_trailing(&component) {
+            crate::apps::Trailing::Action(operation) => self.request_operation(id, operation, cx),
+            _ => self.open_component(id, cx),
         }
     }
 
@@ -1875,7 +1909,7 @@ impl better_ui::restart::Restartable for ManagerApp {
         crate::restart::restart_blocked(
             self.transaction_running(),
             self.repair_task.is_some(),
-            self.heal_task.is_some(),
+            self.heal_task.is_some() || self.keep_awake.blocks_restart(),
         )
     }
 

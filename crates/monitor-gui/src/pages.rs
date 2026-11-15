@@ -2370,11 +2370,10 @@ impl MonitorApp {
         }));
         let language = ComboBox::new(
             "language",
-            vec![
-                ComboItem::new(c.system_default),
-                ComboItem::new("English"),
-                ComboItem::new("繁體中文"),
-            ],
+            better_ui::fluent::words::language_choices(self.locale.words())
+                .into_iter()
+                .map(ComboItem::new)
+                .collect(),
             i18n::Locale::ALL.iter().position(|l| *l == self.locale),
         )
         .min_width(px(200.0))

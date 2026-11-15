@@ -148,12 +148,31 @@ Not run, and not claimed:
 
 ## Remaining
 
-- Icon artwork for the six indicator states, shared with ticket 25.
-- Idle CPU and memory measured for the service and tray processes, with no
-  polling provider active.
-- The container install-and-remove test (ticket 36 ran it for better-launcher
-  only) run for better-awake: installed, started, removed, and nothing of it left
-  running or on disk.
+Done in ticket 87:
+
+- Icon artwork for the six indicator states: original eye family in
+  `packaging/icons/awake-status/`, the rule dot and the slash now cut out of
+  the eye so they read apart at 16 px (`.shots/awake-status-icons.png` in the
+  ticket 87 worktree, dark and light panels, 64 and 16 px).
+- Idle CPU and memory, measured over 60 s with no session and no rule
+  (release builds, the service engine with the fake inhibitor backend, the
+  tray following it on a private bus): service 0.017% CPU (one clock tick),
+  7.3 MB RSS; tray 0.000% CPU, 7.6 MB RSS (`.shots/idle-measurement.txt`).
+
+- The container install-and-remove test, in a disposable `ubuntu:24.04`
+  container with the ticket 87 build: apt installed the package (34 files),
+  a user session's D-Bus activation started `better-awake-service` (it
+  answered protocol 4 and its quick-session offer), the session ended and the
+  service exited, `apt-get remove` left no package file outside
+  `/usr/share/doc` and no process, and `purge` left nothing
+  (`.shots/container-install-remove.{sh,txt}` in the ticket 87 worktree). It
+  found a real fault, fixed in ticket 87: the service kept running after its
+  session bus went away; it now notices and releases everything
+  (`until_bus_closes`, with a private-bus test). Limits: the container has a
+  system bus but no logind, so the inhibitor backend was unavailable and no
+  inhibitor was held or released there (the fake-backend tests cover that),
+  and the image fetched `dbus` and `libglib2.0-bin` from the network when it
+  started, unlike the CI e2e image.
 
 ## Not done when first delivered
 

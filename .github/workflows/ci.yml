@@ -270,7 +270,8 @@ jobs:
       # it is exercised against a real dpkg, system bus, and polkitd rather than
       # only against fakes. It runs in a throwaway container for the same reason
       # the local script refuses to run on a host. The same container carries
-      # the apt install/remove smoke for one of the packages ticket 36 added,
+      # the apt install/remove smoke for better-launcher and better-storage
+      # (the latter also started against a real udisksd and session bus),
       # and the bootstrap installer's real install, re-run, and uninstall.
       - name: Run the privileged service end-to-end
         run: |

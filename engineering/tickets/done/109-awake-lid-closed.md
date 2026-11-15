@@ -52,10 +52,11 @@ would have slept, against the owner's keep-awake session.)
       and the tray's `a_session_started_from_the_tray_holds_the_lid_unless_the_option_is_unticked`.
       A real `systemd-inhibit --list` was not run, by rule.
 - [x] Unit and session-bus tests for every case above.
-- [ ] The window, tray, and Better Manager show the choice; screenshots.
-      Window and tray: done, screenshots below. Better Manager: its Keep
-      awake page is still ticket 87's placeholder, so the choice appears
-      there when ticket 87 builds the page (see below).
+- [x] The window, tray, and Better Manager show the choice; screenshots.
+      Window and tray: screenshots below. Better Manager: ticket 87's Keep
+      awake page shows "Also when the lid is closed" in Defaults for new
+      sessions and in each rule, the lid rows in What's in effect, and the
+      closed-lid limit in Battery and safety (ticket 87's `.shots/`).
 - [x] Tests never hold a real inhibitor or touch the person's real service.
 - [x] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
       build-deb plus verify-deb, and the license check pass.

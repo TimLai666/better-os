@@ -94,6 +94,10 @@ impl<B: InhibitorBackend + 'static> AwakeDbusService<B> {
             }
         };
         let version = request.protocol_version;
+        let request_kind = match request.body {
+            awake_ipc::RequestBody::SetQuickSessions { .. } => RequestKind::SetQuickSessions,
+            _ => RequestKind::Other,
+        };
         // A read changes nothing, so it must not make every other client redraw.
         // Listed rather than negated, so a request added later is treated as a
         // change until someone deliberately says it is not.
@@ -103,6 +107,9 @@ impl<B: InhibitorBackend + 'static> AwakeDbusService<B> {
                 | awake_ipc::RequestBody::QueryRules
                 | awake_ipc::RequestBody::QueryHistory { .. }
                 | awake_ipc::RequestBody::TestRule { .. }
+                | awake_ipc::RequestBody::QueryQuickSessions
+                // Announced on its own signal below; no session changed.
+                | awake_ipc::RequestBody::SetQuickSessions { .. }
         );
 
         let (response, ended) = self.engine.handle_reporting(request).await;
@@ -116,6 +123,16 @@ impl<B: InhibitorBackend + 'static> AwakeDbusService<B> {
         // state so a client that missed an earlier signal is still correct.
         if !query_only {
             announce_status(&emitter, &self.engine).await;
+        }
+
+        // A new offer goes to every tray and page, on the signal only version
+        // 4 clients listen to.
+        if let awake_ipc::ResponseBody::QuickSessions(document) = &response.body
+            && matches!(request_kind, RequestKind::SetQuickSessions)
+            && let Ok(event) =
+                AwakeEvent::new(EventBody::QuickSessionsChanged(document.clone())).to_json()
+        {
+            let _ = Self::quick_sessions_changed(&emitter, &event).await;
         }
 
         response
@@ -133,14 +150,39 @@ impl<B: InhibitorBackend + 'static> AwakeDbusService<B> {
     #[zbus(signal)]
     async fn status_changed(emitter: &SignalEmitter<'_>, event_json: &str) -> zbus::Result<()>;
 
-    /// The same events as `StatusChanged`, in the current protocol version.
+    /// The same events as `StatusChanged`, in protocol version 3's shape,
+    /// which version 4 shares: a tray installed before version 4 that is
+    /// still running reads it, and so does a current client.
     #[zbus(signal)]
     async fn event(emitter: &SignalEmitter<'_>, event_json: &str) -> zbus::Result<()>;
+
+    /// The quick-session offer changed, as a version 4 `quick_sessions_changed`
+    /// event carrying the new offer. Only clients that know the offer listen.
+    #[zbus(signal)]
+    async fn quick_sessions_changed(
+        emitter: &SignalEmitter<'_>,
+        event_json: &str,
+    ) -> zbus::Result<()>;
 
     #[zbus(property)]
     async fn protocol_version(&self) -> u32 {
         awake_ipc::PROTOCOL_VERSION
     }
+}
+
+/// Returns once the connection to the bus has closed: the session the
+/// service belongs to is over. Without it a service whose session bus went
+/// away (a logout without systemd stopping the unit, or a container's
+/// `dbus-run-session` ending) kept running and holding its inhibitors with
+/// nobody left to reach it (ticket 87's container check).
+pub async fn until_bus_closes(connection: &zbus::Connection) {
+    use zbus::export::futures_core::Stream;
+    let messages = zbus::MessageStream::from(connection);
+    let mut messages = std::pin::pin!(messages);
+    while std::future::poll_fn(|context| messages.as_mut().poll_next(context))
+        .await
+        .is_some()
+    {}
 }
 
 /// One service tick, with what it changed pushed to the clients.
@@ -236,7 +278,7 @@ async fn emit<B: InhibitorBackend + 'static>(emitter: &SignalEmitter<'_>, event:
     if let Ok(document) = event.to_legacy_json() {
         let _ = AwakeDbusService::<B>::status_changed(emitter, &document).await;
     }
-    if let Ok(document) = event.to_json() {
+    if let Ok(document) = event.to_previous_json() {
         let _ = AwakeDbusService::<B>::event(emitter, &document).await;
     }
 }
@@ -249,20 +291,25 @@ async fn announce_status<B: InhibitorBackend + 'static>(
     emit::<B>(emitter, &event).await;
 }
 
+/// Which request was answered, kept past the move into the engine.
+enum RequestKind {
+    SetQuickSessions,
+    Other,
+}
+
 fn rejection(error: awake_ipc::IpcError) -> String {
     rejection_for(error.to_string(), awake_ipc::PROTOCOL_VERSION)
 }
 
 /// The version a request that could not be read was stamped with, when it is
-/// the legacy one; the current version otherwise.
+/// an older one this service answers; the current version otherwise.
 fn requested_version(request_json: &str) -> u32 {
     serde_json::from_str::<serde_json::Value>(request_json)
         .ok()
         .and_then(|value| value.get("protocol_version")?.as_u64())
-        .filter(|version| *version == u64::from(awake_ipc::LEGACY_PROTOCOL_VERSION))
-        .map_or(awake_ipc::PROTOCOL_VERSION, |_| {
-            awake_ipc::LEGACY_PROTOCOL_VERSION
-        })
+        .and_then(|version| u32::try_from(version).ok())
+        .filter(|version| awake_ipc::ACCEPTED_PROTOCOL_VERSIONS.contains(version))
+        .unwrap_or(awake_ipc::PROTOCOL_VERSION)
 }
 
 fn rejection_for(error_key: String, version: u32) -> String {
@@ -288,8 +335,12 @@ mod tests {
             requested_version(r#"{"protocol_version":2,"body":{"request":"reboot"}}"#),
             awake_ipc::LEGACY_PROTOCOL_VERSION
         );
+        assert_eq!(
+            requested_version(r#"{"protocol_version":3,"body":{}}"#),
+            awake_ipc::PREVIOUS_PROTOCOL_VERSION
+        );
         for document in [
-            r#"{"protocol_version":3,"body":{}}"#,
+            r#"{"protocol_version":4,"body":{}}"#,
             r#"{"protocol_version":7}"#,
             "not json",
         ] {
