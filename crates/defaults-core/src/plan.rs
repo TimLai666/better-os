@@ -59,6 +59,10 @@ pub enum SkipReason {
         adapter: AdapterId,
     },
     NothingCaptured,
+    /// The declaration's restore policy is `leave-in-place`: what Better OS
+    /// added is additive (a dock entry) and displaced no previous owner, so
+    /// putting things back leaves it where it is.
+    LeftInPlace,
     EffectiveValueUnknown {
         reason: String,
     },

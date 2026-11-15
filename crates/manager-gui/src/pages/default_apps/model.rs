@@ -274,6 +274,9 @@ pub(crate) fn observed_label(locale: Locale, observed: &ObservedValue) -> String
         ObservedValue::Set { value } => value_label(locale, value),
         ObservedValue::Unset => c.value_none.to_string(),
         ObservedValue::Unknown { .. } => c.value_unknown.to_string(),
+        ObservedValue::Unsupported { reason } if reason == defaults_core::NO_SUCH_SETTING => {
+            c.value_no_such_setting.to_string()
+        }
         ObservedValue::Unsupported { .. } => c.value_unsupported.to_string(),
         ObservedValue::PermissionDenied { .. } => c.value_permission_denied.to_string(),
         // Types that open in different applications are listed one by one,
@@ -306,6 +309,9 @@ pub(crate) fn integration_state_label(locale: Locale, state: &IntegrationState) 
         IntegrationState::Default => c.state_default,
         IntegrationState::NotDefault => c.state_not_default,
         IntegrationState::ChangedExternally { .. } => c.state_changed_externally,
+        IntegrationState::Unavailable { reason } if reason == defaults_core::NO_SUCH_SETTING => {
+            c.state_not_used_here
+        }
         IntegrationState::Unavailable { .. } => c.state_unavailable,
         IntegrationState::Conflict { .. } => c.state_conflict,
         IntegrationState::Unknown { .. } => c.state_unknown,
@@ -347,6 +353,7 @@ pub(crate) fn skip_reason_label(locale: Locale, reason: &SkipReason) -> &'static
         SkipReason::RequiresAdministrator => c.skip_requires_administrator,
         SkipReason::NoProductionAdapter { .. } => c.skip_no_adapter,
         SkipReason::NothingCaptured => c.skip_nothing_captured,
+        SkipReason::LeftInPlace => c.skip_left_in_place,
         SkipReason::EffectiveValueUnknown { .. } => c.skip_value_unknown,
         SkipReason::ChangedExternallyWithoutConfirmation { .. } => c.skip_changed_externally,
         SkipReason::Conflict { .. } => c.skip_conflict,
@@ -390,6 +397,8 @@ pub(crate) enum RestoreClass {
     AlreadyRestored,
     ChangedExternally,
     NothingCaptured,
+    /// What Better OS added stays: the declaration says so.
+    LeftInPlace,
     ManualAction,
     NotApplicable,
     /// The application the restore would put back is no longer installed, for
@@ -415,6 +424,7 @@ impl RestoreClass {
                 SkipReason::AlreadyRestored => Self::AlreadyRestored,
                 SkipReason::ChangedExternallyWithoutConfirmation { .. } => Self::ChangedExternally,
                 SkipReason::NothingCaptured => Self::NothingCaptured,
+                SkipReason::LeftInPlace => Self::LeftInPlace,
                 SkipReason::NoProductionAdapter { .. } | SkipReason::RequiresAdministrator => {
                     Self::ManualAction
                 }
@@ -431,6 +441,7 @@ impl RestoreClass {
             Self::AlreadyRestored => c.skip_already_restored,
             Self::ChangedExternally => c.state_changed_externally,
             Self::NothingCaptured => c.skip_nothing_captured,
+            Self::LeftInPlace => c.skip_left_in_place,
             Self::ManualAction => c.manual_action_required,
             Self::NotApplicable => c.skip_not_applicable,
             Self::PreviousApplicationMissing => c.previous_application_missing,

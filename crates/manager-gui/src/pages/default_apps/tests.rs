@@ -1198,13 +1198,19 @@ mod through_the_engine {
             9,
             "every declared integration is listed separately"
         );
-        // One of the nine is declared for a distribution this is not, so the
-        // component reads as unavailable while the other eight are simply not
-        // the default yet. That is the aggregate hiding nothing.
-        assert!(matches!(
-            before.components[0].aggregate,
-            AggregateState::Unavailable { .. }
-        ));
+        // One of the nine is declared for a distribution this is not. It is
+        // listed as unavailable on its own row, and left out of the
+        // component's state (ticket 89): the other eight are simply not the
+        // default yet, which is what the component reads as.
+        assert_eq!(before.components[0].aggregate, AggregateState::NotDefault);
+        assert_eq!(
+            before.components[0]
+                .integrations
+                .iter()
+                .filter(|status| matches!(status.state, IntegrationState::Unavailable { .. }))
+                .count(),
+            1
+        );
         assert_eq!(
             before.components[0]
                 .integrations
@@ -1300,6 +1306,12 @@ mod through_the_engine {
             .iter()
             .zip(&before.components[0].integrations)
         {
+            // A launcher entry is declared leave-in-place: what Better OS
+            // added stays where it is when the rest is put back.
+            if restored.kind == better_core::defaults::IntegrationKind::DesktopLauncherEntry {
+                assert_eq!(restored.state, IntegrationState::Default);
+                continue;
+            }
             assert_eq!(
                 restored.current, original.current,
                 "{} did not come back to what it was",
@@ -1997,5 +2009,59 @@ mod control_center {
             "3 days ago"
         );
         assert_eq!(relative_time(Locale::ZhTw, Some(now - 60), now), "1 分鐘前");
+    }
+
+    /// A setting this desktop does not have says exactly that, in both
+    /// languages, instead of the generic "not available".
+    #[test]
+    fn a_setting_this_desktop_lacks_says_so() {
+        let unsupported = ObservedValue::Unsupported {
+            reason: defaults_core::NO_SUCH_SETTING.to_string(),
+        };
+        let state = IntegrationState::Unavailable {
+            reason: defaults_core::NO_SUCH_SETTING.to_string(),
+        };
+        assert_eq!(
+            observed_label(Locale::EnUs, &unsupported),
+            "This desktop has no such setting, so nothing reads it"
+        );
+        assert_eq!(
+            integration_state_label(Locale::EnUs, &state),
+            "Not used on this desktop"
+        );
+        assert_eq!(
+            integration_state_label(Locale::ZhTw, &state),
+            "這個桌面不使用"
+        );
+        assert_eq!(
+            observed_label(Locale::ZhTw, &unsupported),
+            "這個桌面沒有這項設定，所以不會有程式讀取它"
+        );
+        // Any other unsupported reading keeps the general words.
+        assert_eq!(
+            observed_label(
+                Locale::EnUs,
+                &ObservedValue::Unsupported {
+                    reason: "other".to_string()
+                }
+            ),
+            copy(Locale::EnUs).value_unsupported
+        );
+    }
+
+    /// A dock entry Better OS added stays when defaults are put back, and the
+    /// review says so rather than "not used on this system".
+    #[test]
+    fn a_launcher_entry_left_in_place_reads_as_staying() {
+        let entry = skipping("better-files", "overview-entry", SkipReason::LeftInPlace);
+        assert_eq!(RestoreClass::of(&entry), RestoreClass::LeftInPlace);
+        assert_eq!(
+            skip_reason_label(Locale::EnUs, &SkipReason::LeftInPlace),
+            "Stays: putting things back leaves this in place"
+        );
+        assert_eq!(
+            RestoreClass::LeftInPlace.label(Locale::ZhTw),
+            "保留：恢復時不會移除這一項"
+        );
     }
 }

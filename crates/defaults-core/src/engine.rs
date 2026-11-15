@@ -175,6 +175,17 @@ impl<'a> DefaultsEngine<'a> {
 
         let request = AdapterRequest::new(component, integration);
         let current = adapter.read(&request);
+        // An adapter that says this desktop has no such setting at all (GNOME
+        // 46 defines no file-manager key, for one) makes the integration
+        // unavailable here, with the adapter's own reason: there is nothing to
+        // be the default of, and nothing to change.
+        if let ObservedValue::Unsupported { reason } = &current {
+            status.current = current.clone();
+            status.state = IntegrationState::Unavailable {
+                reason: reason.clone(),
+            };
+            return status;
+        }
         let matches_desired = current.value() == Some(&integration.target.desired);
         status.current = current.clone();
 
@@ -402,6 +413,12 @@ impl<'a> DefaultsEngine<'a> {
                 if integration.restore_policy == RestorePolicy::ManualOnly {
                     entry.action = PlanAction::Skip {
                         reason: SkipReason::NothingCaptured,
+                    };
+                    return entry;
+                }
+                if integration.restore_policy == RestorePolicy::LeaveInPlace {
+                    entry.action = PlanAction::Skip {
+                        reason: SkipReason::LeftInPlace,
                     };
                     return entry;
                 }

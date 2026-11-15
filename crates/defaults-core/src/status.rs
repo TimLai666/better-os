@@ -125,14 +125,31 @@ impl AggregateState {
                 reason: "defaults.no_declared_integrations".to_string(),
             };
         }
+        // A component that is not ready (not installed, not enabled, not
+        // healthy) or would need administrator access is unavailable as a
+        // whole. One setting this desktop does not have — a declaration for
+        // another distribution, or a key no schema here defines — says
+        // nothing about the others, so it is left out of the aggregate; only
+        // when every setting is like that is the component unavailable.
         for status in statuses {
-            if let IntegrationState::Unavailable { reason } = &status.state {
+            if let IntegrationState::Unavailable { reason } = &status.state
+                && is_component_wide(reason)
+            {
                 return Self::Unavailable {
                     reason: reason.clone(),
                 };
             }
         }
-        for status in statuses {
+        let statuses: Vec<&IntegrationStatus> = statuses
+            .iter()
+            .filter(|status| !matches!(status.state, IntegrationState::Unavailable { .. }))
+            .collect();
+        if statuses.is_empty() {
+            return Self::Unavailable {
+                reason: "defaults.not_supported_on_this_system".to_string(),
+            };
+        }
+        for status in &statuses {
             if let IntegrationState::Conflict { claimant } = &status.state {
                 return Self::Conflict {
                     claimant: claimant.clone(),
@@ -145,7 +162,7 @@ impl AggregateState {
         {
             return Self::ChangedExternally;
         }
-        for status in statuses {
+        for status in &statuses {
             if let IntegrationState::Unknown { reason } = &status.state {
                 return Self::Unknown {
                     reason: reason.clone(),
@@ -195,4 +212,10 @@ impl DefaultsReport {
             .iter()
             .find(|entry| &entry.component == component)
     }
+}
+
+/// Whether an unavailable setting makes its whole component unavailable.
+fn is_component_wide(reason: &str) -> bool {
+    reason.starts_with("defaults.prerequisite_not_met")
+        || reason == "defaults.requires_administrator"
 }

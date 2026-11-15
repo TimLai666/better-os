@@ -63,6 +63,27 @@ Screenshots: `.shots/{en,zh}-{light,dark}-{1600,960}-NN-*.png` in the worktree
 `mimeapps.list` and dconf in a scratch HOME, clicked with a remote-desktop
 pointer.
 
-Not changed: the tool-entry and launcher-entry integrations read "Not
-available on this system" because `defaults-core` has no production adapter
-for them (AGENTS.md); that is the engine's state, not the page's.
+Better Files' other two rows (coordinator review): `defaults-platform`
+gained `LauncherEntryAdapter` and `ToolEntryPointAdapter`, read from the
+user's dconf database and, for a key the user never set, from the compiled
+GSettings schema default (a new GVDB schema reader), written through the
+dconf service.
+
+- Launcher entry (`/org/gnome/shell/favorite-apps`): applying adds Better
+  Files to the end of the list GNOME shows, keeping every other pin; it is
+  verified by reading back, and a restore leaves it in place as the
+  declaration's `leave-in-place` says (the engine now honours that policy;
+  before, it ignored it). Tested against a real `dconf-service` on a private
+  bus and seen in the sandbox's overview dash.
+- Tool entry point (`/org/gnome/desktop/applications/file-manager`): GNOME 46
+  has no such key. Evidence: the host's compiled schemas define only
+  `terminal` and `office` under `/org/gnome/desktop/applications/`
+  (`gsettings list-schemas`, the GVDB dump of `gschemas.compiled`), and no
+  schema anywhere holds a `file-manager` key. The adapter reports
+  `gsettings.no_such_key`, never writes, and the row reads "This desktop has
+  no such setting, so nothing reads it" / "Not used on this desktop". The
+  real GNOME hook for "the file manager" is D-Bus activation of
+  `org.freedesktop.FileManager1` (Nautilus ships it); retargeting the
+  declaration there needs its own decision.
+- A setting the desktop lacks no longer makes the whole component
+  "Unavailable": it shows on its own row and is left out of the aggregate.

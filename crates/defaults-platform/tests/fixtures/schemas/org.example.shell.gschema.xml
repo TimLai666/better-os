@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.example.shell" path="/org/example/shell/">
+    <key name="favorite-apps" type="as">
+      <default>['org.gnome.Nautilus.desktop', 'firefox.desktop']</default>
+      <summary>Favorite applications</summary>
+    </key>
+    <key name="enabled" type="b">
+      <default>true</default>
+    </key>
+  </schema>
+  <schema id="org.example.other" path="/org/example/other/">
+    <key name="favorite-apps" type="as">
+      <default>['wrong.desktop']</default>
+    </key>
+  </schema>
+  <schema id="org.example.relocatable">
+    <key name="favorite-apps" type="as">
+      <default>['relocatable.desktop']</default>
+    </key>
+  </schema>
+</schemalist>
