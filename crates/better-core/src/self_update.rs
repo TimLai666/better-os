@@ -668,9 +668,20 @@ mod tests {
     /// Puts a program at `path` the way dpkg does: a new file beside the old
     /// one, renamed over it. The returned handle keeps the file's inode alive,
     /// as a running program does, so the next file cannot be given the same one.
+    ///
+    /// A child process writes the file, so this process never holds it open
+    /// for writing. A test thread forking at that moment (`dpkg-query` in the
+    /// journal test) would keep a copy of the descriptor until its exec, and
+    /// that late close reaches a watch started afterwards as a close-write of
+    /// the program, waking it with nothing replaced.
     fn install(path: &Path, contents: &str) -> fs::File {
         let partial = path.with_extension("dpkg-new");
-        fs::write(&partial, contents).unwrap();
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", "printf %s \"$1\" > \"$2\"", "sh", contents])
+            .arg(&partial)
+            .status()
+            .unwrap();
+        assert!(status.success());
         fs::set_permissions(&partial, fs::Permissions::from_mode(0o755)).unwrap();
         let held = fs::File::open(&partial).unwrap();
         fs::rename(&partial, path).unwrap();
