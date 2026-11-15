@@ -451,10 +451,14 @@ impl GitApp {
                     d.child(self.branch_flyout(p, c, window, cx))
                 });
             bar = bar.child(branches);
-            bar = bar.child(self.sync_item(repo, p, c, cx));
         }
 
         bar = bar.child(div().flex_1());
+        // Fetch, pull, push and publish sit at the right, before the
+        // shortcut buttons (owner, 2026-11-15).
+        if let Some(repo) = repo {
+            bar = bar.child(self.sync_item(repo, p, c, cx));
+        }
         let branch_name = repo
             .map(|r| {
                 r.branch()

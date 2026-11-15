@@ -193,19 +193,14 @@ impl FilesApp {
         // job's own thread, and for as long as the job runs.
         let link: Arc<dyn crate::devices::DeviceLink> = Arc::new(StorageLink::start());
         crate::shared_tracker().attach(link.clone());
-        // With no folder on the command line, the window opens where it was
-        // last closed, when that folder is still there; otherwise at home.
+        // With no folder on the command line, a new window opens at home, not
+        // where the last one was closed (owner, 2026-11-15). A restart after
+        // an update still puts the window back through its handoff.
         let view_store = crate::settings_store::ViewStateStore::from_env();
-        let last = view_store
-            .load()
-            .last_folder()
-            .and_then(|path| files_core::Location::local(path).ok());
-        let default = last.unwrap_or_else(|| {
-            directories
-                .home()
-                .cloned()
-                .unwrap_or_else(|| files_core::Location::Local(files_core::LocalPath::root()))
-        });
+        let default = directories
+            .home()
+            .cloned()
+            .unwrap_or_else(|| files_core::Location::Local(files_core::LocalPath::root()));
 
         let mut session = FilesSession::new(SessionSetup {
             start: start.location(default),
