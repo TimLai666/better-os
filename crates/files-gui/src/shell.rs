@@ -1008,7 +1008,7 @@ impl FilesApp {
         c: &'static Copy,
     ) -> NavEntry {
         let mut item = NavItem::new(drive.name(c), IconName::HardDrive)
-            .icon_path(crate::icons::drive_icon(drive.kind));
+            .icon_path(crate::icons::drive_row_icon(drive));
         let attention =
             device.filter(|device| device.is_warning() || device.unsafe_removal.is_some());
         // Never on the drive the system runs from (Linux on an external SSD,

@@ -25,7 +25,8 @@ use storage_platform::model::PlatformDevice;
 // The listing itself is shared with Better Manager's Drives section (ticket
 // 127): which block devices are drives, and their choices.
 pub use drive_mounts::listing::{
-    Capacity, Drive, DriveKind, NEARLY_FULL, drives_from_devices, is_system_mount, mount_points_of,
+    Capacity, Drive, DriveKind, NEARLY_FULL, RemovableForm, drives_from_devices, is_system_mount,
+    mount_points_of, removable_form,
 };
 
 /// How long a drive's free space is waited for before it is shown without a
@@ -148,6 +149,7 @@ pub fn drives_from_mounts(mounts: &MountTable, devices_known: bool) -> Vec<Drive
             ejectable: false,
             capacity: None,
             auto_mount: None,
+            form: None,
         });
     }
     drives
@@ -191,6 +193,7 @@ pub fn drives_from_gvfs(children: &[PathBuf]) -> Vec<Drive> {
                 ejectable: false,
                 capacity: None,
                 auto_mount: None,
+                form: None,
             })
         })
         .collect()
@@ -983,6 +986,7 @@ fn system_drive_from_mounts() -> Drive {
         ejectable: false,
         capacity: None,
         auto_mount: None,
+        form: None,
     }
 }
 

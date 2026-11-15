@@ -112,6 +112,7 @@ cargo build --release \
     -p git-gui \
     -p touchpad-gui \
     -p touchpad-gesture-service \
+    -p touchpad-scroll \
     -p awake-service \
     -p awake-tray \
     -p awake-gui \
@@ -151,6 +152,7 @@ PACKAGE_DATA_ONLY=0
 #                      switch: enabled globally and started at install, and
 #                      stopped and disabled by a prerm on removal
 PACKAGE_ALWAYS_ON_UNITS=""
+PACKAGE_SYSTEM_FRAGMENT=""
 #   PACKAGE_DAEMON_HANDOFF  1 for better-manager: ships the privileged service
 #                      handoff (ADR 0028) and the checksums of the service and
 #                      adapter packages built beside it, and its postinst
@@ -168,6 +170,7 @@ reset_package_inputs() {
     PACKAGE_RECOMMENDS=""
     PACKAGE_DATA_ONLY=0
     PACKAGE_ALWAYS_ON_UNITS=""
+    PACKAGE_SYSTEM_FRAGMENT=""
     PACKAGE_DAEMON_HANDOFF=0
     PACKAGE_HANDOFF_RETRY=0
 }
@@ -229,6 +232,36 @@ write_user_unit_scripts() {
             esac
         } > "$staging_dir/DEBIAN/$script"
         chmod 0755 "$staging_dir/DEBIAN/$script"
+    done
+}
+
+# Append a package's system-service half to its maintainer scripts. Only
+# better-touchpad has one today, the scroll pass-through: the fragment
+# (packaging/maintainer/touchpad-scroll.sh) defines better_os_scroll_postinst,
+# _prerm, and _postrm, and the header below is its. A script the user-unit half
+# already wrote keeps what it has, and the fragment runs after it.
+write_system_fragment() {
+    local staging_dir="$1"
+    local fragment="$2"
+    local function_name="better_os_scroll"
+    local script path
+    for script in postinst prerm postrm; do
+        path="$staging_dir/DEBIAN/$script"
+        if [[ ! -f "$path" ]]; then
+            printf '#!/bin/sh\nset -e\n' > "$path"
+            chmod 0755 "$path"
+        fi
+        {
+            printf '\n'
+            printf "better_os_scroll_libexec='/usr/libexec/better-touchpad-scrolld'\n"
+            printf "better_os_scroll_state='/var/lib/better-touchpad-scroll'\n"
+            printf "better_os_scroll_user='_better-touchpad-scroll'\n"
+            printf "better_os_scroll_reconnect='/run/better-os/touchpad-scroll-reconnect'\n\n"
+            cat "$ROOT_DIR/packaging/maintainer/$fragment.sh"
+            printf '\n'
+            # shellcheck disable=SC2016 # expanded by the maintainer script
+            printf '%s_%s "$@" || true\n' "$function_name" "$script"
+        } >> "$path"
     done
 }
 
@@ -401,6 +434,9 @@ make_package() {
 ' "${user_units[@]}" | LC_ALL=C sort | paste -sd' ' -)"
         write_user_unit_scripts "$staging_dir" "$package_name" "$sorted_units" \
             "$PACKAGE_ALWAYS_ON_UNITS"
+    fi
+    if [[ -n "$PACKAGE_SYSTEM_FRAGMENT" ]]; then
+        write_system_fragment "$staging_dir" "$PACKAGE_SYSTEM_FRAGMENT"
     fi
 
     if ((PACKAGE_DAEMON_HANDOFF == 1)); then
@@ -817,9 +853,21 @@ make_package better-git \
 # Better OS that is not Rust, under the bounded exception ADR 0012 records; it
 # is three files under the uuid GNOME looks for it by.
 EXTENSION_UUID="touchpad-adapter@betteros.org"
+# Ubuntu 22.04's dbus-daemon 1.12 cannot read send_destination_prefix.
+if [[ "$RELEASE_TARGET" == ubuntu-22.04 ]]; then
+    SCROLL_BUS_POLICY="org.betteros.TouchpadScroll1.dbus-1.12.conf"
+else
+    SCROLL_BUS_POLICY="org.betteros.TouchpadScroll1.conf"
+fi
+#
+# The scroll pass-through (ADR 0030) is the package's system half: one system
+# service per touchpad, started by udev, so installing the package is what
+# turns it on and removing it stops every instance. It ships under
+# /usr/libexec because udev starts it, not a person.
 PACKAGE_BINARIES=(
     "better-touchpad:usr/bin/better-touchpad"
     "better-touchpad-gestured:usr/bin/better-touchpad-gestured"
+    "better-touchpad-scrolld:usr/libexec/better-touchpad-scrolld"
 )
 PACKAGE_DATA=(
     "packaging/touchpad/better-touchpad.desktop:usr/share/applications/better-touchpad.desktop"
@@ -829,8 +877,17 @@ PACKAGE_DATA=(
     "adapters/gnome-shell-touchpad/extension.js:usr/share/gnome-shell/extensions/$EXTENSION_UUID/extension.js"
     "adapters/gnome-shell-touchpad/org.betteros.TouchpadAdapter1.xml:usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml"
     "packaging/icons/better-touchpad.svg:usr/share/icons/hicolor/scalable/apps/better-touchpad.svg"
+    "packaging/touchpad/better-touchpad-scroll@.service:usr/lib/systemd/system/better-touchpad-scroll@.service"
+    "packaging/touchpad/better-touchpad-scroll-coldplug.service:usr/lib/systemd/system/better-touchpad-scroll-coldplug.service"
+    "packaging/touchpad/90-better-touchpad-scroll.rules:usr/lib/udev/rules.d/90-better-touchpad-scroll.rules"
+    "packaging/touchpad/$SCROLL_BUS_POLICY:usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf"
+    "packaging/touchpad/better-touchpad-scroll.sysusers:usr/lib/sysusers.d/better-touchpad-scroll.conf"
+    "packaging/touchpad/better-touchpad-scroll.tmpfiles:usr/lib/tmpfiles.d/better-touchpad-scroll.conf"
 )
-PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS")
+# systemd for sysusers, tmpfiles, and the unit; udev for the rule that starts
+# an instance per touchpad.
+PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS" "systemd" "udev")
+PACKAGE_SYSTEM_FRAGMENT="touchpad-scroll"
 make_package better-touchpad \
     'Better OS touchpad settings and gestures' \
     'Scrolling, tapping, pointer speed, and gestures in one window, with every unavailable setting saying why.'

@@ -102,29 +102,81 @@ impl SysfsDeviceIdentities {
     }
 }
 
-impl DeviceIdentities for SysfsDeviceIdentities {
-    fn identity(&self, node: InputDeviceNode) -> Option<String> {
-        let device = self
-            .sys
-            .join("class/input")
-            .join(node.handler())
-            .join("device");
-        let read = |name: &str| {
-            std::fs::read_to_string(device.join(name))
-                .ok()
-                .map(|text| text.trim().to_string())
-        };
+impl SysfsDeviceIdentities {
+    fn read(&self, handler: &str, name: &str) -> Option<String> {
+        std::fs::read_to_string(
+            self.sys
+                .join("class/input")
+                .join(handler)
+                .join("device")
+                .join(name),
+        )
+        .ok()
+        .map(|text| text.trim().to_string())
+    }
+
+    /// The bus, vendor, product, version, and name: what a scroll
+    /// pass-through clone copies from its touchpad.
+    fn ids(&self, handler: &str) -> Option<[String; 5]> {
+        Some([
+            self.read(handler, "id/bustype")?,
+            self.read(handler, "id/vendor")?,
+            self.read(handler, "id/product")?,
+            self.read(handler, "id/version")?,
+            self.read(handler, "name")?,
+        ])
+    }
+
+    fn is_clone(&self, handler: &str) -> bool {
+        self.read(handler, "phys")
+            .is_some_and(|phys| phys.starts_with(touchpad_scroll::caps::PHYS_PREFIX))
+    }
+
+    fn own_identity(&self, handler: &str) -> Option<String> {
+        let [bus, vendor, product, version, name] = self.ids(handler)?;
         // A device with no `uniq` attribute has no unique id, which is what
         // an empty one means too.
-        let unique_id = read("uniq").unwrap_or_default();
+        let unique_id = self.read(handler, "uniq").unwrap_or_default();
         Some(touchpad_core::device_identity(
-            &unique_id,
-            &read("id/bustype")?,
-            &read("id/vendor")?,
-            &read("id/product")?,
-            &read("id/version")?,
-            &read("name")?,
+            &unique_id, &bus, &vendor, &product, &version, &name,
         ))
+    }
+}
+
+impl DeviceIdentities for SysfsDeviceIdentities {
+    /// While the scroll pass-through holds a touchpad (ADR 0030), its gestures
+    /// come from the clone's node, and the clone carries no `uniq`. So a
+    /// clone's node is resolved to the touchpad it stands in for: the one
+    /// present, non-clone device with the same bus, vendor, product, version,
+    /// and name. Two such devices with different identities cannot be told
+    /// apart, and the gesture goes to the global profile rather than to a guess.
+    fn identity(&self, node: InputDeviceNode) -> Option<String> {
+        let handler = node.handler();
+        if !self.is_clone(&handler) {
+            return self.own_identity(&handler);
+        }
+        let ids = self.ids(&handler)?;
+        let mut found: Option<String> = None;
+        for entry in std::fs::read_dir(self.sys.join("class/input"))
+            .ok()?
+            .flatten()
+        {
+            let Ok(other) = entry.file_name().into_string() else {
+                continue;
+            };
+            if !other.starts_with("event") || other == handler || self.is_clone(&other) {
+                continue;
+            }
+            if self.ids(&other).as_ref() != Some(&ids) {
+                continue;
+            }
+            let identity = self.own_identity(&other)?;
+            match &found {
+                Some(previous) if *previous != identity => return None,
+                _ => found = Some(identity),
+            }
+        }
+        found
     }
 }
 

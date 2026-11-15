@@ -7,10 +7,13 @@
 //!
 //! What this backend does **not** own is as important as what it does. GNOME 46
 //! — the release Zorin 18 ships — has no scroll-factor key for the touchpad and
-//! no smooth-scroll setting, so those three controls are reported unavailable
-//! with the reason attached rather than drawn as switches that do nothing. The
-//! table below is the whole mapping; `engineering/specs/touchpad-sensitivity-mapping.md`
-//! records what it can and cannot promise.
+//! no smooth-scroll setting. The two scroll factors are carried instead by
+//! Better Touchpad's scroll pass-through on the system bus ([`crate::scroll`],
+//! ADR 0030), and are available exactly when a touchpad has one running.
+//! Smooth scrolling stays unavailable with its reason attached rather than
+//! drawn as a switch that does nothing. The tables below are the whole
+//! mapping; `engineering/specs/touchpad-sensitivity-mapping.md` records what
+//! it can and cannot promise.
 
 use std::path::{Path, PathBuf};
 
@@ -22,7 +25,9 @@ use touchpad_core::{
 
 use crate::devices::DeviceCapabilities;
 use crate::gvariant::{ChangeValue, Changeset};
+use crate::scroll::ScrollChannel;
 use crate::{BackendStatus, TouchpadBackend, WriteOutcome};
+use touchpad_scroll::factors::Factors;
 
 #[cfg(feature = "dconf-write")]
 use crate::dconf::DconfWriter;
@@ -102,24 +107,57 @@ const MAPPED: &[KeyMapping] = &[
     },
 ];
 
-/// The controls GNOME has no key for, with the wording the screen shows.
-const UNMAPPED: &[(SettingId, &str, &str)] = &[
-    (
-        SettingId::VerticalScrollFactor,
-        "gnome.no_scroll_factor_key",
-        "GNOME's touchpad settings have no scroll-factor key, so scrolling distance follows the pointer speed and cannot be set separately",
-    ),
-    (
-        SettingId::HorizontalScrollFactor,
-        "gnome.no_scroll_factor_key",
-        "GNOME's touchpad settings have no scroll-factor key, so scrolling distance follows the pointer speed and cannot be set separately",
-    ),
-    (
-        SettingId::SmoothScrolling,
-        "gnome.no_smooth_scroll_key",
-        "smooth scrolling is decided by the compositor and each application, and GNOME exposes no setting for it",
-    ),
+/// The control nothing can carry, with the wording the screen shows.
+///
+/// Smooth scrolling is not an input setting: a touchpad's scrolling is already
+/// continuous when it leaves libinput, and whether a view animates or glides
+/// after the fingers lift is each application's own decision (GTK and the
+/// browsers make it themselves). The scroll pass-through can change how far a
+/// scroll goes, not how an application draws it, so it does not carry this.
+const UNMAPPED: &[(SettingId, &str, &str)] = &[(
+    SettingId::SmoothScrolling,
+    "gnome.no_smooth_scroll_key",
+    "whether scrolling animates is decided by each application, and neither GNOME nor the touchpad has a setting that changes it",
+)];
+
+/// The two controls the scroll pass-through carries.
+const SCROLL_FACTORS: [SettingId; 2] = [
+    SettingId::VerticalScrollFactor,
+    SettingId::HorizontalScrollFactor,
 ];
+
+fn is_scroll_factor(setting: SettingId) -> bool {
+    SCROLL_FACTORS.contains(&setting)
+}
+
+/// Why the scroll factors are unavailable when no pass-through answers.
+pub const SCROLL_ABSENT: (&str, &str) = (
+    "gnome.scroll_passthrough_absent",
+    "no touchpad has Better Touchpad's scroll service running, so scroll distance follows the pointer speed; the service starts for every touchpad once Better Touchpad is installed",
+);
+
+/// Why the scroll factors are unavailable when the install could not start the
+/// pass-throughs for the touchpads that were already there.
+pub const SCROLL_RECONNECT: (&str, &str) = (
+    "gnome.scroll_passthrough_reconnect",
+    "scroll speed is installed but could not start for this touchpad yet; restart the computer or disconnect and reconnect the touchpad to turn it on",
+);
+
+/// Whether the pass-through can carry the factors, and if not why.
+fn scroll_support(scroll: Option<&dyn ScrollChannel>) -> Result<(), (String, String)> {
+    let Some(scroll) = scroll else {
+        return Err((SCROLL_ABSENT.0.to_string(), SCROLL_ABSENT.1.to_string()));
+    };
+    match scroll.factors() {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) if scroll.reconnect_pending() => Err((
+            SCROLL_RECONNECT.0.to_string(),
+            SCROLL_RECONNECT.1.to_string(),
+        )),
+        Ok(None) => Err((SCROLL_ABSENT.0.to_string(), SCROLL_ABSENT.1.to_string())),
+        Err(error) => Err(("gnome.scroll_passthrough_unreachable".to_string(), error)),
+    }
+}
 
 fn mapping(setting: SettingId) -> Option<&'static KeyMapping> {
     MAPPED.iter().find(|entry| entry.setting == setting)
@@ -150,6 +188,7 @@ pub struct GnomeBackend {
     writer: Option<DconfWriter>,
     capabilities: Capabilities,
     status: BackendStatus,
+    scroll: Option<Box<dyn ScrollChannel>>,
 }
 
 impl GnomeBackend {
@@ -171,6 +210,9 @@ impl GnomeBackend {
     #[cfg(feature = "dconf-write")]
     pub fn connect(device: Option<&DeviceCapabilities>) -> Self {
         let database = Self::user_database_path();
+        let scroll = crate::scroll::SystemBusScroll::connect()
+            .ok()
+            .map(|scroll| Box::new(scroll) as Box<dyn ScrollChannel>);
         match DconfWriter::connect().and_then(|writer| writer.probe().map(|()| writer)) {
             Ok(writer) => {
                 let status = BackendStatus::reachable(
@@ -180,20 +222,27 @@ impl GnomeBackend {
                         database.display()
                     ),
                 );
-                let capabilities = capabilities_for(true, device);
+                let capabilities = capabilities_for(true, device, scroll.as_deref());
                 Self {
                     database,
                     writer: Some(writer),
                     capabilities,
                     status,
+                    scroll,
                 }
             }
-            Err(error) => Self::read_only_with_reason(
-                database,
-                device,
-                "gnome.dconf_service_unreachable",
-                error.to_string(),
-            ),
+            Err(error) => {
+                let backend = Self::read_only_with_reason(
+                    database,
+                    device,
+                    "gnome.dconf_service_unreachable",
+                    error.to_string(),
+                );
+                match scroll {
+                    Some(scroll) => backend.with_scroll(scroll, device),
+                    None => backend,
+                }
+            }
         }
     }
 
@@ -225,6 +274,7 @@ impl GnomeBackend {
             writer: None,
             capabilities,
             status,
+            scroll: None,
         }
     }
 
@@ -239,10 +289,41 @@ impl GnomeBackend {
         let database = database.into();
         Self {
             status: BackendStatus::reachable("gnome", format!("writing through {writer:?}")),
-            capabilities: capabilities_for(true, device),
+            capabilities: capabilities_for(true, device, None),
             database,
             writer: Some(writer),
+            scroll: None,
         }
+    }
+
+    /// Carry the scroll factors through `scroll`. This is how a test gives the
+    /// backend a fake pass-through, and how `connect` gives it the real one.
+    pub fn with_scroll(
+        mut self,
+        scroll: Box<dyn ScrollChannel>,
+        device: Option<&DeviceCapabilities>,
+    ) -> Self {
+        let writable = self.status.reachable;
+        self.capabilities = if writable {
+            capabilities_for(true, device, Some(scroll.as_ref()))
+        } else {
+            let mut capabilities = self.capabilities.clone();
+            match scroll_support(Some(scroll.as_ref())) {
+                Ok(()) => {
+                    for setting in SCROLL_FACTORS {
+                        capabilities.insert(setting, Support::immediate());
+                    }
+                }
+                Err((reason, detail)) => {
+                    for setting in SCROLL_FACTORS {
+                        capabilities.insert(setting, Support::unavailable(&reason, &detail));
+                    }
+                }
+            }
+            capabilities
+        };
+        self.scroll = Some(scroll);
+        self
     }
 
     pub fn database_path(&self) -> &Path {
@@ -283,11 +364,23 @@ impl GnomeBackend {
 
 /// The capability table, given whether the service can be written to and what
 /// the selected pad can physically do.
-fn capabilities_for(writable: bool, device: Option<&DeviceCapabilities>) -> Capabilities {
+fn capabilities_for(
+    writable: bool,
+    device: Option<&DeviceCapabilities>,
+    scroll: Option<&dyn ScrollChannel>,
+) -> Capabilities {
     let mut capabilities = Capabilities::new();
+    // The factors are applied by the pass-through, not by dconf, so whether
+    // dconf answers does not decide them.
+    let scroll = scroll_support(scroll);
     for setting in SettingId::ALL {
         let support = match unmapped_reason(setting) {
             Some((reason, detail)) => Support::unavailable(reason, detail),
+            None if is_scroll_factor(setting) => match &scroll {
+                // The service applies a factor at its next frame.
+                Ok(()) => Support::immediate(),
+                Err((reason, detail)) => Support::unavailable(reason, detail),
+            },
             None if !writable => Support::unavailable(
                 "gnome.dconf_service_unreachable",
                 "the dconf service is not answering, so no change could be applied or verified",
@@ -355,10 +448,17 @@ fn to_change_value(shape: KeyShape, value: SettingValue) -> Option<ChangeValue> 
     }
 }
 
-/// The scroll factors have no GNOME key, so they are never written. This keeps
-/// the type from being unused when the write feature is off.
-#[allow(dead_code)]
-fn factor_is_never_written(_: ScrollFactor) {}
+fn factor_reading(factors: Factors, setting: SettingId) -> Reading {
+    let value = if setting == SettingId::VerticalScrollFactor {
+        factors.vertical
+    } else {
+        factors.horizontal
+    };
+    match ScrollFactor::new(value) {
+        Ok(factor) => Reading::value(SettingValue::factor(factor)),
+        Err(_) => Reading::unknown(format!("gnome.scroll_factor_out_of_range:{value}")),
+    }
+}
 
 impl TouchpadBackend for GnomeBackend {
     fn name(&self) -> &'static str {
@@ -388,6 +488,9 @@ impl TouchpadBackend for GnomeBackend {
         settings
             .iter()
             .map(|setting| {
+                if is_scroll_factor(*setting) {
+                    return (*setting, self.read_factor(*setting));
+                }
                 let reading = match mapping(*setting) {
                     None => {
                         let (reason, detail) = unmapped_reason(*setting)
@@ -426,7 +529,19 @@ impl TouchpadBackend for GnomeBackend {
         };
         let mut queued = Vec::new();
 
+        let factor_writes: Vec<(SettingId, Option<SettingValue>)> = writes
+            .iter()
+            .filter(|(setting, _)| is_scroll_factor(*setting))
+            .copied()
+            .collect();
+        if !factor_writes.is_empty() {
+            outcomes.extend(self.write_factors(&factor_writes));
+        }
+
         for (setting, value) in writes {
+            if is_scroll_factor(*setting) {
+                continue;
+            }
             let Some(entry) = mapping(*setting) else {
                 let (reason, detail) = unmapped_reason(*setting)
                     .unwrap_or(("gnome.no_key", "this GNOME has no such key"));
@@ -484,6 +599,82 @@ impl TouchpadBackend for GnomeBackend {
 }
 
 impl GnomeBackend {
+    fn read_factor(&self, setting: SettingId) -> Reading {
+        let Some(scroll) = &self.scroll else {
+            return Reading::unsupported(SCROLL_ABSENT.0);
+        };
+        match scroll.factors() {
+            Ok(Some(factors)) => factor_reading(factors, setting),
+            Ok(None) => Reading::unsupported(SCROLL_ABSENT.0),
+            Err(error) => Reading::unknown(format!("gnome.scroll_passthrough_unreachable:{error}")),
+        }
+    }
+
+    /// Both factors go in one call, so a change to one keeps the other at
+    /// what is in force. Resetting a factor (`None`) is setting it to 1, the
+    /// value at which the pass-through holds nothing.
+    fn write_factors(
+        &mut self,
+        writes: &[(SettingId, Option<SettingValue>)],
+    ) -> Vec<(SettingId, WriteOutcome)> {
+        let refuse = |reason: &str, detail: &str| {
+            writes
+                .iter()
+                .map(|(setting, _)| (*setting, WriteOutcome::unsupported(reason, detail)))
+                .collect::<Vec<_>>()
+        };
+        if let Some((setting, _)) = writes
+            .iter()
+            .find(|(setting, _)| !self.capabilities.is_available(*setting))
+            && let Support::Unavailable { reason, detail } = self.capabilities.support(*setting)
+        {
+            return refuse(&reason, &detail);
+        }
+        let Some(scroll) = &self.scroll else {
+            return refuse(SCROLL_ABSENT.0, SCROLL_ABSENT.1);
+        };
+        let failed = |detail: String| {
+            writes
+                .iter()
+                .map(|(setting, _)| {
+                    (
+                        *setting,
+                        WriteOutcome::failed(
+                            "gnome.scroll_passthrough_write_failed",
+                            detail.clone(),
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut factors = match scroll.factors() {
+            Ok(Some(factors)) => factors,
+            Ok(None) => return refuse(SCROLL_ABSENT.0, SCROLL_ABSENT.1),
+            Err(error) => return failed(error),
+        };
+        for (setting, value) in writes {
+            let factor = match value {
+                None => 1.0,
+                Some(SettingValue::Factor { value }) => value.get(),
+                Some(_) => {
+                    return failed(format!("{setting} takes a scroll factor"));
+                }
+            };
+            if *setting == SettingId::VerticalScrollFactor {
+                factors.vertical = factor;
+            } else {
+                factors.horizontal = factor;
+            }
+        }
+        match scroll.set(factors) {
+            Ok(()) => writes
+                .iter()
+                .map(|(setting, _)| (*setting, WriteOutcome::Written))
+                .collect(),
+            Err(error) => failed(error),
+        }
+    }
+
     #[cfg(feature = "dconf-write")]
     fn send(&self, changeset: &Changeset) -> Result<(), crate::PlatformError> {
         if changeset.is_empty() {
@@ -624,20 +815,190 @@ mod tests {
             ));
             assert_eq!(GnomeBackend::key_path(setting), None);
         }
-        let capabilities = capabilities_for(true, None);
+        let capabilities = capabilities_for(true, None, None);
         assert!(!capabilities.is_available(SettingId::VerticalScrollFactor));
         let Support::Unavailable { reason, detail } =
             capabilities.support(SettingId::VerticalScrollFactor)
         else {
-            panic!("a control with no key must not be available");
+            panic!("a factor with no pass-through must not be available");
         };
-        assert_eq!(reason, "gnome.no_scroll_factor_key");
-        assert!(detail.contains("scroll-factor"));
+        assert_eq!(reason, SCROLL_ABSENT.0);
+        assert!(detail.contains("scroll service"));
+        let Support::Unavailable { reason, .. } = capabilities.support(SettingId::SmoothScrolling)
+        else {
+            panic!("smooth scrolling has no carrier");
+        };
+        assert_eq!(reason, "gnome.no_smooth_scroll_key");
+    }
+
+    /// A pass-through that remembers what it was told.
+    struct FakeScroll {
+        factors: std::sync::Arc<std::sync::Mutex<Option<Factors>>>,
+        fail: bool,
+        reconnect: bool,
+    }
+
+    impl ScrollChannel for FakeScroll {
+        fn factors(&self) -> Result<Option<Factors>, String> {
+            if self.fail {
+                return Err("the system bus is gone".to_string());
+            }
+            Ok(*self.factors.lock().unwrap())
+        }
+
+        fn set(&self, factors: Factors) -> Result<(), String> {
+            *self.factors.lock().unwrap() = Some(factors);
+            Ok(())
+        }
+
+        fn reconnect_pending(&self) -> bool {
+            self.reconnect
+        }
+    }
+
+    fn with_fake_scroll(
+        initial: Option<Factors>,
+    ) -> (
+        GnomeBackend,
+        std::sync::Arc<std::sync::Mutex<Option<Factors>>>,
+    ) {
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(initial));
+        let backend = backend().with_scroll(
+            Box::new(FakeScroll {
+                factors: shared.clone(),
+                fail: false,
+                reconnect: false,
+            }),
+            None,
+        );
+        (backend, shared)
+    }
+
+    #[test]
+    fn the_scroll_factors_are_live_when_a_pass_through_answers() {
+        let (backend, _) = with_fake_scroll(Some(Factors::new(2.0, 0.5).unwrap()));
+        for setting in SCROLL_FACTORS {
+            assert_eq!(
+                backend.capabilities().support(setting).effect(),
+                Some(SessionEffect::Immediate)
+            );
+        }
+        assert_eq!(
+            backend.read_one(SettingId::VerticalScrollFactor),
+            Reading::value(SettingValue::factor(ScrollFactor::new(2.0).unwrap()))
+        );
+        assert_eq!(
+            backend.read_one(SettingId::HorizontalScrollFactor),
+            Reading::value(SettingValue::factor(ScrollFactor::new(0.5).unwrap()))
+        );
+        // Smooth scrolling is still not carried by anything.
+        assert!(
+            !backend
+                .capabilities()
+                .is_available(SettingId::SmoothScrolling)
+        );
+    }
+
+    #[test]
+    fn applying_a_factor_writes_both_and_verifies_by_reading_back() {
+        let (mut backend, shared) = with_fake_scroll(Some(Factors::NEUTRAL));
+        let report = backend.apply(&ApplyPlan {
+            steps: vec![ApplyStep {
+                setting: SettingId::VerticalScrollFactor,
+                requested: SettingValue::factor(ScrollFactor::new(3.0).unwrap()),
+                captured: Reading::value(SettingValue::factor(ScrollFactor::neutral())),
+                effect: SessionEffect::Immediate,
+            }],
+            skipped: Vec::new(),
+        });
+        assert_eq!(report.state(), RunState::Applied, "{report:?}");
+        // The other axis kept the value in force.
+        assert_eq!(
+            *shared.lock().unwrap(),
+            Some(Factors::new(3.0, 1.0).unwrap())
+        );
+    }
+
+    #[test]
+    fn resetting_a_factor_returns_it_to_one() {
+        let (mut backend, shared) = with_fake_scroll(Some(Factors::new(3.0, 2.0).unwrap()));
+        let outcomes = backend.write_all(&[(SettingId::HorizontalScrollFactor, None)]);
+        assert_eq!(
+            outcomes,
+            vec![(SettingId::HorizontalScrollFactor, WriteOutcome::Written)]
+        );
+        assert_eq!(
+            *shared.lock().unwrap(),
+            Some(Factors::new(3.0, 1.0).unwrap())
+        );
+    }
+
+    #[test]
+    fn no_touchpad_with_a_pass_through_means_no_factor() {
+        let (mut backend, _) = with_fake_scroll(None);
+        assert!(
+            !backend
+                .capabilities()
+                .is_available(SettingId::VerticalScrollFactor)
+        );
+        assert_eq!(
+            backend.read_one(SettingId::VerticalScrollFactor),
+            Reading::unsupported(SCROLL_ABSENT.0)
+        );
+        let outcomes = backend.write_all(&[(
+            SettingId::VerticalScrollFactor,
+            Some(SettingValue::factor(ScrollFactor::new(2.0).unwrap())),
+        )]);
+        assert!(matches!(outcomes[0].1, WriteOutcome::Unsupported { .. }));
+    }
+
+    #[test]
+    fn an_install_that_could_not_start_the_pass_through_says_restart_or_reconnect() {
+        let backend = backend().with_scroll(
+            Box::new(FakeScroll {
+                factors: Default::default(),
+                fail: false,
+                reconnect: true,
+            }),
+            None,
+        );
+        let Support::Unavailable { reason, detail } = backend
+            .capabilities()
+            .support(SettingId::VerticalScrollFactor)
+        else {
+            panic!("no pass-through answers yet");
+        };
+        assert_eq!(reason, SCROLL_RECONNECT.0);
+        assert!(detail.contains("restart the computer or disconnect and reconnect"));
+    }
+
+    #[test]
+    fn an_unreachable_pass_through_is_unknown_not_a_default() {
+        let backend = backend().with_scroll(
+            Box::new(FakeScroll {
+                factors: Default::default(),
+                fail: true,
+                reconnect: false,
+            }),
+            None,
+        );
+        let Support::Unavailable { reason, detail } = backend
+            .capabilities()
+            .support(SettingId::VerticalScrollFactor)
+        else {
+            panic!("an unreachable pass-through offers nothing");
+        };
+        assert_eq!(reason, "gnome.scroll_passthrough_unreachable");
+        assert!(detail.contains("system bus"));
+        assert!(matches!(
+            backend.read_one(SettingId::VerticalScrollFactor),
+            Reading::Unknown { .. }
+        ));
     }
 
     #[test]
     fn the_ten_controls_gnome_does_carry_are_available_and_immediate() {
-        let capabilities = capabilities_for(true, None);
+        let capabilities = capabilities_for(true, None, None);
         assert_eq!(capabilities.available().len(), 10);
         for setting in capabilities.available() {
             assert_eq!(
@@ -655,7 +1016,7 @@ mod tests {
 
     #[test]
     fn nothing_is_offered_when_the_dconf_service_cannot_be_reached() {
-        let capabilities = capabilities_for(false, None);
+        let capabilities = capabilities_for(false, None, None);
         assert!(capabilities.available().is_empty());
         let backend = backend();
         assert!(!backend.status().reachable);
@@ -672,7 +1033,7 @@ mod tests {
             max_contacts: 1,
             physical_middle_button: true,
         };
-        let capabilities = capabilities_for(true, Some(&device));
+        let capabilities = capabilities_for(true, Some(&device), None);
         assert!(!capabilities.is_available(SettingId::TwoFingerScrolling));
         assert!(!capabilities.is_available(SettingId::MiddleClickEmulation));
         assert!(!capabilities.is_available(SettingId::ClickMethod));

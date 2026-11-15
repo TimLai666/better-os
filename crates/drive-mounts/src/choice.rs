@@ -222,6 +222,7 @@ mod tests {
             ejectable: false,
             capacity: None,
             auto_mount: None,
+            form: None,
         }
     }
 

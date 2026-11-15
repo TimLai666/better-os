@@ -1,0 +1,4 @@
+# The account the scroll pass-through drops to after opening its two nodes.
+# No home, no shell, no groups: it owns /var/lib/better-touchpad-scroll and
+# nothing else.
+u _better-touchpad-scroll - "Better Touchpad scroll pass-through" /nonexistent /usr/sbin/nologin

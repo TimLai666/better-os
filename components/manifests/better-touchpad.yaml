@@ -140,6 +140,16 @@ permissions:
     reason: better-touchpad-gestured calls that interface and org.betteros.Launcher1; no gesture decision, threshold, or configuration crosses the bus, only typed events and typed actions
   - name: systemd-user-unit
     reason: installs better-touchpad-gestures.service and does not enable it; the resident gesture pipeline is started by the user or by Better Manager's enable step
+  # The scroll pass-through, ADR 0030 and
+  # engineering/specs/touchpad-input-passthrough-security.md.
+  - name: system-service
+    reason: installs better-touchpad-scroll@.service, which udev starts once per touchpad; it opens that touchpad's node and /dev/uinput as root inside a unit whose device policy allows nothing else, then drops to the _better-touchpad-scroll account with no groups and no capabilities
+  - name: input-device-grab
+    reason: while a scroll factor other than 1 is set, the service holds its touchpad exclusively and forwards every event through a uinput clone with two-finger and wheel motion scaled; it refuses any device that can report a key, and the kernel releases the touchpad when the process ends
+  - name: system-dbus-own-name
+    reason: each instance owns org.betteros.TouchpadScroll1.eventN on the system bus with two methods, SetFactors and Describe; only the person in the active local session may set a factor
+  - name: udev-rule
+    reason: installs 90-better-touchpad-scroll.rules, which starts a pass-through for each touchpad and tells libinput where the original touchpad sits so disable-while-typing still pairs it with the keyboard
 paths:
   - /usr/bin/better-touchpad
   # The resident gesture pipeline. It has no window, links no toolkit, and is
@@ -162,13 +172,23 @@ paths:
   # One icon for both entries: the safe-mode entry names the same theme name
   # the settings window does.
   - /usr/share/icons/hicolor/scalable/apps/better-touchpad.svg
+  # The scroll pass-through. Its factors are the machine's applied copy of the
+  # person's choice (which stays in config.json): removing the package deletes
+  # them, the account, and the state directory in postrm.
+  - /usr/libexec/better-touchpad-scrolld
+  - /usr/lib/systemd/system/better-touchpad-scroll@.service
+  - /usr/lib/systemd/system/better-touchpad-scroll-coldplug.service
+  - /usr/lib/udev/rules.d/90-better-touchpad-scroll.rules
+  - /usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf
+  - /usr/lib/sysusers.d/better-touchpad-scroll.conf
+  - /usr/lib/tmpfiles.d/better-touchpad-scroll.conf
+  - /var/lib/better-touchpad-scroll/factors
   - ~/.config/better-os/touchpad/config.json
   - ~/.config/better-os/touchpad/backup.json
   - ~/.config/better-os/touchpad/safe-mode
-  # Every GNOME key the backend can write. The three controls GNOME 46 has no
-  # key for — vertical scroll factor, horizontal scroll factor, and smooth
-  # scrolling — are shown as unavailable and are never written, so they are not
-  # listed here.
+  # Every GNOME key the backend can write. GNOME 46 has no key for the two
+  # scroll factors, which the pass-through above carries, or for smooth
+  # scrolling, which nothing carries and the window shows as unavailable.
   - /org/gnome/desktop/peripherals/touchpad/speed
   - /org/gnome/desktop/peripherals/touchpad/accel-profile
   - /org/gnome/desktop/peripherals/touchpad/disable-while-typing
@@ -180,6 +200,7 @@ paths:
   - /org/gnome/desktop/peripherals/touchpad/click-method
   - /org/gnome/desktop/peripherals/touchpad/middle-click-emulation
 release_notes:
+  - Vertical and horizontal scroll speed now work on GNOME 46, which has no setting for either. A small service per touchpad, started when the package is installed, scales two-finger scrolling (and a touchpad's wheel, where it has one) by the factors you choose. At a factor of 1 it holds nothing at all; it never opens or forwards a keyboard, and the touchpad is given back the moment the service stops. Smooth scrolling stays unavailable, because whether a view glides is each application's choice.
   - Pointer speed, scrolling, tapping, click method, and device selection in one window, with every setting the active backend cannot read, apply, and verify shown as unavailable with the reason instead of as a switch that does nothing.
   - The settings from before the first change are captured once and never overwritten, so restore returns to what the desktop actually said rather than to a guessed factory configuration. Restore works section by section or in full.
   - Installing Better Touchpad changes no setting and replaces no GNOME gesture. The Mac-style preset is offered, previewed, and confirmed by the user, never applied by the install.
