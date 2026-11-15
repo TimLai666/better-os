@@ -30,6 +30,7 @@ members = [
     "crates/launcher-platform",
     "crates/launcher-gui",
     "crates/defaults-core",
+    "crates/drive-mounts",
     "crates/defaults-platform",
     "crates/defaults-store",
     "crates/manager-core",
@@ -128,6 +129,7 @@ touchpad-platform = { path = "crates/touchpad-platform" }
 touchpad-session = { path = "crates/touchpad-session" }
 storage-core = { path = "crates/storage-core" }
 storage-platform = { path = "crates/storage-platform" }
+drive-mounts = { path = "crates/drive-mounts" }
 storage-service = { path = "crates/storage-service" }
 window-attention-core = { path = "crates/window-attention-core" }
 window-attention-service = { path = "crates/window-attention-service" }

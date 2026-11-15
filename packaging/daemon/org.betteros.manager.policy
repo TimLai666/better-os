@@ -61,4 +61,19 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
+
+  <!-- ADR 0032, ticket 127. Writes only Better OS's own lines in /etc/fstab
+       and its own udev rules file, for a drive the daemon looks up itself
+       from a UUID. Asked once, then kept for a few minutes. -->
+  <action id="org.betteros.manager.drive-mounting">
+    <description>Choose which drives mount automatically</description>
+    <description xml:lang="zh_TW">選擇要自動掛載的磁碟</description>
+    <message>Authentication is required to change which drives mount automatically</message>
+    <message xml:lang="zh_TW">變更要自動掛載的磁碟需要驗證身分</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
 </policyconfig>

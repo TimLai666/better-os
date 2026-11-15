@@ -5,6 +5,7 @@ use gpui::*;
 use gpui_component::{ActiveTheme, *};
 
 use crate::app::FilesApp;
+use crate::drives::DriveText as _;
 use crate::i18n::{copy, resolution_label};
 use crate::opcenter::{ConflictPrompt, JobRow};
 use crate::session::PendingDialog;
@@ -1134,7 +1135,7 @@ impl FilesApp {
         use better_ui::fluent::{self, BODY_STRONG, CAPTION, SUBTITLE};
         let c = copy(self.locale());
         let p = fluent::palette(cx);
-        let drives = self.session.drives().to_vec();
+        let drives = self.session.shown_drives();
         let tiles = drives.into_iter().map(|drive| {
             let key = drive.key.clone();
             let this = cx.entity().downgrade();

@@ -1904,6 +1904,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
+name = "drive-mounts"
+version = "0.2.15"
+dependencies = [
+ "storage-platform",
+ "thiserror 2.0.19",
+ "zbus",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2182,6 +2191,7 @@ dependencies = [
  "app-chooser-gui",
  "better-core",
  "better-ui",
+ "drive-mounts",
  "files-core",
  "files-operations",
  "files-platform",
@@ -4517,8 +4527,10 @@ name = "manager-daemon"
 version = "0.2.15"
 dependencies = [
  "better-core",
+ "drive-mounts",
  "hardware-core",
  "hardware-platform",
+ "libc",
  "manager-daemon",
  "manager-ipc",
  "serde",

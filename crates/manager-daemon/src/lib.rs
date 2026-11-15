@@ -22,6 +22,7 @@
 pub mod apt;
 pub mod authorize;
 pub mod dpkg_state;
+pub mod drives;
 pub mod executor;
 pub mod hardware;
 pub mod health;
@@ -112,6 +113,22 @@ pub enum DaemonError {
     /// The write or the read back failed.
     #[error("daemon.error.write_failed:{0}")]
     WriteFailed(String),
+    /// UDisks2 knows no drive with that UUID (ticket 127).
+    #[error("daemon.error.drive_absent")]
+    DriveAbsent,
+    /// A drive this choice is not for: `system_drive`, `system_table` (a
+    /// line Better OS did not write names it), `not_a_filesystem`.
+    #[error("daemon.error.drive_refused:{0}")]
+    DriveRefused(String),
+    /// It could not be unmounted; the entry stays.
+    #[error("daemon.error.drive_busy:{0}")]
+    DriveBusy(String),
+    /// `/etc/fstab` or the rules file is malformed; nothing was written.
+    #[error("daemon.error.mount_table_malformed:{0}")]
+    MountTableMalformed(String),
+    /// The entry was written and the mount failed.
+    #[error("daemon.error.mount_failed:{0}")]
+    MountFailed(String),
 }
 
 impl From<manager_ipc::IpcError> for DaemonError {
@@ -145,6 +162,24 @@ mod tests {
                 .to_string()
                 .starts_with(keys::WRITE_FAILED)
         );
+    }
+
+    /// The windows read these through `drive-mounts`.
+    #[test]
+    fn the_drive_error_keys_are_the_ones_the_windows_read() {
+        use drive_mounts::client::{SetOutcome, classify_error};
+        let name = "org.freedesktop.DBus.Error.Failed";
+        for (error, outcome) in [
+            (DaemonError::AuthCancelled, SetOutcome::Cancelled),
+            (DaemonError::Unauthorized, SetOutcome::NotAllowed),
+            (DaemonError::DriveAbsent, SetOutcome::Absent),
+            (DaemonError::DriveRefused("system_table".into()), SetOutcome::Refused("system_table".into())),
+            (DaemonError::DriveBusy("busy".into()), SetOutcome::Busy("busy".into())),
+            (DaemonError::MountTableMalformed("line 2".into()), SetOutcome::Malformed("line 2".into())),
+            (DaemonError::MountFailed("timeout".into()), SetOutcome::MountFailed("timeout".into())),
+        ] {
+            assert_eq!(classify_error(name, &error.to_string()), outcome);
+        }
     }
 
     #[test]
