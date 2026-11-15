@@ -997,6 +997,10 @@ const NETWORK_FILESYSTEMS: &[&str] = &[
 /// Whether a filesystem can keep a caller waiting on something other than
 /// this machine's own disks: a network filesystem, or any FUSE filesystem
 /// (`fuse`, `fuseblk`, and every `fuse.<name>` subtype).
+pub(crate) fn is_network_filesystem(filesystem: &str) -> bool {
+    NETWORK_FILESYSTEMS.contains(&filesystem)
+}
+
 pub(crate) fn is_network_or_fuse(filesystem: &str) -> bool {
     NETWORK_FILESYSTEMS.contains(&filesystem)
         || filesystem == "fuse"

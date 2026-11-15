@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use crate::entry::{Entry, EntryId};
+use crate::entry::{Entry, EntryId, EntrySize};
 use crate::error::ListingError;
 use crate::hidden::HiddenPreference;
 use crate::listing::{ListingEvent, ListingId, SkippedEntry};
@@ -301,6 +301,28 @@ impl DirectoryModel {
         if !replaced.is_empty() {
             self.ordered.retain(|slot| !replaced.contains(slot));
         }
+    }
+
+    /// Gives entries a new size and moves each to where the sort now puts
+    /// it. Selection is by identity, so it stays on the same entries. Sizes
+    /// equal to the one held, and identities no longer listed, are skipped.
+    /// Returns how many entries changed.
+    pub fn set_sizes(&mut self, sizes: Vec<(EntryId, EntrySize)>) -> usize {
+        let changed: Vec<Entry> = sizes
+            .into_iter()
+            .filter_map(|(id, size)| {
+                let entry = self.get(&id)?;
+                (entry.size != size).then(|| Entry {
+                    size,
+                    ..entry.clone()
+                })
+            })
+            .collect();
+        let count = changed.len();
+        if count > 0 {
+            self.insert_batch(changed);
+        }
+        count
     }
 
     /// Applies a watcher event. Returns whether anything changed.
@@ -662,6 +684,40 @@ mod tests {
         // The same reading again changes nothing.
         let same: Vec<Entry> = model.iter_all().cloned().collect();
         assert!(!model.reconcile(same, Vec::new()));
+    }
+
+    #[test]
+    fn a_size_arriving_resorts_the_entry_and_keeps_the_selection() {
+        let mut model = DirectoryModel::new(
+            Location::local("/d").unwrap(),
+            SortOrder::new(
+                crate::sort::SortKey::Size,
+                crate::sort::SortDirection::Descending,
+            ),
+            HiddenPreference::default(),
+        );
+        let mut file = entry("file", EntryKind::File);
+        file.size = EntrySize::Bytes(10);
+        model.insert_batch(vec![
+            entry("a", EntryKind::Directory),
+            entry("b", EntryKind::Directory),
+            file,
+        ]);
+        let b = EntryId::Name("b".into());
+        model.selection_mut().select_only(b.clone());
+        assert_eq!(names_of(&model), ["a", "b", "file"]);
+        assert_eq!(model.set_sizes(vec![(b.clone(), EntrySize::Bytes(5))]), 1);
+        assert_eq!(names_of(&model), ["b", "a", "file"]);
+        assert!(model.selection().contains(&b));
+        assert_eq!(model.selection().len(), 1);
+        // The same size again, or an identity no longer listed, changes nothing.
+        assert_eq!(
+            model.set_sizes(vec![
+                (b, EntrySize::Bytes(5)),
+                (EntryId::Name("gone".into()), EntrySize::Bytes(1)),
+            ]),
+            0
+        );
     }
 
     #[test]

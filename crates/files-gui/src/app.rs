@@ -569,6 +569,7 @@ impl FilesApp {
                     }
                     if app.session.is_listing()
                         || app.session.is_refreshing()
+                        || app.session.folder_sizes.is_busy()
                         || app.session.jobs.iter().any(|job| !job.state.is_terminal())
                     {
                         BUSY_INTERVAL

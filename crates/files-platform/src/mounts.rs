@@ -46,6 +46,17 @@ impl MountPoint {
     }
 }
 
+/// What kind of storage a path is on, as far as the mount table says.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Reach {
+    Local,
+    /// A network filesystem (`cifs`, `nfs`, `sshfs` is FUSE and not this).
+    Network,
+    /// A filesystem a program serves (`fuse.*`, `fuseblk`): GVfs, sshfs,
+    /// rclone, an NTFS disk through ntfs-3g.
+    Fuse,
+}
+
 /// Every mount, ordered so the longest mount point wins a lookup.
 #[derive(Clone, Debug, Default)]
 pub struct MountTable {
@@ -89,6 +100,17 @@ impl MountTable {
         self.mount_for(path).is_some_and(|mount| {
             mount.filesystem != "fuseblk" && crate::trash::is_network_or_fuse(&mount.filesystem)
         })
+    }
+
+    /// What kind of storage `path` is on, from the mount table alone: nothing
+    /// under `path` is touched, so a share whose server is gone cannot stall
+    /// the caller. `Local` when the table holds no mount for it.
+    pub fn reach(&self, path: &Path) -> Reach {
+        match self.mount_for(path) {
+            Some(mount) if crate::trash::is_network_filesystem(&mount.filesystem) => Reach::Network,
+            Some(mount) if crate::trash::is_network_or_fuse(&mount.filesystem) => Reach::Fuse,
+            _ => Reach::Local,
+        }
     }
 
     /// The device identity to tag entries under this path with.
@@ -234,6 +256,24 @@ mod tests {
             .unwrap();
         assert_eq!(stick.source, "/dev/sdb1");
         assert_eq!(stick.filesystem, "vfat");
+    }
+
+    #[test]
+    fn reach_names_network_and_fuse_storage_from_the_table_alone() {
+        let table = MountTable::new(parse_mountinfo(concat!(
+            "28 1 8:2 / / rw,relatime shared:1 - ext4 /dev/sda2 rw\n",
+            "90 28 0:50 / /run/user/1000/gvfs rw,nosuid,nodev - fuse.gvfsd-fuse gvfsd-fuse rw\n",
+            "91 28 8:17 / /media/user/NTFS rw,nosuid - fuseblk /dev/sdb1 rw\n",
+            "92 28 0:51 / /mnt/share rw - cifs //nas/share rw\n",
+        )));
+        assert_eq!(table.reach(Path::new("/home/user/a")), Reach::Local);
+        assert_eq!(table.reach(Path::new("/mnt/share/x")), Reach::Network);
+        assert_eq!(
+            table.reach(Path::new("/run/user/1000/gvfs/smb-share:x")),
+            Reach::Fuse
+        );
+        assert_eq!(table.reach(Path::new("/media/user/NTFS/d")), Reach::Fuse);
+        assert_eq!(MountTable::default().reach(Path::new("/x")), Reach::Local);
     }
 
     #[test]

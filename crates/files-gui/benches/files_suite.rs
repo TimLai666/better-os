@@ -117,6 +117,7 @@ fn main() {
     println!();
 
     rows.extend(large_directory(root.path(), entry_count, iterations));
+    rows.extend(folder_sizes(root.path(), entry_count, iterations));
     rows.extend(search_latency(root.path(), entry_count));
     rows.extend(preview_generation(root.path(), iterations));
     rows.extend(copy_scenarios(root.path(), small_files, large_bytes));
@@ -257,6 +258,129 @@ fn large_directory(root: &Path, count: usize, iterations: usize) -> Vec<Row> {
 }
 
 // --- Scenario: search in the current directory ---------------------------
+
+/// CPU time this process has used, user and system, from `/proc/self/stat`
+/// (fields 14 and 15, in the kernel's fixed 100 Hz `USER_HZ`).
+fn process_cpu() -> Duration {
+    let stat = fs::read_to_string("/proc/self/stat").unwrap_or_default();
+    let after = stat.rsplit_once(')').map(|(_, rest)| rest).unwrap_or("");
+    let fields: Vec<&str> = after.split_whitespace().collect();
+    let ticks = |index: usize| {
+        fields
+            .get(index)
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    // After the command name, the state is field 3, so utime (14) is at 11.
+    Duration::from_millis((ticks(11) + ticks(12)) * 10)
+}
+
+/// Ticket 126: a tree of `count` files in 1,000 folders under 50, listed and
+/// then measured as the window does, and the listing's first frame with and
+/// without folder sizes on.
+fn folder_sizes(root: &Path, count: usize, iterations: usize) -> Vec<Row> {
+    use files_gui::folder_sizes::FolderSizes;
+    let tree = root.join("tree");
+    let per_folder = (count / 1_000).max(1);
+    for top in 0..50 {
+        for inner in 0..20 {
+            let folder = tree
+                .join(format!("dir{top:02}"))
+                .join(format!("sub{inner:02}"));
+            fs::create_dir_all(&folder).expect("tree folder");
+            for file in 0..per_folder {
+                fs::write(folder.join(format!("f{file:04}")), [0u8; 100]).expect("tree file");
+            }
+        }
+    }
+    let location = Location::local(&tree).expect("location");
+    let reader = reader();
+    let preferences = ViewPreferences::default();
+    let mut all = Vec::new();
+    let mut cpu = Vec::new();
+    let mut total = 0;
+    for _ in 0..iterations {
+        let mut sizes = FolderSizes::default();
+        let mut pane = Pane::open(location.clone(), preferences, reader.as_ref());
+        drain(&mut pane);
+        let clock = Instant::now();
+        let before = process_cpu();
+        sizes.pump(pane.model_mut(), true, false, true);
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while sizes.is_busy() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+            sizes.pump(pane.model_mut(), true, false, false);
+        }
+        all.push(clock.elapsed());
+        cpu.push(process_cpu().saturating_sub(before));
+        total = pane
+            .model()
+            .iter_visible()
+            .filter_map(|entry| entry.size.bytes())
+            .sum::<u64>();
+    }
+
+    // The listing's first frame, with sizes pumped every frame as the window
+    // does and without. The flat directory holds 10,000 folders, so sizes on
+    // means 10,000 walks queued the moment its listing is in.
+    let flat = Location::local(root.join("flat")).expect("flat location");
+    let mut first_on = Vec::new();
+    let mut first_off = Vec::new();
+    let mut complete_on = Vec::new();
+    let mut complete_off = Vec::new();
+    for on in [false, true].iter().cycle().take(iterations * 2) {
+        let mut sizes = FolderSizes::default();
+        let clock = Instant::now();
+        let mut pane = Pane::open(flat.clone(), preferences, reader.as_ref());
+        let mut first = None;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while (pane.is_listing() || first.is_none()) && Instant::now() < deadline {
+            let changed = pane.pump();
+            if *on {
+                let listed = !pane.is_listing();
+                sizes.pump(pane.model_mut(), listed, false, changed);
+            }
+            if first.is_none() && pane.model().visible_len() > 0 {
+                first = Some(clock.elapsed());
+            }
+            std::thread::yield_now();
+        }
+        let (first_list, complete_list) = if *on {
+            (&mut first_on, &mut complete_on)
+        } else {
+            (&mut first_off, &mut complete_off)
+        };
+        first_list.push(first.unwrap_or_default());
+        complete_list.push(clock.elapsed());
+    }
+
+    vec![
+        Row {
+            scenario: format!("Folder sizes, {count} files in 1,000 folders"),
+            metric: "time to all 50 sizes",
+            value: ms(median(all)),
+            detail: format!("listing done first; {} counted", format_bytes(total)),
+        },
+        Row {
+            scenario: format!("Folder sizes, {count} files in 1,000 folders"),
+            metric: "CPU time while measuring",
+            value: ms(median(cpu)),
+            detail: "process user+system, 10 ms resolution".into(),
+        },
+        Row {
+            scenario: format!("{count}-entry directory, sizes on"),
+            metric: "time to first visible entries",
+            value: ms(median(first_on)),
+            detail: format!("off: {}", ms(median(first_off))),
+        },
+        Row {
+            scenario: format!("{count}-entry directory, sizes on"),
+            metric: "time to complete model",
+            value: ms(median(complete_on)),
+            detail: format!("off: {}", ms(median(complete_off))),
+        },
+    ]
+}
 
 fn search_latency(root: &Path, count: usize) -> Vec<Row> {
     let flat = root.join("flat");
