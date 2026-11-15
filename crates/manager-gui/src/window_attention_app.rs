@@ -94,7 +94,7 @@ impl ManagerApp {
 
     /// Turns the shell extension on, then reads everything again.
     /// Installs the missing adapter the way every package is installed:
-    /// a reviewed plan through the privileged service. Better Manager is
+    /// started at once through the privileged service. Better Manager is
     /// current, so it is its missing companion; one that has an update
     /// carries it in that update.
     pub(crate) fn install_shell_adapter(&mut self, cx: &mut Context<Self>) {
@@ -107,7 +107,7 @@ impl ManagerApp {
             }
             _ => manager_core::DesiredOperation::AddCompanions,
         };
-        self.prepare_component_operation(&id, operation, cx);
+        self.start_operation(&id, operation, cx);
     }
 
     pub(crate) fn turn_on_shell_adapter(&mut self, cx: &mut Context<Self>) {

@@ -1841,3 +1841,31 @@ fn every_language_picker_names_the_languages_the_same_way() {
     assert_eq!(language_name(Locale::TraditionalChinese), "繁體中文");
     assert_ne!(language_name(Locale::English), "English (US)");
 }
+
+/// Ticket 85: a window whose first frame was client-decorated at 1280×820
+/// set an input region of that size; sway then drew the decorations itself
+/// and the window grew to 1600×1000, and the early return for a
+/// server-decorated window never cleared the region, so every press right of
+/// x≈1228 or below y≈768 went to nothing. Losing client decorations must
+/// give the compositor the whole surface again, once.
+#[test]
+fn a_window_that_loses_client_decorations_takes_input_everywhere_again() {
+    use crate::system_frame::input_region_changes;
+    let first = Some((52.0, 52.0, 1176.0, 716.0));
+    // The first frame sets its region.
+    assert!(input_region_changes(None, first));
+    // Server-decorated now: the whole surface, which is a change.
+    assert!(input_region_changes(Some(first), None));
+    // And only once.
+    assert!(!input_region_changes(Some(None), None));
+    // The early return clears it: the source says so.
+    let source = include_str!("window_frame.rs");
+    let early = source
+        .split("if !state.client_decorated {")
+        .nth(1)
+        .unwrap()
+        .split("return div()")
+        .next()
+        .unwrap();
+    assert!(early.contains("self.set_input(None, window);"), "{early}");
+}

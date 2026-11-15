@@ -118,13 +118,19 @@ above the built-in catalog's "尚未下載過" warning. Pressing 檢查更新 fe
 published manifests, and both rows changed together: 已是最新 · 剛剛更新, over
 剛剛下載的清單 · 剛剛更新, with the outdated-list warning gone.
 
-## Remaining
+## Remaining (finished in ticket 85's change)
 
-- A periodic background update check, so a window left open does not keep
-  showing an old catalog until someone presses the button.
-- A clickable repository link, with the decision on what this window may
+- **Periodic check.** An open window checks again by itself every six hours
+  (`apps::periodic_check_due`, ticked every ten minutes): same setting and
+  offline rule as the launch check, never during a check or a change, and a
+  failed attempt is not retried until the interval passes again.
+- **Clickable repository link.** Already delivered by ticket 84: Settings ›
+  About has `HyperlinkButton`s for the source and the licenses, opened with
+  the desktop's URL handler; that was the decision on what this window may
   launch.
-- A test that makes a real fetch fail and checks the `Failed` state's copy.
+- **A real failing fetch.** `tests.rs` `failed_real_fetch` makes an HTTPS
+  request to a loopback port nothing listens on and checks the `Failed`
+  state's copy in both languages, with no count.
 
 ## Not done when first delivered
 

@@ -23,18 +23,13 @@ fn required_visible_copy_exists_in_both_locales() {
         let c = copy(locale);
         for value in [
             c.components,
-            c.updates,
-            c.health,
-            c.activity,
             c.review_changes,
-            c.install_updates,
             c.applying_settings,
             c.checking_works,
             c.restore_previous,
             c.ready_to_install,
             c.storage_error,
             c.release_notes,
-            c.required_disk_space,
         ] {
             assert!(!value.trim().is_empty());
         }
@@ -77,7 +72,6 @@ fn an_untranslated_component_is_presented_from_its_own_manifest() {
     assert_eq!(info.icon, ComponentIcon::Launcher);
     assert_eq!(info.restart_requirement, RestartRequirement::Reboot);
     assert_eq!(info.replaces, vec!["org.example.Old".to_string()]);
-    assert_eq!(info.element_id("install"), "install-third-party-tool");
 }
 
 #[test]
@@ -263,7 +257,6 @@ fn localized_long_actions_wrap_at_every_supported_scale() {
     for locale in [Locale::EnUs, Locale::ZhTw] {
         let c = copy(locale);
         let longest = [
-            c.install_updates,
             c.restore_previous,
             c.checking_works,
             c.manual_recovery_required,
@@ -323,7 +316,6 @@ fn every_real_failure_reason_has_copy_in_both_locales() {
             c.evidence_state_drift,
             c.evidence_daemon_refused,
             c.demo_mode_banner,
-            c.downloading_progress,
             c.check_host_reconciliation,
             c.evidence_user_units_failed,
             c.evidence_user_units_not_running,
@@ -489,9 +481,12 @@ mod component_page {
         let monitor_plan = manager
             .plan(&state, &monitor, DesiredOperation::Update)
             .expect("the monitor must be updatable in the demo state");
-        assert!(!crate::app::ManagerApp::updates_the_manager(
-            monitor_plan.steps()
-        ));
+        assert!(
+            !monitor_plan
+                .steps()
+                .iter()
+                .any(|step| manager_core::is_self_component(&step.component))
+        );
 
         // Put the manager one release behind so its own update can be planned.
         state.set_installed(self_id.clone(), "0.0.1", true);
@@ -521,6 +516,8 @@ mod component_page {
             companions.restart_requirement(),
             manager_core::RestartRequirement::NotRequired
         );
+        // The Updates page decides its notice the same way.
+        assert!(include_str!("render_apps.rs").contains("Self::updates_the_manager("));
     }
 
     #[test]
@@ -546,11 +543,7 @@ mod component_page {
                 c.not_installed,
                 c.installed_outside_manager,
                 c.last_install_failed,
-                c.try_install_again,
-                c.remove_component,
                 c.cannot_remove_self,
-                c.self_update_title,
-                c.self_update_detail,
             ] {
                 assert!(!value.trim().is_empty(), "{locale:?} is missing a string");
             }
@@ -561,10 +554,7 @@ mod component_page {
         for (english, chinese) in [
             (en.not_installed, zh.not_installed),
             (en.last_install_failed, zh.last_install_failed),
-            (en.try_install_again, zh.try_install_again),
-            (en.remove_component, zh.remove_component),
             (en.cannot_remove_self, zh.cannot_remove_self),
-            (en.self_update_detail, zh.self_update_detail),
         ] {
             assert_ne!(english, chinese);
         }
@@ -577,12 +567,12 @@ mod component_page {
     fn the_new_action_labels_lay_out_no_worse_than_the_ones_already_shipped() {
         for locale in [Locale::EnUs, Locale::ZhTw] {
             let c = copy(locale);
-            let new_longest = [c.try_install_again, c.remove_component, c.not_installed]
+            let new_longest = [c.not_installed, c.remove]
                 .iter()
                 .map(|label| label.chars().count())
                 .max()
                 .unwrap();
-            let shipped_longest = [c.install_updates, c.restore_previous, c.checking_works]
+            let shipped_longest = [c.restore_previous, c.checking_works]
                 .iter()
                 .map(|label| label.chars().count())
                 .max()
@@ -632,7 +622,7 @@ mod catalog_state {
         for locale in [Locale::EnUs, Locale::ZhTw] {
             let line = CatalogLine::present(locale, &CatalogStatus::built_in(), 1_000_000);
             assert_eq!(line.age, copy(locale).catalog_never_updated);
-            assert!(line.is_degraded());
+            assert!(line.warning.is_some());
             assert_eq!(line.warning, Some(copy(locale).catalog_degraded_never));
         }
     }
@@ -643,7 +633,7 @@ mod catalog_state {
             let line =
                 CatalogLine::present(locale, &status(CatalogSource::Remote, None), 1_000_000);
             assert_eq!(line.age, copy(locale).catalog_updated_just_now);
-            assert!(!line.is_degraded());
+            assert!(!line.warning.is_some());
             assert_eq!(line.warning, None);
         }
     }
@@ -674,7 +664,7 @@ mod catalog_state {
                 let line =
                     CatalogLine::present(locale, &status(source, Some(degradation)), 1_000_000);
                 assert_eq!(line.warning, Some(expected));
-                assert!(line.is_degraded());
+                assert!(line.warning.is_some());
                 seen.push(expected);
             }
             // Four states including "never refreshed", four distinct sentences.
@@ -788,13 +778,11 @@ mod catalog_state {
                 c.catalog_degraded_failed_built_in,
                 c.catalog_degraded_partial,
                 c.catalog_rejected,
-                c.catalog_refresh,
                 c.catalog_refreshing,
             ] {
                 assert!(!value.trim().is_empty());
             }
             if locale == Locale::ZhTw {
-                assert_ne!(c.catalog_refresh, copy(Locale::EnUs).catalog_refresh);
                 assert_ne!(
                     c.catalog_degraded_never,
                     copy(Locale::EnUs).catalog_degraded_never
@@ -1176,13 +1164,10 @@ mod version_and_update_check {
             for value in [
                 c.check_updates,
                 c.checking_updates,
-                c.check_again,
                 c.update_check_found_one,
                 c.update_check_found,
                 c.update_check_up_to_date,
                 c.update_check_failed,
-                c.updates_subtitle,
-                c.review_and_update_all,
             ] {
                 assert!(!value.trim().is_empty(), "{locale:?} is missing a string");
             }
@@ -1193,13 +1178,10 @@ mod version_and_update_check {
         for (english, chinese) in [
             (en.check_updates, zh.check_updates),
             (en.checking_updates, zh.checking_updates),
-            (en.check_again, zh.check_again),
             (en.update_check_found_one, zh.update_check_found_one),
             (en.update_check_found, zh.update_check_found),
             (en.update_check_up_to_date, zh.update_check_up_to_date),
             (en.update_check_failed, zh.update_check_failed),
-            (en.updates_subtitle, zh.updates_subtitle),
-            (en.review_and_update_all, zh.review_and_update_all),
         ] {
             assert_ne!(english, chinese);
         }
@@ -1213,23 +1195,12 @@ mod version_and_update_check {
         let en = copy(Locale::EnUs);
         let zh = copy(Locale::ZhTw);
         let cases = [
-            (
-                en.updates_subtitle,
-                "New versions of the Better OS components on this computer.",
-            ),
-            (zh.updates_subtitle, "這台電腦上 Better OS 元件的新版本。"),
-            (en.review_and_update_all, "Review and update all"),
-            (zh.review_and_update_all, "檢視並全部更新"),
-            (en.check_again, "Check again"),
-            (zh.check_again, "再檢查一次"),
             (en.checking_updates, "Checking for new versions…"),
             (zh.checking_updates, "正在檢查有沒有新版本…"),
             (en.update_check_up_to_date, "All components are up to date"),
             (zh.update_check_up_to_date, "所有元件都是最新版本"),
             (en.update_check_failed, "Couldn't check for new versions"),
             (zh.update_check_failed, "無法檢查有沒有新版本"),
-            (en.catalog_refresh, "Check for updates"),
-            (zh.catalog_refresh, "檢查更新"),
             (en.catalog_refreshing, "Checking…"),
             (zh.catalog_refreshing, "正在檢查…"),
             (en.restart_requirement, "Afterwards"),
@@ -1257,34 +1228,6 @@ mod version_and_update_check {
             (zh.restart_log_out, "需要登出再登入"),
             (en.restart_reboot, "Restart the computer"),
             (zh.restart_reboot, "需要重新開機"),
-            (
-                en.restart_note_application,
-                "Reopens by itself after the update if it is open",
-            ),
-            (
-                zh.restart_note_application,
-                "更新後，開著的話會自動重新開啟",
-            ),
-            (
-                en.restart_note_log_out,
-                "Log out and back in after the update",
-            ),
-            (zh.restart_note_log_out, "更新後需要登出再登入"),
-            (
-                en.restart_note_reboot,
-                "Restart the computer after the update",
-            ),
-            (zh.restart_note_reboot, "更新後需要重新開機"),
-            (en.restore_none_title, "Restore a component"),
-            (zh.restore_none_title, "還原元件"),
-            (
-                en.restore_nothing_failed,
-                "No component has a failed check on record, so there is nothing to restore.",
-            ),
-            (
-                zh.restore_nothing_failed,
-                "目前沒有元件檢查失敗，不需要還原。",
-            ),
             (
                 en.catalog_degraded_never,
                 "This version list may be outdated. It ships with the app and cannot know about versions released since.",
@@ -1393,12 +1336,6 @@ mod version_and_update_check {
                 );
             }
         }
-        // The review's summary row: an update only when every step is one.
-        use crate::app::plan_operation;
-        assert_eq!(plan_operation(&[Op::Update, Op::Update]), Op::Update);
-        assert_eq!(plan_operation(&[Op::Update, Op::Install]), Op::Install);
-        assert_eq!(plan_operation(&[Op::Remove, Op::Disable]), Op::Remove);
-        assert_eq!(plan_operation(&[]), Op::Install);
     }
 
     /// Ticket 110 review: an offline first launch has only the built-in list;
@@ -1474,57 +1411,6 @@ mod version_and_update_check {
         assert!(!shows_catalog_age(&Page::Home));
     }
 
-    /// Ticket 111: a card says what happens after its update only when an
-    /// update is waiting and something happens.
-    #[test]
-    fn a_card_says_what_its_update_will_do_only_when_it_matters() {
-        use crate::components::restart_note;
-        use manager_core::ComponentStatus;
-        let zh = Locale::ZhTw;
-        assert_eq!(
-            restart_note(
-                zh,
-                ComponentStatus::UpdateAvailable,
-                RestartRequirement::RestartApplication
-            ),
-            Some("更新後，開著的話會自動重新開啟")
-        );
-        assert_eq!(
-            restart_note(
-                zh,
-                ComponentStatus::UpdateAvailable,
-                RestartRequirement::LogOut
-            ),
-            Some("更新後需要登出再登入")
-        );
-        assert_eq!(
-            restart_note(
-                zh,
-                ComponentStatus::UpdateAvailable,
-                RestartRequirement::Reboot
-            ),
-            Some("更新後需要重新開機")
-        );
-        for quiet in [
-            RestartRequirement::NotRequired,
-            RestartRequirement::NotDeclared,
-        ] {
-            assert_eq!(
-                restart_note(zh, ComponentStatus::UpdateAvailable, quiet),
-                None
-            );
-        }
-        // Nothing to update, nothing to say.
-        assert_eq!(
-            restart_note(
-                zh,
-                ComponentStatus::Healthy,
-                RestartRequirement::RestartApplication
-            ),
-            None
-        );
-    }
-
     /// The check button and the About rows never make a row worse than what is
     /// already shipped, at every supported window size and scale.
     #[test]
@@ -1533,17 +1419,12 @@ mod version_and_update_check {
             let c = copy(locale);
             // Ticket 111's buttons: the check, its running state, and the
             // review that updates everything.
-            let new_longest = [
-                c.check_updates,
-                c.check_again,
-                c.catalog_refreshing,
-                c.review_and_update_all,
-            ]
-            .iter()
-            .map(|label| label.chars().count())
-            .max()
-            .unwrap();
-            let shipped_longest = [c.install_updates, c.restore_previous]
+            let new_longest = [c.check_updates, c.catalog_refreshing]
+                .iter()
+                .map(|label| label.chars().count())
+                .max()
+                .unwrap();
+            let shipped_longest = [c.restore_previous, c.checking_works]
                 .iter()
                 .map(|label| label.chars().count())
                 .max()
@@ -1597,13 +1478,12 @@ mod affordance {
     use crate::model::ComponentKind;
     use better_ui::{Affordance, StatusPill, StatusTone};
     use defaults_core::AggregateState;
-    use manager_core::{ActivityKind, DoctorCheckStatus, HealthState};
+    use manager_core::HealthState;
 
     /// Every status indicator this window can draw, in one place. A screen
     /// that grows a new one and does not add it here is the gap this test is
     /// meant to make visible, so the list is by state rather than by screen.
     fn every_status_indicator(locale: Locale) -> Vec<StatusPill> {
-        let c = copy(locale);
         let mut pills = Vec::new();
         for status in [
             ComponentStatus::Available,
@@ -1636,24 +1516,8 @@ mod affordance {
         ] {
             pills.push(ManagerApp::health_pill(locale, health));
         }
-        for status in [
-            DoctorCheckStatus::Passed,
-            DoctorCheckStatus::Warning,
-            DoctorCheckStatus::Failed,
-        ] {
-            pills.push(ManagerApp::doctor_pill(c, status));
-        }
-        for kind in [
-            ActivityKind::Success,
-            ActivityKind::RecoverySuccess,
-            ActivityKind::Failure,
-            ActivityKind::Warning,
-            ActivityKind::RecoveryPartial,
-            ActivityKind::ManualRecovery,
-            ActivityKind::Information,
-        ] {
-            pills.push(ManagerApp::activity_pill(c, kind));
-        }
+        // Doctor results and activity entries are list rows with a status
+        // glyph since ticket 85, not pills.
         for aggregate in [
             AggregateState::Default,
             AggregateState::NotDefault,
@@ -1671,7 +1535,7 @@ mod affordance {
         for locale in [Locale::EnUs, Locale::ZhTw] {
             let pills = every_status_indicator(locale);
             assert!(
-                pills.len() >= 40,
+                pills.len() >= 30,
                 "the enumeration lost indicators: {}",
                 pills.len()
             );
@@ -1707,14 +1571,6 @@ mod affordance {
             assert_eq!(
                 ManagerApp::health_pill(locale, HealthState::Healthy).tone,
                 StatusTone::Success
-            );
-            assert_eq!(
-                ManagerApp::doctor_pill(copy(locale), DoctorCheckStatus::Failed).tone,
-                StatusTone::Danger
-            );
-            assert_eq!(
-                ManagerApp::activity_pill(copy(locale), ActivityKind::Failure).tone,
-                StatusTone::Danger
             );
         }
     }
@@ -1760,9 +1616,7 @@ mod affordance {
     fn no_screen_draws_a_status_with_the_toolkit_tag() {
         for (name, source) in [
             ("components.rs", include_str!("components.rs")),
-            ("pages_main.rs", include_str!("pages_main.rs")),
-            ("pages_flow.rs", include_str!("pages_flow.rs")),
-            ("pages_settings.rs", include_str!("pages_settings.rs")),
+            ("render_apps.rs", include_str!("render_apps.rs")),
             ("pages_defaults.rs", include_str!("pages_defaults.rs")),
         ] {
             assert!(
@@ -1782,14 +1636,14 @@ mod affordance {
     /// constants can see.
     #[test]
     fn the_failure_card_labels_its_recovery_row_as_a_heading() {
-        let source = include_str!("components.rs");
+        let source = include_str!("render_apps.rs");
         assert!(
-            source.contains("self.key_value_row(c.recovery_status, recovery, cx)"),
-            "the failure card no longer labels its recovery row with recovery_status"
+            source.contains("c.recovery_status,"),
+            "the failure details no longer label the recovery line with recovery_status"
         );
         assert!(
-            !source.contains("self.key_value_row(c.restore_available, recovery, cx)"),
-            "the failure card prints its own label as its value again"
+            !source.contains("c.restore_available,\n                    match recovery"),
+            "the failure details print their own label as the value again"
         );
     }
 
@@ -1940,25 +1794,23 @@ mod drift_surface {
     /// from the component page is the regression to catch.
     #[test]
     fn the_component_page_draws_the_drift_card_and_asks_before_adopting() {
-        let page = include_str!("pages_main.rs");
+        let page = include_str!("render_apps.rs");
         assert!(
-            page.contains("self.drift_card(&component, &notice, cx)"),
-            "the component detail page must draw the drift card"
+            page.contains("component.drift_notice(self.locale)"),
+            "the component page must draw the drift card"
         );
-
-        let card = include_str!("components.rs");
-        // Adoption throws away the restore point, so the first click may only
-        // ask. `adopt_host_state` is reached from the confirming branch alone.
-        assert!(card.contains("this.ask_to_adopt_host_state(Some(ask_id.clone()), cx)"));
-        assert!(card.contains("this.adopt_host_state(&adopt_id, cx)"));
-        let confirm_at = card
-            .find("Button::new(\"drift-adopt-confirm\")")
-            .expect("the confirming branch must exist");
-        let act_at = card
-            .find("this.adopt_host_state(&adopt_id, cx)")
+        // Adoption throws away the restore point, so the card's button only
+        // opens the dialog; `adopt_host_state` is reached from its primary
+        // button alone.
+        assert!(page.contains("this.set_dialog(Some(Dialog::Adopt { id: adopt.clone() }), cx)"));
+        let dialog_at = page
+            .find("Dialog::Adopt { id } =>")
+            .expect("the adopt dialog must exist");
+        let act_at = page
+            .find("this.adopt_host_state(&confirm, cx)")
             .expect("the adopting handler must exist");
         assert!(
-            confirm_at < act_at,
+            dialog_at < act_at,
             "adoption must only be reachable from the confirmation"
         );
     }
@@ -2170,9 +2022,9 @@ mod package_system_repair {
             activity_evidence_text(en.evidence_health_failed, Some("health.failed")),
             en.evidence_health_failed
         );
-        let rows = include_str!("pages_main.rs");
+        let rows = include_str!("render_apps.rs");
         let row = rows
-            .split("fn activity_row(")
+            .split("fn activity_rows(")
             .nth(1)
             .unwrap()
             .split("\n    }\n")
@@ -2271,9 +2123,9 @@ mod package_system_repair {
     /// go through `manager-core` rather than talking to the service itself.
     #[test]
     fn the_health_screen_draws_the_card_and_repairs_through_manager_core() {
-        let page = include_str!("pages_settings.rs");
+        let page = include_str!("render_apps.rs");
         assert!(
-            page.contains("self.package_system_card(cx)"),
+            page.contains("package_system_notice(self.locale, state)"),
             "the Health screen must draw the package system card"
         );
         assert!(page.contains("this.repair_package_system(cx)"));
@@ -2358,7 +2210,7 @@ mod unorderable_host_versions {
         );
         assert!(!doctor.contains("DpkgProbe"), "{doctor}");
 
-        let page = include_str!("pages_settings.rs");
+        let page = include_str!("render_apps.rs");
         assert!(
             page.contains("DoctorCheckKind::UnorderableHostVersion => c.check_unorderable_version")
         );
@@ -2387,21 +2239,22 @@ mod unorderable_host_versions {
         assert!(plan.contains(".plan_on_host("), "{plan}");
         assert!(plan.contains("&DpkgProbe"), "{plan}");
 
-        let card = include_str!("components.rs");
-        let button = card
-            .split("fn component_action_button(")
-            .nth(1)
-            .unwrap()
-            .split("match component.state")
-            .next()
+        // The row's one action is decided with dpkg's finding in hand, and
+        // an unorderable package gets View, never Install (apps::trailing).
+        assert!(app.contains("unorderable: self.unorderable_check(id).is_some(),"));
+        let rules = include_str!("apps.rs");
+        let decide = rules.split("pub(crate) fn trailing(").nth(1).unwrap();
+        let view_at = decide.find("return Trailing::View;").unwrap();
+        let install_at = decide
+            .find("Trailing::Action(DesiredOperation::Install)")
             .unwrap();
         assert!(
-            button.contains("self.unorderable_check(&component.core_id)"),
-            "{button}"
+            view_at < install_at,
+            "an unorderable row must stop before Install"
         );
 
-        let detail = include_str!("pages_main.rs");
-        assert!(detail.contains(".unorderable_check(&component.core_id)"));
+        let detail = include_str!("render_apps.rs");
+        assert!(detail.contains(".unorderable_check(id)"));
         assert!(detail.contains("unorderable.is_none()"));
         assert!(detail.contains("unorderable_detail(self.locale, check)"));
     }
@@ -2724,6 +2577,44 @@ mod service_notice {
             companion_detail(Locale::ZhTw, &older)
                 .unwrap()
                 .contains("0.2.9")
+        );
+    }
+}
+
+/// Ticket 46: a check that really goes to the network and fails says which
+/// list is on screen instead, and claims no count. The fetch is real: an
+/// HTTPS request to a loopback port nothing listens on, refused at once,
+/// so no outside network is involved.
+mod failed_real_fetch {
+    use super::*;
+    use crate::model::UpdateCheck;
+    use manager_core::catalog::{CatalogDegradation, CatalogStatus, built_in_catalog, refresh};
+    use manager_platform::catalog_fetch::HttpManifestFetcher;
+
+    #[test]
+    fn a_refused_connection_reports_the_built_in_list_in_both_locales() {
+        let fetcher = HttpManifestFetcher::new("https://127.0.0.1:9");
+        let outcome = refresh(
+            &fetcher,
+            &built_in_catalog(),
+            &CatalogStatus::built_in(),
+            1_000,
+        );
+        assert_eq!(
+            outcome.status.degraded,
+            Some(CatalogDegradation::RefreshFailedUsingBuiltIn)
+        );
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let check = UpdateCheck::present(locale, true, false, &outcome.status, 3);
+            assert_eq!(
+                check,
+                UpdateCheck::Failed(copy(locale).catalog_degraded_failed_built_in),
+                "a failed check never reports the count of the list it failed to replace"
+            );
+        }
+        assert_ne!(
+            copy(Locale::EnUs).update_check_failed,
+            copy(Locale::ZhTw).update_check_failed
         );
     }
 }
