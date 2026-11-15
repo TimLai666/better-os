@@ -74,6 +74,12 @@ pub struct DrivePaths {
     /// The lock every change holds from reading a file to renaming the new
     /// one over it (ADR 0032).
     pub lock: PathBuf,
+    /// Who must own the lock file: root on a machine; the test's own user
+    /// in tests (the seam that lets a test make one that is not root's).
+    pub lock_owner: u32,
+    /// How long a change waits for the lock before it says the mount table
+    /// is busy.
+    pub lock_wait: std::time::Duration,
 }
 
 impl DrivePaths {
@@ -83,6 +89,8 @@ impl DrivePaths {
             rules: PathBuf::from(drive_mounts::rules::RULES_PATH),
             mount_root: PathBuf::from("/"),
             lock: PathBuf::from("/run/better-os/fstab.lock"),
+            lock_owner: 0,
+            lock_wait: LOCK_WAIT,
         }
     }
 
@@ -384,6 +392,9 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, DaemonError> {
     }
 }
 
+/// How long a change waits for another one to finish with the files.
+pub const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// An exclusive `flock` on the lock file, held until dropped. Every Better
 /// OS writer of the two files takes it; other programs that edit fstab do
 /// not, and the check that the file still holds what was read before the
@@ -394,8 +405,16 @@ pub struct FileLock {
 }
 
 impl FileLock {
-    pub fn take(path: &Path) -> Result<Self, DaemonError> {
+    /// Takes the lock on `paths.lock`. The file is made `0600` and must be
+    /// owned by `paths.lock_owner` (root): `flock` needs no write access, so
+    /// a file anyone could open would let anyone hold the lock forever. It
+    /// is opened without following a link. A lock still held by someone
+    /// else after `paths.lock_wait` is
+    /// [`DaemonError::MountTableBusy`], which the windows offer Retry for.
+    pub fn take(paths: &DrivePaths) -> Result<Self, DaemonError> {
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
         use std::os::unix::io::AsRawFd as _;
+        let path = &paths.lock;
         let failed =
             |e: std::io::Error| DaemonError::WriteFailed(format!("{}: {e}", path.display()));
         if let Some(parent) = path.parent() {
@@ -405,13 +424,36 @@ impl FileLock {
             .create(true)
             .truncate(false)
             .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(path)
             .map_err(failed)?;
-        // SAFETY: a valid descriptor owned by `file`, which outlives the lock.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(failed(std::io::Error::last_os_error()));
+        let meta = file.metadata().map_err(failed)?;
+        if !meta.is_file() || meta.uid() != paths.lock_owner {
+            return Err(DaemonError::WriteFailed(format!(
+                "{} is not a file of its own owner's; it was left alone",
+                path.display()
+            )));
         }
-        Ok(Self { _file: file })
+        if meta.mode() & 0o7777 != 0o600 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(failed)?;
+        }
+        let deadline = std::time::Instant::now() + paths.lock_wait;
+        loop {
+            // SAFETY: a valid descriptor owned by `file`, which outlives the lock.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Self { _file: file });
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::EWOULDBLOCK) {
+                return Err(failed(error));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(DaemonError::MountTableBusy);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 }
 
@@ -441,7 +483,7 @@ impl DriveChange<'_> {
             return Err(DaemonError::DriveRefused("not_a_filesystem".into()));
         }
         let uuid = uuid.as_str();
-        let _lock = FileLock::take(&self.paths.lock)?;
+        let _lock = FileLock::take(self.paths)?;
         if drive.mount_points.iter().any(|p| p == Path::new("/")) {
             return Err(DaemonError::DriveRefused("system_drive".into()));
         }
@@ -584,7 +626,7 @@ impl DriveChange<'_> {
     /// which the prerm prints and does not fail on.
     pub fn remove_all(units: &dyn MountUnits, paths: &DrivePaths) -> Vec<String> {
         let mut problems = Vec::new();
-        let _lock = match FileLock::take(&paths.lock) {
+        let _lock = match FileLock::take(paths) {
             Ok(lock) => Some(lock),
             Err(error) => {
                 problems.push(error.to_string());
@@ -832,6 +874,9 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
                     .join("etc/udev/rules.d/90-better-os-drives.rules"),
                 mount_root: dir.path().to_path_buf(),
                 lock: dir.path().join("run/fstab.lock"),
+                // SAFETY: getuid has no preconditions.
+                lock_owner: unsafe { libc::getuid() },
+                lock_wait: LOCK_WAIT,
             };
             Self { dir, paths }
         }
@@ -1120,7 +1165,7 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
     #[test]
     fn a_change_waits_for_the_lock() {
         let machine = Machine::new(SYSTEM);
-        let held = FileLock::take(&machine.paths.lock).unwrap();
+        let held = FileLock::take(&machine.paths).unwrap();
         let paths = machine.paths.clone();
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = done.clone();
@@ -1209,5 +1254,68 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
         assert!(replace_file(&path, Some(b"a\n"), Some("c\n")).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "b\n");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_lock_someone_keeps_makes_the_change_busy_within_the_bound() {
+        let mut machine = Machine::new(SYSTEM);
+        machine.paths.lock_wait = std::time::Duration::from_millis(300);
+        let other = FileLock::take(&machine.paths).unwrap();
+        let started = std::time::Instant::now();
+        let resolver = drives();
+        let units = RecordingUnits::default();
+        assert_eq!(
+            change(&resolver, &units, &machine).apply("01D9F00DBEEF1234", true),
+            Err(DaemonError::MountTableBusy)
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(machine.fstab(), SYSTEM);
+        // The package's removal says so and goes on.
+        let problems = DriveChange::remove_all(&units, &machine.paths);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        drop(other);
+    }
+
+    #[test]
+    fn a_world_readable_lock_file_is_tightened() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let machine = Machine::new(SYSTEM);
+        std::fs::create_dir_all(machine.paths.lock.parent().unwrap()).unwrap();
+        std::fs::write(&machine.paths.lock, "").unwrap();
+        std::fs::set_permissions(&machine.paths.lock, std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        drop(FileLock::take(&machine.paths).unwrap());
+        let mode = std::fs::metadata(&machine.paths.lock)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        // A new one is made 0600 from the start.
+        std::fs::remove_file(&machine.paths.lock).unwrap();
+        drop(FileLock::take(&machine.paths).unwrap());
+        let mode = std::fs::metadata(&machine.paths.lock)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn a_lock_file_of_someone_else_or_a_link_is_refused() {
+        let mut machine = Machine::new(SYSTEM);
+        machine.paths.lock_owner = machine.paths.lock_owner.wrapping_add(1);
+        let resolver = drives();
+        let units = RecordingUnits::default();
+        assert!(matches!(
+            change(&resolver, &units, &machine).apply("01D9F00DBEEF1234", true),
+            Err(DaemonError::WriteFailed(_))
+        ));
+        assert_eq!(machine.fstab(), SYSTEM);
+        let machine = Machine::new(SYSTEM);
+        std::fs::create_dir_all(machine.paths.lock.parent().unwrap()).unwrap();
+        let target = machine.dir.path().join("elsewhere");
+        std::fs::write(&target, "").unwrap();
+        std::os::unix::fs::symlink(&target, &machine.paths.lock).unwrap();
+        assert!(FileLock::take(&machine.paths).is_err());
     }
 }

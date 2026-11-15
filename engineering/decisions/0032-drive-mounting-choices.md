@@ -120,6 +120,18 @@ Three places could hold the internal choice:
   do not take it; the check that the file
   still holds what was read just before the rename is what guards against
   them, and a change refused that way writes nothing.
+- **The lock cannot be held by anyone else.** `flock` needs no write
+  access, so a lock file anyone could open would let any local user hold
+  it forever and hang the daemon and the package's removal. The file is
+  created `0600`, opened without following a link, made `0600` again if it
+  was not, and refused unless root owns it. A change waits for the lock at
+  most five seconds (`LOCK_EX|LOCK_NB`, retried), then reports the mount
+  table busy and changes nothing; the windows offer Retry, and the
+  package's removal says what it could not do and goes on.
+- **A rollback after a timeout can leave a mount behind.** A mount that
+  systemd gave up waiting for and that completes afterwards stays mounted
+  after the line is taken out again, until it is unmounted or the next
+  start; the line is gone, so it does not come back.
 - **A linked `/etc/fstab`** (or rules file) is refused with a clear error:
   the rename would replace the link with a file, and what it points to may
   be anyone's.

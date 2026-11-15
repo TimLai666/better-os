@@ -256,6 +256,9 @@ async fn every_start_answers_the_call_that_activated_it() {
                     .join("empty-root/etc/udev/rules.d/90-better-os-drives.rules"),
                 mount_root: bus.directory.join("empty-root"),
                 lock: bus.directory.join("empty-root/fstab.lock"),
+                // SAFETY: getuid has no preconditions.
+                lock_owner: unsafe { libc::getuid() },
+                lock_wait: manager_daemon::drives::LOCK_WAIT,
             },
             service.gate(),
         );

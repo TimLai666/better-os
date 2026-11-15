@@ -17,6 +17,7 @@ pub mod keys {
     pub const DRIVE_BUSY: &str = "daemon.error.drive_busy";
     pub const MOUNT_TABLE_MALFORMED: &str = "daemon.error.mount_table_malformed";
     pub const MOUNT_FAILED: &str = "daemon.error.mount_failed";
+    pub const MOUNT_TABLE_BUSY: &str = "daemon.error.mount_table_busy";
 }
 
 /// What a change came to.
@@ -39,6 +40,9 @@ pub enum SetOutcome {
     Busy(String),
     /// `/etc/fstab` or the rules file is malformed; nothing was written.
     Malformed(String),
+    /// Another change held the mount table for longer than the daemon waits;
+    /// nothing was written, and Retry asks again.
+    TableBusy,
     /// The entry was written and the mount failed; Retry asks again.
     MountFailed(String),
     Failed(String),
@@ -55,6 +59,7 @@ pub fn classify_error(name: &str, message: &str) -> SetOutcome {
         keys::DRIVE_BUSY => SetOutcome::Busy(detail),
         keys::MOUNT_TABLE_MALFORMED => SetOutcome::Malformed(detail),
         keys::MOUNT_FAILED => SetOutcome::MountFailed(detail),
+        keys::MOUNT_TABLE_BUSY => SetOutcome::TableBusy,
         _ => SetOutcome::Failed(format!("{name}: {message}")),
     }
 }

@@ -215,6 +215,7 @@ pub struct Copy {
     pub auto_reason_not_filesystem: &'static str,
     pub auto_reason_busy: &'static str,
     pub auto_reason_malformed: &'static str,
+    pub auto_reason_table_busy: &'static str,
     pub auto_reason_mount_failed: &'static str,
     /// Title of the passphrase dialog; `{drive}` is its name.
     pub drive_unlock_title: &'static str,
@@ -764,6 +765,7 @@ pub const EN_US: Copy = Copy {
     auto_reason_not_filesystem: "it has no files a person keeps",
     auto_reason_busy: "it's in use. Close what's open on it and try again",
     auto_reason_malformed: "the system's mount table couldn't be read safely, so nothing was written",
+    auto_reason_table_busy: "another change to the mount table is still running. Try again in a moment",
     auto_reason_mount_failed: "it couldn't be mounted, so it was left off ({detail})",
     drive_unlock_title: "Unlock {drive}",
     drive_unlock: "Unlock",
@@ -1265,6 +1267,7 @@ pub const ZH_TW: Copy = Copy {
     auto_reason_not_filesystem: "這顆磁碟沒有可存放檔案的檔案系統",
     auto_reason_busy: "磁碟正在使用中，請關閉上面開著的檔案後再試一次",
     auto_reason_malformed: "系統的掛載表無法安全讀取，所以沒有寫入任何內容",
+    auto_reason_table_busy: "掛載表正在進行另一項變更，請稍後再試一次",
     auto_reason_mount_failed: "無法掛載，所以維持關閉（{detail}）",
     drive_unlock_title: "解鎖「{drive}」",
     drive_unlock: "解鎖",

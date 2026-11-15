@@ -3743,6 +3743,7 @@ pub(crate) fn auto_mount_reason(
         .to_string(),
         SetOutcome::Busy(_) => c.auto_reason_busy.to_string(),
         SetOutcome::Malformed(_) => c.auto_reason_malformed.to_string(),
+        SetOutcome::TableBusy => c.auto_reason_table_busy.to_string(),
         SetOutcome::MountFailed(detail) => c
             .auto_reason_mount_failed
             .replace("{detail}", &crate::errors::explain(detail, c)),

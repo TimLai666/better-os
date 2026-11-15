@@ -126,6 +126,9 @@ pub enum DaemonError {
     /// `/etc/fstab` or the rules file is malformed; nothing was written.
     #[error("daemon.error.mount_table_malformed:{0}")]
     MountTableMalformed(String),
+    /// Another change holds the mount table's lock past the wait.
+    #[error("daemon.error.mount_table_busy")]
+    MountTableBusy,
     /// The entry was written and the mount failed.
     #[error("daemon.error.mount_failed:{0}")]
     MountFailed(String),
@@ -189,6 +192,7 @@ mod tests {
                 DaemonError::MountFailed("timeout".into()),
                 SetOutcome::MountFailed("timeout".into()),
             ),
+            (DaemonError::MountTableBusy, SetOutcome::TableBusy),
         ] {
             assert_eq!(classify_error(name, &error.to_string()), outcome);
         }

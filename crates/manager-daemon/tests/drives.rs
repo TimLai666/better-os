@@ -286,6 +286,9 @@ impl Machine {
                 .join("etc/udev/rules.d/90-better-os-drives.rules"),
             mount_root: dir.path().to_path_buf(),
             lock: dir.path().join("run/fstab.lock"),
+            // SAFETY: getuid has no preconditions.
+            lock_owner: unsafe { libc::getuid() },
+            lock_wait: manager_daemon::drives::LOCK_WAIT,
         };
         Self { _dir: dir, paths }
     }
