@@ -57,7 +57,17 @@ can read the touchpad can read the keyboard.
 
 ## Notes
 
+- An independent security and input review of the first commit found no
+  keyboard path and ten things to fix before merge, all fixed with tests:
+  the race between the untouched check and the grab, carried offsets in the
+  clickpad button zone and scaled pinches, a seccomp filter on the uinput
+  descriptor, `BindsTo=` the device with a failing exit on `ENODEV`, the
+  original's integration and libinput device group carried to the clone, the
+  per-session bus authorization, refusal-log rate limiting and unchanged-store
+  skipping and a narrower bus policy, a postrm that stops again before
+  `userdel` and reports its failure, and the factors stated as one pair for
+  every touchpad.
 - Done except the owner's real-hardware run, which is the one open box. No
   test touched a real `/dev/input` node, `/dev/uinput`, or the real system
   bus; the window was looked at in a headless GNOME Shell 46 against a fake
-  pass-through on a private bus, with the vertical factor live at 1.50×.
+  pass-through on a private bus.

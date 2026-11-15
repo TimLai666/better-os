@@ -149,7 +149,7 @@ permissions:
   - name: system-dbus-own-name
     reason: each instance owns org.betteros.TouchpadScroll1.eventN on the system bus with two methods, SetFactors and Describe; only the person in the active local session may set a factor
   - name: udev-rule
-    reason: installs 70-better-touchpad-scroll.rules, which starts a pass-through for each touchpad and tells libinput where the original touchpad sits so disable-while-typing still pairs it with the keyboard
+    reason: installs 90-better-touchpad-scroll.rules, which starts a pass-through for each touchpad and tells libinput where the original touchpad sits so disable-while-typing still pairs it with the keyboard
 paths:
   - /usr/bin/better-touchpad
   # The resident gesture pipeline. It has no window, links no toolkit, and is
@@ -177,7 +177,7 @@ paths:
   # them, the account, and the state directory in postrm.
   - /usr/libexec/better-touchpad-scrolld
   - /usr/lib/systemd/system/better-touchpad-scroll@.service
-  - /usr/lib/udev/rules.d/70-better-touchpad-scroll.rules
+  - /usr/lib/udev/rules.d/90-better-touchpad-scroll.rules
   - /usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf
   - /usr/lib/sysusers.d/better-touchpad-scroll.conf
   - /usr/lib/tmpfiles.d/better-touchpad-scroll.conf

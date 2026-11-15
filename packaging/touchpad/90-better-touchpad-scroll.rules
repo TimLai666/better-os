@@ -1,0 +1,26 @@
+# Better Touchpad scroll speed (ADR 0030).
+#
+# Numbered 90 so it runs after systemd's 70-touchpad.rules and libinput's
+# 80-libinput-device-groups.rules: the clone's two properties below must win
+# over what those would guess for a virtual device.
+ACTION=="remove", GOTO="better_touchpad_scroll_end"
+SUBSYSTEM!="input", GOTO="better_touchpad_scroll_end"
+KERNEL!="event[0-9]*", GOTO="better_touchpad_scroll_end"
+
+# The pass-through's own clone: give it the original's
+# ID_INPUT_TOUCHPAD_INTEGRATION (so disable-while-typing still pairs it with
+# the built-in keyboard) and LIBINPUT_DEVICE_GROUP (so it stays paired with a
+# trackpoint). The service wrote both into the clone's phys; the program only
+# reads that one sysfs file and prints the two properties. Never start a
+# pass-through for a clone.
+ATTRS{phys}=="better-touchpad-scroll/*", IMPORT{program}="/usr/libexec/better-touchpad-scrolld --clone-properties %S%p", GOTO="better_touchpad_scroll_end"
+
+# Start one pass-through per touchpad event node. The service judges the node
+# again by its capabilities and leaves anything that can report a key alone;
+# this rule only narrows what it is started for.
+ENV{ID_INPUT_TOUCHPAD}!="1", GOTO="better_touchpad_scroll_end"
+ENV{ID_INPUT_KEYBOARD}=="1", GOTO="better_touchpad_scroll_end"
+ENV{ID_INPUT_KEY}=="1", GOTO="better_touchpad_scroll_end"
+TAG+="systemd", ENV{SYSTEMD_WANTS}+="better-touchpad-scroll@%k.service"
+
+LABEL="better_touchpad_scroll_end"

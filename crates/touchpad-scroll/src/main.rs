@@ -34,7 +34,7 @@ extern "C" fn on_signal(_: libc::c_int) {
     STOP.store(true, Ordering::SeqCst);
 }
 
-const USAGE: &str = "usage: better-touchpad-scrolld eventN | --eligible | --help | --version";
+const USAGE: &str = "usage: better-touchpad-scrolld eventN | --eligible | --clone-properties SYSPATH | --help | --version";
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -53,6 +53,13 @@ fn main() -> ExitCode {
             println!("better-touchpad-scrolld {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
+        ["--clone-properties", syspath] => match touchpad_scroll::udev::clone_properties(syspath) {
+            Some(properties) => {
+                print!("{properties}");
+                ExitCode::SUCCESS
+            }
+            None => ExitCode::FAILURE,
+        },
         ["--eligible"] => {
             for name in sysfs::eligible(&sysfs::class_root()) {
                 println!("{name}");
@@ -96,6 +103,12 @@ fn run(event: &str) -> ExitCode {
         eprintln!("could not drop privileges, so nothing is held: {error}");
         return ExitCode::FAILURE;
     }
+    // From here the uinput descriptor can declare no key outside the button
+    // block, whatever the code running in this process does.
+    if let Err(error) = touchpad_scroll::seccomp::install() {
+        eprintln!("could not install the uinput filter, so nothing is held: {error}");
+        return ExitCode::FAILURE;
+    }
 
     let state_file = PathBuf::from(ipc::STATE_FILE);
     let (stored, problem) = Factors::load(&state_file);
@@ -118,6 +131,7 @@ fn run(event: &str) -> ExitCode {
         factors: factors.clone(),
         state_file,
         device_name: device_name.clone(),
+        refusals: Default::default(),
     };
     let _connection = match zbus::blocking::connection::Builder::system()
         .and_then(|builder| builder.name(ipc::bus_name(event)))
@@ -147,8 +161,11 @@ fn run(event: &str) -> ExitCode {
         let current = factors.get();
         if let Err(error) = passthrough.step(current, Duration::from_millis(250)) {
             if error.raw_os_error() == Some(libc::ENODEV) {
+                // A failure, not a success: the unit is BindsTo= its device,
+                // and a node that came back under the same name after a
+                // replug or a resume must get a fresh instance.
                 eprintln!("{} is gone", node.display());
-                return ExitCode::SUCCESS;
+                return ExitCode::FAILURE;
             }
             eprintln!("{}: {error}", node.display());
             return ExitCode::FAILURE;

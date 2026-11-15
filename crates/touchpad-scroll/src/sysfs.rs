@@ -59,6 +59,7 @@ pub fn describe(class_dir: &Path) -> Option<DeviceDescriptor> {
         absolute: bitmap("abs")?,
         misc: bitmap("msc")?,
         abs_info: Default::default(),
+        udev: Default::default(),
     })
 }
 

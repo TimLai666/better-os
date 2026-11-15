@@ -6,9 +6,11 @@
 //! unless they are valid scroll factors.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::Instant;
 
 use touchpad_scroll::factors::{Factors, SharedFactors};
-use touchpad_scroll::session_rule::{Decision, DisplaySession, SessionFacts, decide};
+use touchpad_scroll::session_rule::{Decision, RefusalLog, SessionFacts, SessionState, decide};
 use zbus::names::{BusName, UniqueName};
 use zbus::zvariant::OwnedObjectPath;
 use zbus::{Connection, fdo, interface, message::Header};
@@ -17,6 +19,7 @@ pub struct ScrollService {
     pub factors: SharedFactors,
     pub state_file: PathBuf,
     pub device_name: String,
+    pub refusals: Mutex<RefusalLog>,
 }
 
 #[interface(name = "org.betteros.TouchpadScroll1")]
@@ -38,12 +41,28 @@ impl ScrollService {
             .await
             .map_err(fdo::Error::AccessDenied)?;
         if let Decision::Refused(why) = decide(&facts) {
-            eprintln!("refused a factor change from uid {}: {why}", facts.uid);
+            let log = self
+                .refusals
+                .lock()
+                .map(|mut log| log.note(Instant::now()))
+                .unwrap_or(None);
+            if let Some(swallowed) = log {
+                eprintln!(
+                    "refused a factor change from uid {}: {why} ({swallowed} more refusals not logged)",
+                    facts.uid
+                );
+            }
             return Err(fdo::Error::AccessDenied(why.to_string()));
         }
-        factors.store(&self.state_file).map_err(|error| {
-            fdo::Error::Failed(format!("{}: {error}", self.state_file.display()))
-        })?;
+        let written = factors
+            .store_if_changed(self.factors.get(), &self.state_file)
+            .map_err(|error| {
+                fdo::Error::Failed(format!("{}: {error}", self.state_file.display()))
+            })?;
+        if !written {
+            // Nothing changes: no write, no log line.
+            return Ok(());
+        }
         self.factors.set(factors);
         eprintln!(
             "uid {} set vertical {} and horizontal {}",
@@ -65,14 +84,35 @@ impl ScrollService {
 
 const LOGIND: &str = "org.freedesktop.login1";
 
+async fn session_state(
+    connection: &Connection,
+    path: OwnedObjectPath,
+) -> Result<SessionState, String> {
+    let text = |error: zbus::Error| error.to_string();
+    let session = zbus::Proxy::new(connection, LOGIND, path, "org.freedesktop.login1.Session")
+        .await
+        .map_err(text)?;
+    Ok(SessionState {
+        active: session.get_property("Active").await.map_err(text)?,
+        remote: session.get_property("Remote").await.map_err(text)?,
+    })
+}
+
+/// The calling process's own session, and the user's display session for a
+/// process that is in none (see `touchpad_scroll::session_rule`).
 async fn session_facts(
     connection: &Connection,
     sender: &UniqueName<'_>,
 ) -> Result<SessionFacts, String> {
     let text = |error: zbus::Error| error.to_string();
     let dbus = fdo::DBusProxy::new(connection).await.map_err(text)?;
+    let caller = BusName::Unique(sender.to_owned());
     let uid = dbus
-        .get_connection_unix_user(BusName::Unique(sender.to_owned()))
+        .get_connection_unix_user(caller.clone())
+        .await
+        .map_err(|error| error.to_string())?;
+    let pid = dbus
+        .get_connection_unix_process_id(caller)
         .await
         .map_err(|error| error.to_string())?;
     let manager = zbus::Proxy::new(
@@ -83,39 +123,32 @@ async fn session_facts(
     )
     .await
     .map_err(text)?;
-    // A user with no session at all is not logged in, which is an answer.
+    let mut facts = SessionFacts {
+        uid,
+        caller_session: None,
+        display_session: None,
+    };
+    // "No session for this process" is an answer, not an error.
+    if let Ok(path) = manager
+        .call::<_, _, OwnedObjectPath>("GetSessionByPID", &(pid,))
+        .await
+    {
+        facts.caller_session = Some(session_state(connection, path).await?);
+        return Ok(facts);
+    }
     let Ok(user_path) = manager
         .call::<_, _, OwnedObjectPath>("GetUser", &(uid,))
         .await
     else {
-        return Ok(SessionFacts {
-            uid,
-            display_session: None,
-        });
+        return Ok(facts);
     };
     let user = zbus::Proxy::new(connection, LOGIND, user_path, "org.freedesktop.login1.User")
         .await
         .map_err(text)?;
     let (_, display): (String, OwnedObjectPath) =
         user.get_property("Display").await.map_err(text)?;
-    if display.as_str() == "/" {
-        return Ok(SessionFacts {
-            uid,
-            display_session: None,
-        });
+    if display.as_str() != "/" {
+        facts.display_session = Some(session_state(connection, display).await?);
     }
-    let session = zbus::Proxy::new(
-        connection,
-        LOGIND,
-        display,
-        "org.freedesktop.login1.Session",
-    )
-    .await
-    .map_err(text)?;
-    let active: bool = session.get_property("Active").await.map_err(text)?;
-    let remote: bool = session.get_property("Remote").await.map_err(text)?;
-    Ok(SessionFacts {
-        uid,
-        display_session: Some(DisplaySession { active, remote }),
-    })
+    Ok(facts)
 }

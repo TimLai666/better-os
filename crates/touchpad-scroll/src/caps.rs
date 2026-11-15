@@ -102,6 +102,8 @@ pub struct DeviceDescriptor {
     pub absolute: Bits,
     pub misc: Bits,
     pub abs_info: BTreeMap<u16, AbsInfo>,
+    /// What udev said about the original, read before the privilege drop.
+    pub udev: crate::udev::UdevFacts,
 }
 
 /// The `phys` every clone carries, and the prefix the pass-through refuses so
@@ -113,7 +115,11 @@ impl DeviceDescriptor {
     /// Whether the original sits inside the machine. libinput pairs a touchpad
     /// with the keyboard for disable-while-typing only when both are internal,
     /// so the clone has to say the same thing the original did.
-    pub fn integration(&self) -> &'static str {
+    /// udev's own answer when it has one; the bus type only when it has none.
+    pub fn integration(&self) -> &str {
+        if let Some(integration) = &self.udev.integration {
+            return integration;
+        }
         match self.id.bustype {
             BUS_USB | BUS_BLUETOOTH => "external",
             _ => "internal",
@@ -121,7 +127,7 @@ impl DeviceDescriptor {
     }
 
     pub fn clone_phys(&self) -> String {
-        format!("{PHYS_PREFIX}{}", self.integration())
+        crate::udev::clone_phys(self.integration(), self.udev.device_group.as_deref())
     }
 
     pub fn is_multitouch(&self) -> bool {
@@ -309,6 +315,7 @@ pub mod fixtures {
             ]),
             misc: Bits::with(&[5]),
             abs_info,
+            udev: Default::default(),
         }
     }
 
@@ -449,11 +456,20 @@ mod tests {
     fn the_clone_says_where_the_original_was() {
         assert_eq!(
             multitouch_touchpad().clone_phys(),
-            "better-touchpad-scroll/internal"
+            "better-touchpad-scroll/internal/-"
         );
         let mut usb = multitouch_touchpad();
         usb.id.bustype = BUS_USB;
-        assert_eq!(usb.clone_phys(), "better-touchpad-scroll/external");
+        assert_eq!(usb.clone_phys(), "better-touchpad-scroll/external/-");
+        // udev's answer wins over the bus type, and the group travels too.
+        usb.udev = crate::udev::UdevFacts {
+            integration: Some("internal".to_string()),
+            device_group: Some("3/17ef/6047:usb-0000:00:14.0-3".to_string()),
+        };
+        assert_eq!(
+            usb.clone_phys(),
+            "better-touchpad-scroll/internal/3/17ef/6047:usb-0000:00:14.0-3"
+        );
     }
 
     #[test]

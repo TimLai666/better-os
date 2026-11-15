@@ -29,8 +29,9 @@ pub trait Source {
     /// Wait up to `timeout` for events and append what is there. An empty
     /// read is a timeout.
     fn read(&mut self, timeout: Duration, out: &mut Vec<InputEvent>) -> io::Result<()>;
-    /// Throw away whatever is queued for this reader.
-    fn drain(&mut self) -> io::Result<()>;
+    /// Throw away whatever is queued for this reader, and say how many
+    /// events that was.
+    fn drain(&mut self) -> io::Result<usize>;
     /// Whether the kernel says something is touching or pressing the pad now.
     fn touching(&mut self) -> io::Result<bool>;
     /// The kernel's current multitouch slot.
@@ -83,6 +84,7 @@ impl Cost {
 
 pub struct Passthrough<S: Source, F: SinkFactory> {
     cost: Cost,
+    aborted_holds: u64,
     source: S,
     factory: F,
     sink: Option<F::Sink>,
@@ -101,6 +103,7 @@ impl<S: Source, F: SinkFactory> Passthrough<S, F> {
         let scaler = Scaler::new(source.descriptor());
         Self {
             cost: Cost::default(),
+            aborted_holds: 0,
             source,
             factory,
             sink: None,
@@ -121,6 +124,12 @@ impl<S: Source, F: SinkFactory> Passthrough<S, F> {
         }
     }
 
+    /// How many times a hold was given back because the pad was touched
+    /// between the check and the grab.
+    pub fn aborted_holds(&self) -> u64 {
+        self.aborted_holds
+    }
+
     pub fn source(&self) -> &S {
         &self.source
     }
@@ -139,6 +148,13 @@ impl<S: Source, F: SinkFactory> Passthrough<S, F> {
             // onto.
             let touching = self.source.touching()?;
             if factors.is_neutral() || touching {
+                std::thread::sleep(timeout.min(IDLE_POLL));
+                return Ok(());
+            }
+            // Empty the queue, then look again: anything that arrives from
+            // here to the grab is queued, and `hold` checks for it.
+            self.source.drain()?;
+            if self.source.touching()? {
                 std::thread::sleep(timeout.min(IDLE_POLL));
                 return Ok(());
             }
@@ -211,8 +227,19 @@ impl<S: Source, F: SinkFactory> Passthrough<S, F> {
     /// moment where the pad is held and nothing receives it.
     fn hold(&mut self) -> io::Result<()> {
         let mut sink = self.factory.create(self.source.descriptor())?;
-        self.source.drain()?;
         self.source.set_grab(true)?;
+        // A touch or a press between the check and the grab went to libinput
+        // from the original, and its release would now go to the clone: the
+        // original would keep a button or a contact down for good. Any event
+        // queued since the check, or anything down now, gives the pad back
+        // untouched and tries again on a later turn.
+        let late = self.source.drain()?;
+        if late > 0 || self.source.touching()? {
+            let released = self.source.set_grab(false);
+            drop(sink);
+            self.aborted_holds += 1;
+            return released;
+        }
         self.scaler = Scaler::new(self.source.descriptor());
         self.pending.clear();
         self.resyncing = false;
@@ -283,6 +310,10 @@ pub mod fake {
         pub touching: bool,
         pub slot: i32,
         pub drained: usize,
+        /// What each drain finds queued, in order; nothing once empty.
+        pub queued: VecDeque<usize>,
+        /// Something touches the pad at the moment the grab is taken.
+        pub touch_on_grab: bool,
     }
 
     impl FakeSource {
@@ -294,6 +325,8 @@ pub mod fake {
                 touching: false,
                 slot: 0,
                 drained: 0,
+                queued: VecDeque::new(),
+                touch_on_grab: false,
             }
         }
     }
@@ -310,6 +343,9 @@ pub mod fake {
                     return Err(io::Error::from_raw_os_error(libc::EBUSY));
                 }
                 journal.grabs += 1;
+                if self.touch_on_grab {
+                    self.touching = true;
+                }
             } else if journal.grabbed {
                 journal.releases += 1;
             }
@@ -324,9 +360,9 @@ pub mod fake {
             Ok(())
         }
 
-        fn drain(&mut self) -> io::Result<()> {
+        fn drain(&mut self) -> io::Result<usize> {
             self.drained += 1;
-            Ok(())
+            Ok(self.queued.pop_front().unwrap_or(0))
         }
 
         fn touching(&mut self) -> io::Result<bool> {
@@ -435,7 +471,7 @@ mod tests {
         let journal = journal.lock().unwrap();
         assert!(journal.grabbed);
         assert_eq!(journal.clones_alive, 1);
-        assert_eq!(passthrough.source().drained, 1);
+        assert_eq!(passthrough.source().drained, 2);
         assert_eq!(passthrough.mode(faster()), Mode::Holding);
     }
 
@@ -542,6 +578,43 @@ mod tests {
         ]);
         passthrough.step(faster(), TICK).unwrap();
         assert_eq!(passthrough.mode(faster()), Mode::Holding);
+    }
+
+    #[test]
+    fn a_touch_between_the_check_and_the_grab_gives_the_pad_back() {
+        let (mut passthrough, journal) = setup();
+        passthrough.source_mut().touch_on_grab = true;
+        passthrough.step(faster(), TICK).unwrap();
+        {
+            let journal = journal.lock().unwrap();
+            assert_eq!(journal.grabs, 1);
+            assert!(
+                !journal.grabbed,
+                "the pad stayed grabbed with a finger down"
+            );
+            assert_eq!(journal.clones_alive, 0);
+        }
+        assert_eq!(passthrough.aborted_holds(), 1);
+        assert_eq!(passthrough.mode(faster()), Mode::WaitingToHold);
+        // Once the finger lifts, the next turn holds.
+        passthrough.source_mut().touch_on_grab = false;
+        passthrough.source_mut().touching = false;
+        passthrough.step(faster(), TICK).unwrap();
+        assert!(journal.lock().unwrap().grabbed);
+    }
+
+    #[test]
+    fn an_event_that_arrived_before_the_grab_gives_the_pad_back() {
+        let (mut passthrough, journal) = setup();
+        // The first drain empties the old queue; the one after the grab finds
+        // a press that slipped in between.
+        passthrough.source_mut().queued.extend([40, 3]);
+        passthrough.step(faster(), TICK).unwrap();
+        let journal = journal.lock().unwrap();
+        assert!(!journal.grabbed);
+        assert_eq!(journal.releases, 1);
+        assert_eq!(journal.clones_alive, 0);
+        assert_eq!(passthrough.aborted_holds(), 1);
     }
 
     #[test]

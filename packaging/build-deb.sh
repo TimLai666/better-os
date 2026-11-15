@@ -756,6 +756,12 @@ make_package better-git \
 # Better OS that is not Rust, under the bounded exception ADR 0012 records; it
 # is three files under the uuid GNOME looks for it by.
 EXTENSION_UUID="touchpad-adapter@betteros.org"
+# Ubuntu 22.04's dbus-daemon 1.12 cannot read send_destination_prefix.
+if [[ "$RELEASE_TARGET" == ubuntu-22.04 ]]; then
+    SCROLL_BUS_POLICY="org.betteros.TouchpadScroll1.dbus-1.12.conf"
+else
+    SCROLL_BUS_POLICY="org.betteros.TouchpadScroll1.conf"
+fi
 #
 # The scroll pass-through (ADR 0030) is the package's system half: one system
 # service per touchpad, started by udev, so installing the package is what
@@ -775,8 +781,8 @@ PACKAGE_DATA=(
     "adapters/gnome-shell-touchpad/org.betteros.TouchpadAdapter1.xml:usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml"
     "packaging/icons/better-touchpad.svg:usr/share/icons/hicolor/scalable/apps/better-touchpad.svg"
     "packaging/touchpad/better-touchpad-scroll@.service:usr/lib/systemd/system/better-touchpad-scroll@.service"
-    "packaging/touchpad/70-better-touchpad-scroll.rules:usr/lib/udev/rules.d/70-better-touchpad-scroll.rules"
-    "packaging/touchpad/org.betteros.TouchpadScroll1.conf:usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf"
+    "packaging/touchpad/90-better-touchpad-scroll.rules:usr/lib/udev/rules.d/90-better-touchpad-scroll.rules"
+    "packaging/touchpad/$SCROLL_BUS_POLICY:usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf"
     "packaging/touchpad/better-touchpad-scroll.sysusers:usr/lib/sysusers.d/better-touchpad-scroll.conf"
     "packaging/touchpad/better-touchpad-scroll.tmpfiles:usr/lib/tmpfiles.d/better-touchpad-scroll.conf"
 )

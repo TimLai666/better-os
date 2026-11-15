@@ -28,9 +28,12 @@ pub mod ipc;
 pub mod linux;
 pub mod notify;
 pub mod passthrough;
+#[cfg(target_os = "linux")]
+pub mod seccomp;
 pub mod session_rule;
 pub mod sysfs;
 pub mod transform;
+pub mod udev;
 
 pub use caps::{DeviceDescriptor, Refusal, classify, classify_capabilities, clone_descriptor};
 pub use event::InputEvent;

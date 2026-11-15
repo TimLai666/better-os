@@ -33,9 +33,11 @@ permission to read a keyboard.
 - **Privilege:** root only to open the two nodes, inside a unit whose device
   cgroup allows exactly `/dev/input/eventN` and `/dev/uinput`; then
   `_better-touchpad-scroll` with no groups, no capabilities, and
-  `no_new_privs`. No polkit action: the service checks the caller against
-  logind (active, local display session), because an unprivileged mechanism
-  cannot ask polkit about other processes on Ubuntu 22.04.
+  `no_new_privs`, and a seccomp filter of its own that lets the uinput
+  descriptor declare no key outside the button block. No polkit action: the
+  service checks the calling process's own logind session (active and local),
+  because an unprivileged mechanism cannot ask polkit about other processes on
+  Ubuntu 22.04.
 - **The window talks to it over the system bus**,
   `org.betteros.TouchpadScroll1.eventN`, two methods. Better Touchpad's GNOME
   backend carries the vertical and horizontal scroll factors through it; they
@@ -51,11 +53,15 @@ permission to read a keyboard.
   (`engineering/performance/touchpad-scroll-performance.md`); the kernel hop
   is owed to a run on real hardware.
 - The residual risk: a compromised pass-through holds `/dev/uinput` and could
-  synthesise a keyboard. The review bounds it and the owner accepted it.
+  create a pointing device, though not a keyboard (the seccomp filter). The
+  review bounds it and the owner accepted it.
 - libinput sees a clone rather than the original. Capabilities, ids, name,
-  and integration carry over; a trackpoint grouping does not.
-- The factors are per machine, not per person: every touchpad gets the same
-  pair, kept in `/var/lib/better-touchpad-scroll/factors`. The person's own
-  choice still lives in their Better Touchpad configuration.
+  integration, and the libinput device group (trackpoint pairing) carry over.
+- The factors are per machine, not per person or per pad: the window sets the
+  same pair on every touchpad and says so, because Better Touchpad's scrolling
+  settings are session-global (ADR 0010) and a per-pad factor would be the
+  only per-pad scrolling setting. Each instance keeps them in
+  `/var/lib/better-touchpad-scroll/factors`. The person's own choice still
+  lives in their Better Touchpad configuration.
 - A future GNOME with a scroll-factor key makes this replaceable by one row in
   the GNOME backend's key table, and the pass-through can then be removed.

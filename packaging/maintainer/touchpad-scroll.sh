@@ -10,11 +10,13 @@
 # Every command is looked up on PATH, so the test drives it against fakes.
 #
 # Installing is what turns it on: postinst creates the account and the state
-# directory and starts an instance for every touchpad that is already there;
-# udev starts one for every touchpad plugged in later. It deliberately does not
-# run `udevadm trigger`, which writes to /sys and fails inside Better Manager's
-# daemon sandbox (ProtectKernelTunables); the touchpads are found from sysfs
-# instead, which that sandbox can read. Removing stops every instance and
+# directory, asks udev to look at the touchpads already there (which tags them
+# for systemd and starts their instances), and starts an instance for every
+# touchpad sysfs describes, for a device systemd already knows. udev starts one
+# for every touchpad plugged in later. `udevadm trigger` writes to /sys and
+# fails inside Better Manager's daemon sandbox (ProtectKernelTunables); then the
+# instances bound to an untagged device start at the next boot or replug, and
+# the postinst says so. Removing stops every instance and
 # deletes the account and the state; dpkg removes the unit, the rule, and the
 # bus policy. A grab or a clone never outlives its process, so stopping the
 # instances is all it takes to give every touchpad back.
@@ -30,9 +32,18 @@ better_os_scroll_postinst() {
     [ "$1" = configure ] || return 0
     systemd-sysusers better-touchpad-scroll.conf >/dev/null 2>&1 || true
     systemd-tmpfiles --create better-touchpad-scroll.conf >/dev/null 2>&1 || true
+    # dpkg unpacked the bus policy before the account existed, so the bus read
+    # a policy naming an unknown user and dropped its own rule. Reload it now
+    # that the account is there, or no instance could own its name.
+    dbus-send --system --type=method_call --dest=org.freedesktop.DBus \
+        /org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig >/dev/null 2>&1 || true
     better_os_scroll_systemd_running || return 0
     systemctl daemon-reload >/dev/null 2>&1 || true
     udevadm control --reload-rules >/dev/null 2>&1 || true
+    if ! udevadm trigger --action=change --subsystem-match=input \
+        --property-match=ID_INPUT_TOUCHPAD=1 >/dev/null 2>&1; then
+        echo "better-touchpad: scroll speed takes effect after the next restart or when the touchpad is reconnected" >&2
+    fi
     if [ -n "${2:-}" ]; then
         # An upgrade: the running instances restart on the new program.
         systemctl try-restart "$better_os_scroll_unit_glob" >/dev/null 2>&1 || true
@@ -65,8 +76,15 @@ better_os_scroll_postrm() {
                 systemctl reset-failed "$better_os_scroll_unit_glob" >/dev/null 2>&1 || true
             fi
             rm -rf -- "$better_os_scroll_state"
+            # An instance udev started between prerm and now would keep the
+            # account in use and make userdel fail: stop them all again.
+            if better_os_scroll_systemd_running; then
+                systemctl stop "$better_os_scroll_unit_glob" >/dev/null 2>&1 || true
+            fi
             if getent passwd "$better_os_scroll_user" >/dev/null 2>&1; then
-                userdel "$better_os_scroll_user" >/dev/null 2>&1 || true
+                if ! userdel "$better_os_scroll_user" >/dev/null 2>&1; then
+                    echo "better-touchpad: could not remove the account $better_os_scroll_user; remove it with: sudo userdel $better_os_scroll_user" >&2
+                fi
             fi
             if getent group "$better_os_scroll_user" >/dev/null 2>&1; then
                 groupdel "$better_os_scroll_user" >/dev/null 2>&1 || true

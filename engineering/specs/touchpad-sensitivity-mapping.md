@@ -78,23 +78,28 @@ nothing. The factors are offered exactly when a pass-through answers:
 | the system bus fails | `gnome.scroll_passthrough_unreachable` | the bus error |
 | smooth scrolling, always | `gnome.no_smooth_scroll_key` | whether scrolling animates is decided by each application |
 
-What a factor does, exactly: while two fingers are on the pad, each finger's
-movement is multiplied before libinput sees it, the vertical factor on the y
-axis and the horizontal one on the x axis, so libinput's two-finger scroll
-travels that much further or less far. Pointer motion and three- and
-four-finger gestures are not scaled; a touchpad that reports a wheel has its
-wheel (including the high-resolution one) scaled by the same factors. The
-scaling rules are in `crates/touchpad-scroll/src/transform.rs`, and three
-consequences of them belong on the record:
+What a factor does, exactly: while two fingers are on the pad and both move
+the same way along an axis, their movement along it is multiplied before
+libinput sees it, the vertical factor on the y axis and the horizontal one on
+the x axis, so libinput's two-finger scroll travels that much further or less
+far. Pointer motion and three- and four-finger gestures are not scaled; a
+touchpad that reports a wheel has its wheel (including the high-resolution
+one) scaled by the same factors. The scaling rules are in
+`crates/touchpad-scroll/src/transform.rs`, and four consequences of them
+belong on the record:
 
+- Fingers moving toward or away from each other (a pinch, a rotation) are not
+  scaled on that axis, so a pinch keeps its scale and angle whatever the two
+  factors are.
+- When two-finger mode ends, the distance a scroll added is taken back within
+  a few frames, so a finger left resting to click lands in the clickpad
+  button zone it is really in.
 - A scaled finger stops at the pad's edge, so at factor 5 the scroll can end
   when the fingers are halfway across.
-- A two-finger pinch is scaled too (both fingers move by the same factor), and
-  GNOME 46 uses no two-finger pinch.
-- The factors belong to the machine's touchpads, not to one person's session:
-  every touchpad gets the same pair, and a person who logs in later scrolls with
-  them until they change them. Only the person in the active local session may
-  change them.
+- The factors belong to the machine's touchpads, not to one person's session
+  or one pad: every touchpad gets the same pair, the Scrolling page says so,
+  and a person who logs in later scrolls with them until they change them.
+  Only the person in the active local session may change them.
 
 **Smooth scrolling stays unavailable.** A touchpad's scroll is already
 continuous when it leaves libinput; whether a view glides on after the fingers

@@ -165,7 +165,7 @@ fn open_char_device(
     flags: libc::c_int,
     major: u32,
     minor: Option<u32>,
-) -> io::Result<OwnedFd> {
+) -> io::Result<(OwnedFd, u32)> {
     use std::os::unix::ffi::OsStrExt;
     let path = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
@@ -187,7 +187,7 @@ fn open_char_device(
             "the path is not the character device it was expected to be",
         ));
     }
-    Ok(fd)
+    Ok((fd, device_minor))
 }
 
 pub struct EvdevSource {
@@ -199,8 +199,11 @@ pub struct EvdevSource {
 impl EvdevSource {
     /// Open an input event node read-only. Refused unless it really is one.
     pub fn open(path: &Path) -> io::Result<Self> {
-        let fd = open_char_device(path, libc::O_RDONLY | libc::O_NONBLOCK, INPUT_MAJOR, None)?;
-        let descriptor = describe(fd.as_raw_fd())?;
+        let (fd, minor) =
+            open_char_device(path, libc::O_RDONLY | libc::O_NONBLOCK, INPUT_MAJOR, None)?;
+        let mut descriptor = describe(fd.as_raw_fd())?;
+        // Read while the service may still read /run/udev; see crate::udev.
+        descriptor.udev = crate::udev::read_db(INPUT_MAJOR, minor);
         Ok(Self {
             fd,
             descriptor,
@@ -258,6 +261,7 @@ fn describe(fd: RawFd) -> io::Result<DeviceDescriptor> {
         absolute,
         misc: bits(fd, eviocgbit(EV_MSC, 1), 1)?,
         abs_info,
+        udev: Default::default(),
     })
 }
 
@@ -312,12 +316,13 @@ impl Source for EvdevSource {
         }
     }
 
-    fn drain(&mut self) -> io::Result<()> {
+    fn drain(&mut self) -> io::Result<usize> {
+        let mut drained = 0;
         loop {
             match self.read_raw() {
-                Ok(0) => return Ok(()),
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Ok(0) => return Ok(drained),
+                Ok(count) => drained += count,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(drained),
                 Err(error) => return Err(error),
             }
         }
@@ -350,7 +355,7 @@ pub struct UinputFactory {
 
 impl UinputFactory {
     pub fn open(path: &Path) -> io::Result<Self> {
-        let fd = open_char_device(
+        let (fd, _) = open_char_device(
             path,
             libc::O_WRONLY | libc::O_NONBLOCK,
             MISC_MAJOR,

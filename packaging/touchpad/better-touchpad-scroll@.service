@@ -1,9 +1,13 @@
 [Unit]
 Description=Better Touchpad scroll speed for %I
 Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/specs/touchpad-input-passthrough-security.md
-# Started by udev for each touchpad (70-better-touchpad-scroll.rules), and by
-# the package's postinst for the touchpads already there. It exits by itself
-# when its touchpad goes away (the node answers ENODEV).
+# Started by udev for each touchpad (90-better-touchpad-scroll.rules). It is
+# bound to its device: unplugging the touchpad stops it, and a node that
+# returns under the same name (a replug, a resume) gets a fresh instance. If
+# the node answers ENODEV first, the instance exits with a failure for the
+# same reason.
+BindsTo=dev-input-%i.device
+After=dev-input-%i.device
 # Five failures in a minute and systemd stops restarting it. A dead instance
 # holds nothing: the kernel ends the grab and the clone with its descriptors.
 StartLimitIntervalSec=60

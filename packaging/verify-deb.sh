@@ -112,7 +112,7 @@ required_data_files() {
                 "usr/share/gnome-shell/extensions/$EXTENSION_UUID/org.betteros.TouchpadAdapter1.xml" \
                 usr/share/icons/hicolor/scalable/apps/better-touchpad.svg \
                 usr/lib/systemd/system/better-touchpad-scroll@.service \
-                usr/lib/udev/rules.d/70-better-touchpad-scroll.rules \
+                usr/lib/udev/rules.d/90-better-touchpad-scroll.rules \
                 usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf \
                 usr/lib/sysusers.d/better-touchpad-scroll.conf \
                 usr/lib/tmpfiles.d/better-touchpad-scroll.conf
@@ -537,7 +537,9 @@ for package_name in \
                 '^DeviceAllow=/dev/uinput w$' \
                 '^CapabilityBoundingSet=CAP_SETUID CAP_SETGID$' \
                 '^WatchdogSec=' \
-                '^PrivateNetwork=yes$'; do
+                '^PrivateNetwork=yes$' \
+                '^BindsTo=dev-input-%i.device$' \
+                '^After=dev-input-%i.device$'; do
                 grep -q "$line" "$scroll_unit" || {
                     printf 'The scroll unit is missing %s\n' "$line" >&2
                     exit 1
@@ -548,8 +550,24 @@ for package_name in \
                 exit 1
             fi
             grep -q 'ENV{SYSTEMD_WANTS}+="better-touchpad-scroll@%k.service"' \
-                "$extract_dir/usr/lib/udev/rules.d/70-better-touchpad-scroll.rules" || {
+                "$extract_dir/usr/lib/udev/rules.d/90-better-touchpad-scroll.rules" || {
                 printf 'The udev rule does not start a pass-through per touchpad\n' >&2
+                exit 1
+            }
+            scroll_policy="$extract_dir/usr/share/dbus-1/system.d/org.betteros.TouchpadScroll1.conf"
+            if [[ "$RELEASE_TARGET" == ubuntu-22.04 ]]; then
+                if grep -q 'send_destination_prefix' "$scroll_policy"; then
+                    printf 'The 22.04 bus policy uses an attribute its dbus-daemon cannot read\n' >&2
+                    exit 1
+                fi
+            else
+                grep -q 'send_destination_prefix="org.betteros.TouchpadScroll1"' "$scroll_policy" || {
+                    printf 'The bus policy does not narrow sends to the pass-through names\n' >&2
+                    exit 1
+                }
+            fi
+            grep -q 'own_prefix="org.betteros.TouchpadScroll1"' "$scroll_policy" || {
+                printf 'The bus policy does not limit who owns a pass-through name\n' >&2
                 exit 1
             }
             grep -q '^u _better-touchpad-scroll ' \

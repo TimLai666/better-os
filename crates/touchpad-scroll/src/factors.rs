@@ -86,6 +86,15 @@ impl Factors {
         }
     }
 
+    /// Store these factors unless they are `current` already. Returns whether
+    /// anything was written: a repeated call writes nothing.
+    pub fn store_if_changed(self, current: Self, path: &Path) -> std::io::Result<bool> {
+        if self == current {
+            return Ok(false);
+        }
+        self.store(path).map(|()| true)
+    }
+
     /// Written to a temporary file and renamed, so a crash mid-write leaves
     /// the previous factors. The temporary name carries the process id: every
     /// touchpad's service writes the same file.
@@ -167,6 +176,17 @@ mod tests {
         assert!(error.is_some());
         Factors::new(3.0, 1.0).unwrap().store(&path).unwrap();
         assert_eq!(Factors::load(&path).0, Factors::new(3.0, 1.0).unwrap());
+    }
+
+    #[test]
+    fn setting_the_factors_in_force_writes_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("factors");
+        let factors = Factors::new(2.0, 1.0).unwrap();
+        assert!(!factors.store_if_changed(factors, &path).unwrap());
+        assert!(!path.exists());
+        assert!(factors.store_if_changed(Factors::NEUTRAL, &path).unwrap());
+        assert_eq!(Factors::load(&path).0, factors);
     }
 
     #[test]

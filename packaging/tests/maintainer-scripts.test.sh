@@ -447,10 +447,12 @@ SCROLL_LIBRARY="$ROOT_DIR/packaging/maintainer/touchpad-scroll.sh"
 SCROLL_DIR="$WORK_DIR/scroll"
 SCROLL_BIN="$SCROLL_DIR/bin"
 mkdir -p "$SCROLL_BIN" "$SCROLL_DIR/systemd"
-for tool in systemctl udevadm systemd-sysusers systemd-tmpfiles userdel groupdel; do
+for tool in systemctl udevadm systemd-sysusers systemd-tmpfiles userdel groupdel dbus-send; do
     cat > "$SCROLL_BIN/$tool" <<FAKE
 #!/bin/sh
 printf '%s %s\n' "$tool" "\$*" >> "$SCROLL_DIR/log"
+# A tool named in fail-<tool> fails, the way userdel does with the account in use.
+[ ! -e "$SCROLL_DIR/fail-$tool" ]
 FAKE
 done
 # getent answers that the account and its group exist.
@@ -483,11 +485,13 @@ scroll() {
 scroll better_os_scroll_postinst configure ""
 if grep -qx 'systemd-sysusers better-touchpad-scroll.conf' "$SCROLL_DIR/log" \
     && grep -qx 'systemd-tmpfiles --create better-touchpad-scroll.conf' "$SCROLL_DIR/log" \
+    && grep -q '^dbus-send .*ReloadConfig$' "$SCROLL_DIR/log" \
+    && [[ "$(grep -n '^systemd-sysusers' "$SCROLL_DIR/log" | cut -d: -f1)" -lt "$(grep -n '^dbus-send' "$SCROLL_DIR/log" | cut -d: -f1)" ]] \
     && grep -qx 'systemctl start --no-block better-touchpad-scroll@event7.service' "$SCROLL_DIR/log" \
     && grep -qx 'systemctl start --no-block better-touchpad-scroll@event12.service' "$SCROLL_DIR/log" \
     && ! grep -q 'sda' "$SCROLL_DIR/log" \
     && ! grep -q 'try-restart' "$SCROLL_DIR/log" \
-    && ! grep -q 'udevadm trigger' "$SCROLL_DIR/log"; then
+    && grep -qx 'udevadm trigger --action=change --subsystem-match=input --property-match=ID_INPUT_TOUCHPAD=1' "$SCROLL_DIR/log"; then
     pass "a fresh install creates the account and starts one pass-through per touchpad"
 else
     fail "a fresh install did not turn the pass-through on: $(cat "$SCROLL_DIR/log")"
@@ -525,6 +529,13 @@ else
     fail "an upgrade deleted the stored factors"
 fi
 scroll better_os_scroll_postrm remove
+stop_line="$(grep -nx 'systemctl stop better-touchpad-scroll@\*.service' "$SCROLL_DIR/log" | cut -d: -f1)"
+userdel_line="$(grep -nx 'userdel _better-touchpad-scroll' "$SCROLL_DIR/log" | cut -d: -f1)"
+if [[ -n "$stop_line" && -n "$userdel_line" && "$stop_line" -lt "$userdel_line" ]]; then
+    pass "removal stops every instance again before it deletes the account"
+else
+    fail "postrm deleted the account without stopping the instances first: $(cat "$SCROLL_DIR/log")"
+fi
 if [[ ! -e "$SCROLL_DIR/state" ]] \
     && grep -qx 'userdel _better-touchpad-scroll' "$SCROLL_DIR/log" \
     && grep -qx 'groupdel _better-touchpad-scroll' "$SCROLL_DIR/log" \
@@ -532,6 +543,27 @@ if [[ ! -e "$SCROLL_DIR/state" ]] \
     pass "removal deletes the state, the account, and its group"
 else
     fail "removal left something behind: $(cat "$SCROLL_DIR/log")"
+fi
+
+: > "$SCROLL_DIR/log"
+touch "$SCROLL_DIR/fail-userdel"
+message="$(scroll better_os_scroll_postrm remove 2>&1 >/dev/null)"
+rm -f "$SCROLL_DIR/fail-userdel"
+if [[ "$message" == *"could not remove the account _better-touchpad-scroll"* ]]; then
+    pass "a userdel that fails is said, with the command that finishes the job"
+else
+    fail "a failed userdel was silent: $message"
+fi
+
+: > "$SCROLL_DIR/log"
+touch "$SCROLL_DIR/fail-udevadm"
+message="$(scroll better_os_scroll_postinst configure "" 2>&1 >/dev/null)"
+rm -f "$SCROLL_DIR/fail-udevadm"
+if [[ "$message" == *"takes effect after the next restart"* ]] \
+    && grep -q 'systemctl start --no-block better-touchpad-scroll@event7.service' "$SCROLL_DIR/log"; then
+    pass "where udev cannot be asked (Better Manager's sandbox) the install says when it takes effect"
+else
+    fail "a failed trigger was silent: $message"
 fi
 
 : > "$SCROLL_DIR/log"
