@@ -123,6 +123,10 @@ pub trait Drive {
     fn ejectable(&self) -> zbus::Result<bool>;
     #[zbus(property)]
     fn can_power_off(&self) -> zbus::Result<bool>;
+    #[zbus(property)]
+    fn media(&self) -> zbus::Result<String>;
+    #[zbus(property)]
+    fn media_compatibility(&self) -> zbus::Result<Vec<String>>;
     /// An optical drive (the media in it may still be a stick's image).
     #[zbus(property)]
     fn optical(&self) -> zbus::Result<bool>;
@@ -267,6 +271,15 @@ impl UDisks2 {
                         ejectable: drive.ejectable().await.unwrap_or(false),
                         can_power_off: drive.can_power_off().await.unwrap_or(false),
                         optical: drive.optical().await.unwrap_or(false),
+                        media: {
+                            let mut media = drive.media_compatibility().await.unwrap_or_default();
+                            if let Ok(current) = drive.media().await
+                                && !current.is_empty()
+                            {
+                                media.push(current);
+                            }
+                            media
+                        },
                     }),
                     Err(_) => None,
                 }
