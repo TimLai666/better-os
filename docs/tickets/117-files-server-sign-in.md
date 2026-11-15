@@ -1,6 +1,6 @@
 # Ticket 117 — Better Files signs in to a server in the window
 
-**Blocked by:** 93 (released) · **Status:** open
+**Blocked by:** 93 (released) · **Status:** merged, not released
 
 ## Why
 
