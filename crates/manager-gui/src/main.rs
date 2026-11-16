@@ -10,6 +10,7 @@ mod first_call_tests;
 mod home;
 mod i18n;
 mod layout;
+mod login_watch;
 mod model;
 mod navigation;
 mod pages;

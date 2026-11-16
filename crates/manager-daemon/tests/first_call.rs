@@ -262,10 +262,21 @@ async fn every_start_answers_the_call_that_activated_it() {
             },
             service.gate(),
         );
-        let connection =
-            manager_daemon::service::serve(bus.builder(), name, service, hardware, drives)
-                .await
-                .expect("the daemon started on the bus");
+        let boot_watch = manager_daemon::boot_watch::BootWatchService::new(
+            FakeAuthorizer(false),
+            manager_ipc::boot_watch::Records::at(bus.directory.join("empty-root/boot-watch")),
+            service.gate(),
+        );
+        let connection = manager_daemon::service::serve(
+            bus.builder(),
+            name,
+            service,
+            hardware,
+            drives,
+            boot_watch,
+        )
+        .await
+        .expect("the daemon started on the bus");
 
         if let Err(error) = settle(call).await {
             unanswered.push(format!("start {start}: {error}"));

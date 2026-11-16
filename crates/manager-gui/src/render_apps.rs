@@ -1137,6 +1137,8 @@ impl ManagerApp {
             ),
         ));
 
+        rows.extend(self.login_watch_rows(cx));
+
         rows.push(self.group_header(a.results_header, cx));
         let mut list = div().flex().flex_col().pt(px(FIRST_CARD_GAP));
         for (index, check) in checks.iter().enumerate() {
@@ -1183,6 +1185,103 @@ impl ManagerApp {
             list = list.child(row);
         }
         rows.push(Row::new(0.0, list));
+        rows
+    }
+
+    /// Health's login screen watch card (ticket 140): the switch, what this
+    /// startup's watch found, and every kept record with what was recorded
+    /// before the restart.
+    fn login_watch_rows(&self, cx: &mut Context<Self>) -> Vec<Row> {
+        use crate::login_watch::{self, copy as watch_copy};
+        use manager_core::login_watch::Setting;
+        let w = watch_copy(self.locale);
+        let state = &self.login_watch;
+        let Some(report) = &state.report else {
+            return Vec::new();
+        };
+        let mut rows = Vec::new();
+        let mut expander = SettingsExpander::new(login_watch::CARD, w.title, state.expanded)
+            .icon(IconName::Eye)
+            .description(match report.events.first() {
+                Some(event) => login_watch::summary(
+                    self.locale,
+                    event,
+                    report.interrupted(event),
+                    crate::pages::keep_awake::localtime::UtcOffset::for_system(
+                        event.detected_at_unix_seconds,
+                    ),
+                ),
+                None => w.about.to_string(),
+            })
+            // A press on the switch flips the switch, not the expander.
+            .content(inside_card(
+                better_ui::fluent::toggle::ToggleSwitch::new(
+                    "login-watch-switch",
+                    login_watch::switch_on(report.setting),
+                )
+                .locale(self.locale.words())
+                .disabled(state.writing || self.is_demo())
+                .on_change(Self::act_with(cx, |this, on: bool, _, cx| {
+                    this.set_login_watch(on, cx)
+                })),
+            ))
+            .on_toggle(Self::act_with(cx, |this, open: bool, _, cx| {
+                this.login_watch.expanded = open;
+                cx.notify();
+            }));
+        if !report.events.is_empty() {
+            expander = expander.row(SettingsRow::new(w.about));
+        }
+        if let Some(error) = state.error {
+            expander = expander.row(SettingsRow::new(error));
+        }
+        if report.setting == Setting::Unreadable {
+            expander = expander.row(SettingsRow::new(w.switch_unknown));
+        }
+        expander = expander.row(
+            SettingsRow::new(w.last_boot)
+                .description(login_watch::last_boot_line(self.locale, report)),
+        );
+        if report.events.is_empty() {
+            expander = expander.row(SettingsRow::new(w.nothing_recorded));
+        }
+        for event in &report.events {
+            let offset = crate::pages::keep_awake::localtime::UtcOffset::for_system(
+                event.detected_at_unix_seconds,
+            );
+            let outcome =
+                login_watch::outcome(self.locale, &event.restart, report.interrupted(event));
+            // Someone outside adm sees what happened, not the journal.
+            let description = if report.evidence_readable {
+                format!(
+                    "{outcome}\n{}",
+                    login_watch::evidence_line(self.locale, event)
+                )
+            } else {
+                outcome
+            };
+            expander = expander.row(
+                SettingsRow::new(login_watch::header(self.locale, event, offset))
+                    .description(description),
+            );
+        }
+        if !report.events.is_empty() && !report.evidence_readable {
+            let dir = login_watch::records().evidence_dir().display().to_string();
+            expander = expander.row(SettingsRow::new(
+                w.details_need_admin.replace("{dir}", &dir),
+            ));
+        }
+        if !report.events.is_empty() && report.evidence_readable {
+            let dir = login_watch::records().evidence_dir().display().to_string();
+            let url = format!("file://{dir}");
+            expander = expander.row(
+                SettingsRow::new(w.records_at.replace("{dir}", &dir)).content(
+                    HyperlinkButton::new("login-watch-folder", w.open_folder)
+                        .on_click(move |_, cx| cx.open_url(&url)),
+                ),
+            );
+        }
+        rows.push(Row::card(CARD_GAP, login_watch::CARD, expander));
         rows
     }
 

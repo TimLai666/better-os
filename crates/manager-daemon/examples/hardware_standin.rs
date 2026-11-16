@@ -12,6 +12,9 @@
 //!     127), answering for the fixture's drives and writing the two fixture
 //!     files the windows read.
 //!
+//!     With `BETTER_OS_TEST_BOOT_WATCH_DIR` set, its BootWatch1 (ticket 140)
+//!     writes the login screen watch's setting there.
+//!
 //! Runs until killed. Built only with the `test-support` feature.
 
 use std::sync::Arc;
@@ -102,6 +105,21 @@ async fn main() {
                     .unwrap(),
             }
             .serve_at(OBJECT_PATH, drives_standin(auth))
+            .unwrap()
+            // The login screen watch's switch (ticket 140), writing into
+            // `BETTER_OS_TEST_BOOT_WATCH_DIR`, the directory the window reads.
+            .serve_at(
+                OBJECT_PATH,
+                manager_daemon::boot_watch::BootWatchService::new(
+                    FakeAuthorizer(auth == "grant"),
+                    manager_ipc::boot_watch::Records::at(
+                        std::env::var_os("BETTER_OS_TEST_BOOT_WATCH_DIR")
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|| std::env::temp_dir().join("boot-watch")),
+                    ),
+                    Arc::new(CallGate::default()),
+                ),
+            )
             .unwrap()
             .name("org.betteros.Manager1")
             .unwrap()

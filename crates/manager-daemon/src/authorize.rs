@@ -30,6 +30,10 @@ pub const FAN_MODE_ACTION: &str = "org.betteros.manager.set-fan-mode";
 /// (ADR 0032, ticket 127).
 pub const DRIVE_MOUNTING_ACTION: &str = "org.betteros.manager.drive-mounting";
 
+/// The action that gates `org.betteros.BootWatch1.SetEnabled` (ADR 0033,
+/// ticket 140).
+pub const LOGIN_SCREEN_WATCH_ACTION: &str = "org.betteros.manager.login-screen-watch";
+
 /// What polkit answered, with a cancelled prompt told apart from a refusal
 /// so the window can say "authentication wasn't completed" rather than "not
 /// allowed".
@@ -221,6 +225,8 @@ mod tests {
             REPAIR_ACTION,
             CHARGE_LIMIT_ACTION,
             FAN_MODE_ACTION,
+            DRIVE_MOUNTING_ACTION,
+            LOGIN_SCREEN_WATCH_ACTION,
         ] {
             action_block(id);
         }
@@ -247,7 +253,11 @@ mod tests {
     /// session, and both languages describe it.
     #[test]
     fn each_hardware_action_asks_an_administrator_and_says_so_in_both_languages() {
-        for id in [CHARGE_LIMIT_ACTION, FAN_MODE_ACTION] {
+        for id in [
+            CHARGE_LIMIT_ACTION,
+            FAN_MODE_ACTION,
+            LOGIN_SCREEN_WATCH_ACTION,
+        ] {
             let block = action_block(id);
             assert!(
                 block.contains("<allow_active>auth_admin_keep</allow_active>"),

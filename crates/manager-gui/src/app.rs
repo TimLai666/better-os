@@ -225,6 +225,8 @@ pub(crate) struct ManagerApp {
     /// The sub-page a search result or Home item asked for before the page
     /// existed.
     pub(crate) touchpad_sub_page: Option<crate::pages::touchpad::SubPage>,
+    /// The login screen watch's records and switch (ticket 140).
+    pub(crate) login_watch: crate::login_watch::LoginWatchState,
 }
 
 /// What a real transaction is currently moving.
@@ -438,8 +440,10 @@ impl ManagerApp {
             ),
             touchpad_restored: None,
             touchpad_sub_page: None,
+            login_watch: Default::default(),
         };
         app.read_touchpad_markers();
+        app.login_watch.read();
         if let Some(view) = handoff.and_then(|h| h.state::<crate::restart::ManagerView>()) {
             app.restore_view(view, window, cx);
         }
@@ -521,6 +525,7 @@ impl ManagerApp {
                 .map(crate::pages::default_apps::model::changed_elsewhere)
                 .unwrap_or_default(),
             battery_health: self.system.battery_health(),
+            login_screen_late: self.login_watch.recent(now_unix_seconds()),
         }
     }
 
@@ -1094,6 +1099,11 @@ impl ManagerApp {
             self.device = home::HostRoot::default().device();
             self.read_package_system_record(cx);
         }
+        // The login screen watch writes its records at boot; Home and Health
+        // read them each time they are shown.
+        if matches!(page, Page::Home | Page::Health) {
+            self.login_watch.read();
+        }
         // Default apps reads what every integration says each time it, or
         // Home (which says when a default was changed elsewhere), is shown:
         // another program can change a default behind the window's back. A
@@ -1215,6 +1225,41 @@ impl ManagerApp {
         self.read_package_system_record(cx);
         self.check_package_system(cx);
         self.doctor_checked_at = Some(now_unix_seconds());
+        cx.notify();
+    }
+
+    /// Health's login screen watch switch: written by the privileged
+    /// service, which asks polkit (ADR 0033). The window never writes the
+    /// setting itself; it reads the file again once the service answers.
+    pub(crate) fn set_login_watch(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.is_demo() || self.login_watch.writing {
+            return;
+        }
+        self.login_watch.writing = true;
+        self.login_watch.error = None;
+        let locale = self.locale;
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    zbus::blocking::Connection::system()
+                        .map_err(|error| {
+                            manager_platform::PlatformError::DaemonUnavailable(error.to_string())
+                        })
+                        .and_then(|system| {
+                            manager_platform::privileged::set_login_screen_watch(&system, enabled)
+                        })
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.login_watch.writing = false;
+                app.login_watch.error = result
+                    .err()
+                    .map(|error| crate::login_watch::write_error(locale, &error));
+                app.login_watch.read();
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 

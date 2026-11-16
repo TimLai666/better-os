@@ -102,17 +102,24 @@ impl CallGate {
 /// The hardware controls (`org.betteros.Hardware1`, ticket 86) go in on the
 /// same object path before the name is owned, for the same reason.
 /// So do the drive choices (`org.betteros.Drives1`, ticket 127).
-pub async fn serve<A: Authorizer + 'static, H: Authorizer + 'static, D: Authorizer + 'static>(
+pub async fn serve<
+    A: Authorizer + 'static,
+    H: Authorizer + 'static,
+    D: Authorizer + 'static,
+    B: Authorizer + 'static,
+>(
     builder: zbus::connection::Builder<'_>,
     bus_name: &str,
     service: ManagerService<A>,
     hardware: crate::hardware::HardwareService<H>,
     drives: crate::drives::DrivesService<D>,
+    boot_watch: crate::boot_watch::BootWatchService<B>,
 ) -> zbus::Result<zbus::Connection> {
     builder
         .serve_at(OBJECT_PATH, service)?
         .serve_at(OBJECT_PATH, hardware)?
         .serve_at(OBJECT_PATH, drives)?
+        .serve_at(OBJECT_PATH, boot_watch)?
         .name(bus_name)?
         .build()
         .await
