@@ -421,6 +421,18 @@ busctl --system list 2>/dev/null | grep -q 'org.freedesktop.UDisks2' || {
     cat /tmp/e2e-udisks.log >&2 || true
     exit 1
 }
+# findmnt checks that every source exists, `nofail` or not, and the stand-in
+# drive's UUID names no device in this container. That one error line is the
+# only one allowed; any other error or warning still fails the check.
+verify_fstab() {
+    local report
+    report="$(findmnt --verify --tab-file /etc/fstab 2>&1)" && return 0
+    printf '%s\n' "$report" \
+        | grep -E '^[[:space:]]*\[[EW]\]' \
+        | grep -vxF "   [E] unreachable on boot required source: UUID=$INTERNAL_UUID" \
+        | grep -q . && { printf '%s\n' "$report" >&2; return 1; }
+    return 0
+}
 drive_call() {
     busctl --system call org.betteros.Manager1 /org/betteros/Manager1 \
         org.betteros.Drives1 SetMountAutomatically sb "$1" "$2"
@@ -444,7 +456,7 @@ head -c "$(stat -c %s /tmp/fstab.before)" /etc/fstab | cmp -s - /tmp/fstab.befor
     exit 1
 }
 mkdir -p "/mnt/better-os/$INTERNAL_UUID"
-findmnt --verify --tab-file /etc/fstab || {
+verify_fstab || {
     printf 'findmnt --verify refused the file with the entry\n' >&2
     exit 1
 }
@@ -466,7 +478,7 @@ cmp -s /etc/fstab /tmp/fstab.before || {
     printf 'The empty mount point was left behind\n' >&2
     exit 1
 }
-findmnt --verify --tab-file /etc/fstab || {
+verify_fstab || {
     printf 'findmnt --verify refused the file after the entry was removed\n' >&2
     exit 1
 }

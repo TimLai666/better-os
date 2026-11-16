@@ -1,4 +1,4 @@
-# shellcheck shell=sh
+# shellcheck shell=sh disable=SC2154 # build-deb.sh writes the header that sets the better_os_* variables
 # Removes the autostart overrides Better Touchpad wrote (ticket 88), when the
 # package is removed. Turning off a competing gesture tool (Touchégg, fusuma)
 # writes a Hidden=true copy of its autostart entry into the person's
@@ -76,6 +76,7 @@ better_os_forget_autostart_overrides() {
         case "$uid" in
             '' | *[!0-9]*) continue ;;
         esac
+        # shellcheck disable=SC2015 # both tests pass or the account is skipped
         [ "$uid" -ge "$uid_min" ] && [ "$uid" -le "$uid_max" ] || continue
         case "$home" in
             /*) ;;
@@ -86,8 +87,10 @@ better_os_forget_autostart_overrides() {
         better_os_owned_real_dir "$home/.config/autostart" "$uid" || continue
         for file in $better_os_override_files; do
             for path in "$home/.config/autostart/$file" "$home/.config/autostart/$file.tmp-better-os"; do
+                # shellcheck disable=SC2015 # both tests pass or the path is skipped
                 [ -f "$path" ] && [ ! -L "$path" ] || continue
                 [ "$(stat -c %u -- "$path" 2>/dev/null)" = "$uid" ] || continue
+                # shellcheck disable=SC2016 # expanded by the inner shell, not this one
                 better_os_as_account "$uid" "$_gid" sh -c \
                     '[ -f "$1" ] && [ ! -L "$1" ] && grep -qxF "$2" "$1" && rm -f -- "$1"' \
                     better-os-autostart "$path" "$better_os_override_mark" || true
